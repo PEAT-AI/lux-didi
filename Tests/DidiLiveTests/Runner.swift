@@ -460,8 +460,50 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
 }
 
 @main struct NativeLiveTests {
+
+    // One native-live run: every scenario below is a small function, so the Swift type
+    // checker handles a small body at a time. The printed output is unchanged.
     static func main() async {
         do {
+            let run = Run()
+            try await checkDiagnosticsAndPresentation(run)
+            try await checkAudioErrorSentences(run)
+            try await checkPendingCallbacks(run)
+            try await checkTransportRefusalMatrix(run)
+            try await checkAlteredRequestRefusals(run)
+            try await bindCompanionAndNativeHTTP(run)
+            try await checkNativeOperatorEnvelope(run)
+            try await checkPickupJobIdempotency(run)
+            try await checkSilentScriptedOrdering(run)
+            try await checkAdmissionSuspensionAndMute(run)
+            try await checkSuspendedTransportMute(run)
+            try await checkContinuityRebuildAndResume(run)
+            try await scenario3oRebuiltSessionCountsMarkersAgain(run)
+            try await scenario3pRefusedFrameEndsHostSession(run)
+            try await checkFreshCoordinatorZeroWork(run)
+            try await checkInterruptionHoldsQueuedPCM(run)
+            try await checkIntentRetryAndAudioRevoke(run)
+            try await checkExternallyRevokedReplay(run)
+            try await checkProviderGuardLoop(run)
+            try await checkLateCoordinatorTerminal(run)
+            try await checkCloseInvalidatesQueuedPlayback(run)
+            try await checkSendQueueOrdering(run)
+            try await scenario3pWireSendAndStopReceipt(run)
+            try await checkMuteTravelsOnWire(run)
+            try await scenarioZ2PlaybackReceiptHoldsTheWire(run)
+            try await scenarioZ2SoakKeepsCall(run)
+            try await scenarioRestartAndDurations(run)
+        } catch {
+            let message: String
+            if case ProbeError.assertion(let text) = error { message = text }
+            else if let safe = error as? LiveClientError { message = safe.rawValue }
+            else { message = "controlled fixture/transport failure" }
+            FileHandle.standardError.write(Data(("FAIL native live: " + message + "\n").utf8))
+            exit(1)
+        }
+    }
+
+    @MainActor static func checkDiagnosticsAndPresentation(_ run: Run) async throws {
             try await checkClientDiagnostics()
             try require(NativeLivePresentation.failure(URLError(.cannotConnectToHost)) == "Live service is unreachable. Reconnect the service and try again.", "transport failure is actionable")
             try require(NativeLivePresentation.failure(LiveClientError.transport) == NativeLivePresentation.failure(URLError(.timedOut)), "coordinator preserves transport class")
@@ -478,6 +520,9 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(limits.sentence == "Session limit 15 min, idle limit 1 min.", "configured limits are plain text")
             try require(NativeLivePresentation.ended("session_timeout", limits: limits) == "Session limit reached (15 min). Start again to continue.", "session limit explains next action")
             try require(NativeLivePresentation.ended("idle_timeout", limits: limits) == "Ended after 1 min without speech. Start again when ready.", "idle limit explains next action")
+    }
+
+    @MainActor static func checkAudioErrorSentences(_ run: Run) async throws {
             let split: [(NativeLiveAudioError, String, String)] = [
                 (.deviceMissing, "device_missing", "No microphone found: connect one or select it in System Settings, Sound, Input."),
                 (.formatUnavailable, "format_unavailable", "Live audio format is unavailable; select a working microphone and output device."),
@@ -509,18 +554,21 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(LiveClientError.boundedCloseReason(Data("attach_rejected:internal\nSECRET".utf8)) == nil, "unsafe multiline reason rejected")
             try require(LiveClientError.transport.errorDescription == nil, "unknown transport keeps generic fallback")
 
-            let fixture = try JSONDecoder().decode(Fixture.self, from: FileHandle.standardInput.readDataToEndOfFile())
+    }
+
+    @MainActor static func checkPendingCallbacks(_ run: Run) async throws {
+            run.fixture = try JSONDecoder().decode(Fixture.self, from: FileHandle.standardInput.readDataToEndOfFile())
             let pendingWire = Data("[{\"id\":\"job1\",\"state\":\"in_progress\",\"markdown\":\"Working\"},{\"id\":\"job2\",\"state\":\"failed\",\"markdown\":\"Actual failure\"}]".utf8)
-            let pendingCalls = try JSONDecoder().decode([NativePendingLiveJob].self, from: pendingWire)
-            try require(!pendingCalls[0].isReady && pendingCalls[1].isReady, "only a completed or failed job offers a quiet callback")
-            try require(pendingCalls[1].markdown == "Actual failure", "native callback never turns a failure into success")
+            run.pendingCalls = try JSONDecoder().decode([NativePendingLiveJob].self, from: pendingWire)
+            try require(!run.pendingCalls[0].isReady && run.pendingCalls[1].isReady, "only a completed or failed job offers a quiet callback")
+            try require(run.pendingCalls[1].markdown == "Actual failure", "native callback never turns a failure into success")
 
             if CommandLine.arguments.contains("--child-before-intent") || CommandLine.arguments.contains("--child-after-intent") {
-                let http = TestHTTP(fixture)
-                let client = LiveSessionCoordinator(http: http, sockets: CountedSockets(fixture), sink: SilentSink())
+                let http = TestHTTP(run.fixture)
+                let client = LiveSessionCoordinator(http: http, sockets: CountedSockets(run.fixture), sink: SilentSink())
                 let before = CommandLine.arguments.contains("--child-before-intent")
                 if before { await http.configure(loss: true) }
-                await client.begin(intent(fixture))
+                await client.begin(intent(run.fixture))
                 if before { try require(await client.state == .createUnknown, "child before dispatch") }
                 else { try await until { await client.state == .active } }
                 guard let snapshot = await http.lastCreated else { throw ProbeError.assertion("child server identity") }
@@ -534,25 +582,28 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 guard case .terminal(let terminal, _) = frame else { throw ProbeError.assertion("typed terminal frame") }
                 try require(terminal.code == code, "provider terminal code retained")
             }
+    }
+
+    @MainActor static func checkTransportRefusalMatrix(_ run: Run) async throws {
             if CommandLine.arguments.contains("--mutation") {
                 // Compiled mutated transport only removes Cookie preflight. Behavioral check must catch that at the real host.
-                let transport = LiveSocketTransport(requests: TestRequests(fixture: fixture, alteration: "cookie"))
-                let http = TestHTTP(fixture)
-                let snapshot = try await http.create(for: intent(fixture), key: "mutation-cookie-guard")
+                let transport = LiveSocketTransport(requests: TestRequests(fixture: run.fixture, alteration: "cookie"))
+                let http = TestHTTP(run.fixture)
+                let snapshot = try await http.create(for: intent(run.fixture), key: "mutation-cookie-guard")
                 var refusedBeforeTask = false
-                do { _ = try await transport.connect(LiveSocketBinding(origin: URL(string: fixture.origin)!, sessionID: snapshot.liveSessionId,
-                                                                       authorityEpoch: fixture.authorityEpoch, profileIdentity: fixture.profileIdentity)) }
+                do { _ = try await transport.connect(LiveSocketBinding(origin: URL(string: run.fixture.origin)!, sessionID: snapshot.liveSessionId,
+                                                                       authorityEpoch: run.fixture.authorityEpoch, profileIdentity: run.fixture.profileIdentity)) }
                 catch LiveClientError.forbiddenHeader { refusedBeforeTask = true }
                 await http.finish()
                 try require(refusedBeforeTask, "mutation sensitivity: cookie must be rejected before URLSession task")
                 print("PASS cookie preflight sensitivity baseline")
                 return
             }
-            let unreachableHTTP = TestHTTP(fixture)
+            let unreachableHTTP = TestHTTP(run.fixture)
             await unreachableHTTP.makeStatusUnreachable()
-            let unreachableSockets = CountedSockets(fixture)
+            let unreachableSockets = CountedSockets(run.fixture)
             let unreachableClient = LiveSessionCoordinator(http: unreachableHTTP, sockets: unreachableSockets, sink: SilentSink())
-            await unreachableClient.begin(intent(fixture))
+            await unreachableClient.begin(intent(run.fixture))
             let unreachableState = await unreachableClient.state
             try require(unreachableState == .failed(.transport), "coordinator preserves unreachable status transport cause")
             guard case .failed(let unreachableReason) = unreachableState else {
@@ -563,38 +614,43 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(await unreachableSockets.attempts == 0, "unreachable status opens no socket")
             await unreachableHTTP.finish()
 
-            var previous = ContinuousClock.now
-            var durations: [(String, Duration)] = []
-            func record(_ name: String) {
-                let now = ContinuousClock.now; durations.append((name, previous.duration(to: now))); previous = now
-            }
-            let frozen = intent(fixture)
+    }
+
+    @MainActor static func checkAlteredRequestRefusals(_ run: Run) async throws {
+            run.previous = ContinuousClock.now
+            run.durations = []
+            run.frozen = intent(run.fixture)
             for alteration in ["cookie", "origin", "authority", "profile", "host", "duplicate", "destination", "path"] {
-                let http = TestHTTP(fixture)
-                let snapshot = try await http.create(for: frozen, key: "reject-client-" + alteration)
-                let transport = LiveSocketTransport(requests: TestRequests(fixture: fixture, alteration: alteration))
+                let http = TestHTTP(run.fixture)
+                let snapshot = try await http.create(for: run.frozen, key: "reject-client-" + alteration)
+                let transport = LiveSocketTransport(requests: TestRequests(fixture: run.fixture, alteration: alteration))
                 var refused = false
-                do { _ = try await transport.connect(LiveSocketBinding(origin: frozen.origin, sessionID: snapshot.liveSessionId,
-                                                                       authorityEpoch: frozen.authorityEpoch, profileIdentity: frozen.profileIdentity)) }
+                do { _ = try await transport.connect(LiveSocketBinding(origin: run.frozen.origin, sessionID: snapshot.liveSessionId,
+                                                                       authorityEpoch: run.frozen.authorityEpoch, profileIdentity: run.frozen.profileIdentity)) }
                 catch LiveClientError.forbiddenHeader { refused = true }
                 catch LiveClientError.invalidDestination { refused = true }
                 try require(refused, "client destination/header guard")
                 await http.finish()
             }
             print("PASS production transport eight local header/destination/path refusals with zero attach")
-            record("guards")
+            run.record("guards")
 
+    }
+
+    @MainActor static func bindCompanionAndNativeHTTP(_ run: Run) async throws {
             let (companion, nativeHTTP) = try await MainActor.run {
-                let descriptor = try ServiceDescriptor(origin: fixture.origin, credentialService: "synthetic", credentialAccount: "fixture")
-                let companion = CompanionClient(descriptor: descriptor, credential: { fixture.token }, expectedEpoch: fixture.authorityEpoch)
+                let descriptor = try ServiceDescriptor(origin: run.fixture.origin, credentialService: "synthetic", credentialAccount: "fixture")
+                let companion = CompanionClient(descriptor: descriptor, credential: { run.fixture.token }, expectedEpoch: run.fixture.authorityEpoch)
                 return (companion, NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder()))
             }
+            run.companion = companion
+            run.nativeHTTP = nativeHTTP
             let callbackHTTP = await MainActor.run {
                 let config = URLSessionConfiguration.ephemeral
                 config.protocolClasses = [PendingCallsFixture.self]
-                return NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder(), configuration: config)
+                return NativeLiveOperatorHTTP(authority: run.companion.authenticatedRequestBuilder(), configuration: config)
             }
-            let hostWire = try JSONSerialization.data(withJSONObject: ["data": ["assistantId": "naya", "authorityEpoch": fixture.authorityEpoch]])
+            let hostWire = try JSONSerialization.data(withJSONObject: ["data": ["assistantId": "naya", "authorityEpoch": run.fixture.authorityEpoch]])
             let callbackWire = Data("{\"data\":[{\"id\":\"ready-a\",\"state\":\"completed\",\"markdown\":\"private result\"},{\"id\":\"ready-b\",\"state\":\"failed\",\"markdown\":\"private failure\"}]}".utf8)
             PendingCallsFixture.load([.success(hostWire), .success(callbackWire), .failure(URLError(.notConnectedToInternet)), .success(hostWire), .success(Data("{\"data\":[]}".utf8))])
             let readyCallbacks = try await callbackHTTP.pendingCalls()
@@ -606,10 +662,13 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             let goneCallbacks = try await callbackHTTP.pendingCalls()
             try require(goneCallbacks.isEmpty, "native HTTP fixture reconciles job gone after poll error")
             print("PASS native callback HTTP ready/error/gone fixture")
-            record("callbacks")
-            let nativeIntent = try await nativeHTTP.beginIntent()
+            run.record("callbacks")
+    }
+
+    @MainActor static func checkNativeOperatorEnvelope(_ run: Run) async throws {
+            let nativeIntent = try await run.nativeHTTP.beginIntent()
             do {
-                _ = try await nativeHTTP.snapshot(sessionID: "00000000-0000-4000-8000-000000000000", for: nativeIntent)
+                _ = try await run.nativeHTTP.snapshot(sessionID: "00000000-0000-4000-8000-000000000000", for: nativeIntent)
                 throw ProbeError.assertion("missing native snapshot must fail")
             } catch let error as LiveClientError {
                 try require(error == .http(status: 404, code: "NOT_FOUND"), "actual native HTTP preserves status and typed code")
@@ -617,43 +676,46 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
 
             let pickupID = "10000000-0000-4000-8000-000000000001"
             let pickedHTTP = await MainActor.run {
-                NativeLiveOperatorHTTP(authority: companion.authenticatedRequestBuilder(), pickupJobID: pickupID)
+                NativeLiveOperatorHTTP(authority: run.companion.authenticatedRequestBuilder(), pickupJobID: pickupID)
             }
             let firstPickup = try JSONDecoder().decode([String: String].self, from: pickedHTTP.createBody(for: nativeIntent, key: "pickup-key"))
             let pickupRetry = try JSONDecoder().decode([String: String].self, from: pickedHTTP.createBody(for: nativeIntent, key: "pickup-key"))
             let laterStart = try JSONDecoder().decode([String: String].self, from: pickedHTTP.createBody(for: nativeIntent, key: "later-start-key"))
             try require(firstPickup["pickupJobId"] == pickupID && pickupRetry["pickupJobId"] == pickupID, "pickup and its idempotent retry select the same job")
             try require(laterStart["pickupJobId"] == nil && laterStart["inputClass"] == nativeIntent.inputClass, "a later Start cannot reuse the consumed pickup ID")
-            let nativeStatus = try await nativeHTTP.status(for: nativeIntent)
-            try require(nativeStatus.authorityEpoch == fixture.authorityEpoch, "native status freezes authority epoch")
+            let nativeStatus = try await run.nativeHTTP.status(for: nativeIntent)
+            try require(nativeStatus.authorityEpoch == run.fixture.authorityEpoch, "native status freezes authority epoch")
             let nativeKey = UUID().uuidString.lowercased()
-            let nativeSnapshot = try await nativeHTTP.create(for: nativeIntent, key: nativeKey)
+            let nativeSnapshot = try await run.nativeHTTP.create(for: nativeIntent, key: nativeKey)
             try require(nativeSnapshot.idempotencyKey == nativeKey, "native create idempotency envelope")
-            _ = try await nativeHTTP.snapshot(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
-            _ = try await nativeHTTP.journal(sessionID: nativeSnapshot.liveSessionId, cursor: 0, for: nativeIntent)
-            let nativeRequest = try await nativeHTTP.request(for: LiveSocketBinding(origin: nativeIntent.origin,
+            _ = try await run.nativeHTTP.snapshot(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
+            _ = try await run.nativeHTTP.journal(sessionID: nativeSnapshot.liveSessionId, cursor: 0, for: nativeIntent)
+            let nativeRequest = try await run.nativeHTTP.request(for: LiveSocketBinding(origin: nativeIntent.origin,
                 sessionID: nativeSnapshot.liveSessionId, authorityEpoch: nativeIntent.authorityEpoch, profileIdentity: nativeIntent.profileIdentity))
             let nativeHeaders = Set((nativeRequest.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() })
             try require(nativeHeaders == ["authorization", "host", "x-didi-authority-epoch", "x-didi-live-profile"] && nativeRequest.url?.scheme == "ws", "native audio exactly four pinned headers")
             try LiveSocketTransport.validate(nativeRequest, binding: LiveSocketBinding(origin: nativeIntent.origin,
                 sessionID: nativeSnapshot.liveSessionId, authorityEpoch: nativeIntent.authorityEpoch, profileIdentity: nativeIntent.profileIdentity))
-            try await nativeHTTP.revoke(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
-            let nativeTerminal = try await nativeHTTP.snapshot(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
+            try await run.nativeHTTP.revoke(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
+            let nativeTerminal = try await run.nativeHTTP.snapshot(sessionID: nativeSnapshot.liveSessionId, for: nativeIntent)
             try require(nativeTerminal.terminal?.state == .revoked, "native revoke and snapshot routes")
-            let builder = companion.authenticatedRequestBuilder().request
+            let builder = run.companion.authenticatedRequestBuilder().request
             var staleEpochRefused = false
             do { _ = try builder(nativeIntent.origin.appendingPathComponent("api/v1/status"), "stale") }
             catch { staleEpochRefused = true }
             try require(staleEpochRefused, "native builder refuses stale expected epoch")
             print("PASS native operator status/create/snapshot/journal/revoke envelopes and exactly pinned audio headers")
 
-            let playbackGate = Gate(), duplexHTTP = TestHTTP(fixture)
+    }
+
+    @MainActor static func checkPickupJobIdempotency(_ run: Run) async throws {
+            let playbackGate = Gate(), duplexHTTP = TestHTTP(run.fixture)
             let duplexSocket = ScriptedSocket([
                 .marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)),
                 .pcm(Data([1, 0]))
             ])
             let duplex = LiveSessionCoordinator(http: duplexHTTP, sockets: FixedSockets(socket: duplexSocket), sink: GatedPlaybackSink(playbackGate))
-            await duplex.begin(frozen)
+            await duplex.begin(run.frozen)
             try await until { await playbackGate.arrivals == 1 }
             let duplexID = await duplex.sessionID
             try await duplex.sendPCM(Data(repeating: 0, count: 640))
@@ -664,14 +726,17 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             print("PASS full-duplex capture interleaves with suspended playback write")
 
             // Silent scripted output proves ordering, including invalidation on a terminal frame.
-            let scriptedHTTP = TestHTTP(fixture), scriptedSink = SilentSink()
+    }
+
+    @MainActor static func checkSilentScriptedOrdering(_ run: Run) async throws {
+            let scriptedHTTP = TestHTTP(run.fixture), scriptedSink = SilentSink()
             let scripted = LiveSessionCoordinator(http: scriptedHTTP, sockets: ScriptedSockets(frames: [
                 .marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)),
                 .pcm(Data([1, 0])), .pcm(Data([2, 0])),
                 .marker(LiveMarker(kind: .interrupted, sequence: 2, journalSequence: 0, text: nil, finished: nil, value: nil)),
                 .pcm(Data([3, 0])), .terminal(LiveTerminal(state: .closed), complete: true)
             ]), sink: scriptedSink)
-            await scripted.begin(frozen)
+            await scripted.begin(run.frozen)
             try await until { await scriptedSink.events.count == 6 }
             try require(await scriptedSink.events == ["flush", "pcm:1", "pcm:2", "flush", "pcm:3", "flush"],
                         "PCM, interrupted and terminal flush order")
@@ -680,10 +745,13 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             print("PASS silent scripted PCM/interrupted/terminal output ordering")
 
             // R-SEC-5: admission is suspended before the final outbound epoch check.
-            let muteHTTP = TestHTTP(fixture), muteSocket = ContinuitySocket(), admissionGate = Gate()
+    }
+
+    @MainActor static func checkAdmissionSuspensionAndMute(_ run: Run) async throws {
+            let muteHTTP = TestHTTP(run.fixture), muteSocket = ContinuitySocket(), admissionGate = Gate()
             let muteFence = LiveSessionCoordinator(http: muteHTTP, sockets: muteSocket, sink: SilentSink(), beforeCaptureSubmission: { await admissionGate.wait() })
             await muteSocket.push(.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)))
-            await muteFence.begin(frozen)
+            await muteFence.begin(run.frozen)
             try await until { await muteFence.state == .active }
             await muteFence.setCaptureMuted(false, epoch: 0, diagnosticOwner: 17)
             let staleCapture = Task { try await muteFence.sendPCM(Data([9, 0]), captureEpoch: 0) }
@@ -716,11 +784,14 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
 
             // WFIX1-R4: bytes handed to a suspended transport may complete, but mute
             // rejects all post-request capture and withholds the UI acknowledgement.
-            let transportMuteHTTP = TestHTTP(fixture), transportMuteSocket = ContinuitySocket(), transportGate = Gate()
+    }
+
+    @MainActor static func checkSuspendedTransportMute(_ run: Run) async throws {
+            let transportMuteHTTP = TestHTTP(run.fixture), transportMuteSocket = ContinuitySocket(), transportGate = Gate()
             let transportMute = LiveSessionCoordinator(http: transportMuteHTTP,
                 sockets: GatedSockets(underlying: transportMuteSocket, gate: transportGate), sink: SilentSink())
             await transportMuteSocket.push(.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)))
-            await transportMute.begin(frozen)
+            await transportMute.begin(run.frozen)
             try await until { await transportMute.state == .active }
             await transportMute.setCaptureMuted(false, epoch: 0, diagnosticOwner: 18)
             let consentedFrame = Task { try await transportMute.sendPCM(Data([3, 0]), captureEpoch: 0) }
@@ -745,38 +816,44 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             await transportMute.stop(); await transportMuteHTTP.finish()
             print("PASS suspended transport mute: post-request capture rejected + pre-request send may complete + muted acknowledgement after drain")
 
-            let continuityHTTP = TestHTTP(fixture), continuitySocket = ContinuitySocket(), continuitySink = SilentSink()
-            let continuity = LiveSessionCoordinator(http: continuityHTTP, sockets: continuitySocket, sink: continuitySink)
+    }
+
+    @MainActor static func checkContinuityRebuildAndResume(_ run: Run) async throws {
+            let continuityHTTP = TestHTTP(run.fixture), continuitySocket = ContinuitySocket(), continuitySink = SilentSink()
+            run.continuity = LiveSessionCoordinator(http: continuityHTTP, sockets: continuitySocket, sink: continuitySink)
             await continuitySocket.push(.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil)))
-            await continuity.begin(frozen)
-            try await until { await continuity.state == .active }
-            let continuityID = await continuity.sessionID
+            await run.continuity.begin(run.frozen)
+            try await until { await run.continuity.state == .active }
+            let continuityID = await run.continuity.sessionID
             await continuitySocket.push(.pcm(Data([7, 0])))
             try await until { await continuitySink.queued.count == 1 }
             await continuitySocket.push(.continuity(event: "rebuilding"))
             try await until {
-                let state = await continuity.state, empty = await continuitySink.queued.isEmpty
+                let state = await run.continuity.state, empty = await continuitySink.queued.isEmpty
                 return state == .rebuilding && empty
             }
-            try await continuity.sendPCM(Data(repeating: 0, count: 640))
+            try await run.continuity.sendPCM(Data(repeating: 0, count: 640))
             try require(await continuitySocket.inputs.isEmpty, "rebuilding drops captured input")
             await continuitySocket.push(.continuity(event: "future_event"))
             await continuitySocket.push(.continuity(event: "resumed"))
-            try await until { await continuity.state == .active }
-            try require(await continuity.sessionID == continuityID, "resumed preserves session identity")
-            try await continuity.sendPCM(Data(repeating: 0, count: 640))
+            try await until { await run.continuity.state == .active }
+            try require(await run.continuity.sessionID == continuityID, "resumed preserves session identity")
+            try await run.continuity.sendPCM(Data(repeating: 0, count: 640))
             try require(await continuitySocket.inputs.count == 1, "resumed accepts input")
             await continuitySocket.push(.terminal(LiveTerminal(state: .failed, code: "resume_failed"), complete: true))
-            try await until { await continuity.state == .terminal(LiveTerminal(state: .failed, code: "resume_failed")) }
+            try await until { await run.continuity.state == .terminal(LiveTerminal(state: .failed, code: "resume_failed")) }
             try require(await continuitySocket.connections == 1, "terminal resume failure never reconnects")
             print("PASS continuity rebuilding flush/drop/resume identity + unknown event + terminal no restart")
 
             // 3o: a rebuilt provider session counts its markers again. The Mac re-bases on the first marker after
             // `continuity resumed`, so the call keeps its mic and its playback instead of going outcomeUnknown.
-            let rebaseHTTP = TestHTTP(fixture), rebaseSocket = ContinuitySocket(), rebaseSink = SilentSink()
+    }
+
+    @MainActor static func scenario3oRebuiltSessionCountsMarkersAgain(_ run: Run) async throws {
+            let rebaseHTTP = TestHTTP(run.fixture), rebaseSocket = ContinuitySocket(), rebaseSink = SilentSink()
             let rebase = LiveSessionCoordinator(http: rebaseHTTP, sockets: rebaseSocket, sink: rebaseSink)
             await rebaseSocket.push(.marker(LiveMarker(kind: .ready, sequence: 313, journalSequence: 0, text: nil, finished: nil, value: nil)))
-            await rebase.begin(frozen)
+            await rebase.begin(run.frozen)
             try await until { await rebase.state == .active }
             await rebaseSocket.push(.continuity(event: "rebuilding"))
             try await until { await rebase.state == .rebuilding }
@@ -795,10 +872,13 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
 
             // A frame the protocol genuinely refuses is recorded for the native log and ends the host session
             // through the 3p Stop path, so the provider never keeps talking to a Mac that stopped listening.
-            let rejectHTTP = TestHTTP(fixture), rejectSocket = ContinuitySocket(), rejectSink = SilentSink()
+    }
+
+    @MainActor static func scenario3pRefusedFrameEndsHostSession(_ run: Run) async throws {
+            let rejectHTTP = TestHTTP(run.fixture), rejectSocket = ContinuitySocket(), rejectSink = SilentSink()
             let rejectClient = LiveSessionCoordinator(http: rejectHTTP, sockets: rejectSocket, sink: rejectSink)
             await rejectSocket.push(.marker(LiveMarker(kind: .ready, sequence: 5, journalSequence: 0, text: nil, finished: nil, value: nil)))
-            await rejectClient.begin(frozen)
+            await rejectClient.begin(run.frozen)
             try await until { await rejectClient.state == .active }
             await rejectSocket.push(.marker(LiveMarker(kind: .turnComplete, sequence: 5, journalSequence: 0, text: nil, finished: nil, value: nil)))
             try await until { await rejectClient.frameRejection != nil }
@@ -813,85 +893,97 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             print("PASS a refused marker is recorded and ends the host session")
 
             // Fresh coordinator does zero work. Loss happens AFTER actual server commit; explicit retry keeps exact key/meaning.
-            let http = TestHTTP(fixture); let sockets = CountedSockets(fixture); let sink = SilentSink()
-            let client = LiveSessionCoordinator(http: http, sockets: sockets, sink: sink)
-            await client.close(); await client.revoke()
-            let initialState = await client.state
-            try require(await http.requests == 0 && initialState == .idle, "restart and empty close/revoke are inert")
-            await http.configure(loss: true)
-            await client.begin(frozen)
-            try require(await client.state == .createUnknown, "lost committed create response")
-            try require(await sockets.attempts == 0, "no auto attach on lost response")
-            let lost = await http.lastCreated!
-            try await client.retryCreate()
-            try await until { await client.state == .active }
-            let keys = await http.keys
-            try require(keys.count == 2 && keys[0] == keys[1], "retry exact same create key")
-            try require(await client.sessionID == lost.liveSessionId, "one server row by identity")
+    }
+
+    @MainActor static func checkFreshCoordinatorZeroWork(_ run: Run) async throws {
+            run.http = TestHTTP(run.fixture); run.sockets = CountedSockets(run.fixture); run.sink = SilentSink()
+            run.client = LiveSessionCoordinator(http: run.http, sockets: run.sockets, sink: run.sink)
+            await run.client.close(); await run.client.revoke()
+            let initialState = await run.client.state
+            try require(await run.http.requests == 0 && initialState == .idle, "restart and empty close/revoke are inert")
+            await run.http.configure(loss: true)
+            await run.client.begin(run.frozen)
+            try require(await run.client.state == .createUnknown, "lost committed create response")
+            try require(await run.sockets.attempts == 0, "no auto attach on lost response")
+            run.lost = await run.http.lastCreated!
+            try await run.client.retryCreate()
+            try await until { await run.client.state == .active }
+            run.keys = await run.http.keys
+            try require(run.keys.count == 2 && run.keys[0] == run.keys[1], "retry exact same create key")
+            try require(await run.client.sessionID == run.lost.liveSessionId, "one server row by identity")
             var conflict = false
-            do { _ = try await http.create(for: intent(fixture, inputClass: "private"), key: keys[0]) }
+            do { _ = try await run.http.create(for: intent(run.fixture, inputClass: "private"), key: run.keys[0]) }
             catch LiveClientError.conflict { conflict = true }
             try require(conflict, "changed meaning conflicts")
             for invalid in [Data(), Data([0]), Data(repeating: 0, count: 65538)] {
                 var refused = false
-                do { try await client.sendPCM(invalid) } catch LiveClientError.invalidAudio { refused = true }
+                do { try await run.client.sendPCM(invalid) } catch LiveClientError.invalidAudio { refused = true }
                 try require(refused, "invalid input rejected before wire")
             }
-            try await client.sendPCM(Data([1, 0]))
-            try await until { await sink.queued.last?.first == 1 }
+            try await run.client.sendPCM(Data([1, 0]))
+            try await until { await run.sink.queued.last?.first == 1 }
+    }
+
+    @MainActor static func checkInterruptionHoldsQueuedPCM(_ run: Run) async throws {
             let interruptionGate = Gate()
-            await sink.gateFlush(interruptionGate)
-            try await client.sendPCM(Data([2, 0]))
+            await run.sink.gateFlush(interruptionGate)
+            try await run.client.sendPCM(Data([2, 0]))
             try await until { await interruptionGate.arrivals == 1 }
-            try require(await sink.queued.last?.first != 3, "later PCM held until interrupted flush completes")
+            try require(await run.sink.queued.last?.first != 3, "later PCM held until interrupted flush completes")
             await interruptionGate.release()
-            try await until { await sink.queued.last?.first == 3 }
-            let events = await sink.events
+            try await until { await run.sink.queued.last?.first == 3 }
+            let events = await run.sink.events
             guard let flush = events.lastIndex(of: "flush"), let newPCM = events.firstIndex(of: "pcm:3") else { throw ProbeError.assertion("interruption markers") }
             try require(events.firstIndex(of: "pcm:1")! < flush && flush < newPCM, "old queued audio exists and interruption awaits flush before new PCM")
-            try require(await sink.queued.allSatisfy { $0.first == 3 }, "old queued PCM invalidated, new PCM valid")
-            try await client.endAudioStream()
-            await client.revoke()
-            try require(await sink.queued.isEmpty, "revoke invalidates queued playback before returning")
-            let terminal = try await client.readSnapshot()
-            try require(terminal.terminal?.state == .revoked, "durable revoke")
-            let page = try await client.readJournal()
+            try require(await run.sink.queued.allSatisfy { $0.first == 3 }, "old queued PCM invalidated, new PCM valid")
+            try await run.client.endAudioStream()
+            await run.client.revoke()
+            try require(await run.sink.queued.isEmpty, "revoke invalidates queued playback before returning")
+            run.terminal = try await run.client.readSnapshot()
+            try require(run.terminal.terminal?.state == .revoked, "durable revoke")
+            let page = try await run.client.readJournal()
             try require(page.terminal?.outcome.state == .revoked, "journal terminal fact")
-            let afterJournal = try await client.readJournal(cursor: 100000)
+            let afterJournal = try await run.client.readJournal(cursor: 100000)
             try require(afterJournal.fragments.isEmpty && afterJournal.terminal?.outcome.state == .revoked, "terminal row fact is not invented as a journal fragment")
-            let rawJournal = try await http.raw("/api/v1/live-sessions/" + lost.liveSessionId + "/journal")
+            let rawJournal = try await run.http.raw("/api/v1/live-sessions/" + run.lost.liveSessionId + "/journal")
             let journalText = String(decoding: rawJournal, as: UTF8.self)
             try require(!page.fragments.contains { $0.kind == "generationComplete" }, "interrupted turn does not invent generationComplete")
-            for forbidden in ["FORBIDDEN_PROVIDER_TEXT", "FORBIDDEN_THOUGHT_TEXT", fixture.token, "inlineData", "audio/pcm"] {
+            for forbidden in ["FORBIDDEN_PROVIDER_TEXT", "FORBIDDEN_THOUGHT_TEXT", run.fixture.token, "inlineData", "audio/pcm"] {
                 try require(!journalText.contains(forbidden), "journal excludes PCM/thought/provider payload/token")
             }
-            var unavailable = false
-            do { try await client.sendPCM(Data([0, 0])) } catch LiveClientError.unavailable { unavailable = true }
-            try require(unavailable, "no outbound after revoke")
-            try require(await sockets.attempts == 1, "no automatic reattach")
-            await client.stop(); await http.finish()
+            run.unavailable = false
+            do { try await run.client.sendPCM(Data([0, 0])) } catch LiveClientError.unavailable { run.unavailable = true }
+            try require(run.unavailable, "no outbound after revoke")
+            try require(await run.sockets.attempts == 1, "no automatic reattach")
+            await run.client.stop(); await run.http.finish()
             print("PASS real create loss/retry same identity/key changed meaning conflict invalid input interruption flush revoke journal no autoattach")
-            record("intent-retry-audio-revoke")
+    }
+
+    @MainActor static func checkIntentRetryAndAudioRevoke(_ run: Run) async throws {
+            run.record("intent-retry-audio-revoke")
 
             // A replay whose accepted row was revoked externally is an outcome, never a fresh attachment.
-            let consumedHTTP = TestHTTP(fixture); let consumedSockets = CountedSockets(fixture)
+            let consumedHTTP = TestHTTP(run.fixture); let consumedSockets = CountedSockets(run.fixture)
             let consumed = LiveSessionCoordinator(http: consumedHTTP, sockets: consumedSockets, sink: SilentSink())
-            await consumedHTTP.configure(loss: true); await consumed.begin(frozen)
+            await consumedHTTP.configure(loss: true); await consumed.begin(run.frozen)
             let consumedID = await consumedHTTP.lastCreated!.liveSessionId
-            try await consumedHTTP.revoke(sessionID: consumedID, for: frozen)
+            try await consumedHTTP.revoke(sessionID: consumedID, for: run.frozen)
             try await consumed.retryCreate()
             try require(await consumed.state == .terminal(LiveTerminal(state: .revoked)), "terminal create replay truth")
             try require(await consumedSockets.attempts == 0, "terminal replay zero attach")
             await consumed.stop(); await consumedHTTP.finish()
-            let activeHTTP = TestHTTP(fixture); let activeSockets = CountedSockets(fixture)
-            let activeReplay = LiveSessionCoordinator(http: activeHTTP, sockets: activeSockets, sink: SilentSink())
-            await activeHTTP.configure(loss: true); await activeReplay.begin(frozen)
-            let activeSnapshot = await activeHTTP.lastCreated!
-            let external = try await LiveSocketTransport(requests: TestRequests(fixture: fixture, alteration: "")).connect(
-                LiveSocketBinding(origin: frozen.origin, sessionID: activeSnapshot.liveSessionId, authorityEpoch: frozen.authorityEpoch, profileIdentity: frozen.profileIdentity))
+            run.activeHTTP = TestHTTP(run.fixture); run.activeSockets = CountedSockets(run.fixture)
+            run.activeReplay = LiveSessionCoordinator(http: run.activeHTTP, sockets: run.activeSockets, sink: SilentSink())
+            await run.activeHTTP.configure(loss: true); await run.activeReplay.begin(run.frozen)
+            run.activeSnapshot = await run.activeHTTP.lastCreated!
+    }
+
+    @MainActor static func checkExternallyRevokedReplay(_ run: Run) async throws {
+            let external = try await LiveSocketTransport(requests: TestRequests(fixture: run.fixture, alteration: "")).connect(
+                LiveSocketBinding(origin: run.frozen.origin, sessionID: run.activeSnapshot.liveSessionId, authorityEpoch: run.frozen.authorityEpoch, profileIdentity: run.frozen.profileIdentity))
             guard case .marker(let externalReady) = try await external.receive(), externalReady.kind == .ready else { throw ProbeError.assertion("external consumed snapshot") }
-            let duplicate = try await LiveSocketTransport(requests: TestRequests(fixture: fixture, alteration: "")).connect(
-                LiveSocketBinding(origin: frozen.origin, sessionID: activeSnapshot.liveSessionId, authorityEpoch: frozen.authorityEpoch, profileIdentity: frozen.profileIdentity))
+            let duplicate = try await LiveSocketTransport(requests: TestRequests(fixture: run.fixture, alteration: "")).connect(
+                LiveSocketBinding(origin: run.frozen.origin, sessionID: run.activeSnapshot.liveSessionId, authorityEpoch: run.frozen.authorityEpoch, profileIdentity: run.frozen.profileIdentity))
             do {
                 _ = try await duplicate.receive()
                 throw ProbeError.assertion("duplicate attach must close")
@@ -899,19 +991,19 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 try require(error == .socketClosed(code: 1008, reason: "attach_rejected:already_attached"), "actual native socket preserves close reason")
             }
             await duplicate.cancel()
-            try await activeReplay.retryCreate()
-            try require(await activeReplay.state == .outcomeUnknown(.unavailable), "active consumed replay remains honest unknown")
-            try require(await activeSockets.attempts == 0, "active consumed replay zero automatic attach")
-            try await activeHTTP.revoke(sessionID: activeSnapshot.liveSessionId, for: frozen)
-            await external.cancel(); await activeReplay.stop(); await activeHTTP.finish()
+            try await run.activeReplay.retryCreate()
+            try require(await run.activeReplay.state == .outcomeUnknown(.unavailable), "active consumed replay remains honest unknown")
+            try require(await run.activeSockets.attempts == 0, "active consumed replay zero automatic attach")
+            try await run.activeHTTP.revoke(sessionID: run.activeSnapshot.liveSessionId, for: run.frozen)
+            await external.cancel(); await run.activeReplay.stop(); await run.activeHTTP.finish()
             print("PASS consumed/terminal and active replay zero coordinator attach")
-            record("terminal-replay")
+            run.record("terminal-replay")
 
             for mismatch in ["grant", "epoch", "status", "scope"] {
-                let badHTTP = TestHTTP(fixture); let badSockets = CountedSockets(fixture)
+                let badHTTP = TestHTTP(run.fixture); let badSockets = CountedSockets(run.fixture)
                 let bad = LiveSessionCoordinator(http: badHTTP, sockets: badSockets, sink: SilentSink())
                 await badHTTP.configure(grant: mismatch == "grant", epoch: mismatch == "epoch", status: mismatch == "status", scope: mismatch == "scope")
-                await bad.begin(frozen)
+                await bad.begin(run.frozen)
                 let expected: LiveClientState = mismatch == "status" ? .failed(.statusMismatch) : .outcomeUnknown(.grantMismatch)
                 try require(await bad.state == expected, "frozen status/returned grant/epoch pin")
                 if mismatch == "status" { try require(await badHTTP.keys.isEmpty, "status drift refuses even create") }
@@ -922,14 +1014,17 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
 
             // N2 provider guard: the intent gate accepts any provider the host can report (OpenAI included) and
             // the host's own status still pins the value, so a second provider is never refused as a literal.
+    }
+
+    @MainActor static func checkProviderGuardLoop(_ run: Run) async throws {
             for (provider, expected) in [("openai", LiveClientState.failed(.statusMismatch)),
                                           ("not-a-provider", LiveClientState.failed(.invalidIntent))] {
-                let altHTTP = TestHTTP(fixture); let altSockets = CountedSockets(fixture)
+                let altHTTP = TestHTTP(run.fixture); let altSockets = CountedSockets(run.fixture)
                 let alt = LiveSessionCoordinator(http: altHTTP, sockets: altSockets, sink: SilentSink())
-                let other = LiveBeginIntent(origin: URL(string: fixture.origin)!, assistantID: fixture.assistantId,
-                                            authorityEpoch: fixture.authorityEpoch, provider: provider,
-                                            model: frozen.model, voice: frozen.voice,
-                                            profileIdentity: fixture.profileIdentity, inputClass: "ordinary")
+                let other = LiveBeginIntent(origin: URL(string: run.fixture.origin)!, assistantID: run.fixture.assistantId,
+                                            authorityEpoch: run.fixture.authorityEpoch, provider: provider,
+                                            model: run.frozen.model, voice: run.frozen.voice,
+                                            profileIdentity: run.fixture.profileIdentity, inputClass: "ordinary")
                 await alt.begin(other)
                 // openai passes the provider gate and is caught by the host status pin; an unknown name is
                 // refused by the gate itself. Neither reaches a real socket.
@@ -938,68 +1033,77 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 await alt.stop(); await altHTTP.finish()
             }
             print("PASS provider guard accepts a second provider and the host status pins it")
-            record("pins")
+            run.record("pins")
 
-            let lateHTTP = TestHTTP(fixture); let lateSockets = CountedSockets(fixture); let gate = Gate()
-            let lateSink = SilentSink()
-            let late = LiveSessionCoordinator(http: lateHTTP, sockets: lateSockets, sink: lateSink)
-            await lateHTTP.configure(gate: gate)
-            let old = Task { await late.begin(frozen) }
-            try await until { await gate.arrivals == 1 }
-            await late.begin(frozen)
-            try await until { await late.state == .active }
-            let newID = await late.sessionID
-            await gate.release(); await old.value
-            let lateState = await late.state
-            try require(await late.sessionID == newID && lateState == .active, "late canceled operation cannot replace new explicit begin")
-            try require(await lateSockets.attempts == 1, "old canceled begin has zero create/attach")
+    }
+
+    @MainActor static func checkLateCoordinatorTerminal(_ run: Run) async throws {
+            run.lateHTTP = TestHTTP(run.fixture); run.lateSockets = CountedSockets(run.fixture); run.gate = Gate()
+            run.lateSink = SilentSink()
+            run.late = LiveSessionCoordinator(http: run.lateHTTP, sockets: run.lateSockets, sink: run.lateSink)
+            await run.lateHTTP.configure(gate: run.gate)
+            let old = Task { await run.late.begin(run.frozen) }
+            try await until { await run.gate.arrivals == 1 }
+            await run.late.begin(run.frozen)
+            try await until { await run.late.state == .active }
+            let newID = await run.late.sessionID
+            await run.gate.release(); await old.value
+            let lateState = await run.late.state
+            try require(await run.late.sessionID == newID && lateState == .active, "late canceled operation cannot replace new explicit begin")
+            try require(await run.lateSockets.attempts == 1, "old canceled begin has zero create/attach")
             // Seed the sink boundary without changing the parent fixture's exact wire-input budget.
-            await lateSink.write(Data([1, 0]))
-            await lateSockets.disconnect()
-            try await until { if case .outcomeUnknown = await late.state { return true }; return false }
-            try await until { await lateSink.queued.isEmpty }
-            _ = try await late.readSnapshot()
-            try require(await lateSockets.attempts == 1, "explicit snapshot recovery does not reattach")
-            await lateHTTP.configure(failRead: true)
-            await late.revoke()
-            try require(await late.state == .outcomeUnknown(.unavailable), "failed revoke confirmation cannot invent a known terminal")
-            await lateHTTP.configure()
-            let recovered = try await late.readSnapshot()
+            await run.lateSink.write(Data([1, 0]))
+            await run.lateSockets.disconnect()
+            try await until { if case .outcomeUnknown = await run.late.state { return true }; return false }
+            try await until { await run.lateSink.queued.isEmpty }
+            _ = try await run.late.readSnapshot()
+            try require(await run.lateSockets.attempts == 1, "explicit snapshot recovery does not reattach")
+            await run.lateHTTP.configure(failRead: true)
+            await run.late.revoke()
+            try require(await run.late.state == .outcomeUnknown(.unavailable), "failed revoke confirmation cannot invent a known terminal")
+            await run.lateHTTP.configure()
+            let recovered = try await run.late.readSnapshot()
             try require(recovered.terminal?.state == .revoked, "explicit read recovers server outcome without attachment")
             let readGate = Gate()
-            await lateHTTP.configure(readGate: readGate)
-            let oldRead = Task { try await late.readSnapshot() }
+            await run.lateHTTP.configure(readGate: readGate)
+            let oldRead = Task { try await run.late.readSnapshot() }
             try await until { await readGate.arrivals == 1 }
-            await late.begin(frozen); try await until { await late.state == .active }
-            let newestID = await late.sessionID
+            await run.late.begin(run.frozen); try await until { await run.late.state == .active }
+            let newestID = await run.late.sessionID
             await readGate.release()
             var staleRead = false
             do { _ = try await oldRead.value } catch LiveClientError.staleOperation { staleRead = true }
             try require(staleRead, "late explicit read after new begin is fenced")
-            let newestState = await late.state
-            try require(await late.sessionID == newestID && newestState == .active, "old terminal snapshot cannot overwrite new active generation")
-            await lateSink.write(Data([1, 0]))
-            await late.close()
-            try require(await lateSink.queued.isEmpty, "close invalidates queued playback before returning")
-            let closeState = await late.state
+            let newestState = await run.late.state
+            try require(await run.late.sessionID == newestID && newestState == .active, "old terminal snapshot cannot overwrite new active generation")
+            await run.lateSink.write(Data([1, 0]))
+            await run.late.close()
+    }
+
+    @MainActor static func checkCloseInvalidatesQueuedPlayback(_ run: Run) async throws {
+            try require(await run.lateSink.queued.isEmpty, "close invalidates queued playback before returning")
+            let closeState = await run.late.state
             switch closeState {
             case .terminal, .outcomeUnknown: break
             default: throw ProbeError.assertion("close retains terminal/unknown distinction")
             }
-            await late.revoke()
-            let known = try await late.readSnapshot()
+            await run.late.revoke()
+            let known = try await run.late.readSnapshot()
             try require(known.terminal != nil, "close/revoke explicit server truth")
-            let terminalRequests = await lateHTTP.requests
-            await late.close(); await late.revoke()
-            try require(await lateHTTP.requests == terminalRequests, "one terminal state, no outbound after known terminal")
-            try require(await lateSockets.attempts == 2, "only the new explicit begin reattaches")
-            await late.stop(); await lateHTTP.finish()
+            let terminalRequests = await run.lateHTTP.requests
+            await run.late.close(); await run.late.revoke()
+            try require(await run.lateHTTP.requests == terminalRequests, "one terminal state, no outbound after known terminal")
+            try require(await run.lateSockets.attempts == 2, "only the new explicit begin reattaches")
+            await run.late.stop(); await run.lateHTTP.finish()
             print("PASS status/read stale callback fencing + socket loss/revoke confirmation errors + close/recovery single terminal no reconnect")
-            record("generation-recovery")
+            run.record("generation-recovery")
 
-            let queueHTTP = TestHTTP(fixture); let queueSockets = CountedSockets(fixture); let sendGate = Gate()
+    }
+
+    @MainActor static func checkSendQueueOrdering(_ run: Run) async throws {
+            let queueHTTP = TestHTTP(run.fixture); let queueSockets = CountedSockets(run.fixture); let sendGate = Gate()
             let queue = LiveSessionCoordinator(http: queueHTTP, sockets: GatedSockets(underlying: queueSockets, gate: sendGate), sink: SilentSink())
-            await queue.begin(frozen); try await until { await queue.state == .active }
+            await queue.begin(run.frozen); try await until { await queue.state == .active }
             let first = Task { try? await queue.sendPCM(Data(repeating: 0, count: 65536)) }
             try await until { await sendGate.arrivals == 1 }
             let second = Task { try? await queue.sendPCM(Data(repeating: 0, count: 65536)) }
@@ -1011,7 +1115,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(await queue.state == .outcomeUnknown(.queueOverflow), "single honest overflow outcome")
             await queue.stop(); await queueHTTP.finish()
             print("PASS bounded client admission overflow through real transport, no queued PCM sent")
-            record("queue")
+            run.record("queue")
 
             for kind in ["ready", "interrupted", "generationComplete", "turnComplete"] {
                 let frame = try LiveSocketTransport.decode(.string("{\"type\":\"" + kind + "\",\"sequence\":1,\"journalSequence\":1}"))
@@ -1028,9 +1132,12 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 try require(refused, "bounded strict decode")
             }
             print("PASS exact marker/control grammar and bounded strict decode")
-            record("grammar")
+            run.record("grammar")
 
             // 3p: the wire is one send at a time; audio sheds under backpressure and a control frame is never shed.
+    }
+
+    @MainActor static func scenario3pWireSendAndStopReceipt(_ run: Run) async throws {
             let wire = LiveSendQueue()
             try require(await wire.acquireAudio(), "audio takes a free wire")
             try require(!(await wire.acquireAudio()), "a second audio frame sheds instead of queueing")
@@ -1045,26 +1152,29 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             await wire.release()
 
             // 3p: a Stop during a send still reaches the host, and the receipt names what pressed it.
-            let stopHTTP = TestHTTP(fixture), stopGate = Gate()
+            let stopHTTP = TestHTTP(run.fixture), stopGate = Gate()
             let stopSocket = StopProbeSocket([.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil))], stopGate)
-            let stop = LiveSessionCoordinator(http: stopHTTP, sockets: ProbeSockets(socket: stopSocket), sink: SilentSink())
-            await stop.begin(frozen); try await until { await stop.state == .active }
-            let inFlight = Task { try? await stop.sendPCM(Data([1, 0])) }
+            run.stop = LiveSessionCoordinator(http: stopHTTP, sockets: ProbeSockets(socket: stopSocket), sink: SilentSink())
+            await run.stop.begin(run.frozen); try await until { await run.stop.state == .active }
+            let inFlight = Task { try? await run.stop.sendPCM(Data([1, 0])) }
             try await until { await stopGate.arrivals == 1 }
-            let receipt = await stop.close(trigger: .button)
+            let receipt = await run.stop.close(trigger: .button)
             try require(receipt?.trigger == .button, "the stop receipt names the press")
             try require((receipt?.socketCloseSentMs ?? -1) >= 0, "the receipt measures the wire")
             try require(await stopSocket.controls.contains(.close), "the stop control reached the socket while audio was in flight")
             await inFlight.value
             await stopHTTP.finish()
             print("PASS stop control survives a busy send queue and its receipt names the press")
-            record("stop-control")
+            run.record("stop-control")
 
             // The owner's mute travels on the same wire, one frame per change and never on a dead session.
-            let quietHTTP = TestHTTP(fixture), quietGate = Gate()
+    }
+
+    @MainActor static func checkMuteTravelsOnWire(_ run: Run) async throws {
+            let quietHTTP = TestHTTP(run.fixture), quietGate = Gate()
             let quietSocket = StopProbeSocket([.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil))], quietGate)
             let muted = LiveSessionCoordinator(http: quietHTTP, sockets: ProbeSockets(socket: quietSocket), sink: SilentSink())
-            await muted.begin(frozen); try await until { await muted.state == .active }
+            await muted.begin(run.frozen); try await until { await muted.state == .active }
             await muted.setInputMuted(true)
             await muted.setInputMuted(true)
             try require(await quietSocket.controls.contains(.inputMuted), "the mute reaches the host socket")
@@ -1079,11 +1189,14 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
 
             // #476/V10: one Stop is one teardown. A repeated stop() gets no second receipt, so the
             // native log cannot hold a second live_stop / socket_close_sent pair for one press.
-            let looseHTTP = TestHTTP(fixture), looseGate = Gate()
+    }
+
+    @MainActor static func scenarioZ2PlaybackReceiptHoldsTheWire(_ run: Run) async throws {
+            let looseHTTP = TestHTTP(run.fixture), looseGate = Gate()
             await looseHTTP.configure(failRead: true)
             let looseSocket = StopProbeSocket([.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil))], looseGate)
             let loose = LiveSessionCoordinator(http: looseHTTP, sockets: ProbeSockets(socket: looseSocket), sink: SilentSink())
-            await loose.begin(frozen); try await until { await loose.state == .active }
+            await loose.begin(run.frozen); try await until { await loose.state == .active }
             let firstStop = await loose.close(trigger: .button)
             try require(firstStop != nil, "the first stop returns its receipt even when the read-back fails")
             let afterFirst = await looseHTTP.requests
@@ -1093,13 +1206,13 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(await looseSocket.controls.filter { $0 == .close }.count == 1, "the wire sees one close control")
             await looseHTTP.finish()
             print("PASS one stop is one receipt and one close control")
-            record("stop-once")
+            run.record("stop-once")
 
             // Z2: a playback receipt holds the wire; the microphone sheds one frame and the call lives on.
-            let shedHTTP = TestHTTP(fixture), receiptGate = Gate()
+            let shedHTTP = TestHTTP(run.fixture), receiptGate = Gate()
             let shedSocket = BusyWireSocket([.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil))], receiptGate)
             let shed = LiveSessionCoordinator(http: shedHTTP, sockets: BusyWireSockets(socket: shedSocket), sink: SilentSink())
-            await shed.begin(frozen); try await until { await shed.state == .active }
+            await shed.begin(run.frozen); try await until { await shed.state == .active }
             await shed.setCaptureMuted(false, epoch: 0, diagnosticOwner: 41)
             let heldReceipt = Task { await shed.sendPlaybackReceipt("{\"type\":\"playbackReceipt\"}") }
             try await until { await shedSocket.receiptEntered == 1 }
@@ -1116,13 +1229,16 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 && afterShed.entered == 2 && afterShed.shedFrames == 1, "the frame after the shed is sent")
             await shed.stop(); await shedHTTP.finish()
             print("PASS a receipt holding the wire sheds one mic frame and the next frame is sent")
-            record("shed-frame")
+            run.record("shed-frame")
 
             // Z2 soak: 10,000 alternating playback receipts and mic frames, no shed frame, no interruption.
-            let soakHTTP = TestHTTP(fixture)
+    }
+
+    @MainActor static func scenarioZ2SoakKeepsCall(_ run: Run) async throws {
+            let soakHTTP = TestHTTP(run.fixture)
             let soakSocket = YieldingSocket([.marker(LiveMarker(kind: .ready, sequence: 1, journalSequence: 0, text: nil, finished: nil, value: nil))])
             let soak = LiveSessionCoordinator(http: soakHTTP, sockets: YieldingSockets(socket: soakSocket), sink: SilentSink())
-            await soak.begin(frozen); try await until { await soak.state == .active }
+            await soak.begin(run.frozen); try await until { await soak.state == .active }
             await soak.setCaptureMuted(false, epoch: 0, diagnosticOwner: 42)
             for index in 0..<10_000 {
                 await soak.sendPlaybackReceipt("{\"type\":\"playbackReceipt\",\"index\":" + String(index) + "}")
@@ -1137,16 +1253,19 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(soakState == .active && soakInputs == 10_000 && soakReceipts == 10_000,
                 "every receipt and every mic frame reached the wire")
             await soak.stop(); await soakHTTP.finish()
+    }
+
+    @MainActor static func scenarioRestartAndDurations(_ run: Run) async throws {
             print("PASS 10,000 interleaved playback receipts and mic frames with zero shed frames and no interruption")
-            record("receipt-audio-soak")
+            run.record("receipt-audio-soak")
 
             // Z2: the automatic restart is a new call, a new idempotency key, the same persona and voice.
-            let keyHTTP = TestHTTP(fixture)
+            let keyHTTP = TestHTTP(run.fixture)
             let keySocket = RestartSocket()
             let restartCall = LiveSessionCoordinator(http: keyHTTP, sockets: keySocket, sink: SilentSink())
-            await restartCall.begin(frozen); try await until { await restartCall.state == .active }
+            await restartCall.begin(run.frozen); try await until { await restartCall.state == .active }
             let firstCall = try await restartCall.readSnapshot()
-            await restartCall.begin(frozen); try await until { await restartCall.state == .active }
+            await restartCall.begin(run.frozen); try await until { await restartCall.state == .active }
             let restartedCall = try await restartCall.readSnapshot()
             let createKeys = await keyHTTP.keys
             try require(createKeys.count == 2 && createKeys[0] != createKeys[1],
@@ -1160,22 +1279,50 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(sameVoice && samePersona, "same persona and voice on the restarted call")
             await restartCall.stop(); await keyHTTP.finish()
             print("PASS restart begins a new call with a new idempotency key and the same persona and voice")
-            record("restart-key")
+            run.record("restart-key")
             if CommandLine.arguments.contains("--durations=10") {
-                for (name, duration) in durations.sorted(by: { $0.1 > $1.1 }).prefix(10) {
+                for (name, duration) in run.durations.sorted(by: { $0.1 > $1.1 }).prefix(10) {
                     let parts = duration.components
                     let seconds = Double(parts.seconds) + Double(parts.attoseconds) / 1e18
                     print(String(format: "DURATION %.3fs %@", seconds, name))
                 }
             }
             print("NATIVE CLIENT PASS expectedAdditionalUpgrades=5")
-        } catch {
-            let message: String
-            if case ProbeError.assertion(let text) = error { message = text }
-            else if let safe = error as? LiveClientError { message = safe.rawValue }
-            else { message = "controlled fixture/transport failure" }
-            FileHandle.standardError.write(Data(("FAIL native live: " + message + "\n").utf8))
-            exit(1)
+    }
+
+
+    // State shared by the scenario functions, created once in main() and handed in order.
+    // One test process drives it on one task, so no lock is needed here.
+    final class Run: @unchecked Sendable {
+        var fixture: Fixture!
+        var pendingCalls: [NativePendingLiveJob]!
+        var previous = ContinuousClock.now
+        var durations: [(String, Duration)] = []
+        var frozen: LiveBeginIntent!
+        var companion: CompanionClient!
+        var nativeHTTP: NativeLiveOperatorHTTP!
+        var continuity: LiveSessionCoordinator!
+        var http: TestHTTP!
+        var sink: SilentSink!
+        var sockets: CountedSockets!
+        var client: LiveSessionCoordinator!
+        var lost: LiveSnapshot!
+        var keys: [String] = []
+        var terminal: LiveSnapshot!
+        var unavailable = false
+        var activeHTTP: TestHTTP!
+        var activeSockets: CountedSockets!
+        var activeReplay: LiveSessionCoordinator!
+        var activeSnapshot: LiveSnapshot!
+        var gate: Gate!
+        var lateHTTP: TestHTTP!
+        var lateSockets: CountedSockets!
+        var lateSink: SilentSink!
+        var late: LiveSessionCoordinator!
+        var stop: LiveSessionCoordinator!
+
+        func record(_ name: String) {
+            let now = ContinuousClock.now; durations.append((name, previous.duration(to: now))); previous = now
         }
     }
 }

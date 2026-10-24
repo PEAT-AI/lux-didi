@@ -4707,7 +4707,7 @@ test('#538 R4: a response that ends without audio fires the held rung', async t 
   const scheduler = new DeadlineClock();
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
-  await openPort(h, 'debt-even-holds');
+  const { attachment } = await openPort(h, 'debt-even-holds');
   fake.emit({ type: 'toolCall', calls: [{ id: 'r4b', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   h.advance(7_000); scheduler.runDue(); await settlePort();
@@ -4719,18 +4719,20 @@ test('#538 R4: a response that ends without audio fires the held rung', async t 
   await settlePort();
   assert.equal(fake.closes, 1, 'the response ended without audio, so the rung fires then');
   assert.equal(fake.sessionsOpened, 2, 'and one fresh session replaces the stalled one');
+  attachment.close();
 });
 
 test('#538 R4: a session with no response announced is closed at the rung, the mirror', async t => {
   const scheduler = new DeadlineClock();
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
-  await openPort(h, 'debt-nothing-announced');
+  const { attachment } = await openPort(h, 'debt-nothing-announced');
   fake.emit({ type: 'toolCall', calls: [{ id: 'r4c', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   for (let spent = 0; spent < 8_100; spent += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
   assert.equal(fake.closes, 1, 'nothing was announced, so the rung closes the session');
   assert.equal(fake.sessionsOpened, 2, 'and recreates it once');
+  attachment.close();
 });
 
 test('#538: an owner barge-in inside the debt window clears the clock and triggers no recreate', async t => {

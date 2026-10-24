@@ -651,8 +651,10 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
   const confidence = knowledgeConfidenceOf(raw);
   // #580: the ranker line is stripped from the noise, so it rides one canonical line at the head of the
   // shaped text instead, where research reads it back and voices the hedge. Never invented: only the
-  // fields the server itself sent.
-  const carry = (result: ShapedResult): ShapedResult => confidence === undefined ? result : { ...result, text: `${knowledgeConfidenceMark(confidence)}\n${result.text}`, knowledgeConfidence: confidence };
+  // fields the server itself sent. The mark is added before the hard per-result ceiling is applied, so the
+  // ceiling still holds with the line in place.
+  const carry = (result: ShapedResult): ShapedResult => confidence === undefined ? result
+    : capped({ ...result, text: `${knowledgeConfidenceMark(confidence)}\n${result.text}`, knowledgeConfidence: confidence });
   const ranked = knowledgeRanked(raw);
   if (ranked) return carry(ranked);
   const clean = stripKnowledgePreamble(raw);

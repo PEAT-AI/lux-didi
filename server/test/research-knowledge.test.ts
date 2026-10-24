@@ -5,7 +5,7 @@ import {
   type ResearchDeps, type ResearchSourceLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
-import { shapeLuxKnowledge } from '../tools/live-shape.js';
+import { LIVE_RESULT_CHARS, shapeLuxKnowledge } from '../tools/live-shape.js';
 
 // Two sources, so the run plans across them instead of taking the single-source path.
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'chat'];
@@ -83,6 +83,14 @@ test('#5: a clipped knowledge hit counts as shown, never as left out', () => {
   const text = (capped['findings'] as { text: string }[])[0]!.text;
   assert.match(text, /knowledge: 1 of 1 shown/u, `the clipped hit is still shown: ${text.slice(0, 80)}`);
   assert.ok(text.split('\n').length === 2, 'the one hit is still voiced');
+});
+
+test('#580: the confidence line never pushes a knowledge result past the hard ceiling', () => {
+  const body = 'note body text. '.repeat(30);
+  const hits = Array.from({ length: 6 }, (_, n) => `**#${n + 1}** [PATTERN] Note ${n}\n${body}`).join('\n');
+  const shaped = shapeLuxKnowledge('search_knowledge', `_confidence: low · top score: 0.11 · relevant candidate: no_\n${hits}`);
+  assert.match(shaped.text, /confidence: low/u, 'the mark rides the head of the result');
+  assert.ok(shaped.text.length <= LIVE_RESULT_CHARS, `the hard ceiling holds with the mark, got ${shaped.text.length}`);
 });
 
 test('K3: the model-authored knowledge query is clipped to ten content terms, and filler never rides', () => {

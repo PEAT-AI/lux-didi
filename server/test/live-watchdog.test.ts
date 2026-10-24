@@ -131,6 +131,7 @@ test('a mute owner turn is nudged once and then recovered on a fresh seeded sess
   // #591: owner speech asked for the answer, so the rebuild still announces itself and still carries the
   // pickup instruction that lets her say she is back.
   assert.equal(openingText(live), LIVE_RECOVERY_PICKUP, 'the owner asked for this answer, so the pickup stays');
+  assert.equal(live.fake.requests.at(-1)?.opening, 'model_first', 'and the rebuilt session is still asked to continue');
   assert.ok(continuityEvents(live).includes('rebuilding'), 'the reconnect ring and its chime are still requested');
   assert.deepEqual(rebuildTriggers(live), ['no_output_after_owner'], 'the rebuild names owner speech as its trigger');
 });
@@ -174,8 +175,20 @@ test('an open model turn that emits one chunk and then nothing is nudged once an
   assert.equal(live.fake.sessionsOpened, 2);
   // #591: the model spoke, but the owner never did, so nothing is owed and the rebuild arrives unannounced.
   assert.equal(openingText(live), undefined, 'no owner words since the model spoke means no pickup to answer');
+  assert.equal(live.fake.requests.at(-1)?.opening, 'user_first', 'and nothing instructs the rebuilt session to open');
   assert.deepEqual(continuityEvents(live), [], 'and no reconnect marker for the native ring to chime on');
   assert.deepEqual(rebuildTriggers(live), ['no_output_after_ambient'], 'the rebuild names the silence it walked into');
+});
+
+test('#591: a turn that produced model text is not the ambient case, so it is still nudged', async t => {
+  const live = await openLive(t);
+  // Text without audio is still model output: the provider can answer a silent room with text alone.
+  await live.emit(vadEdge(false));
+  await live.emit({ type: 'modelTurnStarted' });
+  await live.emit({ type: 'modelText', text: 'Standing by.', thought: false });
+  assert.deepEqual(phases(live), ['armed'], 'the open turn owes a reply the watchdog must judge');
+  await until(live, () => phases(live).includes('nudged'), RESPONSE_WATCHDOG_NUDGE_MS + 5_000);
+  assert.deepEqual(phases(live), ['armed', 'nudged'], 'a turn that already spoke in text is nudged, never closed as ambient');
 });
 
 test('model output after the nudge disarms the watchdog', async t => {

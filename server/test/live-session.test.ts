@@ -5807,7 +5807,9 @@ test('TOPIC 6 (#565): a live research call writes a query shape row to the trace
 test('#606 unfinished fragments stop immediately across recognizer noise and a 700 ms pause', async t => {
   const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
   const h = await harness(t, { port: fake.port, scheduler });
-  const { session, attachment } = await attached(h, 'stop-fragments');
+  const session = h.owner.create({ idempotencyKey: 'stop-fragments', inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
   const frames: string[] = [];
   const pump = pumpOutput(recordingSocket(frames), attachment, () => {}, 1_000_000);
   for (const text of ['Nayas.', 'Okay, Naya,']) {
@@ -5827,7 +5829,9 @@ test('#606 unfinished fragments stop immediately across recognizer noise and a 7
 test('#606 long unfinished room speech cannot hide a stop at the end', async t => {
   const fake = fakeLiveVoicePort();
   const h = await harness(t, { port: fake.port });
-  const { session } = await attached(h, 'stop-room');
+  const session = h.owner.create({ idempotencyKey: 'stop-room', inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
   fake.emit({ type: 'inputTranscription', text: `${'room '.repeat(60)}naya stop listening`, finished: false });
   await settlePort();
   assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
@@ -5837,7 +5841,9 @@ test('#606 the stop window expires after three seconds and resets on model outpu
   for (const reset of ['silence', 'output'] as const) {
     const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
     const h = await harness(t, { port: fake.port, scheduler });
-    const { session, attachment } = await attached(h, `stop-reset-${reset}`);
+    const session = h.owner.create({ idempotencyKey: `stop-reset-${reset}`, inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
     fake.emit({ type: 'inputTranscription', text: 'Naya', finished: false });
     await settlePort();
     if (reset === 'silence') { scheduler.now += 3_000; scheduler.runDue(); }
@@ -5848,4 +5854,42 @@ test('#606 the stop window expires after three seconds and resets on model outpu
     assert.equal(h.owner.get(session.liveSessionId).terminal, null, reset);
     attachment.close(); await attachment.done;
   }
+});
+
+test('R1 twenty direct requests stop on unfinished fragments with a fake clock', async t => {
+  const positives = [
+    'Naya stop listening', 'Naya stop listening now', 'stop listening Naya',
+    'Naya shut down', 'Naya please stop listening', 'Naya stop', 'Naya hör auf zuzuhören',
+    'Naya, stop', 'Naja stop listening', 'Nayah stop listening', 'Naia stop listening',
+    'Nia stop listening', 'Nayer stop listening', 'Nayla stop listening', 'NAYA STOP LISTENING!',
+    'Naya could you stop listening now please', 'Could you stop listening Naya',
+    'Please Naya stop listening', 'Naya bitte hör auf zuzuhören', 'Naya schalt dich aus',
+  ];
+  assert.equal(positives.length, 20);
+  for (const [i, text] of positives.entries()) {
+    const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
+    const h = await harness(t, { port: fake.port, scheduler });
+    const session = h.owner.create({ idempotencyKey: `positive-${i}`, inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+    fake.emit({ type: 'inputTranscription', text, finished: false });
+    await settlePort();
+    assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' }, text);
+    await attachment.done;
+  }
+});
+
+test('R1 a name at a fragment edge keeps its grace across quiet finals for under three seconds', async t => {
+  const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler });
+  const session = h.owner.create({ idempotencyKey: 'name-grace', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit({ type: 'inputTranscription', text: 'Naja', finished: false });
+  fake.emit({ type: 'inputTranscription', text: '', finished: true, finalOrigin: 'app_quiet' });
+  await settlePort();
+  scheduler.now += 2_999; scheduler.runDue();
+  fake.emit({ type: 'inputTranscription', text: 'stop listening', finished: false });
+  await settlePort();
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
 });

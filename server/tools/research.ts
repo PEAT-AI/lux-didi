@@ -2540,7 +2540,10 @@ export function chatAttentionReason(results: readonly IntentSubResult[]): string
   const failed = results.find(result => !result.ok);
   const code = failed?.code;
   if (code === undefined) return 'unavailable';
-  return CHAT_NOT_GRANTED_CODES.includes(code) ? 'tool-not-granted' : code;
+  if (CHAT_NOT_GRANTED_CODES.includes(code)) return 'tool-not-granted';
+  // R4: the emitted reason is clamped to the closed vocabulary the host log admits, so a code this
+  // build does not know still produces a receipt instead of being refused there.
+  return CHAT_RECEIPT_REASONS.includes(code) ? code : 'refused';
 }
 export function plainReason(code: string): string { return REASON_WORDS[code] ?? code.replace(/_/gu, ' '); }
 const TIMED_OUT = new Set(['timeout', 'deadline', 'deadline_exhausted', 'timed_out']);

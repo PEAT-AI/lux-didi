@@ -11,9 +11,8 @@ import { sanitize } from './voice-replay/sanitize.js';
  * council named, plus the scenario's own fault.
  *
  * A scenario the current code fails is marked `todo` with the falsified assertion and the wagon that owes the
- * fix quoted in its own message, and the same four are named in docs/debugging.md under "Release gates". The
- * suite runs inside the voice release gate, `scripts/check-live-session.sh`. An invariant is never softened to
- * make a scenario pass.
+ * fix quoted in its own message. The suite runs inside the voice release gate, `scripts/check-live-session.sh`.
+ * An invariant is never softened to make a scenario pass.
  */
 
 const invariants = (played: Played): void => {
@@ -61,26 +60,31 @@ test('scenario 2: a barge-in before tool completion still answers and continues'
   await replay.release();
 });
 
-test('scenario 3: a late output after a timeout is not repeated and does not revive a settled turn', { todo: 'current code submits the late callback a second time: call_1 gets the ceiling error at once and the tool\'s real result as a second function_call_output at +32,100 ms in the same generation; wagon S4a owes the ceiling and uncertain-action rule' }, async t => {
+test('scenario 3: a late output after a timeout is not repeated and does not revive a settled turn', async t => {
   const played = await play(t, 'scenario-03-late-output-after-timeout', { tools: true, scripts: [{ latencyMs: 18_000 }] });
   const { replay } = played;
   const call = replay.calls[0];
   assert.ok(call, `one call was observed: ${describe(replay)}`);
-  // The ceiling settles the call locally, and the tool's late answer is not submitted a second time.
-  assert.equal(call.outputs.length, 1, `exactly one output submission for the call: ${describe(replay)}`);
-  // Scoped to the generation that owed it: a re-submission after a reconnect resumes a lost call, which is a
-  // different obligation, never a repeat of this one.
-  const late = replay.commands.filter(command => command.epoch === call.epoch && command.at >= call.at + 12_000
+  // The ceiling settles the call locally, and the tool's late answer is not submitted a second time. Scoped to
+  // the generation that owed it: a re-submission after a reconnect resumes a lost call, which is a different
+  // obligation, never a repeat of this one.
+  const submissions = replay.commands.filter(command => command.epoch === call.epoch
     && (command.frame['item'] as Record<string, unknown> | undefined)?.['call_id'] === call.callId);
-  assert.deepEqual(late.map(entry => ({ seq: entry.seq, at: entry.at - call.at, output: (entry.frame['item'] as Record<string, unknown>)['output'] })),
-    [], `the late callback wrote a second submission for ${call.callId} ${describe(replay)}`);
+  assert.equal(submissions.length, 1, `exactly one output submission for ${call.callId} ${describe(replay)}`);
+  // The ceiling is what answered, at the host limit, not the tool: a late callback is a receipt, never a write
+  // (live/index.ts #withCeiling's `late` callback and the timeout branch that answers through the owner).
+  assert.equal(submissions[0]!.at - call.at >= 12_000, true,
+    `the ceiling, not the tool, answered ${call.callId} at +${submissions[0]!.at - call.at} ms: ${describe(replay)}`);
   assert.equal(/error|timeout|deadline|uncertain/.test(outputOf(played, call.callId)), true,
     `the ceiling's disposition is typed, not a bare success: ${outputOf(played, call.callId)}`);
+  // The tool's real result landed 6 s after the settlement; it must never reach the provider.
+  assert.equal(outputOf(played, call.callId).includes('Synthetic insight'), false,
+    `the late tool result was written to the provider: ${outputOf(played, call.callId)}`);
   invariants(played);
   await replay.release();
 });
 
-test('scenario 4: parallel calls finishing in mixed order with failures get one output and one continuation each', { todo: 'current code continues a partial batch: it sends response.create after call_a while call_b of the same delegation still has no result (invariant 2), which the delegation guide forbids by "do not resend it"; wagon S4a owes the single continuation owner' }, async t => {
+test('scenario 4: parallel calls finishing in mixed order with failures get one output and one continuation each', async t => {
   const played = await play(t, 'scenario-04-parallel-mixed', {
     tools: true, scripts: [{ fail: true }, { latencyMs: 2_000 }],
   });
@@ -112,11 +116,15 @@ test('scenario 5: a new call after the continuation is answered and continued on
   await replay.release();
 });
 
-test('scenario 6: duplicate lifecycle and call events produce one tool turn', { todo: 'current code reads listening with the call still unanswered after a duplicated terminal event: invariant 5; wagon S4a owes the command ledger and duplicate accounting' }, async t => {
+test('scenario 6: duplicate lifecycle and call events produce one tool turn', async t => {
   const played = await play(t, 'scenario-06-duplicate-events', { tools: true, scripts: [{ latencyMs: 1_500 }] });
   const { replay } = played;
   assert.equal(countOf(played, 'response.item.create'), 1, `duplicate calls produced one output: ${describe(replay)}`);
   assert.equal(continuations(played), 1, 'one continuation for the duplicated batch');
+  // The repeated events close resp_1 once, so the call the duplicate named is never left owing a typed loss
+  // (openai.ts, the endedResponses branch: "a duplicated terminal event is the same end").
+  assert.deepEqual(replay.dispositions.filter(entry => entry.callId === 'call_1'), [],
+    `the duplicate was closed as a second obligation: ${describe(replay)}`);
   invariants(played);
   await replay.release();
 });
@@ -137,11 +145,15 @@ test('scenario 8: a rejected command retries at most once and an async settings 
   await replay.release();
 });
 
-test('scenario 9: a failed, incomplete or errored backend ends in a typed disposition', { todo: 'current code answers a failed backend response with a nudge and then a rebuild at 19.2 s, and never reaches audible output nor a typed failure inside the deadline: a failed backend turn ended with neither audible output nor a typed failure; wagon S4a owes the error map' }, async t => {
+test('scenario 9: a failed, incomplete or errored backend ends in a typed disposition', async t => {
   const played = await play(t, 'scenario-09-backend-failed', { tools: true, scripts: [{ latencyMs: 1_500 }] });
   const { replay } = played;
   assert.equal(replay.receipts.length > 0 || replay.owner.get(replay.liveSessionId).lifecycle === 'terminal', true,
     `a failed backend turn ended with neither audible output nor a typed failure: ${describe(replay)}`);
+  // A failed status is not a silent end: the adapter emits a typed turnFailed once no continuation was sent
+  // (openai.ts, the response.done status branch), and the host settles the turn with that code.
+  assert.equal(replay.projections.some(entry => entry.terminalCode === 'backend_failed'), true,
+    `the failed backend turn carried no typed failure code: ${describe(replay)}`);
   invariants(played);
   await replay.release();
 });
@@ -174,6 +186,20 @@ test('scenario 12: a commentary acknowledgement with no audio is not delivery', 
   assert.equal(replay.receipts.length > 0, true, `the turn never became audible: ${describe(replay)}`);
   assert.equal(replay.receipts[0]!.at >= answerAt, true,
     `a commentary acknowledgement with no audio counted as delivery at ${replay.receipts[0]!.at - replay.clock.startedAt} ms: ${describe(replay)}`);
+  invariants(played);
+  await replay.release();
+});
+
+test('scenario 13: a provider error frame mid tool turn ends in a typed failure, not a silent rebuild', { todo: 'current code ends the response a provider error frame interrupted and never emits turnFailed, so the turn is answered and continued, the provider stays silent after its own error, and the host only rebuilds at 18 s: invariant 6, the turn never became audible and never failed with a typed disposition inside the deadline; the fix belongs to the wagon that owns the generic provider error path (openai.ts providerError, the endResponse(undefined) that no turnFailed follows)' }, async t => {
+  const played = await play(t, 'scenario-13-provider-error', { tools: true, scripts: [{ latencyMs: 1_500 }] });
+  const { replay } = played;
+  const call = replay.calls[0];
+  assert.ok(call, `one call was observed: ${describe(replay)}`);
+  // An error frame ends the response it names, but it is not the end of the turn: the turn still owes an answer
+  // or a typed failure, and the deadline judges which. A silent rebuild is neither (openai.ts providerError:
+  // the generic path ends the response with no turnFailed, so the host has nothing to settle on).
+  assert.equal(replay.receipts.length > 0 || replay.projections.some(entry => entry.terminalCode !== null), true,
+    `the provider error left the turn with neither an audible answer nor a typed failure: ${describe(replay)}`);
   invariants(played);
   await replay.release();
 });

@@ -226,7 +226,9 @@ test('N5: a reply that cannot serve a continuation never says more is available'
   assert.equal(stopped['canContinue'], false);
   const note = String(stopped['note'] ?? '');
   assert.doesNotMatch(note, /more available/, 'the note never offers a continuation this run cannot serve');
-  assert.match(note, /did not search/, 'and it names the sources this run never searched');
+  assert.doesNotMatch(note, /did not search/, 'the note never repeats what the header already names');
+  const coverage = String(stopped['coverage'] ?? '');
+  assert.match(coverage, /coverage: (?!none)\w+/u, `the header names what this run did and did not search: ${coverage}`);
 });
 
 test('N5: a trimmed reply that can continue still says more is available', async () => {

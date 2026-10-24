@@ -34,6 +34,7 @@ import Foundation
             cancelPlayback: { record.calls.append("cancelPlayback") },
             providerInputMute: { muted in record.calls.append("inputMute:\(muted)") },
             receipt: { record.receipts.append($0) },
+            goodbyeTone: { record.calls.append("goodbye") },
             surface: { posture in record.surfaces.append((posture.state, posture.alwaysShow)) }), now: { record.clock })
 
         // COLD at start, with the presence orb the only surface.
@@ -147,6 +148,25 @@ import Foundation
         try require(presence.state == .cold, "a tap while connecting cancels")
         try require(record.muted == [true], "a cancelled connect leaves the fence closed")
         try require(record.receipts.last?["trigger"] as? String == "click", "the cancel receipt names the click")
+
+        // #589: a voice stop is the owner's own sentence. The goodbye sounds once, and the teardown is
+        // exactly the Stop button's own: fence, cold, close, one audio release, none of it duplicated.
+        presence.toggle(.hotkey)
+        presence.ready(presence.generation)
+        record.calls.removeAll()
+        let audioReleases = record.calls.filter { $0 == "close" }.count
+        presence.stop(.voice)
+        try require(presence.state == .cold, "a voice stop goes cold at once")
+        try require(record.calls == ["goodbye", "fence", "close"],
+            "the goodbye sounds once, then the same fence and close a Stop button runs, got \(record.calls)")
+        try require(record.calls.filter { $0 == "close" }.count == audioReleases + 1,
+            "the audio slot is released exactly once, got \(record.calls)")
+        try require(record.receipts.last?["trigger"] as? String == "voice",
+            "the receipt names the owner's own words, got \(String(describing: record.receipts.last?["trigger"]))")
+        try require(record.receipts.last?["to"] as? String == "cold", "and the presence is cold")
+        presence.stop(.voice)
+        try require(record.calls.filter { $0 == "goodbye" }.count == 1 && presence.state == .cold,
+            "a second voice stop plays no second goodbye")
 
         // Sleep tears down from LIVE at once and never reconnects.
         presence.toggle(.hotkey)

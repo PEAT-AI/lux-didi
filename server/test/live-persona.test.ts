@@ -1281,3 +1281,17 @@ test('LAT-1023: the first ack before a lookup names the sources it is reading', 
   assert.equal(NAYA_LIVE_BASE.split('name the sources you are reading in a few words').length - 1, 1, 'the rule reaches the live persona once');
   assert.doesNotMatch(NAYA_VOICE_SURFACE, /[\u2013\u2014]/u, 'no dash stands in the rule text');
 });
+
+test('#589/#590: the voice surface names the stop phrases and promises no silence it cannot keep', () => {
+  // She ends the call on the owner's own words, so the words are stated where she can read them.
+  assert.match(NAYA_VOICE_SURFACE, /Naya, stop listening/);
+  assert.match(NAYA_VOICE_SURFACE, /Naya, shut down/);
+  // The honesty line: what she cannot do, and the way out she names instead of promising.
+  assert.match(NAYA_VOICE_SURFACE, /You cannot mute or stop yourself/);
+  assert.match(NAYA_VOICE_SURFACE, /say the exact phrase/);
+  // #590: no first-person promise of a silence or a stopped mic stands in for the call ending.
+  for (const lie of [/\bI(?:'ll| will) (?:stay quiet|be quiet|go quiet|stop listening)\b/,
+    /\bI(?:'ve| have) (?:stopped|muted|turned off)\b/, /\bI(?:'m| am) (?:not recording|muting|stopping)\b/]) {
+    assert.equal(lie.test(NAYA_VOICE_SURFACE), false, `the voice surface never promises ${String(lie)}`);
+  }
+});

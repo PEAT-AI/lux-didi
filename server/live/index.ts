@@ -1805,9 +1805,11 @@ export class LiveSessionOwner {
     const turnAgeMs = Math.max(0, this.#now() - handle.debtSince);
     // #538 R4: an answer in flight is never the ladder's to lose. A response the provider announced since the debt
     // started holds the 8 s rung until it ends, and the 15 s rung stays armed as its bound.
-    if (step === 'rung' && handle.responseInProgress === true) {
+    if (step === 'rung' && handle.responseInProgress === true && handle.debtDeferred !== true) {
+      // The response that holds the rung gets the seven seconds the existing nudge gave it; the rung comes back
+      // with the same work, and only then fires whether or not the provider is still writing.
       handle.debtDeferred = true;
-      this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
+      this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rung');
       return;
     }
     this.#noteDebt(handle, 'rung', step === 'rung' ? 'dead_air' : 'rebuild');

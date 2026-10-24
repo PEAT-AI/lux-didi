@@ -3679,14 +3679,15 @@ test('a delegated response with no audible output is nudged, and audible progres
   for (let second = 0; second < 10; second += 1) await advance(1_000);
   // Amendment B: the result completed at t=0, so ten seconds of silence after it is the defect, not a slow
   // tool. The nudge is the first stage of the obligation, not a rebuild.
-  assert.deepEqual(phases(), ['start', 'rung'], 'silence after the completed result earns the 8 s rung');
+  // #538 R4: the provider announced a model turn, so the 8 s rung holds until that response ends.
+  assert.deepEqual(phases(), ['start'], 'an announced response holds the rung');
   assert.equal(fake.sessionsOpened, 1, 'the working session is not rebuilt by a nudge');
   assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'the call is still up');
   // Audible output defers the deadline to 8 s from that frame (amendment A).
   fake.emit({ type: 'audio', pcm, rate: 24_000 });
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   for (let second = 0; second < 9; second += 1) await advance(1_000);
-  assert.deepEqual(phases(), ['start', 'rung', 'clear', 'armed', 'nudged'], 'a reply that went silent again is watched again, by the watchdog that owns a model turn');
+  assert.deepEqual(phases(), ['start', 'clear', 'armed', 'nudged'], 'a reply that went silent again is watched again, by the watchdog that owns a model turn');
   assert.equal(fake.sessionsOpened, 1, 'a nudge is not a recovery');
   attachment.close();
 });
@@ -4661,7 +4662,10 @@ test('#538: model text never slides the audible debt, so the OpenAI path recreat
   }
   assert.equal(fake.sessionsOpened, 1, 'text deltas never slide the debt clock');
   h.advance(2_000); scheduler.runDue(); await settlePort();
-  assert.equal(fake.closes, 1, 'at 8 s of audible debt the stalled provider session is closed');
+  // DEADAIR-R4: the text announced a response, so the 8 s rung holds and the rung returns seven seconds later.
+  assert.equal(fake.closes, 0, 'an announced response is never closed under');
+  h.advance(7_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.closes, 1, 'the held rung fires once the provider has had its time');
   assert.equal(fake.sessionsOpened, 2, 'and one fresh session replaces it');
   assert.equal(fake.toolResponses.length, 2, 'the pending tool outputs are re-queued exactly once');
   assert.deepEqual(fake.toolResponses[1], fake.toolResponses[0], 'the same answers, not a second batch');

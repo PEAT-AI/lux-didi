@@ -8,14 +8,14 @@ This is a personal prerelease: a locally built, self-signed Mac app. It is not n
 
 ## What Naya does
 
-- **Talks.** One tap on the orb or the Right Command key starts a call. She opens with one short line drawn from the last session. She keeps the call light: answers are short and she speaks while she looks things up.
+- **Talks.** One tap on the orb or the Right Command key starts a call. She opens with one short line drawn from the last session, and an open loop she has not seen confirmed in the last day comes to you as a question, never as a fact she states. She keeps the call light: answers are short and she speaks while she looks things up. If speech from a video makes her go quiet, she rebuilds the call silently: no chime and no "I am back".
 - **Looks things up** (read only), when you connect the matching source:
   - Lux Knowledge: your notes and past decisions.
   - Gmail and Google Calendar: "anything important in mail?", "what is on tomorrow?".
   - Mattermost, through the `mattermost-mcp` server: "anything urgent on Mattermost?".
   - Mongoose: company knowledge.
   - The web, for weather and news.
-- **Remembers.** "Naya, remember that ..." saves a local note. "Save to my vault: ..." saves a note to Lux Knowledge. Notes can be listed and deleted in the app.
+- **Remembers.** "Naya, remember that ..." saves a local note. Two different notes said in the same stretch of talk are both kept; the same note said twice is still refused. "Save to my vault: ..." saves a note to Lux Knowledge. Notes can be listed and deleted in the app.
 - **Opens things** only when you ask: a mail, a calendar event, a chat thread, a file or an app.
 - **Is honest about gaps.** A weak knowledge match is reported as "nothing matched". An empty mail or chat window says so and never says "nothing urgent".
 

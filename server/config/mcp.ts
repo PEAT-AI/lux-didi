@@ -265,6 +265,40 @@ function endpointEntry(raw: unknown): McpEndpointEntry {
 const mongooseConnector = 'mongoose';
 const mongoosePaths = ['/mcp/knowledge', '/mcp/data', '/mcp/crm'] as const;
 const mongooseAudiences = ['mongoose:knowledge', 'mongoose:data', 'mongoose:crm'] as const;
+const mongooseReferences = ['mongoose-knowledge', 'mongoose-data', 'mongoose-crm'] as const;
+
+/** One host log record for a legacy catalogue the loader replaced; the boot path owns the sink. */
+export type McpCatalogueEvents = (event: { event: string; endpoints: number }) => void;
+
+/**
+ * Release 9 stored one Mongoose endpoint at `/mcp` under the retired single `mongoose` audience.
+ * The owner's installation is replaced rather than migrated field by field: the three release-1023b
+ * endpoints take its place the first time the catalogue is read, each with its own reference and
+ * with no stored token, so every one of them reports not signed in until the owner signs in.
+ * Every other shape is left to the strict validation below, which refuses it.
+ */
+function replaceInstalledMongoose(rawEndpoints: readonly unknown[], events: McpCatalogueEvents | undefined): readonly unknown[] {
+  const mongoose = rawEndpoints.filter(item => item !== null && typeof item === 'object' && (item as Record<string, unknown>)['connector'] === mongooseConnector);
+  if (mongoose.length !== 1) return rawEndpoints;
+  const legacy = mongoose[0] as Record<string, unknown>;
+  const url = legacy['url'];
+  if (legacy['resource'] !== mongooseConnector || typeof url !== 'string') return rawEndpoints;
+  let origin: string;
+  try {
+    const parsed = new URL(url);
+    if (parsed.pathname.replace(/\/$/, '') !== '/mcp' || parsed.search !== '') return rawEndpoints;
+    origin = parsed.origin;
+  } catch { return rawEndpoints; }
+  const unknownClass = legacy['unknownClass'];
+  const replacements = mongooseReferences.map((reference, index) => ({
+    id: reference, transport: 'streamable-http', url: `${origin}${mongoosePaths[index]}`, connector: mongooseConnector,
+    account: legacy['account'], resource: mongooseAudiences[index], credentialRef: reference,
+    enabled: legacy['enabled'], allowEgress: legacy['allowEgress'],
+    ...(unknownClass !== undefined ? { unknownClass } : {}),
+  }));
+  events?.({ event: 'mongoose_catalogue_replaced', endpoints: replacements.length });
+  return rawEndpoints.flatMap(item => (item === legacy ? replacements : [item]));
+}
 
 /**
  * One Mongoose endpoint: exactly one of the three release-1023b paths, its own audience and its own
@@ -291,8 +325,8 @@ function mongooseEndpointSet(endpoints: readonly McpEndpointEntry[]): void {
 }
 
 /** Missing mcp.json is a defined state, never an error: startup continues with no approved source. */
-export function loadMcpEndpoints(options: { configDir: string }): McpEndpointSelection {
-  const { configDir } = options;
+export function loadMcpEndpoints(options: { configDir: string; events?: McpCatalogueEvents }): McpEndpointSelection {
+  const { configDir, events } = options;
   if (typeof configDir !== 'string' || !isAbsolute(configDir) || normalize(configDir) !== configDir) fail('invalid_arguments');
   if (!validateRoot(configDir)) return { state: 'missing' };
   let raw: string;
@@ -310,7 +344,7 @@ export function loadMcpEndpoints(options: { configDir: string }): McpEndpointSel
   const rawEndpoints = file['endpoints'];
   if (!Array.isArray(rawEndpoints) || rawEndpoints.length > 64) fail('invalid_profile');
   const seen = new Set<string>(); const endpoints: McpEndpointEntry[] = [];
-  for (const item of rawEndpoints) { const entry = endpointEntry(item); if (seen.has(entry.id)) fail('invalid_profile'); seen.add(entry.id); endpoints.push(entry); }
+  for (const item of replaceInstalledMongoose(rawEndpoints, events)) { const entry = endpointEntry(item); if (seen.has(entry.id)) fail('invalid_profile'); seen.add(entry.id); endpoints.push(entry); }
   mongooseEndpointSet(endpoints);
   return { state: 'configured', catalog: { grantMode, endpoints, ownerIdentity, ownerChatUsername } };
 }

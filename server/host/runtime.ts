@@ -444,10 +444,10 @@ export async function startHost(config: HostConfig) {
   let endpoints = 0;
   let configKind: 'effective' | 'seeded' = config.configDir === undefined ? 'seeded' : 'effective';
   try {
-    let selection = loadMcpEndpoints({ configDir: effectiveConfigDir });
+    let selection = loadMcpEndpoints({ configDir: effectiveConfigDir, events: event => log.event(event) });
     if (selection.state === 'missing') {
       configKind = 'seeded';
-      selection = loadMcpEndpoints({ configDir: join(dataDir, 'provider-config') });
+      selection = loadMcpEndpoints({ configDir: join(dataDir, 'provider-config'), events: event => log.event(event) });
     }
     if (selection.state === 'configured') endpoints = selection.catalog.endpoints.length;
   } catch { /* Composition below owns invalid configuration errors. */ }

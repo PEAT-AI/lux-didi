@@ -21,7 +21,9 @@ cd "$root"
 # isolated copy compiles instead of failing TS2307.
 mkdir -p "$out/source/adapters/model" "$out/source/tools" "$out/source/test"
 cp server/adapters/model/*.ts "$out/source/adapters/model/"
-cp server/tools/declarations.ts "$out/source/tools/"
+# declarations.ts also imports the diagnostic field table, the host log event API and the canonical
+# hash, so they are staged too; without them the isolated copy fails TS2307 before a test runs.
+cp server/tools/declarations.ts server/tools/diagnostic-input.ts server/tools/host-events.ts server/tools/canonical.ts "$out/source/tools/"
 cp server/test/model.test.ts "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \

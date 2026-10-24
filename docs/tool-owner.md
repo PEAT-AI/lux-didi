@@ -52,6 +52,10 @@ Voice remembering writes **ordinary memory only**. An explicit request to classi
 
 A successful result is only `{remembered: true, entryId}`; refusals return `{remembered: false, code}` (duplicate refusals additionally identify the existing entry). Note text is never echoed in the tool result. Naya confirms aloud only after success and otherwise reports the refusal. Saving does not modify the running session's `accepted_prompt_snapshot` or `prompt_identity`: recall occurs at the next session CREATE.
 
+### What a memory recall reads
+
+A memory lookup reads earlier conversations only: remembered notes, summaries and retained conversation rows from before the call in progress. It never reads the live session's own transcript, her own summary of it, or the owner's current question, so an answer can never be proved by the question that asked it. Within what it reads, an owner line leads a line of hers at the same match, and her line is evidence only when no owner line matches; the one exception is a question about what she said, where her own words are the answer. When nothing from an earlier conversation matches, the source reports itself empty instead of falling back to this turn.
+
 
 ## Text chat consumption
 

@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import UserNotifications
+import WebKit
 
 let testStarted = Date()
 
@@ -603,6 +604,28 @@ coordinator.presentMini()
 expect(coordinator.mode == .full && visibleSurfaces == ["full"], "an unready mini retains the usable FULL window")
 miniPageHostable = true
 
+// #619: a Dock click orders the orb front and never builds, keys or activates a window. The
+// reopen is its own launch kind, so a reader of native-live.log sees what the click did.
+var dockWindowFactories = 0, dockKeyAndFront = 0, dockActivations = 0, dockOrbOrders = 0
+let dockCoordinator = PresentationCoordinator(
+    showFull: { activating in
+        dockWindowFactories += 1
+        if activating { dockKeyAndFront += 1; dockActivations += 1 }
+    },
+    hideFull: {},
+    showMini: { _ in dockOrbOrders += 1; return .shown(miniFacts) },
+    hideMini: { _ in },
+    liveIsRunning: { false })
+dockCoordinator.presentMini()
+dockCoordinator.presentOrbFromDock()
+expect(dockWindowFactories == 0 && dockKeyAndFront == 0 && dockActivations == 0,
+       "a Dock reopen builds no window, makes nothing key and activates nothing")
+expect(dockOrbOrders == 2, "a Dock reopen orders the orb front even when it is already on screen")
+expect(LaunchKind.reopen.launchRecord["kind"] as? String == "reopen"
+    && LaunchKind.reopen.launchRecord["windowShown"] as? Bool == false
+    && LaunchKind.reopen.presentsOrbAtLaunch && !LaunchKind.reopen.createsWindowAtLaunch,
+    "the reopen line names its own kind with no window and shows the orb")
+
 // UI3A: the orb never becomes key or main, floats above normal windows over every
 // Space, and stays out of the app switcher.
 expect(MiniOrbPanelPolicy.becomesKey == false && MiniOrbPanelPolicy.becomesMain == false, "the mini panel can become neither key nor main")
@@ -611,6 +634,18 @@ expect(MiniOrbPanelPolicy.level == .floating, "the mini panel floats above norma
 let behavior = MiniOrbPanelPolicy.collectionBehavior
 expect(behavior.contains(.canJoinAllSpaces) && behavior.contains(.fullScreenAuxiliary) && behavior.contains(.ignoresCycle), "the mini panel joins every Space, floats over full screen and stays out of the window cycle")
 expect(behavior.contains(.stationary) == false, "the mini panel moves with its Space")
+
+// #620: the orb hears a display change from its own init, so a screen that goes away cannot
+// strand it off screen. The notification is posted to the panel; no display is changed.
+var orbScreenReceipts = 0
+let screenPanel = MiniOrbPanel(web: WKWebView(frame: .zero), frameKey: "DidiMiniOrbFrame.screenChangeTest",
+                               onStep: { _ in },
+                               onReceipt: { record in
+                                   if record["event"] as? String == "orb_screen_parameters" { orbScreenReceipts += 1 }
+                               })
+NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+expect(orbScreenReceipts == 1, "the orb panel hears the screen-parameters notification its init registers")
+screenPanel.close()
 
 // UI3A: a remembered frame is clamped into a visible screen, on restore and after a
 // display disappears, never discarded and never resized.

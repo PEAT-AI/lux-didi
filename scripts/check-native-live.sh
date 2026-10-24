@@ -163,6 +163,14 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   Sources/LuxDidi/NativeLiveJournal.swift \
   Tests/DidiLiveTests/LaunchVisibilityTests.swift -o "$work/launch-visibility-tests"
 "$work/launch-visibility-tests"
+# #619 and #620: the launch and reopen matrix, the deferred startup prompts and the orb
+# screen-change frame. Recording fakes only: no window is shown and no display is changed.
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+  -target "$target" \
+  Sources/LuxDidi/SingleInstanceGuard.swift Sources/LuxDidi/PresentationCoordinator.swift \
+  Sources/LuxDidi/NativeMiniOrb.swift Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/ConnectingRing.swift \
+  Tests/DidiLiveTests/WindowRoutingTests.swift -o "$work/window-routing-tests"
+"$work/window-routing-tests"
 # Compile the actual app source surface without launching audio or installing an app.
 swiftc -parse-as-library Sources/LuxDidi/*.swift -target "$target" -o "$work/native-app"
 # Isolated mutation sensitivity: compile a scratch copy, never alter the committed source or weaken a gate.

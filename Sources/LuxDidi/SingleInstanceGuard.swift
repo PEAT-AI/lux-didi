@@ -48,6 +48,9 @@ enum LaunchKind: String {
     case selfCheck = "self_check"
     case uiProof = "ui_proof"
     case verification
+    /// #619: the Dock click on a running instance. Its own kind, so native-live.log says that a
+    /// reopen shows the orb and no window.
+    case reopen
 
     /// A check that cannot open its own window exits with this code so a yielded
     /// proof launch can never be mistaken for a pass.
@@ -69,7 +72,7 @@ enum LaunchKind: String {
     var activates: Bool {
         switch self {
         case .interactive, .loginItem: return true
-        case .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification: return false
+        case .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification, .reopen: return false
         }
     }
 
@@ -77,7 +80,7 @@ enum LaunchKind: String {
     /// and only the kinds that host a window for a reason of their own present one at launch.
     var presentsOrbAtLaunch: Bool {
         switch self {
-        case .interactive, .loginItem, .installRelaunch: return true
+        case .interactive, .loginItem, .installRelaunch, .reopen: return true
         case .installedProof, .selfCheck, .uiProof, .verification: return false
         }
     }
@@ -87,7 +90,7 @@ enum LaunchKind: String {
     var presentsWindowAtLaunch: Bool {
         switch self {
         case .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification: return true
-        case .interactive, .loginItem: return false
+        case .interactive, .loginItem, .reopen: return false
         }
     }
 
@@ -98,7 +101,7 @@ enum LaunchKind: String {
 
     var duplicateInstanceExitCodeForYield: Int32 {
         switch self {
-        case .interactive, .loginItem: return 0
+        case .interactive, .loginItem, .reopen: return 0
         case .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification: return LaunchKind.duplicateInstanceExitCode
         }
     }

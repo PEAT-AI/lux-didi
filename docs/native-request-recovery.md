@@ -1,8 +1,8 @@
 # Native pending request recovery
 
 `PendingRequestStore` preserves **one frozen connected request identity** across native
-process termination. It does not send, retry, resolve, or render a conversation. There
-is no installed/native Send/restart parity claim and no app call site in this change.
+process termination. It does not send, retry, resolve, or render a conversation. The
+store is used by the native Send path (`NativeConnectedSend.swift`). It makes no installed Send/restart parity claim beyond that.
 The committed service transcript and CHAT acceptance remain the only conversation authority.
 
 ## Four different things
@@ -64,7 +64,7 @@ when absent, never null. Unknown/duplicate/missing keys, nested extensions, null
 wrong scalar types, unknown phases/versions, invalid JSON/UTF-8, and invalid UUIDs
 are denied; version is the integer JSON token `1` (not a string, bool, or `1.0`).
 
-UUID strings use HTTP's explicit case-insensitive versions 1–8 / RFC-variant syntax.
+UUID strings use HTTP's explicit case-insensitive versions 1 to 8 / RFC-variant syntax.
 They are preserved, not normalized. Assistant and epoch are persisted runtime UUIDs.
 Required strings must not be whitespace-only. Bounds are UTF-16 units to match
 JavaScript string lengths: frozen text **16,000** (`server/http/routes.ts` default),

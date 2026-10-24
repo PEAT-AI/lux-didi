@@ -1,15 +1,14 @@
 # Optional local Lux Knowledge reader
 
 This slice is an optional, local, read-only **connector** over the accepted HTTP MCP adapter
-([mcp-adapter.md](mcp-adapter.md)). It binds exactly two Lux Knowledge tools —
-`search_knowledge` and `get_insight` — through the existing explicit endpoint/account/resource/
+([mcp-adapter.md](mcp-adapter.md)). It binds exactly two Lux Knowledge tools,
+`search_knowledge` and `get_insight`, through the existing explicit endpoint/account/resource/
 schema-digest/generation read grant.
 
 It is **not** wired into the host, HTTP service, UI, model, Domain or chat. It declares no model
 tool, makes no model call, writes no durable memory and starts no background fetch. There is no
 second store, no byte cache and no protocol implementation: transport, retention and slicing stay
-in `server/adapters/mcp/`. The core service has no connector import; a future composition opts in
-explicitly. This unit does **not** claim user-visible connected knowledge.
+in `server/adapters/mcp/`. The host composes this connector explicitly (`server/connectors/lux-knowledge.ts`, wired by `server/connectors/index.ts`); the core service itself imports no connector. What the owner experiences is described in [architecture.md](architecture.md).
 
 ## Owned seam
 
@@ -82,7 +81,7 @@ still propagate. There is no extra transport, detached race or automatic retry.
 Inputs are read once as a strict plain-data snapshot; validated primitives are copied into the
 outgoing arguments a single time. There is no getter re-read and no caller iterator use.
 
-- Exactly those own keys; any extra key — including symbol and non-enumerable keys — is refused
+- Exactly those own keys; any extra key, including symbol and non-enumerable keys, is refused
   before any dispatch, as is any accessor property or non-plain prototype.
 - `query` is a non-empty string no longer than `maxQueryChars`; `limit` is a positive finite safe
   integer within `maxSearchLimit`. `detail`, `maxChars` and `deadlineMs` are optional and each is
@@ -108,16 +107,16 @@ A settled call returns `completed`, an explicit `tool-error`, an explicit `proto
 pre-dispatch `refused` or a post-dispatch `unknown`. It never catches to empty and never retries.
 The `completed`/`tool-error`/`protocol-error` shape carries:
 
-- `classification: 'unknown'` — constant; returned markdown cannot change it.
-- `capability: 'local-only'` — no model/egress capability.
-- `source` — the configured source plus `observedAt` and `response.sha256` (original bytes); this
+- `classification: 'unknown'`: constant; returned markdown cannot change it.
+- `capability: 'local-only'`: no model/egress capability.
+- `source`: the configured source plus `observedAt` and `response.sha256` (original bytes); this
   is not proof of a live deployment revision or of classification.
-- `coverage` — `completeCorpus: false`, `basis: 'single-tool-result'`, `remoteSideEffects:
+- `coverage`: `completeCorpus: false`, `basis: 'single-tool-result'`, `remoteSideEffects:
   'unverified'`.
 - a bounded `projection.text` with `omitted`/character counts, and a scoped `response` handle with
   `sha256`, `byteLength` and `expiresAt`, or an explicit `unavailable` reason (`capacity`,
   `oversize`, `store-unavailable`).
-- `requestedIds` on `get` only — the caller's requested IDs, **not** verified returned entities.
+- `requestedIds` on `get` only, the caller's requested IDs, **not** verified returned entities.
 
 Original bytes are retrieved only through `McpPort.readSlice` with full scope/generation/handle
 checks. Expired, revoked or scoped-out handles are refused by the store and are never silently

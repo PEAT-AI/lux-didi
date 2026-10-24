@@ -1,5 +1,7 @@
 # Privacy and authority
 
+> Historical document. The product policy written during planning. The authority rules still guide the build, but wording such as "proposed" and "later implementation issues" predates the implementation; [architecture.md](architecture.md) and [implementation-status.md](implementation-status.md) describe what is built.
+
 Status: proposed product policy. These are the rules later implementation issues must encode and test. They are written as defaults that need no user decision to ship. Two layers are distinct: user-configurable product preferences (retention windows, notification style, default account for reads) can be changed by the operator, while provider policy, organization restrictions and operating system authority are not overridable in the product and are reported honestly when they block something. Every override of a configurable preference is logged.
 
 ## Starting state

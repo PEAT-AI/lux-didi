@@ -1,5 +1,7 @@
 # Material risks
 
+> Historical document. Written in October 2026 as the planning-time risk register. It has not been maintained as a live register; treat it as history.
+
 Status: proposed risk register for the plan. Each risk names a trigger that would make it real, the mitigation already built into the plan, and the issues that own it. None of these risks is a prediction; they are the failure modes the plan deliberately works against.
 
 - R-01 The recorded service stack is not validated by measurement. Trigger: a later measurement contradicts the TypeScript on Node with SQLite service, or the Superseded Swift prototype turns out to hold a capability the companion cannot reach. Mitigation: A01 records the stack and the superseded prototype explicitly; A19 keeps the seam behind a versioned contract so a placement or runtime change is a seam change, not a rewrite; the companion keeps the native surfaces. Owners: A01, A19.

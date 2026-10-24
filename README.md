@@ -1,125 +1,101 @@
 # Lux Didi
 
-Lux Didi is a Mac-first local assistant in early development: a warm, direct and witty companion with a voice, durable private recall, proactive follow-through on the commitments a person actually makes, and authorized local control. It is designed to be useful when installed alone on one Mac with one Google account, and to become more useful, never dependent, when optional Lux or company integrations are connected.
+Lux Didi is a local voice companion for the Mac. Her name is Naya. She lives as a small floating orb in the top right corner of the screen. Tap a key, say what you need, and she answers by voice. She can look things up in your notes, mail, calendar and team chat, remember what you tell her, and open the item you asked for. She reads your accounts and opens what you ask for. She never sends, edits or deletes mail, events or chat messages; the only thing she writes outside her own notes is a vault note you dictate.
 
-## Status: local Mac prerelease
+The app runs on your Mac. The voice itself comes from a cloud voice provider (OpenAI GPT-Live or Gemini Live, chosen in Settings) once you start a call. Nothing is sent before you start one.
 
-This tree contains a locally packaged, ad-hoc-signed Mac app with bundled Node,
-the authoritative TypeScript service and the shared web client. It is an early
-prerelease, with synthetic checks and separate real-account and hardware gates.
-It is not a notarized public release or a proven clean-machine installation.
+This is a personal prerelease: a locally built, self-signed Mac app. It is not notarized, not a public release and not tested on a clean machine.
 
-- `server/` owns the SQLite store, local notes, memory and commitments. It serves
-  the web client on loopback and composes connected chat, MCP tools and Live when
-  their profiles and required authority are configured.
-- `web/` contains the same-origin client, connected conversations, tool evidence,
-  memory controls and read-only Settings. It stores no private records in browser
-  storage and makes no external font, analytics or CDN requests.
-- `Sources/LuxDidi/` contains the menu-bar app, service supervision, native web
-  view, local Save note and Send to Naya actions, microphone/audio integration,
-  Getting started, shortcuts, notifications and protected operator settings.
+## What Naya does
 
-Installation owns the application bundle only. It preserves existing owner
-configuration and creates no provider profiles, connector catalogs or network
-grants. A fresh unconfigured app can save local notes and memory; connected chat
-and Live need explicit setup. Model and connector configuration is selected using
-the existing protected `--configure --config-dir` command.
+- **Talks.** One tap on the orb or the Right Command key starts a call. She opens with one short line drawn from the last session. She keeps the call light: answers are short and she speaks while she looks things up.
+- **Looks things up** (read only), when you connect the matching source:
+  - Lux Knowledge: your notes and past decisions.
+  - Gmail and Google Calendar: "anything important in mail?", "what is on tomorrow?".
+  - Mattermost, through the `mattermost-mcp` server: "anything urgent on Mattermost?".
+  - Mongoose: company knowledge.
+  - The web, for weather and news.
+- **Remembers.** "Naya, remember that ..." saves a local note. "Save to my vault: ..." saves a note to Lux Knowledge. Notes can be listed and deleted in the app.
+- **Opens things** only when you ask: a mail, a calendar event, a chat thread, a file or an app.
+- **Is honest about gaps.** A weak knowledge match is reported as "nothing matched". An empty mail or chat window says so and never says "nothing urgent".
 
-See [the user guide](docs/user-guide.md), [Mac installation](docs/macos-install.md),
-[implementation status](docs/implementation-status.md) and
-[local development](docs/local-development.md). The repository has no hosted CI
-workflow; canonical checks are in `scripts/`.
+## Using her
 
-## Package boundaries
+1. **Start.** Open Naya. She appears as the orb in the top right. Opening the app by hand starts a call by itself, once. A login start, an install relaunch and every check start only show the orb.
+2. **Talk, mute, resume.** Tap the orb or tap the **Right Command** key (bare tap only; a held key or a chord does nothing). First tap starts her, the next tap mutes her (the orb turns purple), the next tap lets her listen again. Muting closes the microphone at once.
+3. **End the call.** Say "Naya, stop listening" or "Naya, shut down" (also "end the call", "hang up", "goodbye", "good night", "turn off"; German: "Naya aus", "Naya, hör auf zuzuhören"). Her name is required at the start or the end, the sentence is at most 8 words, and a question about the phrase never ends the call. The microphone stops at once and a short goodbye sound plays. The menu bar **Stop** does the same. An unattended call also ends after 5 minutes of conversational silence; noise alone does not keep it alive. By default one provider session lasts at most an hour and a whole call at most four hours.
+4. **Menu bar.** Start Live, Mute, Stop, Open Naya app, Settings, Getting started, Open at login, Right Command tap, Always show Naya, Show mini orb, Reveal logs, Copy diagnostics, Quit. The full window only opens from here (or the shortcut below); it is created the first time you ask for it.
+5. **Shortcuts.** Control Option Space and Control Option Shift Space both show or hide the full window. Control Option Shift L starts Live. Control Option Shift M mutes. The orb itself is shown from the menu (**Show mini orb**) or by **Always show Naya**. If a shortcut is taken by another app, the menu says so.
+6. **Settings** (in the full window): Live voice provider, voice and accent, speaking pace (1.0 to 1.2), light or dark theme, and the status of every connector with the next step to fix it.
 
-The service is the only store writer. The native and web clients use its local
-API. `server/` is an ESM TypeScript package requiring Node 26 or newer, with the
-MCP dependency bundled. The Mac producer bundles Node, service and web assets
-into one app. The native sources compile with the Xcode Command Line Tools.
+More detail: [docs/user-guide.md](docs/user-guide.md).
 
-## Reuse and provenance
+## Install
 
-Reuse in this tree is bounded and recorded. It is not a claim about future reuse.
-
-- `web/src/orb-classic.ts` retains a bounded set of first-party procedural drawing helpers adapted from the public PEAT-AI/Vicuna repository at an immutable revision, under an explicit reuse ruling. The exact source line ranges, the deliberate adaptations and the exclusions are recorded in `web/src/orb-provenance.md`. That note records provenance, not an invented public licence for the original repository.
-- `server/prompt/index.ts` implements stable section order, local hashes and whole-record selection adapted from verified Naya compiler mechanics. Its public persona content is new generic Didi content, not a copy of a private persona, profile or lore.
-- Third-party notices live in `web/public/third-party-notices.txt` and `server/adapters/mcp/SDK-LICENSE.txt`.
-
-## Vision (direction, not current state)
-
-A Mac-first local assistant that:
-
-- opens from a global hotkey and holds a voice or text conversation;
-- remembers past sessions locally and can explain where a claim came from;
-- turns calendar, mail, chat and transcript commitments into prepared, authorized follow-through;
-- carries a specified, Naya-inspired character without copying any private persona or prompt;
-- acts on the user's own accounts under explicit, revocable grants, and reports honest uncertainty when an effect may already have happened;
-- treats model providers as replaceable ingredients, with Gemini preferred, not required;
-- integrates optionally with Lux Knowledge, Mongoose, Lux Coworker, Trello and Mattermost, and with an existing harness only later, as an optional bridge.
-
-Local data and local control are the default. Local does not mean offline: approved cloud inference is part of the design.
-
-One authority per assistant is the rule behind that list. There is a single canonical conversation and memory authority, the service store; adapters such as model providers and MCP tools are optional and never required; account and resource access is scoped to explicit grants. Only the first of those shapes is implemented today.
-
-## First loop (target, not current state)
-
-The first real-user slice is the acceptance target for milestone M1. A person installs an early build from a clean account (Stage A, an ad-hoc local pilot), connects one Google account, presses the hotkey, and asks by text while voice is enabled as soon as the transport works. Didi reads the upcoming calendar, captures or infers one commitment with its evidence, schedules one useful reminder, opens the conversation from the notification, prepares an unsent reply, recalls the exchange in a later session, and, once resolved, never resurrects it. Lux, the harness and Trello are not required. **The first release is this local Mac app with its optional connection set** - the native companion, Lux Knowledge, and the mail and other providers each user chooses to connect - while the **harness bridge is optional and comes later**, after a usable app. There is **no web-only release**: no web-only tag and no web-only publication.
-
-None of that loop is complete on `main`. The part that runs today is the local store and commitment loop described in [docs/implementation-status.md](docs/implementation-status.md).
-
-## Roadmap and backlog
-
-The structured plan is [planning/backlog.json](planning/backlog.json): 120 nodes, one program tracker (P00), thirteen epics (E01 to E13) and one hundred and six work items (A, B, C, D and F leaves) across five implementation lanes. The plan is published as GitHub issues with stable IDs, labels, milestones and dependency links, and the mapping is recorded in [planning/issue-map.json](planning/issue-map.json). The narrative plan is [docs/roadmap.md](docs/roadmap.md).
-
-The only executable artifact for the plan itself is the planning validator, which checks the backlog and its documents for internal consistency: unique IDs, acyclic dependencies, complete epic coverage, resolved relative links and publication hygiene.
+You need an Apple silicon Mac on macOS 26 or newer, the Xcode Command Line Tools, Node 26 or newer and npm (Node is only needed to build; the app carries its own).
 
 ```sh
-python3 scripts/backlog_validate.py --all --report planning/backlog-validation.md
+npm --prefix server ci && npm --prefix web ci
+bash scripts/build-asset-bundle.sh /tmp/didi-assets      # needs a clean, committed tree
+bash scripts/build-macos-app.sh "/tmp/build/Lux Didi.app" --assets /tmp/didi-assets
+bash scripts/install-macos-app.sh "/tmp/build/Lux Didi.app" --to "$HOME/Applications"
 ```
 
-It validates the plan. It does not test the product; product verification is carried by the service, web and host checks named in [docs/local-development.md](docs/local-development.md).
+The installer replaces only the app. It keeps your settings and data, and keeps the previous app next to it until the new one validates. Connectors and the voice provider are configured separately: see [docs/macos-install.md](docs/macos-install.md) and the connector section of [docs/user-guide.md](docs/user-guide.md). A local signing identity (`scripts/create-signing-identity.sh`) keeps macOS permission grants across rebuilds.
 
-## Documents
+## How she is built
 
-- [docs/implementation-status.md](docs/implementation-status.md): what is implemented on `main`, what current `main` integrates, what is only on branches, and what is unresolved.
-- [docs/local-development.md](docs/local-development.md): prerequisites and the exact build, start, data, pairing, check and stop commands for the current baseline.
-- [docs/architecture.md](docs/architecture.md): the decided stack plus the proposed components, data flow and concrete invariants.
-- [docs/roadmap.md](docs/roadmap.md): milestones, tracks, dependency order and the first slice.
-- [docs/parallel-masters.md](docs/parallel-masters.md): lane ownership, start packets and the change protocol.
-- [docs/research.md](docs/research.md): primary sources, options and evidence limits.
-- [docs/privacy-and-authority.md](docs/privacy-and-authority.md): accounts, egress, tool trust and authority rules.
-- [docs/acceptance.md](docs/acceptance.md): synthetic acceptance scenarios and explicitly proposed budgets.
-- [docs/decisions.md](docs/decisions.md): adjudicated choices and deferred proof questions.
-- [docs/risks.md](docs/risks.md): material risks with triggers, mitigations and owners.
-- [docs/overnight-execution.md](docs/overnight-execution.md): the reviewed first-night execution plan (proposed; target selection pending).
-- [docs/cloud-deployment.md](docs/cloud-deployment.md): the designed path from the loopback service to a Linux virtual machine, with runbook, credential, backup and hosting-boundary rules.
-- [docs/client-service-contract.md](docs/client-service-contract.md): the contract the Mac companion, the browser client and the channel adapters share.
+Three layers, one writer:
 
-## Run the local developer baseline
-
-Prerequisites: Node **26 or newer** and npm installed on macOS (the currently verified development host). From the repository root, install the locked dependencies, build the service and web client, and start the composed product host in the foreground:
-
-```sh
-npm --prefix server ci && npm --prefix web ci && bash scripts/run-local.sh --port 0
+```text
+Mac app (Swift, Sources/LuxDidi)
+  menu bar, orb panel, window, microphone and speaker, hotkeys, presence machine
+  starts and watches the host; shows the web UI inside a web view
+        |  local HTTP and one local WebSocket, loopback only, private credential
+Host (Node, server/)
+  the only writer of the local database; chat, memory, the live call,
+  the research layer and the connectors; talks to the voice provider
+        |  serves
+Web UI (TypeScript, web/)
+  orb, conversation, memory, settings; the same UI in the window and in the orb
 ```
 
-The existing wrapper builds both packages before starting one loopback host on an available port. It prints the origin and availability status; use the local pairing flow in [local development](docs/local-development.md) to open the web client. That page also covers explicit state/config directories, separate builds, baseline versus feature checks, and stopping the host with Ctrl-C. `npm --prefix server start` remains the supported lower-level standalone service, not this composed product bootstrap.
+Everything speaks over loopback. The host is the single source of truth; the app and the web UI hold no private records of their own. [docs/architecture.md](docs/architecture.md) explains each layer, the call lifecycle, the presence states, the research layer and the connectors.
 
-This is a source-checked developer command, not a freshly exercised clean-install walkthrough or an installed application. It does not bundle Node, configure a model/provider, grant OS permissions or install a Mac app. With no provider profile, inference remains disabled. See [provider configuration](docs/provider-configuration.md) for the separately authorized setup.
+## Where things live
 
-Build/runtime do not require the managed browser harness. Browser-backed feature proofs currently require an installed Playwright Chromium **and the managed-host `lux-browser-slot` lease tool**; npm dependencies alone do not provide that tool. An unmanaged public browser-proof alternative is future work, not an implemented fallback. See [browser proof prerequisites and artifact destinations](docs/local-development.md#browser-proof-prerequisites-and-artifact-destinations).
+| Path | What |
+| --- | --- |
+| `Sources/LuxDidi/` | The Mac app: launch kinds, presence machine, orb panel, audio owner, host supervisor |
+| `server/` | The host: `host/` entry and wiring, `live/` call core, `adapters/live-voice/` providers, `tools/` research and tools, `connectors/`, `prompt/`, `domain/` and `runtime/` store |
+| `web/` | The web UI: `src/orb*.ts` orb, `src/live-view.ts`, `src/settings-view.ts`, `src/main.ts` |
+| `Tests/` | Swift test sources and the Mac check scripts |
+| `scripts/` | Build, install, every `check-*.sh`, and the log readers `naya-logs.mjs` and `didi-timeline` |
+| `docs/` | The documentation, indexed below |
+| `planning/` | The original planning backlog and its validator output (historical) |
 
-## If you have five minutes
+## Checks
 
-Start with the developer baseline above, then [the P00 program tracker](https://github.com/PEAT-AI/lux-didi/issues/1) and [docs/roadmap.md](docs/roadmap.md). The detail of any single work item lives in its issue, and the backlog file is the machine-readable source.
+There is no hosted CI. Every check is a script you run locally, one at a time: see [docs/checks.md](docs/checks.md) for each script and what it covers. The release gate for a change is the set of checks that touch it; unit tests are not run by hand.
 
-## What this repository is not
+## Documentation map
 
-- It is not a licence grant for any pre-existing private code. No private source, prompt or fixture is copied here, and any reuse decision carries its own licence and notice review first.
-- It contains no credentials, no personal data, no private endpoints and no internal record identifiers.
-- It does not promise that any advertised capability already exists. Claims are labelled as proposals, source claims or observations, and the research page states what has not been measured.
-- It is not an installed product. There is no installer, no notarized application, no cloud deployment and no mobile pairing here. The current local Mac development path has an explicit Node 26 prerequisite, because Node is not bundled.
+Start here:
 
-## Evidence discipline
+- [docs/user-guide.md](docs/user-guide.md): using Naya, the single key, permissions, signing, connector setup.
+- [docs/architecture.md](docs/architecture.md): how it works today.
+- [docs/checks.md](docs/checks.md): every check script.
+- [docs/macos-install.md](docs/macos-install.md): build, install, protected configuration.
+- [docs/local-development.md](docs/local-development.md): run the host and web UI from source.
+- [docs/debugging.md](docs/debugging.md): read her logs and the trace store; [docs/diagnostic-store.md](docs/diagnostic-store.md) for the database.
+- [docs/implementation-status.md](docs/implementation-status.md): what each release added.
+- [CLAUDE.md](CLAUDE.md): rules for coding agents working in this repo.
 
-The planning wave behind this repository used three labels: OBSERVED (evidence from a live system), SOURCE CLAIM (documentation or source of record) and PROPOSED (design intent). This repository repeats that discipline. Where a number appears, it is a target proposed for a later spike or measurement issue to falsify, never a measured result. The status and development pages state plainly which statements are source cross-checks and which are still unproven, and [docs/research.md](docs/research.md) lists the sources and the open evidence gaps while [docs/acceptance.md](docs/acceptance.md) says how the first loop will be judged once it is built.
+Component reference (how one part is specified; read when you touch it): [mac-experience](docs/mac-experience.md), [companion-protocol](docs/companion-protocol.md), [native-live-client](docs/native-live-client.md), [native-conversation-protocol](docs/native-conversation-protocol.md), [native-request-recovery](docs/native-request-recovery.md), [live-gateway](docs/live-gateway.md), [live-session-core](docs/live-session-core.md), [live-voice-adapter](docs/live-voice-adapter.md), [tool-owner](docs/tool-owner.md), [chat-steps](docs/chat-steps.md), [conversation-runtime](docs/conversation-runtime.md), [prompt-composition](docs/prompt-composition.md), [provider-configuration](docs/provider-configuration.md), [mcp-configuration](docs/mcp-configuration.md), [mcp-adapter](docs/mcp-adapter.md), [lux-knowledge-connector](docs/lux-knowledge-connector.md), [model-adapter](docs/model-adapter.md), [domain-contract](docs/domain-contract.md), [client-service-contract](docs/client-service-contract.md), [service-runtime](docs/service-runtime.md), [local-runtime](docs/local-runtime.md), [service-packaging](docs/service-packaging.md), [web-client](docs/web-client.md), [selected-memory-context](docs/selected-memory-context.md), [selected-memory-interface](docs/selected-memory-interface.md), [memory-import](docs/memory-import.md), [owner-profile](docs/owner-profile.md), [privacy-and-authority](docs/privacy-and-authority.md).
+
+Historical planning record (October 2026, written before the product existed; not a description of current behaviour): [roadmap](docs/roadmap.md), [decisions](docs/decisions.md), [risks](docs/risks.md), [research](docs/research.md), [acceptance](docs/acceptance.md), [parallel-masters](docs/parallel-masters.md), [overnight-execution](docs/overnight-execution.md), [cloud-deployment](docs/cloud-deployment.md) (a design, nothing is deployed), and `planning/`.
+
+## Provenance and privacy
+
+- `web/src/orb-classic.ts` keeps a bounded set of drawing helpers adapted from the public PEAT-AI/Vicuna repository; the exact ranges and exclusions are in `web/src/orb-provenance.md`. Third-party notices: `web/public/third-party-notices.txt` and `server/adapters/mcp/SDK-LICENSE.txt`.
+- The public persona content in `server/prompt/` is generic and new. The repository contains no credentials, personal data, private endpoints or recorded conversations; tests use fakes and synthetic fixtures only.

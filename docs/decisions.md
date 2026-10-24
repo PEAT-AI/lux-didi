@@ -1,5 +1,7 @@
 # Decisions and deferred questions
 
+> Historical document. Written in October 2026 during planning. Several choices below were later changed by the build (for example the voice provider is now OpenAI GPT-Live or Gemini Live, chosen in Settings). For how the product works today see [architecture.md](architecture.md).
+
 Status: accepted design directions with named owners. These decisions were taken during planning and are the defaults the implementation lanes start from. They are revisable when real source interfaces or measured evidence contradict them; the trigger for a revision is recorded with each item. Everything here is proposed behavior unless an implementation issue records evidence.
 
 ## Adjudicated choices

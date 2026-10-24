@@ -1,55 +1,39 @@
 # Using Lux Didi
 
-## Live with Naya
+## Starting Naya
 
-Open Naya from the Dock or the menu bar. Press **Start Live** to talk with Naya.
-Press **Mute** to pause the microphone, then press it again to resume. Press
-**Stop** to end Live. Live never starts just because you open the app.
+Open Lux Didi like any app. Naya appears as a small floating orb in the top right corner of the screen, just below the menu bar clock. Opening the app by hand also starts a call by itself, once. If that start fails (no microphone permission, no voice provider configured) she stays quiet and the menu bar says why; she does not retry in a loop.
 
-Global shortcuts:
+Naya does not connect when macOS starts her at login, when an install relaunches her, or during any check. In those cases you only see the orb, and a tap starts the call.
 
-- Control Option Space: switch between the full app and mini orb. Opening the orb starts Live when idle; returning to the full app keeps the session.
-- Control Option Shift Space: show or hide the full Naya window (Live keeps running when the window hides).
-- Control Option Shift L: show Naya and start Live.
-- Control Option Shift M: mute or unmute Live.
-- Escape while the mini orb is focused: hide the orb and stop Live. Escape while the window is focused: hide the window; Live keeps running.
+The full window is separate and optional. It opens only when you ask: **Open Naya app** in the menu bar, a click on the Dock icon, or a shortcut. The orb and the window can be on screen together. Closing the window never ends a call.
 
-Click the mini orb to start, mute or unmute Live. Right-click it and choose **Open full interface** to return to the app without changing Live.
+## Talking with her
 
-Naya opens in the full app. Its **Mini** buttons in the header and Settings switch to the floating orb without starting or stopping Live. The 220-point orb has transparent edges, no caption and no capsule. Drag it to move it; Naya remembers its position and keeps it inside a connected display. The orb never takes focus. Its state changes ease smoothly, with a dim cold state and a brighter live state.
+- **Start, mute, resume.** Tap the orb, or tap the Right Command key (see below). The first tap starts a call, the next one mutes, the next one lets her listen again. While she is muted the orb is purple; she does not hear you and does not speak by herself.
+- **Stop the call.** Say "Naya, stop listening" or "Naya, shut down". Other forms that work: "end the call", "hang up", "goodbye", "good night", "turn off", with or without "please", and the German "Naya aus" and "Naya, hör auf zuzuhören". Rules: her name must be at the start or the end, the sentence is at most 8 words, and a question about the phrase ("what happens if I say Naya shut down?") never ends the call, nor does a typed message. The microphone stops at once, a short goodbye sound plays, and the call ends exactly as if you pressed Stop. The menu bar **Stop** does the same.
+- **If you say nothing.** An unattended call ends after 5 minutes without conversation. Background noise does not count as conversation. Muting suspends the clock. A single provider session lasts at most an hour by default and a whole call at most four hours.
+- **Her first line.** Every new call opens with one short line of her own, based on the last session.
+- **Ask for things.** For example: "anything important in mail?" (unread mail from the last 2 days, newest first), "anything urgent on Mattermost?" (mentions and replies of the last 7 days), "what is on tomorrow?", "what did we decide about X?", "weather in Lisbon". She says plainly when a source returned nothing or is not connected. She opens a mail, event, thread, file or app only when you ask her to.
 
-Closing the full window with Cmd+W during Live switches to the orb and keeps the session. Closing while idle hides the app until an explicit reveal. Clicking the Dock icon or choosing **Open full interface** in the orb's context menu returns to the full app. App/Mini switching preserves the conversation and tool results.
+## Shortcuts and the menu
+
+- Right Command, bare tap: start, mute, resume (the single key, below).
+- Control Option Space and Control Option Shift Space: show or hide the full window.
+- Control Option Shift L: start Live. Control Option Shift M: mute.
+- Escape: closes the window if it is open, otherwise hides the orb.
+- Menu bar: Start Live, Mute, Stop, Open at login, Getting started, Open Naya app, Settings, Right Command tap, Show mini orb, Always show Naya, Reveal logs, Copy diagnostics, Quit Naya. The menu shows each shortcut and says if another app already holds it.
+
+Drag the orb to move it. Naya remembers its position and puts it back on a connected screen if a monitor goes away. Clicks beside the orb pass through to the app underneath.
 
 ### The single key
 
-Turn on **Right Command tap** in the menu bar menu (it is on by default), then use the
-right Command key as the one switch over Naya:
+Turn on **Right Command tap** in the menu bar menu (on by default). Then the right Command key is the one switch over Naya:
 
-- **Tap** it to start her, and tap it again to mute her. The orb turns **purple** while she
-  is muted: she does not hear you and she does not speak by herself, she waits. Tap once
-  more and she listens again; the orb shows the connecting look until she is ready.
-- The mute lasts as long as you want it to, so muting her and coming back an hour later
-  only needs one tap.
-- **Hold** it, or press it with another key (Cmd, Option, Shift), and nothing happens: only
-  the bare tap counts. Muting Naya never touches your microphone, your speakers, another
-  app, or Superwhisper's Right Option.
-- The first time, macOS asks for **Input Monitoring** for Naya. Until that is on, the menu
-  bar shows **Right Command is off: allow Input Monitoring for Naya**: choose it, flip the
-  switch in the pane it opens, and the key starts working without a restart. The
-  Control Option Space chord works with or without it.
-
-The key ignores itself while you are using it in a chord such as Cmd+C, so ordinary
-Command shortcuts keep working, and a chord pressed during a hold ends that hold there
-and then: the microphone closes as you press it, so no shortcut leaves it listening.
-**Mute** stays on the app's mic button and on
-Control Option Shift M, not on the key. The first time you launch Naya by hand, macOS
-asks for Accessibility (or Input Monitoring) permission with a one-line
-explanation, and asks again once after each update, because macOS can drop the grant
-when the app is replaced; the chord keeps working whether or not you allow it, and
-the settings page and the menu bar say when the key is inactive and why. Right Option belongs to SuperWhisper, so
-Naya never uses it.
-
-Use the menu if a shortcut is unavailable.
+- **Tap** it to start her, tap again to mute, tap once more to resume. After a resume the orb shows the connecting look until she is ready.
+- **Hold** it, or press it together with another key (Cmd, Option, Shift), and nothing happens. Only a bare tap counts, so Cmd+C and friends keep working.
+- Muting never touches your microphone settings, speakers or another app. The right Option key is left alone for dictation apps.
+- The first time, macOS asks for **Input Monitoring** for Naya. Until you allow it the menu says "Right Command is off: allow Input Monitoring for Naya"; choose it, flip the switch, and the key works without a restart. The window shortcuts work with or without it. macOS can drop the grant when the app is replaced; see Stable signing below.
 
 ## Remembering and deleting
 
@@ -69,8 +53,8 @@ native draft area saves a local note instead; it does not send a chat message.
 Choose **Getting started** in the menu bar. It opens automatically once after
 this build, then only when you reopen it. It shows microphone and notification
 permissions, Open at login, shortcuts, and connector status. Nothing requests
-permission until you press a setup button. The page's Settings panel shows the
-same connector next steps and is read-only.
+permission until you press a setup button. Settings in the full window shows the
+same connector next steps; the connector rows are read-only, while the Live voice provider, voice, accent, speaking pace and theme can be changed there and apply from the next call.
 
 ## Stable signing
 
@@ -118,11 +102,13 @@ for connected chat, [Live configuration](provider-configuration.md#live-profile-
 for Live, and [MCP configuration](mcp-configuration.md) for connector endpoints,
 classification and explicit network approval.
 
-Mongoose is the one connector Lux Didi can sign in to for you. Run the host once,
-then restart Lux Didi:
+Mongoose is the one connector Lux Didi can sign in to for you. Run the bundled host
+once with the same configuration directory you selected above, then restart Lux Didi:
 
 ```sh
-node /path/to/your/install/server/dist/host/index.js --mongoose-login
+"$HOME/Applications/Lux Didi.app/Contents/MacOS/node" \
+  "$HOME/Applications/Lux Didi.app/Contents/Resources/server/node_modules/@lux-didi/service/dist/host/index.js" \
+  --mongoose-login --config-dir /absolute/path/to/your/config-directory
 ```
 
 Your default browser opens the Mongoose consent page, where you sign in with

@@ -1,5 +1,7 @@
 # Roadmap and backlog
 
+> Historical document. Written in October 2026, before most of the product existed. The milestones and lanes below are the original plan, not the current state; for what exists see [implementation-status.md](implementation-status.md).
+
 Status: proposed plan. Every capability described here is planned work, not a built feature; a partially implemented baseline exists and is recorded in [implementation-status.md](implementation-status.md). The structured plan is [planning/backlog.json](../planning/backlog.json): 120 nodes, one program tracker (P00), thirteen epics (E01 to E13) and one hundred and six work items (A, B, C, D and F leaves). When published, the same nodes are GitHub issues with stable IDs, labels and milestones; the mapping is recorded in `planning/issue-map.json`.
 
 ## Numbering

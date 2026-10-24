@@ -1,5 +1,7 @@
 # First-night execution plan
 
+> Historical document. The plan for a single overnight window on 2026-10-09 and 2026-10-10. The window is over; this file is a record only.
+
 Status: authorized and bounded execution plan. The window is 2026-10-09T16:44:08Z to 2026-10-10T08:44:08Z (14:14 IST), with final hardening beginning by 06:44 UTC, and no CI or paid run is part of it. The published roadmap is a product plan, not a claim that the application already exists.
 
 ## The result to aim for

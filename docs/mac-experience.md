@@ -1,48 +1,25 @@
 # Mac companion experience
 
-Naya is a regular Mac app: a Dock tile with the Naya icon, a Cmd-Tab entry and a
-window that stays in front. It hosts the service's one shared responsive web UI in
-WKWebView. Swift no longer duplicates Conversation/Today/Memory business screens
-or owns a business store. A compact native Naya voice rail owns consent, lifecycle
-and Start, Mute and Stop. Note capture and connection details remain native but
-start collapsed below the shared conversation page. See
-[companion protocol](companion-protocol.md) for trust and credential boundaries.
+Naya is a regular Mac app (Dock tile, Cmd-Tab entry, menu bar item) whose resting surface is a floating orb in the top right corner. The full window is optional and is created the first time it is asked for. Both surfaces host the service's one shared web UI in WKWebView. Swift does not duplicate Conversation, Today or Memory screens and owns no business store. A compact native voice rail owns consent, lifecycle and Start, Mute and Stop. Note capture and connection details stay native and start collapsed below the shared conversation page. See [companion protocol](companion-protocol.md) for trust and credential boundaries and [architecture](architecture.md) for the whole picture.
 
-## Lifecycle
+## Launch
 
-- Control–Option–Space shows the mini orb from either surface and brings the full
-  window back from the orb, through the existing Carbon registration; a
-  registration failure is visible and the menu bar remains usable.
-- Cmd+W and the close button hide the window and keep the agent, editable draft
-  and existing WKWebView; during an active Live session they switch to the mini
-  orb instead and the session keeps running. A Dock click always brings the full
-  window back. Neither hide/show rebuilds the page.
-- Escape hides and stops recording.
-- Explicit Quit stops recording, attempts scoped page-session logout, unregisters
-  the hotkey and exits. It does not promise crash-time revocation.
-- Service failure or WebContent termination becomes a native retry screen, not an
-  endlessly blank view. Reconnect is explicit and reboots page authentication.
-- Native saved/failed/cancelled/unknown outcomes are distinct; uncertain saves keep
-  stable idempotency identity. Retrying does not silently save an edited draft as
-  a second entry.
+What a start may do is decided once, by `LaunchKind` in `SingleInstanceGuard.swift`:
 
-## Two presentation modes
+- Owner opens the app: the orb appears and one call connects by itself, only when the host is up and the orb page can be shown. A refusal (denied microphone, refused audio owner) is final for that launch, so it never loops.
+- Login item: the orb appears, nothing connects, no capture.
+- Install relaunch (`--install-relaunch`): the orb appears, nothing connects.
+- Proof and self-check launches: no orb, no connect, a window only where the proof drives one; a second instance exits with code 3 so a yielded proof can never read as a pass.
 
-Exactly one surface is visible at a time; a presentation coordinator owns the mode
-and every entry point (Dock click, hotkey, orb click, the **mini** button in the
-full window, close) goes through it.
+## Surfaces
 
-- **FULL** is a standard window at the normal level that does not hide when the
-  app deactivates. Its header carries a **mini** button with the accessible label
-  "Show the mini orb".
-- **MINI** is a borderless non-activating floating panel that can become neither
-  key nor main, joins every Space, floats over full-screen apps, stays out of the
-  window cycle, and moves by its background. It shows listening, thinking and
-  talking only: no audio context, no microphone and no Live socket of its own. Its
-  frame is remembered and clamped into a visible screen on restore and after a
-  display change.
-- Live is never started, stopped or restarted by a mode switch, so the session id
-  survives every switch.
+The orb (MINI) and the window (FULL) are independent; a `PresentationCoordinator` owns which are visible and every entry point goes through it. It never touches Live, so no switch starts, ends or restarts a call.
+
+- **MINI** is a borderless non-activating floating panel that can become neither key nor main, joins every Space, floats over full-screen apps and stays out of the window cycle. It defaults to the top right under the menu bar clock, moves by drag, and its frame is remembered and clamped onto a visible screen after a display change. Clicks beside the orb reach the app underneath. It follows presence: grey and dim when cold, the connecting look while opening, colour while live, purple while muted. Showing an orb that is already on screen does nothing, which removed an old flicker.
+- **FULL** is a standard window that does not hide when the app deactivates. Cmd+W and the close button hide it and keep the draft and the page; they never end a call. A Dock click brings it back.
+- Control Option Space and Control Option Shift Space toggle the FULL window. Escape closes the window if it is open, otherwise hides the orb. Explicit Quit stops recording, attempts a scoped page-session logout, unregisters the hotkeys and exits.
+- Service failure or WebContent termination becomes a native retry screen, not a blank view. Reconnect is explicit and reboots page authentication.
+- Native saved, failed, cancelled and unknown outcomes are distinct; uncertain saves keep a stable idempotency identity.
 
 ## Native permissions and effects
 
@@ -127,14 +104,7 @@ Silent injected tests exercise the real audio converter, capture queue and devic
 
 ### Summon and microphone availability
 
-Control-Option-Space remains Show/hide and never starts capture. Explicit Start
-Live in the menu or Control-Option-Shift-L shows the window and uses the same
-guarded Live start. Control-Option-Shift-M toggles mute; menu controls also offer
-Mute/Unmute and Stop. These three-modifier letter combinations avoid common
-macOS defaults; custom user shortcuts can still conflict. Each Live shortcut's
-registration result is visible in the menu, including its OSStatus on conflict.
-Live is full duplex, not push-to-talk. Muting discards captured frames. Hide and
-close still stop capture, and Show never resumes it.
+Control-Option-Space and Control-Option-Shift-Space toggle the full window and never start capture. Explicit Start Live in the menu or Control-Option-Shift-L shows the window and uses the same guarded Live start. Control-Option-Shift-M toggles mute; menu controls also offer Mute/Unmute and Stop, and a bare tap of Right Command drives start, mute and resume (see the [user guide](user-guide.md)). Each shortcut's registration result is visible in the menu, including its OSStatus on conflict. Live is full duplex, not push-to-talk. Muting discards captured frames and closes the capture fence at once.
 
 The status icon, accessible label and menu describe stopped, connecting,
 listening, speaking or muted. A pending-call dot is independent of microphone
@@ -142,7 +112,7 @@ state and never starts capture.
 
 Open at login is opt-in in the menu (macOS 13 or later). Its text reflects the
 system registration status, including approval required or unavailable, rather
-than a saved preference. Login launch starts hidden and never captures audio.
+than a saved preference. A login launch shows only the orb and never captures audio.
 The window frame is remembered; a frame no longer contained on a connected
 screen falls back to a centered, screen-sized frame. Proof launches do not
 change login registration or saved window preferences.

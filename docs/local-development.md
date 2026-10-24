@@ -1,18 +1,12 @@
-# Local development (current baseline)
+# Local development
 
-This page describes the supported developer path for the code that is on `main`. It is a source cross-check, not a freshly exercised walkthrough: every command below was read from the repository's own scripts and manifests at commit `6a66898a392e052a31b59ef009dcae03b1c5aae8`, observed on 2026-10-10, and the source files remain the authority if this page drifts.
-
-It covers the service, the web client and the thin Mac shell. It does not describe a packaged installation, because there is none.
+How to build and run the host and web UI from source, for development. The installed app runs the same host, supervised by the Mac app; see [macos-install.md](macos-install.md) for that path. Commands here were read from the repository's scripts and manifests.
 
 ## What you are running
 
-One process is the only writer. The host entry at `server/dist/host/index.js` opens the SQLite store, composes the durable domain module for memory and commitments, serves the HTTP API and serves the built web client, all on the loopback interface. The wrapper `scripts/run-local.sh` builds the web client and the service and then starts that host in the foreground.
+One process is the only writer. The host entry `server/dist/host/index.js` opens the SQLite store, composes the durable domain module, the chat service, the Live call core, the research layer and the connectors, serves the HTTP API and the built web client, all on the loopback interface. `scripts/run-local.sh` builds the web client and the service and then runs the host.
 
-The host composes the service, the durable domain module and the built web client. With no provider profile, asking
-Didi a question stays disabled: the status the client reads reports the model as unconfigured, and the old Ask Didi
-shortcut remains disabled. With a profile validated locally the host also composes the real Gemini adapter behind an
-explicitly granted connected conversation, which the web client starts through its own Start/Send flow. MCP
-execution, notifications, audio capture and playback, and native web-view integration are still not wired.
+Without a voice profile and connectors, Live and connected chat are unavailable but local notes and memory work. With a profile validated locally, the host composes the voice provider adapter and the connectors named in the protected config directory. Audio capture and playback belong to the Mac app, not the host, so a host started by hand serves the web UI and API but has no microphone; use the installed app (or `scripts/smoke.sh`) for a real call.
 
 ## Prerequisites
 
@@ -78,8 +72,7 @@ default path or repeat `--build-only`.
 activate edits. The profile holds the provider, the model and a key reference; the key material lives in a separate owner-only
 secret file (mode 0600) and is reread on each dispatch. The status line reports unconfigured, disabled, error (a safe code only), or
 configured with provider and model. Configured means the profile is locally validated; this does not prove provider reachability. An unsupported adapter
-model ID is a sanitized configuration error that never prevents the host from starting. With no profile the connected conversation stays unavailable and the old Ask
-Didi shortcut stays disabled.
+model ID is a sanitized configuration error that never prevents the host from starting. With no profile the connected conversation stays unavailable.
 
 The host prints its origin, then the availability line, for example that local memory and commitments are available and that notifications are not. The model line reports the profile state: unconfigured, disabled, or error with a safe code when no usable profile is present, and configured with the provider and model once a profile validates. To see the command line:
 
@@ -119,20 +112,7 @@ Press Ctrl-C, or send SIGTERM, in the terminal that runs the host. The listener 
 
 ## Checks
 
-Each check lives under `scripts/` and names in its own comments what it covers:
-
-- `scripts/check-service.sh`: type-checks, builds, then runs the selected runtime and HTTP tests.
-- `scripts/check-host.sh`: exercises the documented build, then the host and HTTP tests, then the shipped UI against the real host under `lux-browser-slot`.
-- `scripts/check-domain.sh`: rebuilds from source, then runs the focused domain and provenance tests against a temporary SQLite database.
-- `scripts/check-prompt.sh`, `scripts/check-model.sh`, `scripts/check-provider-config.sh` and `scripts/check-mcp.sh`: compile the exact sources they cover into a disposable directory and run their focused tests. Some of them expect an installed TypeScript toolchain under `server/node_modules`.
-- `scripts/check-chat.sh`: the affected HTTP boundary regression. Its own comments state that it deliberately excludes package-installation and CLI tests.
-- `scripts/check-package.sh`: requires committed package source, then builds the service package from a clean `git archive` in a disposable directory.
-- `scripts/check-knowledge-connector.sh`, `scripts/check-live-voice.sh`, `scripts/check-host-entry.sh`, `scripts/check-pending-request.sh`, `scripts/check-provider-config.sh` and `scripts/check-connected.sh`: the per-surface producers of the knowledge connector, live voice, host entry, pending-request store, provider configuration and connected conversation components; each builds the exact sources it covers in a disposable tree and names what it covers in its own comments.
-- `Tests/DidiMacTests/check-mac.sh`: compiles the Mac shell into a disposable bundle in a temporary directory, signs it ad hoc, verifies the signature, and runs its self-check and an empty-app preview. Installation of a real app is owned by integration; the disposable bundle is proof, not an installed product.
-
-`npm --prefix server test` is baseline coverage of the runtime and HTTP tests, not acceptance of every feature. The connected conversation, native conversation discovery and selected-memory UI have separate focused producers: `scripts/check-connected.sh`, `scripts/check-native-conversation.sh` and `scripts/check-selected-memory-ui.sh`. Each includes its affected server regressions and the real browser proof; a passing baseline does not replace them. The native-conversation browser proof is a web/service proof, not proof of an installed Mac application.
-
-On a managed host, lanes run their own declared checks through the controller. On a plain workstation the headless service and domain checks need only Node and the two `npm ci` steps above.
+Every check is a script; [checks.md](checks.md) lists each one and what it covers. Run the ones that cover your change. `npm --prefix server test` is baseline runtime and HTTP coverage only. On a plain workstation the headless server and domain checks need only Node and the two `npm ci` steps above; browser-backed checks need the extras below.
 
 ### Browser proof prerequisites and artifact destinations
 
@@ -144,7 +124,7 @@ The helper prints the exact run root and screenshot directory before browser sta
 
 The focused filesystem test is `node --test web/test/artifacts.test.mjs`. It verifies supplied/default root isolation and invalid/unwritable roots using only newly created test fixtures; it does not replace the real browser gates.
 
-The planning validator is separate from product checks:
+The historical planning validator is separate from product checks:
 
 ```sh
 python3 scripts/backlog_validate.py --all --report planning/backlog-validation.md
@@ -153,16 +133,13 @@ python3 scripts/backlog_validate.py --all --report planning/backlog-validation.m
 ## Platform limitations
 
 - macOS is the only verified platform. Linux shares the code path but is untested; there is no Windows package.
-- Node must already be installed. This baseline ships no bundled runtime, no installer, no notarized application, no cloud deployment and no mobile pairing.
+- Node must be installed to build and run from source. The built Mac app bundles its own Node 26; there is no notarized application, no cloud deployment and no mobile pairing.
 - The Vite development server (`npm --prefix web run dev`) is useful for UI work, but it does not apply the production security headers, so use the host entry for real end-to-end behaviour.
-- The host does not deliver reminder notifications, capture or play audio, or drive native web views. It runs model
-  inference only when a provider profile is configured locally and the user grants an explicitly connected
-  conversation; with no profile, and outside that granted conversation, no inference runs. Those are open proofs,
-  listed in [implementation-status.md](implementation-status.md).
+- The host never touches audio devices; capture and playback are the Mac app's. It runs model inference only when a voice or chat profile is configured locally and the owner starts a call or grants a connected conversation.
 
 ## How this page was verified
 
-Every command above was cross-checked against the current sources of this tree at `6a66898a392e052a31b59ef009dcae03b1c5aae8`: `scripts/run-local.sh`, `server/package.json`, `web/package.json`, `server/tsconfig.json`, `server/host/index.ts`, `server/host/runtime.ts`, `server/index.ts`, the `scripts/check-*.sh` producers, `Tests/DidiMacTests/check-mac.sh`, and the existing runtime records in [local-runtime.md](local-runtime.md) and [service-runtime.md](service-runtime.md). The commands were not re-executed for this document.
+Cross-checked against `scripts/run-local.sh`, `server/package.json`, `web/package.json`, `server/host/index.ts` and the `scripts/check-*.sh` producers at release 7 (7c968615).
 
 ### Companion gate failure evidence
 

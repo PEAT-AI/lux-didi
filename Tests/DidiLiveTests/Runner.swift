@@ -468,8 +468,8 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             let run = Run()
             try await checkDiagnosticsAndPresentation(run)
             try await checkAudioErrorSentences(run)
-            try await checkPendingCallbacks(run)
-            try await checkTransportRefusalMatrix(run)
+            if try await checkPendingCallbacks(run) { return }
+            if try await checkTransportRefusalMatrix(run) { return }
             try await checkAlteredRequestRefusals(run)
             try await bindCompanionAndNativeHTTP(run)
             try await checkNativeOperatorEnvelope(run)
@@ -556,7 +556,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
 
     }
 
-    @MainActor static func checkPendingCallbacks(_ run: Run) async throws {
+    @MainActor static func checkPendingCallbacks(_ run: Run) async throws -> Bool {
             run.fixture = try JSONDecoder().decode(Fixture.self, from: FileHandle.standardInput.readDataToEndOfFile())
             let pendingWire = Data("[{\"id\":\"job1\",\"state\":\"in_progress\",\"markdown\":\"Working\"},{\"id\":\"job2\",\"state\":\"failed\",\"markdown\":\"Actual failure\"}]".utf8)
             run.pendingCalls = try JSONDecoder().decode([NativePendingLiveJob].self, from: pendingWire)
@@ -575,16 +575,17 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 let report = try JSONEncoder().encode(["id": snapshot.liveSessionId])
                 FileHandle.standardOutput.write(report + Data("\n".utf8))
                 await Gate().wait() // parent owns a bounded readiness/kill protocol, no autonomous client requests
-                return
+                return true
             }
             for code in ["provider_setup_rejected", "protocol_error"] {
                 let frame = try LiveSocketTransport.decode(.string("{\"type\":\"terminal\",\"state\":\"failed\",\"code\":\"\(code)\",\"complete\":true}"))
                 guard case .terminal(let terminal, _) = frame else { throw ProbeError.assertion("typed terminal frame") }
                 try require(terminal.code == code, "provider terminal code retained")
             }
+            return false
     }
 
-    @MainActor static func checkTransportRefusalMatrix(_ run: Run) async throws {
+    @MainActor static func checkTransportRefusalMatrix(_ run: Run) async throws -> Bool {
             if CommandLine.arguments.contains("--mutation") {
                 // Compiled mutated transport only removes Cookie preflight. Behavioral check must catch that at the real host.
                 let transport = LiveSocketTransport(requests: TestRequests(fixture: run.fixture, alteration: "cookie"))
@@ -597,7 +598,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
                 await http.finish()
                 try require(refusedBeforeTask, "mutation sensitivity: cookie must be rejected before URLSession task")
                 print("PASS cookie preflight sensitivity baseline")
-                return
+                return true
             }
             let unreachableHTTP = TestHTTP(run.fixture)
             await unreachableHTTP.makeStatusUnreachable()
@@ -614,6 +615,7 @@ func intent(_ fixture: Fixture, inputClass: String = "ordinary") -> LiveBeginInt
             try require(await unreachableSockets.attempts == 0, "unreachable status opens no socket")
             await unreachableHTTP.finish()
 
+            return false
     }
 
     @MainActor static func checkAlteredRequestRefusals(_ run: Run) async throws {

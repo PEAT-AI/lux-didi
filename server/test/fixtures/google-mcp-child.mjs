@@ -2,11 +2,14 @@
 // Synthetic stdio MCP child for check-google-connector.sh.
 // No real account, network, credential or application file is touched. It exposes the five
 // Gmail/Calendar read tools plus a decoy write tool so a test can prove the write is never granted.
-// argv[2] = mode (ok | credential | flaky | code:<helper code> | first:<helper code>), argv[3] = pid file.
+// argv[2] = mode (ok | credential | flaky | code:<helper code> | first:<helper code> | first-mail:<helper code>),
+// argv[3] = pid file.
 // flaky fails the first calendar_list_events call with the credential error and succeeds afterwards.
 // code:<helper code> fails every tool call with that one code, so a test maps each published code
 // through the real connector; first:<helper code> fails only the first call, so a test can prove the
-// next ask retries. Every tool call is appended to <pid file>.calls so a test can count dispatches.
+// next ask retries. first-mail:<helper code> fails only the first gmail_search_messages call, so a test
+// can put one failed mail read in the middle of a sequence of healthy ones (#636).
+// Every tool call is appended to <pid file>.calls so a test can count dispatches.
 import { appendFileSync, writeFileSync } from 'node:fs';
 import { Server } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
@@ -71,12 +74,14 @@ function envelopeFor(name, args) {
 const server = new Server({ name: 'synthetic-google-mcp', version: '0.0.1' }, { capabilities: { tools: {} } });
 let calendarCalls = 0;
 let toolCalls = 0;
+let mailCalls = 0;
 server.setRequestHandler('tools/list', () => ({ tools: TOOLS }));
 server.setRequestHandler('tools/call', request => {
   const name = request.params?.name;
   const args = request.params?.arguments ?? {};
   if (pidFile) appendFileSync(`${pidFile}.calls`, `${name}\n`);
-  if (mode.startsWith('code:') || (mode.startsWith('first:') && toolCalls++ === 0)) {
+  const failsFirstMail = mode.startsWith('first-mail:') && name === 'gmail_search_messages' && mailCalls++ === 0;
+  if (mode.startsWith('code:') || (mode.startsWith('first:') && toolCalls++ === 0) || failsFirstMail) {
     const code = mode.slice(mode.indexOf(':') + 1);
     return { content: [{ type: 'text', text: `${code}: synthetic helper refusal` }], isError: true };
   }

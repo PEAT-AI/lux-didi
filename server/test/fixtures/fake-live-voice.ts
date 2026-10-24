@@ -6,7 +6,7 @@ import type {
 /** A test-only port whose capabilities differ from the Gemini adapter, so the host cannot key on a model name. */
 export type FakeLiveVoiceEvent =
   | { type: 'audio'; pcm: Uint8Array; rate: number; audible?: boolean; rmsDbfs?: number }
-  | { type: 'modelTurnStarted' }
+  | { type: 'modelTurnStarted' } | { type: 'waitingForInput'; value: boolean }
   | { type: 'generationComplete' } | { type: 'turnComplete' } | { type: 'interrupted' }
   | { type: 'resumptionHandle'; handle: string }
   | { type: 'goAway'; timeLeftMs: number }

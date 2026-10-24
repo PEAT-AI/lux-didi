@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { createLiveSessionOwner, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
+import { createLiveSessionOwner, IDLE_RESET_CAUSES, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
   validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -211,6 +211,9 @@ test('an unattended call ends at the idle limit even while VAD only events, a nu
   // Ambient VAD and provider bookkeeping only: no owner speech, an empty finalized transcript, a
   // model turn that carries no audio at all.
   for (let spent = 0; spent < 120_000 && terminalCode(live) === undefined; spent += 20_000) {
+    // The VAD edges the provider sends on ambient sound, both of them: a start is not speech.
+    await live.emit({ type: 'waitingForInput', value: true });
+    await live.emit({ type: 'waitingForInput', value: false });
     await live.emit({ type: 'modelTurnStarted' });
     await live.emit({ type: 'inputTranscription', text: '', finished: true });
     await live.advance(20_000);
@@ -226,9 +229,13 @@ test('an unattended call ends at the idle limit even while VAD only events, a nu
   assert.deepEqual([...new Set(resets)], ['opened', 'model_audio'], 'only the opener reset the clock');
 });
 
-test('the idle arm receipt is a closed set the host log accepts', () => {
-  assert.deepEqual(safeEvent({ event: 'live_idle_arm', resetBy: 'model_audio', idleMs: 300_000 }),
-    { event: 'live_idle_arm', resetBy: 'model_audio', idleMs: 300_000 }, 'a known cause keeps its receipt');
+test('the idle arm receipt is a closed set the host log accepts for every cause', () => {
+  // The closed set lives in the host log; every cause the arm can name must survive it, or an arm
+  // would be silently dropped from the only record of what restarted the idle clock.
+  for (const resetBy of IDLE_RESET_CAUSES) {
+    assert.deepEqual(safeEvent({ event: 'live_idle_arm', resetBy, idleMs: 300_000 }),
+      { event: 'live_idle_arm', resetBy, idleMs: 300_000 }, `the host log keeps the ${resetBy} cause`);
+  }
   assert.equal(safeEvent({ event: 'live_idle_arm', resetBy: 'vad_start', idleMs: 1_000 }), undefined,
     'a cause outside the closed set never reaches the host log');
 });

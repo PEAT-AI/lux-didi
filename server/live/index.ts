@@ -256,8 +256,10 @@ export const RESPONSE_WATCHDOG_RECOVERY_MS = 7_000;
 export const RESPONSE_WATCHDOG_WINDOW_MS = 120_000;
 /** The write tools the Live model may decline or call, and the resource each one is pinned to. */
 const OWNER_WRITE_RESOURCES = new Map([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault']]);
+/** #592: the closed set of causes an idle arm may name, in the host log and in the arm itself. */
+export const IDLE_RESET_CAUSES = ['opened', 'unmuted', 'tool_result', 'turn_failed', 'typed', 'owner_speech', 'model_audio'] as const;
 /** #592: idle is conversational silence: a finalized owner transcript with content, or model audio. */
-type IdleResetCause = 'opened' | 'unmuted' | 'tool_result' | 'turn_failed' | 'typed' | 'owner_speech' | 'model_audio';
+type IdleResetCause = typeof IDLE_RESET_CAUSES[number];
 /** #592: an owner transcript only counts once it closed carrying the text that was spoken. */
 function idleResetCause(handle: ActiveSession, event: LiveVoiceEvent): 'owner_speech' | 'model_audio' | undefined {
   if (event.type === 'audio') return 'model_audio';

@@ -244,10 +244,11 @@ test('a retryable first call failure retries a bounded number of times and then 
   assert.equal(failed.state, 'error', 'the endpoint did not connect');
   assert.equal(failed.retrying, true, 'a retry is scheduled');
   assert.equal(f.requests(), 1);
-  await until(() => runtime.status().endpoints[0]!.retrying === false, 2000);
-  const settled = runtime.status().endpoints[0]!;
-  assert.equal(settled.retrying, false, 'the round is over and no further attempt is pending');
+  // Wait on the wire, not on the flag: `retrying` is briefly false between two scheduled attempts.
+  await until(() => f.requests() === 4, 2000);
   assert.equal(f.requests(), 4, 'the first connect plus exactly three bounded retries');
+  await until(() => runtime.status().endpoints[0]!.retrying === false, 2000);
+  assert.equal(runtime.status().endpoints[0]!.retrying, false, 'the round is over and no further attempt is pending');
 });
 
 /** Two Google endpoints of one owner account, each proving itself with its own family's tool. */

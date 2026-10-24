@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import type { ToolResultBinding, JsonObject } from '../adapters/model/types.js';
 import type { CalendarEvent as RetainedCalendarEvent, CalendarScope, MailMessage } from './live-shape.js';
 import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
+import { MAIL_QUERY_OPERATORS } from '../contracts/mail-operators.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
 import { WEB_SEARCH_ACTION, webAttribution, webDeadlineMs, webEvidenceText, webFooter, webSourceCards, type WebSearchPort } from './web-search.js';
 
@@ -643,28 +644,26 @@ export const TOPIC_MAX_WORDS = 8;
 export const TOPIC_MAX_CHARS = 200;
 
 /**
- * #565 and #576: the topic is the only text whose words become search terms, and a number enters it only
- * when the owner said that number, so a model-written date or clock time never becomes a constraint.
+ * #576: a number enters a query only when the owner said that number. `spokenWords` is what the owner
+ * said in this run, so a later hop never re-filters the run's own topic through its own question.
  */
-export function topicTerms(topic: string | undefined, question: string): string | undefined {
-  if (topic === undefined) return undefined;
-  const spoken = new Set(question.match(/\d+/gu) ?? []);
-  const kept = topic.split(/\s+/u).filter(word => (word.match(/\d+/gu) ?? []).every(run => spoken.has(run)));
-  const text = kept.join(' ').trim();
-  return text === '' ? undefined : text;
-}
-
-/** #576: a query the model wrote keeps only the numbers the owner said, so no invented date survives. */
-export function ownerDigits(text: string, question: string): string {
-  const spoken = new Set(question.match(/\d+/gu) ?? []);
+export function ownerDigits(text: string, spokenWords: string): string {
+  const spoken = new Set(spokenWords.match(/\d+/gu) ?? []);
   return text.split(/\s+/u).filter(word => (word.match(/\d+/gu) ?? []).every(run => spoken.has(run))).join(' ');
 }
 
-export function compileMailQuery(question: string, query: string | undefined, nowMs = Date.now(), timeZone?: string, topic?: string): string {
+/** #565: the topic is the only text whose words become search terms, within the owner's own numbers. */
+export function topicTerms(topic: string | undefined, spokenWords: string): string | undefined {
+  if (topic === undefined) return undefined;
+  const text = ownerDigits(topic, spokenWords).trim();
+  return text === '' ? undefined : text;
+}
+
+export function compileMailQuery(question: string, query: string | undefined, nowMs = Date.now(), timeZone?: string, topic?: string, ownerWords?: string): string {
   const authored = (query ?? '').replace(/\s+/gu, ' ').trim();
   const person = MAIL_DIRECTION.test(question) ? mailPersonName(question) : undefined;
   const asked = mailWindow(question, nowMs, timeZone);
-  const gated = topicTerms(topic, question);
+  const gated = topicTerms(topic, ownerWords ?? question);
   const topicText = gated !== undefined && contentKeywords(gated, 1).length > 0 ? gated : undefined;
   // #565: an authored query that already carries Gmail syntax is the model's own per-source search, and
   // the owner's instruction prose never reaches it because the question is not a text this compiles.
@@ -681,8 +680,6 @@ export function compileMailQuery(question: string, query: string | undefined, no
 
 /** The shape of one mail query for a receipt: term count, operators and window, never the words. */
 export interface MailQueryShape { terms: number; operators: string[]; window?: string }
-/** #565: the closed operator names a mail query may carry, so a searched word is never stored as one. */
-export const MAIL_QUERY_OPERATORS = ['from', 'to', 'cc', 'bcc', 'subject', 'after', 'before', 'newer_than', 'older_than', 'is', 'has', 'label', 'in', 'filename', 'larger', 'smaller', 'list', 'deliveredto', 'rfc822msgid'] as const;
 const OPERATOR_TOKEN = /^([a-z_]+):(.+)$/iu;
 const WINDOW_OPERATORS = new Set(['newer_than', 'older_than', 'after', 'before']);
 const isOperatorToken = (token: string): boolean => OPERATOR_TOKEN.test(token) || token.toUpperCase() === 'OR';
@@ -1117,10 +1114,11 @@ function isoDay(word: string, nowMs: number, timeZone: string): string | undefin
 }
 
 /** The internal sub-calls one candidate issues. `brief` fans out over every configured source. */
-export function candidateSubs(kind: CandidateKind, config: { question: string; topic?: string | undefined; configured: readonly SourceKind[]; evidence: ReadonlyMap<CandidateKind, string>; query?: string | undefined; window?: string | undefined; nowMs?: number | undefined; timeZone?: string | undefined }): IntentSubCall[] {
+export function candidateSubs(kind: CandidateKind, config: { question: string; topic?: string | undefined; ownerWords?: string | undefined; configured: readonly SourceKind[]; evidence: ReadonlyMap<CandidateKind, string>; query?: string | undefined; window?: string | undefined; nowMs?: number | undefined; timeZone?: string | undefined }): IntentSubCall[] {
   const search = (name: string, args: JsonObject, key: string): IntentSubCall => ({ key, name, args });
-  // #565: the topic's words, and only the numbers the owner said, are what a source may search.
-  const topicText = topicTerms(config.topic, config.question);
+  // #565: the topic's words, and only the numbers the owner said in this run, are what a source may search.
+  const ownerWords = config.ownerWords ?? config.question;
+  const topicText = topicTerms(config.topic, ownerWords);
   if (kind === 'knowledge_search') {
     // Q5-R1: a named entry is read by id through the connector's get_insight path, never searched for
     // again; the connector returns its whole body up to the knowledge body cap.
@@ -1128,7 +1126,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     if (ids.length) return [search(INTERNAL.knowledgeRead, { ids } as JsonObject, 'kr0')];
     // K3: a clipped keyword query, never the owner's sentence or the selector's paraphrase of it.
     // K6: with no model query, a question of pure filler is no question to search at all.
-    const query = config.query === undefined ? knowledgeQuery(topicText ?? '') : knowledgeQuery(ownerDigits(config.query, config.question), '');
+    const query = config.query === undefined ? knowledgeQuery(topicText ?? '') : knowledgeQuery(ownerDigits(config.query, ownerWords), '');
     if (!query) return [];
     const meeting = meetingBounds(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
     return [search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(query, projectHintOf(config.question), meeting), 'k0')];
@@ -1146,7 +1144,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
   if (kind === 'mail_search') {
     // #565: a bare inbox scan stays a scan; a topic or a model query is compiled from the topic.
     const bare = config.query === undefined && topicText === undefined;
-    return [search(INTERNAL.mailList, { q: bare ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone, config.topic), maxResults: RESEARCH.pageResults.mail }, 'm0')];
+    return [search(INTERNAL.mailList, { q: bare ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone, config.topic, ownerWords), maxResults: RESEARCH.pageResults.mail }, 'm0')];
   }
   if (kind === 'mail_open') { const id = config.evidence.get('mail_search'); return id ? [search(INTERNAL.mailRead, { id }, 'mo0')] : []; }
   if (kind === 'chat_search') {
@@ -1155,14 +1153,14 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     // DATES-R1 F3 and DATES-R2 F4: with no content term left, the recency window is the only useful thing
     // to send, so an empty query is never dispatched, whoever wrote the query text.
     const dated = DATE_WORD.test(config.question);
-    const compiled = chatQuery(config.query === undefined ? (topicText ?? 'after:yesterday') : ownerDigits(config.query, config.question), config.nowMs, config.timeZone);
+    const compiled = chatQuery(config.query === undefined ? (topicText ?? 'after:yesterday') : ownerDigits(config.query, ownerWords), config.nowMs, config.timeZone);
     const terms = dated ? compiled : compiled.replace(CHAT_DATE_OPERATOR, '').replace(/\s+/gu, ' ').trim();
     const query = terms !== '' ? terms : chatQuery('after:yesterday', config.nowMs, config.timeZone);
     return [search(INTERNAL.chatSearch, { query, limit: RESEARCH.chatLines }, 'c0')];
   }
   if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { post_id: id }, 'ct0')] : []; }
   if (kind === 'web_search') return config.configured.includes('web')
-    ? [search(WEB_SEARCH_ACTION, { query: config.query === undefined ? (topicText ?? '') : ownerDigits(config.query, config.question) }, 'w0')] : [];
+    ? [search(WEB_SEARCH_ACTION, { query: config.query === undefined ? (topicText ?? '') : ownerDigits(config.query, ownerWords) }, 'w0')] : [];
   if (kind === 'brief') {
     const subs: IntentSubCall[] = [];
     // ROUTE-1022 K5: a brief reads his own knowledge, and the layers the question itself names. The
@@ -2761,13 +2759,13 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
  * K6: one routed lookup. `memory` is read in process; every other layer becomes the internal read that
  * source already owns, under its own per-source deadline. Nothing here consults the selector.
  */
-function routedRead(lookup: ResearchLookup, context: { question: string; topic?: string | undefined; configured: readonly SourceKind[]; run: RunState; now: () => number; timeZone?: string }): { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } {
+function routedRead(lookup: ResearchLookup, context: { question: string; topic?: string | undefined; ownerWords?: string | undefined; configured: readonly SourceKind[]; run: RunState; now: () => number; timeZone?: string }): { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } {
   const query = lookup.query;
   if (lookup.source === 'memory') return { source: 'memory', kind: 'memory_search', subs: [{ key: 'history', name: HISTORY_IDENTITY.name, args: { ...(lookup.history ?? { query }) } }] };
   if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: [{ key: 'co0', name: INTERNAL.mongooseSearch, args: { query } as JsonObject }] };
   // The attention digest answers "what is waiting on him"; it takes no query of its own.
   if (lookup.source === 'replies') return { source: 'chat', kind: 'chat_search', subs: [{ key: 'at0', name: INTERNAL.chatAttention, args: {} as JsonObject }] };
-  const subsConfig = { question: context.question, topic: context.topic, configured: context.configured, evidence: context.run.evidence, query };
+  const subsConfig = { question: context.question, topic: context.topic, ownerWords: context.ownerWords, configured: context.configured, evidence: context.run.evidence, query };
   // N3: a voice turn reads the primary calendar only, one bounded call. The merged read is one remote
   // call per visible calendar (22 on the smoke account) and can never finish inside the run deadline, so
   // it always came back empty and the owner heard nothing; the full merge stays on the calendar intent.
@@ -2789,7 +2787,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
         source: 'mail' as const, kind: 'id' in lookup.mail ? 'mail_open' as const : 'mail_search' as const,
         subs: [{
           key: 'mail0', name: 'id' in lookup.mail ? INTERNAL.mailRead : INTERNAL.mailList,
-          args: 'id' in lookup.mail ? { ...lookup.mail } : { ...mailPageArgs(lookup.mail as JsonObject), q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone, context.topic) },
+          args: 'id' in lookup.mail ? { ...lookup.mail } : { ...mailPageArgs(lookup.mail as JsonObject), q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone, context.topic, context.ownerWords) },
         }],
       }
       : { source: 'mail' as const, kind: 'mail_search' as const, subs: candidateSubs('mail_search', subsConfig) };
@@ -3414,7 +3412,8 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   arm();
   // N3: group by the read a lookup resolves to, so 'company' and 'mongoose', or 'replies' and 'chat',
   // share one execution; the group keeps the order in which each source first appeared.
-  const readContext = { question, topic: run.topic, configured, run, now, ...(deps.timeZone ? { timeZone: deps.timeZone } : {}) };
+  // TOPIC-R2 F1: the routed read names the owner's words for this run, never this hop's alone.
+  const readContext = { question, topic: run.topic, ownerWords: run.question === undefined ? question : `${run.question} ${question}`.trim(), configured, run, now, ...(deps.timeZone ? { timeZone: deps.timeZone } : {}) };
   const groups = new Map<SourceKind | 'memory', RoutedPlan[]>();
   for (const lookup of lookups) {
     const plan: RoutedPlan = { lookup, read: routedRead(lookup, readContext) };
@@ -3754,6 +3753,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     if (current()) emitProgress({ ...callKeyOf(run), ...event, sourcesDone: [...completed].filter(source => !running.has(source)), sourcesPending: [...running.keys()] });
   };
   const update = (): void => emit({ researchId: run.researchId, phase: 'round', sourcesDone: [], sourcesPending: [], elapsedMs: Math.max(0, now() - run.startedAt) });
+  // TOPIC-R2 F1: every digit gate reads the owner's words for this run, so a later hop keeps its numbers.
+  const ownerWords = run.question === undefined || run.question === question ? question : `${run.question} ${question}`.trim();
   let invocation = 0;
   /** The host's step sink threw on this run: a host fault the prime read's own catch must not read as an empty source. */
   let stepSinkFailed = false;
@@ -3913,7 +3914,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   };
   // Outcome 5: the owner's knowledge base is the prime source. Its read starts immediately, in
   // parallel with source selection, unless the owner named one certain non-knowledge source.
-  const knowledgeSubs = candidateSubs('knowledge_search', { question, topic: run.topic, configured, evidence: run.evidence, nowMs: now(), timeZone: deps.timeZone });
+  const knowledgeSubs = candidateSubs('knowledge_search', { question, topic: run.topic, ownerWords, configured, evidence: run.evidence, nowMs: now(), timeZone: deps.timeZone });
   widenFor(knowledgeSubs);
   const knowledgeWanted = configured.includes('knowledge') && knowledgeSubs.length > 0 && !run.readKinds.has('knowledge_search')
     && !(hint.length === 1 && hint[0] !== 'knowledge');
@@ -4030,7 +4031,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       for (const kind of chosen) {
         if (run.ops >= RESEARCH.maxOps) { stopReason = 'ops_exhausted'; break; }
         toRun.push(kind);
-        run.ops += Math.max(1, kind === 'calendar_window' ? 1 : candidateSubs(kind, { question, topic: run.topic, configured, evidence: run.evidence }).length);
+        run.ops += Math.max(1, kind === 'calendar_window' ? 1 : candidateSubs(kind, { question, topic: run.topic, ownerWords, configured, evidence: run.evidence }).length);
       }
       const batches: CandidateKind[][] = [];
       for (let i = 0; i < toRun.length; i += RESEARCH.maxConcurrent) batches.push(toRun.slice(i, i + RESEARCH.maxConcurrent));
@@ -4059,7 +4060,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         const reads = batch.map(async kind => {
           const action = selection.actions.find(entry => entry.kind === kind);
           let subs: IntentSubCall[];
-          try { subs = candidateSubs(kind, { question, topic: run.topic, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now(), timeZone: deps.timeZone }); }
+          try { subs = candidateSubs(kind, { question, topic: run.topic, ownerWords, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now(), timeZone: deps.timeZone }); }
           catch { run.unavailableReasons.set('calendar', 'window_unparsed'); run.sourcesFailed.add('calendar'); return; }
           recordChatDate(run, action?.query, subs);
           // F2: the live step speaks the owner's words, never the compiled Gmail query.

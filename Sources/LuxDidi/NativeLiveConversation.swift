@@ -407,9 +407,9 @@ enum State: String, CaseIterable {
                             "stopRequestedAt": NativeLogClock.wallText(receipt.stopRequestedAt)])
             journal.append(["event": "socket_close_sent", "msAfterStop": receipt.socketCloseSentMs])
         } else {
-            // #613: the host never confirmed, so the wire is cancelled and the device released here.
+            // #613: the host never confirmed, so the wire is cancelled here; the device was already stopped
+            // by stopCapture, so the mic is released with no second capture summary.
             await coordinator.stop()
-            stopAudioAndSummarize()
             state = .ended
         }
         journal.append(["event": "live_stop_outcome", "outcome": confirmed == nil ? "deadline" : "confirmed"])

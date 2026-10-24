@@ -838,8 +838,9 @@ describe('openai gpt-live adapter', () => {
     await quiet();
     assert.deepEqual(f.frames.filter(frame => frame['type'] === 'response.create'), [], 'a failed backend response is never continued');
     // S5 receipt, metadata only: the closed shape the host log accepts, and no free field.
-    assert.deepEqual(safeEvent({ event: 'turn_failed', code: 'backend_unavailable' }), { event: 'turn_failed', code: 'backend_unavailable' });
-    assert.equal(safeEvent({ event: 'turn_failed', code: 'two words and a payload' }), undefined, 'a code that is not a token is dropped');
+    // #538: the host log takes its reason from the closed set, so the provider word stays out of it.
+    assert.deepEqual(safeEvent({ event: 'turn_failed', reason: 'provider_error' }), { event: 'turn_failed', reason: 'provider_error' });
+    assert.equal(safeEvent({ event: 'turn_failed', reason: 'backend_unavailable' }), undefined, 'a provider word is not a reason');
   });
 
   test('S5: a deferred continuation lands one receipt naming the response and what it awaits', async t => {

@@ -8,10 +8,11 @@ import { join } from 'node:path';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createLiveSessionOwner, IDLE_RESET_CAUSES, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
-  validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
+  validateLiveProfile, type LiveAttachment, type LiveContext, type LiveOutputChunk, type LiveSessionOwner } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
-import { safeEvent } from '../host/log.js';
+import { LIVE_REBUILD_TRIGGERS, safeEvent } from '../host/log.js';
+import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
 import { fakeLiveVoicePort, type FakeLiveVoice, type FakeLiveVoiceEvent } from './fixtures/fake-live-voice.js';
 import type { LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
 import { pcm } from './live-voice-fixture.js';
@@ -42,6 +43,7 @@ class DeadlineClock {
 
 interface Live {
   owner: LiveSessionOwner; fake: FakeLiveVoice; receipts: Record<string, unknown>[]; liveSessionId: string;
+  attachment: LiveAttachment; output: LiveOutputChunk[];
   emit(event: FakeLiveVoiceEvent): Promise<void>; sendAudio(): void; advance(ms: number): Promise<void>;
   /** The owner's injected clock, so a test can date a weak spell against the watchdog's own interval. */
   now(): number;
@@ -75,15 +77,17 @@ async function openLive(t: TestContext, overrides: { limits?: Record<string, num
   const detach = attachHostLogSink({ event: raw => {
     const record = raw as Record<string, unknown>;
     if (record.event === 'live_watchdog' || record.event === 'live_turn_open' || record.event === 'live_dead_air_nudge' || record.event === 'live_recovery'
-      || record.event === 'live_idle_arm') receipts.push(record);
+      || record.event === 'live_rebuild' || record.event === 'live_idle_arm') receipts.push(record);
   } });
   t.after(() => { detach(); rmSync(dir, { recursive: true, force: true }); });
   const owner = createLiveSessionOwner({ store, voice: port, profile, now: () => scheduler.now, timeZone: 'Asia/Kolkata', schedule: scheduler.schedule });
   const session = owner.create({ idempotencyKey: `watchdog-${randomUUID()}`, inputClass: 'ordinary' }, ctx);
   const attachment = owner.attach({ liveSessionId: session.liveSessionId }, ctx);
   await attachment.ready;
+  const output: LiveOutputChunk[] = [];
+  void (async () => { for await (const chunk of attachment.output) output.push(chunk); })();
   return {
-    owner, fake, receipts, liveSessionId: session.liveSessionId, now: () => scheduler.now,
+    owner, fake, receipts, liveSessionId: session.liveSessionId, attachment, output, now: () => scheduler.now,
     emit: async event => { fake.emit(event); await flush(); },
     sendAudio: () => attachment.sendAudio({ pcm }),
     advance: async ms => { scheduler.now += ms; scheduler.runDue(); await flush(); },
@@ -94,6 +98,12 @@ async function openLive(t: TestContext, overrides: { limits?: Record<string, num
 const vadEdge = (value: boolean): FakeLiveVoiceEvent => ({ type: 'waitingForInput', value } as unknown as FakeLiveVoiceEvent);
 
 const phases = (live: Live): unknown[] => live.receipts.filter(record => record.event === 'live_watchdog').map(record => record.phase);
+/** The reconnect markers the native shell turns into a ring and its arrival chime (#591). */
+const continuityEvents = (live: Live): unknown[] => live.output
+  .filter((chunk): chunk is Extract<LiveOutputChunk, { kind: 'marker' }> => chunk.kind === 'marker')
+  .filter(chunk => chunk.marker.kind === 'continuity').map(chunk => chunk.marker.event);
+const rebuildTriggers = (live: Live): unknown[] => live.receipts.filter(record => record.event === 'live_rebuild').map(record => record.trigger);
+const openingText = (live: Live): string | undefined => live.fake.requests.at(-1)?.openingText;
 const ownerTurnEnd = (live: Live): Promise<void> => live.emit({ type: 'inputTranscription', text: 'what is on my plate', finished: true });
 const terminalCode = (live: Live): string | undefined => {
   const terminal = live.owner.get(live.liveSessionId).terminal;
@@ -118,6 +128,38 @@ test('a mute owner turn is nudged once and then recovered on a fresh seeded sess
   assert.ok((live.fake.requests.at(-1)!.history ?? []).length > 0, 'the fresh session carries the journal seed');
   assert.ok(live.receipts.some(record => record.event === 'live_recovery' && record.path === 'fresh_seeded' && record.reason === 'model_mute'),
     'the recovery is the fresh seeded path with reason model_mute');
+  // #591: owner speech asked for the answer, so the rebuild still announces itself and still carries the
+  // pickup instruction that lets her say she is back.
+  assert.equal(openingText(live), LIVE_RECOVERY_PICKUP, 'the owner asked for this answer, so the pickup stays');
+  assert.ok(continuityEvents(live).includes('rebuilding'), 'the reconnect ring and its chime are still requested');
+  assert.deepEqual(rebuildTriggers(live), ['no_output_after_owner'], 'the rebuild names owner speech as its trigger');
+});
+
+test('#591: an ambient-only turn closes at the watchdog without a nudge and its rebuild stays silent', async t => {
+  const live = await openLive(t);
+  // Ambient sound near the microphone: a VAD start, a finalized transcript with no words in it, and a
+  // model turn that opens and delivers nothing.
+  await live.emit(vadEdge(true));
+  await live.emit(vadEdge(false));
+  await live.emit({ type: 'modelTurnStarted' });
+  await live.emit({ type: 'inputTranscription', text: '', finished: true });
+  assert.deepEqual(phases(live), ['armed'], 'the silent turn owes a reply the watchdog must judge');
+  await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
+  assert.deepEqual(phases(live), ['armed', 'closed', 'recovered'], 'no nudge: the turn is closed and the session rebuilt');
+  assert.equal(live.fake.sessionsOpened, 2, 'the silent turn still rebuilds the provider session');
+  assert.equal(openingText(live), undefined, 'nothing asks the rebuilt session to speak, so no "I am back"');
+  assert.deepEqual(continuityEvents(live).filter(event => event !== 'resumed'), [], 'no reconnect chime is requested');
+  assert.deepEqual(live.output.filter(chunk => chunk.kind === 'audio'), [], 'the rebuilt session plays no audio');
+  assert.deepEqual(rebuildTriggers(live), ['no_output_after_ambient'], 'the rebuild names ambient sound as its trigger');
+});
+
+test('the rebuild trigger is a closed set the host log accepts for every token', () => {
+  for (const trigger of LIVE_REBUILD_TRIGGERS) {
+    assert.deepEqual(safeEvent({ event: 'live_rebuild', trigger, liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }),
+      { event: 'live_rebuild', trigger, liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }, `the host log keeps the ${trigger} trigger`);
+  }
+  assert.equal(safeEvent({ event: 'live_rebuild', trigger: 'ambient', liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }), undefined,
+    'a trigger outside the closed set never reaches the host log');
 });
 
 test('an open model turn that emits one chunk and then nothing is nudged once and then recovered', async t => {
@@ -206,7 +248,7 @@ test('idle measures silence, so it fires with mic frames flowing and no speech, 
   assert.equal(terminalCode(live), 'idle_timeout');
 });
 
-test('an unattended call ends at the idle limit even while VAD only events, a nudge and a rebuild fire', async t => {
+test('an unattended call ends at the idle limit even while VAD only events, a close and a rebuild fire', async t => {
   const live = await openLive(t, { limits: { idleMs: 300_000 } });
   // The opener is the last real activity: model audio, then nothing the owner said.
   await live.emit({ type: 'audio', pcm: new Uint8Array(8), rate: 24_000 });
@@ -221,9 +263,11 @@ test('an unattended call ends at the idle limit even while VAD only events, a nu
     await live.emit({ type: 'inputTranscription', text: '', finished: true });
     await live.advance(20_000);
   }
-  // The silent turn arms the watchdog: the nudge and its fresh-seeded rebuild both happen here.
+  // The silent turn arms the watchdog: the turn closes without a nudge, and the fresh-seeded rebuild runs
+  // quiet, because ambient sound never asked for an answer (#591). Either way the idle clock never moved.
   await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 30_000);
-  assert.ok(phases(live).includes('nudged'), 'the silent turn was nudged');
+  assert.ok(!phases(live).includes('nudged'), 'the ambient turn was never nudged');
+  assert.ok(phases(live).includes('closed'), 'the ambient turn was closed instead');
   assert.equal(live.fake.sessionsOpened, 2, 'the recovery rebuilt the provider session');
   await until(live, () => terminalCode(live) !== undefined, 400_000);
   assert.equal(terminalCode(live), 'idle_timeout');

@@ -11,6 +11,7 @@ import { traceMigrations } from '../trace/schema.js';
 import { liveMigrations } from '../live/schema.js';
 import { domainMigrations } from '../domain/schema.js';
 import { liveTracePort, scopedTraceKey, TraceRecordError, pruneTraceContent, record, recordCallResult, recordUtterance, type RecordResult } from '../trace/record.js';
+import * as traceRecord from '../trace/record.js';
 import { IngestReject, PLAYBACK_RECEIPT_MAX_BYTES, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
 import { buildTimeline, exportMetadata, missingNativeRanges, renderTimeline, resolveSession, type TraceRead } from '../trace/timeline.js';
 
@@ -878,4 +879,27 @@ test('W6: a fixture session renders every turn closed, every playback on a turn,
     assert.doesNotMatch(text, /obligation=no_audible_output/);
     assert.match(text, /gaps: none/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// --- TOPIC (#565): one row per source call's query shape, counts and closed tokens only ---
+
+test('TOPIC 6 (#565): a query shape row holds the counts, the closed operator tokens and no search word', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-trace-shape-'));
+  const store = new Store(dir, traceMigrations);
+  try {
+    const write = (traceRecord as unknown as { recordQueryShape?: (exec: Store, shape: Record<string, unknown>, at: number, researchId?: string) => number }).recordQueryShape;
+    assert.equal(typeof write, 'function', 'the trace store writes one query shape row per source call');
+    const id = write!(store, { source: 'mail', terms: 2, operators: ['from', 'newer_than'], topicWords: 3 }, T0, 'rs-shape-1');
+    assert.ok(id > 0, 'the row is written');
+    const row = store.transaction(tx => tx.get('SELECT research_id, source, terms, operators, topic_words FROM trace_query_shape WHERE id=?', [id]))!;
+    assert.equal(row['research_id'], 'rs-shape-1');
+    assert.equal(row['source'], 'mail');
+    assert.equal(Number(row['terms']), 2);
+    assert.equal(Number(row['topic_words']), 3);
+    assert.match(String(row['operators']), /from/u, 'the closed operator token is kept');
+    assert.match(String(row['operators']), /newer_than/u);
+    assert.throws(() => store.transaction(tx => tx.run(
+      'INSERT INTO trace_query_shape(at, source, terms, operators, topic_words) VALUES (?,?,?,?,?)',
+      [T0, 'diary', 0, '', 0])), 'a source outside the closed list has no column to land in');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

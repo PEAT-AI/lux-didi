@@ -5650,3 +5650,18 @@ test('R9: a cancelled dropped-line opener never plays, its late frames stay drop
   assert.ok(said.includes('here is the folder answer'), 'and it answers the owner');
   h.owner.revoke(next.liveSessionId);
 });
+
+// TOPIC (#565): the query shape of every source call is persisted through the trace writer, so the
+// next forensic review can prove what a search was built from without storing a single word.
+test('TOPIC 6 (#565): a live research call writes a query shape row to the trace store', async t => {
+  const h = await harness(t, { tools: true });
+  await attached(h, 'topic-shape');
+  await settleLiveTool(h, 'ts1', 'research', { action: 'start', question: 'what did we decide about the Wilmar pilot budget', topic: 'Wilmar pilot budget' });
+  const rows = h.store.transaction(tx => tx.all('SELECT source, terms, operators, topic_words FROM trace_query_shape'));
+  assert.ok(rows.length > 0, `the live research call wrote a query shape row: ${JSON.stringify(rows)}`);
+  const knowledge = rows.find(row => row['source'] === 'knowledge');
+  assert.ok(knowledge !== undefined, `a knowledge row is present: ${JSON.stringify(rows)}`);
+  assert.equal(Number(knowledge['topic_words']), 3, 'the topic word count is kept');
+  assert.equal(typeof Number(knowledge['terms']), 'number');
+  assert.equal(JSON.stringify(rows).toLowerCase().includes('wilmar'), false, 'no search word is recorded');
+});

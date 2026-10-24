@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CalendarDigestCache, WarmContextCache, assembleContext, calendarDigestFreshMs, calendarDigestRefreshMs, chooseStartContext, collectSections, signInNote, warmContextMaxAgeMs } from '../live/warm-context.js';
-import { CALENDAR_DIGEST_READ_MS, readCalendarDigest, type CalendarDigestRead, type GcalListInput, type GoogleResult } from '../connectors/google.js';
+import { CalendarDigestCache, WarmContextCache, assembleContext, calendarDigestFreshMs, calendarDigestReadMs, calendarDigestRefreshMs, chooseStartContext, collectSections, signInNote, warmContextMaxAgeMs } from '../live/warm-context.js';
+import { CALENDAR_DIGEST_READ_MS, readCalendarDigest, type CalendarDigestRead, type CalendarDigestReadResult, type GcalListInput, type GoogleResult } from '../connectors/google.js';
 import { NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 
 const sections = {
@@ -265,6 +265,41 @@ test('1015: a failing read is failed, never empty, and an unconfigured connector
     assert.equal((await cache.forStart()).state, 'failed', 'and a start repeats the failure rather than an empty day');
   }
   assert.equal((await readCalendarDigest(undefined, { now: () => digestMonday, timeZone: 'Asia/Kolkata' })).state, 'unconfigured');
+});
+
+// 556: the digest owner dies with the host and never outlives a read. A read that never answers
+// ends at the ten second deadline with one closed line, and a close aborts the read it started.
+test('556: a digest read that never answers ends at ten seconds with the closed timeout event', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const clock = { now: digestMonday };
+  const read = digestConnector({ fail: 'hang' }, clock);
+  const events: unknown[] = [];
+  const cache = new CalendarDigestCache(async () => await readCalendarDigest(read, { now: () => clock.now, timeZone: 'Asia/Kolkata' }),
+    { now: () => clock.now, timeZone: 'Asia/Kolkata', log: event => events.push(event) });
+  const reading = cache.refresh('timer');
+  t.mock.timers.tick(calendarDigestReadMs - 1);
+  assert.deepEqual(events, [], 'a read inside the deadline reports nothing');
+  t.mock.timers.tick(1);
+  const settled = await reading;
+  assert.equal(settled.state, 'timeout', 'a read past the deadline is a timeout, never an empty day');
+  assert.deepEqual(events, [{ event: 'calendar_digest_timeout', reason: 'timer', ms: 0 }],
+    'one closed line names the deadline and the edge that owed the read');
+  assert.equal(read.calls.length, 1, 'and the read is not dispatched a second time');
+});
+
+test('556: host close aborts the digest read it started and logs nothing after the exit', async () => {
+  const clock = { now: digestMonday };
+  const signals: AbortSignal[] = [];
+  const events: unknown[] = [];
+  const cache = new CalendarDigestCache(async signal => { signals.push(signal); return await new Promise<CalendarDigestReadResult>(() => {}); },
+    { now: () => clock.now, timeZone: 'Asia/Kolkata', log: event => events.push(event) });
+  const reading = cache.refresh('timer');
+  assert.equal(signals.length, 1, 'the read is in flight');
+  assert.equal(signals[0]!.aborted, false, 'and it is not aborted while the host lives');
+  cache.stop();
+  assert.equal(signals[0]!.aborted, true, 'close aborts the read instead of leaving it running');
+  assert.equal((await reading).state, 'timeout', 'the read that was cut is said to be a read that never answered');
+  assert.deepEqual(events, [], 'no digest event is logged after host_exit');
 });
 
 test('1015: a truly empty day is the one case that reports empty', async () => {

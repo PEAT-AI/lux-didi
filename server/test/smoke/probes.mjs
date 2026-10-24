@@ -350,7 +350,7 @@ function synthClip(text = QUESTION) {
 async function liveTurn({ base, token, epoch, clipPath }) {
   const headers = () => liveHeaders(token, epoch);
   const created = await fetch(base + '/api/v1/live-sessions', { method: 'POST', headers: headers(), body: JSON.stringify({ inputClass: 'ordinary' }) });
-  if (created.status !== 200) return { ok: false, stage: 'create' };
+  if (created.status !== 200) return await createRefusal(base, headers(), created);
   const id = (await created.json()).data.liveSessionId;
   const wav = await readFile(clipPath);
   let offset = 12, pcm = null;
@@ -466,10 +466,26 @@ function parseResearchLog(appended) {
   return { runs, subcalls, progress };
 }
 
+/** #302: the two codes a refused create reports, so the note names a closed code and never a message. */
+export function createFailureFields(errorBody, liveBody) {
+  const code = errorBody && errorBody.error && typeof errorBody.error.code === 'string' ? errorBody.error.code : null;
+  const state = liveBody && liveBody.data && typeof liveBody.data.status === 'string' ? liveBody.data.status : null;
+  const stateCode = liveBody && liveBody.data && typeof liveBody.data.code === 'string' ? liveBody.data.code : null;
+  return { status: code ?? 'unreadable', detail: `live=${state ?? 'unreadable'}${stateCode === null ? '' : ':' + stateCode}` };
+}
+
+/** #302: what a probe says when POST /api/v1/live-sessions is refused: the response code beside the live state. */
+export async function createRefusal(base, headers, created) {
+  const errorBody = await created.json().catch(() => null);
+  const live = await fetch(base + '/api/v1/live/status', { headers })
+    .then(async response => await response.json()).catch(() => null);
+  return { ok: false, stage: 'create', ...createFailureFields(errorBody, live) };
+}
+
 async function researchTurn({ base, token, epoch, dataDir, clipPath, requireSingleCall = true, requireDriver = true, requireRead = true, enforce = true }) {
   const headers = () => liveHeaders(token, epoch);
   const created = await fetch(base + '/api/v1/live-sessions', { method: 'POST', headers: headers(), body: JSON.stringify({ inputClass: 'ordinary' }) });
-  if (created.status !== 200) return { ok: false, stage: 'create' };
+  if (created.status !== 200) return await createRefusal(base, headers(), created);
   const id = (await created.json()).data.liveSessionId;
   // The audio socket probe4 uses is the host's one supported Live input channel: no microphone and no
   // speaker is opened, only PCM synthesized to a file. The client text route is refused before it is live.
@@ -658,7 +674,7 @@ async function main() {
       const clipPath = synthClip();
       try {
         const voice = await liveTurn({ base, token, epoch, clipPath });
-        report({ id: 'probe4-voice-turn', ok: voice.ok, note: voice.ok ? `tool_result=yes audio_after=${voice.audioAfterResult}B open_after=${voice.openFor}ms lifecycle=${voice.lifecycle}` : `stage=${voice.stage}` });
+        report({ id: 'probe4-voice-turn', ok: voice.ok, note: voice.ok ? `tool_result=yes audio_after=${voice.audioAfterResult}B open_after=${voice.openFor}ms lifecycle=${voice.lifecycle}` : `stage=${voice.stage} status=${voice.status ?? 'n/a'} detail=${voice.detail ?? 'n/a'}` });
       } finally { await rm(clipPath, { force: true }); }
     } catch (error) { report({ id: 'probe4-voice-turn', ok: false, note: String(error && error.message).slice(0, 120) }); }
     try {

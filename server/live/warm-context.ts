@@ -173,21 +173,28 @@ export type CalendarDigestSnapshot = Omit<CalendarDigestReadResult, 'state'> & {
 export const calendarDigestFreshMs = 30 * 60 * 1000;
 /** How often the background owner refreshes the digest. */
 export const calendarDigestRefreshMs = 15 * 60 * 1000;
+/** 556: the longest one background digest read may hold the owner before it is cut and said to have timed out. */
+export const calendarDigestReadMs = 10 * 1000;
 /** L2: the closed reasons a background digest read is reported under, and the receipt one read leaves in host.log. */
 export type CalendarDigestRefreshReason = 'start' | 'timer';
 export type CalendarDigestRefreshReceipt = { readonly event: 'calendar_digest_refreshed'; readonly reason: CalendarDigestRefreshReason; readonly ms: number };
+/** 556: the read that outlived its deadline, reported as one closed line rather than silence. */
+export type CalendarDigestTimeoutReceipt = { readonly event: 'calendar_digest_timeout'; readonly reason: CalendarDigestRefreshReason; readonly ms: number };
+export type CalendarDigestLogReceipt = CalendarDigestRefreshReceipt | CalendarDigestTimeoutReceipt;
 
 export class CalendarDigestCache {
-  readonly #read: () => Promise<CalendarDigestReadResult>;
+  readonly #read: (signal: AbortSignal) => Promise<CalendarDigestReadResult>;
   readonly #now: () => number;
   readonly #timeZone: string;
   readonly #intervalMs: number;
-  readonly #log: ((receipt: CalendarDigestRefreshReceipt) => void) | undefined;
+  readonly #log: ((receipt: CalendarDigestLogReceipt) => void) | undefined;
   #snapshot: CalendarDigestReadResult | undefined;
   #inflight: Promise<CalendarDigestReadResult> | undefined;
   #timer: ReturnType<typeof setInterval> | undefined;
+  #readAbort: AbortController | undefined;
+  #closed = false;
 
-  constructor(read: () => Promise<CalendarDigestReadResult>, options: { readonly now: () => number; readonly timeZone: string; readonly intervalMs?: number; readonly log?: (receipt: CalendarDigestRefreshReceipt) => void }) {
+  constructor(read: (signal: AbortSignal) => Promise<CalendarDigestReadResult>, options: { readonly now: () => number; readonly timeZone: string; readonly intervalMs?: number; readonly log?: (receipt: CalendarDigestLogReceipt) => void }) {
     this.#read = read;
     this.#now = options.now;
     this.#timeZone = options.timeZone;
@@ -204,9 +211,14 @@ export class CalendarDigestCache {
   }
 
   stop(): void {
-    if (this.#timer === undefined) return;
-    clearInterval(this.#timer);
-    this.#timer = undefined;
+    this.#closed = true;
+    if (this.#timer !== undefined) {
+      clearInterval(this.#timer);
+      this.#timer = undefined;
+    }
+    // 556: the host's exit also ends the read it started, so the connector has nothing left to answer.
+    this.#readAbort?.abort();
+    this.#readAbort = undefined;
   }
 
   /** One read, deduplicated: every caller inside the same window shares the read already in flight. */
@@ -214,13 +226,29 @@ export class CalendarDigestCache {
     const inflight = this.#inflight;
     if (inflight !== undefined) return inflight;
     const startedAt = this.#now();
-    const pending = this.#read()
-      .catch((): CalendarDigestReadResult => ({ state: 'failed', text: undefined, items: 0, fetchedAt: this.#now() }))
+    const abort = new AbortController();
+    this.#readAbort = abort;
+    let expired = false;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const cut = new Promise<CalendarDigestReadResult>(resolve => {
+      deadline = setTimeout(() => { expired = true; abort.abort(); }, calendarDigestReadMs);
+      deadline.unref?.();
+      abort.signal.addEventListener('abort', () => resolve({ state: 'timeout', text: undefined, items: 0, fetchedAt: this.#now() }), { once: true });
+    });
+    const read = this.#read(abort.signal)
+      .catch((): CalendarDigestReadResult => ({ state: 'failed', text: undefined, items: 0, fetchedAt: this.#now() }));
+    const pending = Promise.race([read, cut])
       .then(result => {
+        if (deadline !== undefined) clearTimeout(deadline);
+        if (this.#readAbort === abort) this.#readAbort = undefined;
+        if (this.#closed) return result;
         this.#snapshot = result; this.#inflight = undefined;
         // L2: only the caller that started this read reports it, so a joined read never doubles a line
         // and every line names the edge that owed the read.
-        if (reason !== undefined) this.#log?.({ event: 'calendar_digest_refreshed', reason, ms: Math.max(0, this.#now() - startedAt) });
+        if (reason === undefined) return result;
+        // 556: a read the deadline cut says so, instead of passing for a read that answered `failed`.
+        if (expired) this.#log?.({ event: 'calendar_digest_timeout', reason, ms: Math.max(0, this.#now() - startedAt) });
+        else this.#log?.({ event: 'calendar_digest_refreshed', reason, ms: Math.max(0, this.#now() - startedAt) });
         return result;
       });
     this.#inflight = pending;

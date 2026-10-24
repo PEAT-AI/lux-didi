@@ -1,6 +1,6 @@
 import type {
   LiveVoiceCapabilities, LiveVoiceControl, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort,
-  LiveVoiceRequest, LiveVoiceSession, LiveToolResponse,
+  LiveVoiceRequest, LiveVoiceSession, LiveToolResponse, LiveToolSendOutcome,
 } from '../../adapters/live-voice/index.js';
 
 /** A test-only port whose capabilities differ from the Gemini adapter, so the host cannot key on a model name. */
@@ -72,7 +72,7 @@ export function fakeLiveVoicePort(overrides: Partial<LiveVoiceCapabilities> = {}
         ready: Promise.resolve(),
         events,
         done,
-        sendToolResponse(input: { responses: LiveToolResponse[] }): void { toolResponses.push(input.responses); },
+        sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome { toolResponses.push(input.responses); return 'sent'; },
         sendAudio(): void {}, sendText(): void {}, endAudioStream(): void {},
         close(): void { if (closed) return; closed = true; wake(); resolveDone({ status: 'closed', code: 'closed' }); },
       };

@@ -4589,7 +4589,7 @@ test('#538: a tool output whose send outcome is failed opens the recovery at onc
   fake.reportToolSend('failed');
   fake.emit({ type: 'toolCall', calls: [{ id: 'sf1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
-  assert.deepEqual(reasons(), ['start', 'send_failed'], 'the failed write starts the debt and names it in the same tick');
+  assert.deepEqual(reasons(), ['tool_output', 'send_failed'], 'the failed write starts the debt and names it in the same tick');
   assert.equal(fake.sessionsOpened, 2, 'the recovery opened one fresh provider session at once, not at 8 s');
   assert.equal(fake.closes, 1, 'the stalled provider session was closed');
 });

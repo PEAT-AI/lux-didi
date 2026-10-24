@@ -1253,6 +1253,7 @@ class Session implements LiveVoiceSession {
     if (disposition === 'unknown') {
       // S4a-R2 (c): an unclassified provider error is a diagnostic trap, never an interruption and never a retry.
       hostLogEvent({ event: 'provider_error_unclassified', type, code: errorCode, param });
+      this.failOpenResponse();
       this.endResponse(undefined);
       this.touch();
       return;
@@ -1279,8 +1280,16 @@ class Session implements LiveVoiceSession {
     }
     // 3r E (ruling S1-R1): an error ends the response that earned it, whether or not it cut the audio (3r F decides
     // the cut), so the wait for its next frame does not outlive it and an owed continuation is resumed.
+    this.failOpenResponse();
     this.endResponse(undefined);
     this.touch();
+  }
+
+  /** #538: a generic provider error on an open response is a typed failed turn, so the voice can name what happened
+   *  instead of waiting out the host watchdog in silence. */
+  private failOpenResponse(): void {
+    if (this.currentResponse === undefined) return;
+    this.emit({ type: 'turnFailed', code: 'provider_error' });
   }
 
   private sessionClosed(message: ObjectValue): void {

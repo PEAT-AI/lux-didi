@@ -2,6 +2,7 @@ import { CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, RESEARCH_ARGUMENT_FIELDS, R
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
+import { TURN_FAILED_REASONS } from '../adapters/live-voice/types.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { ConfigError } from '../config/files.js';
 import { LIVE_INSTRUCTION_SECTION_IDS } from '../prompt/live-persona.js';
@@ -40,6 +41,10 @@ export const LIVE_STATE_CAUSES = ['created', 'input', 'model_turn_start', 'audio
 export const LIVE_REBUILD_TRIGGERS = ['no_output_after_ambient', 'no_output_after_owner', 'line_dropped', 'session_window'] as const;
 /** The provider handshake steps, in the order the adapter walks them. */
 const LIVE_HANDSHAKE_STEPS = ['credential_resolved', 'socket_open', 'session_start_sent', 'session_started'] as const;
+/** #538: the audible debt clock phases and reasons, and the send outcome, as closed sets. */
+const LIVE_DEBT_PHASES = ['start', 'clear', 'rung'] as const;
+const LIVE_DEBT_REASONS = ['tool_output', 'recreate', 'audible', 'owner_barge_in', 'turn_end', 'dead_air', 'rebuild', 'send_failed'] as const;
+const LIVE_TOOL_SEND_OUTCOMES = ['sent', 'deferred', 'failed'] as const;
 const SESSION_ID = /^[0-9a-f-]{36}$/i;
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 /** K6: the layers a routed research call may name, in the model's own words. */
@@ -458,10 +463,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       if (!isSafeCount(value.generation) || !isSafeCount(value.calls)) return;
       return { event: 'research_call_arrived', liveSessionId: value.liveSessionId, generation: value.generation, calls: value.calls };
     }
-    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'tools', 'msSinceArrived'])) return;
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'tools', 'msSinceArrived', 'outcome'])) return;
     if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
     if (!isSafeCount(value.generation) || !isSafeCount(value.tools) || !isSafeCount(value.msSinceArrived)) return;
-    return { event: 'tool_output_sent', liveSessionId: value.liveSessionId, generation: value.generation, tools: value.tools, msSinceArrived: value.msSinceArrived };
+    // #538: what the adapter reported for the write, from the closed outcome set.
+    if (!isSafeMember(value.outcome, LIVE_TOOL_SEND_OUTCOMES)) return;
+    return { event: 'tool_output_sent', liveSessionId: value.liveSessionId, generation: value.generation, tools: value.tools, msSinceArrived: value.msSinceArrived, outcome: value.outcome };
   }
   if (value.event === 'live_go_away') {
     // Closed shape: the draining deadline the provider announced, in milliseconds.
@@ -626,6 +633,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeMember(value.phase, ['armed', 'nudged', 'closed', 'recovered', 'settled'])) return;
     if (!isSafeCount(value.turnAgeMs) || !isSafeCount(value.generation)) return;
     return { event: 'live_watchdog', phase: value.phase, turnAgeMs: value.turnAgeMs, generation: value.generation };
+  }
+  if (value.event === 'live_debt') {
+    // #538: the audible debt clock, one record per phase change. Enums only, so no duration, no text, no provider word.
+    if (!closedKeys(value, ['event', 'phase', 'reason'])) return;
+    if (!isSafeMember(value.phase, LIVE_DEBT_PHASES) || !isSafeMember(value.reason, LIVE_DEBT_REASONS)) return;
+    return { event: 'live_debt', phase: value.phase, reason: value.reason };
+  }
+  if (value.event === 'turn_failed') {
+    // #538: the typed failed turn the voice can name, from the closed reason set.
+    if (!closedKeys(value, ['event', 'reason'])) return;
+    if (!isSafeMember(value.reason, TURN_FAILED_REASONS)) return;
+    return { event: 'turn_failed', reason: value.reason };
   }
   if (value.event === 'live_rebuild') {
     // #591: every rebuild names its trigger from the closed set, so a silent model and a quiet room are told apart.

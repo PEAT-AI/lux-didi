@@ -1,7 +1,7 @@
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
-import type { DataClass, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveSocketFactory, LiveVoiceErrorCode, LiveVoiceUpstreamDrop, LiveToolResponse, LiveToolCall } from './types.js';
+import type { DataClass, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveSocketFactory, LiveVoiceErrorCode, LiveVoiceUpstreamDrop, LiveToolResponse, LiveToolCall, LiveToolSendOutcome } from './types.js';
 import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
 import { geminiDialect } from '../../tools/declarations.js';
 import { effectiveLanguageCode } from '../../prompt/live-persona.js';
@@ -611,8 +611,8 @@ class Session implements LiveVoiceSession {
       return false;
     }
   }
-  sendToolResponse(input: { responses: LiveToolResponse[] }): void {
-    if (this.draining) return;
+  sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome {
+    if (this.draining) return 'failed';
     if (!this.checkpoint()) fail(this.terminal!.code);
     if (!this.isReady) fail('not_ready');
     if (!object(input) || !Array.isArray(input.responses) || !this.pendingCalls.length || input.responses.length !== this.pendingCalls.length ||
@@ -623,7 +623,9 @@ class Session implements LiveVoiceSession {
       ? input.responses.map(({ id, name, response }) => ({ id, name, ...(name === MEMORY_TOOL ? { scheduling: 'SILENT' } : {}), response }))
       : input.responses;
     const frame = JSON.stringify({ toolResponse: { functionResponses: responses } });
-    if (this.write(frame)) this.pendingCalls = [];
+    if (!this.write(frame)) return 'failed';
+    this.pendingCalls = [];
+    return 'sent';
   }
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void {
     if (this.draining) {

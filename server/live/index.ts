@@ -422,6 +422,9 @@ interface ActiveSession {
   debtSince?: number | undefined; debtTimer?: ReturnType<JobTimer> | undefined;
   debtStep?: 'rung' | 'rebuild' | undefined;
   debtOutputs?: LiveToolResponse[] | undefined; debtRequeued?: boolean | undefined; debtBargeIn?: boolean | undefined;
+  /** #538 R4: the provider has announced a response since the debt started, and that response is still in progress.
+   *  The 8 s rung never closes a session that has an answer in flight; it defers until the response ends. */
+  responseInProgress?: boolean | undefined; debtDeferred?: boolean | undefined;
   /** D6: an open model turn holds SPEAKING until turnComplete or 1,500 ms of audible silence. */
   speakingHoldTimer?: ReturnType<JobTimer> | undefined;
   sessionTimer: ReturnType<JobTimer> | undefined; callTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
@@ -1751,6 +1754,8 @@ export class LiveSessionOwner {
     handle.debtSince = this.#now();
     handle.debtBargeIn = false;
     handle.debtRequeued = false;
+    handle.debtDeferred = false;
+    handle.responseInProgress = false;
     // One silence, one clock: the sliding watchdog stands down for the silence the debt clock now owns.
     this.#cancelWatchdog(handle);
     this.#noteDebt(handle, 'start', reason);
@@ -1769,8 +1774,16 @@ export class LiveSessionOwner {
     if (handle.debtSince === undefined) return;
     handle.debtTimer?.cancel(); handle.debtTimer = undefined;
     handle.debtSince = undefined; handle.debtStep = undefined; handle.debtOutputs = undefined;
-    handle.debtRequeued = false;
+    handle.debtRequeued = false; handle.debtDeferred = false;
     this.#noteDebt(handle, 'clear', reason);
+  }
+
+  /** #538 R4: the held rung fires the moment the response that held it ends without audio. */
+  #fireDeferredRung(handle: ActiveSession): void {
+    if (handle.debtDeferred !== true) return;
+    handle.debtDeferred = false;
+    handle.debtTimer?.cancel(); handle.debtTimer = undefined;
+    void this.#debtRung(handle, handle.generation, 'rung').catch(() => { /* the rung settles its own failure */ });
   }
 
   /** #538: one debt phase change, as the same content-free enums in the host log and in the trace timeline. */
@@ -1790,6 +1803,13 @@ export class LiveSessionOwner {
     handle.debtTimer = undefined;
     if (handle.debtBargeIn) return;
     const turnAgeMs = Math.max(0, this.#now() - handle.debtSince);
+    // #538 R4: an answer in flight is never the ladder's to lose. A response the provider announced since the debt
+    // started holds the 8 s rung until it ends, and the 15 s rung stays armed as its bound.
+    if (step === 'rung' && handle.responseInProgress === true) {
+      handle.debtDeferred = true;
+      this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
+      return;
+    }
     this.#noteDebt(handle, 'rung', step === 'rung' ? 'dead_air' : 'rebuild');
     if (step === 'rebuild') { await this.#watchdogRecover(handle, generation, turnAgeMs); return; }
     // The receipts the dead-air nudge has always written, whichever provider answers the rung.
@@ -2016,10 +2036,22 @@ export class LiveSessionOwner {
     // D3: a fill frame is not output. The provider streams inaudible frames between sentences, so re-arming
     // on one would push the deadline out forever and no stall would ever be witnessed.
     if (type === 'audio' && event.audible === false) return;
+    // #538 R4: the response the provider has announced, from the events it already surfaces. An announced response
+    // holds the debt rung so an answer in flight is never closed under it.
+    if (type === 'modelTurnStarted' || type === 'modelText' || type === 'outputTranscription' || type === 'audio') handle.responseInProgress = true;
     // #538: the audible debt clock clears on what the owner heard or did, never on what the model typed.
-    if (type === 'audio' || type === 'turnComplete') this.#clearDebt(handle, type === 'audio' ? 'audible' : 'turn_end');
-    if (type === 'interrupted') { handle.debtBargeIn = true; this.#clearDebt(handle, 'owner_barge_in'); }
+    if (type === 'audio') this.#clearDebt(handle, 'audible');
+    if (type === 'interrupted') { handle.responseInProgress = false; handle.debtBargeIn = true; this.#clearDebt(handle, 'owner_barge_in'); }
     if (type === 'inputTranscription' && event.finished === true) { handle.debtBargeIn = true; this.#clearDebt(handle, 'owner_barge_in'); }
+    if (type === 'turnComplete' || type === 'turnFailed') {
+      handle.responseInProgress = false;
+      // The response ended: an answer that was heard ends the debt, and one that ended without audio fires the rung
+      // the deferral held, which is the ruling's own order.
+      if (handle.debtSince !== undefined) {
+        if (handle.lastModelAudioAt !== undefined && handle.lastModelAudioAt >= handle.debtSince) this.#clearDebt(handle, 'turn_end');
+        else this.#fireDeferredRung(handle);
+      }
+    }
     if (type === 'turnComplete' || type === 'interrupted' || type === 'toolCall' || type === 'toolCallCancellation') { this.#cancelWatchdog(handle); return; }
     // The owner's turn ended (a final transcription, or the provider's voice-activity end): a reply is owed.
     if (type === 'inputTranscription') { if (event.finished === true) this.#armWatchdog(handle); return; }

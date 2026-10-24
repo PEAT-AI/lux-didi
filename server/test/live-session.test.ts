@@ -4674,6 +4674,61 @@ test('#538: model text never slides the audible debt, so the OpenAI path recreat
   assert.equal(fake.sessionsOpened, 2, 'audible audio ends the recovery ladder');
 });
 
+test('#538 R4: a response in progress holds the 8 s rung and the answer plays', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  const { attachment } = await openPort(h, 'debt-answer-in-flight');
+  const played: string[] = [];
+  void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
+  fake.emit({ type: 'toolCall', calls: [{ id: 'r4a', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  // The answer is announced at 7 s and the rung is due at 8 s: the session is not closed under it.
+  h.advance(7_000); scheduler.runDue(); await settlePort();
+  fake.emit({ type: 'modelTurnStarted' });
+  fake.emit({ type: 'outputTranscription', text: 'working on it', finished: false });
+  await settlePort();
+  h.advance(1_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.sessionsOpened, 1, 'a response the provider announced holds the rung');
+  assert.equal(fake.closes, 0, 'the session with the answer in flight is not closed');
+  h.advance(1_500); scheduler.runDue(); await settlePort();
+  fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
+  await settlePort();
+  assert.ok(played.length > 0, 'the owner hears the answer the client session was carrying');
+  assert.equal(fake.sessionsOpened, 1, 'and no recreate ever happened');
+  attachment.close();
+});
+
+test('#538 R4: a response that ends without audio fires the held rung', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'debt-even-holds');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'r4b', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  h.advance(7_000); scheduler.runDue(); await settlePort();
+  fake.emit({ type: 'modelTurnStarted' });
+  await settlePort();
+  h.advance(1_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.closes, 0, 'still holding at the rung');
+  fake.emit({ type: 'turnComplete' });
+  await settlePort();
+  assert.equal(fake.closes, 1, 'the response ended without audio, so the rung fires then');
+  assert.equal(fake.sessionsOpened, 2, 'and one fresh session replaces the stalled one');
+});
+
+test('#538 R4: a session with no response announced is closed at the rung, the mirror', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'debt-nothing-announced');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'r4c', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  for (let spent = 0; spent < 8_100; spent += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
+  assert.equal(fake.closes, 1, 'nothing was announced, so the rung closes the session');
+  assert.equal(fake.sessionsOpened, 2, 'and recreates it once');
+});
+
 test('#538: an owner barge-in inside the debt window clears the clock and triggers no recreate', async t => {
   const scheduler = new DeadlineClock();
   const fake = progressPort();

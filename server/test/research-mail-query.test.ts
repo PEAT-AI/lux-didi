@@ -143,7 +143,8 @@ const mailPage = (ids: readonly string[]): Partial<IntentSubResult> =>
 test('E4: a prose mail lookup is sent as Gmail syntax, never the spoken sentence', async () => {
   const sent: string[] = [];
   const h = mailHarness(async subs => subs.map(call => {
-    sent.push(String(call.args['q'] ?? call.name));
+    // #621: the depth read of an ask that wants the content is not a query on the wire.
+    if (call.name === 'gmail_search_messages') sent.push(String(call.args['q'] ?? call.name));
     return { key: call.key, name: call.name, ok: true, ...mailPage(['m1']) } as IntentSubResult;
   }));
   await runResearch(h.deps, {
@@ -156,7 +157,7 @@ test('E4: a prose mail lookup is sent as Gmail syntax, never the spoken sentence
 test('E5: a search that matched nothing runs exactly one broader retry and logs both shapes', async () => {
   const sent: string[] = [];
   const h = mailHarness(async subs => subs.map(call => {
-    sent.push(String(call.args['q'] ?? call.name));
+    if (call.name === 'gmail_search_messages') sent.push(String(call.args['q'] ?? call.name));
     const found = sent.length > 1;
     return { key: call.key, name: call.name, ok: true, ...mailPage(found ? ['m9'] : []) } as IntentSubResult;
   }));
@@ -180,7 +181,7 @@ test('E5: a search that matched nothing runs exactly one broader retry and logs 
 test('E5: an empty retry says how it searched, naming the window it used', async () => {
   const sent: string[] = [];
   const h = mailHarness(async subs => subs.map(call => {
-    sent.push(String(call.args['q'] ?? call.name));
+    if (call.name === 'gmail_search_messages') sent.push(String(call.args['q'] ?? call.name));
     return { key: call.key, name: call.name, ok: true, ...mailPage([]) } as IntentSubResult;
   }));
   const reply = await runResearch(h.deps, {

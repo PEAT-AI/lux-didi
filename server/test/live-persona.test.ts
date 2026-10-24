@@ -349,9 +349,9 @@ test('the public character, voice surface and tool conduct are the authored verb
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '1b188117660fe12204cd542001b585fcce69add4f1cc6d27689720e193cac977');
   assert.equal(sha(NAYA_VOICE_SURFACE), 'ea9e608186615ffddeb16008c55dd7d4263ee45412f679b06f8511f9b1d286d3');
-  assert.equal(sha(NAYA_VOICE_TOOLS), '1f0479d58a4955a4ab84a0b52c523cb22ced2c737e47c6bd3c74429a64f7f47a');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '0de6ea422ea2bed80bc72493a5e8dfb70b5768d638b87c1c7c686053a7963325');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '8a41b4537fd70c245e02c9b8f3911f88dcd5cfb794b246067ef5d9ea6e806574');
-  assert.equal(sha(NAYA_TOOLS), '8392a299309d4a77312320fa98e763a67ae9791a8bc56789ad388c178a2c1f0c');
+  assert.equal(sha(NAYA_TOOLS), '2f5cd11148074bcdbe5bed9664e3b3a376110cac1c8838ce11915f8ecef2cf10');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));
@@ -665,8 +665,9 @@ const WRAPPER_3O_CHARS = 6603;
  * vault rule, which says what a save is and what a receipt is not. LAT-1023 raises it for the source name
  * the backchannel ack carries, so the first line before a lookup says what she is reading. */
 // #589/#590: the voice surface grows by the ending-the-call line, which states the stop phrases and
-// the one thing she cannot do. The bound carries the measured wrapper at this sha.
-const WRAPPER_W5_CHARS = 13_027;
+// the one thing she cannot do. #621 raises it for the coverage header the voice reads once, and the bound
+// carries the measured wrapper at this sha.
+const WRAPPER_W5_CHARS = 13_515;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Silence while you look something up is fine. Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
@@ -689,7 +690,8 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // the vault rule named the save phrase and the honest receipt).
   const growth = wrapper.length - WRAPPER_3O_CHARS;
   // #589/#590: the honesty line that names the stop phrases is the growth this bound carries.
-  const cap = 6_425;
+  // #621: the coverage header adds its own measure.
+  const cap = 6_917;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
@@ -1291,7 +1293,8 @@ const W5_REPLACED = [
 // LAT-1023: the voice surface grows by the source name the first ack carries.
 // #589/#590: the voice surface grows by the ending-the-call line, which states the stop phrases and the
 // one thing she cannot do.
-const W5_VOICE_BEFORE = 9461;
+// #621: the coverage header the voice reads once is the growth this bound carries.
+const W5_VOICE_BEFORE = 9949;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],

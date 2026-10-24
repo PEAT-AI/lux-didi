@@ -60,7 +60,8 @@ async function fixture(endpoint: MongooseEndpoint, options: FixtureOptions = {})
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(Buffer.from(chunk as Buffer));
       const bytes = Buffer.concat(chunks);
-      if (options.status !== undefined && options.status !== 200) {
+      // A refusing endpoint refuses the read call, not the discovery a client needs to get there.
+      if (options.status !== undefined && options.status !== 200 && bytes.toString('utf8').includes('"tools/call"')) {
         res.writeHead(options.status, { 'www-authenticate': `Bearer resource_metadata="${MONGOOSE_ENDPOINT_AUDIENCES[endpoint]}"` }); res.end(); return;
       }
       const headers = new Headers();
@@ -251,6 +252,46 @@ test('R2: get_company on crm carries a company profile, knowledge list_companies
   assert.equal(MONGOOSE_ENDPOINT_TOOLS.crm.includes('get_company'), true);
   assert.equal(MONGOOSE_ENDPOINT_TOOLS.knowledge.includes('list_companies'), true);
   assert.equal(MONGOOSE_ENDPOINT_TOOLS.knowledge.includes('read'), true);
+});
+
+test('an unauthenticated endpoint is a typed refusal, never an empty success', async t => {
+  const f = await fixture('knowledge', { status: 401 });
+  t.after(() => f.close());
+  const a = adapterFor('knowledge', f.url, 'knowledge-token');
+  const digest = await approve(a.adapter, a.registry, 'knowledge', a.endpointId);
+  t.after(() => a.adapter.close());
+  const result = await readerFor(a.adapter, a.registry, 'knowledge', a.endpointId, digest).searchCompany({ query: 'agri' });
+  assert.notEqual(result.state, 'completed');
+  assert.equal(f.calls.length, 0);
+});
+
+test('argument budgets refuse malformed input before any wire call', async t => {
+  const k = await knowledge();
+  t.after(() => k.f.close());
+  t.after(() => k.a.adapter.close());
+  const empty = await k.reader.searchCompany({ query: '   ' });
+  assert.equal(empty.state, 'refused');
+  assert.equal(empty.state === 'refused' ? empty.reason : '', 'invalid-query');
+  const wide = await k.reader.searchCompany({ query: 'agri', limit: 11 });
+  assert.equal(wide.state === 'refused' ? wide.reason : '', 'limit-out-of-budget');
+  const extra = await k.reader.searchCompany({ query: 'agri', cursor: 'c', extra: 1 } as never);
+  assert.equal(extra.state === 'refused' ? extra.reason : '', 'invalid-search-input');
+  assert.equal(k.f.calls.length, 0);
+});
+
+test('a large answer is projected as bounded and partial-marked', async t => {
+  const k = await knowledge({ text: JSON.stringify({ outcome: 'evidence', ref: 'x', depth: 'full', items: [], body: 'z'.repeat(9000), next_cursor: null, coverage: { depth: 'full', complete: true }, restriction: null, request_id: 'r' }) });
+  t.after(() => k.f.close());
+  t.after(() => k.a.adapter.close());
+  const result = await k.reader.searchCompany({ query: 'agri' });
+  assert.equal(result.state, 'completed');
+  if (result.state !== 'completed') return;
+  const projected = projectMongooseResult(k.a.adapter, result);
+  assert.equal(projected.ok, true);
+  if (!projected.ok) return;
+  assert.equal(projected.projection.partial, true);
+  assert(projected.projection.omittedCharacters > 0);
+  assert(projected.projection.text.length <= 4000);
 });
 
 test('a crm sign-in refused for teams is one closed owner line', () => {

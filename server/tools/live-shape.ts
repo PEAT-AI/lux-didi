@@ -26,12 +26,14 @@ export const CALENDAR_EVENT_CHARS = 300;
 /** How many attendee names one event line carries; the rest are counted (#574). */
 export const CALENDAR_ATTENDEE_NAMES = 8;
 
-/** #574: as many whole names as the event's own room holds, then the count of the ones left out. */
+/** #574: as many whole names as the event's own room holds, then what is left out. The helper's own
+ * truncated list never supports a count, so it keeps the unnumbered tail the base shape used. */
 function attendeeNamesLine(names: readonly string[], upstreamOmitted: boolean, room: number): string {
   const head = '  attendees: ';
   const render = (count: number): string => {
     const rest = names.length - count;
-    return `${head}${names.slice(0, count).join(', ')}${rest > 0 ? ` and ${rest} others` : upstreamOmitted ? ' and others' : ''}`;
+    const tail = upstreamOmitted ? ' and others' : rest > 0 ? ` and ${rest} others` : '';
+    return `${head}${names.slice(0, count).join(', ')}${tail}`;
   };
   let count = Math.min(names.length, CALENDAR_ATTENDEE_NAMES);
   while (count > 0 && render(count).length >= room) count -= 1;

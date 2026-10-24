@@ -804,11 +804,24 @@ export function triageAsk(question: string): boolean {
   return contentKeywords(ask.replace(TRIAGE_ASK, ' '), 8).every(word => TRIAGE_REST.has(word));
 }
 
+/** Whether a question asks her to recall something the two of them already said. */
+export function recallQuestion(question: string): boolean {
+  return MEMORY_WORDS.test(question.toLowerCase());
+}
+
 /** ROUTE-1022: the word classes a spoken question is routed by, shared by the fallback recipe and the router. */
 const MAIL_WORDS = /\b(mails?|emails?|e-mails?|gmail|inbox(?:es)?|messages?|wrote|sent|repl(?:y|ies|ied))\b/u;
-const CALENDAR_WORDS = /\b(calendar|schedule|meetings?|calls?|agenda|free|busy)\b/u;
-/** #579: a time word is the product's daily language, so it offers the calendar only when no mail or chat word named a source. */
+const CALENDAR_WORDS = /\b(calendar|schedule|meetings?|agenda|free|busy)\b/u;
+/**
+ * #579: a time word is the product's daily language. The router's own class (SCHEDULE_WORDS) never carries
+ * one; only this fallback recipe does, and only when no mail or chat word named a source.
+ */
 const CALENDAR_TIME_WORDS = /\b(tomorrow|today|week)\b/u;
+/**
+ * TRIAGE-R3: a recall ask is her own remembered history, in the words a spoken recall uses. It reads the
+ * memory layer, never the knowledge store.
+ */
+const MEMORY_WORDS = /\b(?:did we say|last time we (?:talked|spoke)|you told me|do you remember|remember when|recall when|our (?:last )?conversation)\b/u;
 const CHAT_WORDS = /\b(chats?|team|channels?|slack|mattermost|messages?|dms?|said|posted|discussed)\b/u;
 /**
  * #564/#572: a triage ask is "what came in", never a keyword search. The host runs the fixed read below
@@ -843,6 +856,8 @@ const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp }[] = [
 export function requiredSources(question: string): SourceKind[] {
   const text = question.toLowerCase();
   if (WEB_WORDS.test(text)) return [];
+  // TRIAGE-R3: a recall ask reads her own remembered history, whatever day or word it also carries.
+  if (recallQuestion(text)) return ['memory'];
   const named = ROUTE_CLASSES.filter(route => route.words.test(text)).slice(0, 2).map(route => route.source);
   if (named.length > 0) return named;
   // #564/#572: "anything urgent" names no source, and what came in is a mail and a chat read alike.
@@ -859,6 +874,9 @@ export function requiredSources(question: string): SourceKind[] {
 export function routedSelection(question: string, configured: readonly SourceKind[], nowMs = Date.now()): SelectorOutput | undefined {
   const text = question.toLowerCase().trim();
   if (!text || WEB_WORDS.test(text)) return undefined;
+  // TRIAGE-R3: a recall ask is the memory lookup the run builds, so the router claims no candidate for
+  // it; without this, the word "said" would turn it into a chat search.
+  if (recallQuestion(text)) return undefined;
   const matched = ROUTE_CLASSES.filter(route => route.words.test(text) && configured.includes(route.source));
   if (matched.length > 2) return undefined;
   if (matched.length > 0) {
@@ -3806,6 +3824,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   const lookups = normalizeLookups(call.lookups);
   if (call.action === 'continue' && run.historyTokens.size > 0 && lookups.length === 0) return { researchId: run.researchId, status: 'partial', findings: [], canContinue: true, note: 'Continue local history with a memory lookup containing history.recordRef or history.cursor from historyPages.' };
   if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, unavailable, unavailableReason, signal, now, limit, first);
+  // TRIAGE-R3: a recall ask reads her own remembered history, so it takes the memory lookup the routed
+  // path already serves with its binding, page and continuation, never a knowledge search.
+  if (call.action === 'start' && recallQuestion(question)) return routedResearch(deps, run, question, [{ source: 'memory', query: contentKeywords(question, 8).join(' ') }], configured, unavailable, unavailableReason, signal, now, limit, first);
 
   const perRound: ResearchRunLog['perRound'] = [];
   const sourceLog: ResearchRunLog['sources'] = [];

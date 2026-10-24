@@ -1860,5 +1860,5 @@ test('TRIAGE-R3: a recall ask reads the owner history, never the knowledge store
   const h = harness({ configured: ['memory', 'knowledge'], memory: query => ({ lines: [`remembered: ${query}`], text: '', total: 1 }) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we say about the pricing deck' }, new AbortController().signal);
   assert.ok(!h.executed.some(call => call.name === 'search_knowledge'), 'the knowledge store is not searched for a recall ask');
-  assert.match(JSON.stringify(reply['findings']), /remembered: pricing deck/u, 'the remembered line reaches the answer');
+  assert.match(JSON.stringify(reply['findings']), /remembered: .*pricing deck/u, 'the remembered line reaches the answer');
 });

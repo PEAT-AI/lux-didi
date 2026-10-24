@@ -36,7 +36,7 @@ Three ownership rules explain most of the code:
 1. macOS starts the app through LaunchServices. `SingleInstanceGuard.swift` decides the launch kind: `interactive` (the owner opened it, maybe from the Dock), `loginItem`, `installRelaunch`, `reopen` (a Dock click while running), and the proof kinds. Only `interactive` brings the app to the front and only it connects by itself.
 2. The app starts the host as its own child through `NativeServiceSupervisor.swift`: the bundled node binary, `server/dist/host/index.js --supervised`, with the app's environment.
 3. The supervisor writes one bounded JSON line on the child's stdin (`type: start`, a nonce, the schema version). The host answers with exactly one ready frame (`type`, `schemaVersion`, `nonce`, `pid`, `origin`, `authorityEpoch`, `assistantId`); any other byte, or a second line, fails the start. The nonce is how the app knows the host it talks to is the one it started.
-4. The supervisor reads the credential file the host wrote, and from then on every request carries it. The credential never appears in a command line, an environment variable or a log line.
+4. The supervisor reads `admin-credential`, the owner-only file the host writes in its data directory on first start, and from then on every request carries it. The credential never appears in a command line, an environment variable or a log line.
 5. The host closes when its stdin reaches EOF, so the app's exit is the host's exit. There is no orphan daemon.
 6. A host started by hand (`node server/dist/host/index.js`, or `bash scripts/run-local.sh`) is the same program without the supervised contract: it prints its origin and runs in the foreground.
 
@@ -98,7 +98,7 @@ A trigger names what moved the machine: `hotkey`, `click`, `app`, `timer`, `slee
 
 | Path | Holds |
 | --- | --- |
-| `~/Library/Application Support/ai.peat.lux-didi/` | The installed app's state: `state.sqlite`, `logs/host.log`, `logs/native-live.log`, `logs/audio.log` |
+| `~/Library/Application Support/ai.peat.lux-didi/` | The installed app's state: `state.sqlite`, `admin-credential` (owner-only), `logs/host.log`, `logs/native-live.log`, `logs/audio.log` |
 | `~/Library/Application Support/ai.peat.lux-didi-operator/settings.json` | The selected config directory (`--configure`) |
 | the selected config directory | `live.json`, the MCP profile, the credential records (owner-only) |
 | `~/Library/Application Support/Lux Didi/` | A host started by hand without `--data-dir`, the same layout |

@@ -909,7 +909,10 @@ test('#589 a stop phrase mid-answer cancels the running response before the good
   fake.emit({ type: 'audio', pcm: new Uint8Array([2, 0]), rate: 24000 });
   fake.emit({ type: 'generationComplete' });
   await pump;
-  const kinds = frames.map(frame => (typeof frame === 'string' ? (JSON.parse(frame) as { type: string }).type : 'audio'));
+  const kinds = frames.map(frame => {
+    if (typeof frame !== 'string') return 'audio';
+    return frame === 'binary' ? 'audio' : (JSON.parse(frame) as { type: string }).type;
+  });
   assert.equal(kinds.at(-1), 'terminal', 'the end frame is the last frame the app receives');
   assert.equal(kinds.filter(kind => kind === 'audio').length, 1, 'only the chunk that arrived before the stop was played');
   assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });

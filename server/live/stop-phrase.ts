@@ -47,10 +47,9 @@ export function stopPhrase(text: string): string | null {
   const nameLast = words[words.length - 1] === STOP_NAME;
   if (!nameFirst && !nameLast) return null;
   let rest = nameFirst ? words.slice(1) : words.slice(0, -1);
-  if (nameFirst) {
-    const lead = POLITE_LEADS.find(candidate => candidate.every((word, index) => rest[index] === word));
-    if (lead !== undefined) rest = rest.slice(lead.length);
-  }
+  // A polite lead opens the request, so it is stripped on either side of the name.
+  const lead = POLITE_LEADS.find(candidate => candidate.every((word, index) => rest[index] === word));
+  if (lead !== undefined) rest = rest.slice(lead.length);
   const phrase = rest.filter(word => !FILLER_WORDS.has(word)).join(' ');
   if (phrase.length === 0) return null;
   if (END_PHRASES.includes(phrase)) return phrase;

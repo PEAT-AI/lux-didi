@@ -94,12 +94,14 @@ export const RESEARCH = Object.freeze({
    * This is the single table every per-source bound reads.
    * N6 (#569): a web read settles in 3.3 to 4.4 s, so a weather or news ask carries the long web budget
    * and every other ask keeps this one; the read and its port are told the same number.
-   * #635: the chat read is its own row. Mattermost answered in 5 to 11 s in the release-10 eval, so the
-   * 12 s row made a chat ask wait the whole turn; 5 s keeps the read inside the ask and returns what
-   * arrived, and a read cut here is a partial timeout in the header and the voice.
+   * #635: the chat read is its own row, bounded near 5 s instead of the connector's 12 s, because
+   * Mattermost answered in 5 to 11 s in the release-10 eval and a chat ask waited the whole turn. 6 s is
+   * the nearest second above the 5 s the eval measured: a 5 s cut landed exactly on a chat result the
+   * session releases at 4.5 s plus 0.5 s, turning a kept late finding into a dropped one. A read cut here
+   * returns what arrived as a partial timeout, and says so in the header and the voice.
    */
   sourceDeadline: Object.freeze({
-    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 5_000, mongoose: 12_000, web: 4_000,
+    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 6_000, mongoose: 12_000, web: 4_000,
   } as Record<SourceKind, number>),
   /** P5: a candidate that names no single source (`brief`) never gets less than the local reads. */
   defaultSourceDeadlineMs: 8_000,
@@ -2199,6 +2201,8 @@ function queryShapeOf(subs: readonly IntentSubCall[]): string {
 
 const OMITTED_NOTE = /^\[omitted:/u;
 const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'company knowledge', web: 'the web' };
+/** #635: the name a source is spoken by, so a clause says "team chat" and never the bare id. */
+const spokenLabelOf = (source: SourceKind): string => SOURCE_LABELS.find(([name]) => name === source)?.[1] ?? SOURCE_LABEL[source];
 /** Findings order: her own memory and the owner's knowledge base lead, company sources follow. */
 const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'];
 /** #621: the smallest room a floor clip may leave, so one source's last line always fits the bound. */
@@ -2262,7 +2266,7 @@ export function coverageLine(searched: readonly CoverageSearched[], unsearched: 
     entries.push(`${entry.source} ${entry.status} ${entry.shown} of ${entry.total} shown${confidence}`);
   }
   for (const entry of unsearched) {
-    entries.push(`${entry.source} ${entry.reason} (say: ${UNSEARCHED_CLAUSE[entry.reason](SOURCE_LABEL[entry.source])})`);
+    entries.push(`${entry.source} ${entry.reason} (say: ${UNSEARCHED_CLAUSE[entry.reason](spokenLabelOf(entry.source))})`);
   }
   const kept: string[] = [];
   let length = 'coverage: '.length;
@@ -2325,8 +2329,10 @@ function unsearchedReasonGiven(run: RunState, configured: readonly SourceKind[],
   // #635: a read still in flight is neither skipped nor failed, so it says so, the same thing the note says.
   if (run.pending.has(source)) return 'still_reading';
   if (run.cutShort.has(source)) return 'timed_out';
-  if (run.sourcesFailed.has(source)) return 'provider_failed';
   const code = run.unavailableReasons.get(source);
+  // #635: a source whose own reason was a timeout is a timeout, never a provider failure.
+  if (code !== undefined && TIMED_OUT.has(code)) return 'timed_out';
+  if (run.sourcesFailed.has(source)) return 'provider_failed';
   if (code !== undefined) return unsearchedReasonOf(code);
   return 'skipped_by_route';
 }
@@ -2838,9 +2844,7 @@ function sourceTroubleLine(run: RunState): string | undefined {
     const code = run.unavailableReasons.get(source);
     // K1: a web lookup this session cannot serve says so in the owner's words, never as a chat answer.
     if (code === 'web_not_available') parts.push('web: not available');
-    // #635: a read that ran out of its budget took too long, which is a different thing from a source that
-    // failed, and the words say which one happened.
-    else if (cut || (code !== undefined && TIMED_OUT.has(code))) parts.push(`${label} took too long to read (timed out after ${secondsOfSource(source)} s)`);
+    else if (cut || (code !== undefined && TIMED_OUT.has(code))) parts.push(`${label}: not read (timed out after ${secondsOfSource(source)} s)`);
     else parts.push(`${label}: unavailable (${(code !== undefined ? plainReason(code) : undefined) ?? 'no answer'})`);
   }
   return parts.length === 0 ? undefined : parts.join('; ');
@@ -3154,7 +3158,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // Outcome 2: name the sources this run could not reach, in one short clause the model can voice,
   // so an outage is never hidden behind a narrow answer. `knowledge` leads the findings.
   groups.sort((a, b) => SOURCE_ORDER.indexOf(a.source) - SOURCE_ORDER.indexOf(b.source));
-  const unreachable = SOURCE_LABELS.filter(([source]) => run.sourcesFailed.has(source)).map(([, label]) => label);
+  // #635: a chat read that failed by timing out is said as a timeout with its budget, never as a chat out of
+  // reach. The web keeps #569's two clauses: its timeout rides its own endpoint reason and names the web part.
+  const chatTimedOut = run.sourcesFailed.has('chat') && TIMED_OUT.has(run.unavailableReasons.get('chat') ?? '');
+  const unreachable = SOURCE_LABELS.filter(([source]) => run.sourcesFailed.has(source) && !(chatTimedOut && source === 'chat')).map(([, label]) => label);
   const searchedNothing = SOURCE_LABELS.filter(([source]) => run.emptySearches.has(source) && !run.sourcesFailed.has(source))
     .map(([source, label]) => `I searched your ${label}${run.emptySearches.get(source) ?? ''} and found nothing matching.`);
   // N3: a read cut short is not a read that found nothing, and the reply must not blur the two.

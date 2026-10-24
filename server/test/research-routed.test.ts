@@ -362,8 +362,8 @@ test('a read cut by the deadline reports timeout and the reply says so, never no
   }, controller.signal);
   assert.deepEqual(h.routed[0]!.outcomes, ['timeout'], 'a cut read is its own outcome, never empty');
   assert.deepEqual(h.sources.map(event => event.outcome), ['timeout'], 'and the per-lookup receipt says so');
-  // #635: a cut read is voiced as a read that took too long, never as a source that failed.
-  assert.match(String(reply['note']), /took too long/i);
+  // #635: a cut read is named as a timeout with its budget, never as a source that failed.
+  assert.match(String(reply['note']), /not read \(timed out after 12 s\)/u);
   assert.doesNotMatch(String(reply['note']), /found nothing matching/i, 'nothing matched is never said about a cut read');
 });
 
@@ -866,7 +866,8 @@ test('#635: a writing ask and a pure recall ask run no chat leg', async () => {
 // #635: the chat read gets its own short budget inside the turn, so one slow connector never spends the
 // ask's whole 12 s. What arrived is used, and a read that timed out says so in the header and the voice.
 test('#635: the chat read is bounded near five seconds, and a timed out one says timed out', async () => {
-  assert.ok(RESEARCH.sourceDeadline.chat <= 5_000, `the chat budget is near five seconds (${RESEARCH.sourceDeadline.chat} ms)`);
+  assert.ok(RESEARCH.sourceDeadline.chat <= 6_000, `the chat budget is near five seconds (${RESEARCH.sourceDeadline.chat} ms)`);
+  assert.ok(RESEARCH.sourceDeadline.chat < RESEARCH.sourceDeadline.mail, 'and far below the 12 s the other connectors keep');
   assert.equal(lookupBound('chat', 1, RESEARCH.answerCapMs), RESEARCH.sourceDeadline.chat, 'a lone chat lookup is given the chat budget');
   const clock = fakeClock();
   const h = harness({
@@ -890,8 +891,9 @@ test('#635: the chat read is bounded near five seconds, and a timed out one says
   const header = String(reply['coverage']);
   assert.match(header, /chat timed_out/u, `a chat read that timed out with nothing arrived says timed_out (${header})`);
   assert.doesNotMatch(header, /chat provider_failed/u, 'a timeout is never voiced as a provider failure');
+  assert.match(header, /chat timed_out \(say: team chat took too long\)/u, `and the voiceable clause says it took too long (${header})`);
   const note = String(reply['note']);
-  assert.match(note, /team chat took too long/u, `the voice says the read took too long (${note})`);
+  assert.match(note, /team chat: not read \(timed out after 6 s\)/u, `the note names the timeout and its budget (${note})`);
   assert.doesNotMatch(note, /could not reach/u, 'and never that the chat was out of reach');
 });
 

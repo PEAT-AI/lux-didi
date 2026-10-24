@@ -304,3 +304,15 @@ test('#302: a create refusal with no readable body still names both codes as unr
   assert.deepEqual(createFailureFields({ error: { code: 'TOO_MANY_REQUESTS' } }, { data: { status: 'unconfigured' } }),
     { status: 'TOO_MANY_REQUESTS', detail: 'live=unconfigured' });
 });
+
+// F1 (#302): a refused create is reported by two probes, plain chat-text and the voice turn. Both must go
+// through createRefusal, and probe4's note must print the two codes: a dropped field at either site fails here.
+test('#302: every live create refusal goes through createRefusal and the voice note prints both codes', async () => {
+  const source = await readFile(join(repoRoot, 'server/test/smoke/probes.mjs'), 'utf8');
+  assert.equal((source.match(/return \{ ok: false, stage: 'create' \}/g) ?? []).length, 0,
+    'no probe reports a bare create stage');
+  assert.equal((source.match(/createRefusal\(/g) ?? []).length, 3,
+    'probes.mjs defines the refusal helper and calls it from both create sites');
+  assert.match(source, /status=\$\{voice\.status/, 'probe4 prints the response error code on a refused create');
+  assert.match(source, /detail=\$\{voice\.detail/, 'probe4 prints the live status state code on a refused create');
+});

@@ -37,7 +37,7 @@ import Foundation
         presence.ready(presence.generation)
         try require(presence.state == .live, "the session is live before the socket goes quiet")
         let generation = presence.generation
-        record.calls.removeAll()
+        record.calls.removeAll(); record.muted.removeAll(); record.opened.removeAll()
 
         presence.sessionUncertain(generation)
 

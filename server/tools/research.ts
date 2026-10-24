@@ -231,6 +231,8 @@ export interface ResearchSourceLog {
   coalesced: number;
   /** 3r K1: the knowledge lookup's bounded-body request, metadata only and never a query. */
   knowledge?: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean; queryTerms: number; dayFilter: DayFilter; chatDateOperator: ChatDateOperator; deduped: number };
+  /** #610: the chat read's shape: word count, operator names, page size and sort. Never a word. */
+  chat?: ChatQueryShape;
   /** E5: the mail search's shape, and the one broader retry's shape when it ran. Counts, never words. */
   mail?: MailQueryShape & { retried?: MailQueryShape };
   /** Release 4: a read that delivered its pages but lost a later one, and how many pages it lost. */
@@ -691,6 +693,32 @@ const OPERATOR_TOKEN = /^([a-z_]+):(.+)$/iu;
 const WINDOW_OPERATORS = new Set(['newer_than', 'older_than', 'after', 'before']);
 const isOperatorToken = (token: string): boolean => OPERATOR_TOKEN.test(token) || token.toUpperCase() === 'OR';
 
+/**
+ * #610: the shape of one chat query for a receipt: how many words, which closed operator names, the
+ * page size and the sort. The words themselves never leave the plan.
+ */
+export interface ChatQueryShape { terms: number; operators: string[]; limit: number; sort: string }
+const CHAT_OPERATORS = new Set(['in', 'from', 'after', 'before']);
+export function chatQueryShape(call: IntentSubCall | undefined): ChatQueryShape | undefined {
+  if (call === undefined) return undefined;
+  const query = typeof call.args['query'] === 'string' ? call.args['query'] : '';
+  const operators: string[] = [];
+  let terms = 0;
+  for (const token of query.split(/\s+/).filter(Boolean)) {
+    const match = /^([a-z_]+):(.+)$/iu.exec(token);
+    if (match === null) { terms += 1; continue; }
+    const operator = match[1]!.toLowerCase();
+    if (CHAT_OPERATORS.has(operator) && !operators.includes(operator)) operators.push(operator);
+  }
+  const limit = typeof call.args['limit'] === 'number' ? call.args['limit'] : RESEARCH.chatLines;
+  // The connector asks for the newest sort on every windowed read, so a receipt names what it asked.
+  return { terms, operators, limit, sort: 'newest' };
+}
+function chatReceiptField(served: readonly IntentSubCall[]): { chat?: ChatQueryShape } {
+  const shape = chatQueryShape(served.find(call => call.name === INTERNAL.chatSearch));
+  return shape === undefined ? {} : { chat: shape };
+}
+
 export function mailQueryShape(q: string): MailQueryShape {
   const operators: string[] = [];
   let terms = 0, window: string | undefined;
@@ -845,6 +873,17 @@ const CALENDAR_TIME_WORDS = /\b(tomorrow|today|week)\b/u;
  */
 const MEMORY_WORDS = /\b(?:did we say|last time we (?:talked|spoke)|you told me|do you remember|remember when|recall when|our (?:last )?conversation)\b/u;
 const CHAT_WORDS = /\b(chats?|team|channels?|slack|mattermost|messages?|dms?|said|posted|discussed)\b/u;
+
+/**
+ * #610: the channel a chat question names, in the three shapes the owner uses: "in the X channel",
+ * "channel X" and "#x". A display name keeps its words, so the connector can fold case and punctuation.
+ */
+const NAMED_CHANNEL = /(?:\bin the |\bin |\bthe )([\w][\w .'-]{0,60}?) channel\b|\bchannel ([\w][\w .'-]{0,60}?)(?=$|[,.?!]|\s(?:about|on|for|with|from)\b)|#([\w.-]{1,60})/iu;
+export function namedChannel(question: string): string | undefined {
+  const match = NAMED_CHANNEL.exec(question);
+  const name = (match?.[1] ?? match?.[2] ?? match?.[3] ?? '').trim().replace(/[.!?]+$/u, '');
+  return name === '' ? undefined : name;
+}
 /**
  * #564/#572: a triage ask is "what came in", never a keyword search. The host runs the fixed read below
  * instead of the question's prose, so a relevance ranker can never answer it from an old thread.
@@ -1236,7 +1275,10 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     const day = dated ? chatWindowDay(config.question, config.nowMs ?? Date.now(), config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone) : undefined;
     const terms = compiled.replace(CHAT_DATE_OPERATOR, '').replace(/\s+/gu, ' ').trim();
     const query = terms !== '' ? terms : chatQuery('after:yesterday', config.nowMs, config.timeZone);
-    return [search(INTERNAL.chatSearch, { query, limit: RESEARCH.chatLines, ...(day === undefined ? {} : { after: day }) }, 'c0')];
+    // #610: a channel the question names is the connector's own filter, resolved through its channel
+    // list, so the ask reads that channel instead of the whole archive.
+    const channel = namedChannel(config.question);
+    return [search(INTERNAL.chatSearch, { query, limit: RESEARCH.chatLines, ...(day === undefined ? {} : { after: day }), ...(channel === undefined ? {} : { channel }) }, 'c0')];
   }
   if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { post_id: id }, 'ct0')] : []; }
   if (kind === 'web_search') return config.configured.includes('web')
@@ -4338,6 +4380,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               ms: (consumeKnowledge || prefetchedKnowledge) && knowledgeEndedAt > 0 ? Math.max(0, knowledgeEndedAt - knowledgeStartedAt) : Math.max(0, now() - at),
               deadlineMs: askedWebDeadline ?? sourceDeadlineMsOfRead, coalesced: 1,
               ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines, run.chatDate ?? 'none', served.find(call => call.name === INTERNAL.knowledgeSearch), { droppedFilters: run.droppedDayFilters, deduped: dedupedKnowledge }) } : {}),
+              ...(part.source === 'chat' ? chatReceiptField(served) : {}),
               ...mailReceiptField(mailInfo),
             });
             // R6: this source settled after the call had already answered, so what it found is handed over

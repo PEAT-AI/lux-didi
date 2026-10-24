@@ -46,7 +46,7 @@ const TOOLS = [...READS.filter(name => !(mode === 'no-thread' && name === 'matte
 
 const server = new Server({ name: 'stdio-mattermost-fixture', version: '1' }, { capabilities: { tools: {} } });
 server.setRequestHandler('tools/list', () => ({
-  tools: TOOLS.map(name => ({ name, description: `Synthetic ${name}`, inputSchema: READ_SCHEMAS[name] })),
+  tools: TOOLS.map(name => ({ name, description: `Synthetic ${name}`, inputSchema: READ_SCHEMAS[name] ?? { type: 'object' } })),
 }));
 server.setRequestHandler('tools/call', request => {
   const name = request.params.name;

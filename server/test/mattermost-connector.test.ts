@@ -56,7 +56,7 @@ test('channel history projects Markdown with bounded fields and permalink source
   const projected = projectMattermostResult(f.adapter, result);
   assert.equal(projected.ok, true);
   if (!projected.ok) return;
-  assert.match(projected.projection.text, /town-square \| Rob \| 2026-10-11T10:00:00Z/);
+  assert.match(projected.projection.text, /town-square \| rob \| 2026-10-11T10:00:00\.000Z/);
   assert.match(projected.projection.text, /Standup at ten/);
   assert.equal(/https?:\/\//.test(projected.projection.text), false, 'mattermost model text holds no raw url');
   // get_channel_history shapes newest first (M1, commit 5d75587); permalink sources follow that order.

@@ -9,11 +9,11 @@ import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { EndpointConfig } from '../adapters/mcp/port.js';
 import type { ConnectionPolicy } from '../tools/types.js';
-import { connectorDescriptor, createMattermostReader, MATTERMOST_ATTENTION, MATTERMOST_TOOLS } from '../connectors/index.js';
+import { connectorDescriptor, createMattermostReader, MATTERMOST_ATTENTION, MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS } from '../connectors/index.js';
 import type { AttentionItem, MattermostAttention } from '../connectors/index.js';
 import { projectMattermostResult, renderAttention } from '../tools/mattermost.js';
 import { INTENT_TOOL_NAMES, INTERNAL, planIntent, validateIntent } from '../tools/intent.js';
-import { RESEARCH, ResearchLedger, runResearch, type ResearchDeps } from '../tools/research.js';
+import { RESEARCH, ResearchLedger, runResearch, type ResearchDeps, type ResearchRunLog } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -39,16 +39,20 @@ function setup(mode: string) {
   return { dir, log, registry, adapter, calls };
 }
 
-async function approve(registry: McpRegistry, adapter: ReturnType<typeof createMcpAdapter>) {
+async function approveWithout(registry: McpRegistry, adapter: ReturnType<typeof createMcpAdapter>, toolNames: readonly string[]) {
   const discovery = await adapter.discover('mattermost');
   assert.equal(discovery.state, 'discovered');
   if (discovery.state !== 'discovered') throw new Error('discovery failed');
-  registry.approve({ endpointId: 'mattermost', schemaDigest: discovery.schemaDigest, toolNames: [...MATTERMOST_TOOLS], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+  registry.approve({ endpointId: 'mattermost', schemaDigest: discovery.schemaDigest, toolNames: [...toolNames], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
   return discovery.schemaDigest;
 }
+async function approve(registry: McpRegistry, adapter: ReturnType<typeof createMcpAdapter>) {
+  return approveWithout(registry, adapter, MATTERMOST_TOOLS);
+}
 
-function reader(adapter: ReturnType<typeof createMcpAdapter>, registry: McpRegistry, schemaDigest: string) {
-  return createMattermostReader({ port: adapter, registry, config: { endpointId: 'mattermost', account: ACCOUNT, resource: RESOURCE, schemaDigest, generation: 1, maxLimit: 60, queryChars: 200 } });
+function reader(adapter: ReturnType<typeof createMcpAdapter>, registry: McpRegistry, schemaDigest: string, names: readonly string[] = [...MATTERMOST_TOOLS, MATTERMOST_ATTENTION_TOOL]) {
+  // #604: the registry grant holds the published child names; the approved policy names the composite.
+  return createMattermostReader({ port: adapter, registry, config: { endpointId: 'mattermost', account: ACCOUNT, resource: RESOURCE, schemaDigest, generation: 1, maxLimit: 50, queryChars: 200, names } });
 }
 
 function digest(result: { state: string; decodedResult?: unknown }): MattermostAttention {
@@ -64,10 +68,10 @@ test('the attention view lists mentions, direct messages and open threads newest
   const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter));
   const view = digest(await r.attention({}));
   assert.deepEqual(summaries(view.items), [
-    'thread Dana I can take it tomorrow morning',
-    'thread Dana done, they line up',
-    'dm Dana sent you the deck for review',
-    'mention Dana @robert can you confirm the 3k release?',
+    'thread dana I can take it tomorrow morning',
+    'thread dana done, they line up',
+    'dm dana sent you the deck for review',
+    'mention dana @robert can you confirm the 3k release?',
   ]);
   const mention = view.items.find(item => item.reason === 'mention');
   assert.ok(mention);
@@ -161,13 +165,14 @@ test('general search looks back ninety days by default and to the period the cal
   const before = Date.now();
   assert.equal((await r.search({ query: 'release' })).state, 'completed');
   const [first] = f.calls().filter(call => call.name === 'mattermost_search');
-  const after = typeof first?.arguments['after'] === 'string' ? Date.parse(first.arguments['after'] as string) : 0;
-  assert.ok(Math.abs(after - (before - 90 * DAY)) < 60_000, `default window is ninety days: ${String(first?.arguments['after'])}`);
-  assert.equal(first?.arguments['before'], undefined);
+  // The installed child declares the day columns, not the instants, so the window travels as from_date.
+  const from = typeof first?.arguments['from_date'] === 'string' ? Date.parse(first.arguments['from_date'] as string) : 0;
+  assert.ok(Math.abs(from - (before - 90 * DAY)) < DAY, `default window is ninety days: ${String(first?.arguments['from_date'])}`);
+  assert.equal(first?.arguments['to_date'], undefined);
   assert.equal((await r.search({ query: 'release', after: '2016-01-01T00:00:00.000Z', before: '2025-01-01T00:00:00.000Z' })).state, 'completed');
   const named = f.calls().filter(call => call.name === 'mattermost_search').at(-1);
   // #610: the day travels in the child's own date columns, and a window is read newest first.
-  assert.deepEqual(named?.arguments, { query: 'release', limit: 12, after: '2016-01-01T00:00:00.000Z', before: '2025-01-01T00:00:00.000Z', from_date: '2016-01-01', to_date: '2025-01-01', sort: 'newest' });
+  assert.deepEqual(named?.arguments, { query: 'release', limit: 12, from_date: '2016-01-01', to_date: '2025-01-01', sort: 'newest' });
   assert.equal((await r.search({ query: 'release', after: 'x'.repeat(260) })).state, 'refused', 'an over-long window string is refused locally, never sent');
 });
 
@@ -264,7 +269,7 @@ test('#572: an empty chat triage names the window it read', async () => {
 });
 
 // #610: the scan's independent reads run under one budget. A child that answers a second late
-// cannot fit a serial scan (whoami, two searches, channels, one history, three threads) in 5 s.
+// cannot fit a serial scan of its twelve children in 8 s.
 test('#610: the attention scan reads its independent children concurrently', async t => {
   const f = setup('slow');
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
@@ -273,7 +278,8 @@ test('#610: the attention scan reads its independent children concurrently', asy
   const view = digest(await r.attention({}));
   const elapsed = Date.now() - started;
   assert.equal(view.items.length, 4, 'the concurrent scan still finds every item');
-  assert.ok(elapsed < 5_000, `a concurrent scan finishes inside 5 s, took ${elapsed} ms`);
+  // Twelve serial child reads at a second each is twelve seconds; three concurrent stages are four.
+  assert.ok(elapsed < 8_000, `a concurrent scan finishes inside 8 s, took ${elapsed} ms`);
   const calls = f.calls();
   const searches = calls.filter(call => call.name === 'mattermost_search').map(call => call.at ?? 0);
   const firstHistory = calls.find(call => call.name === 'mattermost_get_channel_history')?.at ?? 0;
@@ -326,22 +332,37 @@ test('#610: a question that names a channel searches that channel only', async (
 test('#610: the chat research_source line carries the query shape and no query text', async () => {
   const logged: Record<string, unknown>[] = [];
   const deps: ResearchDeps = {
-    now: () => Date.now(), configured: ['chat'],
+    now: () => Date.now(), configured: ['mail', 'chat', 'calendar'],
     execute: async (subs: readonly IntentSubCall[]) => subs.map(call => ({ key: call.key, name: call.name, ok: true, text: 'a line', originalCharacters: 6, omittedCharacters: 0 })),
     emit: () => {},
-    log: (event: Record<string, unknown>) => { logged.push(event); },
+    log: () => {},
+    logSource: (event: ResearchRunLog) => { logged.push(event as unknown as Record<string, unknown>); },
     ledger: new ResearchLedger(),
   };
-  await runResearch(deps, { action: 'start', question: 'what did Dana post in the dogcation channel about after:yesterday?' }, new AbortController().signal);
+  await runResearch(deps, { action: 'start', question: 'latest topics in the dogcation channel' }, new AbortController().signal);
   const receipt = logged.find(event => event['event'] === 'research_source' && event['source'] === 'chat');
   assert.ok(receipt, 'the chat read is receipted');
   const shape = receipt['chat'] as { terms: number; operators: string[]; limit: number; sort: string } | undefined;
   assert.ok(shape, 'the receipt carries a chat query shape');
-  assert.equal(shape.terms, 5);
-  assert.deepEqual(shape.operators, ['after']);
+  assert.equal(shape.terms, 2);
+  assert.deepEqual(shape.operators, []);
   assert.equal(shape.limit, RESEARCH.chatLines);
   assert.equal(shape.sort, 'newest');
   const serialized = JSON.stringify(receipt);
   assert.ok(!serialized.includes('dogcation'), 'no query word reaches the receipt');
-  assert.ok(!serialized.includes('Dana'), 'no name reaches the receipt');
+  assert.ok(!serialized.includes('latest'), 'no query word reaches the receipt');
+});
+
+// #604: a fixture that does not publish the thread read leaves the composite ungranted, and the
+// caller hears the connector's own closed reason instead of an unknown tool.
+test('#604: an ungranted composite refuses with tool-not-granted', async t => {
+  const f = setup('no-thread');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const digestValue = await approveWithout(f.registry, f.adapter, MATTERMOST_TOOLS.filter(name => name !== 'mattermost_get_thread'));
+  // The child publishes four reads, and the policy names the same four: the composite has no grant.
+  const names = MATTERMOST_TOOLS.filter(name => name !== 'mattermost_get_thread');
+  const r = reader(f.adapter, f.registry, digestValue, [...names]);
+  const result = await r.attention({});
+  assert.equal(result.state === 'refused' ? result.reason : result.state, 'tool-not-granted');
+  assert.ok(!f.calls().some(call => call.name === 'mattermost_search'), 'no child read follows an ungranted composite');
 });

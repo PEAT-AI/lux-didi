@@ -1,4 +1,4 @@
-import { CONNECTOR_DESCRIPTORS, ConnectorCompositionError } from '../connectors/index.js';
+import { CONNECTOR_COMPOSED_TOOLS, CONNECTOR_DESCRIPTORS, ConnectorCompositionError, composedDeclarationDigest, composedGrantedNames } from '../connectors/index.js';
 import type { Store } from '../runtime/store.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { assertToolsOwnerBinding, createToolsOwner, validatePolicy } from '../tools/index.js';
@@ -460,13 +460,22 @@ export async function composeMcpRuntime(options: {
       const names = grantMode === 'owner-trusted-reads'
         ? discovery.tools.filter(tool => envelope.includes(tool.name) && accepts(tool)).map(tool => tool.name).sort()
         : [];
+      // #604: a connector composite is granted under its own name, and only beside every child read
+      // it stands on. It is never a published name, so the envelope above cannot carry it.
+      const composed = composedGrantedNames(entry.connector, names).sort();
+      const granted = [...names, ...composed].sort();
       // Healthy discovery without an approved envelope is status-only, not an empty owner policy.
       if (!names.length) {
         reports.set(entry.id, { id: entry.id, state: 'connected', tools: 0, lastHandshakeAt: new Date(discovery.observedAt).toISOString() });
         return { retryable: false };
       }
       // Reconcile through the owner projection; the durable row is authoritative over local config.
-      const schemas = new Map(discovery.tools.map(tool => [tool.name, canonicalToolDigest([tool])] as const));
+      const schemas = new Map<string, string>(discovery.tools.map(tool => [tool.name, canonicalToolDigest([tool])] as const));
+      // #604: the composite's host-computed digest joins the approved schemas, so a changed
+      // declaration is a catalog change like any published tool's.
+      for (const tool of CONNECTOR_COMPOSED_TOOLS[entry.connector] ?? []) {
+        if (composed.includes(tool.name)) schemas.set(tool.name, composedDeclarationDigest(tool));
+      }
       const row = store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE owner_id=? AND connection_id=?', [ownerId, entry.id]));
       const policy: ConnectionPolicy = {
         schemaVersion: 1, bindingMode: 'connection', ownerId, connectionId: entry.id, generation: row ? Number(row.generation) : 1,
@@ -474,7 +483,7 @@ export async function composeMcpRuntime(options: {
         endpoint: entry.transport === 'stdio'
           ? { id: entry.id, transport: 'stdio', command: entry.command, args: [...entry.args], env: { ...entry.env }, account: entry.account, resource: entry.resource, credentialRef: null }
           : { id: entry.id, url: entry.url, account: entry.account, resource: entry.resource, credentialRef: entry.credentialRef },
-        toolNames: names, schemaDigest: discovery.schemaDigest,
+        toolNames: granted, schemaDigest: discovery.schemaDigest,
         sourcePolicy: { id: entry.id, revision: 1, unknownClass: entry.unknownClass, allowedClasses: [entry.unknownClass] },
         route: { identity: entry.id, allowedClasses: [entry.unknownClass] },
         bounds: { maxQueryChars: 16384, maxSearchLimit: 100, maxGetIds: 100, maxEntityBytes: 1048576, maxResultBytes: 1048576 },
@@ -513,9 +522,13 @@ export async function composeMcpRuntime(options: {
         }
         const rank = { ordinary: 0, private: 1, sensitive: 2 };
         const oldClass = stored.sourcePolicy.unknownClass;
+        // Only a published name the stored approval lacks widens the envelope. A composed name is
+        // derived from the children that approval already covers, so it is never a widening.
         const widened = names.some(name => !stored.toolNames.includes(name));
         const previousSchemas = approvedSchemas.get(entry.id);
-        const readableChanged = previousSchemas !== undefined && names.some(name => previousSchemas.get(name) !== schemas.get(name));
+        // A contract change to any approved name needs the owner again; a name the previous settle
+        // never saw is either a widening (above) or a composite's first appearance.
+        const readableChanged = previousSchemas !== undefined && granted.some(name => previousSchemas.has(name) && previousSchemas.get(name) !== schemas.get(name));
         // Only an explicit approval mode needs a fresh owner approval for any catalog change: under
         // owner-trusted-reads the reviewed envelope is the approval, so only a change to the contract of
         // a name that envelope already makes readable needs the owner again.
@@ -603,7 +616,9 @@ export async function composeMcpRuntime(options: {
         if (stale()) return false;
         // Re-establish the already-discovered candidate tools with no remote call, then swap.
         registry.observed(entry.id, discovery.tools, registry.revision(entry.id));
-        registry.restore({ endpointId: stored.endpoint.id, schemaDigest: stored.schemaDigest, generation: stored.generation, account: stored.endpoint.account, resource: stored.endpoint.resource, toolNames: stored.toolNames, effect: 'read' });
+        // The registry grant carries the names the endpoint publishes; a connector composite is a
+        // policy name, so it is the approval that covers it, never this projection (#604).
+        registry.restore({ endpointId: stored.endpoint.id, schemaDigest: stored.schemaDigest, generation: stored.generation, account: stored.endpoint.account, resource: stored.endpoint.resource, toolNames: stored.toolNames.filter(name => names.includes(name)), effect: 'read' });
         return true;
       });
       if (!published) {
@@ -612,7 +627,7 @@ export async function composeMcpRuntime(options: {
       }
       ready.add(entry.id);
       if (attempt === 'first-connect') options.lifecycleLog?.({ event: 'connector_connected', endpointId: entry.id, connectMs: Math.max(0, now() - roundStarted) });
-      reports.set(entry.id, { id: entry.id, state: 'connected', tools: names.length, lastHandshakeAt: new Date(now()).toISOString(), ...(identity ? { identity } : {}) });
+      reports.set(entry.id, { id: entry.id, state: 'connected', tools: granted.length, lastHandshakeAt: new Date(now()).toISOString(), ...(identity ? { identity } : {}) });
       return { retryable: false };
     } catch (error) {
       if (stale()) return { retryable: false };

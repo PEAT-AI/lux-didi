@@ -6,13 +6,18 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { createServer, request } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { bindCalendarRecovery, connectorLifecycleSink, hostMigrations, installedConfigDirRefusal, pairLocal, selectCalendarEndpoint, startHost, type RuntimeDescriptor } from '../host/runtime.js';
 import { createDispatchOwner } from '../tools/dispatch.js';
+import { composeMcpRuntime } from '../host/mcp.js';
+import { MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS } from '../connectors/mattermost.js';
+import type { ConnectionPolicy, LiveAuthority, RunAcceptance } from '../tools/types.js';
+import type { ToolCallIntent } from '../adapters/model/types.js';
 import { toolsMigrations } from '../tools/schema.js';
 import { SUPERVISION_FLAG, supervisionRequested } from '../host/supervision.js';
 import { HostLog, safeEvent } from '../host/log.js';
@@ -1154,4 +1159,108 @@ test('1022: a recovered calendar connector re-reads the digest, and a recovered 
     { event: 'connector_recovered', endpointId: 'calendar' },
     { event: 'connector_recovered', endpointId: 'calendar' },
   ], 'every line still reaches host.log, recovered or not');
+});
+
+// #630: the host publishes only the names an endpoint lists in its read grant (host/mcp.ts restore),
+// while the stored policy also carries the connector composite, so the projection must read a
+// composite as satisfied by the children it stands on.
+async function mattermostCompositeHost(t: TestContext) {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-host-composite-'));
+  const configDir = join(dir, 'provider-config');
+  await mkdir(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads',
+    endpoints: [{ id: 'mattermost', connector: 'mattermost', transport: 'streamable-http', url: 'http://127.0.0.1:18765/mattermost', account: 'mattermost', resource: 'mattermost', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'private' }],
+  }));
+  await chmod(join(configDir, 'mcp.json'), 0o600);
+  const authorities = new Map<string, LiveAuthority>();
+  let active: WebStandardStreamableHTTPServerTransport | undefined;
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    assert.ok(active, 'the fake endpoint is connected before a read');
+    return active.handleRequest(new Request(input, init));
+  });
+  let store = new Store(join(dir, 'data'), toolsMigrations);
+  let sdk: Server | undefined;
+  t.after(async () => { await sdk?.close(); await active?.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
+  const start = async () => {
+    await sdk?.close(); await active?.close();
+    if (runtime) { await runtime.close(); store.close(); store = new Store(join(dir, 'data'), toolsMigrations); }
+    sdk = new Server({ name: 'synthetic-mattermost', version: '1' }, { capabilities: { tools: {} } });
+    active = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+    sdk.setRequestHandler('tools/list', () => ({ tools: MATTERMOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: false } })) }) as never);
+    sdk.setRequestHandler('tools/call', (request) => {
+      const name = (request.params as { name?: string } | undefined)?.name;
+      const payload = name === 'mattermost_whoami' ? { username: 'synthetic-owner', email: 'owner@example.invalid' } : { ok: true };
+      return { content: [{ type: 'text', text: JSON.stringify(payload) }] } as never;
+    });
+    await sdk.connect(active);
+    await runtime?.close();
+    runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async runId => authorities.get(runId) ?? null });
+    await runtime.start();
+    assert.deepEqual(runtime.connectionIds(), ['mattermost']);
+    return runtime;
+  };
+  const policyRow = () => store.transaction(tx => tx.get('SELECT generation,policy_json,policy_sha256 FROM tool_connections WHERE owner_id=? AND connection_id=?', [store.assistantId, 'mattermost']))!;
+  const accept = () => {
+    const acceptance: RunAcceptance = {
+      ownerId: store.assistantId, actorId: 'synthetic-actor', runId: randomUUID(), authorityEpoch: store.authorityEpoch, revision: 1,
+      route: { identity: JSON.stringify({ version: 1, provider: 'gemini', model: 'synthetic-chat', endpoint: 'https://model.invalid', apiVersion: 'v1beta', keyReference: 'synthetic', allowedClasses: ['ordinary', 'private'], policyVersion: 1 }), provider: 'gemini', modelId: 'synthetic-chat', allowedClasses: ['ordinary', 'private'] },
+      allowedClasses: ['ordinary', 'private'], connectionIds: runtime!.connectionIds(),
+    };
+    const hash = store.transaction(tx => runtime!.owner.snapshotRun(tx, acceptance).sha256);
+    authorities.set(acceptance.runId, { ...acceptance, acceptedRunHash: hash });
+    return acceptance;
+  };
+  const search = (acceptance: RunAcceptance): ToolCallIntent => ({
+    runId: acceptance.runId, actorId: acceptance.actorId, authorityEpoch: acceptance.authorityEpoch, revision: acceptance.revision,
+    executionId: `${acceptance.runId}:0:0`, toolName: 'mattermost_search', argumentsHash: createHash('sha256').update(JSON.stringify({ query: 'synthetic', limit: 1 })).digest('hex'),
+    callId: 'call-0', accountId: 'mattermost', resourceId: 'mattermost',
+  });
+  return { store, start, policyRow, accept, search, get runtime() { return runtime!; } };
+}
+
+test('a policy that grants a connector composite admits its granted child reads (#630)', async t => {
+  const host = await mattermostCompositeHost(t);
+  const runtime = await host.start();
+  const policy = JSON.parse(String(host.policyRow().policy_json)) as ConnectionPolicy;
+  assert.ok(policy.toolNames.includes(MATTERMOST_ATTENTION_TOOL), 'the stored policy carries the composite');
+  const grant = runtime.registry.currentGrant('mattermost')!;
+  assert.deepEqual([...grant.toolNames].sort(), [...MATTERMOST_TOOLS].sort(), 'the published grant carries only the endpoint names');
+  assert.equal(grant.generation, policy.generation);
+  const acceptance = host.accept();
+  const call = host.search(acceptance);
+  assert.equal(runtime.owner.journal.intent(call), 'fresh', 'journal.intent admits a granted child of a granted composite');
+  runtime.owner.complete(call, { text: 'synthetic' }, ['private']);
+  assert.equal(host.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE owner_id=? AND execution_id=?', [host.store.assistantId, call.executionId]))?.state, 'completed');
+});
+
+test('a composite never admits a child the published grant does not cover (#630)', async t => {
+  const host = await mattermostCompositeHost(t);
+  const runtime = await host.start();
+  const row = host.policyRow();
+  const stored = JSON.parse(String(row.policy_json)) as ConnectionPolicy;
+  const grant = runtime.registry.currentGrant('mattermost')!;
+  const tools = runtime.registry.visibleTools('mattermost');
+  runtime.owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy: { ...stored, generation: stored.generation + 1 } });
+  // Republish the same grant at the policy's new generation, minus one child the policy still names.
+  runtime.registry.observed('mattermost', tools, runtime.registry.revision('mattermost'));
+  runtime.registry.restore({ ...grant, generation: stored.generation + 1, toolNames: MATTERMOST_TOOLS.filter(name => name !== 'mattermost_search') });
+  const acceptance = host.accept();
+  assert.throws(() => runtime.owner.journal.intent(host.search(acceptance)), /intent_policy_denied/);
+});
+
+test('the first boot bumps an installed release 8 policy to a grant and policy that project (#630)', async t => {
+  const host = await mattermostCompositeHost(t);
+  const first = await host.start();
+  const row = host.policyRow();
+  const stored = JSON.parse(String(row.policy_json)) as ConnectionPolicy;
+  first.owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy: { ...stored, generation: 2, toolNames: [...MATTERMOST_TOOLS] } });
+  assert.deepEqual(JSON.parse(String(host.policyRow().policy_json)).toolNames, [...MATTERMOST_TOOLS], 'the installed app held the release 8 envelope');
+  const restarted = await host.start();
+  const bumped = JSON.parse(String(host.policyRow().policy_json)) as ConnectionPolicy;
+  assert.equal(Number(host.policyRow().generation), 3, 'the bump advances the generation');
+  assert.ok(bumped.toolNames.includes(MATTERMOST_ATTENTION_TOOL), 'the bump carries the composite');
+  assert.equal(restarted.registry.currentGrant('mattermost')!.generation, 3, 'the published grant follows the bump');
+  assert.equal(restarted.owner.journal.intent(host.search(host.accept())), 'fresh', 'the installed owner first chat read after the bump is admitted');
 });

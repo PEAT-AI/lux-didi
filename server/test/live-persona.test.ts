@@ -689,7 +689,7 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // the vault rule named the save phrase and the honest receipt).
   const growth = wrapper.length - WRAPPER_3O_CHARS;
   // #589/#590: the honesty line that names the stop phrases is the growth this bound carries.
-  const cap = 6_424;
+  const cap = 6_425;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.

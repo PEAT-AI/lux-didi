@@ -6062,6 +6062,8 @@ test('R3 bare commands close the real fake-provider socket and consumer, not the
     const frames: string[] = [];
     const pump = pumpOutput(recordingSocket(frames), attachment, () => { assert.fail('terminal was skipped'); }, 1_000_000);
     h.f.send({ serverContent: { inputTranscription: { text, finished: false } } });
+    await settlePort();
+    assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
     await pump; await closed;
     assert.equal(provider.readyState, 3, 'no provider socket remains open after admission');
     assert.equal(h.f.clients.every(client => client.readyState === 3), true);

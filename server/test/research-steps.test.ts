@@ -116,3 +116,71 @@ test('F3 a subject refuses identifier-shaped values and control characters', () 
   // A real date window is still readable words, not an id.
   assert.equal(stepSubject({ window: '2026-10-17' }), 'on 2026-10-17');
 });
+
+// #615: a memory lookup reads earlier conversations only. The live session and the owner's own
+// current question are never its own memory.
+const MEMORY_AT = Date.parse('2026-10-24T12:00:00.000Z');
+const MEMORY_ASK = 'what did we talk about last time';
+interface MemoryHit { snippet: string; role: 'user' | 'assistant'; date: string; sessionId: string }
+
+function memoryDeps(hits: readonly MemoryHit[]): ResearchDeps {
+  return {
+    now: () => MEMORY_AT, configured: [...CONFIGURED, 'memory'], emit: () => {}, log: () => {}, logSubcall: () => {},
+    ledger: new ResearchLedger(),
+    execute: async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => subs.map(call => ({
+      key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0,
+      binding: { executionId: call.key } as NonNullable<IntentSubResult['binding']>,
+      historyPage: { status: 'ok', hits: hits.map(hit => ({ ...hit })), totalMatches: hits.length, nextCursor: null },
+    })),
+  };
+}
+
+const memoryAsk = (deps: ResearchDeps, question = MEMORY_ASK) =>
+  runResearch(deps, { action: 'start', question, lookups: [{ source: 'memory', query: question }] }, new AbortController().signal);
+
+/** What the model can read as memory evidence: the findings and the kept history page. */
+const memoryEvidence = (reply: Record<string, unknown>): string => JSON.stringify({ findings: reply['findings'], pages: reply['historyPages'] });
+
+const minutesAgo = (minutes: number): string => new Date(MEMORY_AT - minutes * 60_000).toISOString();
+
+test('#615: memory evidence is an earlier conversation, never the live session or the current question', async () => {
+  const hits: MemoryHit[] = [
+    { snippet: MEMORY_ASK, role: 'user', date: minutesAgo(4), sessionId: 'live-session' },
+    { snippet: 'we talked about the dentist on Friday', role: 'assistant', date: minutesAgo(3), sessionId: 'live-session' },
+    { snippet: 'the dentist is on Friday at nine', role: 'assistant', date: minutesAgo(2), sessionId: 'live-session' },
+    { snippet: 'we agreed the dentist is on Friday', role: 'user', date: minutesAgo(1440), sessionId: 'earlier-session' },
+  ];
+  const reply = await memoryAsk(memoryDeps(hits));
+  const evidence = memoryEvidence(reply as Record<string, unknown>);
+  assert.match(evidence, /we agreed the dentist is on Friday/, 'the earlier conversation is the evidence');
+  assert.doesNotMatch(evidence, /we talked about the dentist on Friday|the dentist is on Friday at nine/, 'no line of the live session is evidence');
+  assert.doesNotMatch(evidence, /talk about|what did we talk about last time/, "the owner's current question is never memory evidence");
+});
+
+test('#615: an earlier assistant line is evidence when no owner line matches', async () => {
+  const reply = await memoryAsk(memoryDeps([
+    { snippet: 'we talked about the dentist on Friday', role: 'assistant', date: minutesAgo(1440), sessionId: 'earlier-session' },
+  ]));
+  assert.match(memoryEvidence(reply as Record<string, unknown>), /we talked about the dentist on Friday/);
+  assert.equal((reply['sources'] as Record<string, string>)['memory'], 'ok');
+});
+
+test('#615: an owner line from an earlier session leads her own line at the same match', async () => {
+  const reply = await memoryAsk(memoryDeps([
+    { snippet: 'we talked about the dentist and the party', role: 'assistant', date: minutesAgo(2880), sessionId: 'older-session' },
+    { snippet: 'we talked about the dentist', role: 'user', date: minutesAgo(1440), sessionId: 'earlier-session' },
+  ]));
+  const evidence = memoryEvidence(reply as Record<string, unknown>);
+  assert.match(evidence, /we talked about the dentist/, 'the owner line is the evidence');
+  assert.doesNotMatch(evidence, /and the party/, 'her own line is evidence only when no owner line matches');
+});
+
+test('#615: a memory lookup with nothing from an earlier session reports empty, never the current turn', async () => {
+  const reply = await memoryAsk(memoryDeps([
+    { snippet: MEMORY_ASK, role: 'user', date: minutesAgo(4), sessionId: 'live-session' },
+    { snippet: 'we talked about the dentist on Friday', role: 'assistant', date: minutesAgo(3), sessionId: 'live-session' },
+    { snippet: 'the dentist is on Friday at nine', role: 'assistant', date: minutesAgo(2), sessionId: 'live-session' },
+  ]));
+  assert.equal((reply['sources'] as Record<string, string>)['memory'], 'empty', 'the source reports its closed empty reason');
+  assert.doesNotMatch(memoryEvidence(reply as Record<string, unknown>), /dentist|talk about/, 'the current turn is never evidence');
+});

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, candidateSubs, lookupBound, normalizeLookups, ownerScheduleQuestion, researchDeclaration, runResearch,
+  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, candidateSubs, lookupBound, normalizeLookups, ownerScheduleQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
   validateResearch,
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchRoutedLog, type ResearchSubcallLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
@@ -734,4 +734,42 @@ test('LAT-1023: a run that answers in its first round never claims the cap', asy
   await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
   assert.equal(h.logs[0]!.rounds, 1);
   assert.equal(h.logs[0]!.roundCapHit, undefined, 'an answered first round hit no cap');
+});
+
+// #579/TRIAGE-R1 5: the plurals, gmail, inbox, messages, dm(s) and chats name their own source, a time
+// word alone never swaps the named source for the calendar, and a weekday or an exact date is the calendar.
+test('#579/TRIAGE-R1 5: every new word form routes to its source and a window word does not steal it', () => {
+  const table: [string, SourceKind[]][] = [
+    ['what did the emails say about the retainer', ['mail']],
+    ['any gmail from Priya', ['mail']],
+    ['is my inbox clear', ['mail']],
+    ['what did the chats say about the freeze', ['chat']],
+    ['anything from the dms yesterday', ['chat']],
+    ['what did the mattermost team decide', ['chat']],
+    ['any messages', ['mail', 'chat']],
+    ['any important emails today', ['mail']],
+    ['what happened in the chats this week', ['chat']],
+    ["what's on thursday", ['calendar']],
+    ['what have I got on 2026-10-30', ['calendar']],
+  ];
+  for (const [question, sources] of table) assert.deepEqual(requiredSources(question), sources, question);
+  const today = routedSelection('any important emails today', CONFIGURED, Date.parse('2026-10-21T05:30:00Z'));
+  assert.ok(today !== undefined, 'a mail ask with a time word is a deterministic selection');
+  assert.ok(today.actions.some(action => action.kind === 'mail_search'), 'it reads mail');
+  assert.ok(!today.actions.some(action => action.kind === 'calendar_window'), 'a time word never pulls the calendar in');
+  const thursday = routedSelection("what's on thursday", CONFIGURED, Date.parse('2026-10-21T05:30:00Z'));
+  assert.ok(thursday !== undefined && thursday.actions.some(action => action.kind === 'calendar_window'), 'a weekday reads the calendar');
+});
+
+// TRIAGE-R1 6: "anything urgent" names no source, so what came in is a mail, a chat and a calendar read,
+// and her own memory is offered beside them.
+test('TRIAGE-R1 6: a triage ask routes to mail, chat and calendar, with the memory route beside them', () => {
+  assert.deepEqual(requiredSources('anything urgent?'), ['mail', 'chat', 'calendar']);
+  const selection = routedSelection('anything urgent?', CONFIGURED, Date.parse('2026-10-21T05:30:00Z'));
+  assert.ok(selection !== undefined, 'a triage ask is a deterministic selection');
+  const kinds = selection.actions.map(action => action.kind).sort();
+  assert.deepEqual(kinds, ['calendar_window', 'chat_search', 'knowledge_search', 'mail_search'], 'the three sources and her memory');
+  for (const kind of ['mail_search', 'chat_search', 'calendar_window'] as const) {
+    assert.ok(selection.pUseful[kind] !== undefined, `${kind} is offered`);
+  }
 });

@@ -1823,7 +1823,7 @@ export class LiveSessionOwner {
         // asked for this turn, so the watchdog closes it and leaves the session listening instead of nudging a
         // reply nobody asked for.
         if (handle.answerAt === undefined && handle.firstAudioAt === undefined && !this.#ownerWordsSinceModelOutput(handle.liveSessionId)) {
-          this.#closeTurn(handle, 'recovered');
+          this.#closeTurn(handle, 'completed', 'silent');
           this.#cancelWatchdog(handle);
           hostLogEvent({ event: 'live_watchdog', phase: 'closed', turnAgeMs, generation });
           return;

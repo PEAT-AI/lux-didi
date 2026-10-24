@@ -347,7 +347,6 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
   function boundedText(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim().length > 0 && value.length <= settings.queryChars ? value : undefined;
   }
-  /** A caller may narrow the page, never widen it: an over-large limit is clamped to the maximum. */
   /**
    * A caller may narrow the page, never widen it. A search limit over the maximum is clamped, because
    * the child's own cap is the real one (#610); every other read refuses the budget outright.
@@ -446,7 +445,6 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
    * filter carries it. A name that matches nothing is one closed refusal, never a wider archive read.
    */
   async function searchChannel(reference: string, signal?: AbortSignal): Promise<{ channel: string } | { error: string }> {
-    if (!declaredSearchArguments().includes('channel')) return { error: 'channel-filter-absent' };
     const channels = await loadChannels(signal);
     if (!Array.isArray(channels)) return { error: channels.error };
     return resolveChannelReference(reference, channels);
@@ -581,10 +579,11 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
       const window = searchWindow(input.after, input.before);
       if (window === undefined) return { state: 'refused', reason: 'invalid-window' };
-      // #610: a channel the ask names narrows the one search; an unknown name is a closed refusal.
+      // #610/F10: the channel an ask names is only sent where the child declares the filter, so a
+      // child without one searches its whole archive rather than refusing the read.
       const named = input.channel === undefined ? undefined : boundedText(input.channel);
-      if (named === '') return { state: 'refused', reason: 'invalid-channel' };
-      const resolved = named === undefined ? undefined : await searchChannel(named, signal);
+      const declaredChannel = declaredSearchArguments().includes('channel');
+      const resolved = named === undefined || !declaredChannel ? undefined : await searchChannel(named, signal);
       if (resolved !== undefined && 'error' in resolved) return { state: 'refused', reason: resolved.error };
       const filter = resolved === undefined ? {} : { channel: (resolved as { channel: string }).channel };
       return dispatch('mattermost_search', { query, ...bounded, ...window, ...filter }, signal);

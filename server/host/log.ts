@@ -1,4 +1,4 @@
-import { RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_REFUSAL_REASONS } from '../tools/research.js';
+import { CHAT_QUERY_OPERATORS, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_REFUSAL_REASONS } from '../tools/research.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -859,12 +859,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const keys = ['event', 'researchId', 'source', 'outcome', 'ms', 'deadlineMs', 'coalesced'];
     const hasKnowledge = Object.prototype.hasOwnProperty.call(value, 'knowledge');
     const hasMail = Object.prototype.hasOwnProperty.call(value, 'mail');
+    // #610/F7: a chat read also reports its own shape, because a slow chat search was invisible in the
+    // log and every chat receipt was refused here. Counts and closed tokens only, never a query word.
+    const hasChat = Object.prototype.hasOwnProperty.call(value, 'chat');
     // ROUTE-1022 K5: the same plan token as the run receipt, admitted only from its closed set.
     const hasPlan = Object.prototype.hasOwnProperty.call(value, 'plan');
     const hasPartial = Object.prototype.hasOwnProperty.call(value, 'partial');
     if (hasPlan && !isSafeMember(value.plan, RESEARCH_PLANS)) return;
     if (hasPartial && (!isSafeMember(value.partial, RESEARCH_PARTIAL_REASONS) || !isSafeCount(value.failedPages))) return;
-    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : []), ...(hasPlan ? ['plan'] : []), ...(hasPartial ? ['partial', 'failedPages'] : [])].sort().join(',')) return;
+    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : []), ...(hasChat ? ['chat'] : []), ...(hasPlan ? ['plan'] : []), ...(hasPartial ? ['partial', 'failedPages'] : [])].sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_source');
     if (typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
     if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
@@ -900,7 +903,20 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
         mail = { ...shape, retried };
       }
     }
-    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(hasPlan ? { plan: value.plan as string } : {}), ...(hasPartial ? { partial: value.partial as string, failedPages: value.failedPages as number } : {}) };
+    let chat: { terms: number; operators: string[]; limit: number; sort: string } | undefined;
+    if (hasChat) {
+      const row = value.chat as Record<string, unknown> | null | undefined;
+      if (row === null || typeof row !== 'object' || Array.isArray(row)) return;
+      const fields = ['terms', 'operators', 'limit', 'sort'];
+      if (Object.keys(row).some(key => !fields.includes(key))) return;
+      const terms = row['terms'], operators = row['operators'], limit = row['limit'], sort = row['sort'];
+      if (!Number.isSafeInteger(terms) || (terms as number) < 0) return;
+      if (!Array.isArray(operators) || operators.some(operator => typeof operator !== 'string' || !CHAT_QUERY_OPERATORS.includes(operator))) return;
+      if (!Number.isSafeInteger(limit) || (limit as number) < 1) return;
+      if (sort !== 'newest' && sort !== 'relevance') return;
+      chat = { terms: terms as number, operators: [...operators] as string[], limit: limit as number, sort };
+    }
+    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(chat !== undefined ? { chat } : {}), ...(hasPlan ? { plan: value.plan as string } : {}), ...(hasPartial ? { partial: value.partial as string, failedPages: value.failedPages as number } : {}) };
   }
   if (value.event === 'research_first_answer') {
     // R6: when a call answered with sources still reading: the elapsed ms, the sources already in the

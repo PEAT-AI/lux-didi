@@ -698,7 +698,12 @@ const isOperatorToken = (token: string): boolean => OPERATOR_TOKEN.test(token) |
  * page size and the sort. The words themselves never leave the plan.
  */
 export interface ChatQueryShape { terms: number; operators: string[]; limit: number; sort: string }
-const CHAT_OPERATORS = new Set(['in', 'from', 'after', 'before']);
+/**
+ * #610/F7: the closed operator names a chat query may name. Exported so the host log admits exactly
+ * the tokens the planner can produce, and nothing else.
+ */
+export const CHAT_QUERY_OPERATORS: readonly string[] = ['in', 'from', 'after', 'before'];
+const CHAT_OPERATORS = new Set(CHAT_QUERY_OPERATORS);
 export function chatQueryShape(call: IntentSubCall | undefined): ChatQueryShape | undefined {
   if (call === undefined) return undefined;
   const query = typeof call.args['query'] === 'string' ? call.args['query'] : '';

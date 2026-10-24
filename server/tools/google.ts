@@ -150,10 +150,11 @@ function codeOf(text: string): string {
 }
 
 /**
- * Status for a completed-but-failed tool call, driven by the one vocabulary table. A pinned credential
- * or identity code is the auth-needed status naming the helper's own authorize command; a transient,
- * caller or provider code says its own line; a code outside the table is unknown_helper_code, logged
- * by its hashed head. Never an empty success.
+ * Status for a completed-but-failed tool call, driven by the one vocabulary table. Only a pinned
+ * credential or identity row is `configured`, the one status that stops the reads until the credential
+ * file changes; every other failure, and a code outside the table, is `error`, so one failed call never
+ * marks the endpoint dead. Either way the status names the helper's code and its own line, never a state
+ * word and never an empty success.
  */
 export function googleToolStatus(evidence: ConnectorEvidence): GoogleStatus | undefined {
   if (evidence.state === 'completed') return undefined;
@@ -162,10 +163,10 @@ export function googleToolStatus(evidence: ConnectorEvidence): GoogleStatus | un
   const code = codeOf(content.text);
   const entry = googleErrorEntry(code);
   if (entry === undefined) {
-    return { state: 'configured', code: UNKNOWN_HELPER_REASON, reason: UNKNOWN_HELPER_OWNER_LINE, log: googleUnknownLog(code, evidence.tool) };
+    return { state: 'error', code: UNKNOWN_HELPER_REASON, reason: UNKNOWN_HELPER_OWNER_LINE, log: googleUnknownLog(code, evidence.tool) };
   }
   const log = entry.recovery === 'log_defect' ? googleDefectLog(code, evidence.tool) : undefined;
-  return { state: 'configured', code, reason: googleOwnerLine(entry, googleFamilyOf(evidence)), ...(log ? { log } : {}) };
+  return { state: entry.pinned ? 'configured' : 'error', code, reason: googleOwnerLine(entry, googleFamilyOf(evidence)), ...(log ? { log } : {}) };
 }
 
 /** The helper's own consent command for this family: a command name only, never a token path. */

@@ -2045,7 +2045,9 @@ export function configuredSourcesForEndpoints(endpoints: readonly ConfiguredEndp
   const push = (source: SourceKind, reason: string): void => { if (!sources.some(entry => entry.source === source)) sources.push({ source, reason }); };
   for (const endpoint of endpoints) {
     if (endpoint.state === 'connected') continue;
-    const reason = endpoint.reasonCode ?? endpoint.configurationError ?? endpoint.exception?.code ?? endpoint.state;
+    // #636: `configured` is the report's state for a connector whose own credential is dead, and the
+    // state word is never a reason: the owner hears the closed code for a sign-in, not "configured".
+    const reason = endpoint.reasonCode ?? endpoint.configurationError ?? endpoint.exception?.code ?? (endpoint.state === 'configured' ? 'not_signed_in' : endpoint.state);
     for (const source of researchSourcesForEndpoint(endpoint)) push(source, reason);
   }
   if (grantedTools === undefined) return sources;

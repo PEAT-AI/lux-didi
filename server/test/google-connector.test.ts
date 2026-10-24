@@ -552,7 +552,7 @@ function unreachableIn(runtime: Awaited<ReturnType<typeof composeMcpRuntime>>): 
 /** The line one dispatched call spoke, as the stored tool result carries it. */
 function spokenLine(store: Store, executionId: string): string {
   const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', [executionId]));
-  return String((JSON.parse(String(row?.['result_json'] ?? '{}')) as { text?: string }).text ?? '');
+  return String((JSON.parse(String(row?.['result_json'] ?? '{}')) as { response?: { text?: string } }).response?.text ?? '');
 }
 
 // #636: the seven question-only mail asks of one pass. A helper failure is a per-call failure, so the

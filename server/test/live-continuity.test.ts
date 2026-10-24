@@ -11,6 +11,7 @@ import { createLiveSessionOwner, liveMigrations, SEED_CHAR_LIMIT, validateLivePr
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { fakeLiveVoicePort, type FakeLiveVoice, type FakeLiveVoiceEvent } from './fixtures/fake-live-voice.js';
+import { NAYA_LIVE_BASE } from '../prompt/index.js';
 import type { LiveVoicePort } from '../adapters/live-voice/index.js';
 
 const NOW = 1_700_000_000_000;
@@ -50,7 +51,7 @@ interface Live {
 }
 
 /** `timeZone: null` leaves the zone to the host, resolved when each call is composed, as production does. */
-function openLive(t: TestContext, options: { timeZone?: string | null } = {}): Live {
+function openLive(t: TestContext, options: { timeZone?: string | null; promptText?: string } = {}): Live {
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-continuity-'));
   const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations]);
   const ctx: LiveContext = { clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch };
@@ -67,7 +68,7 @@ function openLive(t: TestContext, options: { timeZone?: string | null } = {}): L
   const profile = validateLiveProfile({
     provider: 'gemini', liveModelId: MODEL, voice: 'ExplicitVoice', keyReference: 'test-reference',
     route: { enabled: true, provider: 'gemini', modelId: MODEL, dataClasses: ['ordinary'] },
-    prompt: { text: 'Synthetic system', dataClass: 'ordinary' },
+    prompt: { text: options.promptText ?? 'Synthetic system', dataClass: 'ordinary' },
     limits: { handshakeMs: 1000, idleMs: 600_000, sessionMs: 1_200_000, closeMs: 50 },
   });
   const detach = attachHostLogSink({ event: () => {} });
@@ -184,7 +185,8 @@ test('each call resolves the owner zone when it is composed', async t => {
   const previous = process.env['TZ'];
   t.after(() => { if (previous === undefined) delete process.env['TZ']; else process.env['TZ'] = previous; });
   process.env['TZ'] = 'Europe/Berlin';
-  const live = openLive(t, { timeZone: null });
+  // A frozen instruction carries the base marker, which is the shape the host composes over.
+  const live = openLive(t, { timeZone: null, promptText: `${NAYA_LIVE_BASE}\n\n` });
   const first = await live.start();
   assert.match(live.fake.requests[0]!.system.text, /Now: Tue, 2023-11-14, 23:13 Europe\/Berlin \(UTC\+01:00\)/u,
     'the first call is composed in the zone the host had then');

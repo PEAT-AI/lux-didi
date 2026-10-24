@@ -5759,16 +5759,15 @@ test('#589 a finished owner turn on a superseded generation never ends the call'
   const h = await harness(t);
   const { session } = await attached(h);
   const first = h.f.clients[0]!;
-  // The provider socket dies and the host rebuilds from the saved handle: the session is generation 1.
+  // The host goes away and rebuilds from the saved handle, so the session is generation 1.
   h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-stop-resumption' } });
-  await tick();
-  first.emit('close', 1008);
-  await tick();
-  await tick();
+  h.f.send({ goAway: { timeLeft: '10s' } });
+  await h.f.frame(2);
   h.f.send({ setupComplete: {} });
   await tick();
   await tick();
-  // A finished turn on the socket the owner already left is not his live words.
+  assert.equal(h.owner.current().state, 'listening', 'the rebuilt generation is live');
+  // A finished turn on the socket the host already left is not the owner's live words.
   first.emit('message', Buffer.from(JSON.stringify({ serverContent: { inputTranscription: { text: 'Naya, stop listening', finished: true } } })));
   await tick();
   await tick();

@@ -2621,13 +2621,14 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   while (guard-- > 0) {
     const rendered = JSON.stringify(render().reply).length;
     if (rendered <= limit) break;
-    const removable = groups.filter(group => shownOf(group) > 0);
+    const removable = groups.filter(group => shownOf(group) > (group.days === undefined ? 0 : 1));
     if (removable.length === 0) break;
     removable.sort((a, b) => b.lines.length - a.lines.length);
     const trimmed = removable[0]!;
-    // #4: a calendar day line is a list of whole events, so it loses one event at a time and the count it
-    // reports is the count of events it really dropped, never a clip that swallows an event silently.
-    if (trimCalendarEvent(trimmed)) continue;
+    // #4: a calendar day line is a list of whole events, so it loses one event at a time, the count it
+    // reports is the count of events it really dropped, and it is never clipped: a clip would swallow an
+    // event while the header still claimed it. Its last event stays, so the answer keeps the day it read.
+    if (trimmed.days !== undefined) { trimCalendarEvent(trimmed); continue; }
     const last = trimmed.lines[trimmed.lines.length - 1]!;
     if (trimmed.lines.length === 1) {
       const room = last.length - (rendered - limit) - 1;

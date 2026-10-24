@@ -897,23 +897,30 @@ test('#635: the chat read is bounded near five seconds, and a timed out one says
   assert.doesNotMatch(note, /could not reach/u, 'and never that the chat was out of reach');
 });
 
-// #635: a read that arrived in part and then ran out of its budget is a partial timeout, not a complete read.
-test('#635: a chat read cut after it answered is a partial timeout', async () => {
-  const controller = new AbortController();
+// #635: a chat read that answered in part and then ran out of its budget is a partial timeout under the fake
+// clock, not a complete read and not a whole-run abort.
+test('#635: a chat read cut by its own budget after it answered is a partial timeout', async () => {
+  const clock = fakeClock();
   const h = harness({
-    execute: async (subs: readonly IntentSubCall[]) => {
-      const out = subs.map(call => sub(call.name, '- the release thread opened [post abc123]', true, call.key));
-      controller.abort();
-      return out;
+    now: clock.now,
+    schedule: clock.schedule,
+    execute: async (subs: readonly IntentSubCall[], signal?: AbortSignal) => {
+      if (subs.some(call => call.name === 'mattermost_get_thread')) {
+        await new Promise<void>((_resolve, reject) => {
+          if (signal?.aborted === true) { reject(new Error('aborted')); return; }
+          signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+      }
+      return subs.map(call => sub(call.name, '- the release thread opened [post abc123]', true, call.key));
     },
   });
-  const reply = await runResearch(h.deps, {
-    action: 'start', question: 'what did the team say in chat about the release',
-    lookups: [{ source: 'chat', query: 'release' }],
-  }, controller.signal);
+  const call = runResearch(h.deps, { action: 'start', question: 'what did the team say in chat about the release' }, new AbortController().signal);
+  await flushed();
+  clock.advance(RESEARCH.sourceDeadline.chat);
+  const reply = await call;
   const header = String(reply['coverage']);
-  assert.match(header, /chat partial_timeout/u, `a read that answered and then timed out is partial (${header})`);
   const note = String(reply['note']);
-  assert.match(note, /team chat read took too long/u, `and the voice says it took too long (${note})`);
+  assert.match(header, /chat partial_timeout 1 of 1 shown/u, `a read that answered and then ran out of its budget keeps what it read and is partial (${header})`);
+  assert.match(note, /team chat read took too long/u, `the voice says the read took too long (${note})`);
   assert.doesNotMatch(note, /could not reach/u, 'a cut read is never a source out of reach');
 });

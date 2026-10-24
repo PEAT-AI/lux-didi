@@ -4797,7 +4797,14 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const webCall = subs.find(sub => sub.name === WEB_SEARCH_ACTION);
           const askedWebDeadline = webCall === undefined ? undefined : webDeadlineMs(String(webCall.args['query'] ?? ''));
           const readDeadlineMs = askedWebDeadline === undefined ? sourceDeadlineMs(startSources) : Math.max(sourceDeadlineMs(startSources), askedWebDeadline);
-          const cutTimer = schedule(() => { if (!latencies.has(kind)) { cutKinds.add(kind); cut.abort(new DOMException('Source deadline elapsed', 'TimeoutError')); } }, Math.max(0, Math.min(readDeadlineMs, batchDeadline - now())));
+          // #635: the cut is recorded the moment it happens, not when the read settles, so a reply composed
+      // while the read is being cut still names it a timeout instead of a source nobody read.
+      const cutTimer = schedule(() => {
+        if (latencies.has(kind)) return;
+        cutKinds.add(kind);
+        for (const source of startSources) run.cutShort.add(source);
+        cut.abort(new DOMException('Source deadline elapsed', 'TimeoutError'));
+      }, Math.max(0, Math.min(readDeadlineMs, batchDeadline - now())));
           // Identical duplicate reads are deduplicated: a read this run already issued is reused, never
           // sent twice, so the connector is asked one question once.
           // DATES-R1 F2b: the knowledge reads this run already issued, so the receipt counts them here too.
@@ -4986,8 +4993,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
 
         for (const kind of batch) {
           const source = sourceKindOf(kind) ?? 'knowledge', skipped = cutKinds.has(kind) || !latencies.has(kind);
-          // #635: a source cut at its own budget is named a partial timeout even when part of it arrived.
-          if (cutKinds.has(kind)) run.cutShort.add(source);
           sourceLog.push({ kind: source, disposition: skipped ? 'skipped' : 'completed', latencyMs: latencies.get(kind) ?? 0, ...(skipped ? { reason: skipReasonOf(run.unavailableReasons.get(source), run.unavailableReasons.has(source) ? 'unavailable' : 'timeout') } : {}) });
         }
         // A source that ran out of its own deadline ends the turn as an honest partial: it is named

@@ -49,7 +49,8 @@ interface Live {
   journalTexts(liveSessionId: string, kind: string): string[];
 }
 
-function openLive(t: TestContext): Live {
+/** `timeZone: null` leaves the zone to the host, resolved when each call is composed, as production does. */
+function openLive(t: TestContext, options: { timeZone?: string | null } = {}): Live {
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-continuity-'));
   const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations]);
   const ctx: LiveContext = { clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch };
@@ -71,7 +72,7 @@ function openLive(t: TestContext): Live {
   });
   const detach = attachHostLogSink({ event: () => {} });
   t.after(() => { detach(); rmSync(dir, { recursive: true, force: true }); });
-  const owner = createLiveSessionOwner({ store, voice: port, profile, now: () => clock.now, timeZone: 'Asia/Kolkata', schedule: clock.schedule });
+  const owner = createLiveSessionOwner({ store, voice: port, profile, now: () => clock.now, ...(options.timeZone === null ? {} : { timeZone: options.timeZone ?? 'Asia/Kolkata' }), schedule: clock.schedule });
   const start = async () => {
     const session = owner.create({ idempotencyKey: `continuity-${randomUUID()}`, inputClass: 'ordinary' }, ctx);
     const attachment = owner.attach({ liveSessionId: session.liveSessionId }, ctx);
@@ -177,4 +178,22 @@ test('budget pressure drops whole older exchanges and never the latest one', asy
     { role: 'model', text: answer('C') },
   ], 'the latest exchange stays verbatim');
   assert.ok(seed.reduce((sum, turn) => sum + turn.text.length, 0) <= SEED_CHAR_LIMIT, 'the seed never exceeds the history budget');
+});
+
+test('each call resolves the owner zone when it is composed', async t => {
+  const previous = process.env['TZ'];
+  t.after(() => { if (previous === undefined) delete process.env['TZ']; else process.env['TZ'] = previous; });
+  process.env['TZ'] = 'Europe/Berlin';
+  const live = openLive(t, { timeZone: null });
+  const first = await live.start();
+  assert.match(live.fake.requests[0]!.system.text, /Now: Tue, 2023-11-14, 23:13 Europe\/Berlin \(UTC\+01:00\)/u,
+    'the first call is composed in the zone the host had then');
+  first.close();
+  // The owner flies east between two calls; the long-lived host follows him per call, not per process.
+  await live.advance(67_600_000);
+  process.env['TZ'] = 'Asia/Singapore';
+  const second = await live.start();
+  assert.match(live.fake.requests[1]!.system.text, /Now: Thu, 2023-11-16, 01:00 Asia\/Singapore \(UTC\+08:00\)/u,
+    'the second call is composed in the zone the host has now');
+  second.close();
 });

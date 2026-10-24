@@ -3675,18 +3675,18 @@ test('a delegated response with no audible output is nudged, and audible progres
   await advanceUntil(ms => h.advance(ms), scheduler, () => fake.toolResponses.length === 1);
   fake.emit({ type: 'modelTurnStarted' });
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
-  assert.deepEqual(phases(), ['armed', 'start'], 'the delegated response owes audible audio from its start, on its own clock');
+  assert.deepEqual(phases(), ['start'], 'the delegated response owes audible audio from its start');
   for (let second = 0; second < 10; second += 1) await advance(1_000);
   // Amendment B: the result completed at t=0, so ten seconds of silence after it is the defect, not a slow
   // tool. The nudge is the first stage of the obligation, not a rebuild.
-  assert.deepEqual(phases(), ['armed', 'start', 'rung'], 'silence after the completed result earns the 8 s rung');
+  assert.deepEqual(phases(), ['start', 'rung'], 'silence after the completed result earns the 8 s rung');
   assert.equal(fake.sessionsOpened, 1, 'the working session is not rebuilt by a nudge');
   assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'the call is still up');
   // Audible output defers the deadline to 8 s from that frame (amendment A).
   fake.emit({ type: 'audio', pcm, rate: 24_000 });
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   for (let second = 0; second < 9; second += 1) await advance(1_000);
-  assert.deepEqual(phases(), ['armed', 'start', 'rung', 'clear', 'armed', 'nudged'], 'a reply that went silent again is watched again, by the watchdog that owns a model turn');
+  assert.deepEqual(phases(), ['start', 'rung', 'clear', 'armed', 'nudged'], 'a reply that went silent again is watched again, by the watchdog that owns a model turn');
   assert.equal(fake.sessionsOpened, 1, 'a nudge is not a recovery');
   attachment.close();
 });
@@ -3905,7 +3905,7 @@ test('D3: fill frames never clear the debt, so a tool result with no audible ans
     h.advance(100);
     scheduler.runDue();
   }
-  assert.deepEqual(phasesOf(captureDir), ['start', 'rung', 'recovered'], 'one clock: the rung at 8 s and the recovery at 15 s');
+  assert.deepEqual(phasesOf(captureDir), ['start', 'rung', 'rung', 'recovered'], 'one clock: the rung at 8 s, the rebuild rung at 15 s, then the recovery');
   const stall = hostLines(captureDir).find(line => line.event === 'live_dead_air' && line.msSinceTool !== undefined);
   assert.ok(stall, 'the stall leaves a live_dead_air receipt');
   assert.equal(stall!['msSinceTool'], 8_000, 'the answer had been owed for eight seconds');

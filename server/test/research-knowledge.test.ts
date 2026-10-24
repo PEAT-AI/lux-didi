@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, candidateSubs, knowledgeQuery, runResearch, shapeBlock,
+  RESEARCH, ResearchLedger, candidateSubs, capReply, knowledgeQuery, runResearch, shapeBlock,
   type ResearchDeps, type ResearchSourceLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
+import { GMAIL_BODY_CHARS, shapeLuxKnowledge } from '../tools/live-shape.js';
+import { projectLuxResult } from '../tools/lux-knowledge.js';
+import { createHash } from 'node:crypto';
+import type { McpPort } from '../adapters/mcp/port.js';
+import type { ConnectionPolicy } from '../tools/types.js';
 
 // Two sources, so the run plans across them instead of taking the single-source path.
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'chat'];
@@ -47,6 +52,81 @@ const LONG_BODY = [
   '**#123** [TECHNICAL_DECISION] Retrieval deadline',
   `the deadline is the fifteenth${' and the corpus keeps the rest'.repeat(120)}`,
 ].join('\n');
+
+/** #580: the server's own ranker line for a query nothing in the vault matches. */
+const NO_CANDIDATE = [
+  '# Knowledge Search',
+  '_confidence: low · top score: 0.11 · relevant candidate: no_',
+  '**#900** [PATTERN] Unrelated engineering note',
+  'the vault keeps an unrelated engineering note about socket timeouts',
+].join('\n');
+
+/** #580: a synthetic MCP entity with the ranker's own line, and the policy that admits it. */
+function projectedKnowledge(text: string): Record<string, unknown> {
+  const entity = Buffer.from(JSON.stringify({ content: [{ type: 'text', text }] }), 'utf8');
+  const sha = createHash('sha256').update(entity).digest('hex');
+  const expiresAt = Date.now() + 60_000;
+  const policy: ConnectionPolicy = {
+    schemaVersion: 1, ownerId: 'owner', connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
+    endpoint: { id: 'endpoint', url: 'https://synthetic.invalid/mcp', account: 'account', resource: 'resource', credentialRef: 'private:synthetic-reference' },
+    toolNames: ['search_knowledge'], schemaDigest: 'schema',
+    sourcePolicy: { id: 'synthetic-policy', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
+    route: { identity: 'synthetic-route', allowedClasses: ['private'] },
+    bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 },
+  };
+  const port = { readSlice: () => ({ state: 'available', bytes: entity.slice(), byteLength: entity.length, sha256: sha, expiresAt: expiresAt }) } as unknown as McpPort;
+  return projectLuxResult({
+    state: 'completed', tool: 'search_knowledge', observedAt: 1, decodedResult: { content: [{ type: 'text', text }] },
+    source: { endpointId: 'endpoint', url: 'https://synthetic.invalid/mcp', schemaDigest: 'schema', toolName: 'search_knowledge', generation: 1, account: 'account', resource: 'resource' },
+    coverage: { completeCorpus: false, basis: 'single-tool-result', remoteSideEffects: 'unverified' },
+    projection: { text: text, omitted: false, originalCharacters: text.length, omittedCharacters: 0 },
+    response: { state: 'available', handle: 'handle', sha256: sha, byteLength: entity.length, expiresAt: expiresAt, encoding: 'http-response-entity' },
+  }, policy, port).response;
+}
+
+test('#580: the projection carries the ranker confidence on the response, not only inside its text', () => {
+  const response = projectedKnowledge(NO_CANDIDATE);
+  assert.deepEqual(response['knowledgeConfidence'], { confidence: 'low', top: '0.11', candidates: 'no' }, 'the named carrier survives the projection');
+  assert.equal(typeof response['text'], 'string', 'and the model-visible text is unchanged in kind');
+});
+
+test('#580: a no-candidate low-confidence knowledge read carries the confidence and is voiced as no match', () => {
+  const shaped = shapeLuxKnowledge('search_knowledge', NO_CANDIDATE);
+  assert.deepEqual(shaped.knowledgeConfidence, { confidence: 'low', top: '0.11', candidates: 'no' }, 'the shape reads the ranker line before it strips it');
+  const block = shapeBlock('knowledge_search', [sub('search_knowledge', shaped.text)]);
+  assert.ok(block.lines.includes('knowledge: confidence=low top=0.11 candidates=no'), `the finding leads with the confidence, got ${JSON.stringify(block.lines)}`);
+  assert.ok(block.lines.includes('knowledge: nothing matched this ask'), 'a low-confidence no-candidate match is voiced as no match');
+  assert.equal(block.lines.some(line => line.includes('relevant candidate:')), false, 'the raw ranker line is never voiced as a hit');
+  const carried = shapeBlock('knowledge_search', [{ ...sub('search_knowledge', shaped.text), knowledgeConfidence: { confidence: 'low', top: '0.11', candidates: 'no' } }]);
+  assert.deepEqual(carried.lines, block.lines, 'the carried confidence and the read one voice the same finding');
+});
+
+test('#580: a run voices the weak knowledge match as nothing matching', async () => {
+  const shaped = shapeLuxKnowledge('search_knowledge', NO_CANDIDATE);
+  const h = harness({ execute: async subs => subs.map(call => sub(call.name, shaped.text, true, call.key)) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what does the vault hold about dark triad' }, new AbortController().signal);
+  assert.match(JSON.stringify(reply['findings']), /knowledge: confidence=low top=0\.11 candidates=no/u, 'the voiced finding carries the confidence');
+  assert.match(JSON.stringify(reply['findings']), /nothing matched this ask/u, 'and is voiced as no match');
+});
+
+test('#5: a clipped knowledge hit counts as shown, never as left out', () => {
+  const line = `#1 a long hit ${'x'.repeat(400)}`;
+  const reply = { researchId: 'r', status: 'complete', findings: [{ source: 'knowledge', text: `knowledge: 1 of 1 shown\n${line}`, chars: line.length }] };
+  const capped = capReply(reply, JSON.stringify(reply).length - 100);
+  const text = (capped['findings'] as { text: string }[])[0]!.text;
+  assert.match(text, /knowledge: 1 of 1 shown/u, `the clipped hit is still shown: ${text.slice(0, 80)}`);
+  assert.ok(text.split('\n').length === 2, 'the one hit is still voiced');
+});
+
+test('#580: the confidence line is paid out of the result budget, never added past it', () => {
+  const body = 'the vault entry says the deadline is the fifteenth. '.repeat(120);
+  const plain = shapeLuxKnowledge('search_knowledge', body);
+  const marked = shapeLuxKnowledge('search_knowledge', `_confidence: low · top score: 0.11 · relevant candidate: no_\n${body}`);
+  assert.match(marked.text, /^_confidence: low/u, 'the mark leads the result');
+  const evidence = (text: string): string => text.replace(/\[omitted:[^\]]*\]/gu, '');
+  assert.ok(evidence(plain.text).length <= GMAIL_BODY_CHARS, `the plain result holds the path budget, got ${evidence(plain.text).length}`);
+  assert.ok(evidence(marked.text).length <= GMAIL_BODY_CHARS, `the mark never grows the evidence past that budget, got ${evidence(marked.text).length}`);
+});
 
 test('K3: the model-authored knowledge query is clipped to ten content terms, and filler never rides', () => {
   const sentence = 'what did we decide about the wriggler three layer schema migration deadline for the owner dashboard';

@@ -174,7 +174,7 @@ test('calendar delivery advances exact event identities even when bounded text i
   h.deps.replyLimit = 1_000;
   const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
   const shown = Number((first['calendarCoverage'] as Record<string, unknown>)['shown']);
-  assert.ok(shown > 0 && shown < 10, 'a reply over its byte budget leaves identical events for the continuation');
+  assert.ok(shown > 0 && shown < 10, `a reply over its byte budget leaves identical events for the continuation: ${JSON.stringify(first['calendarCoverage'])} ${JSON.stringify(first['note'])}`);
   assert.match(String(first['note']), /left out \d+ calendar events/u);
   h.deps.replyLimit = 6_000;
   const second = await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, signal());
@@ -533,10 +533,52 @@ test('#574: a day read prints the attendee names it was given', async () => {
   const h = fixture([{ id: 'a1', start: '2026-10-19T09:00:00Z', summary: 'Design review', attendees: party }]);
   const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
   const text = JSON.stringify(reply['findings']);
-  assert.match(text, /Person 0/);
   assert.match(text, /Person 7/);
   assert.doesNotMatch(text, /Person 8/, 'the ninth name is never spoken');
-  assert.match(text, /and others/);
+  assert.match(text, /and 4 others/, 'the four names left out are counted');
+  assert.match(text, /Person 0, Person 1, Person 2, Person 3, Person 4, Person 5, Person 6, Person 7 and 4 others/u, 'every spoken name is whole');
+});
+
+test('#574: a long header shortens the attendee list at a name boundary, never mid-name', () => {
+  const party = Array.from({ length: 12 }, (_, n) => ({ displayName: `Person ${n}` }));
+  const shaped = shapeGcalList({ events: [{ id: 'a1', start: '2026-10-19T09:00:00Z', summary: 'Design review', location: 'L'.repeat(200), attendees: party }] });
+  const line = shaped.text.split('\n').find(entry => entry.trimStart().startsWith('attendees: '));
+  assert.ok(line !== undefined, 'the attendees line survives the event bound');
+  assert.match(line.trim(), /^attendees: (Person \d+(, Person \d+)* and \d+ others|Person \d+(, Person \d+)*)$/u, `no name is cut: ${line}`);
+  const spoken = line.match(/Person \d+/gu)?.length ?? 0;
+  const others = /and (\d+) others/u.exec(line)?.[1];
+  assert.equal(spoken + Number(others ?? 0), 12, `every attendee is either spoken or counted: ${line}`);
+  assert.ok(spoken < 12, 'a header this long cannot carry every name');
+});
+
+test('#574: a helper that truncated its own attendee list never gets a spoken headcount', () => {
+  const party = Array.from({ length: 12 }, (_, n) => ({ displayName: `Person ${n}` }));
+  const shaped = shapeGcalList({ events: [{ id: 'a1', start: '2026-10-19T09:00:00Z', summary: 'Design review', attendees: party, attendeesOmitted: true }] });
+  const line = shaped.text.split('\n').find(entry => entry.trimStart().startsWith('attendees: '));
+  assert.ok(line !== undefined, 'the attendees line survives the event bound');
+  assert.match(line.trim(), / and others$/u, `a truncated source list only supports the unnumbered form: ${line}`);
+  assert.doesNotMatch(line, /\d+ others/u, `and never a count the helper did not send: ${line}`);
+});
+
+test('#3: an empty calendar read says the calendar was searched, never that it was skipped', async () => {
+  const h = fixture([]);
+  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
+  const note = String(reply['note'] ?? '');
+  assert.equal(/did not search/u.test(note), false, `the calendar was read, so the note never says it was skipped: ${note}`);
+  assert.match(note, /I searched your calendar/u, `the note names the read it made: ${note}`);
+});
+
+test('#4: the calendar counts add up, shown plus left out equals the total', async () => {
+  const events = Array.from({ length: 15 }, (_, n) => ({ id: `b${n}`, start: `2026-10-19T${String(9 + n).padStart(2, '0')}:00:00Z`, summary: `Booking ${n} with a long enough name to spend the reply room` }));
+  const h = fixture(events);
+  h.deps.replyLimit = 1_400;
+  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
+  const text = JSON.stringify(reply);
+  const header = /calendar: (\d+) of (\d+) shown/u.exec(text);
+  const note = /I left out (\d+) calendar events?/u.exec(text);
+  assert.ok(header !== null, `the reply carries a calendar count: ${text.slice(0, 400)}`);
+  const leftOut = note === null ? 0 : Number(note[1]);
+  assert.equal(Number(header[1]) + leftOut, Number(header[2]), `shown plus left out equals the total, got ${header[0]} and ${note?.[0] ?? 'no omission note'}`);
 });
 
 test('#5: the window grammar reads every declared form out of the sentence and refuses the rest', async () => {

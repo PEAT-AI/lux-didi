@@ -2446,16 +2446,19 @@ export function capReply(reply: JsonObject, limit: number): JsonObject {
     const widest = findings[0];
     const lines = widest?.text?.split('\n') ?? [];
     if (widest === undefined || lines.length <= 1) break;
-    const head = (lines.shift() ?? '').replace(/: (\d+) of (\d+) shown$/u, (_match, shown: string, total: string) => `: ${Math.max(0, Number(shown) - 1)} of ${total} shown`);
+    const head = lines.shift() ?? '';
     if (lines.length === 1) {
       // R5 (RESCAP-R5): the last evidence line is clipped to the room left, so a long best hit still answers.
+      // #5: the clipped hit is still shown, so the header it keeps counts it.
       const kept = clip(lines[0]!, lines[0]!.length - (size() - limit) - 1);
       if (kept.length >= RESEARCH.clipFloorChars) { widest.text = [head, kept].join('\n'); widest.chars = kept.length; trimmed = true; continue; }
     }
+    // #5: only a line this pass really removes is counted out of the header, never one it clipped.
+    const counted = head.replace(/: (\d+) of (\d+) shown$/u, (_match, shown: string, total: string) => `: ${Math.max(0, Number(shown) - 1)} of ${total} shown`);
     lines.pop();
     // F2 (review): a header that claims a count over no evidence line is a lie, so the finding goes whole.
     if (lines.length === 0) reply['findings'] = (reply['findings'] as JsonObject[]).filter(finding => finding !== widest);
-    else { widest.text = [head, ...lines].join('\n'); widest.chars = lines.join('\n').length; }
+    else { widest.text = [counted, ...lines].join('\n'); widest.chars = lines.join('\n').length; }
     trimmed = true;
   }
   // F2 (review): the hard bound. The page envelopes carry the same evidence as the findings, so they go last.
@@ -2591,15 +2594,23 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     const complete = status === 'answered' && !trimmed && stillReading.length === 0 && [...run.sourcesDone].some(source => configured.includes(source));
     // LAT-1023: evidence left unread is named in one short clause, so a capped answer is never read as the
     // whole record. A source this run never reached and a page it dropped both count as unread.
-    const unsearched = configured.filter(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source) && !run.pending.has(source));
+    // #3: a read that found nothing was still made, so it never rides the "did not search" note.
+    const unsearched = configured.filter(source => !run.sourcesDone.has(source) && !run.sourcesFailed.has(source) && !run.emptySearches.has(source) && !run.pending.has(source));
     const moreAvailable = trimmed || unsearched.length > 0;
     // N5 (#568): the note offers a continuation only when this reply can serve one, so the model never
     // spends a round on a continue the run answers with continuation_unavailable.
     const canRepeat = complete ? false : canContinue || trimmed;
-    const settledNote = complete ? (note === undefined ? RESEARCH.completeNote : `${note} ${RESEARCH.completeNote}`)
+    // #4: the left-out count is derived inside the measured reply, so the header's total and this sentence
+    // never drift apart when a later trim takes one more event out.
+    const calendarGroup = groups.find(group => group.source === 'calendar');
+    const calendarLeftOut = calendarGroup === undefined ? 0 : Math.max(0, calendarGroup.total - shownOf(calendarGroup));
+    const spokenNote = calendarLeftOut === 0 ? note
+      : note === undefined ? `I left out ${calendarLeftOut} calendar ${calendarLeftOut === 1 ? 'event' : 'events'} to keep this answer short.`
+        : `${note} I left out ${calendarLeftOut} calendar ${calendarLeftOut === 1 ? 'event' : 'events'} to keep this answer short.`;
+    const settledNote = complete ? (spokenNote === undefined ? RESEARCH.completeNote : `${spokenNote} ${RESEARCH.completeNote}`)
       : stillReading.length > 0 ? `${RESEARCH.stillReadingNote}${stillReading.map(source => SOURCE_LABEL[source]).join(', ')}`
-        : canRepeat ? (moreAvailable ? (note === undefined ? RESEARCH.moreAvailableNote : `${note} ${RESEARCH.moreAvailableNote}`) : note)
-          : unsearched.length === 0 ? note : `${note === undefined ? '' : `${note} `}${RESEARCH.notSearchedNote}${sourceListText(unsearched)}.`;
+        : canRepeat ? (moreAvailable ? (spokenNote === undefined ? RESEARCH.moreAvailableNote : `${spokenNote} ${RESEARCH.moreAvailableNote}`) : spokenNote)
+          : unsearched.length === 0 ? spokenNote : `${spokenNote === undefined ? '' : `${spokenNote} `}${RESEARCH.notSearchedNote}${sourceListText(unsearched)}.`;
     return { findings, reply: { researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, down to a source's last line: the Live budget is a hard bound, so a kept
@@ -2610,11 +2621,14 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   while (guard-- > 0) {
     const rendered = JSON.stringify(render().reply).length;
     if (rendered <= limit) break;
-    const removable = groups.filter(group => shownOf(group) > 0);
+    const removable = groups.filter(group => shownOf(group) > (group.days === undefined ? 0 : 1));
     if (removable.length === 0) break;
     removable.sort((a, b) => b.lines.length - a.lines.length);
     const trimmed = removable[0]!;
-    if (trimCalendarEvent(trimmed)) continue;
+    // #4: a calendar day line is a list of whole events, so it loses one event at a time, the count it
+    // reports is the count of events it really dropped, and it is never clipped: a clip would swallow an
+    // event while the header still claimed it. Its last event stays, so the answer keeps the day it read.
+    if (trimmed.days !== undefined) { trimCalendarEvent(trimmed); continue; }
     const last = trimmed.lines[trimmed.lines.length - 1]!;
     if (trimmed.lines.length === 1) {
       const room = last.length - (rendered - limit) - 1;
@@ -2623,9 +2637,6 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     trimmed.lines.pop(); dropped += 1;
   }
   const compactItems = dropped + droppedEvents;
-  // A trimmed answer always says it was trimmed and how much it left out.
-  const omission = droppedEvents === 0 ? undefined : `I left out ${droppedEvents} calendar ${droppedEvents === 1 ? 'event' : 'events'} to keep this answer short.`;
-  if (omission !== undefined) note = note === undefined ? omission : `${note} ${omission}`;
   const { findings, reply } = render();
   const result: CalendarReply & MailReply = { ...reply, findings };
   if (mailReads.length) {

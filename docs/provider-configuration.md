@@ -109,7 +109,7 @@ a silent fall back to the public base.
 ## Library API (ESM)
 
 Import `loadProviderConfig`, `initializeProviderConfig`, `ConfigError` and types
-from `server/config/index.js` (compiled from TypeScript).
+from `server/config/index.ts`.
 
 ```ts
 const status = loadProviderConfig({ configDir, ownerId: currentStoreOwnerId });

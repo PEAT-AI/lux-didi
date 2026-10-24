@@ -367,6 +367,29 @@ test('#604: an ungranted composite refuses with tool-not-granted', async t => {
   assert.ok(!f.calls().some(call => call.name === 'mattermost_search'), 'no child read follows an ungranted composite');
 });
 
+// R3: the chat read's reason is the failure the sub-call really returned. Only the two availability
+// codes mean not-granted; every other failure keeps its own closed reason.
+test('R3: a granted composite that fails for another reason is never reported as not granted', async () => {
+  const logged: Record<string, unknown>[] = [];
+  const deps: ResearchDeps = {
+    now: () => Date.now(), configured: ['mail', 'chat', 'calendar'],
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => (call.name === INTERNAL.chatAttention
+      ? { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'credential-refresh-failed' }
+      : { key: call.key, name: call.name, ok: true, text: 'a line', originalCharacters: 6, omittedCharacters: 0 })),
+    emit: () => {},
+    log: () => {},
+    logSource: (event: ResearchSourceLog) => { logged.push(event as unknown as Record<string, unknown>); },
+    ledger: new ResearchLedger(),
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'anything urgent came in?' }, new AbortController().signal);
+  const receipt = logged.find(event => event['event'] === 'research_source' && event['source'] === 'chat');
+  assert.ok(receipt, 'the failed chat read is receipted');
+  assert.equal(receipt['outcome'], 'failed');
+  const text = JSON.stringify(reply);
+  assert.ok(text.includes('sign in again'), `the reply keeps the real cause: ${text.slice(0, 400)}`);
+  assert.ok(!text.includes('tool not granted'), 'a credential failure is never a not-granted read');
+});
+
 // F17: a composite the connector cannot serve is a refusal, never a successful read of a token. The
 // chat sub-call names the closed reason and never reports the tool as unknown.
 test('F17: an ungranted composite refuses the chat sub-call with its own closed reason', async () => {

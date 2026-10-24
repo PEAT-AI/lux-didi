@@ -97,7 +97,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
 # #613: the owner-stop latch and the cold path of an uncertain session. Injected effects only.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
-  Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/ConnectingRing.swift Sources/LuxDidi/SingleInstanceGuard.swift \\
+  Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/ConnectingRing.swift Sources/LuxDidi/SingleInstanceGuard.swift \
   Tests/DidiLiveTests/NativeStopLatchTests.swift -o "$work/native-stop-latch"
 "$work/native-stop-latch"
 # The held-mute race (D5): a fake host delivers every session callback late. No socket,

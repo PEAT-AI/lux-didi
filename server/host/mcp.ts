@@ -627,9 +627,8 @@ export async function composeMcpRuntime(options: {
       }
       ready.add(entry.id);
       if (attempt === 'first-connect') options.lifecycleLog?.({ event: 'connector_connected', endpointId: entry.id, connectMs: Math.max(0, now() - roundStarted) });
-      // The count reports the endpoint's published read tools; a connector composite is a Didi-side
-      // view, so it is granted (#604) but never counted as a tool the endpoint serves.
-      reports.set(entry.id, { id: entry.id, state: 'connected', tools: names.length, lastHandshakeAt: new Date(now()).toISOString(), ...(identity ? { identity } : {}) });
+      // R1: the count includes a granted composite, so the owner sees every callable read tool.
+      reports.set(entry.id, { id: entry.id, state: 'connected', tools: granted.length, lastHandshakeAt: new Date(now()).toISOString(), ...(identity ? { identity } : {}) });
       return { retryable: false };
     } catch (error) {
       if (stale()) return { retryable: false };

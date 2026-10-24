@@ -10,7 +10,7 @@ export type FakeLiveVoiceEvent =
   | { type: 'generationComplete' } | { type: 'turnComplete' } | { type: 'interrupted' }
   | { type: 'resumptionHandle'; handle: string }
   | { type: 'goAway'; timeLeftMs: number }
-  | { type: 'inputTranscription' | 'outputTranscription'; text: string; finished?: boolean }
+  | { type: 'inputTranscription' | 'outputTranscription'; text: string; finished?: boolean; finalOrigin?: string }
   | { type: 'modelText'; text: string; thought: boolean };
 export interface FakeLiveVoice {
   readonly port: LiveVoicePort;

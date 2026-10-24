@@ -846,6 +846,110 @@ test('a user Stop ends the live session at once as user_stop and keeps its journ
   assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'user_stop' }, 'the first reason stands');
 });
 
+// #589: the deterministic host phrase gate. The owner's own finalized sentence with her name at an edge
+// ends the call at once, with no model turn and no generation in the stop path.
+type VoiceStopSocket = Parameters<typeof pumpOutput>[0];
+const recordingSocket = (frames: string[]): VoiceStopSocket => {
+  const socket = { OPEN: 1, readyState: 1, bufferedAmount: 0,
+    send(data: unknown): void { frames.push(typeof data === 'string' ? data : 'binary'); },
+    close(): void { socket.readyState = 3; } };
+  return socket as unknown as VoiceStopSocket;
+};
+
+const sayStopPhrase = async (fake: ReturnType<typeof fakeLiveVoicePort>, finalOrigin?: string): Promise<void> => {
+  fake.emit({ type: 'inputTranscription', text: 'Naya, stop ', finished: false });
+  await tick();
+  fake.emit({ type: 'inputTranscription', text: 'listening.', finished: false });
+  await tick();
+  fake.emit({ type: 'inputTranscription', text: '', finished: true, ...(finalOrigin ? { finalOrigin } : {}) });
+};
+
+test('#589 a spoken "Naya, stop listening" ends the call as voice_stop and sends one end frame', async t => {
+  const scheduler = new DeadlineClock();
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'voice-stop', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const frames: string[] = [];
+  const pump = pumpOutput(recordingSocket(frames), attachment, () => {}, 1_000_000);
+  await sayStopPhrase(fake);
+  // No clock advance: the stop is felt on the finalized turn, not after a countdown.
+  await pump;
+  const end = frames.map(frame => JSON.parse(frame) as { type: string; state?: string; code?: string })
+    .filter(frame => frame.type === 'terminal');
+  assert.equal(end.length, 1, 'one end frame, and it is the terminal the app acts on');
+  assert.deepEqual([end[0]?.state, end[0]?.code], ['closed', 'voice_stop']);
+  const snapshot = h.owner.get(session.liveSessionId);
+  assert.deepEqual(snapshot.terminal, { state: 'closed', code: 'voice_stop' }, 'the terminal is the voice stop');
+  assert.equal(snapshot.consumerState, 'ended', 'the mic stream is closed with the call');
+  assert.equal(receipts.filter(record => record.event === 'voice_stop').length, 1, 'one voice_stop receipt');
+  assert.equal(receipts.filter(record => record.event === 'session_end').length, 0,
+    'a voice stop is not the Stop button, so it is not logged as one');
+  scheduler.runDue();
+});
+
+test('#589 a stop phrase mid-answer cancels the running response before the goodbye', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'voice-stop-mid-answer', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const frames: string[] = [];
+  const pump = pumpOutput(recordingSocket(frames), attachment, () => {}, 1_000_000);
+  // She is answering: the model turn opened and one chunk of it already reached the app.
+  fake.emit({ type: 'modelTurnStarted' });
+  fake.emit({ type: 'audio', pcm: new Uint8Array([1, 0]), rate: 24000 });
+  await tick();
+  await sayStopPhrase(fake);
+  // The rest of the answer is still arriving when the owner's words land: it must never reach the app.
+  fake.emit({ type: 'audio', pcm: new Uint8Array([2, 0]), rate: 24000 });
+  fake.emit({ type: 'generationComplete' });
+  await pump;
+  const kinds = frames.map(frame => {
+    if (typeof frame !== 'string') return 'audio';
+    return frame === 'binary' ? 'audio' : (JSON.parse(frame) as { type: string }).type;
+  });
+  assert.equal(kinds.at(-1), 'terminal', 'the end frame is the last frame the app receives');
+  assert.equal(kinds.filter(kind => kind === 'audio').length, 1, 'only the chunk that arrived before the stop was played');
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
+});
+
+test('#589 a muted call and a typed turn never end on the stop phrase', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'voice-stop-muted', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  void (async () => { for await (const chunk of attachment.output) { void chunk; } })();
+  await attachment.setInputMuted(true);
+  await sayStopPhrase(fake);
+  await tick();
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a muted turn is never the owner asking to stop');
+  await attachment.setInputMuted(false);
+  await sayStopPhrase(fake, 'typed');
+  await tick();
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a typed turn is never the owner speaking');
+  attachment.close();
+  await attachment.done;
+});
+
+test('#589 with no consumer confirmation the host records the voice stop itself', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'voice-stop-silent', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  // No output consumer ever reads: native is silent, so nothing confirms the stop.
+  await sayStopPhrase(fake);
+  const snapshot = await waitTerminal(h, session.liveSessionId);
+  assert.deepEqual(snapshot.terminal, { state: 'closed', code: 'voice_stop' },
+    'the host settles the call itself, no clock advance and no native frame');
+});
+
 test('excluded transport facts and raw secrets never persist; Domain and CHAT stay untouched', async t => {
   const h = await harness(t);
   const { session, attachment } = await attached(h);
@@ -5666,4 +5770,29 @@ test('TOPIC 6 (#565): a live research call writes a query shape row to the trace
   assert.equal(Number(knowledge['topic_words']), 3, 'the topic word count is kept');
   assert.equal(typeof Number(knowledge['terms']), 'number');
   assert.equal(JSON.stringify(rows).toLowerCase().includes('wilmar'), false, 'no search word is recorded');
+});
+
+test('#589 a finished owner turn on a superseded generation never ends the call', async t => {
+  const h = await harness(t);
+  const { session } = await attached(h);
+  const first = h.f.clients[0]!;
+  // The host goes away and rebuilds from the saved handle, so the session is generation 1.
+  h.f.send({ sessionResumptionUpdate: { resumable: true, newHandle: 'synthetic-stop-resumption' } });
+  h.f.send({ goAway: { timeLeft: '10s' } });
+  await h.f.frame(2);
+  h.f.send({ setupComplete: {} });
+  await tick();
+  await tick();
+  assert.equal(h.owner.current().state, 'listening', 'the rebuilt generation is live');
+  // A finished turn on the socket the host already left is not the owner's live words.
+  first.emit('message', Buffer.from(JSON.stringify({ serverContent: { inputTranscription: { text: 'Naya, stop listening', finished: true } } })));
+  await tick();
+  await tick();
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a superseded generation never ends the call');
+  // The live generation is still armed, so the gate itself is not simply dead.
+  h.f.send({ serverContent: { inputTranscription: { text: 'Naya, stop listening', finished: true } } });
+  await tick();
+  await tick();
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' },
+    'the current generation ends the call on the same words');
 });

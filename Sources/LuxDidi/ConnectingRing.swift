@@ -172,6 +172,64 @@ struct ConnectingChimeRecord: Equatable {
     }
 }
 
+/// #589: the goodbye when the owner's own sentence ends the call: the arrival chime turned around and
+/// softened, three bells descending over 600 ms under a lower peak, on the ring's own player.
+enum ConnectingGoodbyeTone {
+    static let sampleRate = 24000.0
+    static let noteFrequencies: [Double] = [1318.51, 1108.73, 880]
+    static let onsetMs: [Int] = [0, 130, 260]
+    static let lengthMs = 600
+    static let peak: Float = 0.12
+    static let decayMs = 200.0
+    static let attackMs = 8
+    /// The closing release: the buffer ends at silence and the ring waits this long past it.
+    static let fadeMs = 40
+    static let partialGains: [Double] = [1, 0.3, 0.1]
+    static let partialDecays: [Double] = [1.4, 0.9, 0.6]
+
+    static var totalFrames: Int { Int(sampleRate * Double(lengthMs) / 1000) }
+    static var onsetFrames: [Int] { onsetMs.map { Int(sampleRate * Double($0) / 1000) } }
+
+    /// One shot on the arrival chime's synthesis, with the notes descending and a slower decay.
+    static func samples() -> [Float] {
+        var out = [Float](repeating: 0, count: totalFrames)
+        let attackFrames = Int(sampleRate * Double(attackMs) / 1000)
+        let releaseFrames = Int(sampleRate * Double(fadeMs) / 1000)
+        for (frequency, onset) in zip(noteFrequencies, onsetFrames) {
+            for index in onset..<totalFrames {
+                let time = Double(index - onset) / sampleRate
+                var value = 0.0
+                for partial in 0..<partialGains.count {
+                    let multiple = Double(partial + 1)
+                    let decay = decayMs / 1000 * partialDecays[partial]
+                    value += partialGains[partial] * exp(-time / decay)
+                        * sin(2 * Double.pi * frequency * multiple * time)
+                }
+                let head = index - onset
+                let attack = head < attackFrames
+                    ? 0.5 - 0.5 * cos(Double.pi * Double(head) / Double(attackFrames)) : 1
+                let tail = totalFrames - 1 - index
+                let release = tail < releaseFrames
+                    ? 0.5 - 0.5 * cos(Double.pi * Double(tail) / Double(releaseFrames)) : 1
+                out[index] += Float(value * attack * release)
+            }
+        }
+        let top = out.map { abs($0) }.max() ?? 0
+        guard top > 0 else { return out }
+        let scale = peak * 0.98 / top
+        return out.map { $0 * scale }
+    }
+
+    static func buffer() -> AVAudioPCMBuffer? {
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(totalFrames)),
+              let channel = buffer.floatChannelData?[0] else { return nil }
+        buffer.frameLength = AVAudioFrameCount(totalFrames)
+        for (index, value) in samples().enumerated() { channel[index] = value }
+        return buffer
+    }
+}
+
 /// The presence-to-ring rule: start on connecting, stop on any other state, and a start that a
 /// stop outran never plays. No clock, no engine, so the rule is testable on its own.
 struct ConnectingRingDirector {
@@ -409,6 +467,21 @@ final class ConnectingRing {
     /// SOUND-R1: the rebuilt call is live again, so the ring returns to live and plays the chime.
     func rebuildSettled() {
         presenceChanged(.live, failed: false)
+    }
+
+    /// #589: the owner's own words ended the call, so the same player says goodbye: one descending bell,
+    /// then the output stops. Nothing here touches the live engine, whose microphone is already closed.
+    func goodbye() {
+        let output = ringOutput()
+        guard let buffer = ConnectingGoodbyeTone.buffer(), output.playChime(buffer) else { return }
+        playToken &+= 1
+        let token = playToken
+        outputRunning = true
+        after(ConnectingGoodbyeTone.lengthMs + ConnectingGoodbyeTone.fadeMs) { [weak self] in
+            guard let self, token == self.playToken, self.outputRunning else { return }
+            self.outputRunning = false
+            output.stopOutput()
+        }
     }
 
     /// The player is only built once a ring is asked for.

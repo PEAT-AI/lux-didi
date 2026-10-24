@@ -37,6 +37,7 @@ import { currentLiveAccent } from '../config/live.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
 import { parseTerminal, persistedKinds, readFragmentPage, retainedBytes } from './journal.js';
+import { stopPhrase } from './stop-phrase.js';
 import {
   LiveError,
   type CreateLiveSession, type JournalKind, type LiveAttachment, type LiveConsumerState, type LiveContext,
@@ -2605,6 +2606,7 @@ export class LiveSessionOwner {
           if (handle.inputFinal) for (const resolve of handle.inputFinalWaiters ?? []) resolve();
         }
         this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, kind, persisted, ++handle.markerSequence) });
+        this.#voiceStopGate(handle, event, generation);
       }
     } catch (error) {
       handle.persistFailure = error;
@@ -3299,6 +3301,22 @@ export class LiveSessionOwner {
     handle.consumer?.close();
     handle.abort.abort();
     handle.resolveDone();
+  }
+
+  /**
+   * #589: the owner's own finalized sentence, with her name at an edge, ends the call. The gate is the
+   * host's, so no model turn, tool or generation stands in the stop path; settling closes the provider
+   * session (cancelling any answer in flight), drops every later mic frame and sends the one end frame
+   * native acts on, the session's own terminal.
+   */
+  #voiceStopGate(handle: ActiveSession, event: LiveVoiceEvent, generation: number): void {
+    if (event.type !== 'inputTranscription' || event.finished !== true) return;
+    if (handle.muted || handle.terminal || generation !== handle.generation) return;
+    if (event.finalOrigin === 'typed') return;
+    const spoken = this.#store.transaction(tx => finishedOwnerTurn(tx, handle.liveSessionId));
+    if (stopPhrase(spoken) === null) return;
+    this.#settle(handle, { state: 'closed', code: 'voice_stop' }, true, 'ended', null);
+    hostLogEvent({ event: 'voice_stop' });
   }
 
   /** The transaction/lifecycle guard makes attach and every expiry observation share one winner. */

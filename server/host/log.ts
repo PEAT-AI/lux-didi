@@ -521,6 +521,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.msAfterStop)) return;
     return { event: 'session_end', reason: value.reason, msAfterStop: value.msAfterStop };
   }
+  if (value.event === 'voice_stop') {
+    // #589: the owner's own sentence ended the call on the host's phrase gate. No words, no audio, no code.
+    if (!closedKeys(value, ['event'])) return;
+    return { event: 'voice_stop' };
+  }
   if (value.event === 'live_context_usage') {
     // Closed shape: provider-neutral token counts only; no behaviour reads them yet (release 3g-c).
     const keys = Object.keys(value).sort().join(',');

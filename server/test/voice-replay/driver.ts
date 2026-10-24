@@ -14,6 +14,7 @@ import { fixture } from '../openai-live-voice-fixture.js';
 import { randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { createMcpAdapter } from '../../adapters/mcp/adapter.js';
+import { attachHostLogSink } from '../../tools/host-events.js';
 import { McpRegistry, canonicalToolDigest } from '../../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../../tools/index.js';
@@ -119,6 +120,9 @@ export interface Replay {
   /** The typed dispositions the host itself published for a call it could not finish, for example a call lost
    *  when the voice connection resumed. A typed loss is a disposition; silence is not. */
   readonly dispositions: readonly { readonly at: number; readonly callId: string; readonly code: string }[];
+  /** Every structured host diagnostic the owner emitted, so a scenario can see which clock settled a call:
+   *  `tool_ceiling_hit` when the owner's ceiling answered, a tool failure receipt when anything else did. */
+  readonly hostEvents: readonly Record<string, unknown>[];
   readonly calls: readonly CallObligation[];
   /** Each run of output submissions and every continuation decision recorded after it. */
   readonly batches: readonly { readonly epoch: number; readonly at: number; readonly callIds: readonly string[]; readonly creates: readonly Command[] }[];
@@ -210,6 +214,8 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
   const commands: Command[] = [];
   const projections: Projection[] = [];
   const receipts: Receipt[] = [];
+  const hostEvents: Record<string, unknown>[] = [];
+  t.after(attachHostLogSink({ event: raw => { if (raw !== null && typeof raw === 'object') hostEvents.push(raw as Record<string, unknown>); } }));
   const calls: CallObligation[] = [];
   const batches: { epoch: number; at: number; callIds: string[]; creates: Command[] }[] = [];
   let seq = 0;
@@ -341,6 +347,7 @@ export async function replay(t: TestContext, options: ReplayOptions = {}): Promi
     clock, owner, store, liveSessionId, providerFrames, commands, projections, receipts, calls, batches, ctx,
     get inaudibleFrames() { return inaudibleFrames; },
     get dispositions() { return dispositions; },
+    get hostEvents() { return hostEvents; },
     get toolCalls() { return tools?.calls ?? []; },
     get journalErrors() { return tools?.journalErrors ?? []; },
     async ready() {

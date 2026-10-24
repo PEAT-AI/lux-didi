@@ -71,6 +71,11 @@ test('scenario 3: a late output after a timeout is not repeated and does not rev
   const submissions = replay.commands.filter(command => command.epoch === call.epoch
     && (command.frame['item'] as Record<string, unknown> | undefined)?.['call_id'] === call.callId);
   assert.equal(submissions.length, 1, `exactly one output submission for ${call.callId} ${describe(replay)}`);
+  // Which clock settled the call: the host says so itself. The owner's ceiling logs `tool_ceiling_hit` when it
+  // answers, and the scripted tool's real budget (driver.ts `budgets.timeoutMs`) logs nothing of the kind, so a
+  // call settled by anything other than the ceiling fails here instead of reading as a ceiling that ran early.
+  assert.equal(replay.hostEvents.some(event => event['event'] === 'tool_ceiling_hit'), true,
+    `the owner's ceiling did not settle ${call.callId}, something earlier did (host events: ${JSON.stringify(replay.hostEvents.map(event => event['event']))})`);
   // The ceiling is what answered, at the host limit, not the tool: a late callback is a receipt, never a write
   // (live/index.ts #withCeiling's `late` callback and the timeout branch that answers through the owner).
   assert.equal(submissions[0]!.at - call.at >= 12_000, true,

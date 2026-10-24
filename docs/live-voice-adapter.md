@@ -73,8 +73,8 @@ All limits are configurable positive finite safe integers, snapshotted at constr
 | maxRequestBytes | 256 KiB | UTF-8 JSON system/history budget, whole history only |
 | maxHistoryTurns | 128 | Initial text turn count |
 | handshakeMs | 15 seconds | Socket handshake and actual setup completion |
-| idleMs | 60 seconds | No accepted inbound/outbound activity after readiness |
-| sessionMs | 15 minutes | Whole session, including deferred credentials |
+| idleMs | 5 minutes | No accepted inbound/outbound activity after readiness |
+| sessionMs | 1 hour | Whole session, including deferred credentials |
 | closeMs | 1 second | Graceful close cleanup before forced termination |
 
 Timers must also fit Node's 32-bit timer range. Absolute deadline is validated and checked before/after deferred credential resolution, before socket construction and at writes/event work boundaries. Handshake, idle, session, deadline and close timers are owned and cleaned on terminal paths. Defaults are configurable operational bounds, not claims that every transient network delay is fatal. Short test timers are synthetic test bounds, not product latency guarantees.

@@ -73,8 +73,7 @@ admin credential into the browser, URL, shell command, logs or JavaScript.
 Capture with **Save message**, search **Memory**, add a commitment under **Today**,
 and use **Edit** to correct its due date. Stale revisions display a conflict and
 load the latest state for explicit review; no overwrite retry is automatic.
-The old **Ask Didi** shortcut remains disabled; use the separate explicitly
-disclosed connected Start/Send flow when a model is locally configured. Offline edits are
+Use the explicitly disclosed connected Start/Send flow when a model is locally configured. Offline edits are
 refused, not queued; reconnect restores current service state.
 
 ## State and shutdown

@@ -58,8 +58,7 @@ loaded records. No offline writer exists.
   `/api/v1/sessions/:id/entries`, creating a session if needed; it never sends to
   a model. A successful Save clears the draft; failure or Stop waiting retains
   it without claiming that an ambiguous request was not saved.
-  **Ask Didi** scrolls to the separate connected composer; it does not send the
-  local-note draft. Connected Start/Send uses `/api/v1/chat` and a durable Chat
+  Connected Start/Send uses `/api/v1/chat` and a durable Chat
   Run, not a generic job ID or `/jobs/:id` polling. It requires explicit route consent; its
   Cancel model run action cancels durable work, not merely subscription waiting.
   Neither cancel nor revoke can retract bytes already sent.
@@ -73,7 +72,7 @@ loaded records. No offline writer exists.
   browser notification delivery or microphone access.
 
 Dates are displayed in the browser's IANA time zone and sent as UTC instants.
-The service—not the client—decides plan membership, revision validity,
+The service, not the client, decides plan membership, revision validity,
 transitions, and reminder behavior. Pagination cursors are reported as partial
 views; this first protocol provides no agreed cursor input to fetch next pages.
 No private data is seeded at startup.

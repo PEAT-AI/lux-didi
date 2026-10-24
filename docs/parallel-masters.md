@@ -1,5 +1,7 @@
 # Parallel masters: ownership, start packets and the change protocol
 
+> Historical document. Written in October 2026 for the original build plan. It is a record of that working agreement, not a description of how the repository is worked on now (see [CLAUDE.md](../CLAUDE.md)).
+
 Status: proposed working agreement for the build. Five implementation lanes are planned, matching the five masters in the backlog. This document describes how they start, what each one owns, and how changes cross lane boundaries. It describes intended process, not a running organization.
 
 ## Lanes and ownership

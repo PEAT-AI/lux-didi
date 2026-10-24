@@ -1,5 +1,7 @@
 # Building and installing the Mac app
 
+Requirements: Apple silicon, macOS 26 or newer (`LSMinimumSystemVersion`), the Xcode Command Line Tools, and Node 26 plus npm to build. The app bundles its own Node 26 (default 26.8.2, checksum-verified). Every check named here is described in [checks.md](checks.md).
+
 One canonical producer builds the native shell and, optionally, composes an
 accepted asset bundle into a single `.app`. Production is built **without**
 `COMPANION_TEST`. The build and the install are separate steps.
@@ -17,13 +19,16 @@ scripts/build-macos-app.sh "<output>/Lux Didi.app" \
   no duplicate `Info.plist`, entitlements or launcher. `Resources/AppIcon.icns` is
   copied to `Contents/Resources/AppIcon.icns` and named by `CFBundleIconFile`, so
   the Dock tile and the app switcher show the Naya icon.
-- `--assets DIR` composes an accepted producer output:
-  - `DIR/node` → `Contents/MacOS/node`
-  - `DIR/server/` → `Contents/Resources/server`
-  - `DIR/web/` → `Contents/Resources/web`
+- `--assets DIR` composes the output of `scripts/build-asset-bundle.sh`:
+  - `DIR/Resources/node/bin/node` goes to `Contents/MacOS/node`
+  - `DIR/server/node_modules/@lux-didi/service` goes to
+    `Contents/Resources/server/node_modules/@lux-didi/service`
+  - `DIR/Resources/web/dist` goes to `Contents/Resources/web/dist`
   - `Contents/Resources/didi-runtime.json` is written with `nodePath`
-    `Contents/MacOS/node` (bundle-relative), `serverEntry` `server/dist/host/index.js`,
-    `webRoot` `web/dist`, `schemaVersion` 1, and the real bundled Node major.
+    `Contents/MacOS/node` (bundle-relative), `serverEntry`
+    `server/node_modules/@lux-didi/service/dist/host/index.js`, `webRoot`
+    `web/dist`, `schemaVersion` 1, and the real bundled Node major. The app
+    validates it on every launch.
 - Nested Mach-O code (bundled Node and any `.node`/`.dylib`) is signed first and
   the completed bundle last, then `codesign --verify --deep --strict`.
 
@@ -45,6 +50,10 @@ or grant network access. Existing configuration files and symlinks remain untouc
 ```
 scripts/install-macos-app.sh "/path/to/Lux Didi.app" --to "$HOME/Applications"
 ```
+
+## First launch after an install
+
+An installer or script that relaunches the app should pass `--install-relaunch` (for example `open -g -a "Lux Didi" --args --install-relaunch`). That launch shows the orb, takes no focus and never connects a call, so an install can never open the microphone. A launch by hand from Finder or the Dock is the interactive kind and connects once by itself. App state lives in `~/Library/Application Support/ai.peat.lux-didi` and the selected configuration directory is recorded in `ai.peat.lux-didi-operator`.
 
 ## Protected operator configuration
 
@@ -73,7 +82,7 @@ no new UI and no in-app editor.
 
 ## Checks
 
-- `scripts/check-macos-install.sh` — composes the real app and drives it through
+- `scripts/check-macos-install.sh`: composes the real app and drives it through
   LaunchServices (no external descriptor, bundled Node only), plus signatures,
   artifact hygiene, the configure matrix and install/rollback.
   Status and P1/P2 replay assertions remain in the installer script. A private,
@@ -84,10 +93,10 @@ no new UI and no in-app editor.
   post-release premature acknowledgement, wrong/stale/duplicate acknowledgement,
   cancellation/EOF and an actual HTTP assertion failure. This adds no public
   endpoint, ordinary-launch hold, configuration authority or longer deadline.
-- `Tests/DidiMacTests/check-mac.sh` — native shell proof (unchanged meanings).
+- `Tests/DidiMacTests/check-mac.sh`: native shell proof.
 - `Tests/DidiCompanionTests/check-companion.sh`,
-  `Tests/DidiCompanionTests/check-launch-services-probe.sh` — companion and
-  LaunchServices proofs (unchanged meanings).
+  `Tests/DidiCompanionTests/check-launch-services-probe.sh`: companion and
+  LaunchServices proofs.
 
 ## Limits
 

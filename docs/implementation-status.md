@@ -1,64 +1,42 @@
 # Implementation status
 
-This describes the current source tree, not proof that a published release or an
-owner installation contains every change. A bundle's `didi-runtime.json`
-`releaseCommit` identifies its source. Build success alone does not prove usable
-accounts, voice hardware or a healthy installed application.
+State of the source tree at release 7 (main 7c968615, 2026-10-24). It describes the source, not proof that a given installation contains every change: a bundle's `didi-runtime.json` `releaseCommit` names its source. A green build alone proves neither working accounts, voice hardware nor a healthy installed app.
 
-## Implemented surfaces
+## What works today
 
-- A loopback-only TypeScript service with a single SQLite writer, durable local
-  notes, source-backed memory, commitments, correction history and Today.
-- Connected text conversations with explicit consent and provider configuration;
-  MCP tool composition with endpoint classification, approval and tool evidence.
-- Live session ownership, Gemini transport, native microphone capture and audio
-  playback, mute/stop controls, transcript projection and local memory tools.
-- A shared same-origin web client with pairing, connected conversations, memory
-  filters/deletion, origin/kind labels, Settings and connector next steps.
-- A regular Mac app named Naya (Dock icon, app icon, FULL window and MINI
-  floating orb) with service supervision, native web view, native Save note and
-  Send to Naya, Getting started, permission buttons, shortcuts, login item
-  control, notifications and safe diagnostics.
-- Canonical producers for a bundled-Node app, signature validation, installation,
-  preservation of a prior app and restoration on failed post-swap verification.
+- **Voice calls with Naya** over OpenAI GPT-Live or Gemini Live, chosen in Settings. Full duplex, interruptible, with mute, reconnect with resumption, a short opening line, voice stop phrases and an idle timeout.
+- **The orb.** Naya starts as the floating orb in the top right. One motion coordinator drives both orbs; her voice moves the body and her state sets the colour.
+- **Research layer** over memory, Lux Knowledge, Gmail, Google Calendar, Mattermost, Mongoose and the web, with triage scans for mail and chat, bounded rounds and a 2,500 character reply cap.
+- **Memory.** Local notes ("Naya, remember that ..."), a private summary of each finished call, imported standing memory, and vault notes to Lux Knowledge.
+- **Text chat and the web UI** (Conversation, Today, Memory, Settings) in the full window.
+- **Build and install** of a self-signed Mac app with bundled Node, which preserves the previous app and the owner's configuration.
+- **Diagnostics.** Content-free `host.log`, the joinable trace tables, `naya-logs`, `didi-timeline`, and Copy diagnostics in the menu.
+
+## Release history
+
+| Release | Date | What it added |
+| --- | --- | --- |
+| 3 series | 2026-10-17 to 10-19 | Right Command single key, the always-there presence model, mini orb, custom voices, Mongoose sign-in, steadier calls on weak connections, research receipts |
+| fix release 2 and retrieval | 2026-10-22 to 10-23 | Right sources and fewer round trips, calls survive blips, instant unmute, connecting ring, connector recovery, meeting notes found, search text holds content words only |
+| 4 | 2026-10-23 | Orb shows live at once, mute frees the microphone, follow-up searches use content words, vault notes by voice |
+| 5 | 2026-10-23 | Naya opens each call with her own short line, research capped in rounds, long mail pages trimmed, lighter calls |
+| 6 | 2026-10-24 | Orb first (start top right, auto-connect only on an interactive launch, window only from the menu), one motion engine, soft connecting and reconnecting sounds, opener from the last session, reply cap 2,500 characters, calendar attendees and weekdays |
+| 7 | 2026-10-24 | Voice stop ("Naya, stop listening"), 5 minute idle timeout, honest mail and chat triage, topic-only searches, confidence as a field, `--install-relaunch` never connects |
+
+Each release is one squash-merged pull request; its body lists the checks run at the head commit and the issues it closes.
 
 ## Setup and authority
 
-The installer creates no provider or connector configuration and changes no
-existing configuration files or symlinks. An owner selects a protected directory
-with the existing native `--configure --config-dir` mechanism and supplies the
-profiles, endpoint catalog and credentials described in the public guides.
-Missing profiles are a healthy unconfigured state. Local notes and memory still
-work; no unconfigured provider or connector receives automatic authority.
+The installer creates no provider or connector configuration and changes no existing configuration files or symlinks. An owner selects a protected directory with `--configure --config-dir` and supplies the voice profile (`live.json`), the connector catalog and credentials. A missing profile or connector is a healthy unconfigured state: local notes and memory still work, and nothing gets authority automatically. Connector access is read-only, per explicit endpoint, account and credential reference.
 
-The host retains a compatibility migration for an existing default
-`provider-config` catalog into a selected directory when its catalog is absent.
-It copies existing MCP/Live catalogs only, never credentials. A fresh installation
-has no such catalog to migrate. Configured endpoints can grant trusted reads only
-when the owner has explicitly supplied that catalog and its approval mode.
+Live limits come from the validated profile. When it omits them the defaults are a 1 hour provider session, a 5 minute idle limit and a 4 hour call limit (`adapters/live-voice/types.ts`, `live/config.ts`).
 
-Live limits come from the effective validated profile. When its optional limits
-are omitted, the core supplies a 15 minute session and 1 minute idle limit.
-Installation no longer chooses a different timer profile.
+## Known limits
 
-## Verification limits
+- Local ad-hoc or self-signed signing does not prove acceptance on another Mac. There is no notarization, no clean-machine install test and no Windows or Linux package.
+- Deleting a memory removes it from future reads and future call context. A call already running keeps what it has received until it reconnects, and stored answers may quote a deleted memory.
+- Voice, microphone, Google, Mattermost and Mongoose behaviour is proven by fixtures in checks and by owner use. No check talks to a real provider or account; `scripts/smoke.sh` is the one real-path run, after an install.
+- Control Option Space is registered twice in the app (window toggle and orb pill); the first wins and the second is expected to report unavailable. Unverified at runtime.
+- Cloud placement, mobile pairing, harness control and broad computer control are designs only; see the historical [roadmap](roadmap.md) and [cloud-deployment](cloud-deployment.md).
 
-Canonical scripts include packaging, host, provider, MCP, Live, native and web
-checks. Synthetic fixtures exercise boundaries without a real account or voice
-provider. A final release still requires the exact committed tree's applicable
-checks, installed identity and signature proof, companion proof, meaningful
-real-account tool/chat/memory results and a built-in microphone/audio smoke.
-
-Local ad-hoc signing and same-Mac relocation do not prove cross-Mac Gatekeeper
-acceptance. Paid signing, notarization and clean-machine installation remain
-unverified. Strict whole-app Keychain API modernization remains separate work.
-Linux is unverified, Windows has no package, and cloud/mobile synchronization,
-harness control and broad computer autonomy remain roadmap work.
-
-Deletion excludes memories from future reads and session context. An active
-provider session retains context already sent until reconnect or stop, and stored
-conversation answers may retain quoted memory. These are explicit current limits.
-
-See [user guide](user-guide.md), [Mac installation](macos-install.md),
-[provider configuration](provider-configuration.md),
-[MCP configuration](mcp-configuration.md) and [Mac experience](mac-experience.md).
+See the [user guide](user-guide.md), [Mac installation](macos-install.md), [provider configuration](provider-configuration.md), [MCP configuration](mcp-configuration.md) and [Mac experience](mac-experience.md).

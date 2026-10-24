@@ -1,5 +1,7 @@
 # Research: sources, options and evidence limits
 
+> Historical document. Written in October 2026. The sources and evidence limits below are the planning-time research base; nothing here describes the current product.
+
 Status: public summary of the research base for the plan. Access date for every source below is 2026-10-09, the planning date. This page separates what a source says from what was observed and from what is still an assumption. Nothing here was measured by running a product, because no product exists.
 
 ## Evidence classes

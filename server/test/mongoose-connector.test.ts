@@ -21,10 +21,25 @@ import { loadMcpEndpoints, mcpErrorCode } from '../config/mcp.js';
 
 const ACCOUNT = 'account-a';
 
+/**
+ * The published input schemas at aa105bc6, not a permissive stand-in: `search` and `read` carry their real
+ * key sets with additionalProperties false, so the dispatch gate refuses any argument the real server
+ * would refuse. Every other tool keeps an open object because its own schema is the server's business.
+ */
+const PUBLISHED_SCHEMAS: Record<string, Record<string, unknown>> = {
+  search: {
+    type: 'object', additionalProperties: false, required: ['query'],
+    properties: { query: { type: 'string' }, mode: { type: 'string', enum: ['answer', 'browse'] }, limit: { type: 'integer' }, cursor: { type: 'string' }, verbose: { type: 'boolean' } },
+  },
+  read: {
+    type: 'object', additionalProperties: false, required: ['ref'],
+    properties: { ref: { type: 'string' }, depth: { type: 'string', enum: ['summary', 'full', 'all'] }, cursor: { type: 'string' }, verbose: { type: 'boolean' } },
+  },
+};
 const endpointTools: Record<MongooseEndpoint, ToolDefinition[]> = {
-  knowledge: MONGOOSE_ENDPOINT_TOOLS.knowledge.map(name => ({ name, inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } })),
-  data: MONGOOSE_ENDPOINT_TOOLS.data.map(name => ({ name, inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } })),
-  crm: MONGOOSE_ENDPOINT_TOOLS.crm.map(name => ({ name, inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } })),
+  knowledge: MONGOOSE_ENDPOINT_TOOLS.knowledge.map(name => ({ name, inputSchema: PUBLISHED_SCHEMAS[name] ?? { type: 'object' }, annotations: { readOnlyHint: true } })),
+  data: MONGOOSE_ENDPOINT_TOOLS.data.map(name => ({ name, inputSchema: PUBLISHED_SCHEMAS[name] ?? { type: 'object' }, annotations: { readOnlyHint: true } })),
+  crm: MONGOOSE_ENDPOINT_TOOLS.crm.map(name => ({ name, inputSchema: PUBLISHED_SCHEMAS[name] ?? { type: 'object' }, annotations: { readOnlyHint: true } })),
 };
 
 const SEARCH_TEXT = JSON.stringify({
@@ -190,10 +205,11 @@ test('a company question runs search mode answer then read on the top ref and re
   const k = await knowledge({ replies: { search: SEARCH_TEXT, read: READ_TEXT } });
   t.after(() => k.f.close());
   t.after(() => k.a.adapter.close());
-  const result = await k.reader.searchCompany({ query: 'agri input pricing', read: 'summary' });
+  const result = await k.reader.searchCompany({ query: 'agri input pricing' });
   assert.equal(result.state, 'completed');
+  // Every wire argument is one the published search schema carries; the depth read is a second call.
   assert.deepEqual(k.f.calls, [
-    { name: 'search', arguments: { query: 'agri input pricing', mode: 'answer', read: 'summary', limit: 5 } },
+    { name: 'search', arguments: { query: 'agri input pricing', mode: 'answer', limit: 5 } },
     { name: 'read', arguments: { ref: 'item-9', depth: 'summary' } },
   ]);
   const projected = projectMongooseResult(k.a.adapter, result);

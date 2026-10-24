@@ -286,8 +286,8 @@ async function harness(t: TestContext, overrides: {
     let mongooseTransport: WebStandardStreamableHTTPServerTransport | undefined;
     const mongooseEndpoint = { id: 'mongoose-knowledge', url: 'https://fixture.invalid/mcp/knowledge', account: 'account', resource: 'mongoose:knowledge' };
     const mongooseSchemas = [
-      { name: 'search', inputSchema: { type: 'object', properties: { query: { type: 'string' }, mode: { type: 'string' }, limit: { type: 'integer' }, read: { type: 'string' } }, required: ['query'], additionalProperties: false } },
-      { name: 'read', inputSchema: { type: 'object', properties: { ref: { type: 'string' }, depth: { type: 'string' } }, required: ['ref'], additionalProperties: false } },
+      { name: 'search', inputSchema: { type: 'object', properties: { query: { type: 'string' }, mode: { type: 'string' }, limit: { type: 'integer' }, cursor: { type: 'string' }, verbose: { type: 'boolean' } }, required: ['query'], additionalProperties: false } },
+      { name: 'read', inputSchema: { type: 'object', properties: { ref: { type: 'string' }, depth: { type: 'string' }, cursor: { type: 'string' }, verbose: { type: 'boolean' } }, required: ['ref'], additionalProperties: false } },
     ];
     if (overrides.mongoose) {
       registry.register(mongooseEndpoint); registry.enable(mongooseEndpoint.id); registry.allowEgress(mongooseEndpoint.id);

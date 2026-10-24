@@ -892,6 +892,29 @@ test('#589 a spoken "Naya, stop listening" ends the call as voice_stop and sends
   scheduler.runDue();
 });
 
+test('#589 a stop phrase mid-answer cancels the running response before the goodbye', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'voice-stop-mid-answer', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const frames: string[] = [];
+  const pump = pumpOutput(recordingSocket(frames), attachment, () => {}, 1_000_000);
+  // She is answering: the model turn opened and one chunk of it already reached the app.
+  fake.emit({ type: 'modelTurnStarted' });
+  fake.emit({ type: 'audio', pcm: new Uint8Array([1, 0]), rate: 24000 });
+  await tick();
+  await sayStopPhrase(fake);
+  // The rest of the answer is still arriving when the owner's words land: it must never reach the app.
+  fake.emit({ type: 'audio', pcm: new Uint8Array([2, 0]), rate: 24000 });
+  fake.emit({ type: 'generationComplete' });
+  await pump;
+  const kinds = frames.map(frame => (typeof frame === 'string' ? (JSON.parse(frame) as { type: string }).type : 'audio'));
+  assert.equal(kinds.at(-1), 'terminal', 'the end frame is the last frame the app receives');
+  assert.equal(kinds.filter(kind => kind === 'audio').length, 1, 'only the chunk that arrived before the stop was played');
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
+});
+
 test('#589 a muted call and a typed turn never end on the stop phrase', async t => {
   const fake = fakeLiveVoicePort();
   const h = await harness(t, { port: fake.port, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });

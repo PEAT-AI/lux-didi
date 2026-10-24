@@ -168,6 +168,27 @@ import Foundation
         try require(record.calls.filter { $0 == "goodbye" }.count == 1 && presence.state == .cold,
             "a second voice stop plays no second goodbye")
 
+        // #589/STOP-R2 B4: the host's end frame decides it. A voice_stop terminal is the owner's own
+        // words and takes the goodbye path; any other terminal is a session that ended, as it always was.
+        presence.toggle(.hotkey)
+        presence.ready(presence.generation)
+        record.calls.removeAll()
+        record.receipts.removeAll()
+        presence.endAfterHostTerminal(voiceStop: true, generation: presence.generation)
+        try require(presence.state == .cold, "a voice_stop end frame closes the call")
+        try require(record.calls.contains("goodbye"), "and the goodbye sounds, got \(record.calls)")
+        try require(record.receipts.last?["trigger"] as? String == "voice",
+            "presence names the owner's own words as the trigger")
+        presence.toggle(.hotkey)
+        presence.ready(presence.generation)
+        record.calls.removeAll()
+        record.receipts.removeAll()
+        presence.endAfterHostTerminal(voiceStop: false, generation: presence.generation)
+        try require(presence.state == .cold, "any other end frame closes the call too")
+        try require(!record.calls.contains("goodbye"), "and plays no goodbye, got \(record.calls)")
+        try require(record.receipts.last?["trigger"] as? String == "app",
+            "an ordinary ending keeps the receipt it always had")
+
         // Sleep tears down from LIVE at once and never reconnects.
         presence.toggle(.hotkey)
         presence.ready(presence.generation)

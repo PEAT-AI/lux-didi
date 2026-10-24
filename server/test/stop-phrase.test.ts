@@ -17,6 +17,13 @@ const ACCEPTED: [string, string][] = [
   ['Naya, schalt dich aus.', 'schalt dich aus'],
   ['Naya, good night.', 'good night'],
   ['end the call Naya', 'end the call'],
+  // STOP-R2 O1: he speaks politely, so a filler around the phrase still ends the call.
+  ['Naya, please stop listening', 'stop listening'],
+  ['Naya stop listening now', 'stop listening'],
+  ['Naya kannst du bitte aufhören zuzuhören', 'aufhoren zuzuhoren'],
+  ['Naya, can you shut down?', 'shut down'],
+  ['could you end the call Naya', 'end the call'],
+  ['Naya, okay, thanks, goodbye', 'goodbye'],
 ];
 
 test('the stop phrase table ends the call on the owner saying it, however the recognizer spells it', () => {
@@ -41,6 +48,11 @@ test('a bare command, a mid-sentence name or a question about the phrase never e
     'Naya',
     '',
     '   ',
+    // STOP-R2 O1: the question reject outlives the filler allowance.
+    'Naya what happens if you stop listening',
+    'Naya, please be quiet',
+    'Naya thanks',
+    'can you stop listening',
   ];
   for (const spoken of rejected) assert.equal(stopPhrase(spoken), null, `"${spoken}" does not end the call`);
 });

@@ -363,8 +363,10 @@ interface ActiveSession {
   inputFinalTimer?: ReturnType<JobTimer>;
   inputFinalWaiters?: Set<() => void>;
   generation: number; attempts: number; rebuilding: boolean;
-  /** #591: a rebuild nothing asked for stays quiet: no reconnect marker, no pickup instruction. */
+  /** #591: a rebuild nothing asked for stays quiet: no reconnect marker, no pickup, no instruction to open. */
   quietRebuild: boolean;
+  /** #591: model text or an output transcript since this turn opened, so a turn that spoke is never called ambient. */
+  modelTextSinceOpen: boolean;
   /** #451: when this connection generation's provider socket was opened, and when the provider said ready. */
   openedAt?: number | undefined; readyAt?: number | undefined;
   request: LiveVoiceRequest; deadlineMs: number; deadlineAt: number; callDeadlineAt: number; idleAt: number; goAwayUntil: number | undefined;
@@ -1472,7 +1474,7 @@ export class LiveSessionOwner {
     }
     this.#store.transaction(tx => tx.run("UPDATE live_sessions SET lifecycle='active', updated_at=? WHERE live_session_id=?", [this.#now(), liveSessionId]));
     const handle: ActiveSession = {
-      generation: 0, attempts: 0, rebuilding: false, quietRebuild: false, request: structuredClone(request),
+      generation: 0, attempts: 0, rebuilding: false, quietRebuild: false, modelTextSinceOpen: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
       timeZone: this.#ownerTimeZone(),
       recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false, dropResponse: false, mutedResponse: false, outputJournalled: false, spokenThisTurn: false, dropOpener: silentStart, mutedMs: 0, researchAllowed: false, mutedOfferAttempts: 0,
@@ -1819,10 +1821,11 @@ export class LiveSessionOwner {
       const turnAgeMs = this.#now() - (handle.watchdogSince ?? this.#now());
       if (step === 'nudge') {
         if (handle.watchdogPhase === 'nudged') return;
-        // #591: no tool result, no model output and no owner words since the model last spoke means nothing
-        // asked for this turn, so the watchdog closes it and leaves the session listening instead of nudging a
-        // reply nobody asked for.
-        if (handle.answerAt === undefined && handle.firstAudioAt === undefined && !this.#ownerWordsSinceModelOutput(handle.liveSessionId)) {
+        // #591: no tool result, no model output (audible or written) and no owner words since the model last
+        // spoke means nothing asked for this turn, so the watchdog closes it and leaves the session listening
+        // instead of nudging a reply nobody asked for.
+        if (handle.answerAt === undefined && handle.firstAudioAt === undefined && !handle.modelTextSinceOpen
+          && !this.#ownerWordsSinceModelOutput(handle.liveSessionId)) {
           this.#closeTurn(handle, 'completed', 'silent');
           this.#cancelWatchdog(handle);
           hostLogEvent({ event: 'live_watchdog', phase: 'closed', turnAgeMs, generation });
@@ -1942,6 +1945,7 @@ export class LiveSessionOwner {
     // replaces is closed here rather than orphaned open forever. Only a killed session leaves one open.
     const supersedes = connection.turnId;
     if (supersedes !== undefined) this.#closeTurn(handle, 'superseded');
+    handle.modelTextSinceOpen = false;
     this.#cancelTimers(handle);
     handle.progressCallIds.clear();
     handle.exec.clear();
@@ -2151,7 +2155,9 @@ export class LiveSessionOwner {
     handle.connection = { seq: handle.connection.seq + 1, epoch: `e${handle.connection.seq + 1}`, turnId: undefined, turnIndex: handle.connection.turnIndex };
     handle.deadlineAt = this.#now() + remaining; handle.deadlineMs = Date.now() + remaining;
     const request = path === 'fresh_seeded'
-      ? { ...structuredClone(handle.request), history: seed.turns, ...(handle.quietRebuild ? {} : { openingText: LIVE_RECOVERY_PICKUP }) }
+      ? { ...structuredClone(handle.request), history: seed.turns, ...(handle.quietRebuild
+        ? { opening: 'user_first' as const }
+        : { openingText: LIVE_RECOVERY_PICKUP }) }
       : { ...structuredClone(handle.request), resumptionHandle: savedHandle as string };
     try {
       handle.session = this.#voice.open(request, {
@@ -2436,6 +2442,7 @@ export class LiveSessionOwner {
         // 3j: the watchdog sees every port event before the per-type dispatch, because the arms sit on events
         // this loop handles early (modelTurnStarted) and on ones it consumes later.
         this.#watchdogEvent(handle, event);
+        if (event.type === 'modelText' || event.type === 'outputTranscription') handle.modelTextSinceOpen = true;
         // D3: only audio the adapter measured as audible is output. A fill frame is forwarded to playback and
         // nothing else; it neither re-arms the deadline nor answers the obligation.
         const audible = event.type === 'audio' && event.audible !== false;

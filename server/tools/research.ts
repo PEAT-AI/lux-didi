@@ -444,7 +444,8 @@ export function contentKeywords(question: string, max = 8, skip?: ReadonlySet<st
 const KNOWLEDGE_FILLER = new Set([
   'about', 'regarding', 're', 'results', 'result', 'info', 'information', 'details', 'detail', 'owner', 'rob',
   'stuff', 'things', 'related', 'update', 'updates', 'status',
-  // ROUTE-1022 K7: the instruction words that could be content in mail, so knowledge only.
+  // ROUTE-1022 K7: the instruction words that could be content in mail, so knowledge only. #631: the
+  // layer's own name is the phrase "the web", which every source drops; the bare word stays here.
   'records', 'official', 'content', 'web',
   // and the instruction words above, so the model's own keyword fallback drops them too.
   'wait', 'continue', 'verify', 'verified', 'findings', 'finding', 'exact', 'reliable', 'specific',
@@ -677,22 +678,49 @@ export function ownerDigits(text: string, spokenWords: string): string {
   return text.split(/\s+/u).filter(word => (word.match(/\d+/gu) ?? []).every(run => spoken.has(run))).join(' ');
 }
 
+/**
+ * #631: a source name is the route's word, never the ask's subject. Every name and spoken form of a
+ * source this run may read is dropped from the topic before any source compiles it; a name whose source
+ * this run cannot read is content (an ask about "the Mongoose release" keeps Mongoose when the company
+ * layer is off the route). "Lux Didi" is the product's own name, so a bare Lux is kept inside it.
+ */
+const ROUTE_WORDS: Partial<Record<SourceKind, RegExp>> = {
+  // The lookbehind keeps a Gmail operator's own value ("in:inbox") out of the strip.
+  knowledge: /(?<!:)\blux\b(?!\s+didi\b)|\bknowledge base\b|\bknowledge\b|\b(?:the )?vault\b|\b(?:google drive|the drive|drive files?)\b/giu,
+  mail: /(?<!:)\b(?:the )?(?:e-?mails?|gmail|inbox(?:es)?|mails?)\b/giu,
+  chat: /(?<!:)\bteam chats?\b|\bmattermost\b/giu,
+  calendar: /(?<!:)\b(?:the )?calendar\b/giu,
+  web: /(?<!:)\bthe web\b/giu,
+  mongoose: /(?<!:)\bmongoose\b/giu,
+};
+
 /** #565: the topic is the only text whose words become search terms, within the owner's own numbers. */
-export function topicTerms(topic: string | undefined, spokenWords: string): string | undefined {
+/** #631: the routing words removed from any search text, the owner's topic or a model-written query. */
+function withoutRouteWords(text: string, sources: readonly SourceKind[]): string {
+  let out = text;
+  for (const source of sources) {
+    const words = ROUTE_WORDS[source];
+    if (words !== undefined) out = out.replace(words, ' ');
+  }
+  return out.replace(/\s+/gu, ' ').trim();
+}
+
+export function topicTerms(topic: string | undefined, spokenWords: string, sources: readonly SourceKind[] = RESEARCH_SOURCES): string | undefined {
   if (topic === undefined) return undefined;
-  const text = ownerDigits(topic, spokenWords).trim();
+  const text = withoutRouteWords(ownerDigits(topic, spokenWords), sources);
   return text === '' ? undefined : text;
 }
 
-export function compileMailQuery(question: string, query: string | undefined, nowMs = Date.now(), timeZone?: string, topic?: string, ownerWords?: string, fallbackWindow?: string): string {
+export function compileMailQuery(question: string, query: string | undefined, nowMs = Date.now(), timeZone?: string, topic?: string, ownerWords?: string, fallbackWindow?: string, sources: readonly SourceKind[] = RESEARCH_SOURCES): string {
   // #564: a triage ask reads the unread inbox itself, so the host's own generic inbox scan, a prose
   // question and a topic all give way to it; its own prose is never a term and no drop-a-term retry
   // follows an empty scan, so "anything important" cannot be answered from one old thread.
   if (triageAsk(question)) return TRIAGE_MAIL_QUERY;
-  const authored = (query ?? '').replace(/\s+/gu, ' ').trim();
+  // #631: a model-written query names the layer as often as the topic it was written from.
+  const authored = withoutRouteWords((query ?? '').replace(/\s+/gu, ' ').trim(), sources);
   const person = MAIL_DIRECTION.test(question) ? mailPersonName(question) : undefined;
   const asked = mailWindow(question, nowMs, timeZone);
-  const gated = topicTerms(topic, ownerWords ?? question);
+  const gated = topicTerms(topic, ownerWords ?? question, sources);
   const topicText = gated !== undefined && contentKeywords(gated, 1).length > 0 ? gated : undefined;
   // #565: an authored query that already carries Gmail syntax is the model's own per-source search, and
   // the owner's instruction prose never reaches it because the question is not a text this compiles.
@@ -845,7 +873,7 @@ export function mailSearchPhrase(q: string): string {
 }
 
 /** The deterministic fallback query per source: never the raw sentence. */
-export function fallbackQuery(kind: CandidateKind, question: string, nowMs = Date.now()): { query?: string; window?: string } {
+export function fallbackQuery(kind: CandidateKind, question: string, nowMs = Date.now(), sources: readonly SourceKind[] = RESEARCH_SOURCES): { query?: string; window?: string } {
   const text = question.toLowerCase();
   const keywords = contentKeywords(question);
   const terms = keywords.join(' ');
@@ -858,7 +886,7 @@ export function fallbackQuery(kind: CandidateKind, question: string, nowMs = Dat
       : /\b(this week|week)\b/.test(text) ? 'newer_than:7d'
       : /\byesterday\b/.test(text) ? 'newer_than:2d'
       : 'newer_than:14d';
-    return { query: compileMailQuery(question, undefined, nowMs, undefined, question, question, window) };
+    return { query: compileMailQuery(question, undefined, nowMs, undefined, question, question, window, sources) };
   }
   // ONE-1023: the day operator is the owner's own day. DATES-R1 F3: the no-operator rule applies to
   // content terms, and with none left the base recency window stays, never an empty query.
@@ -1014,7 +1042,7 @@ export function routedSelection(question: string, configured: readonly SourceKin
   if (!KNOWLEDGE_WORDS.test(text)) return undefined;
   return {
     questionClass: 'cross_source',
-    actions: [{ kind: 'knowledge_search', ...fallbackQuery('knowledge_search', question, nowMs) }],
+    actions: [{ kind: 'knowledge_search', ...fallbackQuery('knowledge_search', question, nowMs, configured) }],
     pUseful: { knowledge_search: 0.6 },
   };
 }
@@ -1026,7 +1054,7 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   const pUseful: Partial<Record<CandidateKind, number>> = {};
   const offer = (kind: CandidateKind, p: number, source: SourceKind | null): void => {
     if (source !== null && !configured.includes(source)) return;
-    actions.push({ kind, ...fallbackQuery(kind, question, nowMs) });
+    actions.push({ kind, ...fallbackQuery(kind, question, nowMs, configured) });
     pUseful[kind] = p;
   };
   const webWords = !/\b(?:mail|calendar|chat|our|my|we)\b/u.test(text)
@@ -1293,7 +1321,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
   const search = (name: string, args: JsonObject, key: string): IntentSubCall => ({ key, name, args });
   // #565: the topic's words, and only the numbers the owner said in this run, are what a source may search.
   const ownerWords = config.ownerWords ?? config.question;
-  const topicText = topicTerms(config.topic, ownerWords);
+  const topicText = topicTerms(config.topic, ownerWords, config.configured);
   if (kind === 'knowledge_search') {
     // Q5-R1: a named entry is read by id through the connector's get_insight path, never searched for
     // again; the connector returns its whole body up to the knowledge body cap.
@@ -1302,7 +1330,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     // K3: a clipped keyword query, never the owner's sentence or the selector's paraphrase of it.
     // K6: with no model query, a question of pure filler is no question to search at all.
     // E1 (#605): the topic is the search text; a model written query only fills in when no topic was named.
-    const modelQuery = config.query === undefined ? undefined : ownerDigits(config.query, ownerWords);
+    const modelQuery = config.query === undefined ? undefined : withoutRouteWords(ownerDigits(config.query, ownerWords), config.configured);
     const fromTopic = topicText === undefined ? '' : knowledgeQuery(topicText);
     const query = fromTopic !== '' ? fromTopic : knowledgeQuery(modelQuery ?? '', '');
     if (!query) return [];
@@ -1323,7 +1351,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     // #565: a bare inbox scan stays a scan; a topic or a model query is compiled from the topic.
     // #564: a triage ask is never a bare scan, whatever prose the selector or the model wrote for it.
     const bare = config.query === undefined && topicText === undefined && !triageAsk(config.question);
-    return [search(INTERNAL.mailList, { q: bare ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone, config.topic, ownerWords), maxResults: RESEARCH.pageResults.mail }, 'm0')];
+    return [search(INTERNAL.mailList, { q: bare ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone, config.topic, ownerWords, undefined, config.configured), maxResults: RESEARCH.pageResults.mail }, 'm0')];
   }
   if (kind === 'mail_open') { const id = config.evidence.get('mail_search'); return id ? [search(INTERNAL.mailRead, { id }, 'mo0')] : []; }
   if (kind === 'chat_search') {
@@ -3295,7 +3323,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
         source: 'mail' as const, kind: 'id' in lookup.mail ? 'mail_open' as const : 'mail_search' as const,
         subs: [{
           key: 'mail0', name: 'id' in lookup.mail ? INTERNAL.mailRead : INTERNAL.mailList,
-          args: 'id' in lookup.mail ? { ...lookup.mail } : { ...mailPageArgs(lookup.mail as JsonObject), q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone, context.topic, context.ownerWords) },
+          args: 'id' in lookup.mail ? { ...lookup.mail } : { ...mailPageArgs(lookup.mail as JsonObject), q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone, context.topic, context.ownerWords, undefined, context.configured) },
         }],
       }
       : { source: 'mail' as const, kind: 'mail_search' as const, subs: candidateSubs('mail_search', subsConfig) };
@@ -4608,7 +4636,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         const text = plannedText;
         for (const kind of narrowed) {
           if (selection.actions.some(action => action.kind === kind)) continue;
-          selection.actions.push({ kind, ...fallbackQuery(kind, text, now()) });
+          selection.actions.push({ kind, ...fallbackQuery(kind, text, now(), configured) });
           selection.pUseful[kind] = 0.6;
         }
       }
@@ -4617,7 +4645,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       // the selector path and the fallback path alike, whenever the calendar endpoint can serve it.
       if (ownerScheduleQuestion(plannedText) && selection.actions.length > 0 && candidatesForSelector.includes('calendar_window')
         && !unavailable.includes('calendar') && !selection.actions.some(action => action.kind === 'calendar_window')) {
-        selection.actions.push({ kind: 'calendar_window', ...fallbackQuery('calendar_window', plannedText, now()) });
+        selection.actions.push({ kind: 'calendar_window', ...fallbackQuery('calendar_window', plannedText, now(), configured) });
         selection.pUseful['calendar_window'] ??= 0.4;
       }
 

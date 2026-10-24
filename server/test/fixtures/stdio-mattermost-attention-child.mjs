@@ -2,7 +2,12 @@
 // Synthetic stdio MCP child for server/test/mattermost-attention.test.ts.
 // No network, no credentials, no session, no application files: every post is generated here,
 // relative to this process's clock, so the window rules are exercised without a fixture clock.
-// argv[2] = mode (window | no-window). DIDI_FAKE_MATTERMOST_LOG records every call and its arguments.
+// Envelopes are literal copies of the installed child's shapes (mattermost-mcp src/search/serialize.ts):
+// search and channel history answer {total, returned, results}, a thread answers {root, replies},
+// whoami answers {id, username, email}, list_channels answers {count, channels}. Post fields are the
+// concise shape {id, username, channel, timestamp, message, url}, and the declared limit maxima are
+// the child's own (search 50, channel history 200).
+// argv[2] = mode (window | no-window | no-thread | slow). DIDI_FAKE_MATTERMOST_LOG records every call.
 import { appendFileSync } from 'node:fs';
 import { Server } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
@@ -15,29 +20,28 @@ const DAY = 24 * HOUR;
 const now = Date.now();
 const iso = (ms) => new Date(ms).toISOString();
 
-const OWNER = { id: 'owner0000000000000000000a', username: 'robert', display_name: 'Robert Peat' };
+const OWNER = { id: 'owner0000000000000000000a', username: 'robert', email: 'robert@example.invalid' };
 
-const post = (id, channel, author, at, text, slug, root = '') => ({
-  id, channel, author, time: iso(at), create_at: at, text,
-  permalink: `https://chat.example/m/${slug}`,
-  ...(root === '' ? {} : { root_id: root }),
+const post = (id, channel, author, at, message, slug) => ({
+  id, username: author, channel, timestamp: iso(at), message,
+  url: `https://chat.example/m/${slug}`,
 });
 
 // Mention window: one inside the default seven days, one ten days back.
-const mentionRecent = post('postMentionRecent', 'team-release', 'Dana', now - 2 * HOUR, '@robert can you confirm the 3k release?', 'mention-recent');
-const mentionOld = post('postMentionOld', 'team-release', 'Dana', now - 10 * DAY, '@robert did you see this last week?', 'mention-old');
+const mentionRecent = post('postMentionRecent', 'team-release', 'dana', now - 2 * HOUR, '@robert can you confirm the 3k release?', 'mention-recent');
+const mentionOld = post('postMentionOld', 'team-release', 'dana', now - 10 * DAY, '@robert did you see this last week?', 'mention-old');
 // A direct conversation, with one owner post and one from Dana.
-const dmDana = post('postDmDana', 'direct-dana', 'Dana', now - 1 * HOUR, 'sent you the deck for review', 'dm-dana');
-const dmOwner = post('postDmOwner', 'direct-dana', 'Robert Peat', now - 3 * HOUR, 'thanks, looking now', 'dm-owner');
+const dmDana = post('postDmDana', 'direct-dana', 'dana', now - 1 * HOUR, 'sent you the deck for review', 'dm-dana');
+const dmOwner = post('postDmOwner', 'direct-dana', 'robert', now - 3 * HOUR, 'thanks, looking now', 'dm-owner');
 // Two threads the owner opened: one waits on Dana, the other the owner answered last.
-const threadOpenRoot = post('threadOpenRoot', 'direct-dana', 'Robert Peat', now - 5 * HOUR, 'can you check the diag numbers?', 'thread-open-root');
-const threadOpenReply = post('threadOpenReply', 'direct-dana', 'Dana', now - 30 * 60 * 1000, 'done, they line up', 'thread-open-reply', 'threadOpenRoot');
-const threadDoneRoot = post('threadDoneRoot', 'direct-dana', 'Robert Peat', now - 6 * HOUR, 'ok to ship?', 'thread-done-root');
-const threadDoneReply = post('threadDoneReply', 'direct-dana', 'Robert Peat', now - 4 * HOUR, 'shipped it', 'thread-done-reply', 'threadDoneRoot');
+const threadOpenRoot = post('threadOpenRoot', 'direct-dana', 'robert', now - 5 * HOUR, 'can you check the diag numbers?', 'thread-open-root');
+const threadOpenReply = post('threadOpenReply', 'direct-dana', 'dana', now - 30 * 60 * 1000, 'done, they line up', 'thread-open-reply');
+const threadDoneRoot = post('threadDoneRoot', 'direct-dana', 'robert', now - 6 * HOUR, 'ok to ship?', 'thread-done-root');
+const threadDoneReply = post('threadDoneReply', 'direct-dana', 'robert', now - 4 * HOUR, 'shipped it', 'thread-done-reply');
 // A public channel thread: the owner opened it, Dana answered last. Nothing mentions the owner,
 // so only a read seeded by the owner's own posts can find it.
-const publicThreadRoot = post('publicThreadRoot', 'team-release', 'Robert Peat', now - 7 * HOUR, 'who owns the 3k dock retest?', 'public-thread-root');
-const publicThreadReply = post('publicThreadReply', 'team-release', 'Dana', now - 20 * 60 * 1000, 'I can take it tomorrow morning', 'public-thread-reply', 'publicThreadRoot');
+const publicThreadRoot = post('publicThreadRoot', 'team-release', 'robert', now - 7 * HOUR, 'who owns the 3k dock retest?', 'public-thread-root');
+const publicThreadReply = post('publicThreadReply', 'team-release', 'dana', now - 20 * 60 * 1000, 'I can take it tomorrow morning', 'public-thread-reply');
 
 // Deliberately unsorted: the connector owns the order it shows.
 const mentions = [mentionOld, mentionRecent];
@@ -52,44 +56,61 @@ const threads = {
 };
 
 const SEARCH = mode === 'no-window'
-  ? { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } } }
-  : { type: 'object', additionalProperties: false, properties: { query: { type: 'string' }, limit: { type: 'integer' }, after: { type: 'string' }, before: { type: 'string' } } };
+  ? { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 50 } } }
+  : { type: 'object', additionalProperties: false, properties: { query: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 50 }, channel: { type: 'string' }, from_date: { type: 'string' }, to_date: { type: 'string' }, sort: { type: 'string', enum: ['relevance', 'newest'] } } };
 
 const READ_SCHEMAS = {
   mattermost_whoami: { type: 'object', additionalProperties: false, properties: {} },
   mattermost_list_channels: { type: 'object' },
-  mattermost_get_channel_history: { type: 'object', additionalProperties: false, required: ['channel'], properties: { channel: { type: 'string' }, limit: { type: 'integer' } } },
+  mattermost_get_channel_history: { type: 'object', additionalProperties: false, required: ['channel'], properties: { channel: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 200 } } },
   mattermost_get_thread: { type: 'object', additionalProperties: false, required: ['post_id'], properties: { post_id: { type: 'string' } } },
   mattermost_search: SEARCH,
 };
-const TOOLS = Object.keys(READ_SCHEMAS);
+// A child that does not publish the thread read: the attention composite has no grant at all.
+const TOOLS = Object.keys(READ_SCHEMAS).filter(name => !(mode === 'no-thread' && name === 'mattermost_get_thread'));
 
 const server = new Server({ name: 'stdio-mattermost-attention-fixture', version: '1' }, { capabilities: { tools: {} } });
 server.setRequestHandler('tools/list', () => ({
-  tools: TOOLS.map((name) => ({ name, description: `Synthetic ${name}`, inputSchema: READ_SCHEMAS[name] })),
+  tools: TOOLS.map(name => ({ name, description: `Synthetic ${name}`, inputSchema: READ_SCHEMAS[name] })),
 }));
-server.setRequestHandler('tools/call', (request) => {
+server.setRequestHandler('tools/call', async (request) => {
   const { name, arguments: args = {} } = request.params;
-  if (logPath !== undefined) appendFileSync(logPath, `${JSON.stringify({ name, arguments: args })}\n`);
+  if (logPath !== undefined) appendFileSync(logPath, `${JSON.stringify({ name, arguments: args, at: Date.now() })}\n`);
+  // A child that answers a second late, so a serial scan cannot fit the same budget as a concurrent one.
+  if (mode === 'slow') await new Promise(resolve => setTimeout(resolve, 1000));
   const text = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
-  const within = (posts) => (typeof args.after === 'string'
-    ? posts.filter((entry) => Date.parse(entry.time) >= Date.parse(args.after))
-    : posts);
+  const envelope = (list) => ({ total: list.length, returned: list.length, results: list });
+  const within = (list) => (typeof args.from_date === 'string'
+    ? list.filter(entry => entry.timestamp.slice(0, 10) >= args.from_date)
+    : list);
+  if (!TOOLS.includes(name)) return { isError: true, content: [{ type: 'text', text: `unsupported tool ${name}` }] };
   if (name === 'mattermost_whoami') return text(OWNER);
   if (name === 'mattermost_list_channels') {
-    return text({ channels: [
-      { name: 'team-release', display_name: 'Team Release', type: 'O' },
-      { name: 'direct-dana', type: 'D' },
-    ] });
+    const channels = [
+      { id: 'chanTeamRelease', name: 'team-release', display_name: 'Team Release', type: 'O' },
+      { id: 'chanDirectDana', name: 'direct-dana', display_name: 'dana', type: 'D' },
+    ];
+    return text({ count: channels.length, channels });
   }
-  if (name === 'mattermost_get_channel_history') return text({ posts: history[args.channel] ?? [] });
+  if (name === 'mattermost_get_channel_history') {
+    if (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 200) {
+      return { isError: true, content: [{ type: 'text', text: 'invalid limit' }] };
+    }
+    return text(envelope(history[args.channel] ?? []));
+  }
   if (name === 'mattermost_get_thread') {
-    const posts = threads[args.post_id];
-    return text({ posts: posts ?? (typeof args.post_id === 'string' ? [{ ...dmDana, id: args.post_id }] : []) });
+    const list = threads[args.post_id] ?? (typeof args.post_id === 'string'
+      ? [{ ...dmDana, id: args.post_id }]
+      : []);
+    const [root, ...replies] = list;
+    return text({ root, replies });
   }
   if (name === 'mattermost_search') {
+    if (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 50) {
+      return { isError: true, content: [{ type: 'text', text: 'invalid limit' }] };
+    }
     const query = typeof args.query === 'string' ? args.query : '';
-    return text({ posts: within(query.startsWith('from:') ? ownerPosts : mentions) });
+    return text(envelope(within(query.startsWith('from:') ? ownerPosts : mentions)));
   }
   return { isError: true, content: [{ type: 'text', text: `unsupported tool ${name}` }] };
 });

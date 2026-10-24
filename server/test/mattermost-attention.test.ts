@@ -13,7 +13,7 @@ import { connectorDescriptor, createMattermostReader, MATTERMOST_ATTENTION, MATT
 import type { AttentionItem, MattermostAttention } from '../connectors/index.js';
 import { projectMattermostResult, renderAttention } from '../tools/mattermost.js';
 import { INTENT_TOOL_NAMES, INTERNAL, planIntent, validateIntent } from '../tools/intent.js';
-import { ResearchLedger, runResearch, type ResearchDeps } from '../tools/research.js';
+import { RESEARCH, ResearchLedger, runResearch, type ResearchDeps } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -34,8 +34,8 @@ function setup(mode: string) {
   registry.register(config);
   registry.enable('mattermost'); registry.allowEgress('mattermost');
   const adapter = createMcpAdapter({ registry, store: new MemoryResultStore() });
-  const calls = (): { name: string; arguments: Record<string, unknown> }[] =>
-    existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as { name: string; arguments: Record<string, unknown> }) : [];
+  const calls = (): { name: string; arguments: Record<string, unknown>; at?: number }[] =>
+    existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as { name: string; arguments: Record<string, unknown>; at?: number }) : [];
   return { dir, log, registry, adapter, calls };
 }
 
@@ -143,8 +143,8 @@ test('the attention view projects one line per item with its permalink', async t
   if (!projected.ok) return;
   const lines = projected.projection.text.split('\n');
   assert.equal(lines.length, 4);
-  assert.match(lines[0] ?? '', /^- \[thread\] team-release \| Dana \| \d{4}-\d{2}-\d{2}T[\d:.]+Z \| I can take it tomorrow morning \| https:\/\/chat\.example\/m\/public-thread-reply$/u);
-  assert.match(lines[1] ?? '', /^- \[thread\] direct-dana \| Dana \| \d{4}-\d{2}-\d{2}T[\d:.]+Z \| done, they line up \| https:\/\/chat\.example\/m\/thread-open-reply$/u);
+  assert.match(lines[0] ?? '', /^- \[thread\] team-release \| dana \| \d{4}-\d{2}-\d{2}T[\d:.]+Z \| I can take it tomorrow morning \| https:\/\/chat\.example\/m\/public-thread-reply$/u);
+  assert.match(lines[1] ?? '', /^- \[thread\] direct-dana \| dana \| \d{4}-\d{2}-\d{2}T[\d:.]+Z \| done, they line up \| https:\/\/chat\.example\/m\/thread-open-reply$/u);
   assert.equal(projected.projection.itemCount, 4);
 });
 
@@ -166,7 +166,8 @@ test('general search looks back ninety days by default and to the period the cal
   assert.equal(first?.arguments['before'], undefined);
   assert.equal((await r.search({ query: 'release', after: '2016-01-01T00:00:00.000Z', before: '2025-01-01T00:00:00.000Z' })).state, 'completed');
   const named = f.calls().filter(call => call.name === 'mattermost_search').at(-1);
-  assert.deepEqual(named?.arguments, { query: 'release', limit: 12, after: '2016-01-01T00:00:00.000Z', before: '2025-01-01T00:00:00.000Z' });
+  // #610: the day travels in the child's own date columns, and a window is read newest first.
+  assert.deepEqual(named?.arguments, { query: 'release', limit: 12, after: '2016-01-01T00:00:00.000Z', before: '2025-01-01T00:00:00.000Z', from_date: '2016-01-01', to_date: '2025-01-01', sort: 'newest' });
   assert.equal((await r.search({ query: 'release', after: 'x'.repeat(260) })).state, 'refused', 'an over-long window string is refused locally, never sent');
 });
 
@@ -260,4 +261,87 @@ test('#572: an empty chat triage names the window it read', async () => {
   };
   const reply = await runResearch(deps, { action: 'start', question: 'anything urgent came in?' }, new AbortController().signal);
   assert.match(String(reply['note']), /I searched your team chat in the last 7 days and found nothing matching\./u);
+});
+
+// #610: the scan's independent reads run under one budget. A child that answers a second late
+// cannot fit a serial scan (whoami, two searches, channels, one history, three threads) in 5 s.
+test('#610: the attention scan reads its independent children concurrently', async t => {
+  const f = setup('slow');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter));
+  const started = Date.now();
+  const view = digest(await r.attention({}));
+  const elapsed = Date.now() - started;
+  assert.equal(view.items.length, 4, 'the concurrent scan still finds every item');
+  assert.ok(elapsed < 5_000, `a concurrent scan finishes inside 5 s, took ${elapsed} ms`);
+  const calls = f.calls();
+  const searches = calls.filter(call => call.name === 'mattermost_search').map(call => call.at ?? 0);
+  const firstHistory = calls.find(call => call.name === 'mattermost_get_channel_history')?.at ?? 0;
+  assert.equal(searches.length, 2, 'both attention searches ran');
+  assert.ok(searches.every(start => start > 0 && firstHistory > 0));
+  // A serial scan would still be in its first search when the concurrent one has both in flight.
+  assert.ok(Math.max(...searches) < firstHistory, 'both searches start before the first channel history');
+});
+
+// #610: an attention search asks for its own page, never the connector maximum.
+test('#610: the attention searches ask for the attention limit', async t => {
+  const f = setup('window');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter));
+  await r.attention({});
+  const limits = f.calls().filter(call => call.name === 'mattermost_search').map(call => Number(call.arguments['limit']));
+  assert.deepEqual(limits, [MATTERMOST_ATTENTION.limit, MATTERMOST_ATTENTION.limit]);
+});
+
+// #610: the child refuses a limit over its own 50, and the newest sort is a declared argument.
+test('#610: a search asks for at most the child maximum and reads newest first', async t => {
+  const f = setup('window');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter));
+  assert.equal((await r.search({ query: 'release', limit: 60 })).state, 'completed');
+  const [first] = f.calls().filter(call => call.name === 'mattermost_search');
+  assert.equal(first?.arguments['limit'], 50, 'a limit over the child maximum is clamped, never sent');
+  assert.equal(first?.arguments['sort'], 'newest');
+});
+
+// #610: a channel named in the question is the connector's own filter, not a broader archive search.
+test('#610: a question that names a channel searches that channel only', async () => {
+  const planned: { name: string; args: Record<string, unknown> }[] = [];
+  const deps: ResearchDeps = {
+    now: () => Date.now(), configured: ['mail', 'chat', 'calendar'],
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
+      planned.push({ name: call.name, args: call.args as Record<string, unknown> });
+      return { key: call.key, name: call.name, ok: true, text: 'a line', originalCharacters: 6, omittedCharacters: 0 };
+    }),
+    emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
+  };
+  await runResearch(deps, { action: 'start', question: 'latest topics in the dogcation channel' }, new AbortController().signal);
+  const search = planned.find(call => call.name === INTERNAL.chatSearch);
+  assert.ok(search, 'the chat read is a search');
+  assert.equal(search.args['channel'], 'dogcation');
+  assert.equal(planned.some(call => call.name === INTERNAL.chatAttention), false, 'a channel ask is not the whole-account scan');
+});
+
+// #610: the chat receipt carries the query's shape, never its words.
+test('#610: the chat research_source line carries the query shape and no query text', async () => {
+  const logged: Record<string, unknown>[] = [];
+  const deps: ResearchDeps = {
+    now: () => Date.now(), configured: ['chat'],
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => ({ key: call.key, name: call.name, ok: true, text: 'a line', originalCharacters: 6, omittedCharacters: 0 })),
+    emit: () => {},
+    log: (event: Record<string, unknown>) => { logged.push(event); },
+    ledger: new ResearchLedger(),
+  };
+  await runResearch(deps, { action: 'start', question: 'what did Dana post in the dogcation channel about after:yesterday?' }, new AbortController().signal);
+  const receipt = logged.find(event => event['event'] === 'research_source' && event['source'] === 'chat');
+  assert.ok(receipt, 'the chat read is receipted');
+  const shape = receipt['chat'] as { terms: number; operators: string[]; limit: number; sort: string } | undefined;
+  assert.ok(shape, 'the receipt carries a chat query shape');
+  assert.equal(shape.terms, 5);
+  assert.deepEqual(shape.operators, ['after']);
+  assert.equal(shape.limit, RESEARCH.chatLines);
+  assert.equal(shape.sort, 'newest');
+  const serialized = JSON.stringify(receipt);
+  assert.ok(!serialized.includes('dogcation'), 'no query word reaches the receipt');
+  assert.ok(!serialized.includes('Dana'), 'no name reaches the receipt');
 });

@@ -1,6 +1,6 @@
 # Implementation status
 
-State of the source tree at release 10 (main 225dcd15, 2026-10-24). It describes the source, not proof that a given installation contains every change: a bundle's `didi-runtime.json` `releaseCommit` names its source. A green build alone proves neither working accounts, voice hardware nor a healthy installed app.
+State of the source tree at release 10 (main 7c1a26ae, 2026-10-24). It describes the source, not proof that a given installation contains every change: a bundle's `didi-runtime.json` `releaseCommit` names its source. A green build alone proves neither working accounts, voice hardware nor a healthy installed app.
 
 ## What works today
 

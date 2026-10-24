@@ -41,6 +41,12 @@ import Foundation
             let expectsWindow = (kind == .installRelaunch || kind == .installedProof
                 || kind == .selfCheck || kind == .uiProof || kind == .verification)
             check(kind.presentsWindowAtLaunch == expectsWindow, "presents window at launch for \(kind)")
+            // #613: the launch line carries the same three facts, so no log reader infers a kind.
+            check(kind.launchRecord["kind"] as? String == kind.rawValue
+                && kind.launchRecord["autoConnects"] as? Bool == kind.autoConnects
+                && kind.launchRecord["windowShown"] as? Bool == kind.presentsWindowAtLaunch
+                && kind.launchRecord["event"] as? String == "launch_kind",
+                "the launch record names kind, autoConnects and windowShown for \(kind)")
         }
         // ORBFIRST: the orb is the default start on every kind that shows UI, and the app
         // window is only created when the owner opens it.

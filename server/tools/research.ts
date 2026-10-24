@@ -692,14 +692,19 @@ const ROUTE_WORDS: Partial<Record<SourceKind, RegExp>> = {
 };
 
 /** #565: the topic is the only text whose words become search terms, within the owner's own numbers. */
-export function topicTerms(topic: string | undefined, spokenWords: string, sources: readonly SourceKind[] = RESEARCH_SOURCES): string | undefined {
-  if (topic === undefined) return undefined;
-  let text = ownerDigits(topic, spokenWords);
+/** #631: the routing words removed from any search text, the owner's topic or a model-written query. */
+function withoutRouteWords(text: string, sources: readonly SourceKind[]): string {
+  let out = text;
   for (const source of sources) {
     const words = ROUTE_WORDS[source];
-    if (words !== undefined) text = text.replace(words, ' ');
+    if (words !== undefined) out = out.replace(words, ' ');
   }
-  text = text.replace(/\s+/gu, ' ').trim();
+  return out.replace(/\s+/gu, ' ').trim();
+}
+
+export function topicTerms(topic: string | undefined, spokenWords: string, sources: readonly SourceKind[] = RESEARCH_SOURCES): string | undefined {
+  if (topic === undefined) return undefined;
+  const text = withoutRouteWords(ownerDigits(topic, spokenWords), sources);
   return text === '' ? undefined : text;
 }
 
@@ -708,7 +713,8 @@ export function compileMailQuery(question: string, query: string | undefined, no
   // question and a topic all give way to it; its own prose is never a term and no drop-a-term retry
   // follows an empty scan, so "anything important" cannot be answered from one old thread.
   if (triageAsk(question)) return TRIAGE_MAIL_QUERY;
-  const authored = (query ?? '').replace(/\s+/gu, ' ').trim();
+  // #631: a model-written query names the layer as often as the topic it was written from.
+  const authored = withoutRouteWords((query ?? '').replace(/\s+/gu, ' ').trim(), sources);
   const person = MAIL_DIRECTION.test(question) ? mailPersonName(question) : undefined;
   const asked = mailWindow(question, nowMs, timeZone);
   const gated = topicTerms(topic, ownerWords ?? question, sources);
@@ -1321,7 +1327,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     // K3: a clipped keyword query, never the owner's sentence or the selector's paraphrase of it.
     // K6: with no model query, a question of pure filler is no question to search at all.
     // E1 (#605): the topic is the search text; a model written query only fills in when no topic was named.
-    const modelQuery = config.query === undefined ? undefined : ownerDigits(config.query, ownerWords);
+    const modelQuery = config.query === undefined ? undefined : withoutRouteWords(ownerDigits(config.query, ownerWords), config.configured);
     const fromTopic = topicText === undefined ? '' : knowledgeQuery(topicText);
     const query = fromTopic !== '' ? fromTopic : knowledgeQuery(modelQuery ?? '', '');
     if (!query) return [];

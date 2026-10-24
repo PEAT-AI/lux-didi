@@ -441,8 +441,6 @@ interface ActiveSession {
   turnCompleteSeen: boolean;
   /** #592: the owner text joined since the last finalization, so an empty finalization is not speech. */
   ownerSpeechPending?: boolean;
-  /** #592: the cause of the last idle arm, so a repeated cause is not a repeated record. */
-  idleResetBy?: IdleResetCause;
   /** #595: the owner zone this call was composed in; the call's date math never re-resolves it. */
   timeZone: string;
   /** The last live state this session projected, which is the `from` of its next transition receipt. */
@@ -1664,11 +1662,8 @@ export class LiveSessionOwner {
     if (this.#settled(handle)) return;
     handle.idleTimer?.cancel();
     handle.idleAt = this.#now() + remainingMs;
-    // One record per cause change, so a call kept open by bookkeeping is visible without a record per chunk.
-    if (handle.idleResetBy !== resetBy) {
-      handle.idleResetBy = resetBy;
-      hostLogEvent({ event: 'live_idle_arm', resetBy, idleMs: remainingMs });
-    }
+    // #592: one record per arm, so the log testifies when the clock last restarted and by which cause.
+    hostLogEvent({ event: 'live_idle_arm', resetBy, idleMs: remainingMs });
     handle.idleTimer = this.#schedule(() => {
       // #303: an idle expiry after model audio had streamed, with no turnComplete ever seen, is the shape the
       // 3h-a witness stalled in: the greeting played, then the provider went silent without ending its turn.

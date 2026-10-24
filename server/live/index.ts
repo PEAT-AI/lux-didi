@@ -353,6 +353,8 @@ interface ActiveSession {
   stopWords?: string[];
   stopInputAt?: number | undefined;
   stopFinalJournalId?: number | undefined;
+  stopAfterJournalId?: number;
+  stopGeneration?: number;
   inputAt?: number;
   /** When the owner's turn finished, to measure dead air until the first model audio. */
   inputFinalAt: number | undefined;
@@ -3365,7 +3367,7 @@ export class LiveSessionOwner {
     if (handle.stopInputAt === undefined || this.#now() - handle.stopInputAt >= 3_000) return;
     // A fallback can finalize the last text row rather than writing an empty final marker.
     const text = this.#store.transaction(tx => {
-      const rows = tx.all("SELECT text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id DESC", [handle.liveSessionId]);
+      const rows = tx.all("SELECT text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND journal_id>? ORDER BY journal_id DESC", [handle.liveSessionId, handle.stopAfterJournalId ?? 0]);
       const pending: string[] = [];
       for (const [i, row] of rows.entries()) {
         if (i > 0 && Number(row['finished']) === 1) break;
@@ -3380,7 +3382,11 @@ export class LiveSessionOwner {
     if (event.type !== 'inputTranscription') return;
     if (handle.muted || handle.terminal || generation !== handle.generation || event.finalOrigin === 'typed') return;
     const now = this.#now();
-    if (handle.stopInputAt === undefined || now - handle.stopInputAt >= 3_000) handle.stopWords = [];
+    if (handle.stopGeneration !== generation || handle.stopInputAt === undefined || now - handle.stopInputAt >= 3_000) {
+      handle.stopWords = [];
+      handle.stopAfterJournalId = handle.inputJournalId ?? 0;
+      handle.stopGeneration = generation;
+    }
     const words = normalizeStopSpeech(event.text).split(' ').filter(Boolean);
     const window = final ? words.slice(-STOP_WORD_LIMIT) : [...(handle.stopWords ?? []), ...words].slice(-STOP_WORD_LIMIT);
     if (!final && words.length) { handle.stopWords = window; handle.stopInputAt = now; }

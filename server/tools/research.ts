@@ -231,8 +231,8 @@ export interface ResearchSourceLog {
   coalesced: number;
   /** 3r K1: the knowledge lookup's bounded-body request, metadata only and never a query. */
   knowledge?: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean; queryTerms: number; dayFilter: DayFilter; chatDateOperator: ChatDateOperator; deduped: number };
-  /** #610: the chat read's shape: word count, operator names, page size and sort. Never a word. */
-  chat?: ChatQueryShape;
+  /** #610: the chat read's shape, or R3: the closed reason a refused chat read records. Never a word. */
+  chat?: ChatReceipt;
   /** E5: the mail search's shape, and the one broader retry's shape when it ran. Counts, never words. */
   mail?: MailQueryShape & { retried?: MailQueryShape };
   /** Release 4: a read that delivered its pages but lost a later one, and how many pages it lost. */
@@ -719,7 +719,14 @@ export function chatQueryShape(call: IntentSubCall | undefined): ChatQueryShape 
   // The connector asks for the newest sort on every windowed read, so a receipt names what it asked.
   return { terms, operators, limit, sort: 'newest' };
 }
-function chatReceiptField(served: readonly IntentSubCall[]): { chat?: ChatQueryShape } {
+/**
+ * R3: the chat read's receipt. A search records its shape; a refused triage read records the closed
+ * reason it really failed with. The two never ride together, so a shape is never mistaken for a cause.
+ */
+export interface ChatReceipt { terms?: number; operators?: string[]; limit?: number; sort?: string; reason?: string }
+export function chatReceiptField(served: readonly IntentSubCall[], results: readonly IntentSubResult[]): { chat?: ChatReceipt } {
+  const failed = results.find(result => !result.ok);
+  if (failed !== undefined) return { chat: { reason: chatAttentionReason(results) } };
   const shape = chatQueryShape(served.find(call => call.name === INTERNAL.chatSearch));
   return shape === undefined ? {} : { chat: shape };
 }
@@ -2520,6 +2527,15 @@ function briefPlanField(run: RunState): { plan?: 'knowledge_only' | 'named_sourc
  * stay apart: only `unknown_tool` and `grant_not_permitted` mean the read was not granted.
  */
 const CHAT_NOT_GRANTED_CODES: readonly string[] = ['unknown_tool', 'grant_not_permitted'];
+/**
+ * R3: the closed reasons a refused chat read may record on its receipt. One token each, never a
+ * sentence: a not-granted read, a refused session, a cut read, drift, a protocol refusal, or no answer.
+ */
+export const CHAT_RECEIPT_REASONS: readonly string[] = [
+  'tool-not-granted', 'credential-refresh-failed', 'source_not_granted', 'not_signed_in', 'timeout',
+  'deadline', 'timed_out', 'schema-drift', 'grant-stale', 'source-unavailable', 'sdk_protocol_rejected',
+  'connector_error', 'invalid_result', 'unavailable', 'refused',
+];
 export function chatAttentionReason(results: readonly IntentSubResult[]): string {
   const failed = results.find(result => !result.ok);
   const code = failed?.code;
@@ -4407,7 +4423,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               ms: (consumeKnowledge || prefetchedKnowledge) && knowledgeEndedAt > 0 ? Math.max(0, knowledgeEndedAt - knowledgeStartedAt) : Math.max(0, now() - at),
               deadlineMs: askedWebDeadline ?? sourceDeadlineMsOfRead, coalesced: 1,
               ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines, run.chatDate ?? 'none', served.find(call => call.name === INTERNAL.knowledgeSearch), { droppedFilters: run.droppedDayFilters, deduped: dedupedKnowledge }) } : {}),
-              ...(part.source === 'chat' ? chatReceiptField(served) : {}),
+              ...(part.source === 'chat' ? chatReceiptField(served, part.results) : {}),
               ...mailReceiptField(mailInfo),
             });
             // R6: this source settled after the call had already answered, so what it found is handed over

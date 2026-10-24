@@ -1,4 +1,4 @@
-import { CHAT_QUERY_OPERATORS, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_REFUSAL_REASONS } from '../tools/research.js';
+import { CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_REFUSAL_REASONS } from '../tools/research.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -903,18 +903,25 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
         mail = { ...shape, retried };
       }
     }
-    let chat: { terms: number; operators: string[]; limit: number; sort: string } | undefined;
+    let chat: { terms: number; operators: string[]; limit: number; sort: string } | { reason: string } | undefined;
     if (hasChat) {
       const row = value.chat as Record<string, unknown> | null | undefined;
       if (row === null || typeof row !== 'object' || Array.isArray(row)) return;
-      const fields = ['terms', 'operators', 'limit', 'sort'];
-      if (Object.keys(row).some(key => !fields.includes(key))) return;
-      const terms = row['terms'], operators = row['operators'], limit = row['limit'], sort = row['sort'];
-      if (!Number.isSafeInteger(terms) || (terms as number) < 0) return;
-      if (!Array.isArray(operators) || operators.some(operator => typeof operator !== 'string' || !CHAT_QUERY_OPERATORS.includes(operator))) return;
-      if (!Number.isSafeInteger(limit) || (limit as number) < 1) return;
-      if (sort !== 'newest' && sort !== 'relevance') return;
-      chat = { terms: terms as number, operators: [...operators] as string[], limit: limit as number, sort };
+      // R3: a refused read records one closed reason; a search records its shape. Never both, and
+      // never a free-text cause.
+      if (Object.prototype.hasOwnProperty.call(row, 'reason')) {
+        if (Object.keys(row).length !== 1 || typeof row['reason'] !== 'string' || !CHAT_RECEIPT_REASONS.includes(row['reason'])) return;
+        chat = { reason: row['reason'] };
+      } else {
+        const fields = ['terms', 'operators', 'limit', 'sort'];
+        if (Object.keys(row).some(key => !fields.includes(key))) return;
+        const terms = row['terms'], operators = row['operators'], limit = row['limit'], sort = row['sort'];
+        if (!Number.isSafeInteger(terms) || (terms as number) < 0) return;
+        if (!Array.isArray(operators) || operators.some(operator => typeof operator !== 'string' || !CHAT_QUERY_OPERATORS.includes(operator))) return;
+        if (!Number.isSafeInteger(limit) || (limit as number) < 1) return;
+        if (sort !== 'newest' && sort !== 'relevance') return;
+        chat = { terms: terms as number, operators: [...operators] as string[], limit: limit as number, sort };
+      }
     }
     return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(chat !== undefined ? { chat } : {}), ...(hasPlan ? { plan: value.plan as string } : {}), ...(hasPartial ? { partial: value.partial as string, failedPages: value.failedPages as number } : {}) };
   }

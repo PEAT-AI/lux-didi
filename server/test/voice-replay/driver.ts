@@ -558,7 +558,10 @@ export async function replayTools(t: TestContext, store: Store, clock: ReplayClo
   const port = createMcpAdapter({
     registry, store: new MemoryResultStore({ maxBytes: 10_000, maxSliceBytes: 512 }),
     resolveCredential: async () => 'synthetic-token',
-    budgets: { maxResponseBytes: 12_000, projectionChars: 10, timeoutMs: 1_000 },
+    // The adapter measures this budget in real milliseconds (AbortSignal.timeout) while every deadline in a
+    // replay is virtual, so the owner's 12 s ceiling must be the clock that settles the call, never this one
+    // under CPU contention: keep it far past any ceiling the scenario can reach.
+    budgets: { maxResponseBytes: 12_000, projectionChars: 10, timeoutMs: 60_000 },
   });
   const toolOwner = createToolsOwner({
     store, ownerId: store.assistantId, registry, port,

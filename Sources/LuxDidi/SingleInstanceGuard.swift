@@ -40,14 +40,17 @@ enum SingleInstanceGuard {
 /// The launch paths that decide whether Didi may appear and take focus. A pure
 /// value: `resolve` reads only the arguments, the environment and the login Apple
 /// Event, so the presentation decision is provable without a window.
-enum LaunchKind: Equatable {
+enum LaunchKind: String {
     case interactive
-    case loginItem
-    case installRelaunch
-    case installedProof
-    case selfCheck
-    case uiProof
+    case loginItem = "login_item"
+    case installRelaunch = "install_relaunch"
+    case installedProof = "installed_proof"
+    case selfCheck = "self_check"
+    case uiProof = "ui_proof"
     case verification
+    /// #619: the Dock click on a running instance. Its own kind, so native-live.log says that a
+    /// reopen shows the orb and no window.
+    case reopen
 
     /// A check that cannot open its own window exits with this code so a yielded
     /// proof launch can never be mistaken for a pass.
@@ -69,7 +72,7 @@ enum LaunchKind: Equatable {
     var activates: Bool {
         switch self {
         case .interactive, .loginItem: return true
-        case .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification: return false
+        case .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification, .reopen: return false
         }
     }
 
@@ -77,7 +80,7 @@ enum LaunchKind: Equatable {
     /// and only the kinds that host a window for a reason of their own present one at launch.
     var presentsOrbAtLaunch: Bool {
         switch self {
-        case .interactive, .loginItem, .installRelaunch: return true
+        case .interactive, .loginItem, .installRelaunch, .reopen: return true
         case .installedProof, .selfCheck, .uiProof, .verification: return false
         }
     }
@@ -87,7 +90,7 @@ enum LaunchKind: Equatable {
     var presentsWindowAtLaunch: Bool {
         switch self {
         case .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification: return true
-        case .interactive, .loginItem: return false
+        case .interactive, .loginItem, .reopen: return false
         }
     }
 
@@ -98,9 +101,17 @@ enum LaunchKind: Equatable {
 
     var duplicateInstanceExitCodeForYield: Int32 {
         switch self {
-        case .interactive, .loginItem: return 0
+        case .interactive, .loginItem, .reopen: return 0
         case .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification: return LaunchKind.duplicateInstanceExitCode
         }
+    }
+}
+
+/// #613: the one content-free launch record, so a launch kind is never inferred from LaunchServices.
+extension LaunchKind {
+    var launchRecord: [String: Any] {
+        ["event": "launch_kind", "kind": rawValue,
+         "autoConnects": autoConnects, "windowShown": presentsWindowAtLaunch]
     }
 }
 
@@ -113,5 +124,24 @@ enum OrbFirstAutoConnect {
     static func decide(kind: LaunchKind, serviceReady: Bool, pageHostable: Bool, attempted: Bool) -> Action {
         guard kind.autoConnects, !attempted else { return .never }
         return serviceReady && pageHostable ? .connect : .wait
+    }
+
+    /// #613: an auto-connected launch waits for the calendar connector to publish, so the opener composes
+    /// with a digest instead of racing it. Four seconds, then the call starts and the digest reads absent.
+    static let calendarBoundMs = 4000
+    static let calendarStepMs = 200
+
+    /// The probe and the clock are injected, so the bound is provable with no host and no waiting.
+    @MainActor static func waitForCalendar(published: () async -> Bool,
+                                sleep: (Int) async -> Void,
+                                boundMs: Int = calendarBoundMs,
+                                stepMs: Int = calendarStepMs) async -> Bool {
+        var waited = 0
+        while true {
+            if await published() { return true }
+            if waited >= boundMs { return false }
+            await sleep(stepMs)
+            waited += stepMs
+        }
     }
 }

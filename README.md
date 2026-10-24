@@ -8,21 +8,23 @@ This is a personal prerelease: a locally built, self-signed Mac app. It is not n
 
 ## What Naya does
 
-- **Talks.** One tap on the orb or the Right Command key starts a call. She opens with one short line drawn from the last session, and an open loop she has not seen confirmed in the last day comes to you as a question, never as a fact she states. She keeps the call light: answers are short and she speaks while she looks things up. If speech from a video makes her go quiet, she rebuilds the call silently: no chime and no "I am back".
+- **Talks.** One tap on the orb or the Right Command key starts a call. She opens with one short line drawn from the last session, and an open loop she has not seen confirmed in the last day comes to you as a question, never as a fact she states. She keeps the call light: answers are short and she speaks while she looks things up. If speech from a video makes her go quiet, she rebuilds the call silently: no chime and no "I am back". A call you start by hand waits a moment for the calendar, so her opening line can see the day. She looks live only while a call is live: when a call's state is unknown she goes cold rather than reopen the microphone, and a stop stays stopped until you start her again.
 - **Looks things up** (read only), when you connect the matching source:
   - Lux Knowledge: your notes and past decisions.
   - Gmail and Google Calendar: "anything important in mail?", "what is on tomorrow?". Mail triage sets bulk mail aside and reads human threads first; a mail search uses at most three words from your ask and tries a wider search once when nothing matches.
   - Mattermost, through the `mattermost-mcp` server: "anything urgent on Mattermost?". Triage of what came in works again, and several chat searches in one ask run side by side.
-  - Mongoose: company knowledge.
+  - Mongoose: company knowledge, data and crm, each its own sign-in; admin is never connected.
   - The web, for weather and news. A web result is never lost when the answer is trimmed to fit.
+- **Says what it searched.** Every lookup answer opens with what was searched and what was not, before the findings.
+- **Never stalls after a lookup.** Once a lookup returns she owes you an answer: if the model goes quiet she nudges it at 8 seconds and rebuilds the call at 15, so you are not left waiting in silence.
 - **Stops when told.** She reads the last ten words of every spoken fragment, so an end phrase works inside any sentence: her name may sit up to four words before or two words after it, and a name at the end of a fragment stays good for three seconds. "Stop listening", "shut down" and "stop now", and the German forms, end the call with no name; a bare "stop" still needs her name next to it.
-- **Remembers.** "Naya, remember that ..." saves a local note. Two different notes said in the same stretch of talk are both kept; the same note said twice is still refused. "Save to my vault: ..." saves a note to Lux Knowledge. Notes can be listed and deleted in the app.
+- **Remembers.** "Naya, remember that ..." saves a local note. Two different notes said in the same stretch of talk are both kept; the same note said twice is still refused. "Save to my vault: ..." saves a note to Lux Knowledge. Notes can be listed and deleted in the app. A memory recall reads earlier conversations only, never the call in progress or your current question.
 - **Opens things** only when you ask: a mail, a calendar event, a chat thread, a file or an app.
 - **Is honest about gaps.** A weak knowledge match is reported as "nothing matched". An empty mail or chat window says so and never says "nothing urgent".
 
 ## Using her
 
-1. **Start.** Open Naya. She appears as the orb in the top right. Opening the app by hand starts a call by itself, once. A login start, an install relaunch and every check start only show the orb.
+1. **Start.** Open Naya. She appears as the orb in the top right. Opening the app by hand starts a call by itself, once. A login start, an install relaunch and every check start only show the orb. A click on the Dock icon only shows the orb too, and never opens the full window.
 2. **Talk, mute, resume.** Tap the orb or tap the **Right Command** key (bare tap only; a held key or a chord does nothing). First tap starts her, the next tap mutes her (the orb turns purple), the next tap lets her listen again. Muting closes the microphone at once.
 3. **End the call.** Say "Naya, stop listening" or "Naya, shut down" (also "end the call", "hang up", "goodbye", "good night", "turn off"; German: "Naya aus", "Naya, hör auf zuzuhören"). Her name is required at the start or the end, the sentence is at most 8 words, and a question about the phrase never ends the call. The microphone stops at once and a short goodbye sound plays. The menu bar **Stop** does the same. An unattended call also ends after 5 minutes of conversational silence; noise alone does not keep it alive. By default one provider session lasts at most an hour and a whole call at most four hours.
 4. **Menu bar.** Start Live, Mute, Stop, Open Naya app, Settings, Getting started, Open at login, Right Command tap, Always show Naya, Show mini orb, Reveal logs, Copy diagnostics, Quit. The full window only opens from here (or the shortcut below); it is created the first time you ask for it.

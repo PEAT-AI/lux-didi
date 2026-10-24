@@ -166,7 +166,7 @@ test('the timing waterfall lines keep closed, count-only shapes (#451)', () => {
   assert.deepEqual(safeEvent(answer), answer);
   const arrived = { event: 'research_call_arrived', liveSessionId: LIVE_SESSION_ID, generation: 1, calls: 2 };
   assert.deepEqual(safeEvent(arrived), arrived);
-  const output = { event: 'tool_output_sent', liveSessionId: LIVE_SESSION_ID, generation: 1, tools: 2, msSinceArrived: 1_400 };
+  const output = { event: 'tool_output_sent', liveSessionId: LIVE_SESSION_ID, generation: 1, tools: 2, msSinceArrived: 1_400, outcome: 'sent' };
   assert.deepEqual(safeEvent(output), output);
   assert.equal(safeEvent({ ...output, msSinceArrived: -5 }), undefined, 'a negative span is refused');
 });
@@ -187,6 +187,31 @@ test('live_context_usage and live_dead_air_nudge carry numbers only', () => {
   assert.equal(safeEvent({ event: 'live_context_usage', totalTokens: 15, extra: 1 }), undefined, 'an extra key fails closed');
   assert.deepEqual(safeEvent({ event: 'live_dead_air_nudge', elapsedMs: 8000 }), { event: 'live_dead_air_nudge', elapsedMs: 8000 });
   assert.equal(safeEvent({ event: 'live_dead_air_nudge', elapsedMs: -1 }), undefined, 'a negative elapsed is refused');
+});
+test('#538: the debt clock, the typed turn failure and the tool send outcome are closed shapes', () => {
+  // The debt clock records phase changes as enums, never a duration, a reason string or any content.
+  assert.deepEqual(safeEvent({ event: 'live_debt', phase: 'start', reason: 'tool_output' }),
+    { event: 'live_debt', phase: 'start', reason: 'tool_output' });
+  assert.deepEqual(safeEvent({ event: 'live_debt', phase: 'clear', reason: 'audible' }),
+    { event: 'live_debt', phase: 'clear', reason: 'audible' });
+  assert.deepEqual(safeEvent({ event: 'live_debt', phase: 'rung', reason: 'send_failed' }),
+    { event: 'live_debt', phase: 'rung', reason: 'send_failed' });
+  assert.equal(safeEvent({ event: 'live_debt', phase: 'started', reason: 'tool_output' }), undefined, 'an unknown phase fails closed');
+  assert.equal(safeEvent({ event: 'live_debt', phase: 'start', reason: 'the model said nothing' }), undefined, 'free text has no column');
+  assert.equal(safeEvent({ event: 'live_debt', phase: 'start', reason: 'tool_output', ms: 8_000 }), undefined, 'a duration is not part of the shape');
+  // The typed turn failure names a reason from the closed set.
+  for (const reason of ['provider_error', 'delegation_stalled', 'send_failed', 'recreate_failed']) {
+    assert.deepEqual(safeEvent({ event: 'turn_failed', reason }), { event: 'turn_failed', reason });
+  }
+  assert.equal(safeEvent({ event: 'turn_failed', reason: 'mystery_error' }), undefined, 'the provider word never reaches the log');
+  assert.equal(safeEvent({ event: 'turn_failed', code: 'provider_error' }), undefined, 'the old open field is gone');
+  // The tool answer names what the adapter reported, and nothing else.
+  const answered = { event: 'tool_output_sent', liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2, tools: 1, msSinceArrived: 12 };
+  for (const outcome of ['sent', 'deferred', 'failed'] as const) {
+    assert.deepEqual(safeEvent({ ...answered, outcome }), { ...answered, outcome });
+  }
+  assert.equal(safeEvent({ ...answered, outcome: 'unknown' }), undefined, 'the outcome is a closed set');
+  assert.equal(safeEvent(answered), undefined, 'a send receipt without its outcome is refused');
 });
 test('live_turn_open carries the silence duration only (#303)', () => {
   assert.deepEqual(safeEvent({ event: 'live_turn_open', msSinceLastModelAudio: 42 }), { event: 'live_turn_open', msSinceLastModelAudio: 42 });
@@ -433,4 +458,17 @@ test('#610: the chat query shape reaches the log, and a stray key still refuses 
   assert.equal(safeEvent({ ...source, note: 'extra' }), undefined, 'an unknown field beside a chat shape still refuses the receipt');
   const serialized = JSON.stringify(admitted);
   assert.ok(!serialized.includes('dogcation'), 'no query word reaches the log');
+});
+
+test('launch_kind carries the kind and its two flags, and nothing else', () => {
+  const launch = { event: 'launch_kind', kind: 'interactive', autoConnects: true, windowShown: false };
+  assert.deepEqual(safeEvent(launch), launch);
+  // Every kind the app can report is accepted, so a new launch path is never a silent gap.
+  for (const kind of ['interactive', 'login_item', 'install_relaunch', 'installed_proof', 'self_check', 'ui_proof', 'verification']) {
+    assert.deepEqual(safeEvent({ ...launch, kind }), { ...launch, kind }, `${kind} is a known launch kind`);
+  }
+  assert.equal(safeEvent({ ...launch, kind: 'the owner opened it' }), undefined, 'a free text kind is refused');
+  assert.equal(safeEvent({ ...launch, autoConnects: 'yes' }), undefined, 'a flag is never text');
+  assert.equal(safeEvent({ ...launch, windowShown: 1 }), undefined, 'a flag is never a count');
+  assert.equal(safeEvent({ ...launch, windowTitle: 'Naya' }), undefined, 'no window text crosses this boundary');
 });

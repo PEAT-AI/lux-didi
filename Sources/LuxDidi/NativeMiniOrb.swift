@@ -210,6 +210,14 @@ enum MiniOrbFrameRestore {
         let width = min(size.width, screen.width), height = min(size.height, screen.height)
         return clamp(CGRect(x: saved.minX, y: saved.minY, width: width, height: height), into: screen)
     }
+    /// #620: a screen change keeps the orb visible. The owner's saved origin wins while it is
+    /// still on a screen; otherwise the orb's own frame is clamped into the screen it ended on.
+    static func afterScreenChange(current: CGRect, saved: CGRect?, screens: [CGRect]) -> CGRect {
+        if let saved, screens.contains(where: { $0.contains(CGPoint(x: saved.minX, y: saved.minY)) }) {
+            return resolve(saved, screens: screens)
+        }
+        return resolve(current, screens: screens)
+    }
     /// Shifts a rect inside `screen` without resizing it: the orb never lands
     /// under the menu bar, off an edge, or outside every Space it can join.
     static func clamp(_ rect: CGRect, into screen: CGRect) -> CGRect {
@@ -307,6 +315,7 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         MiniOrbFrameStore.resetSavedFrameOnce(.standard)
         restoreFrame()
         observeAppearance()
+        observeScreenChanges()
         followCursor()
     }
 
@@ -356,8 +365,8 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         let saved = defaults.string(forKey: frameKey).map(NSRectFromString)
         setFrame(MiniOrbFrameRestore.resolve(saved, screens: NSScreen.screens.map(\.visibleFrame)), display: false)
     }
-    /// A display that appears, sleeps or disappears re-clamps the remembered
-    /// frame, so the orb is never stranded on a screen that is gone.
+    /// A display that appears, sleeps or disappears re-places the orb, so it is never stranded on
+    /// a screen that is gone. Registered from init, the only place the panel is born.
     private func observeScreenChanges() {
         NotificationCenter.default.addObserver(self, selector: #selector(screenParametersChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
@@ -365,7 +374,10 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     /// A screen change re-places the orb and writes nothing: the saved frame belongs to the owner's
     /// drag, so unplugging a display can never overwrite the position it returns to.
     @objc private func screenParametersChanged() {
-        restoreFrame()
+        let screens = NSScreen.screens.map(\.visibleFrame)
+        let saved = UserDefaults.standard.string(forKey: frameKey).map(NSRectFromString)
+        setFrame(MiniOrbFrameRestore.afterScreenChange(current: frame, saved: saved, screens: screens),
+                 display: false)
         onReceipt?(["event": "orb_screen_parameters", "screens": NSScreen.screens.count,
                     "orbScreen": orbScreenToken])
     }

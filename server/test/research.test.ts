@@ -175,7 +175,7 @@ test('a failed follow-up logs its real error code, never a bare failed', async (
 test('the whole serialized reply stays within the character cap', async () => {
   const h = harness({ executeText: 'x'.repeat(9_000) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'anything' }, new AbortController().signal);
-  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(reply).length} chars`);
+  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `reply was ${JSON.stringify(reply).length} chars with the coverage header`);
 });
 
 // N4 (#567): memory and knowledge findings of 10 KB each reached Live at 6,125 and 8,543 chars, so the
@@ -191,7 +191,8 @@ test('N4: memory and knowledge findings of 10 KB each still fit the capped reply
     lookups: [{ source: 'memory', history: { query: 'release scope' } }, { source: 'knowledge', query: 'release scope' }],
   }, new AbortController().signal);
   const size = JSON.stringify(reply).length;
-  assert.ok(size <= RESEARCH.replyLimitChars, `reply was ${size} chars`);
+  // #621: the coverage header has its own budget beside the prose envelope.
+  assert.ok(size <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `reply was ${size} chars with the coverage header`);
 });
 
 // N5 (#568): a completed run promised more was available, and the model's continue got
@@ -217,11 +218,15 @@ test('N5: a trimmed reply that can continue still says more is available', async
 // #575: a memory hit that is her own earlier voice confirms a past answer instead of finding new
 // evidence, so it is dropped unless the owner asks what she said.
 test('#575: memory drops her own earlier turns and keeps the owner turns', async () => {
+  // #615: an honest clock, so the call before this one really starts at 09:00:00.
+  let at = Date.parse('2026-10-23T09:00:00.000Z');
   const hits = [
-    { snippet: 'he said the release ships on Friday', role: 'user', date: '2026-10-23T09:00:00.000Z' },
-    { snippet: 'I said the release ships on Friday', role: 'assistant', date: '2026-10-23T09:00:05.000Z' },
+    { snippet: 'he said the release ships on Friday', role: 'user', date: '2026-10-23T08:59:50.000Z' },
+    { snippet: 'I said the release ships on Friday', role: 'assistant', date: '2026-10-23T09:00:10.000Z' },
   ];
-  const h = harness({ configured: ['memory'], memory: () => ({ lines: hits.map(hit => hit.snippet), hits, text: '', total: 2 }) });
+  const h = harness({ configured: ['memory'], now: () => at, memory: () => ({ lines: hits.map(hit => hit.snippet), hits, text: '', total: 2 }) });
+  await runResearch(h.deps, { action: 'start', question: 'anything for today' }, new AbortController().signal);
+  at = Date.parse('2026-10-23T09:00:30.000Z');
   const reply = await runResearch(h.deps, {
     action: 'start', question: 'what did we say about the release', lookups: [{ source: 'memory', history: { query: 'release ships' } }],
   }, new AbortController().signal);
@@ -259,7 +264,7 @@ test('#567: a reply capped after its note was built advertises the continuation 
   const ledger = new ResearchLedger();
   const hits = Array.from({ length: 20 }, (_, index) => ({ snippet: `memory line ${index} ${'m'.repeat(150)}`, role: 'user', date: '2026-09-01T09:00:00.000Z' }));
   const h = harness({
-    ledger, configured: ['memory', 'knowledge'],
+    ledger, configured: ['memory', 'knowledge'], now: () => Date.parse('2026-10-24T12:00:00.000Z'),
     executeText: '### Release scope [id 12] the release ships on Friday',
     memory: () => ({ lines: hits.map(hit => hit.snippet), hits, text: '', total: hits.length }),
   });
@@ -318,7 +323,7 @@ test('#567/R5: a long best knowledge hit is clipped to fit, never dropped', asyn
   const reply = await runResearch(h.deps, {
     action: 'start', question: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }],
   }, new AbortController().signal);
-  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(reply).length} chars`);
+  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `reply was ${JSON.stringify(reply).length} chars with the coverage header`);
   const shown = (reply['findings'] as { text: string }[]).map(finding => finding.text).join('\n');
   assert.match(shown, /the release ships on Friday/, 'the head of the best hit survives the cap');
   assert.match(shown, /\u2026/u, 'and the reply marks where it was cut');
@@ -508,7 +513,7 @@ test('the research declaration names only the configured sources and the valid h
   assert.doesNotMatch(description, /company knowledge base/);
   assert.ok(description.length < 500, `description ${description.length} chars`);
   // R2-R2 superseded by the owner's Mongoose connection: the loop now has a Mongoose candidate.
-  const withMongooseTools = researchSourcesFromToolNames([...google, 'mattermost_search', 'search_knowledge', 'ask_mongoose', 'search_mongoose']);
+  const withMongooseTools = researchSourcesFromToolNames([...google, 'mattermost_search', 'search_knowledge', 'search', 'read']);
   assert.deepEqual(withMongooseTools, ['calendar', 'mail', 'chat', 'knowledge', 'mongoose']);
   const declaration = researchDeclaration(base);
   assert.equal(declaration.name, 'research');
@@ -1784,7 +1789,7 @@ test('LAT-1023: a wide answer is compacted to the Live budget by dropping whole 
   const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
   const text = JSON.stringify(reply);
   assert.ok(RESEARCH.replyLimitChars <= 2_500, `the Live budget is 2,500 chars, not ${RESEARCH.replyLimitChars}`);
-  assert.ok(text.length <= 2_500, `the answer to Live is ${text.length} chars`);
+  assert.ok(text.length <= 2_500 + RESEARCH.coverageLimitChars, `the answer to Live is ${text.length} chars, the prose bound plus the coverage header`);
   const findings = reply['findings'] as { text: string }[];
   const shown = findings.map(finding => finding.text).join('\n');
   const items = shown.split(/\n(?=#\d+ )/u).slice(1);
@@ -1849,7 +1854,7 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
     lookups: [{ source: 'knowledge', query: 'invoice release plan' }, { source: 'mail', query: 'from:ana' }],
   }, new AbortController().signal);
   const text = JSON.stringify(reply);
-  assert.ok(text.length <= RESEARCH.replyLimitChars, `the answer to Live is ${text.length} chars, over ${RESEARCH.replyLimitChars}`);
+  assert.ok(text.length <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `the answer to Live is ${text.length} chars, the prose bound plus the coverage header`);
   const line = h.logs.at(-1)!;
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
   assert.ok((line.answerCompacted?.items ?? 0) >= 2, 'whole items were dropped from both sources');
@@ -2034,7 +2039,8 @@ test('WEB-1024: an early answer with two pending readers keeps its final cap and
   const call = runResearch(h.deps, { action: 'start', question: 'what is remembered and recorded', lookups: [{ source: 'memory', query: 'remembered' }, { source: 'knowledge', query: 'recorded' }, { source: 'chat', query: 'recorded' }] }, new AbortController().signal);
   await tick(); clock.advance(RESEARCH.firstAnswerMs);
   const reply = await call;
-  assert.ok(JSON.stringify(reply).length <= 2500, JSON.stringify(reply).length.toString());
+  // #621: the coverage header has its own budget beside the 2,500 char prose envelope.
+  assert.ok(JSON.stringify(reply).length <= 2_500 + RESEARCH.coverageLimitChars, JSON.stringify(reply).length.toString());
   assert.ok(String(reply['note']).includes(RESEARCH.moreAvailableNote), String(reply['note']));
   assert.deepEqual(reply['pending'], ['knowledge', 'chat']);
   gate.resolve(); await reading;

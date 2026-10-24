@@ -31,7 +31,8 @@ import { hostLogEvent, LIVE_REBUILD_TRIGGERS, LIVE_STATE_CAUSES } from '../host/
 import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
-import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest } from '../adapters/live-voice/index.js';
+import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest, LiveToolResponse, LiveToolSendOutcome, TurnFailedReason } from '../adapters/live-voice/index.js';
+import type { DebtPhase, DebtReason } from '../trace/kinds.js';
 import { headAnchor, terminalAnchor, canonicalSpeechLanguage, effectiveLanguageCode, LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
 import { currentLiveAccent } from '../config/live.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
@@ -255,6 +256,11 @@ export const RESPONSE_WATCHDOG_NUDGE_MS = 8_000;
 export const RESPONSE_WATCHDOG_RECOVERY_MS = 7_000;
 /** At most one watchdog recovery per window; a second mute inside it ends the call honestly instead of looping. */
 export const RESPONSE_WATCHDOG_WINDOW_MS = 120_000;
+/** #538: the audible debt rung. The clock is non-sliding: the first rung lands 8 s after the model began owing audio,
+ *  whatever text it wrote in between. The rebuild rung is seven seconds later, which is AUDIBLE_DEBT_REBUILD_MS. */
+export const AUDIBLE_DEBT_RUNG_MS = 8_000;
+export const AUDIBLE_DEBT_REBUILD_MS = AUDIBLE_DEBT_RUNG_MS + RESPONSE_WATCHDOG_RECOVERY_MS;
+
 /** The write tools the Live model may decline or call, and the resource each one is pinned to. */
 const OWNER_WRITE_RESOURCES = new Map([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault']]);
 /** #592: the closed set of causes an idle arm may name, in the host log and in the arm itself. */
@@ -410,6 +416,15 @@ interface ActiveSession {
   /** 3j response watchdog: the silence clock of the turn that owes a reply, and the last watchdog recovery. */
   watchdogTimer?: ReturnType<JobTimer> | undefined; watchdogSince?: number | undefined;
   watchdogPhase?: 'armed' | 'nudged' | undefined; watchdogRecoveredAt?: number | undefined;
+  /** #538: the audible debt clock, the debt the owner can hear is unanswered. It is non-sliding: it starts when the
+   *  model begins owing audio and only an audible frame, an owner barge-in or the turn's end clears it. `debtOutputs`
+   *  is the batch a recreate re-queues exactly once. */
+  debtSince?: number | undefined; debtTimer?: ReturnType<JobTimer> | undefined;
+  debtStep?: 'rung' | 'rebuild' | undefined;
+  debtOutputs?: LiveToolResponse[] | undefined; debtRequeued?: boolean | undefined; debtBargeIn?: boolean | undefined;
+  /** #538 R4: the provider has announced a response since the debt started, and that response is still in progress.
+   *  The 8 s rung never closes a session that has an answer in flight; it defers until the response ends. */
+  responseInProgress?: boolean | undefined; debtDeferred?: boolean | undefined;
   /** D6: an open model turn holds SPEAKING until turnComplete or 1,500 ms of audible silence. */
   speakingHoldTimer?: ReturnType<JobTimer> | undefined;
   sessionTimer: ReturnType<JobTimer> | undefined; callTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
@@ -1709,8 +1724,10 @@ export class LiveSessionOwner {
    * watchdog: the neutral continuation input at 8 s and the fresh-seeded recovery 7 s after it, never 23 s
    * (amendment A). Only the answer's own audible audio or an ended turn clears the obligation, so inaudible
    * fill frames can no longer push the deadline out forever (D3).
+   * #538: what the adapter reported for the write decides the start. A failed write is already a lost answer, so the
+   * recovery opens at once; sent and deferred both leave the model owing audio, which starts the audible debt clock.
    */
-  #armDeadAir(handle: ActiveSession): void {
+  #armDeadAir(handle: ActiveSession, outputs: LiveToolResponse[], outcome: LiveToolSendOutcome): void {
     if (this.#settled(handle)) return;
     // 3j: the tool result is conversational activity, so the idle clock restarts here rather than on mic frames.
     // A muted session suspends that clock as well, so research finishing while muted cannot time the call out.
@@ -1718,7 +1735,128 @@ export class LiveSessionOwner {
     handle.awaitingAnswer = true;
     handle.answerAt = this.#now();
     this.#armDelegationDeadline(handle);
-    this.#armWatchdog(handle);
+    this.#armDebt(handle, outputs, 'tool_output');
+    if (outcome === 'failed') void this.#recreateForDeadAir(handle, 'send_failed').catch(() => { /* the recreate names its own failure */ });
+  }
+
+  /**
+   * #538: the audible debt clock. It starts when the model began owing audio and it never slides: model text, a model
+   * turn start and output transcription are not audio the owner heard, so they leave its deadline exactly where it
+   * was. Only the first audible frame, an owner barge-in or the turn's end clears it, and while it runs the response
+   * watchdog stays out of its silence so one silence never has two timers on it.
+   */
+  #armDebt(handle: ActiveSession, outputs: LiveToolResponse[], reason: 'tool_output' | 'recreate'): void {
+    if (this.#settled(handle)) return;
+    handle.debtOutputs = outputs;
+    if (handle.debtSince !== undefined) return;
+    // A muted session hears nothing, so nothing is owed to it while the mute holds.
+    if (handle.muted) return;
+    handle.debtSince = this.#now();
+    handle.debtBargeIn = false;
+    handle.debtRequeued = false;
+    handle.debtDeferred = false;
+    handle.responseInProgress = false;
+    // One silence, one clock: the sliding watchdog stands down for the silence the debt clock now owns.
+    this.#cancelWatchdog(handle);
+    this.#noteDebt(handle, 'start', reason);
+    this.#scheduleDebt(handle, AUDIBLE_DEBT_RUNG_MS, 'rung');
+  }
+
+  #scheduleDebt(handle: ActiveSession, delayMs: number, step: 'rung' | 'rebuild'): void {
+    handle.debtTimer?.cancel();
+    handle.debtStep = step;
+    const generation = handle.generation;
+    handle.debtTimer = this.#schedule(() => { void this.#debtRung(handle, generation, step).catch(() => { /* the rung settles its own failure */ }); }, delayMs);
+    handle.debtTimer.unref?.();
+  }
+
+  #clearDebt(handle: ActiveSession, reason: 'audible' | 'owner_barge_in' | 'turn_end'): void {
+    if (handle.debtSince === undefined) return;
+    handle.debtTimer?.cancel(); handle.debtTimer = undefined;
+    handle.debtSince = undefined; handle.debtStep = undefined; handle.debtOutputs = undefined;
+    handle.debtRequeued = false; handle.debtDeferred = false;
+    this.#noteDebt(handle, 'clear', reason);
+  }
+
+  /** #538 R4: the held rung fires the moment the response that held it ends without audio. */
+  #fireDeferredRung(handle: ActiveSession): void {
+    if (handle.debtDeferred !== true) return;
+    handle.debtDeferred = false;
+    handle.debtTimer?.cancel(); handle.debtTimer = undefined;
+    void this.#debtRung(handle, handle.generation, 'rung').catch(() => { /* the rung settles its own failure */ });
+  }
+
+  /** #538: one debt phase change, as the same content-free enums in the host log and in the trace timeline. */
+  #noteDebt(handle: ActiveSession, phase: DebtPhase, reason: DebtReason): void {
+    hostLogEvent({ event: 'live_debt', phase, reason });
+    this.#receipt(handle, 'live.debt', {}, { phase, reason, at: this.#now() });
+  }
+
+  /**
+   * #538: one rung of the audible debt clock. The 8 s rung is per provider: gpt-live-1 has no response.cancel and no
+   * truncate, so the only move is to close the provider session and recreate it; Gemini keeps its one neutral
+   * continuation input. The rebuild rung seven seconds later is the existing fresh-seeded recovery, so a second mute
+   * inside the window keeps its model_unresponsive and uplink_starved classification.
+   */
+  async #debtRung(handle: ActiveSession, generation: number, step: 'rung' | 'rebuild'): Promise<void> {
+    if (this.#settled(handle) || generation !== handle.generation || handle.debtSince === undefined) return;
+    handle.debtTimer = undefined;
+    if (handle.debtBargeIn) return;
+    const turnAgeMs = Math.max(0, this.#now() - handle.debtSince);
+    // #538 R4: an answer in flight is never the ladder's to lose. A response the provider announced since the debt
+    // started holds the 8 s rung until it ends, and the 15 s rung stays armed as its bound.
+    if (step === 'rung' && handle.responseInProgress === true && handle.debtDeferred !== true) {
+      // The response that holds the rung gets the seven seconds the existing nudge gave it; the rung comes back
+      // with the same work, and only then fires whether or not the provider is still writing.
+      handle.debtDeferred = true;
+      this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rung');
+      return;
+    }
+    this.#noteDebt(handle, 'rung', step === 'rung' ? 'dead_air' : 'rebuild');
+    if (step === 'rebuild') { await this.#watchdogRecover(handle, generation, turnAgeMs); return; }
+    // The receipts the dead-air nudge has always written, whichever provider answers the rung.
+    hostLogEvent({ event: 'live_dead_air', msSinceTool: turnAgeMs,
+      msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
+    hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: AUDIBLE_DEBT_RUNG_MS });
+    const stalledTurn = handle.connection.turnId;
+    if (stalledTurn !== undefined) {
+      this.#receipt(handle, 'live.dead_air_stalled', { turnId: stalledTurn }, {
+        stalledAt: this.#now(), turnAgeMs, anyAudio: handle.firstAudioAt !== undefined, inaudibleMs: Math.round(handle.inaudibleMs),
+      });
+    }
+    if (this.#profile.provider !== 'openai') {
+      try { handle.session.sendText({ text: DEAD_AIR_NUDGE_TEXT }); } catch { return; }
+      this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
+      return;
+    }
+    const recreated = await this.#recreateForDeadAir(handle, 'dead_air');
+    if (!recreated) return;
+  }
+
+  /**
+   * #538: the OpenAI recovery rung. gpt-live-1 cannot cancel or truncate a response, so the host closes the provider
+   * session and recreates it with the conversation seed, then hands the pending tool outputs to the new response
+   * exactly once. An owner barge-in in flight owns the turn: nothing is recreated under it.
+   */
+  async #recreateForDeadAir(handle: ActiveSession, reason: 'send_failed' | 'dead_air'): Promise<boolean> {
+    if (this.#settled(handle) || handle.debtBargeIn) return false;
+    if (reason === 'send_failed') this.#noteDebt(handle, 'rung', 'send_failed');
+    const outputs = handle.debtOutputs ?? [];
+    const requeue = outputs.length > 0 && handle.debtRequeued !== true;
+    const opened = await this.#recoverFromDrop(handle, undefined, true, 'model_mute');
+    // F3: a recreate that could not open is the speakable failure, whichever rung started the ladder.
+    if (!opened || this.#settled(handle)) { this.#turnFailed(handle, handle.generation, 'recreate_failed'); return false; }
+    if (requeue) {
+      handle.debtRequeued = true;
+      // F3: the re-queue's own outcome is read, never dropped. A fresh session has no such pending batch, so a
+      // refusal here is recorded and the seeded answer carries on; it is not a second failure of the same kind.
+      let requeued: LiveToolSendOutcome = 'failed';
+      try { requeued = handle.session.sendToolResponse({ responses: outputs }); } catch { /* the new transport settles itself */ }
+      if (requeued === 'failed') this.#noteDebt(handle, 'rung', 'send_failed');
+    }
+    this.#armDebt(handle, outputs, 'recreate');
+    this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
+    return true;
   }
 
   /** The delegation a receipt names: this session window, which is the one delegation the host can speak for. */
@@ -1731,10 +1869,10 @@ export class LiveSessionOwner {
    * transport failure, so nothing is rebuilt; if her line never becomes audible, the turn is settled failed
    * rather than left owing, and the owner's S2 recovery starts the retry.
    */
-  #turnFailed(handle: ActiveSession, generation: number, code: string): void {
+  #turnFailed(handle: ActiveSession, generation: number, reason: TurnFailedReason): void {
     if (this.#settled(handle) || generation !== handle.generation) return;
     const failedAt = this.#now();
-    hostLogEvent({ event: 'turn_failed', code });
+    hostLogEvent({ event: 'turn_failed', reason });
     // The turn is over: every call it left open is closed here, never still in flight in the projection.
     for (const id of [...handle.pendingCallIds]) {
       handle.callAborts.get(id)?.abort();
@@ -1828,6 +1966,9 @@ export class LiveSessionOwner {
     if (handle.muted) { this.#cancelWatchdog(handle); return; }
     // A tool call in flight owns the silence through the dead-air path: never two timers on one silence.
     if (handle.pendingCallIds.size > 0) { this.#cancelWatchdog(handle); return; }
+    // #538: the audible debt clock owns an owed answer that a tool output started. Its clock never slides, so the
+    // sliding watchdog stands down for exactly that silence and takes no second timer on it.
+    if (handle.debtSince !== undefined) { this.#cancelWatchdog(handle); return; }
     // One record per phase change: a streaming reply refreshes the clock on every chunk and must not write a
     // receipt per chunk into the rotating host log.
     const wasArmed = handle.watchdogPhase === 'armed';
@@ -1897,6 +2038,22 @@ export class LiveSessionOwner {
     // D3: a fill frame is not output. The provider streams inaudible frames between sentences, so re-arming
     // on one would push the deadline out forever and no stall would ever be witnessed.
     if (type === 'audio' && event.audible === false) return;
+    // #538 R4: the response the provider has announced, from the events it already surfaces. An announced response
+    // holds the debt rung so an answer in flight is never closed under it.
+    if (type === 'modelTurnStarted' || type === 'modelText' || type === 'outputTranscription' || type === 'audio') handle.responseInProgress = true;
+    // #538: the audible debt clock clears on what the owner heard or did, never on what the model typed.
+    if (type === 'audio') this.#clearDebt(handle, 'audible');
+    if (type === 'interrupted') { handle.responseInProgress = false; handle.debtBargeIn = true; this.#clearDebt(handle, 'owner_barge_in'); }
+    if (type === 'inputTranscription' && event.finished === true) { handle.debtBargeIn = true; this.#clearDebt(handle, 'owner_barge_in'); }
+    if (type === 'turnComplete' || type === 'turnFailed') {
+      handle.responseInProgress = false;
+      // The response ended: an answer that was heard ends the debt, and one that ended without audio fires the rung
+      // the deferral held, which is the ruling's own order.
+      if (handle.debtSince !== undefined) {
+        if (handle.lastModelAudioAt !== undefined && handle.lastModelAudioAt >= handle.debtSince) this.#clearDebt(handle, 'turn_end');
+        else this.#fireDeferredRung(handle);
+      }
+    }
     if (type === 'turnComplete' || type === 'interrupted' || type === 'toolCall' || type === 'toolCallCancellation') { this.#cancelWatchdog(handle); return; }
     // The owner's turn ended (a final transcription, or the provider's voice-activity end): a reply is owed.
     if (type === 'inputTranscription') { if (event.finished === true) this.#armWatchdog(handle); return; }
@@ -2514,7 +2671,7 @@ export class LiveSessionOwner {
         if (event.type === 'turnFailed') {
           // S5: a backend response that ended failed, incomplete or errored is a typed turn failure, never a
           // silent stall and never a rebuild: the session is healthy, the turn is not.
-          this.#turnFailed(handle, generation, event.code);
+          this.#turnFailed(handle, generation, 'provider_error');
           continue;
         }
         if (event.type === 'contextUsage') {
@@ -2552,9 +2709,10 @@ export class LiveSessionOwner {
           void this.#toolBatch(handle, event, generation).catch(() => {
             if (this.#settled(handle) || generation !== handle.generation) return;
             const responses = event.calls.filter(call => handle.pendingCallIds.has(call.id)).map(call => ({ id: call.id, name: call.name, response: { error: 'tool_processing_failed' } }));
-            try { if (responses.length) { exposeToolResults(responses); handle.session.sendToolResponse({ responses }); } } catch { /* transport may have terminated */ }
+            let outcome: LiveToolSendOutcome = 'failed';
+            try { if (responses.length) { exposeToolResults(responses); outcome = handle.session.sendToolResponse({ responses }); } } catch { /* transport may have terminated */ }
             for (const call of event.calls) handle.pendingCallIds.delete(call.id);
-            if (responses.length) this.#armDeadAir(handle);
+            if (responses.length) this.#armDeadAir(handle, responses, outcome);
             handle.thinking = responses.length > 0 || handle.pendingCallIds.size > 0;
             this.#noteState(handle, 'tool');
           }); continue;
@@ -3261,13 +3419,14 @@ export class LiveSessionOwner {
         if (responses.length) {
           // OPEN2-R4: the one exposure point, on the text these results deliver after every trim.
           exposeToolResults(responses);
-          handle.session.sendToolResponse({ responses });
+          // #538: what the write did is the host's to read, not a receipt to log and then forget.
+          const outcome = handle.session.sendToolResponse({ responses });
           // #451: the function_call_output write itself, measured from the frame that asked for it.
           const askedAt = event.calls.map(call => arrivedAt.get(call.id)).find(started => started !== undefined);
-          hostLogEvent({ event: 'tool_output_sent', liveSessionId: handle.liveSessionId, generation, tools: responses.length,
+          hostLogEvent({ event: 'tool_output_sent', liveSessionId: handle.liveSessionId, generation, tools: responses.length, outcome,
             msSinceArrived: askedAt === undefined ? 0 : Math.max(0, this.#now() - askedAt) });
           for (const entry of responses) if (entry.name === RESEARCH_TOOL_NAME) markCalendarReply(handle.researchLedger, entry.response);
-          this.#armDeadAir(handle);
+          this.#armDeadAir(handle, responses, outcome);
         }
       } catch { /* A cancelled provider batch or terminal transport cannot receive late answers. */ }
     }

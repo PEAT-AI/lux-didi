@@ -9,17 +9,26 @@ What a start may do is decided once, by `LaunchKind` in `SingleInstanceGuard.swi
 - Owner opens the app: the orb appears and one call connects by itself, only when the host is up and the orb page can be shown. A refusal (denied microphone, refused audio owner) is final for that launch, so it never loops.
 - Login item: the orb appears, nothing connects, no capture.
 - Install relaunch (`--install-relaunch`): the orb appears, nothing connects.
+- Dock reopen: the orb is ordered front and nothing else happens. It is its own launch kind, no full window is created, nothing becomes key and the app never activates, so the Dock cannot rearrange the owner's other windows.
 - Proof and self-check launches: no orb, no connect, a window only where the proof drives one; a second instance exits with code 3 so a yielded proof can never read as a pass.
+
+Every launch and every Dock reopen writes one content-free `launch_kind` line carrying the kind, `autoConnects` and `windowShown`, into `native-live.log` and to the host so `host.log` carries it too. A launch kind is never inferred from LaunchServices.
+
+An interactive launch waits up to four seconds for the calendar connector to publish before it starts the call, so the opener composes with a digest; past the bound the call starts and the digest reads absent.
+
+A stop is the owner's, so the native side never waits for the host to go cold: a local stop cancels the transport after 500 ms and records `live_stop_outcome` as `confirmed` or `deadline`, and a socket that closed without a terminal frame takes presence cold at once with no reconnect.
 
 ## Surfaces
 
 The orb (MINI) and the window (FULL) are independent; a `PresentationCoordinator` owns which are visible and every entry point goes through it. It never touches Live, so no switch starts, ends or restarts a call.
 
-- **MINI** is a borderless non-activating floating panel that can become neither key nor main, joins every Space, floats over full-screen apps and stays out of the window cycle. It defaults to the top right under the menu bar clock, moves by drag, and its frame is remembered and clamped onto a visible screen after a display change. Clicks beside the orb reach the app underneath. It follows presence: grey and dim when cold, the connecting look while opening, colour while live, purple while muted. Showing an orb that is already on screen does nothing, which removed an old flicker.
-- **FULL** is a standard window that does not hide when the app deactivates. Cmd+W and the close button hide it and keep the draft and the page; they never end a call. A Dock click brings it back.
+- **MINI** is a borderless non-activating floating panel that can become neither key nor main, joins every Space, floats over full-screen apps and stays out of the window cycle. It defaults to the top right under the menu bar clock, moves by drag, and its frame is remembered and clamped onto a visible screen after a display change, heard from the panel's own init so an unplugged display cannot strand it. Clicks beside the orb reach the app underneath. It follows presence: grey and dim when cold, the connecting look while opening, colour while live, purple while muted. Showing an orb that is already on screen does nothing, which removed an old flicker; only a Dock reopen orders an orb that is already there front again.
+- **FULL** is a standard window that does not hide when the app deactivates. Cmd+W and the close button hide it and keep the draft and the page; they never end a call. It opens only when the owner asks for it: the **Open Naya app** menu item, Control Option Space, the orb's expand, Settings, or an install relaunch. A Dock click shows the orb and no window.
 - Control Option Space and Control Option Shift Space toggle the FULL window. Escape closes the window if it is open, otherwise hides the orb. Explicit Quit stops recording, attempts a scoped page-session logout, unregisters the hotkeys and exits.
 - Service failure or WebContent termination becomes a native retry screen, not a blank view. Reconnect is explicit and reboots page authentication.
 - Native saved, failed, cancelled and unknown outcomes are distinct; uncertain saves keep a stable idempotency identity.
+
+Right-clicking the Dock icon offers the four menu bar actions as a Dock menu: **Open Naya app**, Settings, then Start Live and Mute (Mute reads Unmute while she is muted), and macOS adds Quit itself. The items carry the menu bar's own actions, so choosing **Open Naya app** there is the one Dock interaction that opens the FULL window and activates the app, exactly like the menu item; a plain Dock click still shows the orb alone.
 
 ## Native permissions and effects
 
@@ -150,7 +159,8 @@ prevents further submissions in that launch. Quitting the app stops polling.
 The menu bar's **Getting started** sheet shows microphone and notification
 permission states, the actual Open at login registration, global shortcut
 defaults and current Connections status. It appears once for this onboarding
-build after a normal launch. Proof and self-check launches do not consume the
+build, on the first time the owner opens the full window; a launch that shows only the orb shows
+no sheet. Proof and self-check launches do not consume the
 flag. It never requests a permission automatically. Explicit setup buttons
 request a not-yet-decided microphone permission, open the microphone privacy
 pane for a denied permission, or use the existing notification permission

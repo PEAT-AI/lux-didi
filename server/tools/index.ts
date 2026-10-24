@@ -80,6 +80,16 @@ export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
   exact(p.bounds, ['maxQueryChars', 'maxSearchLimit', 'maxGetIds', 'maxEntityBytes', 'maxResultBytes']); Object.values(p.bounds).forEach(positive);
   return p;
 }
+/**
+ * #630: the host publishes only the names the endpoint itself lists (host/mcp.ts restore), so a
+ * composite the policy grants is satisfied by the children it stands on, never by its own name.
+ * Any other difference between the grant and the policy still refuses.
+ */
+function projectionCovers(p: ConnectionPolicy, granted: readonly string[]): boolean {
+  if (granted.some(name => !p.toolNames.includes(name))) return false;
+  const covered = new Set([...granted, ...composedGrantedNames(p.connector, granted)]);
+  return p.toolNames.every(name => covered.has(name));
+}
 function validateAcceptance(input: RunAcceptance): RunAcceptance {
   const a = detached(input);
   exact(a, ['ownerId', 'actorId', 'runId', 'authorityEpoch', 'revision', 'route', 'allowedClasses', 'connectionIds']);
@@ -156,7 +166,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     try {
       const endpoint = registry.endpoint(p.endpoint.id); const grant = registry.currentGrant(p.endpoint.id);
       return !!grant && endpointBinding(endpoint) === endpointBinding(p.endpoint) &&
-        grant.generation === p.generation && grant.schemaDigest === p.schemaDigest && grant.account === p.endpoint.account && grant.resource === p.endpoint.resource && canonicalJSON(grant.toolNames) === canonicalJSON(p.toolNames);
+        grant.generation === p.generation && grant.schemaDigest === p.schemaDigest && grant.account === p.endpoint.account && grant.resource === p.endpoint.resource && projectionCovers(p, grant.toolNames);
     } catch { return false; }
   };
   const intentBytes = (tx: Transaction, call: ToolCallRefusal): string => canonicalJSON({ ...call, routeIdentity: readRun(tx, call.runId).snapshot.acceptance.route.identity });
@@ -687,8 +697,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                   return { status: 'failed', code: failureCode };
                 }
                 // A classified failure is visible: the endpoint flips to configured and the call
-                // returns the plain reason as its projection, never an empty success.
+                // returns the plain reason as its projection, never an empty success. A status that
+                // names a content-free log line (an unknown helper code, a Didi defect) writes it too.
                 reportToolStatus?.(p.endpoint.id, status);
+                if (status.log) options.log?.(status.log);
                 return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0 }, []) };
               }
               reportToolStatus?.(p.endpoint.id, null);

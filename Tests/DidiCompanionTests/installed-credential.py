@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory(prefix="didi-credential-compile-") as temporary
     info = plistlib.loads((source / "Resources/Info.plist").read_bytes())
     info["CFBundleIdentifier"] = "ai.peat.lux-didi.credential-proof"
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
-    command = ["xcrun", "swiftc", "-j", "1", "-num-threads", "1", "-whole-module-optimization",
+    command = [str(source / "scripts/with-compile-lock.sh"), "--", "xcrun", "swiftc", "-j", "1", "-num-threads", "1", "-whole-module-optimization",
                "-D", "COMPANION_TEST", "-parse-as-library", "-module-cache-path", str(work / "cache")]
     command += [str(path) for path in sorted((source / "Sources/LuxDidi").glob("*.swift"))]
     command += [str(path) for path in sorted((source / "Tests/DidiCompanionTests").glob("*.swift"))]

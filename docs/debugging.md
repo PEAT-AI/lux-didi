@@ -47,6 +47,16 @@ turn's age, whether any audio arrived and the inaudible milliseconds, which is t
 missing. All of it lands under the session's `connection_epoch`; a rebuilt socket gets a new epoch
 and a late receipt from the one it replaced is refused as `STALE_EPOCH`.
 
+Since release 10 the dead-air recovery is legible from `host.log` alone. `tool_output_sent` carries what
+the adapter reported for the answer (`outcome`: `sent`, `deferred` or `failed`). `live_debt` records the
+audible debt clock as content-free enums and nothing else: `phase: start` with `reason: tool_output` or
+`recreate`, `phase: clear` with `reason: audible`, `owner_barge_in` or `turn_end`, and `phase: rung` with
+`reason: dead_air` at 8 s, `rebuild` at 15 s, or `send_failed` at once for a write the adapter refused.
+No duration, no text and no provider word is in any of them, which is why model text, a model turn start
+and output transcription can re-arm the response watchdog and still never clear this clock. `turn_failed`
+names its reason from the closed set `provider_error`, `delegation_stalled`, `send_failed`, `recreate_failed`,
+so the one line she speaks and the log agree.
+
 Only the last two tables hold owner text. Every metadata column is an id, a closed code, a count or
 a duration: the writer refuses any field outside its allowlist, so a provider message, a tool
 argument, a result preview, a transcript snippet, a path or a title has nowhere to land. A turn
@@ -71,6 +81,10 @@ increasing per instance), `mono_ms` (the app's own monotonic clock) and a fracti
 `timestamp` plus `wall_ms`. Inside a call every line also carries `liveSessionId`. Both files rotate
 at 5 MiB with two rotations (`<name>`, `<name>.1`, `<name>.2`), the shape `host.log` already uses,
 so neither grows without a bound.
+
+Five records answer what a launch and a stop did, all content-free: `launch_kind` (the kind, `autoConnects`, `windowShown`, in `native-live.log` and, through the client diagnostic route, in `host.log`; a Dock reopen is its own kind, `reopen`, with `windowShown` false), `startup_prompt` (`prompt` of `grant_alert` or `getting_started`, and `decision` of `deferred`, `shown` or `skipped`, so a prompt that waits for the owner's first window is visible), `goodbye_tone` (`played`, and a `reason` of `no_buffer` or `output_refused` when nothing sounded), `live_stop_outcome` (`confirmed` when the host closed the wire inside the deadline, `deadline` when it did not) and `live_restart` (`reason`). A `presence_state` move to `cold` with trigger `error` is the uncertain session: the socket closed without a terminal frame and presence went cold with no reconnect.
+
+A display change writes `orb_screen_parameters` (`screens`, the count, and `orbScreen`, `main`, `other` or `none`), so an orb that moved after an unplugged screen is explained without a rectangle.
 
 The app forwards its playback receipts (received, enqueued, started, drained, interrupted,
 terminated) to the host over the live socket it already holds. Each is one bounded frame with
@@ -129,7 +143,7 @@ in** names the log that already carried it; **dropped** means nothing needs it a
 | `audio` | replaced by `playback.*` receipts and `live.dead_air_stalled`; the byte counts stay in `host.log` |
 | `audio_marker` | replaced by `live.dead_air_stalled` (`anyAudio`, `inaudibleMs`) and `live_stall` in `host.log` |
 | `deadline` | retained in `host.log` as `session_end` reason and `turn_failed` |
-| `turn_failed` | retained in `host.log` as `turn_failed` |
+| `turn_failed` | retained in `host.log` as `turn_failed`, with a reason from `provider_error`, `delegation_stalled`, `send_failed`, `recreate_failed` |
 | `provider_setup` | retained in `host.log` as `live_started` and `gptlive_setup_error` |
 | `provider_error` | retained in `host.log` as `live_provider_error` and `provider_error_unclassified` |
 | `provider_close` | retained in `host.log` as `session_end` |

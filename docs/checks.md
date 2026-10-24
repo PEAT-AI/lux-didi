@@ -10,6 +10,18 @@ Rules that apply to all of them:
 - Browser-backed checks run under `lux-browser-slot run` (a lease on the shared GPU renderer; it is not an npm dependency and exists only on a managed host). Without it those checks are blocked, not skipped.
 - Most server checks copy the exact sources they cover into a temporary directory and compile there, so a stale `dist` can never make them pass.
 
+## Memory discipline
+
+Every Swift compile in this repository is serialized. Each `swiftc` invocation passes one
+compiler job (`-j 1 -num-threads 1`, declared once per script in a `swift_serial` flag set) and
+runs as `scripts/with-compile-lock.sh -- swiftc ...`. The wrapper takes one exclusive lock on the
+per-user path `${LUX_COMPILE_LOCK:-$HOME/.lux/state/compile.lock}`, starts the compiler only once
+it holds that lock, and the lock lives exactly as long as the compiler process. One compiler at a
+time per user on the machine is what stops three parallel lanes from each fanning a frontend out
+per core and eating the Mac's memory. Set `LUX_COMPILE_LOCK` to move the lock path, and a script
+that invents its own `HOME` pins `LUX_COMPILE_LOCK` to the real user path before it does. Test
+binaries run outside the lock: only the compiler is inside it.
+
 ## The release gate
 
 Before a release, run these twelve at the release head, one at a time, with no rerun on a flake: `check-live-voice`, `check-live-session`, `check-prompt`, `check-live-gateway`, `check-tool-owner`, `check-google-connector`, `check-company-connectors`, `check-native-live`, `check-web-unit`, `Tests/DidiMacTests/check-mac.sh`, `check-host`, `check-install-smoke`. After installing the app, run `scripts/smoke.sh` once (it makes at most two real model turns, so never in a loop).

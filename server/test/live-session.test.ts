@@ -41,7 +41,7 @@ import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
 import { NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
-import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse } from '../adapters/live-voice/index.js';
+import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse, LiveToolSendOutcome } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createDomainPort } from '../domain/facade.js';
@@ -285,8 +285,11 @@ async function harness(t: TestContext, overrides: {
     }
     let mongooseSdk: Server | undefined;
     let mongooseTransport: WebStandardStreamableHTTPServerTransport | undefined;
-    const mongooseEndpoint = { id: 'mongoose', url: 'https://fixture.invalid/mongoose', account: 'account', resource: 'resource' };
-    const mongooseSchemas = [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query'], additionalProperties: false } }];
+    const mongooseEndpoint = { id: 'mongoose-knowledge', url: 'https://fixture.invalid/mcp/knowledge', account: 'account', resource: 'mongoose:knowledge' };
+    const mongooseSchemas = [
+      { name: 'search', inputSchema: { type: 'object', properties: { query: { type: 'string' }, mode: { type: 'string' }, limit: { type: 'integer' }, cursor: { type: 'string' }, verbose: { type: 'boolean' } }, required: ['query'], additionalProperties: false } },
+      { name: 'read', inputSchema: { type: 'object', properties: { ref: { type: 'string' }, depth: { type: 'string' }, cursor: { type: 'string' }, verbose: { type: 'boolean' } }, required: ['ref'], additionalProperties: false } },
+    ];
     if (overrides.mongoose) {
       registry.register(mongooseEndpoint); registry.enable(mongooseEndpoint.id); registry.allowEgress(mongooseEndpoint.id);
       mongooseSdk = new Server({ name: 'live-mongoose-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
@@ -294,7 +297,7 @@ async function harness(t: TestContext, overrides: {
       mongooseSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(mongooseSchemas) }) as never);
       mongooseSdk.setRequestHandler('tools/call', req => {
         calls.push({ name: req.params.name, args: req.params.arguments });
-        return { content: [{ type: 'text', text: JSON.stringify(overrides.mongooseData ?? { results: [{ entity_type: 'knowledge', id: 'synthetic-company-item', title: 'Synthetic company evidence', snippet: 'A current source answer.' }] }) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(overrides.mongooseData ?? { outcome: 'evidence', items: [{ type: 'knowledge_item', ref: 'knowledge/synthetic-company-item', name: 'Synthetic company evidence', url: 'https://source.example.invalid/knowledge/synthetic' }], next_cursor: null, next_tool: null, restriction: null, request_id: 'req-fixture' }) }] };
       });
       await mongooseSdk.connect(mongooseTransport);
     }
@@ -368,11 +371,11 @@ async function harness(t: TestContext, overrides: {
     }
     if (overrides.mongoose) {
       toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mongoose', generation: 1, enabled: true, connector: 'mongoose',
-        endpoint: { ...mongooseEndpoint, credentialRef: null }, toolNames: ['search_mongoose'], schemaDigest: canonicalToolDigest(mongooseSchemas),
+        endpoint: { ...mongooseEndpoint, credentialRef: null }, toolNames: ['search', 'read'], schemaDigest: canonicalToolDigest(mongooseSchemas),
         sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
         route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
         bounds: { maxQueryChars: 200, maxSearchLimit: 10, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
-      assert.equal((await port.discover('mongoose')).state, 'discovered');
+      assert.equal((await port.discover('mongoose-knowledge')).state, 'discovered');
       toolOwner.projectConnection('mongoose');
       mark('mongoose', 'mongoose');
     }
@@ -3657,7 +3660,8 @@ test('a delegated response with no audible output is nudged, and audible progres
   const receipts: Record<string, unknown>[] = [];
   const detach = attachHostLogSink({ event: raw => {
     const record = raw as Record<string, unknown>;
-    if (record.event === 'live_watchdog') receipts.push(record);
+    // #538: a tool turn owes audible audio, so its silence is the debt clock's; the watchdog owns the rest.
+    if (record.event === 'live_watchdog' || record.event === 'live_debt') receipts.push(record);
   } });
   t.after(() => detach());
   const fake = fakeLiveVoicePort();
@@ -3674,18 +3678,19 @@ test('a delegated response with no audible output is nudged, and audible progres
   await advanceUntil(ms => h.advance(ms), scheduler, () => fake.toolResponses.length === 1);
   fake.emit({ type: 'modelTurnStarted' });
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
-  assert.deepEqual(phases(), ['armed'], 'the delegated response is watched from its start');
+  assert.deepEqual(phases(), ['start'], 'the delegated response owes audible audio from its start');
   for (let second = 0; second < 10; second += 1) await advance(1_000);
   // Amendment B: the result completed at t=0, so ten seconds of silence after it is the defect, not a slow
   // tool. The nudge is the first stage of the obligation, not a rebuild.
-  assert.deepEqual(phases(), ['armed', 'nudged'], 'silence after the completed result earns the nudge');
+  // #538 R4: the provider announced a model turn, so the 8 s rung holds until that response ends.
+  assert.deepEqual(phases(), ['start'], 'an announced response holds the rung');
   assert.equal(fake.sessionsOpened, 1, 'the working session is not rebuilt by a nudge');
   assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'the call is still up');
   // Audible output defers the deadline to 8 s from that frame (amendment A).
   fake.emit({ type: 'audio', pcm, rate: 24_000 });
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   for (let second = 0; second < 9; second += 1) await advance(1_000);
-  assert.deepEqual(phases(), ['armed', 'nudged', 'armed', 'nudged'], 'a reply that went silent again is watched again');
+  assert.deepEqual(phases(), ['start', 'clear', 'armed', 'nudged'], 'a reply that went silent again is watched again, by the watchdog that owns a model turn');
   assert.equal(fake.sessionsOpened, 1, 'a nudge is not a recovery');
   attachment.close();
 });
@@ -3875,14 +3880,16 @@ function hostLines(dir: string): Record<string, unknown>[] {
   const text = readFileSync(join(dir, 'logs', 'host.log'), 'utf8').trim();
   return text === '' ? [] : text.split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
 }
-const phasesOf = (dir: string): unknown[] => hostLines(dir).filter(line => line.event === 'live_watchdog').map(line => line.phase);
+// #538: a tool turn's silence is the audible debt clock's, and the watchdog reports only the rebuild it runs.
+const phasesOf = (dir: string): unknown[] => hostLines(dir)
+  .filter(line => line.event === 'live_watchdog' || line.event === 'live_debt').map(line => line.phase);
 const fillFrame = { type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: false, rmsDbfs: -120 } as const;
 const audibleFrame = { type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 } as const;
 /** The fixture port forwards any port event; its declared union predates tool calls and the silence model. */
 const portEvent = (event: unknown) => event as never;
 const settlePort = async (): Promise<void> => { for (let i = 0; i < 12; i++) await tick(); };
 
-test('D3: fill frames never disarm the watchdog, so a tool result with no audible answer is nudged at 8 s and recovered at 15 s', async t => {
+test('D3: fill frames never clear the debt, so a tool result with no audible answer is nudged at 8 s and recovered at 15 s', async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-fill-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));
   t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
@@ -3902,7 +3909,7 @@ test('D3: fill frames never disarm the watchdog, so a tool result with no audibl
     h.advance(100);
     scheduler.runDue();
   }
-  assert.deepEqual(phasesOf(captureDir), ['armed', 'nudged', 'recovered'], 'one clock: the nudge at 8 s and the recovery at 15 s');
+  assert.deepEqual(phasesOf(captureDir), ['start', 'rung', 'rung', 'recovered'], 'one clock: the rung at 8 s, the rebuild rung at 15 s, then the recovery');
   const stall = hostLines(captureDir).find(line => line.event === 'live_dead_air' && line.msSinceTool !== undefined);
   assert.ok(stall, 'the stall leaves a live_dead_air receipt');
   assert.equal(stall!['msSinceTool'], 8_000, 'the answer had been owed for eight seconds');
@@ -3933,8 +3940,50 @@ test('D3: one audible frame restarts the deadline from that frame, never from th
   const nudges = hostLines(captureDir).filter(line => line.event === 'live_dead_air');
   assert.equal(nudges.length, 1, 'one stall receipt for the one nudge');
   assert.equal(nudges[0]!['msSinceTool'], 11_000, 'the clock runs from the audible frame at 3 s');
-  assert.deepEqual(phasesOf(captureDir), ['armed', 'nudged', 'recovered'], 'and the recovery follows 7 s after that nudge');
+  assert.deepEqual(phasesOf(captureDir), ['start', 'clear', 'armed', 'nudged', 'recovered'], 'the audible frame clears the debt, and the watchdog owns the silence after it');
   assert.equal(fake.sessionsOpened, 2);
+  attachment.close();
+});
+
+test('#538: the Gemini path sends its one Continue at 8 s and never closes or recreates the session', async t => {
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'gemini-debt', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'g1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] }));
+  await settlePort();
+  for (let elapsed = 0; elapsed < 8_500; elapsed += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
+  assert.deepEqual(fake.texts, ['Continue.'], 'the 8 s rung on this path is the one neutral continuation input');
+  assert.equal(fake.closes, 0, 'a Continue rung never closes the provider session');
+  assert.equal(fake.sessionsOpened, 1, 'and never recreates it');
+  for (let elapsed = 0; elapsed < 7_500; elapsed += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
+  assert.equal(fake.sessionsOpened, 2, 'the 15 s rung is the one path that opens a fresh session');
+  assert.equal(fake.closes, 1, 'and it closes the old one exactly once');
+  attachment.close();
+});
+
+test('#538: the trace timeline records the debt clock as content-free enums', async t => {
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'trace-debt', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 't1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] }));
+  await settlePort();
+  for (let elapsed = 0; elapsed < 8_500; elapsed += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
+  fake.emit(audibleFrame);
+  await settlePort();
+  const rows = h.store.transaction(tx => tx.all(
+    "SELECT detail FROM trace_event WHERE live_session_id=? AND kind='live.debt' ORDER BY seq", [session.liveSessionId]));
+  const seen = rows.map(row => JSON.parse(String(row['detail'])) as { phase: string; reason: string });
+  assert.deepEqual(seen.map(entry => [entry.phase, entry.reason]), [['start', 'tool_output'], ['rung', 'dead_air'], ['clear', 'audible']],
+    'the start, the rung and the clear, in order');
+  for (const entry of seen) {
+    assert.deepEqual(Object.keys(entry).sort(), ['at', 'phase', 'reason'], 'a time and two enums, never text');
+  }
   attachment.close();
 });
 
@@ -3960,7 +4009,7 @@ test('D3: an audible frame followed by silence still recovers on the same clock'
   const stall = hostLines(captureDir).find(line => line.event === 'live_dead_air' && line.msSinceTool !== undefined);
   assert.ok(stall, 'audible output is not fulfilment, so the stall is still witnessed');
   assert.equal(stall!['msSinceAudible'], 8_000, 'the receipt counts the audible frame');
-  assert.deepEqual(phasesOf(captureDir), ['armed', 'nudged', 'recovered'], 'the deadline still ends in the fresh-seeded recovery');
+  assert.deepEqual(phasesOf(captureDir), ['start', 'clear', 'armed', 'nudged', 'recovered'], 'the deadline still ends in the fresh-seeded recovery');
   assert.equal(fake.sessionsOpened, 2);
   attachment.close();
 });
@@ -4035,6 +4084,9 @@ function progressPort() {
   const toolResponses: LiveToolResponse[][] = [];
   let emit: (event: unknown) => void = () => {};
   let sessionsOpened = 0;
+  /** #538: what the adapter reports back for the next tool answer, so a failed write can be driven here. */
+  let sendOutcome: LiveToolSendOutcome = 'sent';
+  let closes = 0;
   const port: LiveVoicePort = {
     capabilities: { ...fakeLiveVoicePort().port.capabilities, provider: 'openai', supportsResumption: true },
     open(_request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession {
@@ -4063,18 +4115,21 @@ function progressPort() {
       };
       return {
         ready: Promise.resolve(), events, done,
-        sendToolResponse(input: { responses: LiveToolResponse[] }): void { toolResponses.push(input.responses); },
+        sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome { toolResponses.push(input.responses); return sendOutcome; },
         sendAudio(): void {}, sendText(input: { text: string }): void { texts.push(input.text); }, endAudioStream(): void {},
         sendCommentary(input: { text: string }): boolean {
           if (!commentaryDelivered) return false;
           commentary.push(input.text);
           return true;
         },
-        close(): void { if (closed) return; closed = true; wake(); resolveDone({ status: 'closed', code: 'closed' }); },
+        close(): void { if (closed) return; closed = true; closes += 1; wake(); resolveDone({ status: 'closed', code: 'closed' }); },
       };
     },
   };
   return { port, commentary, thinking, texts, toolResponses, emit: (event: unknown) => emit(event),
+    /** #538: what the next tool answer reports, and how many provider sessions the host closed. */
+    reportToolSend: (outcome: LiveToolSendOutcome) => { sendOutcome = outcome; },
+    get closes() { return closes; },
     /** W4: a transport with no open delegation refuses the append, exactly as the GPT-Live wire does. */
     refuseCommentary: () => { commentaryDelivered = false; },
     get sessionsOpened() { return sessionsOpened; } };
@@ -4446,7 +4501,7 @@ test('a delegation still open at 25 s logs its stall, speaks once and is not reb
   // session count shows the stall started nothing of its own.
   const recoveries = receipts.filter(entry => entry['event'] === 'live_recovery');
   assert.equal(fake.sessionsOpened, 1 + recoveries.length, 'the stall added no session of its own');
-  assert.ok(receipts.some(entry => entry['event'] === 'live_watchdog' && entry['phase'] === 'nudged'), 'S2 keeps its own escalation');
+  assert.ok(receipts.some(entry => entry['event'] === 'live_debt' && entry['phase'] === 'rung'), 'S2 keeps its own escalation, on the audible debt clock');
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -4571,6 +4626,133 @@ test('S4a-R2 (f): silence on the commentary channel never satisfies the answer w
   answered.attachment.close();
 });
 
+test('#538: a tool output whose send outcome is failed opens the recovery at once with a typed reason', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'send-failed');
+  const reasons = (): unknown[] => receipts.filter(record => record.event === 'live_debt').map(record => record.reason);
+  fake.reportToolSend('failed');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'sf1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  // F3: the re-queue into the recreated session is read too, and this transport refuses every write, so its own
+  // refusal is recorded rather than dropped.
+  assert.deepEqual(reasons(), ['tool_output', 'send_failed', 'send_failed'], 'the failed write starts the debt and names it in the same tick, and the re-queue names its own refusal');
+  assert.equal(fake.sessionsOpened, 2, 'the recovery opened one fresh provider session at once, not at 8 s');
+  assert.equal(fake.closes, 1, 'the stalled provider session was closed');
+});
+
+test('#538: model text never slides the audible debt, so the OpenAI path recreates once at 8 s and re-queues once', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  const { attachment } = await openPort(h, 'debt-text-only');
+  const played: string[] = [];
+  void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
+  fake.emit({ type: 'toolCall', calls: [{ id: 'd1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the tool answer went out once on the first session');
+  assert.equal(fake.sessionsOpened, 1, 'nothing is rebuilt before the rung');
+  // The provider writes text and no audio, which used to postpone recovery forever.
+  for (let spent = 0; spent < 6_000; spent += 2_000) {
+    h.advance(2_000); scheduler.runDue(); await settlePort();
+    fake.emit({ type: 'outputTranscription', text: 'partial answer', finished: false });
+    fake.emit({ type: 'modelText', text: 'partial answer', thought: false });
+    await settlePort();
+  }
+  assert.equal(fake.sessionsOpened, 1, 'text deltas never slide the debt clock');
+  h.advance(2_000); scheduler.runDue(); await settlePort();
+  // DEADAIR-R4: the text announced a response, so the 8 s rung holds and the rung returns seven seconds later.
+  assert.equal(fake.closes, 0, 'an announced response is never closed under');
+  h.advance(7_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.closes, 1, 'the held rung fires once the provider has had its time');
+  assert.equal(fake.sessionsOpened, 2, 'and one fresh session replaces it');
+  assert.equal(fake.toolResponses.length, 2, 'the pending tool outputs are re-queued exactly once');
+  assert.deepEqual(fake.toolResponses[1], fake.toolResponses[0], 'the same answers, not a second batch');
+  h.advance(4_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.toolResponses.length, 2, 'the re-queue is never replayed twice');
+  // The recreated session answers audibly, which is what the owner hears.
+  fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
+  await settlePort();
+  assert.ok(played.length > 0, 'audio from the recreated session reaches the owner');
+  assert.equal(fake.sessionsOpened, 2, 'audible audio ends the recovery ladder');
+});
+
+test('#538 R4: a response in progress holds the 8 s rung and the answer plays', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  const { attachment } = await openPort(h, 'debt-answer-in-flight');
+  const played: string[] = [];
+  void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
+  fake.emit({ type: 'toolCall', calls: [{ id: 'r4a', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  // The answer is announced at 7 s and the rung is due at 8 s: the session is not closed under it.
+  h.advance(7_000); scheduler.runDue(); await settlePort();
+  fake.emit({ type: 'modelTurnStarted' });
+  fake.emit({ type: 'outputTranscription', text: 'working on it', finished: false });
+  await settlePort();
+  h.advance(1_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.sessionsOpened, 1, 'a response the provider announced holds the rung');
+  assert.equal(fake.closes, 0, 'the session with the answer in flight is not closed');
+  h.advance(1_500); scheduler.runDue(); await settlePort();
+  fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
+  await settlePort();
+  assert.ok(played.length > 0, 'the owner hears the answer the client session was carrying');
+  assert.equal(fake.sessionsOpened, 1, 'and no recreate ever happened');
+  attachment.close();
+});
+
+test('#538 R4: a response that ends without audio fires the held rung', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  const { attachment } = await openPort(h, 'debt-even-holds');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'r4b', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  h.advance(7_000); scheduler.runDue(); await settlePort();
+  fake.emit({ type: 'modelTurnStarted' });
+  await settlePort();
+  h.advance(1_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.closes, 0, 'still holding at the rung');
+  fake.emit({ type: 'turnComplete' });
+  await settlePort();
+  assert.equal(fake.closes, 1, 'the response ended without audio, so the rung fires then');
+  assert.equal(fake.sessionsOpened, 2, 'and one fresh session replaces the stalled one');
+  attachment.close();
+});
+
+test('#538 R4: a session with no response announced is closed at the rung, the mirror', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  const { attachment } = await openPort(h, 'debt-nothing-announced');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'r4c', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  for (let spent = 0; spent < 8_100; spent += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
+  assert.equal(fake.closes, 1, 'nothing was announced, so the rung closes the session');
+  assert.equal(fake.sessionsOpened, 2, 'and recreates it once');
+  attachment.close();
+});
+
+test('#538: an owner barge-in inside the debt window clears the clock and triggers no recreate', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'debt-barge-in');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'b1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  h.advance(3_000); scheduler.runDue(); await settlePort();
+  fake.emit({ type: 'interrupted' });
+  await settlePort();
+  h.advance(10_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.closes, 0, 'the owner owns the turn, so no provider session is closed');
+  assert.equal(fake.sessionsOpened, 1, 'no recreate after an owner barge-in');
+});
+
 test('W4: a research-only batch still gets its silent line', async t => {
   const scheduler = new DeadlineClock();
   const fake = progressPort();
@@ -4683,7 +4865,8 @@ test('S5: a failed backend turn settles typed, says one honest line, and is neve
   fake.emit({ type: 'turnFailed', code: 'backend_unavailable' });
   await settlePort();
   // The typed disposition is immediate and metadata only.
-  assert.deepEqual(receipts.filter(entry => entry['event'] === 'turn_failed'), [{ event: 'turn_failed', code: 'backend_unavailable' }]);
+  assert.deepEqual(receipts.filter(entry => entry['event'] === 'turn_failed'), [{ event: 'turn_failed', reason: 'provider_error' }],
+    'the reason comes from the closed set; the provider word stays in the adapter receipt');
   assert.deepEqual(fake.commentary, [TURN_FAILED_LINE], 'one honest line: lost the thread, asked to repeat, offered the retry');
   assert.equal(fake.sessionsOpened, 1, 'a backend turn failure is never a rebuild');
   // The line never becomes audible here, so the turn is settled failed instead of left owing, and no rebuild follows.
@@ -4863,9 +5046,9 @@ test('Mongoose current contract: approved company research reaches the actual SD
   const h = await harness(t, { tools: true, mongoose: true });
   await attached(h, 'mongoose-configured-research');
   await settleLiveTool(h, 'company-start', 'research', { action: 'start', question: 'Synthetic company evidence', topic: 'Synthetic company evidence', lookups: [{ source: 'company', query: 'synthetic' }] });
-  assert.equal(h.calls.filter(call => call.name === 'search_mongoose').length, 1, 'an approved company source must be dispatched');
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
-  assert.equal((frame.toolResponse.functionResponses[0]!.response['sources'] as Record<string, unknown>)['company'], 'ok');
+  assert.equal((frame.toolResponse.functionResponses[0]!.response['sources'] as Record<string, unknown>)['company'], 'ok', JSON.stringify(frame.toolResponse.functionResponses[0]!.response));
+  assert.equal(h.calls.filter(call => call.name === 'search').length, 1, 'an approved company source must be dispatched');
   assert.match(JSON.stringify(frame), /Synthetic company evidence/);
 });
 
@@ -4940,12 +5123,14 @@ test('history integration: parallel sibling await cannot publish deleted or rela
 });
 
 test('Mongoose evidence projection: grouped SDK hits survive actual Live research adaptation', async t => {
-  const h = await harness(t, { tools: true, mongoose: true, mongooseData: { hits: { company: [], offering: [], knowledge: [{ id: 'kb-17', title: 'Synthetic grouped evidence', snippet: 'Synthetic launch delayed to Monday.', status: 'active' }], ticket: [] }, has_more: false, total: 1 } });
+  const h = await harness(t, { tools: true, mongoose: true, mongooseData: { outcome: 'evidence', items: [{ type: 'knowledge_item', ref: 'kb-17', name: 'Synthetic grouped evidence', url: 'https://source.example.invalid/knowledge/kb-17' }], next_cursor: null, next_tool: null, restriction: null, request_id: 'req-fixture' } });
   await attached(h, 'mongoose-grouped-research');
   await settleLiveTool(h, 'grouped-start', 'research', { action: 'start', question: 'Synthetic company evidence', topic: 'Synthetic company evidence', lookups: [{ source: 'company', query: 'synthetic' }] });
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
   assert.equal((frame.toolResponse.functionResponses[0]!.response['sources'] as Record<string, unknown>)['company'], 'ok');
-  assert.match(JSON.stringify(frame), /kb-17/); assert.match(JSON.stringify(frame), /Synthetic launch delayed to Monday/);
+  assert.match(JSON.stringify(frame), /kb-17/); assert.match(JSON.stringify(frame), /Synthetic grouped evidence/);
+  // The finding keeps the entity and the ref a read needs; the source card itself is the projection's.
+  assert.match(JSON.stringify(frame), /entity: knowledge_item/); assert.match(JSON.stringify(frame), /ref: kb-17/);
 
 });
 

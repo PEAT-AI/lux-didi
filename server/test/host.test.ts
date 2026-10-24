@@ -6,13 +6,18 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { createServer, request } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { bindCalendarRecovery, connectorLifecycleSink, hostMigrations, installedConfigDirRefusal, pairLocal, selectCalendarEndpoint, startHost, type RuntimeDescriptor } from '../host/runtime.js';
 import { createDispatchOwner } from '../tools/dispatch.js';
+import { composeMcpRuntime } from '../host/mcp.js';
+import { MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS } from '../connectors/mattermost.js';
+import type { ConnectionPolicy, LiveAuthority, RunAcceptance } from '../tools/types.js';
+import type { ToolCallIntent } from '../adapters/model/types.js';
 import { toolsMigrations } from '../tools/schema.js';
 import { SUPERVISION_FLAG, supervisionRequested } from '../host/supervision.js';
 import { HostLog, safeEvent } from '../host/log.js';
@@ -456,8 +461,8 @@ for (const scenario of ['both', 'existing-live', 'default', 'absent'] as const) 
 }
 
 // Real installed endpoint identities and connector kinds, with synthetic transports only.
-for (const missingMongoose of [true, false]) {
-  test(`real five-endpoint host CREATE composes company readers (mongoose missing=${missingMongoose})`, async t => {
+for (const releaseNineCatalogue of [true, false]) {
+  test(`real company-endpoint host CREATE composes company readers (release 9 catalogue=${releaseNineCatalogue})`, async t => {
     const dir = await mkdtemp(join(tmpdir(), 'didi-real-shape-'));
     t.after(() => rm(dir, { recursive: true, force: true }));
     const config = join(dir, 'provider-config');
@@ -465,9 +470,9 @@ for (const missingMongoose of [true, false]) {
     const tools = [
       'search_knowledge', 'get_insight', 'gmail_get_profile', 'gmail_search_messages', 'gmail_read_message',
       'calendar_list_calendars', 'calendar_list_events', 'mattermost_whoami', 'mattermost_get_channel_history',
-      'mattermost_get_thread', 'mattermost_search', 'mattermost_list_channels', 'ask_mongoose',
-      'search_mongoose', 'get_knowledge_item', 'read_knowledge_body', 'get_company_profile', 'list_tickets', 'get_ticket',
-    ].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
+      'mattermost_get_thread', 'mattermost_search', 'mattermost_list_channels',
+      'search', 'read', 'list_companies', 'get_company', 'list_tickets', 'get_metadata',
+    ].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true }, annotations: { readOnlyHint: true } }));
     const reply = (message: { id?: unknown; method: string; params?: { name?: string } }) => message.id === undefined ? undefined : {
       jsonrpc: '2.0', id: message.id, result: message.method === 'initialize'
         ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } }
@@ -494,12 +499,32 @@ for (const missingMongoose of [true, false]) {
     const url = `http://127.0.0.1:${address.port}`;
     const child = join(dir, 'fake-mattermost.cjs');
     await writeFile(child, `const tools=${JSON.stringify(tools)}; const reply=${reply.toString()}; require('node:readline').createInterface({input:process.stdin}).on('line', line => { const response=reply(JSON.parse(line)); if(response) console.log(JSON.stringify(response)); });`);
-    const http = (id: string, connector: string, credentialRef: string | null = null) => ({ id, connector, transport: 'streamable-http', url: url + '/' + id, account: 'synthetic', resource: id, credentialRef, enabled: true, allowEgress: true, unknownClass: 'ordinary' });
+    const http = (id: string, connector: string, credentialRef: string | null = null, resource = id, path = '/' + id) => ({ id, connector, transport: 'streamable-http', url: url + path, account: 'synthetic', resource, credentialRef, enabled: true, allowEgress: true, unknownClass: 'ordinary' });
     await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [
       http('lux-knowledge', 'lux-knowledge'), http('gmail', 'google'), http('calendar', 'google'),
       { id: 'mattermost', connector: 'mattermost', transport: 'stdio', command: process.execPath, args: [child], env: { HOME: dir, PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: 'synthetic', resource: 'mattermost', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' },
-      http('mongoose', 'mongoose', missingMongoose ? 'missing-credential' : null),
+      // Release 9 stored one Mongoose endpoint at /mcp under the retired single audience; the loader
+      // replaces it with the three release-1023b endpoints. The other variant seeds them directly.
+      ...(releaseNineCatalogue
+        ? [{ id: 'mongoose', connector: 'mongoose', transport: 'streamable-http', url: url + '/mcp/', account: 'synthetic', resource: 'mongoose', credentialRef: 'mongoose-mcp', enabled: true, allowEgress: true, unknownClass: 'ordinary' }]
+        : ['knowledge', 'data', 'crm'].map(endpoint => http(`mongoose-${endpoint}`, 'mongoose', `mongoose-${endpoint}`, `mongoose:${endpoint}`, `/mcp/${endpoint}`))),
     ] }), { mode: 0o600 });
+    if (releaseNineCatalogue) {
+      // The record release 9 wrote: one token for the retired single endpoint, with no endpoint or
+      // audience of its own, so it can never be adopted by one of the three replaced endpoints.
+      await writeFile(join(config, 'mongoose-mcp.json'), JSON.stringify({
+        schemaVersion: 2, base: url, clientId: 'client', redirectPort: 45871, account: 'synthetic',
+        accessToken: 'access-token', refreshToken: 'refresh-token', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now(),
+      }), { mode: 0o600 });
+    } else {
+      for (const endpoint of ['knowledge', 'data', 'crm'] as const) {
+        await writeFile(join(config, `mongoose-${endpoint}.json`), JSON.stringify({
+          schemaVersion: 2, base: url, clientId: 'client', redirectPort: 45871, account: 'synthetic',
+          endpoint, audience: `mongoose:${endpoint}`, accessToken: 'access-token', refreshToken: 'refresh-token',
+          expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now(),
+        }), { mode: 0o600 });
+      }
+    }
     await writeFile(join(config, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/live-gateway-test', voice: 'LiveVoice', keyReference: 'gemini-primary', dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' } }), { mode: 0o600 });
     await writeFile(join(config, 'gemini-primary.json'), JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: 'synthetic-test-key' }), { mode: 0o600 });
     const host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
@@ -507,11 +532,25 @@ for (const missingMongoose of [true, false]) {
     const headers = { Authorization: `Bearer ${host.store.adminCredential}`, 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID(), 'X-Didi-Authority-Epoch': host.descriptor.authorityEpoch };
     const status = await fetch(host.descriptor.origin + '/api/v1/tools/status', { headers });
     assert.equal(status.status, 200);
-    const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; tools: number }>;
+    const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; tools: number; reasonCode?: string }>;
     assert.deepEqual(reports.map(report => [report.id, report.state, report.tools]).sort(), [
       ['lux-knowledge', 'connected', 2], ['gmail', 'connected', 3], ['calendar', 'connected', 2],
-      ['mattermost', 'connected', 6], ['mongoose', missingMongoose ? 'error' : 'connected', missingMongoose ? 0 : 7],
+      // Each Mongoose connection is granted its own endpoint envelope, so the three publish disjoint reads.
+      ['mattermost', 'connected', 6], ['mongoose-knowledge', releaseNineCatalogue ? 'error' : 'connected', releaseNineCatalogue ? 0 : 4],
+      ['mongoose-data', releaseNineCatalogue ? 'error' : 'connected', releaseNineCatalogue ? 0 : 1],
+      ['mongoose-crm', releaseNineCatalogue ? 'error' : 'connected', releaseNineCatalogue ? 0 : 1],
     ].sort());
+    const mongoose = reports.filter(report => report.id.startsWith('mongoose'));
+    if (releaseNineCatalogue) {
+      // The release 9 catalogue is replaced, never refused: the boot reports the three published
+      // endpoints, and the stored legacy token is not adopted, so each waits for its own sign-in.
+      assert.deepEqual(mongoose.map(report => report.id).sort(), ['mongoose-crm', 'mongoose-data', 'mongoose-knowledge']);
+      for (const report of mongoose) assert.equal(report.reasonCode, 'not_signed_in', 'a replaced endpoint with no stored record is parked for sign-in');
+    } else {
+      // Three connections composed at once: the collision that used to answer 503 is pinned by this
+      // 200 below, and each connection holds only its own endpoint's reads, never a union.
+      assert.deepEqual(mongoose.map(report => report.tools).sort((a, b) => a - b), [1, 1, 4]);
+    }
     const response = await fetch(host.descriptor.origin + '/api/v1/live-sessions', { method: 'POST', headers, body: JSON.stringify({ inputClass: 'ordinary' }) });
     const body = await response.json();
     assert.equal(response.status, 200, JSON.stringify(body));
@@ -1154,4 +1193,108 @@ test('1022: a recovered calendar connector re-reads the digest, and a recovered 
     { event: 'connector_recovered', endpointId: 'calendar' },
     { event: 'connector_recovered', endpointId: 'calendar' },
   ], 'every line still reaches host.log, recovered or not');
+});
+
+// #630: the host publishes only the names an endpoint lists in its read grant (host/mcp.ts restore),
+// while the stored policy also carries the connector composite, so the projection must read a
+// composite as satisfied by the children it stands on.
+async function mattermostCompositeHost(t: TestContext) {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-host-composite-'));
+  const configDir = join(dir, 'provider-config');
+  await mkdir(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads',
+    endpoints: [{ id: 'mattermost', connector: 'mattermost', transport: 'streamable-http', url: 'http://127.0.0.1:18765/mattermost', account: 'mattermost', resource: 'mattermost', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'private' }],
+  }));
+  await chmod(join(configDir, 'mcp.json'), 0o600);
+  const authorities = new Map<string, LiveAuthority>();
+  let active: WebStandardStreamableHTTPServerTransport | undefined;
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    assert.ok(active, 'the fake endpoint is connected before a read');
+    return active.handleRequest(new Request(input, init));
+  });
+  let store = new Store(join(dir, 'data'), toolsMigrations);
+  let sdk: Server | undefined;
+  t.after(async () => { await sdk?.close(); await active?.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
+  const start = async () => {
+    await sdk?.close(); await active?.close();
+    if (runtime) { await runtime.close(); store.close(); store = new Store(join(dir, 'data'), toolsMigrations); }
+    sdk = new Server({ name: 'synthetic-mattermost', version: '1' }, { capabilities: { tools: {} } });
+    active = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+    sdk.setRequestHandler('tools/list', () => ({ tools: MATTERMOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: false } })) }) as never);
+    sdk.setRequestHandler('tools/call', (request) => {
+      const name = (request.params as { name?: string } | undefined)?.name;
+      const payload = name === 'mattermost_whoami' ? { username: 'synthetic-owner', email: 'owner@example.invalid' } : { ok: true };
+      return { content: [{ type: 'text', text: JSON.stringify(payload) }] } as never;
+    });
+    await sdk.connect(active);
+    await runtime?.close();
+    runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async runId => authorities.get(runId) ?? null });
+    await runtime.start();
+    assert.deepEqual(runtime.connectionIds(), ['mattermost']);
+    return runtime;
+  };
+  const policyRow = () => store.transaction(tx => tx.get('SELECT generation,policy_json,policy_sha256 FROM tool_connections WHERE owner_id=? AND connection_id=?', [store.assistantId, 'mattermost']))!;
+  const accept = () => {
+    const acceptance: RunAcceptance = {
+      ownerId: store.assistantId, actorId: 'synthetic-actor', runId: randomUUID(), authorityEpoch: store.authorityEpoch, revision: 1,
+      route: { identity: JSON.stringify({ version: 1, provider: 'gemini', model: 'synthetic-chat', endpoint: 'https://model.invalid', apiVersion: 'v1beta', keyReference: 'synthetic', allowedClasses: ['ordinary', 'private'], policyVersion: 1 }), provider: 'gemini', modelId: 'synthetic-chat', allowedClasses: ['ordinary', 'private'] },
+      allowedClasses: ['ordinary', 'private'], connectionIds: runtime!.connectionIds(),
+    };
+    const hash = store.transaction(tx => runtime!.owner.snapshotRun(tx, acceptance).sha256);
+    authorities.set(acceptance.runId, { ...acceptance, acceptedRunHash: hash });
+    return acceptance;
+  };
+  const search = (acceptance: RunAcceptance): ToolCallIntent => ({
+    runId: acceptance.runId, actorId: acceptance.actorId, authorityEpoch: acceptance.authorityEpoch, revision: acceptance.revision,
+    executionId: `${acceptance.runId}:0:0`, toolName: 'mattermost_search', argumentsHash: createHash('sha256').update(JSON.stringify({ query: 'synthetic', limit: 1 })).digest('hex'),
+    callId: 'call-0', accountId: 'mattermost', resourceId: 'mattermost',
+  });
+  return { store, start, policyRow, accept, search, get runtime() { return runtime!; } };
+}
+
+test('a policy that grants a connector composite admits its granted child reads (#630)', async t => {
+  const host = await mattermostCompositeHost(t);
+  const runtime = await host.start();
+  const policy = JSON.parse(String(host.policyRow().policy_json)) as ConnectionPolicy;
+  assert.ok(policy.toolNames.includes(MATTERMOST_ATTENTION_TOOL), 'the stored policy carries the composite');
+  const grant = runtime.registry.currentGrant('mattermost')!;
+  assert.deepEqual([...grant.toolNames].sort(), [...MATTERMOST_TOOLS].sort(), 'the published grant carries only the endpoint names');
+  assert.equal(grant.generation, policy.generation);
+  const acceptance = host.accept();
+  const call = host.search(acceptance);
+  assert.equal(runtime.owner.journal.intent(call), 'fresh', 'journal.intent admits a granted child of a granted composite');
+  runtime.owner.complete(call, { text: 'synthetic' }, ['private']);
+  assert.equal(host.store.transaction(tx => tx.get('SELECT state FROM tool_calls WHERE owner_id=? AND execution_id=?', [host.store.assistantId, call.executionId]))?.state, 'completed');
+});
+
+test('a composite never admits a child the published grant does not cover (#630)', async t => {
+  const host = await mattermostCompositeHost(t);
+  const runtime = await host.start();
+  const row = host.policyRow();
+  const stored = JSON.parse(String(row.policy_json)) as ConnectionPolicy;
+  const grant = runtime.registry.currentGrant('mattermost')!;
+  const tools = runtime.registry.visibleTools('mattermost');
+  runtime.owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy: { ...stored, generation: stored.generation + 1 } });
+  // Republish the same grant at the policy's new generation, minus one child the policy still names.
+  runtime.registry.observed('mattermost', tools, runtime.registry.revision('mattermost'));
+  runtime.registry.restore({ ...grant, generation: stored.generation + 1, toolNames: MATTERMOST_TOOLS.filter(name => name !== 'mattermost_search') });
+  const acceptance = host.accept();
+  assert.throws(() => runtime.owner.journal.intent(host.search(acceptance)), /intent_policy_denied/);
+});
+
+test('the first boot bumps an installed release 8 policy to a grant and policy that project (#630)', async t => {
+  const host = await mattermostCompositeHost(t);
+  const first = await host.start();
+  const row = host.policyRow();
+  const stored = JSON.parse(String(row.policy_json)) as ConnectionPolicy;
+  first.owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy: { ...stored, generation: 2, toolNames: [...MATTERMOST_TOOLS] } });
+  assert.deepEqual(JSON.parse(String(host.policyRow().policy_json)).toolNames, [...MATTERMOST_TOOLS], 'the installed app held the release 8 envelope');
+  const restarted = await host.start();
+  const bumped = JSON.parse(String(host.policyRow().policy_json)) as ConnectionPolicy;
+  assert.equal(Number(host.policyRow().generation), 3, 'the bump advances the generation');
+  assert.ok(bumped.toolNames.includes(MATTERMOST_ATTENTION_TOOL), 'the bump carries the composite');
+  assert.equal(restarted.registry.currentGrant('mattermost')!.generation, 3, 'the published grant follows the bump');
+  assert.equal(restarted.owner.journal.intent(host.search(host.accept())), 'fresh', 'the installed owner first chat read after the bump is admitted');
 });

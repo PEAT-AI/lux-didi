@@ -2,6 +2,8 @@ import { CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, RESEARCH_ARGUMENT_FIELDS, R
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
+import { TURN_FAILED_REASONS } from '../adapters/live-voice/types.js';
+import { DEBT_PHASES, DEBT_REASONS } from '../trace/kinds.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { ConfigError } from '../config/files.js';
 import { LIVE_INSTRUCTION_SECTION_IDS } from '../prompt/live-persona.js';
@@ -40,6 +42,8 @@ export const LIVE_STATE_CAUSES = ['created', 'input', 'model_turn_start', 'audio
 export const LIVE_REBUILD_TRIGGERS = ['no_output_after_ambient', 'no_output_after_owner', 'line_dropped', 'session_window'] as const;
 /** The provider handshake steps, in the order the adapter walks them. */
 const LIVE_HANDSHAKE_STEPS = ['credential_resolved', 'socket_open', 'session_start_sent', 'session_started'] as const;
+/** #538: the send outcome, a closed set. The debt phases and reasons live with the trace kinds, one definition. */
+const LIVE_TOOL_SEND_OUTCOMES = ['sent', 'deferred', 'failed'] as const;
 const SESSION_ID = /^[0-9a-f-]{36}$/i;
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 /** K6: the layers a routed research call may name, in the model's own words. */
@@ -100,6 +104,8 @@ const isSafeMembers = (value: unknown, allowed: readonly string[]): value is str
 /** A closed shape: exactly these keys, so no field a later caller adds can slip through the whitelist. */
 const closedKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
   Object.keys(value).sort().join(',') === [...keys].sort().join(',');
+/** #613: the launch paths the app can report, mirrored from LaunchKind, so no free text crosses. */
+const LAUNCH_KINDS = ['interactive', 'login_item', 'install_relaunch', 'installed_proof', 'self_check', 'ui_proof', 'verification'];
 
 // Only the existing diagnostic schemas cross this boundary, never arbitrary console text.
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
@@ -136,6 +142,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!ms(value.fenceMs) || !ms(value.acquireMs) || !ms(value.answerMs)) return;
     return { event: 'chat_timing', runId: value.runId, outcome: value.outcome, rounds: [...value.rounds],
       tools, fenceMs: value.fenceMs, acquireMs: value.acquireMs, answerMs: value.answerMs };
+  }
+  if (value.event === 'launch_kind') {
+    // #613: which launch opened the app and the two flags it decides. Closed set, metadata only.
+    const allowed = ['autoConnects', 'event', 'kind', 'windowShown'];
+    if (!closedKeys(value, allowed)) return;
+    if (typeof value.kind !== 'string') return;
+    if (!LAUNCH_KINDS.includes(value.kind)) return;
+    if (typeof value.autoConnects !== 'boolean' || typeof value.windowShown !== 'boolean') return;
+    return { event: 'launch_kind', kind: value.kind, autoConnects: value.autoConnects, windowShown: value.windowShown };
   }
   if (value.event === 'native_action') {
     // Closed receipt: the action, its ack code and a scheme or extension, never the target.
@@ -274,6 +289,9 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'config_seeded' && ['live.json', 'mcp.json', 'providers.json'].includes(String(value.file)) && value.from === 'provider-config') {
     return { event: value.event, file: value.file, from: value.from };
+  }
+  if (value.event === 'mongoose_catalogue_replaced' && value.endpoints === 3) {
+    return { event: 'mongoose_catalogue_replaced', endpoints: 3 };
   }
   if (value.event === 'live_attach_rejected' && typeof value.code === 'string' && /^[A-Za-z0-9_]{1,107}$/.test(value.code)) {
     return { event: value.event, ...(typeof value.liveSessionId === 'string' && /^[0-9a-f-]{36}$/i.test(value.liveSessionId) ? { liveSessionId: value.liveSessionId } : {}), code: value.code };
@@ -458,10 +476,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       if (!isSafeCount(value.generation) || !isSafeCount(value.calls)) return;
       return { event: 'research_call_arrived', liveSessionId: value.liveSessionId, generation: value.generation, calls: value.calls };
     }
-    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'tools', 'msSinceArrived'])) return;
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'tools', 'msSinceArrived', 'outcome'])) return;
     if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
     if (!isSafeCount(value.generation) || !isSafeCount(value.tools) || !isSafeCount(value.msSinceArrived)) return;
-    return { event: 'tool_output_sent', liveSessionId: value.liveSessionId, generation: value.generation, tools: value.tools, msSinceArrived: value.msSinceArrived };
+    // #538: what the adapter reported for the write, from the closed outcome set.
+    if (!isSafeMember(value.outcome, LIVE_TOOL_SEND_OUTCOMES)) return;
+    return { event: 'tool_output_sent', liveSessionId: value.liveSessionId, generation: value.generation, tools: value.tools, msSinceArrived: value.msSinceArrived, outcome: value.outcome };
   }
   if (value.event === 'live_go_away') {
     // Closed shape: the draining deadline the provider announced, in milliseconds.
@@ -626,6 +646,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeMember(value.phase, ['armed', 'nudged', 'closed', 'recovered', 'settled'])) return;
     if (!isSafeCount(value.turnAgeMs) || !isSafeCount(value.generation)) return;
     return { event: 'live_watchdog', phase: value.phase, turnAgeMs: value.turnAgeMs, generation: value.generation };
+  }
+  if (value.event === 'live_debt') {
+    // #538: the audible debt clock, one record per phase change. Enums only, so no duration, no text, no provider word.
+    if (!closedKeys(value, ['event', 'phase', 'reason'])) return;
+    if (!isSafeMember(value.phase, DEBT_PHASES) || !isSafeMember(value.reason, DEBT_REASONS)) return;
+    return { event: 'live_debt', phase: value.phase, reason: value.reason };
+  }
+  if (value.event === 'turn_failed') {
+    // #538: the typed failed turn the voice can name, from the closed reason set.
+    if (!closedKeys(value, ['event', 'reason'])) return;
+    if (!isSafeMember(value.reason, TURN_FAILED_REASONS)) return;
+    return { event: 'turn_failed', reason: value.reason };
   }
   if (value.event === 'live_rebuild') {
     // #591: every rebuild names its trigger from the closed set, so a silent model and a quiet room are told apart.

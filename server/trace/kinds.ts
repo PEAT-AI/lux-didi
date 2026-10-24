@@ -62,9 +62,15 @@ export const EVENT_KINDS = [
   'playback.received', 'playback.audible', 'playback.enqueued', 'playback.started',
   'playback.drained', 'playback.interrupted', 'playback.terminated',
   'progress.commentary', 'progress.thinking', 'call.ceiling', 'command.rejected',
-  'live.dead_air_stalled',
+  'live.dead_air_stalled', 'live.debt',
 ] as const;
 export type TraceEventKind = (typeof EVENT_KINDS)[number];
+// #538: the audible debt clock, in two closed sets. Its events are enums only: no duration, no text, and no
+// provider word has a column to land in.
+export const DEBT_PHASES = ['start', 'clear', 'rung'] as const;
+export type DebtPhase = (typeof DEBT_PHASES)[number];
+export const DEBT_REASONS = ['tool_output', 'recreate', 'audible', 'owner_barge_in', 'turn_end', 'dead_air', 'rebuild', 'send_failed'] as const;
+export type DebtReason = (typeof DEBT_REASONS)[number];
 
 export const TRACE_SCHEMA_VERSION = 3;
 export const TRACE_RETENTION_DAYS = 30;

@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
-import { MONGOOSE_RECORD_SCHEMA, writeMongooseOAuth, type MongooseOAuthRecord } from './mongoose-auth.js';
+import { MONGOOSE_RECORD_SCHEMA, discoverMongooseResource, writeMongooseOAuth, type MongooseOAuthRecord } from './mongoose-auth.js';
+import { MONGOOSE_ENDPOINT_AUDIENCES, type MongooseEndpoint } from '../connectors/mongoose.js';
 
 /**
  * The owner's one-time Mongoose sign-in: discovery, one dynamic client registration, PKCE S256, a
@@ -14,7 +15,7 @@ export const MONGOOSE_LOGIN_SCOPE = 'mcp';
 export const MONGOOSE_LOGIN_PORT = 8768;
 export const MONGOOSE_LOGIN_TIMEOUT_MS = 300_000;
 
-export type MongooseLoginCode = 'metadata-unavailable' | 'registration-refused' | 'port-in-use' | 'state-mismatch' | 'authorization-refused' | 'token-refused' | 'browser-unavailable' | 'timeout';
+export type MongooseLoginCode = 'metadata-unavailable' | 'registration-refused' | 'port-in-use' | 'state-mismatch' | 'authorization-refused' | 'token-refused' | 'browser-unavailable' | 'timeout' | 'endpoint-not-allowed';
 
 export class MongooseLoginError extends Error {
   constructor(readonly code: MongooseLoginCode) { super(code); }
@@ -27,6 +28,8 @@ export interface MongooseLoginOptions {
   reference: string;
   /** The endpoint's MCP URL; its origin is the OAuth resource and the fallback issuer. */
   resourceUrl: string;
+  /** Which of the three endpoints this sign-in binds; it decides the audience and the record. */
+  endpoint: MongooseEndpoint;
   account: string;
   redirectPort?: number;
   timeoutMs?: number;
@@ -60,12 +63,14 @@ async function getJson(post: typeof fetch, url: string, wait: <T>(promise: Promi
   } catch { return undefined; }
 }
 
-/** The authorization server document, from the protected-resource metadata when it is present. */
-async function discover(post: typeof fetch, origin: string, wait: <T>(promise: Promise<T>) => Promise<T>): Promise<Metadata> {
-  const resource = await getJson(post, `${origin}/.well-known/oauth-protected-resource`, wait);
-  const listed = resource?.['authorization_servers'];
-  const issuer = Array.isArray(listed) && token(listed[0]) ? listed[0] : origin;
-  const server = await getJson(post, `${issuer.replace(/\/$/, '')}/.well-known/oauth-authorization-server`, wait);
+/**
+ * The authorization server document, through this endpoint's own RFC 9728 protected-resource
+ * document: its audience must be the audience this sign-in binds, or the endpoint is refused.
+ */
+async function discover(post: typeof fetch, resourceUrl: string, audience: string, wait: <T>(promise: Promise<T>) => Promise<T>): Promise<Metadata> {
+  const resource = await wait(discoverMongooseResource(post, resourceUrl, audience));
+  if (!resource) throw new MongooseLoginError('metadata-unavailable');
+  const server = await getJson(post, `${resource.authorizationServer.replace(/\/$/, '')}/.well-known/oauth-authorization-server`, wait);
   if (!server) throw new MongooseLoginError('metadata-unavailable');
   return server;
 }
@@ -85,7 +90,8 @@ export async function runMongooseLogin(options: MongooseLoginOptions): Promise<M
     const now = options.now ?? Date.now;
     const requestedPort = options.redirectPort ?? MONGOOSE_LOGIN_PORT;
     const origin = originOf(options.resourceUrl);
-    const metadata = await discover(post, origin, wait);
+    const audience = MONGOOSE_ENDPOINT_AUDIENCES[options.endpoint];
+    const metadata = await discover(post, options.resourceUrl, audience, wait);
     if (!token(metadata['authorization_endpoint']) || !token(metadata['token_endpoint']) || !token(metadata['registration_endpoint'])) throw new MongooseLoginError('metadata-unavailable');
 
     const state = base64url(randomBytes(16));
@@ -153,7 +159,7 @@ export async function runMongooseLogin(options: MongooseLoginOptions): Promise<M
     const exchange = await post(String(metadata['token_endpoint']), {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
-      body: new URLSearchParams({ grant_type: 'authorization_code', code: result.code, redirect_uri: redirectUri, client_id: clientId, code_verifier: verifier }),
+      body: new URLSearchParams({ grant_type: 'authorization_code', code: result.code, redirect_uri: redirectUri, client_id: clientId, code_verifier: verifier, resource: audience }),
     }).catch(() => undefined);
     const granted = exchange?.ok ? await wait(exchange.json()).catch(() => undefined) as Record<string, unknown> | undefined : undefined;
     const accessToken = granted?.['access_token'];
@@ -167,6 +173,8 @@ export async function runMongooseLogin(options: MongooseLoginOptions): Promise<M
       clientId,
       redirectPort: port,
       account: options.account,
+      endpoint: options.endpoint,
+      audience,
       accessToken,
       refreshToken,
       expiresAt: now() + (expiresIn as number) * 1000,

@@ -139,7 +139,7 @@ export const INTERNAL = {
   chatSearch: 'mattermost_search',
   chatAttention: 'mattermost_attention',
   /** K6: the company knowledge base, read by the routed research path when the model names `company`. */
-  mongooseSearch: 'search_mongoose',
+  mongooseSearch: 'search',
 } as const;
 
 function callsFor(name: IntentToolName, args: Record<string, unknown>): IntentSubCall[] {

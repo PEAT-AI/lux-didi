@@ -1,6 +1,7 @@
 import type { HostEvidenceRef } from './types.js';
 import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history.js';
 import type { HistoryArguments } from '../domain/history-reader.js';
+import { fold, tokenize } from '../domain/util.js';
 import { calendarRange } from './calendar-window.js';
 import { randomUUID } from 'node:crypto';
 import type { ToolResultBinding, JsonObject } from '../adapters/model/types.js';
@@ -125,6 +126,11 @@ export const RESEARCH = Object.freeze({
    * 3.5 minutes. The full bodies stay readable inside the run through their cursors; Live hears the answer.
    */
   replyLimitChars: 2_500,
+  /**
+   * #621: the coverage header rides outside the prose envelope, like the citation metadata, so the trim
+   * that keeps an answer inside its budget can never take away the one line that says what was searched.
+   */
+  coverageLimitChars: 1_200,
   /**
    * LAT-1023 ruling R1: a body the owner asked to read keeps its own page bound. The compaction targets
    * composed answers; paging a requested 16,800-char body at the Live budget would double the round trips
@@ -438,7 +444,8 @@ export function contentKeywords(question: string, max = 8, skip?: ReadonlySet<st
 const KNOWLEDGE_FILLER = new Set([
   'about', 'regarding', 're', 'results', 'result', 'info', 'information', 'details', 'detail', 'owner', 'rob',
   'stuff', 'things', 'related', 'update', 'updates', 'status',
-  // ROUTE-1022 K7: the instruction words that could be content in mail, so knowledge only.
+  // ROUTE-1022 K7: the instruction words that could be content in mail, so knowledge only. #631: the
+  // layer's own name is the phrase "the web", which every source drops; the bare word stays here.
   'records', 'official', 'content', 'web',
   // and the instruction words above, so the model's own keyword fallback drops them too.
   'wait', 'continue', 'verify', 'verified', 'findings', 'finding', 'exact', 'reliable', 'specific',
@@ -671,22 +678,49 @@ export function ownerDigits(text: string, spokenWords: string): string {
   return text.split(/\s+/u).filter(word => (word.match(/\d+/gu) ?? []).every(run => spoken.has(run))).join(' ');
 }
 
+/**
+ * #631: a source name is the route's word, never the ask's subject. Every name and spoken form of a
+ * source this run may read is dropped from the topic before any source compiles it; a name whose source
+ * this run cannot read is content (an ask about "the Mongoose release" keeps Mongoose when the company
+ * layer is off the route). "Lux Didi" is the product's own name, so a bare Lux is kept inside it.
+ */
+const ROUTE_WORDS: Partial<Record<SourceKind, RegExp>> = {
+  // The lookbehind keeps a Gmail operator's own value ("in:inbox") out of the strip.
+  knowledge: /(?<!:)\blux\b(?!\s+didi\b)|\bknowledge base\b|\bknowledge\b|\b(?:the )?vault\b|\b(?:google drive|the drive|drive files?)\b/giu,
+  mail: /(?<!:)\b(?:the )?(?:e-?mails?|gmail|inbox(?:es)?|mails?)\b/giu,
+  chat: /(?<!:)\bteam chats?\b|\bmattermost\b/giu,
+  calendar: /(?<!:)\b(?:the )?calendar\b/giu,
+  web: /(?<!:)\bthe web\b/giu,
+  mongoose: /(?<!:)\bmongoose\b/giu,
+};
+
 /** #565: the topic is the only text whose words become search terms, within the owner's own numbers. */
-export function topicTerms(topic: string | undefined, spokenWords: string): string | undefined {
+/** #631: the routing words removed from any search text, the owner's topic or a model-written query. */
+function withoutRouteWords(text: string, sources: readonly SourceKind[]): string {
+  let out = text;
+  for (const source of sources) {
+    const words = ROUTE_WORDS[source];
+    if (words !== undefined) out = out.replace(words, ' ');
+  }
+  return out.replace(/\s+/gu, ' ').trim();
+}
+
+export function topicTerms(topic: string | undefined, spokenWords: string, sources: readonly SourceKind[] = RESEARCH_SOURCES): string | undefined {
   if (topic === undefined) return undefined;
-  const text = ownerDigits(topic, spokenWords).trim();
+  const text = withoutRouteWords(ownerDigits(topic, spokenWords), sources);
   return text === '' ? undefined : text;
 }
 
-export function compileMailQuery(question: string, query: string | undefined, nowMs = Date.now(), timeZone?: string, topic?: string, ownerWords?: string, fallbackWindow?: string): string {
+export function compileMailQuery(question: string, query: string | undefined, nowMs = Date.now(), timeZone?: string, topic?: string, ownerWords?: string, fallbackWindow?: string, sources: readonly SourceKind[] = RESEARCH_SOURCES): string {
   // #564: a triage ask reads the unread inbox itself, so the host's own generic inbox scan, a prose
   // question and a topic all give way to it; its own prose is never a term and no drop-a-term retry
   // follows an empty scan, so "anything important" cannot be answered from one old thread.
   if (triageAsk(question)) return TRIAGE_MAIL_QUERY;
-  const authored = (query ?? '').replace(/\s+/gu, ' ').trim();
+  // #631: a model-written query names the layer as often as the topic it was written from.
+  const authored = withoutRouteWords((query ?? '').replace(/\s+/gu, ' ').trim(), sources);
   const person = MAIL_DIRECTION.test(question) ? mailPersonName(question) : undefined;
   const asked = mailWindow(question, nowMs, timeZone);
-  const gated = topicTerms(topic, ownerWords ?? question);
+  const gated = topicTerms(topic, ownerWords ?? question, sources);
   const topicText = gated !== undefined && contentKeywords(gated, 1).length > 0 ? gated : undefined;
   // #565: an authored query that already carries Gmail syntax is the model's own per-source search, and
   // the owner's instruction prose never reaches it because the question is not a text this compiles.
@@ -839,7 +873,7 @@ export function mailSearchPhrase(q: string): string {
 }
 
 /** The deterministic fallback query per source: never the raw sentence. */
-export function fallbackQuery(kind: CandidateKind, question: string, nowMs = Date.now()): { query?: string; window?: string } {
+export function fallbackQuery(kind: CandidateKind, question: string, nowMs = Date.now(), sources: readonly SourceKind[] = RESEARCH_SOURCES): { query?: string; window?: string } {
   const text = question.toLowerCase();
   const keywords = contentKeywords(question);
   const terms = keywords.join(' ');
@@ -852,7 +886,7 @@ export function fallbackQuery(kind: CandidateKind, question: string, nowMs = Dat
       : /\b(this week|week)\b/.test(text) ? 'newer_than:7d'
       : /\byesterday\b/.test(text) ? 'newer_than:2d'
       : 'newer_than:14d';
-    return { query: compileMailQuery(question, undefined, nowMs, undefined, question, question, window) };
+    return { query: compileMailQuery(question, undefined, nowMs, undefined, question, question, window, sources) };
   }
   // ONE-1023: the day operator is the owner's own day. DATES-R1 F3: the no-operator rule applies to
   // content terms, and with none left the base recency window stays, never an empty query.
@@ -1008,7 +1042,7 @@ export function routedSelection(question: string, configured: readonly SourceKin
   if (!KNOWLEDGE_WORDS.test(text)) return undefined;
   return {
     questionClass: 'cross_source',
-    actions: [{ kind: 'knowledge_search', ...fallbackQuery('knowledge_search', question, nowMs) }],
+    actions: [{ kind: 'knowledge_search', ...fallbackQuery('knowledge_search', question, nowMs, configured) }],
     pUseful: { knowledge_search: 0.6 },
   };
 }
@@ -1020,7 +1054,7 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   const pUseful: Partial<Record<CandidateKind, number>> = {};
   const offer = (kind: CandidateKind, p: number, source: SourceKind | null): void => {
     if (source !== null && !configured.includes(source)) return;
-    actions.push({ kind, ...fallbackQuery(kind, question, nowMs) });
+    actions.push({ kind, ...fallbackQuery(kind, question, nowMs, configured) });
     pUseful[kind] = p;
   };
   const webWords = !/\b(?:mail|calendar|chat|our|my|we)\b/u.test(text)
@@ -1287,7 +1321,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
   const search = (name: string, args: JsonObject, key: string): IntentSubCall => ({ key, name, args });
   // #565: the topic's words, and only the numbers the owner said in this run, are what a source may search.
   const ownerWords = config.ownerWords ?? config.question;
-  const topicText = topicTerms(config.topic, ownerWords);
+  const topicText = topicTerms(config.topic, ownerWords, config.configured);
   if (kind === 'knowledge_search') {
     // Q5-R1: a named entry is read by id through the connector's get_insight path, never searched for
     // again; the connector returns its whole body up to the knowledge body cap.
@@ -1296,7 +1330,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     // K3: a clipped keyword query, never the owner's sentence or the selector's paraphrase of it.
     // K6: with no model query, a question of pure filler is no question to search at all.
     // E1 (#605): the topic is the search text; a model written query only fills in when no topic was named.
-    const modelQuery = config.query === undefined ? undefined : ownerDigits(config.query, ownerWords);
+    const modelQuery = config.query === undefined ? undefined : withoutRouteWords(ownerDigits(config.query, ownerWords), config.configured);
     const fromTopic = topicText === undefined ? '' : knowledgeQuery(topicText);
     const query = fromTopic !== '' ? fromTopic : knowledgeQuery(modelQuery ?? '', '');
     if (!query) return [];
@@ -1317,7 +1351,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     // #565: a bare inbox scan stays a scan; a topic or a model query is compiled from the topic.
     // #564: a triage ask is never a bare scan, whatever prose the selector or the model wrote for it.
     const bare = config.query === undefined && topicText === undefined && !triageAsk(config.question);
-    return [search(INTERNAL.mailList, { q: bare ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone, config.topic, ownerWords), maxResults: RESEARCH.pageResults.mail }, 'm0')];
+    return [search(INTERNAL.mailList, { q: bare ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone, config.topic, ownerWords, undefined, config.configured), maxResults: RESEARCH.pageResults.mail }, 'm0')];
   }
   if (kind === 'mail_open') { const id = config.evidence.get('mail_search'); return id ? [search(INTERNAL.mailRead, { id }, 'mo0')] : []; }
   if (kind === 'chat_search') {
@@ -1513,6 +1547,10 @@ export interface RunState {
   cutShort: Set<SourceKind>;
   /** P5: why a source cannot serve a read right now, so the reply names the cause and never guesses. */
   unavailableReasons: Map<SourceKind, string>;
+  /** #621: the sources this ask routed to, whether or not the session configured them, for the header. */
+  route: Set<SourceKind>;
+  /** #621: sources that already spent their one broadened retry, so a zero-hit read retries exactly once. */
+  retried: Set<SourceKind>;
 }
 
 function invalidateEvidence(run: RunState): void {
@@ -1545,7 +1583,7 @@ export class ResearchLedger {
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -1923,7 +1961,7 @@ const SOURCE_LABELS: readonly (readonly [SourceKind, string])[] = [
 
 /** The connector tool whose presence means a source is configured. Same four names the research loop fans out over. */
 const SOURCE_TOOLS: Readonly<Record<string, SourceKind>> = {
-  conversation_history: 'memory', search_knowledge: 'knowledge', search_mongoose: 'mongoose', calendar_list_events: 'calendar', gmail_search_messages: 'mail', mattermost_search: 'chat',
+  conversation_history: 'memory', search_knowledge: 'knowledge', search: 'mongoose', read: 'mongoose', calendar_list_events: 'calendar', gmail_search_messages: 'mail', mattermost_search: 'chat',
 };
 
 /** Map the tool names a session actually configured to the research sources they expose, in display order. */
@@ -2129,6 +2167,8 @@ const OMITTED_NOTE = /^\[omitted:/u;
 const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'company knowledge', web: 'the web' };
 /** Findings order: her own memory and the owner's knowledge base lead, company sources follow. */
 const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'];
+/** #621: the smallest room a floor clip may leave, so one source's last line always fits the bound. */
+const FLOOR_CLIP_CHARS = 8;
 const LINE_CAP: Partial<Record<CandidateKind, number>> = {
   mail_search: RESEARCH.mailLines, mail_open: 2,
   chat_search: RESEARCH.chatLines, chat_thread: 12,
@@ -2136,9 +2176,116 @@ const LINE_CAP: Partial<Record<CandidateKind, number>> = {
   brief: RESEARCH.mailLines,
 };
 
-function clip(text: string, max: number): string {
+export function clip(text: string, max: number): string {
   const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length <= max ? flat : `${flat.slice(0, Math.max(0, max - 1)).trimEnd()}\u2026`;
+  if (flat.length <= max) return flat;
+  const room = flat.slice(0, Math.max(0, max - 1)).trimEnd();
+  // #621: a clip never leaves half a word, because the voice reads its last token as content. A single
+  // unbroken token has no boundary to honour, so there the cut stays where the room ends.
+  const whole = room.replace(/\s+\S*$/u, '').trimEnd();
+  return `${whole.length * 2 >= room.length ? whole : room}\u2026`;
+}
+
+/** #621: the E3 states a reply must keep apart, and the E4 reason a source was never searched. */
+export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry';
+export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route';
+export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
+export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
+
+/** The one clause the voice can say about a source it could not read, keyed by the closed reason. */
+const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string) => string> = {
+  not_connected: label => `${label} is not connected`,
+  not_configured: label => `${label} is not set up`,
+  grant_missing: label => `${label} needs permission`,
+  provider_failed: label => `${label} failed when I asked`,
+  skipped_by_route: label => `I did not read ${label} this time`,
+};
+
+/** A not-searched reason code from the host, narrowed to the closed set the header publishes. */
+export function unsearchedReasonOf(code: string): UnsearchedReason {
+  const text = code.toLowerCase();
+  if (/grant|permission|scope|forbidden|unauthori[sz]ed|not_connected|signin|sign_in|sign-in|login|credential|token/u.test(text)) {
+    return /not_connected|signin|sign_in|sign-in|login|credential|token|disconnect/u.test(text) ? 'not_connected' : 'grant_missing';
+  }
+  if (/unparsed|no_query|skipped|deadline|history_reference/u.test(text)) return 'skipped_by_route';
+  return 'provider_failed';
+}
+
+/**
+ * #621: the deterministic header every reply opens with. It names each searched source with its status and
+ * the hits it returned over the hits it matched, and each source the route wanted but never read with the
+ * reason, so an empty findings list never stands for any of them.
+ */
+export function coverageLine(searched: readonly CoverageSearched[], unsearched: readonly CoverageUnsearched[]): string {
+  const entries: string[] = [];
+  for (const entry of searched) {
+    const confidence = entry.confidence === undefined ? '' : ` confidence=${entry.confidence}`;
+    entries.push(`${entry.source} ${entry.status} ${entry.shown} of ${entry.total} shown${confidence}`);
+  }
+  for (const entry of unsearched) {
+    entries.push(`${entry.source} ${entry.reason} (say: ${UNSEARCHED_CLAUSE[entry.reason](SOURCE_LABEL[entry.source])})`);
+  }
+  const kept: string[] = [];
+  let length = 'coverage: '.length;
+  for (const entry of entries) {
+    if (length + entry.length + 2 > RESEARCH.coverageLimitChars) break;
+    kept.push(entry);
+    length += entry.length + 2;
+  }
+  const left = entries.length - kept.length;
+  if (left > 0) kept.push(`+${left} not shown`);
+  return kept.length === 0 ? 'coverage: none' : `coverage: ${kept.join('; ')}`;
+}
+
+/** The header of a reply that carries no findings yet, which is how a stopped or repeated call answers. */
+export function coverageOfRun(run: RunState, configured: readonly SourceKind[]): string {
+  return coverageTextOf(run, configured, [], new Map());
+}
+
+/** The fields the header reads off a finding: which source it came from and the count line it leads with. */
+interface FindingLike { source?: string; text?: string }
+
+/** `Source: 3 of 9 shown`, the head every finding line group carries. */
+const FINDING_HEAD = /^\S[^:\n]*: (\d+) of (\d+) shown$/mu;
+
+/**
+ * #621: the header of a reply with findings, derived from the findings the voice will actually hear, so the
+ * counts can never drift from the evidence after a trim.
+ */
+function coverageTextOf(run: RunState, configured: readonly SourceKind[], findings: readonly FindingLike[], totals: ReadonlyMap<SourceKind, number>): string {
+  const searched: CoverageSearched[] = [];
+  for (const source of SOURCE_ORDER) {
+    if (!configured.includes(source)) continue;
+    // A routed read that matched nothing records the empty search, never sourcesDone, so the header reads
+    // the three the same way.
+    const wasSearched = run.sourcesDone.has(source) || run.cutShort.has(source) || run.emptySearches.has(source);
+    if (!wasSearched) continue;
+    if (run.sourcesFailed.has(source)) continue;
+    const finding = findings.find(entry => entry.source === source && typeof entry.text === 'string');
+    const text = finding?.text ?? '';
+    const head = FINDING_HEAD.exec(text);
+    const shown = head === null ? 0 : Number(head[1]);
+    const total = Math.max(shown, totals.get(source) ?? (head === null ? 0 : Number(head[2])));
+    const status: CoverageStatus = run.cutShort.has(source) ? 'partial_timeout'
+      : total > shown ? 'truncated_to_budget' : shown === 0 ? 'empty_after_retry' : 'complete';
+    const confidence = source === 'knowledge' && finding !== undefined ? knowledgeConfidenceOf(text.split('\n'))?.confidence : undefined;
+    searched.push({ source, status, shown, total, ...(confidence === undefined ? {} : { confidence }) });
+  }
+  const unsearched: CoverageUnsearched[] = [];
+  for (const source of SOURCE_ORDER) {
+    if (!run.route.has(source)) continue;
+    if (searched.some(entry => entry.source === source)) continue;
+    unsearched.push({ source, reason: unsearchedReasonGiven(run, configured, source) });
+  }
+  return coverageLine(searched, unsearched);
+}
+
+function unsearchedReasonGiven(run: RunState, configured: readonly SourceKind[], source: SourceKind): UnsearchedReason {
+  if (!configured.includes(source)) return 'not_configured';
+  if (run.sourcesFailed.has(source)) return 'provider_failed';
+  const code = run.unavailableReasons.get(source);
+  if (code !== undefined) return unsearchedReasonOf(code);
+  return 'skipped_by_route';
 }
 
 function itemLines(text: string): string[] {
@@ -2588,6 +2735,13 @@ const REASON_WORDS: Record<string, string> = {
   history_unavailable: 'unavailable',
   history_reference_unavailable: 'unavailable',
   cancelled: 'the run stopped before it was read',
+  // Mongoose 1023b carries closed reasons of its own; restricted is a state, never an empty answer.
+  restricted: 'restricted for this account, not missing',
+  not_found: 'not in the company knowledge base',
+  data_not_connected: 'the Lightdash token is not connected in Mongoose settings',
+  endpoint_not_allowed: 'this account is not in the Mongoose CRM teams',
+  cursor_stale: 'that page of results expired, search again',
+  cursor_invalid: 'that page of results was not readable, search again',
 };
 /**
  * ROUTE-1022 K5: the plan a brief actually ran, as one closed token. A brief that read nothing but
@@ -2744,16 +2898,69 @@ const findingKey = (text: string): string => text.replace(/\s+/gu, ' ').trim();
 /** #575: the one ask where her own earlier words are the evidence the owner wants. */
 const ASKS_WHAT_SHE_SAID = /\bwhat (?:did|do|have) (?:you|she) (?:say|said)\b|\bwhat (?:you|she) (?:said|answered)\b/iu;
 
-/** #575: a hit dated before the previous call's start is history; anything newer is the live conversation. */
-function memoryHitAllowed(hit: JsonObject, run: RunState, asked: boolean): boolean {
-  if (asked || hit['role'] !== 'assistant') return true;
-  const at = Date.parse(String(hit['date'] ?? ''));
-  return Number.isFinite(at) && at < (run.previousCallAt ?? run.startedAt);
+/** #615: the same words whatever the spacing or case, so the owner's own question is recognized as this turn. */
+const memoryWords = (text: string): string => fold(text).replace(/\s+/gu, ' ').trim();
+
+/**
+ * #615: the sessions this call is writing to. A row of the live session is the conversation in progress, whatever
+ * its role, so every row of that session is excluded by identity rather than by its own timestamp.
+ */
+function liveSessionIds(hits: readonly JsonObject[], question: string, history: number): Set<string> {
+  const asked = new Set([question].filter(text => text.trim().length > 0).map(memoryWords));
+  const ids = new Set<string>();
+  for (const hit of hits) {
+    const id = hit['sessionId'];
+    if (typeof id !== 'string') continue;
+    const at = Date.parse(String(hit['date'] ?? ''));
+    if (asked.has(memoryWords(String(hit['snippet'] ?? ''))) || (Number.isFinite(at) && at >= history)) ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * #615: an owner line leads her own line at the same match, and her line is evidence only when no owner line
+ * matches (#575 keeps it when the owner asks what she said, which is the one ask that wants her own words).
+ */
+function rankMemoryEvidence(hits: readonly JsonObject[], tokens: readonly string[], asked: boolean): JsonObject[] {
+  const scored = hits.map(hit => {
+    const words = fold(String(hit['snippet'] ?? ''));
+    const at = Date.parse(String(hit['date'] ?? ''));
+    return { hit, owner: hit['role'] === 'user', score: tokens.filter(token => words.includes(token)).length, at: Number.isFinite(at) ? at : 0 };
+  });
+  const ownerLeads = !asked && scored.some(entry => entry.owner && entry.score > 0);
+  const evidence = ownerLeads ? scored.filter(entry => entry.owner) : scored;
+  evidence.sort((left, right) => right.score - left.score
+    || (left.owner === right.owner ? 0 : left.owner ? -1 : 1)
+    || right.at - left.at);
+  return evidence.map(entry => entry.hit);
+}
+
+/**
+ * #575/#615: what a memory lookup may show as earlier conversation. The owner's current question and every row
+ * of the live session are never its own memory, and a row dated at or after the call before this one is the
+ * live conversation, so only older rows survive unless the owner asked what she said.
+ */
+function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunState, asked: boolean): JsonObject[] {
+  const keys = new Set([question, run.question ?? ''].filter(text => text.trim().length > 0).map(memoryWords));
+  const history = run.previousCallAt ?? run.startedAt;
+  const live = asked ? new Set<string>() : liveSessionIds(hits, question, history);
+  const kept = hits.filter(hit => {
+    if (keys.has(memoryWords(String(hit['snippet'] ?? '')))) return false;
+    if (asked) return true;
+    // A remembered note is memory even when it was written in this call; the recording of the
+    // conversation itself, and every summary of it, never is.
+    if (hit['sourceKind'] === 'entry') return true;
+    const id = hit['sessionId'];
+    if (typeof id === 'string' && live.has(id)) return false;
+    const at = Date.parse(String(hit['date'] ?? ''));
+    return !Number.isFinite(at) || at < history;
+  });
+  return rankMemoryEvidence(kept, tokenize(question), asked);
 }
 
 /** Citation metadata has its own 12,000 character envelope, outside the spoken reply budget. */
 function spokenReplySize(reply: JsonObject): number {
-  const { markdown: _markdown, webSources: _sources, webAttribution: _attribution, ...spoken } = reply;
+  const { markdown: _markdown, webSources: _sources, webAttribution: _attribution, coverage: _coverage, ...spoken } = reply;
   return JSON.stringify(spoken).length;
 }
 
@@ -2944,6 +3151,11 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     droppedEvents += 1;
     return true;
   };
+  // #621: the hits each source matched with, kept apart from what a trim leaves, so the header can say
+  // `2 of 9 shown` truthfully after the reply is bounded.
+  const totals = new Map<SourceKind, number>();
+  for (const group of groups) totals.set(group.source, Math.max(group.total, group.lines.length));
+  const coverageOf = (findings: readonly FindingLike[]): string => coverageTextOf(run, configured, findings, totals);
   const render = (): { findings: ReplyFinding[]; reply: JsonObject } => {
     const calendarShown = shownOf(groups.find(group => group.source === 'calendar') ?? { lines: [] });
     const calendarPending = calendarUpstream || calendarShown < remaining.length;
@@ -2991,7 +3203,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       : stillReading.length > 0 ? `${RESEARCH.stillReadingNote}${stillReading.map(source => SOURCE_LABEL[source]).join(', ')}`
         : canRepeat ? (moreAvailable ? (spokenNote === undefined ? RESEARCH.moreAvailableNote : `${spokenNote} ${RESEARCH.moreAvailableNote}`) : spokenNote)
           : unsearched.length === 0 ? spokenNote : `${spokenNote === undefined ? '' : `${spokenNote} `}${RESEARCH.notSearchedNote}${sourceListText(unsearched)}.`;
-    return { findings, reply: { researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
+    return { findings, reply: { coverage: coverageOf(findings), researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, down to a source's last line: the Live budget is a hard bound, so a kept
   // line wider than the budget is dropped whole rather than left to overrun it (LAT-1023 B3). R5 (RESCAP-R5):
@@ -2999,29 +3211,40 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // emptied the answer for a long best hit.
   let webDropped = false;
   let guard = 4096;
+  // #621: two passes. The floor first, which is one whole finding line per source that returned a hit, so a
+  // capped reply never hides a source; then proportional fill, which takes from the source furthest above its
+  // share of the room. Only when even the floor overruns is that last line clipped, at a word boundary.
   while (guard-- > 0) {
     const rendered = spokenReplySize(render().reply);
     if (rendered <= limit) break;
-    const removable = groups.filter(group => shownOf(group) > (group.days === undefined ? 0 : 1));
-    if (removable.length === 0) break;
-    removable.sort((a, b) => b.lines.length - a.lines.length);
-    const trimmed = removable[0]!;
-    // #4: a calendar day line is a list of whole events, so it loses one event at a time, the count it
-    // reports is the count of events it really dropped, and it is never clipped: a clip would swallow an
-    // event while the header still claimed it. Its last event stays, so the answer keeps the day it read.
-    if (trimmed.days !== undefined) { trimCalendarEvent(trimmed); continue; }
-    const last = trimmed.lines[trimmed.lines.length - 1]!;
-    if (trimmed.source === 'web') {
-      const kept = clipWebEvidence(last, last.length - (rendered - limit) - RESEARCH.moreAvailableNote.length - 80);
-      if (kept !== undefined) trimmed.lines[trimmed.lines.length - 1] = kept;
-      else { trimmed.lines.pop(); webDropped = true; dropped += 1; }
+    const fillable = groups.filter(group => shownOf(group) > (group.days === undefined ? 1 : 2));
+    if (fillable.length > 0) {
+      const kept = (group: { lines: string[]; total: number }): number => shownOf(group) / Math.max(1, group.total);
+      const trimmed = fillable.reduce((worst, group) => (kept(group) > kept(worst) ? group : worst));
+      // #4: a calendar day line is a list of whole events, so it loses one event at a time, the count it
+      // reports is the count of events it really dropped, and it is never clipped: a clip would swallow an
+      // event while the header still claimed it. Its last event stays, so the answer keeps the day it read.
+      if (trimmed.days !== undefined) { trimCalendarEvent(trimmed); continue; }
+      const last = trimmed.lines[trimmed.lines.length - 1]!;
+      if (trimmed.source === 'web') {
+        const keptLine = clipWebEvidence(last, last.length - (rendered - limit) - RESEARCH.moreAvailableNote.length - 80);
+        if (keptLine !== undefined) trimmed.lines[trimmed.lines.length - 1] = keptLine;
+        else { trimmed.lines.pop(); webDropped = true; dropped += 1; }
+        continue;
+      }
+      trimmed.lines.pop(); dropped += 1;
       continue;
     }
-    if (trimmed.lines.length === 1) {
-      const room = last.length - (rendered - limit) - 1;
-      if (room >= RESEARCH.clipFloorChars) { trimmed.lines[0] = sentencePrefix(last, room) || clip(last, room); continue; }
-    }
-    trimmed.lines.pop(); dropped += 1;
+    // The floor: one line per source. A line wider than the whole room is clipped, never left half a word.
+    const widest = groups.filter(group => shownOf(group) > 0).sort((a, b) => b.lines.join(' ').length - a.lines.join(' ').length)[0];
+    if (widest === undefined) break;
+    const last = widest.lines[widest.lines.length - 1]!;
+    const room = last.length - (rendered - limit) - 1;
+    const clipped = room >= FLOOR_CLIP_CHARS ? sentencePrefix(last, room) || clip(last, room) : '';
+    if (clipped.length >= FLOOR_CLIP_CHARS) { widest.lines[widest.lines.length - 1] = clipped; continue; }
+    // The floor wins: a reply slightly over its prose budget still names every source that answered.
+    if (shownOf(widest) <= 1) break;
+    widest.lines.pop(); dropped += 1;
   }
   const compactItems = dropped + droppedEvents;
   const { findings, reply } = render();
@@ -3047,7 +3270,25 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   for (const finding of (Array.isArray(capped['findings']) ? capped['findings'] as { text?: string }[] : [])) {
     if (typeof finding.text === 'string' && finding.text.length > 0 && !finding.text.includes(ALREADY_GIVEN)) run.deliveredFindings.add(findingKey(finding.text));
   }
+  // #621: the header is derived after the final trim, so its counts match the evidence the voice hears.
+  if (typeof capped['coverage'] === 'string') {
+    capped['coverage'] = coverageOf(Array.isArray(capped['findings']) ? capped['findings'] as unknown as FindingLike[] : []);
+  }
   return capped;
+}
+
+/** A listing ask browses entities; anything else is a question the answer mode answers. */
+const COMPANY_LISTING = /\b(?:list|which|what|who)\b[^?]{0,60}\b(?:companies|company|products|markets|offerings|tickets)\b/iu;
+export function companyLookupMode(query: string): 'answer' | 'browse' {
+  return COMPANY_LISTING.test(query) ? 'browse' : 'answer';
+}
+
+/**
+ * The company lookup: one search, and for a question one read of the top hit's ref, so the finding
+ * carries the entity behind the answer instead of a title alone.
+ */
+function companySubs(query: string): IntentSubCall[] {
+  return [{ key: 'co0', name: INTERNAL.mongooseSearch, args: { query, mode: companyLookupMode(query) } }];
 }
 
 /**
@@ -3057,7 +3298,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
 function routedRead(lookup: ResearchLookup, context: { question: string; topic?: string | undefined; ownerWords?: string | undefined; configured: readonly SourceKind[]; run: RunState; now: () => number; timeZone?: string }): { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } {
   const query = lookup.query;
   if (lookup.source === 'memory') return { source: 'memory', kind: 'memory_search', subs: [{ key: 'history', name: HISTORY_IDENTITY.name, args: { ...(lookup.history ?? { query }) } }] };
-  if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: [{ key: 'co0', name: INTERNAL.mongooseSearch, args: { query } as JsonObject }] };
+  if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: companySubs(query) };
   // The attention digest answers "what is waiting on him"; it takes no query of its own.
   if (lookup.source === 'replies') return { source: 'chat', kind: 'chat_search', subs: [{ key: 'at0', name: INTERNAL.chatAttention, args: {} as JsonObject }] };
   const subsConfig = { question: context.question, topic: context.topic, ownerWords: context.ownerWords, configured: context.configured, evidence: context.run.evidence, query, nowMs: context.now(), timeZone: context.timeZone };
@@ -3082,7 +3323,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
         source: 'mail' as const, kind: 'id' in lookup.mail ? 'mail_open' as const : 'mail_search' as const,
         subs: [{
           key: 'mail0', name: 'id' in lookup.mail ? INTERNAL.mailRead : INTERNAL.mailList,
-          args: 'id' in lookup.mail ? { ...lookup.mail } : { ...mailPageArgs(lookup.mail as JsonObject), q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone, context.topic, context.ownerWords) },
+          args: 'id' in lookup.mail ? { ...lookup.mail } : { ...mailPageArgs(lookup.mail as JsonObject), q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone, context.topic, context.ownerWords, undefined, context.configured) },
         }],
       }
       : { source: 'mail' as const, kind: 'mail_search' as const, subs: candidateSubs('mail_search', subsConfig) };
@@ -3602,11 +3843,14 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
       // #575: her own spoken turn from this call or the last one confirms a past answer instead of being
       // new evidence, so it is dropped unless the owner asked what she said.
       const askedWhatSheSaid = ASKS_WHAT_SHE_SAID.test(context.question);
-      const hits = (Array.isArray(page['hits']) ? page['hits'].filter(isRecord) : []).filter(hit => memoryHitAllowed(hit, run, askedWhatSheSaid));
+      const raw = Array.isArray(page['hits']) ? page['hits'].filter(isRecord) : [];
+      const hits = memoryEvidence(raw, context.question, run, askedWhatSheSaid);
       const kept = { ...page, hits };
       for (const hit of hits) if (typeof hit['recordRef'] === 'string') run.historyTokens.add(hit['recordRef']);
       const lines = typeof page['text'] === 'string' ? [page['text']] : hits.map(hit => String(hit['snippet'] ?? ''));
-      done.push({ ...settle(plan, lines.length ? 'ok' : 'empty', lines, Number(page['totalMatches'] ?? lines.length)), historyPage: kept });
+      // #615: a page trimmed to the rows this call may read never reports the rows it dropped as matches.
+      const total = hits.length === raw.length ? Number(page['totalMatches'] ?? lines.length) : hits.length;
+      done.push({ ...settle(plan, lines.length ? 'ok' : 'empty', lines, total), historyPage: kept });
     } catch { done.push(settle(plan, signal.aborted ? 'timeout' : 'failed')); } finally { cut.done(); }
   }
   const reads = plans.filter(entry => entry.read.source !== 'memory' && !entry.read.unresolved);
@@ -3697,6 +3941,59 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
 }
 
 /**
+ * #621: the one broader read a source that matched nothing may run: the same query with its fillers dropped,
+ * and the owner's names, numbers, window and exclusion kept, because the RETRIEVAL rule says a broaden never
+ * removes a sender, recipient, window, exclusion or a pronoun's antecedent.
+ */
+export function broaderQueryOf(query: string): string | undefined {
+  // An authored operator, a quoted phrase or an exclusion is the owner's own predicate, never a filler.
+  if (/[:"]|(^|\s)-\S/u.test(query)) return undefined;
+  const kept = contentKeywords(query, 8);
+  const wider = kept.join(' ');
+  return wider.length === 0 || wider === query.trim().toLowerCase() ? undefined : wider;
+}
+
+/** The rewritten plans for that one retry, or undefined when this source cannot broaden or already has. */
+function broadenedPlans(run: RunState, plans: readonly RoutedPlan[], context: Parameters<typeof routedRead>[1]): RoutedPlan[] | undefined {
+  const first = plans[0];
+  if (first === undefined) return undefined;
+  const source = first.read.source;
+  // Mail and the web own their broader query; a calendar window and her own memory have nothing to widen.
+  if (source === 'memory' || source === 'mail' || source === 'web' || source === 'calendar' || source === 'mongoose') return undefined;
+  if (run.retried.has(source)) return undefined;
+  const wider = broaderQueryOf(first.lookup.query ?? '');
+  if (wider === undefined) return undefined;
+  return plans.map(plan => {
+    const lookup: ResearchLookup = { ...plan.lookup, query: wider };
+    return { lookup, read: routedRead(lookup, context) };
+  });
+}
+
+/**
+ * #621: an ask that wants the content of a message, not just its subject line.
+ */
+const DEPTH_ASK = /\b(?:what|which)\b[^.?!]*\b(?:writ(?:e|es|ten)?|wrote|sa(?:y|ys|id)|sen(?:d|ds|t)|mean(?:s|t)?)\b|\bread (?:it|that|this|them)\b|\bfull (?:text|message|thread|mail)\b|\bwhole (?:message|thread|mail)\b/iu;
+
+/**
+ * #621: the escalation inside one research call. A mail ask that wants depth and left exactly one top hit
+ * gets that message read here, so the voice model never spends a round asking for a body the host can read.
+ */
+async function depthRead(deps: ResearchDeps, run: RunState, question: string, signal: AbortSignal): Promise<void> {
+  if (run.bodies.size > 0 || !DEPTH_ASK.test(question)) return;
+  const messages = [...mailMessages(run).values()];
+  if (messages.length !== 1) return;
+  const top = messages[0]!;
+  const key = `depth:mail:${top.id}`;
+  if (run.calls.has(key)) return;
+  run.calls.add(key);
+  try {
+    await deps.execute([{ key, name: INTERNAL.mailRead, args: { id: top.id } }], signal);
+  } catch {
+    // A depth read that fails leaves the search answer intact, and the header still names the source.
+  }
+}
+
+/**
  * K6: the routed start. Every lookup is dispatched before any is awaited, so the layers the model
  * named are read at once; the reply is shaped as today's, plus a per-source outcome.
  */
@@ -3725,7 +4022,11 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     const bucket = groups.get(plan.read.source) ?? [];
     bucket.push(plan);
     groups.set(plan.read.source, bucket);
+    // #621: the route names what the ask wanted, configured or not, so the header can say why a source
+    // the owner asked about was never read.
+    if (plan.read.source !== 'memory') run.route.add(plan.read.source);
   }
+  for (const source of requiredSources(question)) run.route.add(source);
   let outcomes: RoutedOutcome[] = [];
   let reply: JsonObject | undefined;
   // R6: every layer named below is being read, so a first answer can name the ones still running.
@@ -3789,6 +4090,15 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         const batch = await routedGroup(deps, run, plans, { question, configured, unavailable, unavailableReason, signal, now });
         record(batch);
         outcomes.push(...batch);
+        // #621: a source that matched nothing gets exactly one broadened retry inside this same call, so the
+        // voice never spends a round asking the same thing with fewer words.
+        const retryPlans = broadenedPlans(run, plans, readContext);
+        if (retryPlans !== undefined && batch.every(outcome => outcome.outcome === 'empty')) {
+          run.retried.add(retryPlans[0]!.read.source as SourceKind);
+          const retried = await routedGroup(deps, run, retryPlans, { question, configured, unavailable, unavailableReason, signal, now });
+          record(retried);
+          outcomes.push(...retried);
+        }
         first.historyPages = outcomes.flatMap(outcome => outcome.historyPage ? [outcome.historyPage] : []);
         const source = batch[0]?.source;
         if (source) {
@@ -3800,6 +4110,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     } finally {
       beatTimer?.cancel();
     }
+    await depthRead(deps, run, question, signal);
     run.ended = true;
     const sources: JsonObject = {};
     for (const outcome of outcomes) sources[outcome.lookup.source] = outcome.outcome;
@@ -3938,12 +4249,15 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   // them; an answer with nothing left reading is complete and says nothing more is to fetch.
   const partial = pending.length > 0;
   const early = capReply(withHistoryPages(buildReply(view.run, 'partial', view.configured, false, view.limit), first.historyPages ?? []), view.limit);
-  const reply: JsonObject = {
+  // #621: the pending note rides after the trim, so the length check runs once more on the reply the voice
+  // actually receives.
+  const wrapped = capReply({
     ...early,
     status: partial || early['canContinue'] === true ? 'partial' : 'complete',
     canContinue: partial || early['canContinue'] === true,
     note: partial ? `${RESEARCH.stillReadingNote}${pending.join(', ')}.${String(early['note'] ?? '').includes(RESEARCH.moreAvailableNote) ? ` ${RESEARCH.moreAvailableNote}` : ''}` : (typeof early['note'] === 'string' ? early['note'] : RESEARCH.completeNote),
-  };
+  }, view.limit);
+  const reply: JsonObject = wrapped;
   first.mailShown = new Set((reply as MailReply)[mailDelivery]?.keys ?? []);
   const shown = Array.isArray(reply['findings']) ? reply['findings'] as { text?: string }[] : [];
   for (const finding of shown) for (const line of (finding.text ?? '').split('\n').slice(1)) first.seen.add(lineKey(line));
@@ -4051,6 +4365,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     run = resumed;
   }
   run.direction = call.direction ?? run.direction;
+  // #621: the ask's own route, so a source it names but the session never wired still says why.
+  for (const source of requiredSources(run.question ?? question)) run.route.add(source);
   if (deps.timeZone === undefined) delete run.timeZone; else run.timeZone = deps.timeZone;
   if (call.cursor !== undefined) { if (run.bodyCursors.has(call.cursor)) run.bodyCursorRequested = call.cursor; else run.mailCursorRequested = call.cursor; }
   first.snapshot = () => ({ run, configured, limit });
@@ -4320,7 +4636,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         const text = plannedText;
         for (const kind of narrowed) {
           if (selection.actions.some(action => action.kind === kind)) continue;
-          selection.actions.push({ kind, ...fallbackQuery(kind, text, now()) });
+          selection.actions.push({ kind, ...fallbackQuery(kind, text, now(), configured) });
           selection.pUseful[kind] = 0.6;
         }
       }
@@ -4329,7 +4645,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       // the selector path and the fallback path alike, whenever the calendar endpoint can serve it.
       if (ownerScheduleQuestion(plannedText) && selection.actions.length > 0 && candidatesForSelector.includes('calendar_window')
         && !unavailable.includes('calendar') && !selection.actions.some(action => action.kind === 'calendar_window')) {
-        selection.actions.push({ kind: 'calendar_window', ...fallbackQuery('calendar_window', plannedText, now()) });
+        selection.actions.push({ kind: 'calendar_window', ...fallbackQuery('calendar_window', plannedText, now(), configured) });
         selection.pUseful['calendar_window'] ??= 0.4;
       }
 
@@ -4362,6 +4678,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           return named !== null ? [named] : kind === 'brief' ? [...configured] : [];
         });
         allowAnswer(batchSources);
+        // #621: every round adds what it routed to, so a source the deadline never reached still says so.
+        for (const source of batchSources) run.route.add(source);
         const remainingMs = batchDeadline - now();
         if (remainingMs <= 0) { stopReason = 'deadline'; break; }
         // RD/P5-R1: a start call answers inside its budget, so the owner hears a reply instead of waiting on

@@ -17,7 +17,7 @@ trap 'rm -rf "$out"' EXIT
 mkdir -p "$out/source/adapters" "$out/source/live" "$out/source/contracts" "$out/source/test"
 cp -R "$root/server/config" "$root/server/prompt" "$out/source/"
 cp -R "$root/server/tools" "$root/server/connectors" "$out/source/"
-cp -R "$root/server/adapters/model" "$root/server/adapters/live-voice" "$root/server/adapters/mcp" "$out/source/adapters/"
+cp -R "$root/server/adapters/model" "$root/server/adapters/live-voice" "$root/server/adapters/mcp" "$root/server/adapters/lux-write" "$out/source/adapters/"
 cp -R "$root/server/live/." "$out/source/live/"
 cp -R "$root/server/contracts/." "$out/source/contracts/"
 # The selected tests side-effect import live-remember/live-declarations and host/log,

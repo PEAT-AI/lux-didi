@@ -211,6 +211,8 @@ const diagnosticCodes = {
 };
 // #352 (release 3o): the Mac's Mic Mode, which the native app reads and never sets. Two names, nothing else.
 const MIC_MODES = ['standard', 'wideSpectrum', 'voiceIsolation', 'unknown'];
+// #613: the launch paths the app may report, mirrored from LaunchKind in SingleInstanceGuard.swift.
+const LAUNCH_KINDS = ['interactive', 'login_item', 'install_relaunch', 'installed_proof', 'self_check', 'ui_proof', 'verification'];
 export function clientDiagnostic(body: Record<string, unknown>): Record<string, unknown> {
   const { event, failureClass, code, detail } = body;
   if (event === 'mic_mode') {
@@ -219,6 +221,15 @@ export function clientDiagnostic(body: Record<string, unknown>): Record<string, 
       throw new ServiceError('BAD_REQUEST', 'Invalid client diagnostic');
     }
     return { event: 'mic_mode', preferred: body.preferred, active: body.active };
+  }
+  if (event === 'launch_kind') {
+    // #613: how the app was launched, so host.log never has to infer it from LaunchServices.
+    if (Object.keys(body).some(key => !['event', 'kind', 'autoConnects', 'windowShown'].includes(key))
+      || !LAUNCH_KINDS.includes(String(body.kind))
+      || typeof body.autoConnects !== 'boolean' || typeof body.windowShown !== 'boolean') {
+      throw new ServiceError('BAD_REQUEST', 'Invalid client diagnostic');
+    }
+    return { event: 'launch_kind', kind: body.kind, autoConnects: body.autoConnects, windowShown: body.windowShown };
   }
   if (event !== 'live_precreate_failed' || (failureClass !== 'audio' && failureClass !== 'service') || typeof code !== 'string' || !diagnosticCodes[failureClass].includes(code)
     || Object.keys(body).some(key => !['event', 'failureClass', 'code', 'detail'].includes(key))

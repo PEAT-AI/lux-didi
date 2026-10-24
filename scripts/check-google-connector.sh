@@ -30,6 +30,7 @@ cp "$root/server/host/mongoose-auth.ts" "$out/source/host/"
 cp "$root/server/test/google-connector.test.ts" "$out/source/test/"
 mkdir -p "$out/source/test/fixtures"
 cp "$root/server/test/fixtures/google-mcp-child.mjs" "$out/source/test/fixtures/"
+cp "$root/server/test/fixtures/google-error-contract-6ee466f0.json" "$out/source/test/fixtures/"
 printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$deps" "$out/node_modules"
 inputs=()
@@ -39,4 +40,5 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
   --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" "${inputs[@]}"
 mkdir -p "$out/dist/test/fixtures"
 cp "$root/server/test/fixtures/google-mcp-child.mjs" "$out/dist/test/fixtures/"
+cp "$root/server/test/fixtures/google-error-contract-6ee466f0.json" "$out/dist/test/fixtures/"
 node_test_files --test-timeout=15000 "$out/dist/test/google-connector.test.js"

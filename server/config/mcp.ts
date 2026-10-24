@@ -209,8 +209,7 @@ function optionalUsername(value: unknown): string | null {
   if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) fail('invalid_profile');
   return value;
 }
-/** Installed <dataDir>/provider-config/mcp.json: a small, owner-only, secret-free endpoint catalog. */
-export interface HttpMcpEndpointEntry {
+/** Installed <dataDir>/provider-config/mcp.json: a small, owner-only, secret-free endpoint catalog. */export interface HttpMcpEndpointEntry {
   id: string; transport: 'streamable-http'; url: string; connector: string;
   unknownClass: DataClass | null; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid';
   account: string; resource: string; credentialRef: string | null; enabled: boolean; allowEgress: boolean;
@@ -260,11 +259,74 @@ function endpointEntry(raw: unknown): McpEndpointEntry {
   const credentialRef = e['credentialRef'];
   if (credentialRef !== null && (typeof credentialRef !== 'string' || !refPattern.test(credentialRef))) fail('invalid_reference');
   if (typeof e['enabled'] !== 'boolean' || typeof e['allowEgress'] !== 'boolean') fail('invalid_profile');
+  if (e['connector'] === mongooseConnector) mongooseEndpointEntry(url, e['resource'], credentialRef);
   return { ...classification, id: e['id'] as string, transport: 'streamable-http', url, connector: e['connector'] as string, account: e['account'] as string, resource: e['resource'] as string, credentialRef: credentialRef as string | null, enabled: e['enabled'], allowEgress: e['allowEgress'] };
 }
+const mongooseConnector = 'mongoose';
+const mongoosePaths = ['/mcp/knowledge', '/mcp/data', '/mcp/crm'] as const;
+const mongooseAudiences = ['mongoose:knowledge', 'mongoose:data', 'mongoose:crm'] as const;
+const mongooseReferences = ['mongoose-knowledge', 'mongoose-data', 'mongoose-crm'] as const;
+
+/** One host log record for a legacy catalogue the loader replaced; the boot path owns the sink. */
+export type McpCatalogueEvents = (event: { event: string; endpoints: number }) => void;
+
+/**
+ * Release 9 stored one Mongoose endpoint at `/mcp` under the retired single `mongoose` audience.
+ * The owner's installation is replaced rather than migrated field by field: the three release-1023b
+ * endpoints take its place the first time the catalogue is read, each with its own reference and
+ * with no stored token, so every one of them reports not signed in until the owner signs in.
+ * Every other shape is left to the strict validation below, which refuses it.
+ */
+function replaceInstalledMongoose(rawEndpoints: readonly unknown[], events: McpCatalogueEvents | undefined): readonly unknown[] {
+  const mongoose = rawEndpoints.filter(item => item !== null && typeof item === 'object' && (item as Record<string, unknown>)['connector'] === mongooseConnector);
+  if (mongoose.length !== 1) return rawEndpoints;
+  const legacy = mongoose[0] as Record<string, unknown>;
+  const url = legacy['url'];
+  if (legacy['resource'] !== mongooseConnector || typeof url !== 'string') return rawEndpoints;
+  let origin: string;
+  try {
+    const parsed = new URL(url);
+    if (parsed.pathname.replace(/\/$/, '') !== '/mcp' || parsed.search !== '') return rawEndpoints;
+    origin = parsed.origin;
+  } catch { return rawEndpoints; }
+  const unknownClass = legacy['unknownClass'];
+  const replacements = mongooseReferences.map((reference, index) => ({
+    id: reference, transport: 'streamable-http', url: `${origin}${mongoosePaths[index]}`, connector: mongooseConnector,
+    account: legacy['account'], resource: mongooseAudiences[index], credentialRef: reference,
+    enabled: legacy['enabled'], allowEgress: legacy['allowEgress'],
+    ...(unknownClass !== undefined ? { unknownClass } : {}),
+  }));
+  events?.({ event: 'mongoose_catalogue_replaced', endpoints: replacements.length });
+  return rawEndpoints.flatMap(item => (item === legacy ? replacements : [item]));
+}
+
+/**
+ * One Mongoose endpoint: exactly one of the three release-1023b paths, its own audience and its own
+ * credential reference. `/mcp`, `/mcp/`, a toolset query, a retired name and admin are all refused,
+ * because a token bound to one audience is refused on another and admin is never connected.
+ */
+function mongooseEndpointEntry(url: string, resource: unknown, credentialRef: string | null): void {
+  if (typeof resource !== 'string' || !(mongooseAudiences as readonly string[]).includes(resource)) fail('invalid_source');
+  if (credentialRef === null) fail('invalid_source');
+  let path: string;
+  try { path = new URL(url).pathname.replace(/\/$/, ''); } catch { return fail('invalid_source'); }
+  if (!(mongoosePaths as readonly string[]).includes(path)) fail('invalid_source');
+  if (path.replace('/mcp/', 'mongoose:') !== resource) fail('invalid_source');
+}
+
+/** The catalog carries all three Mongoose endpoints, once each, with three distinct resources and refs. */
+function mongooseEndpointSet(endpoints: readonly McpEndpointEntry[]): void {
+  const mongoose = endpoints.filter(endpoint => endpoint.connector === mongooseConnector);
+  if (!mongoose.length) return;
+  if (mongoose.length !== mongoosePaths.length) fail('invalid_source');
+  if (new Set(mongoose.map(endpoint => endpoint.resource)).size !== mongoosePaths.length) fail('invalid_source');
+  if (new Set(mongoose.map(endpoint => endpoint.credentialRef)).size !== mongoosePaths.length) fail('invalid_source');
+  if (new Set(mongoose.map(endpoint => endpoint.id)).size !== mongoosePaths.length) fail('invalid_source');
+}
+
 /** Missing mcp.json is a defined state, never an error: startup continues with no approved source. */
-export function loadMcpEndpoints(options: { configDir: string }): McpEndpointSelection {
-  const { configDir } = options;
+export function loadMcpEndpoints(options: { configDir: string; events?: McpCatalogueEvents }): McpEndpointSelection {
+  const { configDir, events } = options;
   if (typeof configDir !== 'string' || !isAbsolute(configDir) || normalize(configDir) !== configDir) fail('invalid_arguments');
   if (!validateRoot(configDir)) return { state: 'missing' };
   let raw: string;
@@ -282,6 +344,7 @@ export function loadMcpEndpoints(options: { configDir: string }): McpEndpointSel
   const rawEndpoints = file['endpoints'];
   if (!Array.isArray(rawEndpoints) || rawEndpoints.length > 64) fail('invalid_profile');
   const seen = new Set<string>(); const endpoints: McpEndpointEntry[] = [];
-  for (const item of rawEndpoints) { const entry = endpointEntry(item); if (seen.has(entry.id)) fail('invalid_profile'); seen.add(entry.id); endpoints.push(entry); }
+  for (const item of replaceInstalledMongoose(rawEndpoints, events)) { const entry = endpointEntry(item); if (seen.has(entry.id)) fail('invalid_profile'); seen.add(entry.id); endpoints.push(entry); }
+  mongooseEndpointSet(endpoints);
   return { state: 'configured', catalog: { grantMode, endpoints, ownerIdentity, ownerChatUsername } };
 }

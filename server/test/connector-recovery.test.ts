@@ -16,11 +16,10 @@ import { bindCalendarFirstConnect, bindCalendarRecovery } from '../host/runtime.
 import { CalendarDigestCache } from '../live/warm-context.js';
 import { safeEvent } from '../host/log.js';
 import { proveIdentity, type IdentitySource } from '../connectors/identity.js';
-import { mongooseCredentialAtStart } from '../connectors/mongoose.js';
+import { MONGOOSE_ENDPOINTS, mongooseCredentialAtStart } from '../connectors/mongoose.js';
 import type { ConnectorResult } from '../connectors/index.js';
 
 const ACCOUNT = 'owner@example.test';
-const RESOURCE = 'company';
 const FAST = [10, 10, 10];
 
 async function body(req: IncomingMessage): Promise<Buffer> {
@@ -93,22 +92,31 @@ async function until(done: () => boolean, budgetMs = 2000): Promise<void> {
   }
 }
 
-function configDirFor(url: string, credentialRef: string | null): string {
+/**
+ * The three release-1023b endpoints at the fixture origin; the knowledge endpoint is the one these
+ * recovery tests exercise, so it carries the reference under test and the other two are parked.
+ */
+function configDirFor(url: string, credentialRef: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'didi-connect-recovery-'));
   const configDir = join(dir, 'provider-config');
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
   writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
     schemaVersion: 1, grantMode: 'owner-trusted-reads',
-    endpoints: [{ id: 'mongoose', transport: 'streamable-http', url, connector: 'mongoose', account: ACCOUNT, resource: RESOURCE, credentialRef, enabled: true, allowEgress: true, unknownClass: 'ordinary' }],
+    endpoints: MONGOOSE_ENDPOINTS.map(endpoint => ({
+      id: `mongoose-${endpoint}`, transport: 'streamable-http', url: `${url}/${endpoint}`, connector: 'mongoose',
+      account: ACCOUNT, resource: `mongoose:${endpoint}`, credentialRef: endpoint === 'knowledge' ? credentialRef : `mongoose-${endpoint}`,
+      enabled: true, allowEgress: true, unknownClass: 'ordinary',
+    })),
   }), { mode: 0o600 });
   return configDir;
 }
 
-function oauthRecord(configDir: string, fields: { refreshToken: string; expiresAt: number; consentStartedAt: number }): void {
-  writeFileSync(join(configDir, 'mongoose-mcp.json'), JSON.stringify({
+/** One schemaVersion 2 record, bound to the knowledge endpoint the seeded reference names. */
+function oauthRecord(configDir: string, reference: string, fields: { refreshToken: string; expiresAt: number; consentStartedAt: number }): void {
+  writeFileSync(join(configDir, `${reference}.json`), JSON.stringify({
     schemaVersion: 2, base: 'https://mongoose.example.test', clientId: 'client', redirectPort: 45871,
-    account: ACCOUNT, accessToken: 'current-access', refreshToken: fields.refreshToken,
-    expiresAt: fields.expiresAt, consentStartedAt: fields.consentStartedAt,
+    account: ACCOUNT, endpoint: 'knowledge', audience: 'mongoose:knowledge', accessToken: 'current-access',
+    refreshToken: fields.refreshToken, expiresAt: fields.expiresAt, consentStartedAt: fields.consentStartedAt,
   }), { mode: 0o600 });
 }
 
@@ -180,8 +188,8 @@ test('a mongoose credential verdict needs refresh material and no expired consen
 
 test('a mongoose record with no refresh material is parked for sign-in and the transport is never called', async t => {
   const f = await fixture(); t.after(() => f.close());
-  const configDir = configDirFor(f.url, 'mongoose-mcp');
-  oauthRecord(configDir, { refreshToken: '   ', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now() });
+  const configDir = configDirFor(f.url, 'mongoose-knowledge');
+  oauthRecord(configDir, 'mongoose-knowledge', { refreshToken: '   ', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now() });
   const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-store-'));
   const store = new Store(join(dir, 'data'), toolsMigrations);
   const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
@@ -196,8 +204,8 @@ test('a mongoose record with no refresh material is parked for sign-in and the t
 
 test('an expired access token with refresh material is not a local sign-in verdict', async t => {
   const f = await fixture(); t.after(() => f.close());
-  const configDir = configDirFor(f.url, 'mongoose-mcp');
-  oauthRecord(configDir, { refreshToken: 'refresh-material', expiresAt: Date.now() - 60_000, consentStartedAt: Date.now() });
+  const configDir = configDirFor(f.url, 'mongoose-knowledge');
+  oauthRecord(configDir, 'mongoose-knowledge', { refreshToken: 'refresh-material', expiresAt: Date.now() - 60_000, consentStartedAt: Date.now() });
   const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-store-'));
   const store = new Store(join(dir, 'data'), toolsMigrations);
   const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
@@ -209,8 +217,8 @@ test('an expired access token with refresh material is not a local sign-in verdi
 
 test('a consent family past its cap is parked for sign-in with no wire call', async t => {
   const f = await fixture(); t.after(() => f.close());
-  const configDir = configDirFor(f.url, 'mongoose-mcp');
-  oauthRecord(configDir, { refreshToken: 'refresh-material', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now() - 91 * 24 * 60 * 60 * 1000 });
+  const configDir = configDirFor(f.url, 'mongoose-knowledge');
+  oauthRecord(configDir, 'mongoose-knowledge', { refreshToken: 'refresh-material', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now() - 91 * 24 * 60 * 60 * 1000 });
   const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-store-'));
   const store = new Store(join(dir, 'data'), toolsMigrations);
   const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
@@ -226,7 +234,8 @@ test('a retryable first call failure retries a bounded number of times and then 
   // cause itself is asserted at the projection above. This drives the same retryable first_call path with
   // a fast closed cause: a tool definition the client refuses.
   const f = await fixture({ tools: [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: [], required: 'not-an-array' } }] }); t.after(() => f.close());
-  const configDir = configDirFor(f.url, null);
+  const configDir = configDirFor(f.url, 'mongoose-knowledge');
+  oauthRecord(configDir, 'mongoose-knowledge', { refreshToken: 'refresh-material', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now() });
   const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-store-'));
   const store = new Store(join(dir, 'data'), toolsMigrations);
   const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST });
@@ -235,10 +244,11 @@ test('a retryable first call failure retries a bounded number of times and then 
   assert.equal(failed.state, 'error', 'the endpoint did not connect');
   assert.equal(failed.retrying, true, 'a retry is scheduled');
   assert.equal(f.requests(), 1);
-  await new Promise(resolve => setTimeout(resolve, FAST[0]! * 3 + 120));
-  const settled = runtime.status().endpoints[0]!;
-  assert.equal(settled.retrying, false, 'the round is over and no further attempt is pending');
+  // Wait on the wire, not on the flag: `retrying` is briefly false between two scheduled attempts.
+  await until(() => f.requests() === 4, 2000);
   assert.equal(f.requests(), 4, 'the first connect plus exactly three bounded retries');
+  await until(() => runtime.status().endpoints[0]!.retrying === false, 2000);
+  assert.equal(runtime.status().endpoints[0]!.retrying, false, 'the round is over and no further attempt is pending');
 });
 
 /** Two Google endpoints of one owner account, each proving itself with its own family's tool. */
@@ -303,17 +313,17 @@ test('a gmail proof that runs out of time is retried until it proves the account
 
 /** The same record the login writer produces, pointed at the fixture's own token route. */
 function oauthRecordAt(configDir: string, base: string): void {
-  writeFileSync(join(configDir, 'mongoose-mcp.json'), JSON.stringify({
+  writeFileSync(join(configDir, 'mongoose-knowledge.json'), JSON.stringify({
     schemaVersion: 2, base, clientId: 'client', redirectPort: 45871,
-    account: ACCOUNT, accessToken: 'current-access', refreshToken: 'refresh-token-1',
-    expiresAt: 1, consentStartedAt: Date.now(),
+    account: ACCOUNT, endpoint: 'knowledge', audience: 'mongoose:knowledge',
+    accessToken: 'current-access', refreshToken: 'refresh-token-1', expiresAt: 1, consentStartedAt: Date.now(),
   }), { mode: 0o600 });
 }
 
 type Lifecycle = { event: string; endpointId: string; attempts?: number; reason?: string; connectMs?: number; bytes?: number };
 
 async function mongooseRuntime(t: { after: (fn: () => void) => void }, f: { url: string; close: () => Promise<void> }) {
-  const configDir = configDirFor(f.url, 'mongoose-mcp');
+  const configDir = configDirFor(f.url, 'mongoose-knowledge');
   oauthRecordAt(configDir, f.url.replace(/\/mcp$/, ''));
   const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-unreachable-'));
   const store = new Store(join(dir, 'data'), toolsMigrations);
@@ -340,7 +350,7 @@ test('1022: an unreachable token endpoint is retried and recovers, it never asks
   await until(() => runtime.status().endpoints[0]!.state === 'connected');
   const recovered = lifecycle.filter(entry => entry.event === 'connector_recovered');
   assert.equal(recovered.length, 1, 'one line for the recovery that landed');
-  assert.equal(recovered[0]!.endpointId, 'mongoose');
+  assert.equal(recovered[0]!.endpointId, 'mongoose-knowledge');
   assert.equal(recovered[0]!.attempts, 1, 'the first recovery round proved it');
   assert.ok(Number.isFinite(recovered[0]!.connectMs), 'and the line carries how long it took');
 });
@@ -358,7 +368,8 @@ test('1022: a token endpoint that refuses the refresh still parks the connector 
 test('1022: a recovery round that never succeeds says so once, with the reason', async t => {
   const f = await fixture({ tools: [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: [], required: 'not-an-array' } }] });
   t.after(() => f.close());
-  const configDir = configDirFor(f.url, null);
+  const configDir = configDirFor(f.url, 'mongoose-knowledge');
+  oauthRecord(configDir, 'mongoose-knowledge', { refreshToken: 'refresh-material', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now() });
   const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-exhausted-'));
   const store = new Store(join(dir, 'data'), toolsMigrations);
   const lifecycle: Lifecycle[] = [];
@@ -369,7 +380,7 @@ test('1022: a recovery round that never succeeds says so once, with the reason',
   await until(() => lifecycle.some(entry => entry.event === 'connector_recovery_exhausted'), 4000);
   const exhausted = lifecycle.filter(entry => entry.event === 'connector_recovery_exhausted');
   assert.equal(exhausted.length, 1, 'one line when the bounded round is spent');
-  assert.equal(exhausted[0]!.endpointId, 'mongoose');
+  assert.equal(exhausted[0]!.endpointId, 'mongoose-knowledge');
   assert.equal(exhausted[0]!.attempts, FAST.length, 'every delay was used');
   assert.ok((exhausted[0]!.reason ?? '').length > 0, 'and it names the closed reason it gave up on');
 });

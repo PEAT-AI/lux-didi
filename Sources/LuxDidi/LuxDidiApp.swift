@@ -312,6 +312,14 @@ import WebKit
             }
         }
     }
+    /// #613: the launch receipt the host records, best effort: a host that is down leaves the local line only.
+    func forwardLaunchReceipt(_ kind: LaunchKind) {
+        guard let client else { return }
+        Task { _ = try? await client.launchReceipt(kind: kind.rawValue,
+            autoConnects: kind.autoConnects, windowShown: kind.presentsWindowAtLaunch) }
+    }
+    /// #613: the one latch and session epoch presence and the conversation share.
+    let ownerStopLatch = OwnerStopLatch()
     @discardableResult
     func startLive(pickupJobID: String? = nil) -> Bool {
         guard let client else { error = "Connect the local service before starting Live voice."; return false }
@@ -321,7 +329,7 @@ import WebKit
         let conversation = liveAuthorityOwner.ownerStart {
             NativeLiveConversation(authority: client.authenticatedRequestBuilder(), dictationIsCapturing: { [weak self] in
                 self?.voice.state.phase == .recording
-            }, pickupJobID: pickupJobID, logsDirectory: liveLogsDirectory)
+            }, pickupJobID: pickupJobID, logsDirectory: liveLogsDirectory, latch: ownerStopLatch)
         }
         conversation.start()
         orbLevels = NativeOrbLevelPublisher(device: conversation.device, bridge: bridge)
@@ -608,7 +616,8 @@ struct RootView: View {
         receipt: { [weak self] record in self?.model.appendPresenceReceipt(record) },
         goodbyeTone: { [weak self] in self?.model.playGoodbyeTone() },
         surface: { [weak self] posture in self?.miniOrb.applyPresence(posture) },
-        prewarm: { [weak self] in self?.model.prewarmWarmContext() }))
+        prewarm: { [weak self] in self?.model.prewarmWarmContext() }),
+        latch: model.ownerStopLatch)
     private var presencePickupJobID: String?
     /// The presence generation the conversation now on the wire was opened under, so a
     /// callback from any other conversation is stale by construction.
@@ -640,6 +649,8 @@ struct RootView: View {
     private var muteMenuItem: NSMenuItem?
     private var loginMenuItem: NSMenuItem?
     private var gettingStartedSheet: NSWindow?
+    /// #620: the grant alert and the Getting Started sheet wait for the owner to open the window.
+    private var deferredPrompts = DeferredPrompts()
     private(set) var window: NSWindow!
     private var statusItem: NSStatusItem!
     private var liveCallTimer: Timer?
@@ -672,6 +683,13 @@ struct RootView: View {
         prepare: { [weak self] target, generation in self?.preparePresentation(target, generation: generation) },
         didCommit: { [weak self] mode, _ in self?.presentationCommitted(mode) },
         requestChanged: { [weak self] in self?.cancelPresentationPreparation() })
+    /// #625: the Dock icon's menu reuses the menu bar's own actions; Open Naya app is the same
+    /// selector the menu item sends, so the Dock opens the window by that one path.
+    private(set) lazy var dockMenu = DockMenu(
+        show: { [weak self] in self?.show() },
+        openSettings: { [weak self] in self?.openSettingsFromMenu() },
+        startLive: { [weak self] in self?.startLiveFromMenu() },
+        mute: { [weak self] in self?.muteLiveFromMenu() })
     /// ORBFIRST: the app window is built the first time the owner opens it, so a launch that shows
     /// only the orb builds the web host and no window at all.
     @discardableResult
@@ -710,6 +728,10 @@ struct RootView: View {
         loginLaunch = launchedAtLogin
         launchKind = LaunchKind.resolve(arguments: CommandLine.arguments,
             environment: ProcessInfo.processInfo.environment, loginLaunch: loginLaunch)
+        model.appendPresenceReceipt(launchKind.launchRecord)
+        // #613: the same fields reach the host, so host.log carries the launch kind too.
+        model.forwardLaunchReceipt(launchKind)
+        recordPrompts(deferredPrompts.launchDecisions())
         OwnedWindowReadiness.trace("app:didFinishLaunching-entry",
             ["activationPolicy": NSApp.activationPolicy().rawValue, "isActive": NSApp.isActive])
         // UI3A-R1: a regular app for the interactive, login-item and install
@@ -780,7 +802,8 @@ struct RootView: View {
         bindRightCommandKey(singleKey, to: presence, present: { [weak self] in self?.presentShortcutMini() })
         singleKey.presenceState = { [weak presence] in presence?.state ?? .cold }
         singleKey.onReceipt = { [weak self] record in self?.model.appendPresenceReceipt(record) }
-        SingleKeyTrigger.requestGrantIfNeeded(for: launchKind, version: model.shortcutGrantVersion)
+        // #620: the grant alert waits for the owner to open the full window, so a launch that
+        // shows only the orb asks nothing.
         singleKey.start()
         syncSingleKeyGrantWatch()
         model.onShellChanged = { [weak self] in
@@ -859,7 +882,6 @@ struct RootView: View {
             // retried here and the auto-connect waits for the same two facts.
             if launchKind.presentsOrbAtLaunch, !coordinator.miniShown { _ = coordinator.presentMini(trigger: .other) }
             autoConnectIfReady()
-            if window != nil, NativeGettingStartedOnce.consume(UserDefaults.standard) { showGettingStarted() }
         }
     }
     @objc private func revealLogs() {
@@ -927,9 +949,27 @@ struct RootView: View {
                                           pageHostable: pageHostable, attempted: autoConnectAttempted) {
         case .connect:
             autoConnectAttempted = true
-            startPresence()
+            Task { [weak self] in
+                guard let self else { return }
+                // #613: the calendar connector publishes a moment after the host is up, so this launch
+                // waits a bounded four seconds for it and starts the call either way.
+                _ = await OrbFirstAutoConnect.waitForCalendar(
+                    published: { await self.calendarPublished() },
+                    sleep: { ms in try? await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000) })
+                self.startPresence()
+            }
         case .wait, .never:
             break
+        }
+    }
+
+    /// #613: the calendar connector is published when the host's tools status names it ready.
+    private func calendarPublished() async -> Bool {
+        guard let client = model.client,
+              let value = try? await client.connectedRead("api/v1/tools/status"),
+              let endpoints = value["endpoints"] as? [[String: Any]] else { return false }
+        return endpoints.contains {
+            $0["connector"] as? String == "calendar" && $0["state"] as? String == "ready"
         }
     }
 
@@ -950,6 +990,8 @@ struct RootView: View {
         }
         OwnedWindowReadiness.trace("app:present-after",
             ["isVisible": window.isVisible, "isKey": window.isKeyWindow, "isMain": window.isMainWindow, "isActive": NSApp.isActive])
+        // #620: only the owner's own open runs the prompts a launch deferred.
+        if activating { showDeferredPrompts() }
     }
     private var launchedAtLogin: Bool {
         NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
@@ -1030,6 +1072,32 @@ struct RootView: View {
     @objc func muteLiveFromMenu() { summonActions.mute() }
     @objc func stopLiveFromMenu() { model.stopTrigger.arm(.menu); menuBridge.stop() }
     private var gettingStartedProofRows: [NativeGettingStartedItem]?
+
+    /// #620: a prompt that is not shown at launch, and the decision the owner moment reached, are
+    /// one content-free line in native-live.log.
+    private func recordPrompts(_ decisions: [(DeferredPrompts.Prompt, DeferredPrompts.Decision)]) {
+        for (prompt, decision) in decisions {
+            model.recordSurfaceReceipt(["event": "startup_prompt", "prompt": prompt.rawValue,
+                                        "decision": decision.rawValue])
+        }
+    }
+
+    /// #620: the owner opened the full window. The grant alert is asked exactly where it was asked
+    /// before (once per app version, interactive launches only) and the sheet appears once.
+    private func showDeferredPrompts() {
+        recordPrompts(deferredPrompts.ownerOpenedWindow { prompt in
+            switch prompt {
+            case .grantAlert:
+                guard launchKind == .interactive else { return false }
+                SingleKeyTrigger.requestGrantIfNeeded(for: launchKind, version: model.shortcutGrantVersion)
+                return true
+            case .gettingStarted:
+                guard window != nil, NativeGettingStartedOnce.consume(UserDefaults.standard) else { return false }
+                showGettingStarted()
+                return true
+            }
+        })
+    }
     @objc private func showGettingStarted() {
         show()
         guard gettingStartedSheet == nil else { return }
@@ -1191,16 +1259,18 @@ struct RootView: View {
         case .listening, .speaking, .muted: model.ringRebuildSettled()
         default: break
         }
-        switch state {
-        case .listening: presence.ready(generation)
-        case .speaking:
-            presence.ready(generation)
+        switch state.presenceMove {
+        case .ready: presence.ready(generation)
         case .failed: presence.fail(generation)
         case .ended:
             // #589: the owner's own sentence ended this call, so presence closes it as her voice stop and the
             // goodbye sounds. Any other ending is a session that ended, which presence records as it always has.
             presence.endAfterHostTerminal(voiceStop: model.live?.hostVoiceStop == true, generation: generation)
-        case .idle, .connecting, .muted, .outcomeUnknown, .pausedForInput, .rebuilding: break
+        case .uncertain:
+            // #613: a socket that closed without a terminal frame leaves no live microphone, so presence
+            // goes cold now. It never reconnects to find out what the host thinks.
+            presence.sessionUncertain(generation)
+        case .none: break
         }
     }
     /// The FULL window's "Show the mini orb" button (#311): the page asks through the bridge and
@@ -1358,11 +1428,19 @@ struct RootView: View {
     /// the mini orb and keeps running; otherwise the window hides and the app
     /// stays in the Dock.
     func windowShouldClose(_ sender: NSWindow) -> Bool { coordinator.closeFull(); return false }
-    /// A Dock click always presents the FULL window and never leaves the orb
-    /// beside it.
+    /// #619: a Dock click shows the orb. It is its own launch kind with no window, so no window is
+    /// created, nothing becomes key and the app never activates; the menu item, the hotkey and an
+    /// install relaunch still open the full window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        coordinator.presentFull(activating: true)
+        model.appendPresenceReceipt(LaunchKind.reopen.launchRecord)
+        model.forwardLaunchReceipt(LaunchKind.reopen)
+        _ = coordinator.presentOrbFromDock()
         return false
+    }
+    /// #625: right-clicking the Dock icon offers the menu bar's four actions, so the owner can
+    /// open the full app from the Dock itself without a second icon or process.
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        dockMenu.build(muted: model.live?.isMuted == true)
     }
     @objc func quit() { NSApp.terminate(nil) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }

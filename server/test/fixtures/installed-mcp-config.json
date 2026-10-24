@@ -70,16 +70,40 @@
       "command": "<fake-helper-path>"
     },
     {
-      "id": "mongoose",
+      "id": "mongoose-knowledge",
       "unknownClass": "sensitive",
       "transport": "streamable-http",
       "connector": "mongoose",
       "account": "local",
-      "resource": "mongoose",
-      "credentialRef": "mongoose-mcp",
+      "resource": "mongoose:knowledge",
+      "credentialRef": "mongoose-knowledge",
       "enabled": true,
       "allowEgress": true,
-      "url": "https://mongoose.dev.peat-cloud.com/mcp/"
+      "url": "https://mongoose.dev.peat-cloud.com/mcp/knowledge"
+    },
+    {
+      "id": "mongoose-data",
+      "unknownClass": "sensitive",
+      "transport": "streamable-http",
+      "connector": "mongoose",
+      "account": "local",
+      "resource": "mongoose:data",
+      "credentialRef": "mongoose-data",
+      "enabled": true,
+      "allowEgress": true,
+      "url": "https://mongoose.dev.peat-cloud.com/mcp/data"
+    },
+    {
+      "id": "mongoose-crm",
+      "unknownClass": "sensitive",
+      "transport": "streamable-http",
+      "connector": "mongoose",
+      "account": "local",
+      "resource": "mongoose:crm",
+      "credentialRef": "mongoose-crm",
+      "enabled": true,
+      "allowEgress": true,
+      "url": "https://mongoose.dev.peat-cloud.com/mcp/crm"
     },
     {
       "id": "mattermost",

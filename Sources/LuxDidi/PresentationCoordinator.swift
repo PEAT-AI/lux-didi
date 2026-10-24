@@ -9,7 +9,7 @@ enum LaunchActivation: Equatable { case regular, accessory }
 extension LaunchKind {
     var activation: LaunchActivation {
         switch self {
-        case .interactive, .loginItem, .installRelaunch: return .regular
+        case .interactive, .loginItem, .installRelaunch, .reopen: return .regular
         case .installedProof, .selfCheck, .uiProof, .verification: return .accessory
         }
     }
@@ -85,9 +85,12 @@ final class PresentationCoordinator {
     /// ORBFIRST: a show of an orb that is already on screen does nothing. The hotkey, the menu
     /// item and the window's own button repeat it, and a second show cycle was the flicker.
     @discardableResult
-    func presentMini(trigger: SurfaceTrigger = .other) -> MiniPresentOutcome {
+    func presentMini(trigger: SurfaceTrigger = .other, reorder: Bool = false) -> MiniPresentOutcome {
         self.trigger = trigger
-        if miniShown, pending == nil { return .alreadyPresented }
+        if miniShown, pending == nil {
+            guard reorder else { return .alreadyPresented }
+            return commitMini()
+        }
         requestChanged()
         explicitlyHidden = false
         desired = .mini
@@ -120,6 +123,11 @@ final class PresentationCoordinator {
         guard !explicitlyHidden, pending == nil, !miniShown else { return }
         _ = presentMini()
     }
+
+    /// #619: a Dock reopen shows the orb alone. The orb is ordered front even when it is already
+    /// on screen, and no window is created, raised or activated.
+    @discardableResult
+    func presentOrbFromDock() -> MiniPresentOutcome { presentMini(trigger: .other, reorder: true) }
 
     func allowPresenceReveal() {
         explicitlyHidden = false
@@ -192,6 +200,30 @@ final class PresentationCoordinator {
     }
 }
 
+/// #620: the two prompts that wait for the owner. A launch defers them, so a login or cold start
+/// shows no grant alert and no Getting Started sheet; the first explicit open of the FULL window
+/// runs each once and every decision is a content-free enum.
+struct DeferredPrompts {
+    enum Prompt: String, CaseIterable, Equatable {
+        case grantAlert = "grant_alert"
+        case gettingStarted = "getting_started"
+    }
+    enum Decision: String, Equatable { case deferred, shown, skipped }
+
+    private var pending = Set(Prompt.allCases)
+
+    /// A launch shows neither prompt and records the wait instead.
+    func launchDecisions() -> [(Prompt, Decision)] { Prompt.allCases.map { ($0, .deferred) } }
+
+    /// The owner opened the window: each pending prompt runs once, and one whose own
+    /// once-a-version gate refuses is recorded as skipped, never shown.
+    mutating func ownerOpenedWindow(_ show: (Prompt) -> Bool) -> [(Prompt, Decision)] {
+        let due = Prompt.allCases.filter { pending.contains($0) }
+        pending.subtract(due)
+        return due.map { ($0, show($0) ? .shown : .skipped) }
+    }
+}
+
 /// The app's main menu (UI3A-R7). A hand-built NSApplication carries no AppKit
 /// File menu, so Command-W had no binding at all and the window could only be
 /// closed by its traffic light. File > Close Window sends the standard
@@ -220,5 +252,46 @@ enum WindowMenu {
         }()
         main.addItem(fileItem)
         return main
+    }
+}
+
+/// #625: the Dock icon's right-click menu. macOS supplies Quit itself; these four items are the
+/// menu bar's own actions, and Open Naya app is the one Dock interaction that opens the full
+/// window, by the same activating path as the menu item.
+@MainActor
+final class DockMenu: NSObject {
+    static let openTitle = "Open Naya app"
+    static let settingsTitle = "Settings"
+    static let startLiveTitle = "Start Live"
+    /// The menu bar's own Mute title is state dependent, so the Dock menu says the same word.
+    static func muteTitle(muted: Bool) -> String { muted ? "Unmute" : "Mute" }
+
+    private let show: @MainActor () -> Void
+    private let openSettings: @MainActor () -> Void
+    private let startLive: @MainActor () -> Void
+    private let mute: @MainActor () -> Void
+
+    init(show: @escaping @MainActor () -> Void, openSettings: @escaping @MainActor () -> Void,
+         startLive: @escaping @MainActor () -> Void, mute: @escaping @MainActor () -> Void) {
+        self.show = show; self.openSettings = openSettings
+        self.startLive = startLive; self.mute = mute
+    }
+
+    @objc func dockShow() { show() }
+    @objc func dockOpenSettings() { openSettings() }
+    @objc func dockStartLive() { startLive() }
+    @objc func dockMute() { mute() }
+
+    func build(muted: Bool) -> NSMenu {
+        let menu = NSMenu(title: "Dock")
+        func add(_ title: String, _ action: Selector) {
+            menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self
+        }
+        add(Self.openTitle, #selector(dockShow))
+        add(Self.settingsTitle, #selector(dockOpenSettings))
+        menu.addItem(.separator())
+        add(Self.startLiveTitle, #selector(dockStartLive))
+        add(Self.muteTitle(muted: muted), #selector(dockMute))
+        return menu
     }
 }

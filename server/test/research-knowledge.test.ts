@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, candidateSubs, capReply, knowledgeQuery, runResearch, shapeBlock,
+  RESEARCH, ResearchLedger, candidateSubs, capReply, fallbackSelection, knowledgeQuery, runResearch, shapeBlock,
   type ResearchDeps, type ResearchSourceLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -237,7 +237,9 @@ test('ROUTE-1022: a knowledge reply that would overrun the reply budget is trimm
   const h = harness({ execute: async subs => subs.map(call => sub(call.name, longBody, true, call.key)) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline', topic: 'retrieval deadline' }, new AbortController().signal);
   const bytes = JSON.stringify(reply).length;
-  assert.ok(bytes <= RESEARCH.replyLimitChars, `reply bytes ${bytes} over the ${RESEARCH.replyLimitChars} budget`);
+  // #621: the coverage header has its own budget beside the prose envelope, so the whole reply may carry
+  // both bounds and the prose it bounds stays at the reply limit.
+  assert.ok(bytes <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `reply bytes ${bytes} over the ${RESEARCH.replyLimitChars} prose budget plus the coverage header`);
 });
 
 // --- ONE-1023: notes live in the past, and a day filter never hides them -----------------------
@@ -275,4 +277,63 @@ test('ONE-1023: a filtered search that matched nothing retries once without the 
   assert.match(JSON.stringify(reply), /budget review is agreed/u, 'the hit reaches the reply');
   const receipt = h.sources.filter(entry => entry.source === 'knowledge').at(-1);
   assert.equal(receipt?.knowledge?.dayFilter, 'dropped_on_empty', 'the receipt says the filter was dropped');
+});
+
+// #631: the ask names the layer so the router can read it; the layer's name is never a search term. A
+// name whose layer this run cannot read is the ask's subject and stays a term.
+test('#631: the source name an ask speaks is the route, never a knowledge term', () => {
+  const ask = (topic: string, question = topic): string =>
+    String(candidateSubs('knowledge_search', { question, topic, configured: CONFIGURED, evidence: new Map() })[0]?.args['query']);
+  assert.equal(ask('lux knowledge about determinism', 'check lux knowledge about determinism'), 'determinism', 'the named layer is dropped, the subject kept');
+  assert.equal(ask('the vault determinism'), 'determinism', 'the vault is the same layer in another name');
+  assert.equal(ask('dark triad lux knowledge', 'what do we know about dark triad'), 'dark triad', 'a trailing source name is dropped too');
+  assert.equal(ask('mongoose release'), 'mongoose release', 'mongoose is no layer this run may read, so the word is content');
+  // The word that is dropped still routes: the layer the owner named is the one that is read.
+  assert.ok(fallbackSelection('check lux knowledge about determinism', CONFIGURED).actions.some(action => action.kind === 'knowledge_search'), 'the named layer is still read');
+});
+
+test('#631: a mail ask names the layer, and the layer name is no Gmail term', () => {
+  const MAIL_RUN: readonly SourceKind[] = ['knowledge', 'mail', 'mongoose'];
+  const q = (topic: string, question: string): string =>
+    String(candidateSubs('mail_search', { question, topic, configured: MAIL_RUN, evidence: new Map() })[0]?.args['q']);
+  assert.ok(!/\binbox\b/u.test(q('inbox about the invoice', 'what is in my inbox about the invoice').replace(/in:inbox/gu, '')), 'inbox is the layer, not a term');
+  assert.ok(!/\bmongoose\b/u.test(q('mongoose invoice', 'what did the mongoose invoice email say')), 'and a source word the mail run may read is dropped');
+  assert.match(q('mongoose invoice', 'what did the mongoose invoice email say'), /invoice/u, 'the subject still searches');
+});
+
+// #631 R1/R2: the strip is not the topic's alone. A model-authored query, and the fallback recipe, are
+// the same search text and lose the same routing words; a name whose source is off the route stays.
+test('#631: a model-authored knowledge query loses the source word too', () => {
+  const asked = (query: string): string => String(candidateSubs('knowledge_search', {
+    question: 'check lux knowledge about determinism', query, configured: CONFIGURED, evidence: new Map(),
+  })[0]?.args['query']);
+  assert.equal(asked('lux determinism'), 'determinism', 'the model query is stripped like the topic');
+});
+
+test('#631: an authored Gmail query keeps its operators and loses the source words', () => {
+  const MAIL_RUN: readonly SourceKind[] = ['knowledge', 'mail', 'mongoose'];
+  const [call] = candidateSubs('mail_search', {
+    question: 'what did the mongoose invoice email say', query: 'in:inbox mongoose invoice', topic: 'invoice', configured: MAIL_RUN, evidence: new Map(),
+  });
+  assert.equal(String(call?.args['q']), 'in:inbox invoice', 'the operator stays, the layer name goes');
+});
+
+test('#631: the fallback mail recipe keeps a name whose source is off the route', () => {
+  const FALLBACK: readonly SourceKind[] = ['knowledge', 'mail'];
+  const mail = fallbackSelection('what did Helm mail about the Mongoose release', FALLBACK).actions.find(action => action.kind === 'mail_search');
+  assert.match(String(mail?.query), /mongoose/u, 'mongoose is no layer this run may read, so the fallback keeps the word');
+});
+
+// #631 R3/R4: a routing word is stripped in the phrase an ask names its layer with, never as ordinary
+// content ("web analytics" is a subject, "drive growth" is a verb).
+test('#631: a bare source word that is content stays a term', () => {
+  const mail = (topic: string): string => String(candidateSubs('mail_search', {
+    question: 'what did the web analytics thread say', topic, configured: ['knowledge', 'mail', 'web'], evidence: new Map(),
+  })[0]?.args['q']);
+  assert.match(mail('web analytics thread'), /web/u, 'web analytics is a subject, not the layer');
+  const known = (topic: string): string => String(candidateSubs('knowledge_search', {
+    question: topic, topic, configured: CONFIGURED, evidence: new Map(),
+  })[0]?.args['query']);
+  assert.match(known('drive growth plan'), /drive/u, 'drive growth is the verb, not the layer');
+  assert.match(known('chats about the release'), /chats/u, 'chats is the noun, not the layer');
 });

@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,7 @@ import { Store } from '../runtime/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { sha256 } from '../tools/canonical.js';
 import type { ConnectionPolicy, LiveAuthority, RunAcceptance } from '../tools/types.js';
+import type { ConnectorEvidence } from '../connectors/index.js';
 import type { ToolCallIntent } from '../adapters/model/types.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
@@ -21,7 +22,7 @@ import type { CallResult, CompletedResult, EndpointConfig, McpPort, ResultScope 
 import { composeMcpRuntime } from '../host/mcp.js';
 import { GOOGLE_FAMILIES, GOOGLE_TOOLS, createGoogleReader, type GoogleConfig, type GoogleEvidence, type GoogleResult } from '../connectors/index.js';
 import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, type GcalListInput } from '../connectors/google.js';
-import { credentialFailure, decodeGoogleEnvelope, googleToolStatus, identityRefusal, readGooglePayload, renderGoogleTool } from '../tools/google.js';
+import { GOOGLE_ERROR_TABLE, UNKNOWN_HELPER_OWNER_LINE, UNKNOWN_HELPER_REASON, decodeGoogleEnvelope, googleErrorEntry, googleOwnerLine, googleToolStatus, readGooglePayload, renderGoogleTool } from '../tools/google.js';
 import { GMAIL_LIST_MESSAGES } from '../tools/live-shape.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -39,6 +40,10 @@ function config(id: string, mode: string, pidFile: string): EndpointConfig {
 function scratch(): { dir: string; pidFile: string } {
   const dir = mkdtempSync(join(tmpdir(), 'didi-google-'));
   return { dir, pidFile: join(dir, 'child.pid') };
+}
+/** The tool names the fake child has been asked for, in order, so a test can count dispatches. */
+function callsOf(pidFile: string): string[] {
+  try { return readFileSync(`${pidFile}.calls`, 'utf8').split('\n').filter(Boolean); } catch { return []; }
 }
 function adapterFor(registry: McpRegistry, timeoutMs = 4000): McpPort {
   return createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs } });
@@ -220,22 +225,139 @@ test('a typed credential error becomes a configured/auth-needed status, never an
     assert.equal(result.state, 'tool-error');
     if (result.state !== 'tool-error') throw new Error('not a tool error');
     const status = googleToolStatus(result);
-    assert.deepEqual(status, { state: 'configured', reason: 'auth needed: run lux-google-mcp authorize --family calendar' });
-    assert.equal(credentialFailure('credential-missing: no token'), true);
-    assert.equal(credentialFailure('provider-failure: http 500'), false);
-    // The helper's own identity refusal is a named error, never a credentials prompt: the owner has to
-    // know the account is wrong, and the answer carries the code only, no address and no token path.
-    assert.equal(identityRefusal('account_mismatch: the credential belongs to another account'), true);
-    assert.equal(identityRefusal('identity_unverified: no id_token'), true);
-    assert.equal(identityRefusal('credential-missing: LUX_GOOGLE_MCP_TOKEN is not set'), false);
-    const refused = googleToolStatus({ ...result, decodedResult: { content: [{ type: 'text', text: 'account_mismatch: the credential belongs to another account' }] } } as typeof result);
-    assert.deepEqual(refused, { state: 'error', reason: 'identity refused: account_mismatch' });
+    assert.deepEqual(status, { state: 'configured', code: 'credential-missing', reason: 'auth needed: run lux-google-mcp authorize --family calendar to sign in again' });
+    // The helper's own identity refusal is a pinned refusal too, so it is the same auth-needed status:
+    // the owner has to know the account is wrong, and the answer carries the code only, no address and
+    // no token path.
+    const refused = googleToolStatus({ ...result, decodedResult: { content: [{ type: 'text', text: 'account-mismatch: the credential belongs to another account' }] } } as unknown as ConnectorEvidence);
+    assert.deepEqual(refused, { state: 'configured', code: 'account-mismatch', reason: 'auth needed: run lux-google-mcp authorize --family calendar for the account you configured' });
     assert.equal(JSON.stringify(refused).includes('@'), false, 'no address in the status');
     assert.equal(JSON.stringify(refused).includes('/'), false, 'no path in the status');
   } finally {
     await adapter.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// The helper's published failure vocabulary, read from the contract fixture the check copies beside the
+// compiled test. A code the fixture carries without a table row fails here, and so does a table row that
+// disagrees with the contract on pinning.
+const CONTRACT = JSON.parse(readFileSync(join(here, 'fixtures', 'google-error-contract-6ee466f0.json'), 'utf8')) as {
+  codes: { code: string; pinned: boolean; emitted: boolean; surface: 'call' | 'authorize' | 'both' }[];
+};
+
+for (const row of CONTRACT.codes.filter(entry => entry.emitted)) {
+  test(`the published helper code ${row.code} maps to its table row, through the fake child`, async () => {
+    const { dir, pidFile } = scratch();
+    const registry = new McpRegistry();
+    registry.register(config('local-stdio', `code:${row.code}`, pidFile));
+    const adapter = adapterFor(registry);
+    try {
+      const digest = await discoverAndApprove(registry, adapter, 'local-stdio', GOOGLE_TOOLS);
+      const gmail = readerFor(adapter, registry, digest);
+      const result = await gmail.gmailList({});
+      assert.equal(result.state, 'tool-error');
+      if (result.state !== 'tool-error') throw new Error('not a tool error');
+      const status = googleToolStatus(result);
+      const entry = googleErrorEntry(row.code);
+      assert.ok(entry, `the table has a row for ${row.code}`);
+      if (!entry) return;
+      assert.equal(status?.code, row.code, 'the closed reason is the helper code itself');
+      assert.equal(status?.reason, googleOwnerLine(entry, 'gmail'), 'the owner line is the table\'s');
+      assert.equal(entry.pinned, row.pinned, 'the table agrees with the published contract on pinning');
+      assert.equal(status?.state, 'configured', 'a typed helper failure never empties the answer');
+    } finally {
+      await adapter.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test('a scope mismatch asks for a re-authorize naming the family, and the old scope code is gone', async () => {
+  // credential-insufficient-scope was never a code the helper emitted, so it is no longer in any Didi set.
+  assert.equal(googleErrorEntry('credential-insufficient-scope'), undefined);
+  assert.equal(Object.keys(GOOGLE_ERROR_TABLE).includes('credential-insufficient-scope'), false);
+  assert.equal(GOOGLE_ERROR_TABLE['credential-scope-mismatch']?.pinned, true);
+  const { dir, pidFile } = scratch();
+  const registry = new McpRegistry();
+  registry.register(config('local-stdio', 'code:credential-scope-mismatch', pidFile));
+  const adapter = adapterFor(registry);
+  try {
+    const digest = await discoverAndApprove(registry, adapter, 'local-stdio', GOOGLE_TOOLS);
+    const gmail = readerFor(adapter, registry, digest);
+    const result = await gmail.gmailList({});
+    if (result.state !== 'tool-error') throw new Error('not a tool error');
+    const status = googleToolStatus(result);
+    assert.equal(status?.reason, 'auth needed: run lux-google-mcp authorize --family gmail to grant the read scopes again');
+    // A pinned refusal is not retried inside this process: the child saw exactly one dispatch.
+    assert.equal(callsOf(pidFile).length, 1, 'a pinned code is never retried in the same process');
+  } finally {
+    await adapter.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a transient helper code retries once on the next ask', async () => {
+  const { dir, pidFile } = scratch();
+  const registry = new McpRegistry();
+  registry.register(config('local-stdio', 'first:provider-failure', pidFile));
+  const adapter = adapterFor(registry);
+  try {
+    const digest = await discoverAndApprove(registry, adapter, 'local-stdio', GOOGLE_TOOLS);
+    const gmail = readerFor(adapter, registry, digest);
+    const failed = await gmail.gmailList({});
+    if (failed.state !== 'tool-error') throw new Error('not a tool error');
+    assert.equal(googleToolStatus(failed)?.reason, 'the Google service failed just now, ask me again and I will retry');
+    assert.equal(callsOf(pidFile).length, 1, 'a transient code is not retried inside the same ask');
+    const retried = await gmail.gmailList({});
+    assert.equal(retried.state, 'completed');
+    assert.equal(callsOf(pidFile).length, 2, 'the next ask retries once');
+  } finally {
+    await adapter.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an unknown helper code is named and logged content free, never a silent empty result', async () => {
+  const { dir, pidFile } = scratch();
+  const registry = new McpRegistry();
+  registry.register(config('local-stdio', 'code:future-helper-code', pidFile));
+  const adapter = adapterFor(registry);
+  try {
+    const digest = await discoverAndApprove(registry, adapter, 'local-stdio', GOOGLE_TOOLS);
+    const gmail = readerFor(adapter, registry, digest);
+    const result = await gmail.gmailList({});
+    if (result.state !== 'tool-error') throw new Error('not a tool error');
+    const status = googleToolStatus(result);
+    assert.equal(status?.code, UNKNOWN_HELPER_REASON);
+    assert.equal(status?.reason, UNKNOWN_HELPER_OWNER_LINE);
+    assert.equal(status?.state, 'configured');
+    // The log line carries the tool name and the hashed head of the code, never the code or its message.
+    assert.deepEqual(status?.log, { event: 'tool_failure', code: 'connector_error', tool: 'gmail_search_messages', connector: 'google', errorClass: 'Error', messageHead: sha256('future-helper-code') });
+    assert.equal(JSON.stringify(status).includes('future-helper-code'), false);
+    assert.equal(JSON.stringify(status).includes('synthetic helper refusal'), false, 'no helper text anywhere in the status');
+  } finally {
+    await adapter.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the two legacy credential spellings stay accepted until the lux-cli release retires them', () => {
+  // Retire these rows, and this test, when the lux-cli release carrying
+  // tools/google-mcp/error-contract.json at 6ee466f0 (train/google-ipc-1024) is installed: both spellings
+  // exist only in the helper that is installed today, and the contract emits neither.
+  const fresh = GOOGLE_ERROR_TABLE['credential-missing']!;
+  for (const legacy of ['credential-missing-env', 'credential_missing']) {
+    const entry = googleErrorEntry(legacy);
+    assert.ok(entry, `${legacy} is still accepted`);
+    if (!entry) continue;
+    assert.equal(entry.class, fresh.class);
+    assert.equal(entry.pinned, fresh.pinned);
+    assert.equal(entry.ownerLine, fresh.ownerLine);
+    const status = googleToolStatus({ state: 'tool-error', tool: 'gmail_search_messages', decodedResult: { content: [{ type: 'text', text: `${legacy}: no token is available` }] } } as unknown as ConnectorEvidence);
+    assert.equal(status?.code, legacy, 'the legacy spelling is classified, not unknown_helper_code');
+  }
+  assert.equal(CONTRACT.codes.some(entry => entry.code === 'credential_missing'), false, 'the contract does not spell it this way');
 });
 
 test('an ungranted tool name is refused before dispatch even when the remote lists it', async () => {
@@ -359,7 +481,7 @@ test('a credential-failing call flips the calendar endpoint to configured/auth-n
     assert.equal(failed.status, 'completed');
     const flipped = runtime.status().endpoints.find(endpoint => endpoint.id === 'calendar');
     assert.equal(flipped?.state, 'configured');
-    assert.equal(flipped?.error, 'auth needed: run lux-google-mcp authorize --family calendar');
+    assert.equal(flipped?.error, 'auth needed: run lux-google-mcp authorize --family calendar to sign in again');
     const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
     const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };
     assert.match(String(stored.response['text']), /auth needed: run lux-google-mcp authorize --family calendar/);

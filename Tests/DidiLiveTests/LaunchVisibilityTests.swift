@@ -6,7 +6,8 @@ import Foundation
 /// drag band is exercised through a plain NSView hierarchy.
 @main struct LaunchVisibilityTests {
     private static let allKinds: [LaunchKind] = [
-        .interactive, .loginItem, .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification
+        .interactive, .loginItem, .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification,
+        .reopen
     ]
 
     @MainActor static func main() {
@@ -41,11 +42,18 @@ import Foundation
             let expectsWindow = (kind == .installRelaunch || kind == .installedProof
                 || kind == .selfCheck || kind == .uiProof || kind == .verification)
             check(kind.presentsWindowAtLaunch == expectsWindow, "presents window at launch for \(kind)")
+            // #613: the launch line carries the same three facts, so no log reader infers a kind.
+            check(kind.launchRecord["kind"] as? String == kind.rawValue
+                && kind.launchRecord["autoConnects"] as? Bool == kind.autoConnects
+                && kind.launchRecord["windowShown"] as? Bool == kind.presentsWindowAtLaunch
+                && kind.launchRecord["event"] as? String == "launch_kind",
+                "the launch record names kind, autoConnects and windowShown for \(kind)")
         }
         // ORBFIRST: the orb is the default start on every kind that shows UI, and the app
         // window is only created when the owner opens it.
         for kind in allKinds {
-            let showsUI = (kind == .interactive || kind == .loginItem || kind == .installRelaunch)
+            let showsUI = (kind == .interactive || kind == .loginItem || kind == .installRelaunch
+                || kind == .reopen)
             check(kind.presentsOrbAtLaunch == showsUI, "presents the orb at launch for \(kind)")
             check(kind.autoConnects == (kind == .interactive), "auto-connect only on an interactive launch for \(kind)")
             check(kind.createsWindowAtLaunch == kind.presentsWindowAtLaunch,
@@ -53,6 +61,13 @@ import Foundation
         }
         check(!LaunchKind.interactive.createsWindowAtLaunch && !LaunchKind.loginItem.createsWindowAtLaunch,
               "no window exists after an interactive or login launch until Open Naya app")
+        // #619: a Dock reopen is its own kind: the orb, never a window, never an activation.
+        check(LaunchKind.reopen.presentsOrbAtLaunch && !LaunchKind.reopen.createsWindowAtLaunch
+            && !LaunchKind.reopen.activates && !LaunchKind.reopen.autoConnects,
+              "a Dock reopen shows the orb and never creates a window or activates")
+        check(LaunchKind.reopen.launchRecord["kind"] as? String == "reopen"
+            && LaunchKind.reopen.launchRecord["windowShown"] as? Bool == false,
+              "the reopen launch line names its own kind with no window")
         // ORBFIRST: auto-connect fires once, after the host is connected and the orb page is
         // hostable, and a refused or failed start never retries.
         check(OrbFirstAutoConnect.decide(kind: .interactive, serviceReady: true, pageHostable: true, attempted: false) == .connect,
@@ -63,7 +78,7 @@ import Foundation
               "auto-connect waits for the orb page the panel hosts")
         check(OrbFirstAutoConnect.decide(kind: .interactive, serviceReady: true, pageHostable: true, attempted: true) == .never,
               "a denied microphone or refused audio never retries auto-connect")
-        for kind in [LaunchKind.loginItem, .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification] {
+        for kind in [LaunchKind.loginItem, .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification, .reopen] {
             check(OrbFirstAutoConnect.decide(kind: kind, serviceReady: true, pageHostable: true, attempted: false) == .never,
                   "a \(kind) launch shows the orb cold and never connects")
         }

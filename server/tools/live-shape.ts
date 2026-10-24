@@ -23,8 +23,20 @@ export const GMAIL_LIST_MESSAGES = 10;
 export const GMAIL_LIST_EXCERPT_CHARS = 300;
 export const CALENDAR_EVENTS = 8;
 export const CALENDAR_EVENT_CHARS = 300;
-/** How many attendee names one event line carries; the rest are "and others" (#574). */
+/** How many attendee names one event line carries; the rest are counted (#574). */
 export const CALENDAR_ATTENDEE_NAMES = 8;
+
+/** #574: as many whole names as the event's own room holds, then the count of the ones left out. */
+function attendeeNamesLine(names: readonly string[], upstreamOmitted: boolean, room: number): string {
+  const head = '  attendees: ';
+  const render = (count: number): string => {
+    const rest = names.length - count;
+    return `${head}${names.slice(0, count).join(', ')}${rest > 0 ? ` and ${rest} others` : upstreamOmitted ? ' and others' : ''}`;
+  };
+  let count = Math.min(names.length, CALENDAR_ATTENDEE_NAMES);
+  while (count > 0 && render(count).length >= room) count -= 1;
+  return count === 0 ? '' : render(count);
+}
 export const MATTERMOST_MESSAGE_CHARS = 250;
 export const MATTERMOST_MESSAGES = 8;
 /** How many ranked channels ever reach the connector-internal projection. A company archive can
@@ -355,11 +367,16 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     // A merged fan-out tags the event with its calendar name; a single-calendar read does not.
     const calendar = field(entry, 'calendar');
     const lines = [`- ${start}, ${title}${location ? `, ${location}` : ''}${calendar ? ` | ${calendar}` : ''}${eventId ? ` [id ${eventId}]` : ''}`];
+    // A header longer than the whole per-event bound is no title but a wall of text, and it is cut as
+    // one with the rest so a hostile fixture cannot blow the result budget.
+    const headerLine = lines[0]!;
+    const titleFits = headerLine.length <= CALENDAR_EVENT_CHARS;
+    const budget = titleFits ? Math.max(0, CALENDAR_EVENT_CHARS - headerLine.length - 1) : 0;
     const attendees = Array.isArray(entry['attendees']) ? entry['attendees'] : [];
     const names = attendees.filter(isRecord).map(a => field(a, 'displayName', 'email')).filter(Boolean);
-    // #574: eight names fit a spoken line; the ninth and beyond are "and others", and the helper's own
-    // attendeesOmitted caps a 25-name list it truncated, so a long list is never spoken as complete.
-    if (names.length) lines.push(`  attendees: ${names.slice(0, CALENDAR_ATTENDEE_NAMES).join(', ')}${names.length > CALENDAR_ATTENDEE_NAMES || entry['attendeesOmitted'] === true ? ' and others' : ''}`);
+    // #574: whole names only, as many as the event's own room holds, and the rest counted, so a long list
+    // is never spoken as complete and no name is ever cut in half.
+    if (names.length) { const attendeeLine = attendeeNamesLine(names, entry['attendeesOmitted'] === true, budget); if (attendeeLine) lines.push(attendeeLine); }
     const organizer = isRecord(entry['organizer']) ? field(entry['organizer'], 'displayName', 'email') : '';
     if (organizer) lines.push(`  organizer: ${organizer}`);
     const conference = field(entry, 'hangoutLink') || (isRecord(entry['conferenceData']) ? 'yes' : '');
@@ -372,12 +389,7 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     if (openLine) lines.splice(1, 0, openLine);
     // #7: the first line is the event's own identity (time, title, place), so it is never the part a
     // cut removes: a long company name survives whole and only the body is trimmed against the bound.
-    const headerLine = lines[0]!;
-    // A header longer than the whole per-event bound is no title but a wall of text, and it is cut as
-    // one with the rest so a hostile fixture cannot blow the result budget.
-    const titleFits = headerLine.length <= CALENDAR_EVENT_CHARS;
     const bodyLines = titleFits ? lines.slice(1) : lines;
-    const budget = titleFits ? Math.max(0, CALENDAR_EVENT_CHARS - headerLine.length - 1) : CALENDAR_EVENT_CHARS;
     const cut = cutAtSentence(bodyLines.join('\n'), budget);
     if (cut.omitted === 0) { const line = lines.join('\n'); normalized.push({ id: eventId, start, line, bodyTruncated: false }); return line; }
     const note = (omitted: number): string => ` [+${omitted} chars]`;
@@ -582,6 +594,10 @@ function stripKnowledgePreamble(raw: string): string {
     return !KNOWLEDGE_HEADER.test(trimmed) && !KNOWLEDGE_METADATA.test(trimmed);
   }).join('\n').replace(/^\n+/u, '');
 }
+/** #580: one canonical ranker line, the shape research's own reader expects. */
+function knowledgeConfidenceMark(confidence: KnowledgeConfidence): string {
+  return `_confidence: ${confidence.confidence}${confidence.top === undefined ? '' : ` · top score: ${confidence.top}`}${confidence.candidates === undefined ? '' : ` · relevant candidate: ${confidence.candidates}`}_`;
+}
 
 function knowledgeHeading(hit: Record<string, unknown>): string {
   const title = field(hit, 'insight_title', 'title', 'name') || `insight ${scalar(hit['id']) || '(untitled)'}`;
@@ -630,7 +646,10 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
     }
   }
   const confidence = knowledgeConfidenceOf(raw);
-  const carry = (result: ShapedResult): ShapedResult => confidence === undefined ? result : { ...result, knowledgeConfidence: confidence };
+  // #580: the ranker line is stripped from the noise, so it rides one canonical line at the head of the
+  // shaped text instead, where research reads it back and voices the hedge. Never invented: only the
+  // fields the server itself sent.
+  const carry = (result: ShapedResult): ShapedResult => confidence === undefined ? result : { ...result, text: `${knowledgeConfidenceMark(confidence)}\n${result.text}`, knowledgeConfidence: confidence };
   const ranked = knowledgeRanked(raw);
   if (ranked) return carry(ranked);
   const clean = stripKnowledgePreamble(raw);

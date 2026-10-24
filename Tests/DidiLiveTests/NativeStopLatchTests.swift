@@ -183,10 +183,9 @@ import Foundation
         let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
         let device = NativeLiveAudioDevice(captureInput: format,
             defaultInput: { (id: "synthetic", name: "Synthetic input") })
-        let authority: (origin: URL, request: NativeLiveRequestBuilder) =
-            (URL(string: "http://127.0.0.1:1")!, { _, _ in throw LiveClientError.unavailable })
-        let conversation = NativeLiveConversation(authority: authority, dictationIsCapturing: { false },
-            logsDirectory: directory, audioDevice: device, closeHook: closeHook)
+        let conversation = NativeLiveConversation(
+            authority: (URL(string: "http://127.0.0.1:1")!, { _, _ in throw LiveClientError.unavailable }),
+            dictationIsCapturing: { false }, logsDirectory: directory, audioDevice: device, closeHook: closeHook)
         return (conversation, device)
     }
 
@@ -208,10 +207,9 @@ import Foundation
         let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
         let device = NativeLiveAudioDevice(captureInput: format,
             defaultInput: { (id: "synthetic", name: "Synthetic input") })
-        let authority: (origin: URL, request: NativeLiveRequestBuilder) =
-            (URL(string: "http://127.0.0.1:1")!, { _, _ in throw LiveClientError.unavailable })
-        let conversation = NativeLiveConversation(authority: authority, dictationIsCapturing: { false },
-            logsDirectory: root, audioDevice: device, latch: latch,
+        let conversation = NativeLiveConversation(
+            authority: (URL(string: "http://127.0.0.1:1")!, { _, _ in throw LiveClientError.unavailable }),
+            dictationIsCapturing: { false }, logsDirectory: root, audioDevice: device, latch: latch,
             closeHook: { _ in await gate.wait(); return nil })
 
         await device.interruptForTesting(LiveClientError.transport)

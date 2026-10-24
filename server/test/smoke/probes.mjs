@@ -350,7 +350,7 @@ function synthClip(text = QUESTION) {
 async function liveTurn({ base, token, epoch, clipPath }) {
   const headers = () => liveHeaders(token, epoch);
   const created = await fetch(base + '/api/v1/live-sessions', { method: 'POST', headers: headers(), body: JSON.stringify({ inputClass: 'ordinary' }) });
-  if (created.status !== 200) return { ok: false, stage: 'create' };
+  if (created.status !== 200) return await createRefusal(base, headers(), created);
   const id = (await created.json()).data.liveSessionId;
   const wav = await readFile(clipPath);
   let offset = 12, pcm = null;
@@ -674,7 +674,7 @@ async function main() {
       const clipPath = synthClip();
       try {
         const voice = await liveTurn({ base, token, epoch, clipPath });
-        report({ id: 'probe4-voice-turn', ok: voice.ok, note: voice.ok ? `tool_result=yes audio_after=${voice.audioAfterResult}B open_after=${voice.openFor}ms lifecycle=${voice.lifecycle}` : `stage=${voice.stage}` });
+        report({ id: 'probe4-voice-turn', ok: voice.ok, note: voice.ok ? `tool_result=yes audio_after=${voice.audioAfterResult}B open_after=${voice.openFor}ms lifecycle=${voice.lifecycle}` : `stage=${voice.stage} status=${voice.status ?? 'n/a'} detail=${voice.detail ?? 'n/a'}` });
       } finally { await rm(clipPath, { force: true }); }
     } catch (error) { report({ id: 'probe4-voice-turn', ok: false, note: String(error && error.message).slice(0, 120) }); }
     try {

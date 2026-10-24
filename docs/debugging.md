@@ -47,6 +47,50 @@ turn's age, whether any audio arrived and the inaudible milliseconds, which is t
 missing. All of it lands under the session's `connection_epoch`; a rebuilt socket gets a new epoch
 and a late receipt from the one it replaced is refused as `STALE_EPOCH`.
 
+## The host.log event catalog
+
+The `event` value of every line in `host.log` is one name from a closed set. The authority is `server/host/log.ts`: each name below is a `value.event === ...` case in its allowlist, and a name that is not there is dropped before the line is written. The catalog is grouped by family; a line that does not appear here is a doc bug, and a new event is added to `log.ts` and to this table in the same change.
+
+| family | events | what it answers |
+| --- | --- | --- |
+| `host` | `host_exit`, `host_resources`, `host_started` | start, exit and a resource sample for the host process itself |
+| `launch` | `launch_kind` | what a start was allowed to do (kind, autoConnects, windowShown) |
+| `live` | `live_answer_audio`, `live_attach_rejected`, `live_context_usage`, `live_dead_air`, `live_dead_air_nudge`, `live_debt`, `live_first_audio`, `live_frame_rejected`, `live_go_away`, `live_handshake`, `live_idle_arm`, `live_instruction_sizes`, `live_interrupted`, `live_mute`, `live_no_pong`, `live_provider_error`, `live_provider_open`, `live_provider_ready`, `live_read_cache`, `live_rebuild`, `live_recovery`, `live_reply_unjournalled`, `live_resumption_fresh`, `live_session_diagnostics`, `live_session_superseded`, `live_stall`, `live_started`, `live_state`, `live_tool_turn`, `live_trace_rejected`, `live_turn_open`, `live_turn_script`, `live_upstream_drop`, `live_upstream_queue`, `live_watchdog` | the call: start, frames, provider open and ready, watchdog, idle arm, state causes, dead air, debt, mute, rebuild, resume, session diagnostics |
+| `voice` | `voice_stop`, `voice_stop_candidate` | the stop gate: a matched stop or a rejected near miss |
+| `turn` | `turn_failed` | a turn that failed, with its closed reason |
+| `playback` | `playback_rearm` | the app asked for playback to be re-armed |
+| `delegation` | `delegation_closed`, `delegation_open` | a delegated response opened and closed, with its provider id and call count |
+| `continuation` | `continuation_deferred` | the single continuation owner skipped or deferred, and why |
+| `provider` | `provider_error_unclassified` | a provider error the adapter could not classify |
+| `openai` | `openai_instructions_size` | the size of the composed OpenAI instruction sections |
+| `gptlive` | `gptlive_append_ack`, `gptlive_delegation_stalled`, `gptlive_setup_error`, `gptlive_tool_output`, `gptlive_turn_complete`, `gptlive_unknown_frame` | the GPT-Live wire: setup error, unknown frame, append ack, tool output, turn complete, stalled delegation |
+| `tool` | `tool_arguments_rejected`, `tool_cancelled`, `tool_ceiling_hit`, `tool_ceiling_late`, `tool_diagnostic_capture`, `tool_failure`, `tool_output_sent`, `tool_redaction` | a tool call: refusal, cancellation, ceiling, redaction, failure, send outcome, diagnostic capture |
+| `research` | `research_call_arrived`, `research_first_answer`, `research_joined`, `research_late_findings`, `research_progress`, `research_refused`, `research_routed`, `research_run`, `research_source`, `research_subcall` | a research run: arrival, routing, sub-calls, sources, first answer, late findings, progress, refusal |
+| `connector` | `connector_connected`, `connector_failure`, `connector_helper_stderr`, `connector_identity`, `connector_recovered`, `connector_recovery_exhausted` | a connector connection: connected, identity, failure, recovered, recovery exhausted, helper stderr |
+| `connection` | `connection_quality` | the connection quality sample of the local socket |
+| `calendar` | `calendar_digest`, `calendar_digest_refreshed`, `calendar_digest_timeout` | the calendar digest: published, refreshed, timed out |
+| `chat` | `chat_timing` | one text chat turn: outcome, rounds, timing |
+| `mattermost` | `mattermost_shape` | the shape of a Mattermost answer, no content |
+| `mongoose` | `mongoose_catalogue_replaced` | the catalogue was replaced after a re-sign-in |
+| `memory` | `memory_note` | a memory note was written |
+| `standing` | `standing_memory_selection` | which standing memory was selected for a prompt |
+| `conversation` | `conversation_summary_injection`, `conversation_summary_recovery` | the conversation summary: injected, recovered |
+| `opener` | `opener_plan` | the opening line plan for a new call |
+| `responses` | `responses_validation_failed` | a provider responses payload failed validation |
+| `session` | `session_end` | a live session ended, with its reason |
+| `client` | `client_diagnostic` | a diagnostic a client reported |
+| `command` | `command_rejected` | a client command was rejected |
+| `commentary` | `commentary_sent`, `commentary_skipped` | a commentary line was sent or skipped |
+| `config` | `config_seeded` | the config was seeded on first start |
+| `consumer` | `consumer_gone_end` | the output consumer went away at the end of a call |
+| `debug` | `debug_journal_removal_failed`, `debug_journal_removed` | the debug journal files were removed, or their removal failed |
+| `native` | `native_action` | a native action was forwarded to the host |
+| `open` | `open_claim_corrected` | an open request was corrected |
+| `thinking` | `thinking_sent` | a thinking line was sent |
+| `uplink` | `uplink_shed` | uplink backpressure shed a frame |
+| `vault` | `vault_write` | a vault note was written |
+| `warm` | `warm_prewarm` | the warm context was prewarmed |
+
 Since release 10 the dead-air recovery is legible from `host.log` alone. `tool_output_sent` carries what
 the adapter reported for the answer (`outcome`: `sent`, `deferred` or `failed`). `live_debt` records the
 audible debt clock as content-free enums and nothing else: `phase: start` with `reason: tool_output` or

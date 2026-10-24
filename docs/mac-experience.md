@@ -1,6 +1,6 @@
 # Mac companion experience
 
-Naya is a regular Mac app (Dock tile, Cmd-Tab entry, menu bar item) whose resting surface is a floating orb in the top right corner. The full window is optional and is created the first time it is asked for. Both surfaces host the service's one shared web UI in WKWebView. Swift does not duplicate Conversation, Today or Memory screens and owns no business store. A compact native voice rail owns consent, lifecycle and Start, Mute and Stop. Note capture and connection details stay native and start collapsed below the shared conversation page. See [companion protocol](companion-protocol.md) for trust and credential boundaries and [architecture](architecture.md) for the whole picture.
+Naya is a regular Mac app (Dock tile, Cmd-Tab entry, menu bar item) whose resting surface is a floating orb in the top right corner. The full window is optional and is created the first time it is asked for. Both surfaces host the service's one shared web UI in WKWebView. Swift does not duplicate Conversation, Today or Memory screens and owns no business store. A compact native voice rail owns consent, lifecycle and Start, Mute and Stop. Note capture and connection details stay native and start collapsed below the shared conversation page. See [companion protocol](native-app.md#native-companion-protocol-and-trust-boundary) for trust and credential boundaries and [architecture](architecture.md) for the whole picture.
 
 ## Launch
 
@@ -9,7 +9,8 @@ What a start may do is decided once, by `LaunchKind` in `SingleInstanceGuard.swi
 - Owner opens the app: the orb appears and one call connects by itself, only when the host is up and the orb page can be shown. A refusal (denied microphone, refused audio owner) is final for that launch, so it never loops.
 - Login item: the orb appears, nothing connects, no capture.
 - Install relaunch (`--install-relaunch`): the orb appears, nothing connects.
-- Dock reopen: the orb is ordered front and nothing else happens. It is its own launch kind, no full window is created, nothing becomes key and the app never activates, so the Dock cannot rearrange the owner's other windows.
+- Dock click on the running app (reopen): the orb is ordered front and nothing else happens. It is its own launch kind, no full window is created, nothing becomes key and the app never activates, so the Dock cannot rearrange the owner's other windows.
+- Dock click that starts the app (cold): this is an interactive launch, so the orb appears and one call connects by itself after the same bounded calendar wait, exactly like opening the app by hand.
 - Proof and self-check launches: no orb, no connect, a window only where the proof drives one; a second instance exits with code 3 so a yielded proof can never read as a pass.
 
 Every launch and every Dock reopen writes one content-free `launch_kind` line carrying the kind, `autoConnects` and `windowShown`, into `native-live.log` and to the host so `host.log` carries it too. A launch kind is never inferred from LaunchServices.
@@ -82,7 +83,7 @@ existing control assertion and expanded whole-window capture. The expected
 accessible controls stay Start recording, Stop recording, Send to Naya and Save
 note.
 No real appdata, permission prompt, live microphone, playback or notification
-is involved. See [the companion protocol](companion-protocol.md) for rejection,
+is involved. See [the companion protocol](native-app.md#native-companion-protocol-and-trust-boundary) for rejection,
 reinstall/relocation and versioned reporting semantics.
 
 ## Protected operator configuration

@@ -30,7 +30,7 @@ The supported composed host is `server/dist/host/index.js`: it injects Domain
 and Chat and serves the built browser shell. The supported standalone
 `server/dist/index.js` / `npm --prefix server start` is runtime-only and does not
 supply that shell or those Domain/Chat capabilities. See
-[service-runtime.md](service-runtime.md); the two entries are not interchangeable.
+[service.md](service.md); the two entries are not interchangeable.
 No tunnel, public deployment, or scheduled task is provided. Production requests
 always go to same-origin `/api/v1`, never a hard-coded remote service.
 
@@ -106,9 +106,9 @@ Focused acceptance covers local Save without model dispatch, failed Save preserv
 waiting, loading, stale revision, date correction, complete/reopen, source
 recall, denied/offline behavior, CSRF/cookie transport, private cache isolation,
 keyboard skip/focus/live regions, locally authored manifest/icon, and overflow
-at 375px/768px. Artifacts default to the ignored, repository-relative
-`web/test-artifacts/` directory. `DIDI_WEB_ARTIFACTS` overrides that directory;
-managed check configuration supplies an explicit private review output path.
+at 375px/768px. Artifacts default to a fresh `didi-proof-*` directory under the system temporary
+directory. `DIDI_ARTIFACT_DIR` (an absolute path) overrides that root; a managed
+check configuration supplies an explicit private review output path.
 The check logs its resolved output directory. No developer home path is baked
 into the client or test source. Actual
 renderer and durations are recorded as JSON. Screenshots require coordinator

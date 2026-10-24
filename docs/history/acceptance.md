@@ -1,6 +1,6 @@
 # Acceptance scenarios and proposed budgets
 
-> Historical document. Written in October 2026 as the planned acceptance scenarios, when no product existed. The checks that actually run today are in [checks.md](checks.md).
+> Historical document. Written in October 2026 as the planned acceptance scenarios, when no product existed. The checks that actually run today are in [checks.md](../checks.md).
 
 Status: proposed acceptance plan on the decided stack (PLAN-R1). No product exists, so no scenario here has been run, and no test command for a product exists yet. This page defines what the first slice must demonstrably do once it is built, and how that evidence is recorded. Failing to meet a scenario is a real outcome; a document saying a scenario passes is not evidence.
 

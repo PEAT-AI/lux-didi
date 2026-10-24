@@ -125,6 +125,7 @@ async function harness(t: TestContext, overrides: {
   model?: string;
   provider?: 'gemini' | 'openai';
   tools?: boolean;
+  releaseEvidenceError?: boolean;
   history?: boolean;
   mattermost?: boolean;
   calendar?: boolean;
@@ -377,6 +378,7 @@ async function harness(t: TestContext, overrides: {
     }
     toolOwner.projectConnection('lux');
     mark('lux', 'lux-knowledge');
+    if (overrides.releaseEvidenceError) toolOwner.releaseEvidence = () => { throw new Error('synthetic evidence release failure'); };
     tools = { ...(overrides.recover ? { recover: overrides.recover } : {}), owner: toolOwner,
       connectionIds: () => [...published],
       status: () => ({ endpoints: endpointStates.map(state => ({ ...state })) }) };
@@ -5858,7 +5860,7 @@ test('#606 the stop window expires after three seconds and resets on model outpu
 
 test('R1 twenty direct requests stop on unfinished fragments with a fake clock', async t => {
   const positives = [
-    'Naya stop listening', 'Naya stop listening now', 'stop listening Naya',
+    'Naya, stop listening', 'Naya stop listening', 'stop listening Naya',
     'Naya shut down', 'Naya please stop listening', 'Naya stop', 'Naya hör auf zuzuhören',
     'Naya, stop', 'Naja stop listening', 'Nayah stop listening', 'Naia stop listening',
     'Nia stop listening', 'Nayer stop listening', 'Nayla stop listening', 'NAYA STOP LISTENING!',
@@ -5982,4 +5984,39 @@ test('R1 admission precedes journal overflow and drops queued host audio', async
   const chunks = [];
   for await (const chunk of attachment.output) chunks.push(chunk);
   assert.equal(chunks.some(chunk => chunk.kind === 'audio'), false, 'previously queued speech is purged');
+});
+
+test('R2 the three named forensic stop shapes terminate before any final marker', async t => {
+  for (const scenario of ['question-after-command', 'recognizer-prefix', 'long-room-turn'] as const) {
+    const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
+    const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+    const session = h.owner.create({ idempotencyKey: `forensic-${scenario}`, inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+    const fragments = scenario === 'question-after-command' ? ['Naya,', 'stop listening.', 'Can you react to stop listening?']
+      : scenario === 'recognizer-prefix' ? ['Nayas.', 'Okay, Naya,', 'stop listening now']
+      : [...Array.from({ length: 21 }, (_, i) => 'room '.repeat(i < 12 ? 4 : 3)), 'naya stop listening now'];
+    for (const text of fragments) {
+      fake.emit({ type: 'inputTranscription', text, finished: false });
+      await settlePort();
+      scheduler.now += scenario === 'long-room-turn' ? 2_000 : 300;
+      scheduler.runDue();
+    }
+    assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'voice_stop' }, scenario);
+  }
+});
+
+
+test('R1 evidence release cannot skip provider close or the typed terminal', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, tools: true, releaseEvidenceError: true });
+  const session = h.owner.create({ idempotencyKey: 'stop-evidence-failure', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const frames: string[] = [];
+  const pump = pumpOutput(recordingSocket(frames), attachment, () => { assert.fail('terminal was skipped'); }, 1_000_000);
+  fake.emit({ type: 'inputTranscription', text: 'Naya stop listening', finished: false });
+  await pump;
+  assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'voice_stop' });
+  assert.equal(frames.filter(frame => frame !== 'binary' && JSON.parse(frame).type === 'terminal').length, 1);
 });

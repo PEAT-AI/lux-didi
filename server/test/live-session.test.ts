@@ -5851,7 +5851,7 @@ test('#606 the stop window expires after three seconds and resets on model outpu
     if (reset === 'silence') { scheduler.now += 3_000; scheduler.runDue(); }
     else fake.emit({ type: 'outputTranscription', text: 'yes', finished: false });
     await settlePort();
-    fake.emit({ type: 'inputTranscription', text: 'stop listening', finished: false });
+    fake.emit({ type: 'inputTranscription', text: 'stop', finished: false });
     await settlePort();
     assert.equal(h.owner.get(session.liveSessionId).terminal, null, reset);
     attachment.close(); await attachment.done;
@@ -5891,7 +5891,7 @@ test('R1 a name at a fragment edge keeps its grace across quiet finals for under
   fake.emit({ type: 'inputTranscription', text: '', finished: true, finalOrigin: 'app_quiet' });
   await settlePort();
   scheduler.now += 2_999; scheduler.runDue();
-  fake.emit({ type: 'inputTranscription', text: 'stop listening', finished: false });
+  fake.emit({ type: 'inputTranscription', text: 'stop', finished: false });
   await settlePort();
   assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
 });
@@ -5903,7 +5903,7 @@ test('#606 modelTurnStarted finalization admits a phrase only visible after join
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
   await attachment.ready;
   fake.emit({ type: 'inputTranscription', text: 'Na', finished: false });
-  fake.emit({ type: 'inputTranscription', text: 'ya stop listening', finished: false });
+  fake.emit({ type: 'inputTranscription', text: 'ya stop', finished: false });
   await settlePort();
   assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'the fragment word boundary hides the name until finalization');
   fake.emit({ type: 'modelTurnStarted' });
@@ -5944,13 +5944,13 @@ test('R1 no false stop from typed or assistant speech, negation, quotation or an
   const cases: { text: string; origin?: 'typed'; output?: boolean; expired?: boolean }[] = [
     { text: 'what happens if I say Naya stop listening' }, { text: 'Naya said stop listening' },
     { text: 'Naya do not stop listening' }, { text: "Naya don't stop" },
-    { text: 'tell Maya to stop listening to podcasts' }, { text: 'stop listening' },
+    { text: 'tell Maya to stop listening to podcasts' }, { text: 'stop listening to podcasts' },
     { text: 'Naya stop listening', origin: 'typed' }, { text: 'Naya stop listening', output: true },
-    { text: 'stop listening', expired: true }, { text: 'Naya why stop listening' },
+    { text: 'stop', expired: true }, { text: 'Naya why stop listening' },
     { text: 'Naya what should I stop listening to' }, { text: 'Naya never stop listening' },
     { text: 'Naya how do I stop listening' }, { text: 'Naya when should I stop listening' },
-    { text: 'Nadia stop listening' }, { text: 'nayas stop listening' },
-    { text: 'please stop listening' }, { text: 'Naya stop listening to podcasts' },
+    { text: 'Nadia said stop listening' }, { text: 'nayas said stop listening' },
+    { text: 'please stop listening to podcasts' }, { text: 'Naya stop listening to podcasts' },
     { text: 'Naya please do not shut down' }, { text: 'Naya if you stop listening' },
   ];
   assert.equal(cases.length, 20);
@@ -6050,4 +6050,25 @@ test('R1 a candidate diagnostic sink cannot prevent admitted stop teardown', asy
   t.after(detach);
   fake.emit({ type: 'inputTranscription', text: 'Naya stop listening', finished: false });
   assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'voice_stop' });
+});
+
+
+test('R3 bare commands close the real fake-provider socket and consumer, not the host owner', async t => {
+  for (const [i, text] of ['stop listening', 'Okay, like stop listening. You need to shut down now.'].entries()) {
+    const h = await harness(t);
+    const { session, attachment } = await attached(h, `bare-stop-${i}`);
+    const provider = h.f.clients[0]!;
+    const closed = new Promise<void>(resolve => provider.once('close', () => resolve()));
+    const frames: string[] = [];
+    const pump = pumpOutput(recordingSocket(frames), attachment, () => { assert.fail('terminal was skipped'); }, 1_000_000);
+    h.f.send({ serverContent: { inputTranscription: { text, finished: false } } });
+    await pump; await closed;
+    assert.equal(provider.readyState, 3, 'no provider socket remains open after admission');
+    assert.equal(h.f.clients.every(client => client.readyState === 3), true);
+    assert.equal((await attachment.done).consumerState, 'ended', 'the microphone uplink consumer is closed');
+    assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
+    const next = h.owner.create({ idempotencyKey: `host-still-running-${i}`, inputClass: 'ordinary' }, h.ctx);
+    assert.equal(next.terminal, null, 'ending a call does not shut down the host owner');
+    assert.equal(frames.filter(frame => frame !== 'binary' && JSON.parse(frame).type === 'terminal').length, 1);
+  }
 });

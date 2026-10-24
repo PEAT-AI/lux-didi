@@ -701,9 +701,11 @@ export function compileMailQuery(question: string, query: string | undefined, no
   const leading = [...flags, ...(person === undefined ? [] : [`from:${person} OR to:${person}`])];
   // E6 (#609): the window the caller's own recipe asked for, so a fallback search is compiled here once.
   const window = asked ?? fallbackWindow;
-  const inbox = fallbackWindow === undefined ? [] : ['in:inbox'];
+  // E6 (#609): the fallback recipe keeps its own order, the inbox and its window first, because that is the
+  // shape the live step and the receipt already speak.
+  if (fallbackWindow !== undefined) return ['in:inbox', ...(window === undefined ? [] : [window]), ...leading, ...terms].join(' ').slice(0, RESEARCH.queryLimitChars);
   if (leading.length === 0 && terms.length === 0) return `in:inbox ${window ?? 'newer_than:14d'}`.slice(0, RESEARCH.queryLimitChars);
-  return [...inbox, ...leading, ...terms, ...(window === undefined ? [] : [window])].join(' ').slice(0, RESEARCH.queryLimitChars);
+  return [...leading, ...terms, ...(window === undefined ? [] : [window])].join(' ').slice(0, RESEARCH.queryLimitChars);
 }
 
 /** The shape of one mail query for a receipt: term count, operators and window, never the words. */

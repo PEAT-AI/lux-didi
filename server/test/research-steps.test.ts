@@ -55,8 +55,7 @@ test('research publishes one live step per actual source read, including mail bo
     assert.equal(starts[0]!.subject, 'happened release freeze');
     // ROUTE-1022 K6: the plan authors the mail query from the question, so the mail step names the query
     // that was really dispatched (starts[1]; starts[2] is the chat read under the plan's own order).
-    // E6 (#609): the fallback recipe is compiled by the same compiler, which puts the window last.
-    assert.equal(starts[1]!.subject, 'in:inbox happened release freeze newer_than:14d');
+    assert.equal(starts[1]!.subject, 'in:inbox newer_than:14d happened release freeze');
     // The end step replaces its own start line, so both share one id.
     for (const [index, start] of starts.entries()) assert.equal(ends[index]!.stepId, start.stepId);
     for (const step of ends) {

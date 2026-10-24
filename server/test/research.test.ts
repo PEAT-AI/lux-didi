@@ -1982,7 +1982,7 @@ test('E6: a fallback inbox search is compiled, so its terms are capped and ORed'
   const selection = fallbackSelection('any mail about the offsite venue inspection budget review card', ['mail'], Date.parse('2026-10-21T05:30:00Z'));
   const mailQuery = selection.actions.find(action => action.kind === 'mail_search')?.query;
   assert.equal(typeof mailQuery, 'string', 'the fallback offers a mail search');
-  assert.match(mailQuery!, /^in:inbox offsite venue inspection budget OR review OR card newer_than:14d$/u, `the fallback window is compiled in: ${mailQuery}`);
+  assert.match(mailQuery!, /^in:inbox newer_than:14d offsite venue inspection budget OR review OR card$/u, `the fallback window is compiled in: ${mailQuery}`);
   assert.match(mailQuery!, /offsite venue inspection budget OR review OR card/u, `three AND terms and the rest ORed: ${mailQuery}`);
 });
 

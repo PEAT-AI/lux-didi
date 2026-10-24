@@ -2034,7 +2034,8 @@ test('WEB-1024: an early answer with two pending readers keeps its final cap and
   const call = runResearch(h.deps, { action: 'start', question: 'what is remembered and recorded', lookups: [{ source: 'memory', query: 'remembered' }, { source: 'knowledge', query: 'recorded' }, { source: 'chat', query: 'recorded' }] }, new AbortController().signal);
   await tick(); clock.advance(RESEARCH.firstAnswerMs);
   const reply = await call;
-  assert.ok(JSON.stringify(reply).length <= 2500, JSON.stringify(reply).length.toString());
+  // #621: the coverage header has its own budget beside the 2,500 char prose envelope.
+  assert.ok(JSON.stringify(reply).length <= 2_500 + RESEARCH.coverageLimitChars, JSON.stringify(reply).length.toString());
   assert.ok(String(reply['note']).includes(RESEARCH.moreAvailableNote), String(reply['note']));
   assert.deepEqual(reply['pending'], ['knowledge', 'chat']);
   gate.resolve(); await reading;

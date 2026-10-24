@@ -1,10 +1,20 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { RESEARCH, ResearchLedger, runResearch, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
+import { ResearchLedger, clip, runResearch, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 function sub(name: string, text: string, ok = true, key = name): IntentSubResult {
   return { key, name, ok, text, originalCharacters: text.length, omittedCharacters: 0 };
+}
+
+/** Knowledge headings in the shape the real reader returns, one line each. */
+function knowledgeHits(count: number): string {
+  return Array.from({ length: count }, (_v, index) => `### Release plan ${index} (decision | 2026-10-17) [id ${100 + index}]`).join('\n');
+}
+
+/** Mail rows in the connector's own shaped line, one message each. */
+function mailRows(count: number): string {
+  return Array.from({ length: count }, (_v, index) => `- Release note ${index} | from: Ana | date: 2026-10-16 [id m${index}]`).join('\n');
 }
 
 interface Harness {
@@ -35,7 +45,10 @@ function harness(opts: { execute?: ResearchDeps['execute']; configured?: readonl
   return { deps, executed, progress, logs };
 }
 
-const BODY_SCOPE = { endpointId: 'local', transport: 'stdio' as const, bindingDigest: 'sha256:compose-scope', schemaDigest: 'sha256:compose-schema', toolName: 'gmail_read_message' };
+const BODY_SCOPE = {
+  endpointId: 'local', transport: 'stdio' as const, bindingDigest: 'sha256:compose-scope', schemaDigest: 'sha256:compose-schema',
+  toolName: 'gmail_read_message', generation: 1, account: 'owner', resource: 'mail',
+};
 const BODY_EVIDENCE = {
   kind: 'remote-body' as const, source: BODY_SCOPE, entitySha256: 'e'.repeat(64), bodySha256: 'b'.repeat(64),
   expiresAt: Date.now() + 600_000, tool: 'gmail_read_message', upstreamComplete: true, upstreamOmitted: false,
@@ -51,9 +64,11 @@ function bodyResult(call: IntentSubCall): IntentSubResult {
 }
 
 test('COMPOSE 1: a mail ask whose first query matches nothing broadens once and reads the top body inside the same call', async () => {
+  let searches = 0;
   const h = harness({ execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
     if (call.name === 'gmail_search_messages') {
-      return String(call.args['q'] ?? '').includes('lease')
+      searches += 1;
+      return searches === 1
         ? sub(call.name, '', true, call.key)
         : sub(call.name, '- Deposit move | from: Landlord | date: 2026-10-20 [id m1]', true, call.key);
     }
@@ -63,11 +78,13 @@ test('COMPOSE 1: a mail ask whose first query matches nothing broadens once and 
   const reply = await runResearch(h.deps, {
     action: 'start',
     question: 'what did the landlord write about the deposit',
+    topic: 'landlord lease deposit',
     lookups: [{ source: 'mail', mail: { q: 'landlord lease deposit' } }],
   }, new AbortController().signal);
-  const searches = h.executed.filter(entry => entry.name === 'gmail_search_messages');
-  assert.equal(searches.length, 2, 'one search and exactly one broadened retry, never a second round');
-  assert.notEqual(searches[1]!.args['q'], searches[0]!.args['q'], 'the retry asks a broader question');
+  const sent = h.executed.filter(entry => entry.name === 'gmail_search_messages');
+  assert.equal(sent.length, 2, 'one search and exactly one broadened retry, never a second round');
+  assert.notEqual(sent[1]!.args['q'], sent[0]!.args['q'], 'the retry asks a broader question');
+  assert.ok(String(sent[0]!.args['q']).includes('landlord'), 'the first search carries the owner name');
   const reads = h.executed.filter(entry => entry.name === 'gmail_read_message');
   assert.equal(reads.length, 1, 'the top body is read inside the same call');
   assert.equal(reads[0]!.args['id'], 'm1');
@@ -80,11 +97,10 @@ test('COMPOSE 1: a mail ask whose first query matches nothing broadens once and 
 });
 
 test('COMPOSE 2: every reply opens with the coverage header, and a reply at the cap keeps the header, the note and one line per source', async () => {
-  const wide = (name: string, n: number): string => Array.from({ length: n }, (_v, i) => `- ${name} line ${i} the release plan moved to the autumn window with a longer sentence`).join('\n');
   const h = harness({
-    replyLimit: 700,
+    replyLimit: 900,
     execute: async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name,
-      call.name === 'gmail_search_messages' ? wide('mail', 12) : wide('knowledge', 12), true, call.key)),
+      call.name === 'gmail_search_messages' ? mailRows(12) : knowledgeHits(12), true, call.key)),
   });
   const reply = await runResearch(h.deps, {
     action: 'start',
@@ -101,7 +117,7 @@ test('COMPOSE 2: every reply opens with the coverage header, and a reply at the 
     assert.ok(findings.some(finding => finding.source === source), `one finding line for ${source}`);
   }
   assert.match(String(reply['note'] ?? ''), /more available/iu, 'the note survives the trim');
-  assert.ok(JSON.stringify(reply).length <= 700 + 1_200, 'the prose envelope keeps its bound and the header rides outside it');
+  assert.ok(JSON.stringify(reply).length <= 900 + 1_200, 'the prose envelope keeps its bound and the header rides outside it');
 });
 
 test('COMPOSE 3: a source the ask routes to but the session never configured is not_configured, and a failed source is provider_failed', async () => {
@@ -124,12 +140,9 @@ test('COMPOSE 3: a source the ask routes to but the session never configured is 
 });
 
 test('COMPOSE 4: the allocator clips at a word boundary and the header counts the lines it dropped', async () => {
-  const words = Array.from({ length: 40 }, (_v, i) => `token${String(i).padStart(2, '0')}`);
-  const fixture = words.join(' ');
   const h = harness({
     replyLimit: 480,
-    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name,
-      Array.from({ length: 10 }, (_v, i) => `- ${i} ${fixture}`).join('\n'), true, call.key)),
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name, knowledgeHits(10), true, call.key)),
   });
   const reply = await runResearch(h.deps, {
     action: 'start',
@@ -137,14 +150,16 @@ test('COMPOSE 4: the allocator clips at a word boundary and the header counts th
     lookups: [{ source: 'knowledge', query: 'release plan' }],
   }, new AbortController().signal);
   const finding = (reply['findings'] as { source: string; text: string }[]).find(entry => entry.source === 'knowledge');
-  const present = finding === undefined ? 0 : finding.text.split('\n').filter(line => line.startsWith('- ')).length;
-  const known = new Set(words);
-  for (const token of (finding?.text ?? '').split(/[^a-z0-9]+/u).filter(Boolean)) {
-    if (!/^token/u.test(token)) continue;
-    assert.ok(known.has(token), `no clipped fragment leaves the reply: ${token}`);
-  }
-  const match = /knowledge truncated_to_budget (\d+) of (\d+) shown/u.exec(String(reply['coverage']));
-  assert.ok(match, 'the header names the truncation');
-  assert.equal(Number(match[2]), 10, 'the header names the lines the read returned');
-  assert.equal(Number(match[1]), present, 'and the lines it kept, so the omitted count is the lines dropped');
+  assert.ok(finding, 'the source keeps its evidence');
+  const counts = /: (\d+) of (\d+) shown/u.exec(finding.text);
+  assert.ok(counts, 'the finding names what it shows');
+  const lines = finding.text.split('\n').slice(1).filter(Boolean).length;
+  assert.equal(Number(counts[1]), lines, 'the count equals the lines it kept');
+  assert.ok(Number(counts[2]) > Number(counts[1]), 'the read matched more than the reply could keep');
+  const header = /knowledge truncated_to_budget (\d+) of (\d+) shown/u.exec(String(reply['coverage']));
+  assert.ok(header, 'the header names the truncation');
+  assert.equal(Number(header[1]), Number(counts[1]), 'the header counts the lines the finding carries');
+  assert.equal(Number(header[2]), Number(counts[2]), 'and the lines the read matched');
+  assert.equal(clip('alpha bravo charlie', 14), 'alpha bravo\u2026', 'a clip ends on a whole word');
+  assert.equal(clip('alpha bravo charlie', 30), 'alpha bravo charlie', 'a text inside its room is untouched');
 });

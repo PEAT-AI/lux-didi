@@ -2138,6 +2138,8 @@ const OMITTED_NOTE = /^\[omitted:/u;
 const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'company knowledge', web: 'the web' };
 /** Findings order: her own memory and the owner's knowledge base lead, company sources follow. */
 const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'];
+/** #621: the smallest room a floor clip may leave, so one source's last line always fits the bound. */
+const FLOOR_CLIP_CHARS = 8;
 const LINE_CAP: Partial<Record<CandidateKind, number>> = {
   mail_search: RESEARCH.mailLines, mail_open: 2,
   chat_search: RESEARCH.chatLines, chat_thread: 12,
@@ -2145,7 +2147,7 @@ const LINE_CAP: Partial<Record<CandidateKind, number>> = {
   brief: RESEARCH.mailLines,
 };
 
-function clip(text: string, max: number): string {
+export function clip(text: string, max: number): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   if (flat.length <= max) return flat;
   const room = flat.slice(0, Math.max(0, max - 1)).trimEnd();
@@ -2224,7 +2226,10 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
   const searched: CoverageSearched[] = [];
   for (const source of SOURCE_ORDER) {
     if (!configured.includes(source)) continue;
-    if (!run.sourcesDone.has(source) && !run.cutShort.has(source)) continue;
+    // A routed read that matched nothing records the empty search, never sourcesDone, so the header reads
+    // the three the same way.
+    const wasSearched = run.sourcesDone.has(source) || run.cutShort.has(source) || run.emptySearches.has(source);
+    if (!wasSearched) continue;
     if (run.sourcesFailed.has(source)) continue;
     const finding = findings.find(entry => entry.source === source && typeof entry.text === 'string');
     const text = finding?.text ?? '';
@@ -3145,8 +3150,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     if (widest === undefined) break;
     const last = widest.lines[widest.lines.length - 1]!;
     const room = last.length - (rendered - limit) - 1;
-    const clipped = room >= RESEARCH.clipFloorChars ? sentencePrefix(last, room) || clip(last, room) : '';
-    if (clipped.length >= RESEARCH.clipFloorChars) { widest.lines[widest.lines.length - 1] = clipped; continue; }
+    const clipped = room >= FLOOR_CLIP_CHARS ? sentencePrefix(last, room) || clip(last, room) : '';
+    if (clipped.length >= FLOOR_CLIP_CHARS) { widest.lines[widest.lines.length - 1] = clipped; continue; }
+    // The floor wins: a reply slightly over its prose budget still names every source that answered.
+    if (shownOf(widest) <= 1) break;
     widest.lines.pop(); dropped += 1;
   }
   const compactItems = dropped + droppedEvents;
@@ -3837,7 +3844,7 @@ const DEPTH_ASK = /\b(?:what|which)\b[^.?!]*\b(?:writ(?:e|es|ten)?|wrote|sa(?:y|
  */
 async function depthRead(deps: ResearchDeps, run: RunState, question: string, signal: AbortSignal): Promise<void> {
   if (run.bodies.size > 0 || !DEPTH_ASK.test(question)) return;
-  const messages = [...run.mail.values()].flatMap(read => [...read.messages.values()]);
+  const messages = [...mailMessages(run).values()];
   if (messages.length !== 1) return;
   const top = messages[0]!;
   const key = `depth:mail:${top.id}`;

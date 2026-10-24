@@ -39,7 +39,7 @@ Live limits come from the validated profile. When it omits them the defaults are
 - Local ad-hoc or self-signed signing does not prove acceptance on another Mac. There is no notarization, no clean-machine install test and no Windows or Linux package.
 - Deleting a memory removes it from future reads and future call context. A call already running keeps what it has received until it reconnects, and stored answers may quote a deleted memory.
 - Voice, microphone, Google, Mattermost and Mongoose behaviour is proven by fixtures in checks and by owner use. No check talks to a real provider or account; `scripts/smoke.sh` is the one real-path run, after an install.
-- Control Option Space is registered twice in the app (window toggle and orb pill); the first wins and the second is expected to report unavailable. Unverified at runtime.
+- The orb chord (Control Option Space) and the window chord (Control Option Shift Space) are separate registrations; either can be taken by another app, and the menu then reports the shortcut unavailable. Unverified at runtime.
 - Cloud placement, mobile pairing, harness control and broad computer control are designs only; see the historical [roadmap](roadmap.md) and [cloud-deployment](history/cloud-deployment.md).
 
 See the [user guide](user-guide.md), [Mac installation](macos-install.md), [provider configuration](provider-configuration.md), [MCP configuration](mcp-configuration.md) and [Mac experience](mac-experience.md).

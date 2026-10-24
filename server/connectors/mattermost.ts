@@ -387,19 +387,30 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     return { ok: true, ...identity };
   }
 
-  /** The search window: the last 90 days by default, forwarded only for arguments the child declares. */
+  /** The child's own spelling of a search window, in the day shape (`from_date`) the archive takes. */
+  function declaredSearchArguments(): string[] {
+    const definition = port.visibleTools(settings.endpointId).find(entry => entry.name === 'mattermost_search');
+    const schema = definition?.inputSchema;
+    return isRecord(schema) && isRecord(schema['properties']) ? Object.keys(schema['properties']) : [];
+  }
+
+  /**
+   * The search window: the last 90 days by default, forwarded only for arguments the child declares.
+   * #581: the day travels in the child's own `from_date`/`to_date` arguments, and with it `sort=newest`,
+   * so a windowed ask never ranks the whole archive by relevance and filters afterwards.
+   */
   function searchWindow(after: unknown, before: unknown): Record<string, string> | undefined {
     const lower = after === undefined ? new Date(Date.now() - SEARCH_WINDOW_MS).toISOString() : boundedText(after);
     if (lower === undefined) return undefined;
-    const window: Record<string, string> = { after: lower };
+    const day = (iso: string): string => iso.slice(0, 10);
+    const window: Record<string, string> = { after: lower, from_date: day(lower) };
     if (before !== undefined) {
       const upper = boundedText(before);
       if (upper === undefined) return undefined;
       window['before'] = upper;
+      window['to_date'] = day(upper);
     }
-    const definition = port.visibleTools(settings.endpointId).find(entry => entry.name === 'mattermost_search');
-    const schema = definition?.inputSchema;
-    const declared = isRecord(schema) && isRecord(schema['properties']) ? Object.keys(schema['properties']) : [];
+    const declared = declaredSearchArguments();
     for (const key of Object.keys(window)) if (!declared.includes(key)) delete window[key];
     return window;
   }
@@ -519,7 +530,9 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
       const window = searchWindow(input.after, input.before);
       if (window === undefined) return { state: 'refused', reason: 'invalid-window' };
-      return dispatch('mattermost_search', { query, ...bounded, ...window }, signal);
+      // #581: newest first, because a bounded window is a window the owner wants read from the top.
+      const sort = declaredSearchArguments().includes('sort') ? { sort: 'newest' } : {};
+      return dispatch('mattermost_search', { query, ...bounded, ...window, ...sort }, signal);
     },
     async listChannels(input: BoundedInput, signal?: AbortSignal): Promise<MattermostResult> {
       const denied = preflight(registry, settings, 'mattermost_list_channels');

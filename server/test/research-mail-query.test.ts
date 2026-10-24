@@ -379,8 +379,8 @@ test('#564: a triage ask runs the fixed unread scan once and counts what came in
     lookups: [{ source: 'mail', query: 'anything important' }],
   }, new AbortController().signal);
   assert.deepEqual(sent, ['in:inbox is:unread newer_than:2d'], 'one fixed scan, never the question prose');
-  const mail = (reply['findings'] as { text: string }[]).find(finding => finding.text.startsWith('Mail:'))!;
-  assert.match(mail.text, /^Mail: 8 of 10 shown/u, 'the reply counts every unread thread it read');
+  const mail = (reply['findings'] as { text: string }[]).find(finding => finding.text.startsWith('mail:'))!;
+  assert.match(mail.text, /^mail: 8 of 10 shown/u, 'the reply counts every unread thread it read');
   assert.match(mail.text, /from: Dana \| date: Mon, 20 Oct 2026 00:00:00 \+0000/u, 'sender and date ride each item');
   assert.match(mail.text, /Unread thread 1/u, 'the newest first');
   assert.ok(!mail.text.includes('Unread thread 10'), 'the oldest lines are the tail the reply cut');

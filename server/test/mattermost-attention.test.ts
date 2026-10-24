@@ -259,5 +259,5 @@ test('#572: an empty chat triage names the window it read', async () => {
     emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
   };
   const reply = await runResearch(deps, { action: 'start', question: 'anything urgent came in?' }, new AbortController().signal);
-  assert.match(String(reply['note']), /I searched your chat in the last 7 days and found nothing matching\./u);
+  assert.match(String(reply['note']), /I searched your team chat in the last 7 days and found nothing matching\./u);
 });

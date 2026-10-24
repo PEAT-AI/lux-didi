@@ -360,9 +360,12 @@ test('MED-1022: a named meeting and a date word become the connector meeting bou
 test('MED-1022 and ONE-1023: a chat date word compiles only for the day the owner named', () => {
   const now = Date.parse('2026-10-22T06:00:00Z');
   const config = { question: 'what did the team say yesterday', configured: CONFIGURED, evidence: new Map(), nowMs: now, timeZone: 'Asia/Kolkata' };
-  const chat = (query?: string, question?: string): unknown => candidateSubs('chat_search', { ...config, ...(question === undefined ? {} : { question }), ...(query === undefined ? {} : { query }) })[0]?.args['query'];
+  const sub = (query?: string, question?: string): IntentSubCall | undefined => candidateSubs('chat_search', { ...config, ...(question === undefined ? {} : { question }), ...(query === undefined ? {} : { query }) })[0];
+  const chat = (query?: string, question?: string): unknown => sub(query, question)?.args['query'];
   assert.equal(chat(), 'After:2026-10-21', 'the default names a real day, never a word the parser ignores');
-  assert.equal(chat('budget after:yesterday'), 'budget After:2026-10-21');
+  // #581: the day the question named rides the tool's own window argument, never inline query text.
+  assert.equal(chat('budget after:yesterday'), 'budget');
+  assert.equal(sub('budget after:yesterday')?.args['after'], '2026-10-21', 'and the day is still the window it read');
   assert.equal(chat('budget after:someday'), 'budget', 'an operator no calendar can resolve is dropped');
   // ONE-1023: a question that names no day carries no invented operator, and the direction words are filler.
   assert.equal(chat('read full post body current available budget review', 'what did we decide about the budget'), 'budget review', 'instruction words never ride a chat search');

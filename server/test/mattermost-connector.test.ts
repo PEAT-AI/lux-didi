@@ -278,7 +278,7 @@ test('#581: a chat window ask sends from_date and sort newest and no inline Afte
   const searches = f.calls().filter(call => call.name === 'mattermost_search');
   assert.ok(searches.length > 0, 'the chat read reached the child');
   const first = searches[0]!;
-  assert.equal(first.arguments['from_date'], '2026-10-19', 'the window is the Monday the ask named, in the child own argument');
+  assert.equal(first.arguments['from_date'], '2026-10-21', 'the window is the day the ask named, in the child own argument');
   assert.equal(first.arguments['sort'], 'newest', 'a windowed read is newest first');
   assert.ok(!String(first.arguments['query']).includes('After:'), 'no inline operator rides the query text');
   assert.ok((reply['findings'] as unknown[]).length > 0, 'the read reaches the answer');

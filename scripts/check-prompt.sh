@@ -20,12 +20,16 @@ cd "$root"
 mkdir -p "$out/source/adapters/model" "$out/source/adapters/live-voice" "$out/source/adapters/mcp" "$out/source/connectors" "$out/source/test" "$out/source/prompt" "$out/source/tools" "$out/source/host" "$out/source/http" "$out/source/config" "$out/source/contracts" "$out/source/trace" "$out/source/domain"
 cp server/adapters/model/*.ts "$out/source/adapters/model/"
 cp server/adapters/live-voice/types.ts "$out/source/adapters/live-voice/"
+# #562: the prompt content test reads the accepted Live instruction through the adapter, so the adapter
+# and the two modules it imports are staged; nothing else of the adapter tree is compiled.
+cp server/adapters/live-voice/openai.ts server/adapters/live-voice/resample.ts "$out/source/adapters/live-voice/"
 # The adapter types name the host's trace port (O1b-A), so stage the trace kinds and the record door.
 cp server/trace/kinds.ts server/trace/record.ts server/trace/clock.ts "$out/source/trace/"
 cp server/domain/history-reader.ts server/domain/history-lifecycle.ts server/domain/util.ts server/domain/contract.ts "$out/source/domain/"
 cp server/adapters/mcp/port.ts server/adapters/mcp/registry.ts "$out/source/adapters/mcp/"
 cp server/connectors/google.ts "$out/source/connectors/"
 cp server/tools/vault-write.ts "$out/source/tools/"
+cp server/tools/redact.ts "$out/source/tools/"
 cp server/tools/declarations.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts server/tools/open-handles.ts server/tools/types.ts server/tools/history.ts server/tools/diagnostic-input.ts server/tools/canonical.ts server/tools/received-body.ts server/tools/remember.ts server/tools/calendar-window.ts server/tools/web-search.ts "$out/source/tools/"
 cp server/prompt/*.ts "$out/source/prompt/"
 cp server/host/log.ts "$out/source/host/"
@@ -43,7 +47,7 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes \
   --noUnusedLocals --noUnusedParameters --skipLibCheck \
   --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
-  "$out"/source/adapters/model/*.ts "$out"/source/prompt/*.ts "$out"/source/tools/*.ts "$out"/source/test/*.ts
+  "$out"/source/adapters/model/*.ts "$out"/source/adapters/live-voice/openai.ts "$out"/source/prompt/*.ts "$out"/source/tools/*.ts "$out"/source/test/*.ts
 test -f "$out/dist/test/prompt.test.js" # fresh mktemp output; no stale dist accepted
 tests=("$out/dist/test/prompt.test.js" "$out/dist/test/model.test.js" "$out/dist/test/live-persona.test.js" "$out/dist/test/runtime-context.test.js" "$out/dist/test/research.test.js" "$out/dist/test/research-web.test.js" "$out/dist/test/research-routed.test.js" "$out/dist/test/research-shape.test.js")
 # W11-R1: server/test/research-mail-query.test.ts lands from fix/w11-mail-queries-1021; stage and run
@@ -53,3 +57,8 @@ if [[ -f "$out/source/test/research-mail-query.test.ts" ]]; then
 fi
 node_test_files --test-reporter=tap --test-timeout=15000 "${tests[@]}" | tee "$out/results.tap"
 grep -Eq "^# tests [1-9][0-9]*$" "$out/results.tap"
+# #562: the accepted prompt content, byte for byte, over the same strict compile staged above.
+mkdir -p "$out/test/fixtures"
+cp server/test/prompt-content.integration.mjs "$out/test/"
+cp server/test/fixtures/prompt-final.json server/test/fixtures/prompt-character-excluded.json "$out/test/fixtures/"
+node "$out/test/prompt-content.integration.mjs"

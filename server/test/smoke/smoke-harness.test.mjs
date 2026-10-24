@@ -2,13 +2,14 @@
 // must say so. These tests never start the real host, make no model turn and print no credential.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { READY_TIMEOUT_MS, spawnSupervised, stopSupervised, waitForReady } from './strict-supervisor.mjs';
-import { awaitRunReceipt, launchTimeoutMs, noHostResults, researchDriver, researchFailureNote, RESEARCH_DRIVERS, RESEARCH_PROBES, researchTurnResult, sourceSummary, stageProviderConfig, supervisorNote } from './probes.mjs';
+import { awaitRunReceipt, createFailureFields, createRefusal, launchTimeoutMs, noHostResults, researchDriver, researchFailureNote, RESEARCH_DRIVERS, RESEARCH_PROBES, researchTurnResult, sourceSummary, stageProviderConfig, supervisorNote } from './probes.mjs';
 
 const repoRoot = resolve(import.meta.dirname, '../../..');
 const smokeSource = join(repoRoot, 'scripts/smoke.sh');
@@ -267,4 +268,39 @@ test('probes stage the installed provider config into a private temp copy', asyn
   const probeSource = await readFile(join(repoRoot, 'server/test/smoke/probes.mjs'), 'utf8');
   assert.equal((probeSource.match(/stageProviderConfig\(/g) ?? []).length, 2, 'probes.mjs defines the staging step and calls it once');
   assert.match(probeSource, /configDir: config\.configDir/, 'the host spawn takes the staged copy, never the installed dir');
+});
+
+// #302: a refused live create used to report stage=create and nothing else, so an owner could not tell a
+// missing provider from a closed live route. The probe now names the response error code and the live
+// status state. Codes only: the response message and the status body never print.
+test('#302: a refused live create names the response error code and the live status state', async () => {
+  const message = 'provider route is not configured for this owner';
+  const server = createServer((req, res) => {
+    if (req.method === 'POST') {
+      res.writeHead(409, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 'CONFLICT', message }, requestId: 'r-1' }));
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ data: { service: 'live', status: 'error', code: 'LIVE_MODEL_NOT_CONFIGURED', model: 'private-model' } }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const created = await fetch(`${base}/api/v1/live-sessions`, { method: 'POST' });
+    const refused = await createRefusal(base, {}, created);
+    assert.equal(refused.ok, false);
+    assert.equal(refused.stage, 'create', 'the stage is still the refused create');
+    assert.equal(refused.status, 'CONFLICT', 'the response error code is the status');
+    assert.equal(refused.detail, 'live=error:LIVE_MODEL_NOT_CONFIGURED', 'and the live status state code rides the detail');
+    const note = researchFailureNote(refused);
+    assert.ok(note.includes('status=CONFLICT'), note);
+    assert.equal(note.includes(message) || note.includes('private-model'), false, 'codes only, never content');
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('#302: a create refusal with no readable body still names both codes as unreadable', () => {
+  assert.deepEqual(createFailureFields(undefined, undefined), { status: 'unreadable', detail: 'live=unreadable' });
+  assert.deepEqual(createFailureFields({ error: { code: 'TOO_MANY_REQUESTS' } }, { data: { status: 'unconfigured' } }),
+    { status: 'TOO_MANY_REQUESTS', detail: 'live=unconfigured' });
 });

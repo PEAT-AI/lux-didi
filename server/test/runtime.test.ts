@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../runtime/store.js';
+import { digestRead } from '../host/runtime.js';
+import type { GcalListInput, GoogleResult } from '../connectors/google.js';
 import { traceMigrations } from '../trace/schema.js';
 import { Outbox } from '../runtime/outbox.js';
 import type { OutboxEvent } from '../runtime/outbox.js';
@@ -272,4 +274,26 @@ test('unclean process exit releases writer and rolls back open transaction', () 
     const s = new Store(dir, [{owner:'crash',version:1,statements:['CREATE TABLE rows(id TEXT PRIMARY KEY)']}]);
     try { assert.deepEqual(s.transaction(tx => tx.all('SELECT id FROM rows')).map(row => row.id), ['committed']); } finally { s.close(); }
   } finally { rmSync(dir, {recursive:true,force:true}); }
+});
+
+// 556: the digest read the host owns dies with the host. The cache aborts it, and this is the wiring
+// that carries that abort into the connector read instead of leaving it to finish after host_exit.
+test('556: the host abort reaches the connector read the digest asks for', async () => {
+  const seen: (AbortSignal | undefined)[] = [];
+  const reader = {
+    gcalList: async (_input: GcalListInput, signal?: AbortSignal) => {
+      seen.push(signal);
+      return await new Promise<GoogleResult>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      });
+    },
+  };
+  const controller = new AbortController();
+  const reading = digestRead(reader, controller.signal, { now: () => Date.parse('2026-10-19T04:00:00Z'), timeZone: 'Asia/Kolkata' });
+  for (let i = 0; i < 10 && seen.length === 0; i += 1) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(seen.length, 1, 'the connector read is dispatched once');
+  assert.equal(seen[0]!.aborted, false, 'and runs while the host lives');
+  controller.abort();
+  assert.equal((await reading).state, 'failed', 'the cut read comes back, it is not left hanging');
+  assert.equal(seen[0]!.aborted, true, 'the signal the connector holds is the one the host aborted');
 });

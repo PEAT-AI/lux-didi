@@ -5754,3 +5754,26 @@ test('R9: a cancelled dropped-line opener never plays, its late frames stay drop
   assert.ok(said.includes('here is the folder answer'), 'and it answers the owner');
   h.owner.revoke(next.liveSessionId);
 });
+
+test('#589 a finished owner turn on a superseded generation never ends the call', async t => {
+  const h = await harness(t);
+  const { session } = await attached(h);
+  const first = h.f.clients[0]!;
+  // The provider socket dies and the host rebuilds: the session is now generation 1.
+  first.emit('close', 1008);
+  await tick();
+  await tick();
+  h.f.send({ setupComplete: {} });
+  await tick();
+  // A finished turn on the socket the owner already left is not his live words.
+  first.emit('message', Buffer.from(JSON.stringify({ serverContent: { inputTranscription: { text: 'Naya, stop listening', finished: true } } })));
+  await tick();
+  await tick();
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a superseded generation never ends the call');
+  // The live generation is still armed, so the gate itself is not simply dead.
+  h.f.send({ serverContent: { inputTranscription: { text: 'Naya, stop listening', finished: true } } });
+  await tick();
+  await tick();
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' },
+    'the current generation ends the call on the same words');
+});

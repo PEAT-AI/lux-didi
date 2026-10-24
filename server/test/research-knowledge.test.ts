@@ -300,3 +300,40 @@ test('#631: a mail ask names the layer, and the layer name is no Gmail term', ()
   assert.ok(!/\bmongoose\b/u.test(q('mongoose invoice', 'what did the mongoose invoice email say')), 'and a source word the mail run may read is dropped');
   assert.match(q('mongoose invoice', 'what did the mongoose invoice email say'), /invoice/u, 'the subject still searches');
 });
+
+// #631 R1/R2: the strip is not the topic's alone. A model-authored query, and the fallback recipe, are
+// the same search text and lose the same routing words; a name whose source is off the route stays.
+test('#631: a model-authored knowledge query loses the source word too', () => {
+  const asked = (query: string): string => String(candidateSubs('knowledge_search', {
+    question: 'check lux knowledge about determinism', query, configured: CONFIGURED, evidence: new Map(),
+  })[0]?.args['query']);
+  assert.equal(asked('lux determinism'), 'determinism', 'the model query is stripped like the topic');
+});
+
+test('#631: an authored Gmail query keeps its operators and loses the source words', () => {
+  const MAIL_RUN: readonly SourceKind[] = ['knowledge', 'mail', 'mongoose'];
+  const [call] = candidateSubs('mail_search', {
+    question: 'what did the mongoose invoice email say', query: 'in:inbox mongoose invoice', topic: 'invoice', configured: MAIL_RUN, evidence: new Map(),
+  });
+  assert.equal(String(call?.args['q']), 'in:inbox invoice', 'the operator stays, the layer name goes');
+});
+
+test('#631: the fallback mail recipe keeps a name whose source is off the route', () => {
+  const FALLBACK: readonly SourceKind[] = ['knowledge', 'mail'];
+  const mail = fallbackSelection('what did Helm say about the Mongoose release', FALLBACK).actions.find(action => action.kind === 'mail_search');
+  assert.match(String(mail?.query), /mongoose/u, 'mongoose is no layer this run may read, so the fallback keeps the word');
+});
+
+// #631 R3/R4: a routing word is stripped in the phrase an ask names its layer with, never as ordinary
+// content ("web analytics" is a subject, "drive growth" is a verb).
+test('#631: a bare source word that is content stays a term', () => {
+  const mail = (topic: string): string => String(candidateSubs('mail_search', {
+    question: 'what did the web analytics thread say', topic, configured: ['knowledge', 'mail', 'web'], evidence: new Map(),
+  })[0]?.args['q']);
+  assert.match(mail('web analytics thread'), /web/u, 'web analytics is a subject, not the layer');
+  const known = (topic: string): string => String(candidateSubs('knowledge_search', {
+    question: topic, topic, configured: CONFIGURED, evidence: new Map(),
+  })[0]?.args['query']);
+  assert.match(known('drive growth plan'), /drive/u, 'drive growth is the verb, not the layer');
+  assert.match(known('chats about the release'), /chats/u, 'chats is the noun, not the layer');
+});

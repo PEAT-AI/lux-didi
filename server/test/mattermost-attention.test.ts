@@ -13,7 +13,7 @@ import { connectorDescriptor, createMattermostReader, MATTERMOST_ATTENTION, MATT
 import type { AttentionItem, MattermostAttention } from '../connectors/index.js';
 import { projectMattermostResult, renderAttention } from '../tools/mattermost.js';
 import { INTENT_TOOL_NAMES, INTERNAL, planIntent, validateIntent } from '../tools/intent.js';
-import { RESEARCH, ResearchLedger, runResearch, type ResearchDeps, type ResearchRunLog } from '../tools/research.js';
+import { RESEARCH, ResearchLedger, runResearch, type ResearchDeps, type ResearchSourceLog } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -336,7 +336,7 @@ test('#610: the chat research_source line carries the query shape and no query t
     execute: async (subs: readonly IntentSubCall[]) => subs.map(call => ({ key: call.key, name: call.name, ok: true, text: 'a line', originalCharacters: 6, omittedCharacters: 0 })),
     emit: () => {},
     log: () => {},
-    logSource: (event: ResearchRunLog) => { logged.push(event as unknown as Record<string, unknown>); },
+    logSource: (event: ResearchSourceLog) => { logged.push(event as unknown as Record<string, unknown>); },
     ledger: new ResearchLedger(),
   };
   await runResearch(deps, { action: 'start', question: 'latest topics in the dogcation channel' }, new AbortController().signal);

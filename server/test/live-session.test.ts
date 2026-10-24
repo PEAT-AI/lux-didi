@@ -3261,7 +3261,7 @@ test('F4: a barge-in keeps THINKING while the call is still in flight, and her a
 test('W10: a configured endpoint that cannot serve a research read is named unreachable, never dropped', async t => {
   const h = await harness(t, { tools: true, calendar: true, ungrantedCalendar: true });
   await attached(h, 'late-calendar-named');
-  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar', topic: 'what is on my calendar' });
   const reply = lastToolResponse(h);
   assert.match(reply, /calendar: unavailable \(read grant not published\)/, 'the calendar source names its closed reason');
 });
@@ -3269,12 +3269,12 @@ test('W10: a configured endpoint that cannot serve a research read is named unre
 test('W10: a source whose grant publishes after the call started joins the next research call', async t => {
   const h = await harness(t, { tools: true, calendar: true, lateCalendar: true });
   await attached(h, 'late-calendar-join');
-  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar', topic: 'what is on my calendar' });
   assert.match(lastToolResponse(h), /calendar: unavailable/, 'the first call has no calendar grant');
   await h.publishCalendar!();
   h.advance(300);
   const before = h.calls.length;
-  await settleLiveTool(h, 'r2', 'research', { action: 'start', question: 'what is on my calendar' });
+  await settleLiveTool(h, 'r2', 'research', { action: 'start', question: 'what is on my calendar', topic: 'what is on my calendar' });
   const reply = lastToolResponse(h);
   assert.doesNotMatch(reply, /calendar: unavailable/, 'the published grant is offered, not reported broken');
   assert.ok(h.calls.slice(before).some(call => String(call.name).startsWith('calendar_')), `the late source serves the read: calls=${JSON.stringify(h.calls.map(call => call.name))} reply=${reply}`);
@@ -3283,7 +3283,7 @@ test('W10: a source whose grant publishes after the call started joins the next 
 test('U1: research progress reaches the live channel with metadata only', async t => {
   const h = await harness(t, { tools: true, calendar: true });
   await attached(h, 'lookup-progress');
-  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar', topic: 'what is on my calendar' });
   const entries = h.owner.current().entries.filter(entry => entry.kind === 'researchProgress');
   assert.ok(entries.length > 0, 'a research progress entry reaches the live channel');
   const progress = entries.at(-1)!.progress as unknown as Record<string, unknown>;
@@ -3341,7 +3341,7 @@ test('F6: three tool calls in one model message run concurrently and return thre
 test('F6-R1: a successful research call is journaled completed, not error', async t => {
   const h = await harness(t, { tools: true, calendar: true });
   await attached(h, 'research-status');
-  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar', topic: 'what is on my calendar' });
   const result = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
   assert.equal(result?.tool?.status, 'completed', 'a successful research reply is completed, not error');
   const markdown = String(result?.tool?.markdown ?? '');
@@ -3358,7 +3358,7 @@ test('#1020: a refused research call names its reason in the settled projection'
 test('F4: a pending research call is journalled as called, never error', async t => {
   const h = await harness(t, { tools: true, calendar: true });
   await attached(h, 'research-called');
-  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar' });
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question: 'what is on my calendar', topic: 'what is on my calendar' });
   const rows = h.store.transaction(tx => tx.all("SELECT tool_json FROM live_journal WHERE kind='toolCall'", []));
   const tools = rows.map(row => JSON.parse(String(row['tool_json'])) as { name?: string; status?: string });
   const research = tools.find(tool => tool.name === 'research');
@@ -4036,7 +4036,7 @@ test('VOICE-R4: no commentary goes out over three six second beats of one lookup
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, mattermost: true, mattermostWork: () => held, scheduler, limits: openaiLimits });
   const { session } = await openPort(h, 'progress-cap');
   await ownerInput(fake);
-  fake.emit({ type: 'toolCall', calls: [{ id: 'cap1', name: 'research', args: { action: 'start', question: 'Synthetic progress cap', lookups: [{ source: 'chat', query: 'Synthetic progress cap' }] } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'cap1', name: 'research', args: { action: 'start', question: 'Synthetic progress cap', topic: 'Synthetic progress cap', lookups: [{ source: 'chat', query: 'Synthetic progress cap' }] } }] });
   await settlePort();
   for (const beat of [1, 2, 3]) {
     h.advance(6_000); scheduler.runDue(); await settlePort();
@@ -4106,7 +4106,7 @@ test('R6: a source that settles after the first answer is appended once, and sai
   note(h, 'r6-mem', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-quiet');
   await ownerInput(fake);
-  fake.emit({ type: 'toolCall', calls: [{ id: 'lr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'lr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', topic: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'the tool output is written with a source still reading');
@@ -4141,7 +4141,7 @@ test('#472: a late result for a run the model stopped is named a cut, never a so
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   const { session } = await openPort(h, 'late-stopped-472');
   await ownerInput(fake);
-  fake.emit({ type: 'toolCall', calls: [{ id: 'ls1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ls1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', topic: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
   const reply = (fake.toolResponses[0]![0]!.response) as Record<string, unknown>;
@@ -4181,7 +4181,7 @@ test('#472: a late source result reaches the model while the session is live', a
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true, mattermost: true, scheduler, limits: openaiLimits, mattermostWork: () => held });
   const { session } = await openPort(h, 'late-delivery-472');
   await ownerInput(fake);
-  fake.emit({ type: 'toolCall', calls: [{ id: 'ld1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ld1', name: 'research', args: { action: 'start', question: 'what is on my calendar today', topic: 'what is on my calendar today', lookups: [{ source: 'calendar', query: 'today' }, { source: 'chat', query: 'standup' }] } }] });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'the first answer goes out with chat still reading');
@@ -4209,7 +4209,7 @@ test('R6: a late finding speaks nothing over an owner who has started a new ques
   note(h, 'r6-mem-busy', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-busy');
   await ownerInput(fake);
-  fake.emit({ type: 'toolCall', calls: [{ id: 'lr2', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'lr2', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', topic: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
   assert.deepEqual(((fake.toolResponses[0]![0]!.response) as Record<string, unknown>)['pending'], ['chat']);
@@ -4241,7 +4241,7 @@ test('R6/B1: a late finding stays silent while the owner speech that began befor
   note(h, 'r6-mem-speech', 'he asked me to remember the dentist on Friday');
   const { session } = await openPort(h, 'late-owner-speech');
   await ownerInput(fake);
-  fake.emit({ type: 'toolCall', calls: [{ id: 'lr3', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'lr3', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', topic: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] });
   await settlePort();
   // She started talking before any answer could go out, and no turn boundary has arrived yet.
   h.advance(3_500); scheduler.runDue(); await settlePort();
@@ -4272,7 +4272,7 @@ test('R6: a Gemini late finding rides the response channel, not a thinking chann
   await attached(h, 'late-gemini');
   const before = toolResponseCount(h);
   await ownerSpoke(h);
-  h.f.send({ toolCall: { functionCalls: [{ id: 'gr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] } });
+  h.f.send({ toolCall: { functionCalls: [{ id: 'gr1', name: 'research', args: { action: 'start', question: 'what did he ask me to remember', topic: 'what did he ask me to remember', lookups: LATE_LOOKUPS } }] } });
   await settlePort();
   h.advance(4_500); scheduler.runDue(); await settlePort();
   for (let i = 0; i < 400 && toolResponseCount(h) === before; i++) await tick();
@@ -4468,7 +4468,7 @@ test('W4: a research-only batch still gets its silent line', async t => {
   const { session } = await openPort(h, 'research-thinking');
   // W4-R2: the tool-call handler must not invent a waiting line for a batch that is one research call.
   await ownerInput(fake);
-  fake.emit({ type: 'toolCall', calls: [{ id: 'w4r2', name: 'research', args: { action: 'start', question: 'Synthetic research batch', sources: ['chat'] } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'w4r2', name: 'research', args: { action: 'start', question: 'Synthetic research batch', topic: 'Synthetic research batch', sources: ['chat'] } }] });
   await settlePort();
   assert.equal(fake.thinking.length, 0, 'the research lookup injects no provider append');
   assert.equal(fake.texts.length, 0, 'and no host text either');
@@ -4488,7 +4488,7 @@ test('review F1/F2: the research lookup, the one the model can call, sends no ho
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, history: true, mattermost: true, scheduler, limits: openaiLimits, beforeTool: () => held, mattermostWork: () => held });
   const { session } = await openPort(h, 'research-progress');
   await ownerInput(fake);
-  fake.emit({ type: 'toolCall', calls: [{ id: 'r1', name: 'research', args: { action: 'start', question: 'what did the team say about the budget', sources: ['chat'] } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'r1', name: 'research', args: { action: 'start', question: 'what did the team say about the budget', topic: 'what did the team say about the budget', sources: ['chat'] } }] });
   await settlePort();
   assert.equal(fake.thinking.length, 0, 'silent truth goes out for a research lookup');
   assert.equal(fake.texts.length, 0, 'the host says nothing while the lookup runs');
@@ -4694,7 +4694,7 @@ test('calendar integration: actual Google projector and Live ledger deliver ever
       ? { calendars: [{ id: 'primary', summary: 'Main' }], nextPageToken: 'more-calendars' }
       : args['pageToken'] ? { events: events.slice(12) } : { events: events.slice(0, 12), nextPageToken: 'next-events' } });
     await attached(h, `calendar-complete-${revoked}`);
-    await settleLiveTool(h, 'calendar-start', 'research', { action: 'start', question: 'Synthetic calendar this week', lookups: [{ source: 'calendar', query: 'this week' }] });
+    await settleLiveTool(h, 'calendar-start', 'research', { action: 'start', question: 'Synthetic calendar this week', topic: 'Synthetic calendar this week', lookups: [{ source: 'calendar', query: 'this week' }] });
     const last = (): Record<string, unknown> => {
       const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
       return frame.toolResponse.functionResponses[0]!.response;
@@ -4731,7 +4731,7 @@ test('calendar integration: revocation during a sibling await or final microtask
       if (boundary === 'final-microtask' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('calendar'));
       return result;
     });
-    const response = settleLiveTool(h, 'calendar-race', 'research', { action: 'start', question: 'Synthetic calendar and knowledge', lookups: [{ source: 'calendar', query: 'this week' }, { source: 'knowledge', query: 'synthetic' }] });
+    const response = settleLiveTool(h, 'calendar-race', 'research', { action: 'start', question: 'Synthetic calendar and knowledge', topic: 'Synthetic calendar and knowledge', lookups: [{ source: 'calendar', query: 'this week' }, { source: 'knowledge', query: 'synthetic' }] });
     let entered = false, collected = false;
     void started.promise.then(() => { entered = true; }); void calendarAccepted.promise.then(() => { collected = true; });
     t.after(() => finish.resolve());
@@ -4750,7 +4750,7 @@ test('calendar integration: revocation during a sibling await or final microtask
 test('Mongoose current contract: approved company research reaches the actual SDK through Live source discovery', async t => {
   const h = await harness(t, { tools: true, mongoose: true });
   await attached(h, 'mongoose-configured-research');
-  await settleLiveTool(h, 'company-start', 'research', { action: 'start', question: 'Synthetic company evidence', lookups: [{ source: 'company', query: 'synthetic' }] });
+  await settleLiveTool(h, 'company-start', 'research', { action: 'start', question: 'Synthetic company evidence', topic: 'Synthetic company evidence', lookups: [{ source: 'company', query: 'synthetic' }] });
   assert.equal(h.calls.filter(call => call.name === 'search_mongoose').length, 1, 'an approved company source must be dispatched');
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
   assert.equal((frame.toolResponse.functionResponses[0]!.response['sources'] as Record<string, unknown>)['company'], 'ok');
@@ -4770,7 +4770,7 @@ test('history integration: Live canonical research reads exact sixty-day evidenc
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     return frame.toolResponse.functionResponses[0]!.response;
   };
-  await settleLiveTool(h, 'history-search', 'research', { action: 'start', question: 'What did Mira decide?', lookups: [{ source: 'memory', history: { query: 'Mira', limit: 1 } }, { source: 'knowledge', query: 'synthetic' }] });
+  await settleLiveTool(h, 'history-search', 'research', { action: 'start', question: 'What did Mira decide?', topic: 'What did Mira decide?', lookups: [{ source: 'memory', history: { query: 'Mira', limit: 1 } }, { source: 'knowledge', query: 'synthetic' }] });
   const search = reply(), pages = search['historyPages'] as Record<string, unknown>[];
   assert.ok(pages, JSON.stringify(search)); assert.equal(pages.length, 1);
   const hits = pages[0]!['hits'] as Record<string, unknown>[];
@@ -4812,7 +4812,7 @@ test('history integration: parallel sibling await cannot publish deleted or rela
     t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof authorize>) => {
       const result = await authorize(...args); if (args[1].some(binding => binding.name === 'conversation_history')) collected.resolve(); return result;
     });
-    const running = settleLiveTool(h, 'history-race-call', 'research', { action: 'start', question: 'Mira and project', lookups: [{ source: 'memory', query: 'Mira' }, { source: 'knowledge', query: 'synthetic' }] });
+    const running = settleLiveTool(h, 'history-race-call', 'research', { action: 'start', question: 'Mira and project', topic: 'Mira and project', lookups: [{ source: 'memory', query: 'Mira' }, { source: 'knowledge', query: 'synthetic' }] });
     let local = false, remote = false; void collected.promise.then(() => { local = true; }); void started.promise.then(() => { remote = true; });
     t.after(() => release.resolve());
     for (let n = 0; n < 1000 && !(local && remote); n++) await tick();
@@ -4830,7 +4830,7 @@ test('history integration: parallel sibling await cannot publish deleted or rela
 test('Mongoose evidence projection: grouped SDK hits survive actual Live research adaptation', async t => {
   const h = await harness(t, { tools: true, mongoose: true, mongooseData: { hits: { company: [], offering: [], knowledge: [{ id: 'kb-17', title: 'Synthetic grouped evidence', snippet: 'Synthetic launch delayed to Monday.', status: 'active' }], ticket: [] }, has_more: false, total: 1 } });
   await attached(h, 'mongoose-grouped-research');
-  await settleLiveTool(h, 'grouped-start', 'research', { action: 'start', question: 'Synthetic company evidence', lookups: [{ source: 'company', query: 'synthetic' }] });
+  await settleLiveTool(h, 'grouped-start', 'research', { action: 'start', question: 'Synthetic company evidence', topic: 'Synthetic company evidence', lookups: [{ source: 'company', query: 'synthetic' }] });
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
   assert.equal((frame.toolResponse.functionResponses[0]!.response['sources'] as Record<string, unknown>)['company'], 'ok');
   assert.match(JSON.stringify(frame), /kb-17/); assert.match(JSON.stringify(frame), /Synthetic launch delayed to Monday/);
@@ -4846,7 +4846,7 @@ test('mail integration: exact native query pages and retained remainder reach la
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     return frame.toolResponse.functionResponses[0]!.response;
   };
-  await settleLiveTool(h, 'mail-start', 'research', { action: 'start', question: 'List synthetic mail', lookups: [{ source: 'mail', mail: { q: 'from:sender@example.invalid subject:"precise phrase"', maxResults: 8 } }] });
+  await settleLiveTool(h, 'mail-start', 'research', { action: 'start', question: 'List synthetic mail', topic: 'List synthetic mail', lookups: [{ source: 'mail', mail: { q: 'from:sender@example.invalid subject:"precise phrase"', maxResults: 8 } }] });
   const first = last(); assert.equal(first['error'], undefined); assert.equal(first['canContinue'], true);
   const coverage = first['mailCoverage'] as Record<string, unknown>; assert(coverage); assert.equal(coverage['received'], 13); assert.equal(coverage['shown'], 8); assert.equal(coverage['localRemaining'], 5);
   assert.doesNotMatch(JSON.stringify(first), /private-native-mail-next/);
@@ -4868,7 +4868,7 @@ test('mail integration: delivered consumer cursors are idempotent and Stop inval
       const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
       return frame.toolResponse.functionResponses[0]!.response;
     };
-    await settleLiveTool(h, 'start', 'research', { action: 'start', question: 'List synthetic mail', lookups: [{ source: 'mail', mail: { q: 'subject:cursor', maxResults: 13 } }] });
+    await settleLiveTool(h, 'start', 'research', { action: 'start', question: 'List synthetic mail', topic: 'List synthetic mail', lookups: [{ source: 'mail', mail: { q: 'subject:cursor', maxResults: 13 } }] });
     const first = last(), researchId = first['researchId'], cursor = first['nextCursor']; assert.equal(typeof cursor, 'string');
     await settleLiveTool(h, 'bad-cursor', 'research', { action: 'continue', researchId, cursor: 'not-this-run-cursor' });
     assert.equal(last()['error'], 'continuation_unavailable');
@@ -4895,7 +4895,7 @@ test('mail integration: a failed dispatched native page is terminal and truthful
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     return frame.toolResponse.functionResponses[0]!.response;
   };
-  await settleLiveTool(h, 'start', 'research', { action: 'start', question: 'List synthetic mail', lookups: [{ source: 'mail', query: 'synthetic' }] });
+  await settleLiveTool(h, 'start', 'research', { action: 'start', question: 'List synthetic mail', topic: 'List synthetic mail', lookups: [{ source: 'mail', query: 'synthetic' }] });
   const reply = last(); assert.equal(reply['status'], 'partial'); assert.equal(reply['canContinue'], false);
   assert.equal((reply['mailCoverage'] as Record<string, unknown>)['failed'], true); assert.match(JSON.stringify(reply['findings']), /Received before failure 7/);
   await settleLiveTool(h, 'continue', 'research', { action: 'continue', researchId: reply['researchId'] });
@@ -4908,7 +4908,7 @@ test('mail integration: the deterministic plan shares the native page collector'
   const h = await harness(t, { tools: true, mail: true, knowledgeSearchLimit: 6,
     mailData: (_name, args) => args['pageToken'] ? { messages: messages.slice(8) } : { messages: messages.slice(0, 8), nextPageToken: 'selector-native-next' },
   }); await attached(h, 'mail-selector');
-  try { await settleLiveTool(h, 'selector-start', 'research', { action: 'start', question: 'List anything in my email' }); }
+  try { await settleLiveTool(h, 'selector-start', 'research', { action: 'start', question: 'List anything in my email', topic: 'List anything in my email' }); }
   catch (error) { throw new Error(`Selector source calls: ${JSON.stringify(h.calls)}; ${String(error)}`); }
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
   const reply = frame.toolResponse.functionResponses[0]!.response;
@@ -4931,7 +4931,7 @@ test('mail integration: revocation during a sibling await or final microtask den
       if (boundary === 'final-microtask' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('mail'));
       return result;
     });
-    const pending = settleLiveTool(h, 'mail-race', 'research', { action: 'start', question: 'Synthetic mail and notes', lookups: [{ source: 'mail', query: 'synthetic' }, { source: 'knowledge', query: 'synthetic' }] });
+    const pending = settleLiveTool(h, 'mail-race', 'research', { action: 'start', question: 'Synthetic mail and notes', topic: 'Synthetic mail and notes', lookups: [{ source: 'mail', query: 'synthetic' }, { source: 'knowledge', query: 'synthetic' }] });
     let entered = false, collected = false; void started.promise.then(() => { entered = true; }); void mailAccepted.promise.then(() => { collected = true; });
     t.after(() => finish.resolve());
     for (let n = 0; n < 2000 && !(entered && collected); n++) await tick();
@@ -4951,7 +4951,7 @@ test('mail integration: an unused cursor keeps its original message coordinates 
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     return frame.toolResponse.functionResponses[0]!.response;
   };
-  await settleLiveTool(h, 'start', 'research', { action: 'start', question: 'List synthetic mail', lookups: [{ source: 'mail', mail: { q: 'subject:immutable', maxResults: 21 } }] });
+  await settleLiveTool(h, 'start', 'research', { action: 'start', question: 'List synthetic mail', topic: 'List synthetic mail', lookups: [{ source: 'mail', mail: { q: 'subject:immutable', maxResults: 21 } }] });
   const first = last(), researchId = first['researchId'], cursor = first['nextCursor'];
   await settleLiveTool(h, 'advance-without-cursor', 'research', { action: 'continue', researchId }); const nextCursor = last()['nextCursor'];
   assert.deepEqual((last()['mailMessages'] as { id: string }[]).map(message => message.id), messages.slice(8, 16).map(message => message.id));
@@ -4983,7 +4983,7 @@ test('mail body integration: full received text continues locally once with exac
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     return frame.toolResponse.functionResponses[0]!.response;
   };
-  await settleLiveTool(h, 'body-start', 'research', { action: 'start', question: 'Read the full synthetic message', lookups: [{ source: 'mail', mail: { id: 'full-message' } }] });
+  await settleLiveTool(h, 'body-start', 'research', { action: 'start', question: 'Read the full synthetic message', topic: 'Read the full synthetic message', lookups: [{ source: 'mail', mail: { id: 'full-message' } }] });
   assert(received.length > 22000, 'actual canonical producer must retain the acquired source text'); assert.match(received, /On Monday/);
   const calls = h.calls.filter(call => call.name === 'gmail_read_message'); assert.equal(calls.length, 1); assert.equal((calls[0]!.args as Record<string, unknown>)['format'], 'full');
   const researchId = last()['researchId']; let joined = '', count = 0, next = last()['nextCursor'];
@@ -5008,7 +5008,7 @@ test('mail body integration: completed research Stop releases the canonical host
   const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate);
   let captured: Parameters<typeof original> | undefined;
   t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'gmail_read_message') && result.state === 'allowed') captured = args; return result; });
-  await settleLiveTool(h, 'body-start', 'research', { action: 'start', question: 'Read the full synthetic message', lookups: [{ source: 'mail', mail: { id: 'stop-message' } }] });
+  await settleLiveTool(h, 'body-start', 'research', { action: 'start', question: 'Read the full synthetic message', topic: 'Read the full synthetic message', lookups: [{ source: 'mail', mail: { id: 'stop-message' } }] });
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
   const researchId = frame.toolResponse.functionResponses[0]!.response['researchId']; assert(captured);
   const binding = captured[1].find(binding => binding.name === 'gmail_read_message')!;
@@ -5027,12 +5027,12 @@ test('mail body integration: immutable receipt, metadata opt-out and new-start c
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     return frame.toolResponse.functionResponses[0]!.response;
   };
-  await settleLiveTool(h, 'first-body', 'research', { action: 'start', question: 'Read full mail', lookups: [{ source: 'mail', mail: { id: 'identity' } }] });
+  await settleLiveTool(h, 'first-body', 'research', { action: 'start', question: 'Read full mail', topic: 'Read full mail', lookups: [{ source: 'mail', mail: { id: 'identity' } }] });
   const researchId = last()['researchId'], cursor = last()['nextCursor']; assert(captured); const held = captured;
   await settleLiveTool(h, 'next-body', 'research', { action: 'continue', researchId, cursor }); const nextCursor = last()['nextCursor'];
   await settleLiveTool(h, 'replay-body', 'research', { action: 'continue', researchId, cursor });
   assert.equal(last()['alreadyDelivered'], true); assert.equal(last()['nextCursor'], nextCursor); assert.equal(last()['bodySlices'], undefined); assert.deepEqual(last()['findings'], []);
-  await settleLiveTool(h, 'metadata-only', 'research', { action: 'start', question: 'Read metadata', lookups: [{ source: 'mail', mail: { id: 'identity', format: 'metadata' } }] });
+  await settleLiveTool(h, 'metadata-only', 'research', { action: 'start', question: 'Read metadata', topic: 'Read metadata', lookups: [{ source: 'mail', mail: { id: 'identity', format: 'metadata' } }] });
   assert.equal(last()['bodySlices'], undefined); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 2);
   assert.equal((h.calls.filter(call => call.name === 'gmail_read_message')[1]!.args as Record<string, unknown>)['format'], 'metadata');
   assert.equal(h.toolOwner!.consumeEvidence(held[0], held[1].find(binding => binding.name === 'gmail_read_message')!, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
@@ -5050,7 +5050,7 @@ test('mail body integration: revocation during sibling await and final microtask
       if (boundary === 'final-microtask' && args[1].some(binding => binding.name === 'search_knowledge')) queueMicrotask(() => h.toolRegistry!.revoke('mail'));
       return result;
     });
-    const pending = settleLiveTool(h, 'body-race', 'research', { action: 'start', question: 'Read mail and notes', lookups: [{ source: 'mail', mail: { id: 'revoked-body' } }, { source: 'knowledge', query: 'synthetic' }] });
+    const pending = settleLiveTool(h, 'body-race', 'research', { action: 'start', question: 'Read mail and notes', topic: 'Read mail and notes', lookups: [{ source: 'mail', mail: { id: 'revoked-body' } }, { source: 'knowledge', query: 'synthetic' }] });
     let entered = false, collected = false; void started.promise.then(() => { entered = true; }); void mailAccepted.promise.then(() => { collected = true; }); t.after(() => finish.resolve());
     for (let n = 0; n < 2000 && !(entered && collected); n++) await tick(); assert(entered && collected);
     if (boundary === 'sibling') h.toolRegistry!.revoke('mail'); finish.resolve(); await pending;
@@ -5066,7 +5066,7 @@ test('mail body integration: a source completion after research Stop cannot resu
   const original = h.toolOwner!.resultGate.authorize.bind(h.toolOwner!.resultGate); let captured: Parameters<typeof original> | undefined; let siblingReady = false;
   t.mock.method(h.toolOwner!.resultGate, 'authorize', async (...args: Parameters<typeof original>) => { const result = await original(...args); if (args[1].some(binding => binding.name === 'calendar_list_events') && result.state === 'allowed') siblingReady = true; if (args[1].some(binding => binding.name === 'gmail_read_message') && result.state === 'allowed') captured = args; return result; });
   await ownerSpoke(h);
-  h.f.send({ toolCall: { functionCalls: [{ id: 'pending-body-start', name: 'research', args: { action: 'start', question: 'Read full synthetic mail', lookups: [{ source: 'calendar', query: 'this week' }, { source: 'mail', mail: { id: 'late-stopped' } }] } }] } });
+  h.f.send({ toolCall: { functionCalls: [{ id: 'pending-body-start', name: 'research', args: { action: 'start', question: 'Read full synthetic mail', topic: 'Read full synthetic mail', lookups: [{ source: 'calendar', query: 'this week' }, { source: 'mail', mail: { id: 'late-stopped' } }] } }] } });
   let dispatched = false; void entered.promise.then(() => { dispatched = true; }); for (let n = 0; n < 2000 && !dispatched; n++) await tick(); assert(dispatched);
   const progress = h.owner.listFragments({ liveSessionId: session.liveSessionId, limit: 500 }).fragments.find(fragment => fragment.kind === 'researchProgress'); assert(progress?.text);
   const researchId = (JSON.parse(progress.text) as { researchId: string }).researchId;
@@ -5094,7 +5094,7 @@ test('mail body integration: actual source expiry denies local continuation with
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     return frame.toolResponse.functionResponses[0]!.response;
   };
-  await settleLiveTool(h, 'expiry-start', 'research', { action: 'start', question: 'Read full message', lookups: [{ source: 'mail', mail: { id: 'expiring' } }] });
+  await settleLiveTool(h, 'expiry-start', 'research', { action: 'start', question: 'Read full message', topic: 'Read full message', lookups: [{ source: 'mail', mail: { id: 'expiring' } }] });
   const researchId = last()['researchId'], cursor = last()['nextCursor']; assert(expiresAt > Date.now());
   assert(captured); const changedClock = t.mock.method(Date, 'now', () => expiresAt + 1);
   assert.equal(h.toolOwner!.consumeEvidence(captured[0], captured[1].find(binding => binding.name === 'gmail_read_message')!, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
@@ -5110,7 +5110,7 @@ test('mail body integration: body consumption preserves simultaneous calendar ev
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     return frame.toolResponse.functionResponses[0]!.response;
   };
-  await settleLiveTool(h, 'mixed-start', 'research', { action: 'start', question: 'Read full mail and calendar', lookups: [{ source: 'mail', mail: { id: 'mixed' } }, { source: 'calendar', query: 'this week' }] });
+  await settleLiveTool(h, 'mixed-start', 'research', { action: 'start', question: 'Read full mail and calendar', topic: 'Read full mail and calendar', lookups: [{ source: 'mail', mail: { id: 'mixed' } }, { source: 'calendar', query: 'this week' }] });
   const seen = new Set<string>(), researchId = last()['researchId']; let count = 0;
   for (;;) {
     for (const match of JSON.stringify(last()['findings']).matchAll(/Body sibling event (\d+)/g)) seen.add(match[1]!);
@@ -5128,7 +5128,7 @@ test('Lux body integration: exact received opaque content reaches its retained t
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
     return frame.toolResponse.functionResponses[0]!.response;
   };
-  await settleLiveTool(h, 'lux-start', 'research', { action: 'start', question: 'Read full insight 42', lookups: [{ source: 'knowledge', query: 'Read full insight 42' }] });
+  await settleLiveTool(h, 'lux-start', 'research', { action: 'start', question: 'Read full insight 42', topic: 'Read full insight 42', lookups: [{ source: 'knowledge', query: 'Read full insight 42' }] });
   const researchId = last()['researchId']; let collected = '', count = 0;
   for (;;) {
     const slices = last()['bodySlices'] as { source: string; text: string; offset: number; upstreamComplete: unknown; upstreamOmitted: unknown }[]; assert(Array.isArray(slices) && slices.length, JSON.stringify({ count, calls: h.calls, response: last() }).slice(0, 1800));
@@ -5150,7 +5150,7 @@ test('RUN-R11: a 16,800-character mail body arrives in at most four replies, eve
     return frame.toolResponse.functionResponses[0]!.response;
   };
   await attached(h, 'long-mail-body');
-  await settleLiveTool(h, 'long-start', 'research', { action: 'start', question: 'Read the full mail', lookups: [{ source: 'mail', mail: { id: 'long' } }] });
+  await settleLiveTool(h, 'long-start', 'research', { action: 'start', question: 'Read the full mail', topic: 'Read the full mail', lookups: [{ source: 'mail', mail: { id: 'long' } }] });
   const researchId = String(last()['researchId']); let collected = '', replies = 1, started = -1;
   for (;;) {
     const slices = last()['bodySlices'] as { text: string; offset: number }[] | undefined;
@@ -5175,7 +5175,7 @@ test('VOICE-R4: a research call sends no status line at six seconds', async t =>
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, knowledgeSearchLimit: 20, mattermost: true, mattermostWork: () => held, scheduler, limits: openaiLimits });
   const { session } = await openPort(h, 'progress-typed');
   await ownerInput(fake);
-  fake.emit({ type: 'toolCall', calls: [{ id: 'typed-read', name: 'research', args: { action: 'start', question: 'Synthetic progress lookup', lookups: [{ source: 'chat', query: 'Synthetic progress lookup' }] } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'typed-read', name: 'research', args: { action: 'start', question: 'Synthetic progress lookup', topic: 'Synthetic progress lookup', lookups: [{ source: 'chat', query: 'Synthetic progress lookup' }] } }] });
   for (let n = 0; n < 50 && !h.calls.length; n++) await settlePort();
   assert.equal(h.calls.filter(call => call.name.startsWith('mattermost_')).length, 1, 'one actual SDK chat read');
   assert.equal(h.calls.length, 1, 'one lookups read and no selector round');
@@ -5200,7 +5200,7 @@ test('progress recovery: a new owner question retires pending research speech an
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, knowledgeSearchLimit: 20, mattermost: true, mattermostWork: () => held, scheduler, limits: openaiLimits });
   const { session } = await openPort(h, 'progress-new-question');
   await ownerInput(fake);
-  fake.emit({ type: 'toolCall', calls: [{ id: 'old-read', name: 'research', args: { action: 'start', question: 'Old synthetic question', lookups: [{ source: 'chat', query: 'Old synthetic question' }] } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'old-read', name: 'research', args: { action: 'start', question: 'Old synthetic question', topic: 'Old synthetic question', lookups: [{ source: 'chat', query: 'Old synthetic question' }] } }] });
   for (let n = 0; n < 50 && !h.calls.length; n++) await settlePort(); assert.equal(h.calls.length, 1);
   h.advance(5_000); scheduler.runDue();
   fake.emit({ type: 'inputTranscription', text: 'A different synthetic question', finished: true }); await settlePort();
@@ -5222,7 +5222,7 @@ for (const source of ['mail', 'calendar'] as const) test(`progress recovery: act
   });
   const { session } = await openPort(h, `progress-pages-${source}`);
   await ownerInput(fake);
-  const args = { action: 'start', question: 'Synthetic pages', lookups: [{ source, query: source === 'calendar' ? 'week' : 'subject:synthetic' }] };
+  const args = { action: 'start', question: 'Synthetic pages', topic: 'Synthetic pages', lookups: [{ source, query: source === 'calendar' ? 'week' : 'subject:synthetic' }] };
   fake.emit({ type: 'toolCall', calls: [{ id: 'pages', name: 'research', args }] });
   for (let n = 0; n < 100 && !fake.toolResponses.length; n++) await settlePort();
   assert.equal(fake.toolResponses.length, 1); const first = fake.toolResponses[0]![0]!.response;
@@ -5254,7 +5254,7 @@ test('progress recovery: actual local history is represented and fast work stays
   });
   const { session } = await openPort(h, 'progress-history');
   await ownerInput(fake);
-  fake.emit({ type: 'toolCall', calls: [{ id: 'history', name: 'research', args: { action: 'start', question: 'Synthetic history', lookups: [{ source: 'memory', query: 'violet flags' }] } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'history', name: 'research', args: { action: 'start', question: 'Synthetic history', topic: 'Synthetic history', lookups: [{ source: 'memory', query: 'violet flags' }] } }] });
   for (let n = 0; n < 100 && !fake.toolResponses.length; n++) await settlePort();
   assert.equal(fake.toolResponses.length, 1); assert.match(JSON.stringify(fake.toolResponses[0]![0]!.response), /violet flags/);
   assert.deepEqual((h.owner.current().steps ?? []).map(step => [step.source, step.phase, step.ok]), [['memory', 'end', true]]);
@@ -5271,7 +5271,7 @@ test('VOICE-R4: a slow next mail page sends no status line while it runs', async
   });
   const { session } = await openPort(h, 'progress-next-mail-page');
   await ownerInput(fake);
-  fake.emit({ type: 'toolCall', calls: [{ id: 'mail-pages', name: 'research', args: { action: 'start', question: 'Synthetic mail pages', lookups: [{ source: 'mail', query: 'synthetic' }] } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'mail-pages', name: 'research', args: { action: 'start', question: 'Synthetic mail pages', topic: 'Synthetic mail pages', lookups: [{ source: 'mail', query: 'synthetic' }] } }] });
   for (let n = 0; n < 100 && h.calls.length < 2; n++) await settlePort(); assert.equal(h.calls.length, 2);
   h.advance(5_999); scheduler.runDue(); await settlePort(); assert.deepEqual(fake.commentary, []);
   h.advance(1); scheduler.runDue(); await settlePort();
@@ -5300,7 +5300,7 @@ test('research 469: known stopped run projects error and retained no-wire delive
     assert(projection);
     return { response, projection, journalEntry };
   };
-  const first = await call('start', { action: 'start', question: 'List synthetic continuation', lookups: [{ source: 'mail', mail: { q: 'subject:synthetic', maxResults: 13 } }] });
+  const first = await call('start', { action: 'start', question: 'List synthetic continuation', topic: 'List synthetic continuation', lookups: [{ source: 'mail', mail: { q: 'subject:synthetic', maxResults: 13 } }] });
   assert.equal(first.response['status'], 'partial'); assert.equal(first.projection.status, 'completed');
   assert.equal(h.calls.length, 1); assert.equal(h.owner.current().steps?.length, 1);
   const researchId = first.response['researchId'], cursor = first.response['nextCursor'];
@@ -5318,7 +5318,7 @@ test('research 469: known stopped run projects error and retained no-wire delive
   assert.equal(unknown.response['error'], 'unknown_research_run'); assert.equal(unknown.projection.status, 'error');
   assert.equal(h.calls.length, 1, 'no automatic retry or fabricated source execution');
   t.diagnostic(JSON.stringify({ regression: 'research-469-journal', retained: retained.journalEntry, unavailable: unavailable.journalEntry }));
-  const partial = await call('partial', { action: 'start', question: 'Synthetic unavailable calendar', lookups: [{ source: 'calendar', query: 'today' }] });
+  const partial = await call('partial', { action: 'start', question: 'Synthetic unavailable calendar', topic: 'Synthetic unavailable calendar', lookups: [{ source: 'calendar', query: 'today' }] });
   assert.equal(partial.response['status'], 'partial'); assert.equal(partial.response['error'], undefined); assert.equal(partial.projection.status, 'completed');
   assert.equal(h.calls.length, 1); assert.deepEqual(h.owner.current().steps ?? [], []);
   assert.deepEqual({ error: unavailable.response['error'], projection: unavailable.projection }, { error: 'continuation_unavailable', projection: { name: 'research', status: 'error', markdown: 'research: error (continuation_unavailable)', sources: [] } });
@@ -5453,7 +5453,7 @@ test('W6/H22: a research receipt names the call it answers', async t => {
   const h = await harness(t, { tools: true, calendar: true,
     calendarData: name => name === 'calendar_list_calendars' ? { calendars: [{ id: 'primary', summary: 'Main' }] } : { events: [{ id: 'calendar-event-0', start: '2023-11-15T10:00:00Z', summary: 'Synthetic event 0' }] } });
   const { attachment } = await attached(h, 'research-receipt-call');
-  await settleLiveTool(h, 'research-window', 'research', { action: 'start', question: 'Synthetic calendar this week', lookups: [{ source: 'calendar', query: 'this week' }] });
+  await settleLiveTool(h, 'research-window', 'research', { action: 'start', question: 'Synthetic calendar this week', topic: 'Synthetic calendar this week', lookups: [{ source: 'calendar', query: 'this week' }] });
 
   const receipts = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n')
     .map(line => JSON.parse(line) as Record<string, unknown>)
@@ -5542,7 +5542,7 @@ test('#451: an opener research start before the owner speaks is answered at once
   const h = await harness(t, { tools: true, calendar: true });
   await attached(h, 'opener-gate');
   const started = Date.now();
-  await settleLiveTool(h, 'opener1', 'research', { action: 'start', question: 'what is on my calendar today', sources: ['calendar'] }, { spoke: false });
+  await settleLiveTool(h, 'opener1', 'research', { action: 'start', question: 'what is on my calendar today', topic: 'what is on my calendar today', sources: ['calendar'] }, { spoke: false });
   const elapsed = Date.now() - started;
   assert.equal(h.calls.length, 0, 'no source ran before the owner spoke');
   t.diagnostic(`gated reply in ${elapsed} ms`);
@@ -5552,7 +5552,7 @@ test('#451: an opener research start before the owner speaks is answered at once
   // The owner speaks: the same lookup now runs for real.
   h.f.send({ inputTranscription: 'so what is on my calendar today' });
   await settlePort();
-  await settleLiveTool(h, 'opener2', 'research', { action: 'start', question: 'what is on my calendar today', sources: ['calendar'] });
+  await settleLiveTool(h, 'opener2', 'research', { action: 'start', question: 'what is on my calendar today', topic: 'what is on my calendar today', sources: ['calendar'] });
   assert.ok(h.calls.length > 0, 'after the owner speaks the lookup reaches its source');
 });
 

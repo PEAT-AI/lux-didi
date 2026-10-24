@@ -89,10 +89,10 @@ test('a calendar window is asked for with the primary-calendar scope', () => {
 });
 
 test('candidateSubs uses the authored query and the per-source limits', () => {
-  const knowledge = candidateSubs('knowledge_search', { question: 'raw sentence here', configured: CONFIGURED, evidence: new Map(), query: 'lux didi' });
+  const knowledge = candidateSubs('knowledge_search', { question: 'raw sentence here', topic: 'lux didi', configured: CONFIGURED, evidence: new Map(), query: 'lux didi' });
   assert.equal(knowledge[0]?.args['limit'], RESEARCH.knowledgeHits, 'P5-R1 and 3r K1: six hits with bounded bodies');
-  // MED-1022: the authored terms lead, and the question's own words follow them inside the budget.
-  assert.equal(knowledge[0]?.args['query'], 'lux didi raw sentence here');
+  // #565: the authored query is the search text; the owner's instruction prose never joins it.
+  assert.equal(knowledge[0]?.args['query'], 'lux didi');
   const chat = candidateSubs('chat_search', { question: 'q', configured: CONFIGURED, evidence: new Map(), query: 'after:2026-10-15 release' });
   assert.equal(chat[0]?.args['limit'], RESEARCH.chatLines);
   const mail = candidateSubs('mail_search', { question: 'q', configured: CONFIGURED, evidence: new Map(), query: 'in:inbox newer_than:2d' });
@@ -205,7 +205,7 @@ test('research_subcall matches results by position even when execute keys are co
     execute: async (subs: readonly IntentSubCall[]) => subs.map((call, n) => ({ key: `r0~${n}~${call.key}`, name: call.name, ok: true, text: '- Subject | Sender | Mon | body [id m1]', originalCharacters: 40, omittedCharacters: 0 })),
     emit: () => undefined, log: () => undefined, logSubcall: entry => subcalls.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
   };
-  const reply = await runResearch(deps, { action: 'start', question: 'anything', sources: 'mail' }, new AbortController().signal);
+  const reply = await runResearch(deps, { action: 'start', question: 'anything', topic: 'invoice', sources: 'mail' }, new AbortController().signal);
   assert.equal(subcalls[0]!['ok'], true, 'a composed execute key must still find its result');
   assert.ok((subcalls[0]!['items'] as number) >= 1);
   // F5: the owner named the one source, so the receipt says the hint wrote the query.
@@ -225,7 +225,7 @@ test('ROUTE-1022: a knowledge read is one search call and logs no second hop', a
     })),
     emit: () => undefined, log: () => undefined, logSubcall: entry => subcalls.push(entry as unknown as Record<string, unknown>), ledger: new ResearchLedger(),
   };
-  await runResearch(deps, { action: 'start', question: 'anything' }, new AbortController().signal);
+  await runResearch(deps, { action: 'start', question: 'anything', topic: 'release scope' }, new AbortController().signal);
   assert.equal(subcalls.filter(entry => entry['tool'] === 'search_knowledge').length, 1, 'one knowledge search');
   assert.equal(subcalls.filter(entry => entry['tool'] === 'get_insight').length, 0, 'no get_insight second hop');
 });
@@ -343,16 +343,16 @@ test('MED-1022: the knowledge query drops filler, keeps the spoken name, and tak
 test('MED-1022: a named meeting and a date word become the connector meeting bounds', () => {
   const now = Date.parse('2026-10-22T06:00:00Z');
   const config = { configured: ['knowledge'] as const, evidence: new Map(), nowMs: now, timeZone: 'Asia/Kolkata' };
-  const dated = candidateSubs('knowledge_search', { ...config, question: "what did we decide in yesterday's call about pricing" });
+  const dated = candidateSubs('knowledge_search', { ...config, question: "what did we decide in yesterday's call about pricing", topic: 'yesterday call pricing' });
   assert.equal(dated[0]?.args['meeting_date_from'], '2026-10-21', 'yesterday is resolved in the owner zone');
   assert.equal(dated[0]?.args['meeting_date_to'], '2026-10-21');
   assert.equal('participant' in (dated[0]?.args ?? {}), false, 'a name never becomes a hard participant filter');
-  const noDate = candidateSubs('knowledge_search', { ...config, question: 'what did we decide in the call about pricing' });
+  const noDate = candidateSubs('knowledge_search', { ...config, question: 'what did we decide in the call about pricing', topic: 'call pricing' });
   assert.equal('meeting_date_from' in (noDate[0]?.args ?? {}), false, 'a meeting with no date word is not narrowed');
-  const noMeeting = candidateSubs('knowledge_search', { ...config, question: 'what did we ship yesterday' });
+  const noMeeting = candidateSubs('knowledge_search', { ...config, question: 'what did we ship yesterday', topic: 'shipped yesterday' });
   assert.equal('meeting_date_from' in (noMeeting[0]?.args ?? {}), false, 'a date with no meeting named is not narrowed');
   // T-R5: last week is the previous Monday to Sunday in the owner's zone, not an unresolved window.
-  const lastWeek = candidateSubs('knowledge_search', { ...config, question: "what did we agree in last week's call" });
+  const lastWeek = candidateSubs('knowledge_search', { ...config, question: "what did we agree in last week's call", topic: "last week's call" });
   assert.equal(lastWeek[0]?.args['meeting_date_from'], '2026-10-12', 'Monday of the previous week');
   assert.equal(lastWeek[0]?.args['meeting_date_to'], '2026-10-18', 'and its Sunday');
 });

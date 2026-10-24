@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import { hostClockDomain } from './clock.js';
+import { MAIL_QUERY_OPERATORS } from '../tools/research.js';
 import type { SQLValue, Transaction } from '../contracts/storage.js';
 import {
   CALL_OUTCOMES, COMMAND_KINDS, CONTINUATION_OUTCOMES, EVENT_KINDS, EVENT_SOURCES, PLAYBACK_TERMINATION_REASONS, PROGRESS_REASONS,
@@ -498,4 +499,30 @@ export function liveTracePort(binding: LiveTraceBinding): LiveTracePort {
       }
     },
   };
+}
+
+/** #565: the sources a query shape may name, closed so no other string can reach the row. */
+export const QUERY_SHAPE_SOURCES = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'replies', 'company', 'mongoose', 'web'] as const;
+export type QueryShapeSource = (typeof QUERY_SHAPE_SOURCES)[number];
+export interface TraceQueryShape { source: QueryShapeSource; terms: number; operators: readonly string[]; topicWords: number }
+
+/** The closed operator vocabulary a shape may carry is the mail compiler's own list, never a second one. */
+const QUERY_SHAPE_OPERATORS = MAIL_QUERY_OPERATORS;
+
+/**
+ * #565: the only writer for a query shape. Counts, the closed operator names and the source are the whole
+ * row; a term count above zero says a search happened without ever saying what was searched for.
+ */
+export function recordQueryShape(port: TraceWritePort, shape: TraceQueryShape, at: number, researchId?: string): number {
+  if (!isOneOf(QUERY_SHAPE_SOURCES, shape.source)) throw new TraceRecordError('INVALID_VALUE', 'query shape: source is outside its allowlist');
+  if (!isCount(shape.terms) || !isCount(shape.topicWords) || !isCount(at)) throw new TraceRecordError('INVALID_VALUE', 'query shape: terms, topicWords or at is not a count');
+  if (!Array.isArray(shape.operators) || shape.operators.length > 16 || !shape.operators.every(operator => (QUERY_SHAPE_OPERATORS as readonly string[]).includes(operator))) {
+    throw new TraceRecordError('INVALID_VALUE', 'query shape: operator is outside its allowlist');
+  }
+  if (researchId !== undefined && !isId(researchId)) throw new TraceRecordError('INVALID_VALUE', 'query shape: researchId is not an id');
+  return port.transaction(tx => {
+    tx.run('INSERT INTO trace_query_shape(at, research_id, source, terms, operators, topic_words) VALUES (?,?,?,?,?,?)',
+      [at, researchId ?? null, shape.source, shape.terms, shape.operators.join(','), shape.topicWords]);
+    return Number(tx.get('SELECT last_insert_rowid() AS id')!['id']);
+  });
 }

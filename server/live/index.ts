@@ -22,7 +22,7 @@ import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, Rese
 
 import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption, type OpeningOptionKind } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
-import { liveTracePort, record, recordCallResult, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
+import { liveTracePort, record, recordCallResult, recordQueryShape, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
 import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
@@ -2775,6 +2775,14 @@ export class LiveSessionOwner {
         }
       },
       log: entry => hostLogEvent(entry), logJoined: researchId => hostLogEvent({ event: 'research_joined', researchId }), ledger: handle.researchLedger,
+      // #565: one trace row per source call's query shape. A refused write is a diagnostic failure, never
+      // the answer: the owner's read has already succeeded by the time this lands.
+      queryShape: shape => {
+        try { recordQueryShape(this.#store, shape, shape.at, shape.researchId); } catch (error) {
+          hostLogEvent({ event: 'live_trace_rejected', kind: 'query.shape_written', code: error instanceof TraceRecordError ? error.code : 'unknown' });
+          this.#diagnosticFailure(handle, 'trace_write_failed');
+        }
+      },
       // R6: the loop's own clocks (the first answer point, the dead-air beat) run on the owner's scheduler,
       // so a test drives whole seconds instead of sleeping through them.
       schedule: this.#schedule,

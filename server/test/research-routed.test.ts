@@ -154,7 +154,7 @@ test('ROUTE-1022 K11: a model-written mail lookup reads one page, never the whol
     return subs.map(call => sub(call.name, '- Invoice | Landlord | Mon | due soon [id m1]', true, call.key));
   } });
   await runResearch(h.deps, {
-    action: 'start', question: 'agricon mail', lookups: [{ source: 'mail', mail: { q: 'agricon', maxResults: 100 } }],
+    action: 'start', question: 'agricon mail', topic: 'agricon', lookups: [{ source: 'mail', mail: { q: 'agricon', maxResults: 100 } }],
   }, new AbortController().signal);
   const pages = dispatched.filter(args => typeof args['q'] === 'string');
   assert.ok(pages.length > 0, 'the mail lookup dispatched a page');
@@ -164,14 +164,14 @@ test('ROUTE-1022 K11: a model-written mail lookup reads one page, never the whol
 });
 
 test('ROUTE-1022 K5: a brief on a question that names no layer reads knowledge only', async () => {
-  const subs = candidateSubs('brief', { question: 'what do you think about our business model', configured: CONFIGURED, evidence: new Map() });
+  const subs = candidateSubs('brief', { question: 'what do you think about our business model', topic: 'business model', configured: CONFIGURED, evidence: new Map() });
   assert.deepEqual(subs.map(call => call.name), ['search_knowledge'], 'no mail, calendar or chat read');
   assert.equal(JSON.stringify(subs).includes('open loop follow up'), false, 'the default query is gone');
   assert.match(String(subs[0]!.args['query']), /business model/);
 });
 
 test('ROUTE-1022 K5: a brief on a question that names a layer reads that layer too', async () => {
-  const subs = candidateSubs('brief', { question: "what's on my calendar tomorrow", configured: CONFIGURED, evidence: new Map() });
+  const subs = candidateSubs('brief', { question: "what's on my calendar tomorrow", topic: 'calendar', configured: CONFIGURED, evidence: new Map() });
   const names = subs.map(call => call.name);
   assert.ok(names.includes('calendar_list_events'), 'the layer the question names is read');
   assert.equal(names.includes('mattermost_search'), false, 'a layer it did not name is not');
@@ -254,15 +254,15 @@ test('calendar lookups carry a day or a named window', () => {
 });
 
 test('the declared lookups key is valid on start only and matches its validator', () => {
-  assert.equal(validateResearch({ action: 'start', question: 'q' }), true, 'unrouted start stays valid');
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: [{ source: 'memory', query: 'x' }] }), true);
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: [] }), true);
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: [{ source: 'mail' }] }), false);
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: [{ source: 'nonsense', query: 'x' }] }), false);
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: [{ source: 'mail', query: 'x', extra: 1 }] }), false);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't' }), true, 'unrouted start stays valid');
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [{ source: 'memory', query: 'x' }] }), true);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [] }), true);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [{ source: 'mail' }] }), false);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [{ source: 'nonsense', query: 'x' }] }), false);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [{ source: 'mail', query: 'x', extra: 1 }] }), false);
   assert.equal(validateResearch({ action: 'continue', researchId: 'r', lookups: [{ source: 'mail', query: 'x' }] }), false,
     'lookups belong to a start');
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: 'mail' }), false);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: 'mail' }), false);
 });
 
 test('both provider declarations carry lookups, and the Gemini dialect flattens it', () => {

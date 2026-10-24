@@ -885,7 +885,7 @@ test('W6: a fixture session renders every turn closed, every playback on a turn,
 
 test('TOPIC 6 (#565): a query shape row holds the counts, the closed operator tokens and no search word', () => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-trace-shape-'));
-  const store = new Store(dir, traceMigrations);
+  const store = new Store(dir, []);
   try {
     const write = (traceRecord as unknown as { recordQueryShape?: (exec: Store, shape: Record<string, unknown>, at: number, researchId?: string) => number }).recordQueryShape;
     assert.equal(typeof write, 'function', 'the trace store writes one query shape row per source call');

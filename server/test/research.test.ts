@@ -1959,3 +1959,11 @@ test('TRIAGE-R3: a recall ask reads the owner history, never the knowledge store
   assert.ok(!h.executed.some(call => call.name === 'search_knowledge'), 'the knowledge store is not searched for a recall ask');
   assert.match(JSON.stringify(reply['findings']), /remembered: .*pricing deck/u, 'the remembered line reaches the answer');
 });
+
+
+test('WEB-1024: the final pending envelope remains bounded and preserves the more-available sentence', () => {
+  const reply = capReply({ status: 'partial', canContinue: true, note: `Still reading mail, chat. ${RESEARCH.moreAvailableNote}`, findings: [{ source: 'knowledge', text: 'knowledge: 1 of 1 shown\n' + 'This is a complete sentence. '.repeat(120) }], pending: ['mail', 'chat'], pendingBlock: 'A pending reader has more evidence. '.repeat(90) }, 2500);
+  assert.ok(JSON.stringify(reply).length <= 2500);
+  assert.match(String(reply['note']), new RegExp(RESEARCH.moreAvailableNote.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  for (const finding of (reply['findings'] as { text: string }[])) assert.match(finding.text, /[.!?]$/);
+});

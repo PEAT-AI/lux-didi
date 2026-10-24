@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CANDIDATES, RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, fallbackSelection, runResearch, type ResearchDeps, type SourceKind } from '../tools/research.js';
+import { CANDIDATES, RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, fallbackSelection, runResearch, type ResearchDeps, type SourceKind } from '../tools/research.js';
 import { WEB_DEADLINE_MS, WEB_MODEL, WEB_SEARCH_ACTION, createWebSearch, publicQueryOf, webAttribution, webDeadlineMs, webEvidenceText, webFooter, type WebOutcome, type WebSearchPort } from '../tools/web-search.js';
 import { safeEvent } from '../host/log.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -39,13 +39,13 @@ function transportOf(seen: { url?: string; body?: string; signal?: AbortSignal }
   }) as unknown as typeof fetch;
 }
 
-test('a grounded response becomes evidence with claims mapped to at most three sources', async () => {
+test('a grounded response becomes evidence with claims mapped to at most five sources', async () => {
   const seen: { url?: string; body?: string; signal?: AbortSignal }[] = [];
   const port = createWebSearch({ credentials: KEY, transport: transportOf(seen, async () => json(body())), now: () => Date.parse('2026-10-21T12:00:00Z') });
   const outcome = await port.search({ query: 'bridge reopening date', signal: new AbortController().signal });
   assert.equal(outcome.ok, true);
   if (!outcome.ok) return;
-  assert.equal(outcome.evidence.sources.length, 3, 'at most three sources');
+  assert.equal(outcome.evidence.sources.length, 3, 'at most five sources');
   assert.deepEqual(outcome.evidence.sources.map(source => source.title), ['Bridge reopening', 'Council works list', 'Traffic notes']);
   assert.equal(outcome.evidence.sources[1]!.publishedAt, '2026-10-14', 'publication time only when the result supplies it');
   assert.equal(outcome.evidence.sources[0]!.publishedAt, undefined);
@@ -59,18 +59,18 @@ test('a grounded response becomes evidence with claims mapped to at most three s
   assert.match(webEvidenceText(outcome.evidence), /web claim: The bridge reopened to traffic last Tuesday\. \[Bridge reopening\]/);
 });
 
-test('the request body carries only the public query, the search tool and no thinking budget', async () => {
+test('the request body carries only the public query, the search tool and low thinking', async () => {
   const seen: { url?: string; body?: string; signal?: AbortSignal }[] = [];
   const port = createWebSearch({ credentials: KEY, transport: transportOf(seen, async () => json(body())) });
   await port.search({ query: 'council bridge works status', signal: new AbortController().signal });
   const sent = JSON.parse(seen[0]!.body ?? '{}') as Record<string, unknown>;
   assert.deepEqual(sent['tools'], [{ google_search: {} }]);
-  assert.deepEqual((sent['generationConfig'] as Record<string, unknown>)['thinkingConfig'], { thinkingBudget: 0 });
+  assert.deepEqual((sent['generationConfig'] as Record<string, unknown>)['thinkingConfig'], { thinkingLevel: 'low' });
   const query = JSON.stringify(sent['contents']);
   assert.match(query, /council bridge works status/);
   for (const privateText of ['research brief', 'launchpad', 'in:inbox', 'transcript', 'attendee']) assert.equal(JSON.stringify(sent).includes(privateText), false);
   assert.equal(seen[0]!.signal?.aborted, false);
-  assert.equal(WEB_DEADLINE_MS, 4_000);
+  assert.equal(WEB_DEADLINE_MS, 6_000);
 });
 
 test('a question that cannot be separated from private content is reported instead of sent', async () => {
@@ -87,7 +87,7 @@ test('a response without grounding metadata is web_ungrounded, never a success',
   const bare = body() as { candidates: { groundingMetadata?: unknown }[] };
   delete bare.candidates[0]!.groundingMetadata;
   const port = createWebSearch({ credentials: KEY, transport: transportOf([], async () => json(bare)) });
-  assert.deepEqual(await port.search({ query: 'bridge reopening date', signal: new AbortController().signal }), { ok: false, code: 'web_ungrounded' });
+  assert.deepEqual(await port.search({ query: 'bridge reopening date', signal: new AbortController().signal }), { ok: false, code: 'web_insufficient', reason: 'ungrounded' });
 });
 
 test('a transport past the deadline yields web_timeout and is cancelled', async () => {
@@ -319,9 +319,9 @@ test('T-R5: a price question about our own licence is internal, never a web read
 
 // --- N6 (#569): an explicit weather or news ask gets the long web budget ------------------------
 
-test('N6: a weather or news ask takes the 8 s web deadline and every other ask keeps 4 s', () => {
-  assert.equal(webDeadlineMs('what is the weather in Pune tomorrow'), 8_000);
-  assert.equal(webDeadlineMs('latest news on the bridge closure'), 8_000);
+test('N6: a weather or news ask takes the 10 s web deadline and every other ask keeps 6 s', () => {
+  assert.equal(webDeadlineMs('what is the weather in Pune tomorrow'), 10_000);
+  assert.equal(webDeadlineMs('latest news on the bridge closure'), 10_000);
   assert.equal(webDeadlineMs('bridge reopening date'), WEB_DEADLINE_MS);
 });
 
@@ -336,7 +336,7 @@ test('N6: a weather read that settles at 6 s succeeds, and a generic read is nam
   const weatherReply = await runResearch(routedDeps({ configured: ['web'], web: weather, executed: [], dispatched: [] }), {
     action: 'start', question: 'what is the weather in Pune', lookups: [{ source: 'web', query: 'weather in Pune tomorrow' }],
   }, new AbortController().signal);
-  assert.deepEqual(weatherSeen, [8_000], 'the port is told the longer deadline for a weather ask');
+  assert.deepEqual(weatherSeen, [10_000], 'the port is told the longer deadline for a weather ask');
   assert.deepEqual(weatherReply['sources'], { web: 'ok' }, 'a 6 s weather read is no longer cut');
 
   const genericSeen: number[] = [];
@@ -364,4 +364,60 @@ test('N6: a per-call deadline overrides the port default', async () => {
   const started = Date.now();
   assert.deepEqual(await port.search({ query: 'weather in Pune tomorrow', signal: new AbortController().signal, deadlineMs: 40 }), { ok: false, code: 'web_timeout' });
   assert.ok(Date.now() - started < 2_000);
+});
+
+// WEB-1024: these regressions assert the evidence that reaches the model, not HTTP success.
+test('WEB-1024: public fact shapes offer web but private source words keep it off', () => {
+  for (const question of ['What is the price of a Herreshoff Caribbean 50', 'how much is a bicycle', 'latest version of Node', 'who is Ada Lovelace', 'when did Apollo land', 'release date of Node', 'population of Pune', 'exchange rate USD INR', 'cricket score', 'results of the marathon']) {
+    assert.ok(fallbackSelection(question, ['web']).actions.some(action => action.kind === 'web_search'), question);
+  }
+  for (const question of ['what did Thomas write about the price', 'price of our licence', 'latest version in my mail', 'weather in the calendar', 'news in chat', 'when did we agree']) {
+    assert.equal(fallbackSelection(question, ['web']).actions.some(action => action.kind === 'web_search'), false, question);
+  }
+});
+
+test('WEB-1024: cap preserves clipped web evidence and its first source, with metadata outside the spoken budget', () => {
+  assert.ok(grounded.ok);
+  if (!grounded.ok) return;
+  const evidence = { ...grounded.evidence, answer: 'The bridge reopened. ' + 'The works are finished. '.repeat(39), claims: [{ text: 'The bridge reopened.', sourceIndexes: [0] }], sources: [...grounded.evidence.sources, { title: 'Council', url: 'https://example.org/' + 'x'.repeat(3000) }] };
+  const reply = capReply({ status: 'complete', sources: { web: 'ok' }, findings: [{ source: 'knowledge', text: 'knowledge: 1 of 1 shown\n' + 'A complete statement. '.repeat(105) }, { source: 'web', text: 'web: 1 of 1 shown\n' + webEvidenceText(evidence) }], webSources: evidence.sources }, 2500);
+  const finding = (reply['findings'] as { source: string; text: string }[]).find(item => item.source === 'web');
+  assert.ok(finding, JSON.stringify(reply));
+  assert.match(finding.text, /The bridge reopened\./);
+  assert.match(finding.text, /web sources: 1\. Bridge reopening/);
+  assert.match(finding.text, /ask for the full result/i);
+  const { webSources: _metadata, ...spoken } = reply;
+  assert.ok(JSON.stringify(spoken).length <= 2500);
+  assert.deepEqual(reply['webSources'], evidence.sources);
+});
+
+test('WEB-1024: evidence that cannot fit is typed insufficient, never web ok with empty findings', () => {
+  const reply = capReply({ sources: { web: 'ok' }, findings: [{ source: 'web', text: 'web: 1 of 1 shown\nweb answer: ' + 'Long answer. '.repeat(80) + '\nweb claim: Long answer. [Bridge]\nweb sources: 1. Bridge' }] }, 240);
+  assert.notEqual((reply['sources'] as Record<string, unknown> | undefined)?.['web'], 'ok');
+  assert.deepEqual(reply['webInsufficient'], { code: 'web_insufficient', reason: 'reply_budget' });
+});
+
+test('WEB-1024: cap rechecks grounding after supported claims fall outside the word cap', async () => {
+  const payload = body() as { candidates: { content: { parts: { text: string }[] }; groundingMetadata: { groundingSupports: unknown[] } }[] };
+  payload.candidates[0]!.content.parts[0]!.text = 'Unsupported filler. '.repeat(230) + 'The bridge reopened.';
+  payload.candidates[0]!.groundingMetadata.groundingSupports = [{ segment: { text: 'The bridge reopened.' }, groundingChunkIndices: [0] }];
+  const seen: { body?: string }[] = [];
+  const port = createWebSearch({ credentials: KEY, transport: transportOf(seen, async () => json(payload)) });
+  assert.deepEqual(await port.search({ query: 'bridge reopening date', signal: new AbortController().signal }), { ok: false, code: 'web_insufficient', reason: 'capped' });
+  assert.equal(seen.length, 2, 'one retry only');
+});
+
+test('WEB-1024: empty results retry once with a broader entity query', async () => {
+  const seen: { body?: string }[] = [];
+  const port = createWebSearch({ credentials: KEY, transport: transportOf(seen, async () => json(seen.length === 1 ? { candidates: [] } : body())) });
+  assert.equal((await port.search({ query: 'please find the latest bridge reopening date in Pune 2026', signal: new AbortController().signal })).ok, true);
+  assert.equal(seen.length, 2);
+  const retry = JSON.stringify(JSON.parse(seen[1]!.body!)['contents']);
+  assert.match(retry, /bridge/); assert.match(retry, /Pune/); assert.match(retry, /2026/);
+  assert.doesNotMatch(retry, /please|latest|find/);
+  assert.equal(WEB_MODEL, 'gemini-3.8-flash');
+  const emptySeen: { body?: string }[] = [];
+  const empty = createWebSearch({ credentials: KEY, transport: transportOf(emptySeen, async () => json({ candidates: [] })) });
+  assert.deepEqual(await empty.search({ query: 'bridge reopening date', signal: new AbortController().signal }), { ok: false, code: 'web_insufficient', reason: 'empty' });
+  assert.equal(emptySeen.length, 2);
 });

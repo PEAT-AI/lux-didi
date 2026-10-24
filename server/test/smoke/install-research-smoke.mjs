@@ -80,7 +80,7 @@ function startArguments(schema) {
   return args;
 }
 
-const startArgs = { action: 'start', question: 'List synthetic evidence', lookups };
+const startArgs = { ...startArguments(schema), lookups };
 
 function fakeLiveVoicePort() {
   const requests = [];

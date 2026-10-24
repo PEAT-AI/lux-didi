@@ -244,7 +244,7 @@ test('a retryable first call failure retries a bounded number of times and then 
   assert.equal(failed.state, 'error', 'the endpoint did not connect');
   assert.equal(failed.retrying, true, 'a retry is scheduled');
   assert.equal(f.requests(), 1);
-  await new Promise(resolve => setTimeout(resolve, FAST[0]! * 3 + 120));
+  await until(() => runtime.status().endpoints[0]!.retrying === false, 2000);
   const settled = runtime.status().endpoints[0]!;
   assert.equal(settled.retrying, false, 'the round is over and no further attempt is pending');
   assert.equal(f.requests(), 4, 'the first connect plus exactly three bounded retries');

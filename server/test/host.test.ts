@@ -472,7 +472,7 @@ for (const releaseNineCatalogue of [true, false]) {
       'calendar_list_calendars', 'calendar_list_events', 'mattermost_whoami', 'mattermost_get_channel_history',
       'mattermost_get_thread', 'mattermost_search', 'mattermost_list_channels',
       'search', 'read', 'list_companies', 'get_company', 'list_tickets', 'get_metadata',
-    ].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
+    ].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true }, annotations: { readOnlyHint: true } }));
     const reply = (message: { id?: unknown; method: string; params?: { name?: string } }) => message.id === undefined ? undefined : {
       jsonrpc: '2.0', id: message.id, result: message.method === 'initialize'
         ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } }

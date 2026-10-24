@@ -5,7 +5,7 @@ import {
   type ResearchDeps, type ResearchSourceLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
-import { LIVE_RESULT_CHARS, shapeLuxKnowledge } from '../tools/live-shape.js';
+import { shapeLuxKnowledge } from '../tools/live-shape.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { createHash } from 'node:crypto';
 import type { McpPort } from '../adapters/mcp/port.js';
@@ -118,12 +118,13 @@ test('#5: a clipped knowledge hit counts as shown, never as left out', () => {
   assert.ok(text.split('\n').length === 2, 'the one hit is still voiced');
 });
 
-test('#580: the confidence line never pushes a knowledge result past the hard ceiling', () => {
-  const body = 'note body text. '.repeat(30);
-  const hits = Array.from({ length: 6 }, (_, n) => `**#${n + 1}** [PATTERN] Note ${n}\n${body}`).join('\n');
-  const shaped = shapeLuxKnowledge('search_knowledge', `_confidence: low · top score: 0.11 · relevant candidate: no_\n${hits}`);
-  assert.match(shaped.text, /confidence: low/u, 'the mark rides the head of the result');
-  assert.ok(shaped.text.length <= LIVE_RESULT_CHARS, `the hard ceiling holds with the mark, got ${shaped.text.length}`);
+test('#580: the confidence line is paid out of the result budget, never added past it', () => {
+  const body = 'the vault entry says the deadline is the fifteenth. '.repeat(120);
+  const plain = shapeLuxKnowledge('search_knowledge', body);
+  const marked = shapeLuxKnowledge('search_knowledge', `_confidence: low · top score: 0.11 · relevant candidate: no_\n${body}`);
+  assert.match(marked.text, /^_confidence: low/u, 'the mark leads the result');
+  const evidence = (text: string): string => text.replace(/\[omitted:[^\]]*\]/gu, '');
+  assert.ok(evidence(marked.text).length <= evidence(plain.text).length, `the mark costs no room past the plain evidence budget, got ${evidence(marked.text).length} against ${evidence(plain.text).length}`);
 });
 
 test('K3: the model-authored knowledge query is clipped to ten content terms, and filler never rides', () => {

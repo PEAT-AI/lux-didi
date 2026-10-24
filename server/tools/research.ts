@@ -2669,7 +2669,8 @@ export function capReply(reply: JsonObject, limit: number): JsonObject {
     if (lines.length === 1) {
       // R5 (RESCAP-R5): the last evidence line is clipped to the room left, so a long best hit still answers.
       // #5: the clipped hit is still shown, so the header it keeps counts it.
-      const kept = sentencePrefix(lines[0]!, lines[0]!.length - (size() - limit) - 1);
+      const room = lines[0]!.length - (size() - limit) - 1;
+      const kept = sentencePrefix(lines[0]!, room) || clip(lines[0]!, room);
       if (kept.length >= RESEARCH.clipFloorChars) { widest.text = [head, kept].join('\n'); widest.chars = kept.length; trimmed = true; continue; }
     }
     // #5: only a line this pass really removes is counted out of the header, never one it clipped.

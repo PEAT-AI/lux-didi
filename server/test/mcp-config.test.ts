@@ -341,13 +341,15 @@ test('mcp credential resolver reads an owner-only synthetic file and refuses a m
   const configDir = join(dir, 'provider-config');
   mkdirSync(configDir, { recursive: true, mode: 0o700 }); chmodSync(configDir, 0o700);
   privateJSON(join(configDir, 'mcp.json'), { schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [
-    { id: 'mongo', transport: 'streamable-http', url: 'https://synthetic.invalid/mcp', connector: 'mongoose', account: 'alpha', resource: 'mongodb', credentialRef: 'mongo', enabled: true, allowEgress: true, unknownClass: 'ordinary' },
+    { id: 'mongoose-knowledge', transport: 'streamable-http', url: 'https://synthetic.invalid/mcp/knowledge', connector: 'mongoose', account: 'alpha', resource: 'mongoose:knowledge', credentialRef: 'mongoose-knowledge', enabled: true, allowEgress: true, unknownClass: 'ordinary' },
+    { id: 'mongoose-data', transport: 'streamable-http', url: 'https://synthetic.invalid/mcp/data', connector: 'mongoose', account: 'alpha', resource: 'mongoose:data', credentialRef: 'mongoose-data', enabled: true, allowEgress: true, unknownClass: 'ordinary' },
+    { id: 'mongoose-crm', transport: 'streamable-http', url: 'https://synthetic.invalid/mcp/crm', connector: 'mongoose', account: 'alpha', resource: 'mongoose:crm', credentialRef: 'mongoose-crm', enabled: true, allowEgress: true, unknownClass: 'ordinary' },
   ] });
   const store = new Store(join(dir, 'data'), toolsMigrations);
   t.after(() => store.close());
   const runtime = await host.composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
   t.after(async () => { await runtime.close(); });
-  const report = runtime.status().endpoints.find((endpoint: { id: string }) => endpoint.id === 'mongo');
+  const report = runtime.status().endpoints.find((endpoint: { id: string }) => endpoint.id === 'mongoose-knowledge');
   // H19: no stored mongoose credential is a not-signed-in state, not a failing probe at every start.
   assert.equal(report?.state, 'error');
   assert.equal(report?.error, 'not_signed_in');

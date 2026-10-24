@@ -16,6 +16,7 @@ const LOGIN_LINES: Record<MongooseLoginCode, string> = {
   'token-refused': 'the Mongoose server did not return a usable session',
   'browser-unavailable': 'the default browser could not be opened',
   'timeout': 'the sign-in deadline elapsed, so nothing was saved',
+  'endpoint-not-allowed': 'your account is not in the Mongoose CRM teams, so the crm endpoint stays off',
 };
 
 /**

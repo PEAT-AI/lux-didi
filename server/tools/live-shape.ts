@@ -65,7 +65,7 @@ export interface ShapedSource { title: string; url?: string; sourceType?: string
 export interface CalendarEvent { id: string; start: string; line: string; bodyTruncated: boolean }
 export interface CalendarPage { upstreamIncomplete?: boolean; events: CalendarEvent[]; received: number; localOmitted: number; unread: number; nextPageToken?: string }
 export interface CalendarScope { received: number; partial: boolean }
-export interface MailMessage { id: string; threadId: string; internalDate: string; line: string; bodyTruncated: boolean }
+export interface MailMessage { id: string; threadId: string; internalDate: string; line: string; bodyTruncated: boolean; /** E5 (#612): bulk mail, so a triage read can rank it after a person. */ bulk?: boolean; /** E5 (#612): the owner's own message, so its thread needs no cold read. */ sent?: boolean }
 export interface MailPage { messages: MailMessage[]; received: number; invalid: number; localOmitted: number; nextPageToken?: string; upstreamIncomplete?: boolean }
 /** #6: the ranker's own retrieval metadata, read before the preamble is stripped and carried for research. */
 export interface KnowledgeConfidence { confidence: string; top?: string; candidates?: string }
@@ -257,6 +257,14 @@ export function cleanMailBody(raw: string): string {
 // --- Gmail ---------------------------------------------------------------------------------
 
 const AUTHORS = /^\s*"?([^"<]*?)"?\s*</;
+/** E5 (#612): what a triage read ranks by, read here because this is where the headers and labels are. */
+function mailReplyNeed(entry: Record<string, unknown>, from: string): { bulk?: boolean; sent?: boolean } {
+  const listed = header(entry, 'List-Unsubscribe') !== '' || header(entry, 'List-Id') !== '';
+  // The sender's address, not the display name, is what says a machine wrote it.
+  const bulk = listed || /no-?reply|do-?not-?reply|notifications?@/iu.test(from);
+  return { ...(bulk ? { bulk: true } : {}), ...(labels(entry).includes('SENT') ? { sent: true } : {}) };
+}
+
 function senderName(source: Record<string, unknown>): string {
   const from = header(source, 'From');
   return (AUTHORS.exec(from)?.[1] ?? from).trim();
@@ -331,7 +339,7 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
     const full = `- ${segments.join(' | ')}${idValue ? ` [id ${idValue}]` : ''}`;
     const cut = cutAtSentence(full, 600);
     const line = openLine ? `${cut.text}\n${openLine}` : cut.text;
-    if (idValue) normalized.push({ id: idValue, threadId: str(entry['threadId']), internalDate: scalar(entry['internalDate']), line, bodyTruncated: cut.omitted > 0 || snippet.length > excerpt.length });
+    if (idValue) normalized.push({ id: idValue, threadId: str(entry['threadId']), internalDate: scalar(entry['internalDate']), line, bodyTruncated: cut.omitted > 0 || snippet.length > excerpt.length, ...mailReplyNeed(entry, header(entry, 'From')) });
     return line;
   });
   const body = listed(lines, GMAIL_LIST_MESSAGES, 'messages');

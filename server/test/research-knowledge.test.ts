@@ -7,6 +7,7 @@ import {
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { GMAIL_BODY_CHARS, shapeLuxKnowledge } from '../tools/live-shape.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
+import { subResultOf } from '../live/index.js';
 import { createHash } from 'node:crypto';
 import type { McpPort } from '../adapters/mcp/port.js';
 import type { ConnectionPolicy } from '../tools/types.js';
@@ -93,7 +94,8 @@ test('#580: the projection carries the ranker confidence on the response, not on
 test('#580: a no-candidate low-confidence knowledge read carries the confidence and is voiced as no match', () => {
   const shaped = shapeLuxKnowledge('search_knowledge', NO_CANDIDATE);
   assert.deepEqual(shaped.knowledgeConfidence, { confidence: 'low', top: '0.11', candidates: 'no' }, 'the shape reads the ranker line before it strips it');
-  const block = shapeBlock('knowledge_search', [{ ...sub('search_knowledge', shaped.text), knowledgeConfidence: shaped.knowledgeConfidence }]);
+  // E4 (#611): the field is never injected here: it rides the live sub-result the batched path builds.
+  const block = shapeBlock('knowledge_search', [subResultOf('k0', 'search_knowledge', { text: shaped.text, knowledgeConfidence: shaped.knowledgeConfidence }, true)]);
   assert.ok(block.lines.includes('knowledge: confidence=low top=0.11 candidates=no'), `the finding leads with the confidence, got ${JSON.stringify(block.lines)}`);
   assert.ok(block.lines.includes('knowledge: nothing matched this ask'), 'a low-confidence no-candidate match is voiced as no match');
   assert.equal(block.lines.some(line => line.includes('relevant candidate:')), false, 'the raw ranker line is never voiced as a hit');

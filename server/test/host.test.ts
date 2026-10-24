@@ -461,8 +461,8 @@ for (const scenario of ['both', 'existing-live', 'default', 'absent'] as const) 
 }
 
 // Real installed endpoint identities and connector kinds, with synthetic transports only.
-for (const missingMongoose of [true, false]) {
-  test(`real five-endpoint host CREATE composes company readers (mongoose missing=${missingMongoose})`, async t => {
+for (const releaseNineCatalogue of [true, false]) {
+  test(`real company-endpoint host CREATE composes company readers (release 9 catalogue=${releaseNineCatalogue})`, async t => {
     const dir = await mkdtemp(join(tmpdir(), 'didi-real-shape-'));
     t.after(() => rm(dir, { recursive: true, force: true }));
     const config = join(dir, 'provider-config');
@@ -471,7 +471,7 @@ for (const missingMongoose of [true, false]) {
       'search_knowledge', 'get_insight', 'gmail_get_profile', 'gmail_search_messages', 'gmail_read_message',
       'calendar_list_calendars', 'calendar_list_events', 'mattermost_whoami', 'mattermost_get_channel_history',
       'mattermost_get_thread', 'mattermost_search', 'mattermost_list_channels',
-      'search', 'read', 'list_companies', 'get_company', 'list_tickets',
+      'search', 'read', 'list_companies', 'get_company', 'list_tickets', 'get_metadata',
     ].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
     const reply = (message: { id?: unknown; method: string; params?: { name?: string } }) => message.id === undefined ? undefined : {
       jsonrpc: '2.0', id: message.id, result: message.method === 'initialize'
@@ -499,12 +499,25 @@ for (const missingMongoose of [true, false]) {
     const url = `http://127.0.0.1:${address.port}`;
     const child = join(dir, 'fake-mattermost.cjs');
     await writeFile(child, `const tools=${JSON.stringify(tools)}; const reply=${reply.toString()}; require('node:readline').createInterface({input:process.stdin}).on('line', line => { const response=reply(JSON.parse(line)); if(response) console.log(JSON.stringify(response)); });`);
-    const http = (id: string, connector: string, credentialRef: string | null = null) => ({ id, connector, transport: 'streamable-http', url: url + '/' + id, account: 'synthetic', resource: id, credentialRef, enabled: true, allowEgress: true, unknownClass: 'ordinary' });
+    const http = (id: string, connector: string, credentialRef: string | null = null, resource = id, path = '/' + id) => ({ id, connector, transport: 'streamable-http', url: url + path, account: 'synthetic', resource, credentialRef, enabled: true, allowEgress: true, unknownClass: 'ordinary' });
     await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [
       http('lux-knowledge', 'lux-knowledge'), http('gmail', 'google'), http('calendar', 'google'),
       { id: 'mattermost', connector: 'mattermost', transport: 'stdio', command: process.execPath, args: [child], env: { HOME: dir, PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: 'synthetic', resource: 'mattermost', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' },
-      http('mongoose', 'mongoose', missingMongoose ? 'missing-credential' : null),
+      // Release 9 stored one Mongoose endpoint at /mcp under the retired single audience; the loader
+      // replaces it with the three release-1023b endpoints. The other variant seeds them directly.
+      ...(releaseNineCatalogue
+        ? [{ id: 'mongoose', connector: 'mongoose', transport: 'streamable-http', url: url + '/mcp/', account: 'synthetic', resource: 'mongoose', credentialRef: 'mongoose-mcp', enabled: true, allowEgress: true, unknownClass: 'ordinary' }]
+        : ['knowledge', 'data', 'crm'].map(endpoint => http(`mongoose-${endpoint}`, 'mongoose', `mongoose-${endpoint}`, `mongoose:${endpoint}`, `/mcp/${endpoint}`))),
     ] }), { mode: 0o600 });
+    if (releaseNineCatalogue) {
+      for (const endpoint of ['knowledge', 'data', 'crm'] as const) {
+        await writeFile(join(config, `mongoose-${endpoint}.json`), JSON.stringify({
+          schemaVersion: 2, base: url, clientId: 'client', redirectPort: 45871, account: 'synthetic',
+          endpoint, audience: `mongoose:${endpoint}`, accessToken: 'access-token', refreshToken: 'refresh-token',
+          expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now(),
+        }), { mode: 0o600 });
+      }
+    }
     await writeFile(join(config, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/live-gateway-test', voice: 'LiveVoice', keyReference: 'gemini-primary', dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' } }), { mode: 0o600 });
     await writeFile(join(config, 'gemini-primary.json'), JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: 'synthetic-test-key' }), { mode: 0o600 });
     const host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
@@ -512,11 +525,20 @@ for (const missingMongoose of [true, false]) {
     const headers = { Authorization: `Bearer ${host.store.adminCredential}`, 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID(), 'X-Didi-Authority-Epoch': host.descriptor.authorityEpoch };
     const status = await fetch(host.descriptor.origin + '/api/v1/tools/status', { headers });
     assert.equal(status.status, 200);
-    const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; tools: number }>;
+    const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; tools: number; reasonCode?: string }>;
     assert.deepEqual(reports.map(report => [report.id, report.state, report.tools]).sort(), [
       ['lux-knowledge', 'connected', 2], ['gmail', 'connected', 3], ['calendar', 'connected', 2],
-      ['mattermost', 'connected', 6], ['mongoose', missingMongoose ? 'error' : 'connected', missingMongoose ? 0 : 7],
+      ['mattermost', 'connected', 6], ['mongoose-knowledge', releaseNineCatalogue ? 'connected' : 'error', releaseNineCatalogue ? 4 : 0],
+      ['mongoose-data', releaseNineCatalogue ? 'connected' : 'error', releaseNineCatalogue ? 1 : 0],
+      ['mongoose-crm', releaseNineCatalogue ? 'connected' : 'error', releaseNineCatalogue ? 1 : 0],
     ].sort());
+    const mongoose = reports.filter(report => report.id.startsWith('mongoose'));
+    if (releaseNineCatalogue) {
+      // The release 9 catalogue is replaced, never refused: the boot reports the three published endpoints.
+      assert.deepEqual(mongoose.map(report => report.id).sort(), ['mongoose-crm', 'mongoose-data', 'mongoose-knowledge']);
+    } else {
+      for (const report of mongoose) assert.equal(report.reasonCode, 'not_signed_in', 'an endpoint with no stored record is parked for sign-in');
+    }
     const response = await fetch(host.descriptor.origin + '/api/v1/live-sessions', { method: 'POST', headers, body: JSON.stringify({ inputClass: 'ordinary' }) });
     const body = await response.json();
     assert.equal(response.status, 200, JSON.stringify(body));

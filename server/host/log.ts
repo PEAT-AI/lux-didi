@@ -290,6 +290,9 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'config_seeded' && ['live.json', 'mcp.json', 'providers.json'].includes(String(value.file)) && value.from === 'provider-config') {
     return { event: value.event, file: value.file, from: value.from };
   }
+  if (value.event === 'mongoose_catalogue_replaced' && value.endpoints === 3) {
+    return { event: 'mongoose_catalogue_replaced', endpoints: 3 };
+  }
   if (value.event === 'live_attach_rejected' && typeof value.code === 'string' && /^[A-Za-z0-9_]{1,107}$/.test(value.code)) {
     return { event: value.event, ...(typeof value.liveSessionId === 'string' && /^[0-9a-f-]{36}$/i.test(value.liveSessionId) ? { liveSessionId: value.liveSessionId } : {}), code: value.code };
   }

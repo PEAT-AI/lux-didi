@@ -1051,6 +1051,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 900_000) return;
     return { event: 'calendar_digest_refreshed', reason: value.reason, ms: Math.round(value.ms) };
   }
+  if (value.event === 'calendar_digest_timeout') {
+    // 556: the read the ten second deadline cut, with the edge that owed it and how long it held, never a day.
+    if (!closedKeys(value, ['event', 'reason', 'ms'])) return;
+    if (!isSafeMember(value.reason, CALENDAR_DIGEST_REFRESH_REASONS)) return;
+    if (typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 900_000) return;
+    return { event: 'calendar_digest_timeout', reason: value.reason, ms: Math.round(value.ms) };
+  }
   if (value.event === 'host_resources') {
     // L12d: this process's own footprint while a call is live. Megabytes to one decimal, CPU as a
     // percentage of one core over the last window: numbers only, never a device or a person.

@@ -256,8 +256,17 @@ export const RESPONSE_WATCHDOG_RECOVERY_MS = 7_000;
 export const RESPONSE_WATCHDOG_WINDOW_MS = 120_000;
 /** The write tools the Live model may decline or call, and the resource each one is pinned to. */
 const OWNER_WRITE_RESOURCES = new Map([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault']]);
-/** 3j: idle is conversational silence, so only an owner speech signal or model output resets it, never a mic frame. */
-const IDLE_ACTIVITY: ReadonlySet<string> = new Set(['inputTranscription', 'waitingForInput', 'modelTurnStarted', 'audio', 'modelText', 'outputTranscription', 'turnComplete', 'toolCall']);
+/** #592: idle is conversational silence: a finalized owner transcript with content, or model audio. */
+type IdleResetCause = 'opened' | 'unmuted' | 'tool_result' | 'turn_failed' | 'typed' | 'owner_speech' | 'model_audio';
+/** #592: an owner transcript only counts once it closed carrying the text that was spoken. */
+function idleResetCause(handle: ActiveSession, event: LiveVoiceEvent): 'owner_speech' | 'model_audio' | undefined {
+  if (event.type === 'audio') return 'model_audio';
+  if (event.type !== 'inputTranscription') return undefined;
+  if (event.text.trim() !== '') handle.ownerSpeechPending = true;
+  if (event.finished !== true || handle.ownerSpeechPending !== true) return undefined;
+  handle.ownerSpeechPending = false;
+  return 'owner_speech';
+}
 /** Every job row is written with a one day expiry (server/tools/jobs.ts); past it the row is stale data. */
 const JOB_EXPIRY_MS = 86_400_000;
 /** One intent sub-read deadline: a slow source never holds the whole turn past this. */
@@ -428,6 +437,12 @@ interface ActiveSession {
   // E1 interruption telemetry: provider-side facts for the last turn only, never audio or text.
   lastModelAudioAt?: number;
   turnCompleteSeen: boolean;
+  /** #592: the owner text joined since the last finalization, so an empty finalization is not speech. */
+  ownerSpeechPending?: boolean;
+  /** #592: the cause of the last idle arm, so a repeated cause is not a repeated record. */
+  idleResetBy?: IdleResetCause;
+  /** #595: the owner zone this call was composed in; the call's date math never re-resolves it. */
+  timeZone: string;
   /** The last live state this session projected, which is the `from` of its next transition receipt. */
   liveState?: LivePageProjection['state'];
   liveSessionId: string;
@@ -880,7 +895,7 @@ export class LiveSessionOwner {
   readonly #voice: LiveVoicePort;
   readonly #profile: LiveProfile;
   readonly #now: () => number;
-  readonly #timeZone: string;
+  readonly #timeZonePin: string | undefined;
   readonly #schedule: NonNullable<LiveOwnerConfig['schedule']>;
   readonly #researchWeb: WebSearchPort | undefined;
   /** The local, model-free block a silent Naya keeps ready (council-presence-1017, item 4). */
@@ -921,7 +936,7 @@ export class LiveSessionOwner {
     this.#voice = config.voice;
     this.#researchWeb = config.researchWeb;
     this.#profile = validateLiveProfile(config.profile);
-    this.#timeZone = config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+    this.#timeZonePin = config.timeZone;
     const now = config.now ?? Date.now;
     this.#now = () => {
       const value = now();
@@ -941,14 +956,19 @@ export class LiveSessionOwner {
 
   get revision(): number { return this.#revision; }
 
+  /** #595: the owner zone now, so a call composed after the owner moved carries his new zone. */
+  #ownerTimeZone(): string {
+    return this.#timeZonePin ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  }
+
   /** Host-generated runtime context: host clock and timezone, plus the groups this session can reach. */
-  #liveRuntimeContext(toolNames: readonly string[]): string {
+  #liveRuntimeContext(toolNames: readonly string[], timeZone: string): string {
     const connected = toolGroupNames(toolNames);
     const endpoints = this.#tools?.status?.().endpoints ?? [];
     const unavailable = endpoints.filter(endpoint => endpoint.state !== 'connected')
       .flatMap(endpoint => connectorGroupNames(endpoint.connector))
       .filter((group, index, all) => all.indexOf(group) === index && !connected.includes(group));
-    const context = buildRuntimeContext({ now: new Date(this.#now()), timeZone: this.#timeZone, connected, unavailable });
+    const context = buildRuntimeContext({ now: new Date(this.#now()), timeZone, connected, unavailable });
     const signIn = signInNote(endpoints);
     return signIn ? `${context}\n\n${signIn}` : context;
   }
@@ -1024,6 +1044,8 @@ export class LiveSessionOwner {
     this.#contextShape(context);
     const fingerprintFor = (prompt: string) => identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt, pickupJobId: input.pickupJobId ?? null });
     const now = this.#now();
+    // #595: the owner travels, so the zone is read when this call is composed, never at host start.
+    const timeZone = this.#ownerTimeZone();
     const assistantId = this.#store.assistantId;
     const snapshot = this.#store.transaction(tx => {
       // Same-key replay is decided on the normalized request meaning before any policy.
@@ -1070,7 +1092,7 @@ export class LiveSessionOwner {
       const storedSummaries = summarySelection.candidates;
       const summaryGap = Object.values(summarySelection.coverage).some(count => count > 0);
       const freshThread = freshOwnerThread(tx, assistantId, this.#profile.route.dataClasses, now);
-      const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone: this.#timeZone,
+      const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone,
         ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
         openLoops: storedOpenLoops(tx, this.#profile.route.dataClasses, now),
         ...(freshThread === undefined ? {} : { freshThread }),
@@ -1080,7 +1102,7 @@ export class LiveSessionOwner {
         // The delegated backend executes the tools on the OpenAI path; a direct-tool provider keeps the full conduct.
         delegatedBackend: this.#profile.provider === 'openai',
         accentSelection: currentLiveAccent(),
-        runtimeContext: this.#liveRuntimeContext(toolNames),
+        runtimeContext: this.#liveRuntimeContext(toolNames, timeZone),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         ...(calendar ? { calendar } : {}),
         ...((earlierSection || summaryGap) ? { earlierConversations: [earlierSection, summaryGap ? CONVERSATION_RECALL_COVERAGE_NOTE : undefined].filter(Boolean).join('\n') } : {}),
@@ -1093,7 +1115,7 @@ export class LiveSessionOwner {
       const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
         const basis = composeSession(undefined, this.#calendar);
         earlier = buildEarlierConversationsSection(storedSummaries,
-          { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
+          { now, timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
         this.#sections = { persona: configuredPrompt.system, memory: [],
           summary: earlier.section || undefined, summaryIds: [...earlier.selectedIds],
           summaryOmitted: [...earlier.omitted], calendar: this.#calendar };
@@ -1449,6 +1471,7 @@ export class LiveSessionOwner {
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
+      timeZone: this.#ownerTimeZone(),
       recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false, dropResponse: false, mutedResponse: false, outputJournalled: false, spokenThisTurn: false, dropOpener: silentStart, mutedMs: 0, researchAllowed: false, mutedOfferAttempts: 0,
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
@@ -1483,7 +1506,7 @@ export class LiveSessionOwner {
     handle.sessionTimer = this.#schedule(() => this.#sessionWindowEnded(handle), sessionMs);
     handle.callTimer = this.#schedule(() => {
       this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null); }, this.#profile.limits.callMaxMs);
-    this.#armIdle(handle, this.#profile.limits.idleMs);
+    this.#armIdle(handle, this.#profile.limits.idleMs, 'opened');
     void this.#consume(handle).catch(error => this.#consumeFailed(handle, error));
     const ready = session.ready.then(() => this.#readSnapshot(liveSessionId));
     void ready.catch(() => {});
@@ -1584,7 +1607,7 @@ export class LiveSessionOwner {
       handle.muteTimer.unref?.();
     } else {
       handle.muteTimer?.cancel(); handle.muteTimer = undefined;
-      this.#armIdle(handle, this.#profile.limits.idleMs);
+      this.#armIdle(handle, this.#profile.limits.idleMs, 'unmuted');
       // L7: the muted time is not dead air the owner heard, and a response that began under the mute is not
       // played at unmute: the owner speaks next, and the held-answer offer names it in one sentence.
       handle.mutedMs += Math.max(0, now - (handle.mutedAt ?? now));
@@ -1635,10 +1658,15 @@ export class LiveSessionOwner {
     if (handle.mutedOfferAttempts < MUTED_OFFER_ATTEMPTS) this.#scheduleMutedOffer(handle);
   }
 
-  #armIdle(handle: ActiveSession, remainingMs: number): void {
+  #armIdle(handle: ActiveSession, remainingMs: number, resetBy: IdleResetCause): void {
     if (this.#settled(handle)) return;
     handle.idleTimer?.cancel();
     handle.idleAt = this.#now() + remainingMs;
+    // One record per cause change, so a call kept open by bookkeeping is visible without a record per chunk.
+    if (handle.idleResetBy !== resetBy) {
+      handle.idleResetBy = resetBy;
+      hostLogEvent({ event: 'live_idle_arm', resetBy, idleMs: remainingMs });
+    }
     handle.idleTimer = this.#schedule(() => {
       // #303: an idle expiry after model audio had streamed, with no turnComplete ever seen, is the shape the
       // 3h-a witness stalled in: the greeting played, then the provider went silent without ending its turn.
@@ -1660,7 +1688,7 @@ export class LiveSessionOwner {
     if (this.#settled(handle)) return;
     // 3j: the tool result is conversational activity, so the idle clock restarts here rather than on mic frames.
     // A muted session suspends that clock as well, so research finishing while muted cannot time the call out.
-    if (!handle.muted) this.#armIdle(handle, this.#profile.limits.idleMs);
+    if (!handle.muted) this.#armIdle(handle, this.#profile.limits.idleMs, 'tool_result');
     handle.awaitingAnswer = true;
     handle.answerAt = this.#now();
     this.#armDelegationDeadline(handle);
@@ -1699,7 +1727,7 @@ export class LiveSessionOwner {
     if (typeof handle.session.sendCommentary === 'function') {
       try { handle.session.sendCommentary!({ text: TURN_FAILED_LINE }); } catch { /* an ended transport settles below */ }
     }
-    this.#armIdle(handle, this.#profile.limits.idleMs);
+    this.#armIdle(handle, this.#profile.limits.idleMs, 'turn_failed');
     this.#schedule(() => {
       if (this.#settled(handle) || generation !== handle.generation) return;
       // She spoke the line: the turn is answered, and the session carries on from it.
@@ -2231,7 +2259,7 @@ export class LiveSessionOwner {
     // O1b-A: typed text is an owner utterance at the same boundary as a spoken one, so it opens a turn.
     if (handle.connection.turnId === undefined) this.#openTurn(handle);
     // Same rule as provider activity: the owner's mute suspends the idle clock until the unmute.
-    if (!handle.muted) this.#armIdle(handle, this.#profile.limits.idleMs);
+    if (!handle.muted) this.#armIdle(handle, this.#profile.limits.idleMs, 'typed');
     const journalSequence = this.#persist(handle, event, 'inputTranscription');
     if (journalSequence === 'overflow') return;
     this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, 'inputTranscription', journalSequence, ++handle.markerSequence) });
@@ -2444,7 +2472,10 @@ export class LiveSessionOwner {
         }
         // Provider activity restarts the idle clock everywhere except under the owner's mute, which
         // suspends that clock until the unmute re-arms it.
-        if (!handle.muted && IDLE_ACTIVITY.has(event.type)) this.#armIdle(handle, this.#profile.limits.idleMs);
+        if (!handle.muted) {
+          const resetBy = idleResetCause(handle, event);
+          if (resetBy !== undefined) this.#armIdle(handle, this.#profile.limits.idleMs, resetBy);
+        }
         if (event.type === 'toolCall') {
           handle.toolCalls += event.calls.length;
           hostLogEvent({ event: 'research_call_arrived', liveSessionId: handle.liveSessionId, generation, calls: event.calls.length });
@@ -2757,7 +2788,7 @@ export class LiveSessionOwner {
     // #1022 F1: the scheduler's closures name one generation, so a rebuilt session builds its own.
     if (handle.researchSchedulerGeneration !== handle.generation) handle.researchScheduler = undefined;
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
-      now: () => this.#now(), timeZone: this.#timeZone,
+      now: () => this.#now(), timeZone: handle.timeZone,
       authorizeEvidence: (bindings, signal) => !signal.aborted && generation === handle.generation && !this.#settled(handle)
         && this.#tools!.owner.authorizeDelivery(host, bindings, [handle.inputClass], this.lookupAuthority(host.runId), signal).state === 'allowed',
       configured, configuredNow: () => this.#researchSources(handle),

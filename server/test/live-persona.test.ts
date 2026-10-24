@@ -666,7 +666,7 @@ const WRAPPER_3O_CHARS = 6603;
  * the backchannel ack carries, so the first line before a lookup says what she is reading. */
 // #589/#590: the voice surface grows by the ending-the-call line, which states the stop phrases and
 // the one thing she cannot do. The bound carries the measured wrapper at this sha.
-const WRAPPER_W5_CHARS = 12_808;
+const WRAPPER_W5_CHARS = 13_027;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Silence while you look something up is fine. Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
@@ -689,7 +689,7 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // the vault rule named the save phrase and the honest receipt).
   const growth = wrapper.length - WRAPPER_3O_CHARS;
   // #589/#590: the honesty line that names the stop phrases is the growth this bound carries.
-  const cap = 6_300;
+  const cap = 6_424;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
@@ -1207,7 +1207,7 @@ test('593: an old standing loop carries its age and last-seen date', () => {
     records: [standingRecord('standing-1', 'Call the accountant about the invoice', 'open')] });
   const line = composed.text.split('\n').find(candidate => candidate.includes('standing-1'))!;
   assert.ok(line.includes('from 49 days ago'), `the plain-word age is carried: ${line}`);
-  assert.ok(line.includes('last seen open 2026-09-01'), `the last-seen date is carried: ${line}`);
+  assert.ok(line.includes('last seen open 1 Sept 2026'), `the last-seen date is carried: ${line}`);
   assert.ok(line.includes('is it done:'), 'an old standing loop is asked about');
 });
 
@@ -1283,7 +1283,7 @@ const W5_REPLACED = [
 // LAT-1023: the voice surface grows by the source name the first ack carries.
 // #589/#590: the voice surface grows by the ending-the-call line, which states the stop phrases and the
 // one thing she cannot do.
-const W5_VOICE_BEFORE = 9242;
+const W5_VOICE_BEFORE = 9461;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],

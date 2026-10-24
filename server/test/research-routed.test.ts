@@ -18,7 +18,9 @@ const EVIDENCE: Record<string, string> = {
   gmail_search_messages: '- Release notes | from: Ana | date: 2026-10-16 [id m1]',
   mattermost_search: '- the release thread, from Ana',
   mattermost_attention: '- one question from Ana is waiting on him',
-  search_mongoose: '- Plantix organisation chart',
+  // MONGOOSE: the company read dispatches the connector's own tool name, `search`, so the fixture
+  // answers under that name; a fixture keyed to the retired `search_mongoose` left the layer empty.
+  search: '- Plantix organisation chart',
 };
 
 function sub(name: string, text = EVIDENCE[name] ?? 'evidence', ok = true, key = name): IntentSubResult {
@@ -114,7 +116,7 @@ test('a routed start skips the selector and reads every named layer at once', as
 test('the routed receipt names the sources, the count and per-source ms, never a query', async () => {
   let clock = 0;
   const h = harness({ now: () => { clock += 250; return clock; } });
-  await runResearch(h.deps, {
+  const reply = await runResearch(h.deps, {
     action: 'start', question: 'what did we decide about the release',
     lookups: [{ source: 'knowledge', query: 'release 3k decision' }, { source: 'company', query: 'who reports to whom' }],
   }, new AbortController().signal);
@@ -125,6 +127,7 @@ test('the routed receipt names the sources, the count and per-source ms, never a
   assert.equal(receipt.ms.length, 2);
   assert.ok(receipt.ms.every(ms => Number.isInteger(ms) && ms >= 0));
   assert.deepEqual(receipt.outcomes, ['ok', 'ok']);
+  assert.match(JSON.stringify(reply['findings']), /Plantix organisation chart/, 'the company layer answered with the line it read');
   assert.doesNotMatch(JSON.stringify(receipt), /release 3k decision|reports to whom/, 'no query text leaves in the receipt');
   assert.deepEqual(safeEvent(receipt), receipt, 'the host log admits the routed receipt unchanged');
 });

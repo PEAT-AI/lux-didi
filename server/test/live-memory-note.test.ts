@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { chatMigrations } from '../chat/index.js';
 import { liveMigrations, rememberOwnerNote } from '../live/index.js';
+import * as memory from '../domain/memory.js';
 import { safeEvent } from '../host/log.js';
 import { openMemoryFixture } from './memory-context-process.js';
 import type { Store } from '../runtime/store.js';
@@ -24,9 +25,18 @@ const model = { generate: async (): Promise<never> => { throw new Error('the mem
 interface Row { kind?: 'inputTranscription' | 'outputTranscription'; text: string; finished?: boolean; at?: number }
 
 function liveSession(t: TestContext, rows: readonly Row[]): Store {
-  const dir = mkdtempSync(join(tmpdir(), 'live-memory-note-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const f = openMemoryFixture(dir, model, {}, [...chatMigrations, ...liveMigrations]);
+  return openSession(dir(t), rows);
+}
+
+/** A store on its own directory, so a test can close it and open it again. */
+function dir(t: TestContext): string {
+  const path = mkdtempSync(join(tmpdir(), 'live-memory-note-'));
+  t.after(() => rmSync(path, { recursive: true, force: true }));
+  return path;
+}
+
+function openSession(path: string, rows: readonly Row[]): Store {
+  const f = openMemoryFixture(path, model, {}, [...chatMigrations, ...liveMigrations]);
   f.store.transaction(tx => {
     tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
         client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events,
@@ -68,7 +78,7 @@ test('a paraphrased note supported by a long delta-assembled owner turn is remem
   assert.equal(result.remembered, true, 'the paraphrase is supported by the owner turn');
   const stored = entry(store, result.entryId);
   assert.equal(stored.text, 'Rob prefers short answers in the morning', 'the model note text is what is stored, not the raw delta soup');
-  assert.match(String(stored.externalId), new RegExp(`^${SESSION}:\\d+$`), 'the supporting owner turn journal seq is the provenance');
+  assert.match(String(stored.externalId), new RegExp(`^${SESSION}:\\d+:[0-9a-f]{8}$`), 'the supporting owner turn journal seq and a note discriminator are the provenance');
 });
 
 test('a note whose content only appears in the model output transcript is refused', async t => {
@@ -101,6 +111,39 @@ test('the same supporting owner turn is remembered once', async t => {
   const first = await remember(store, 'Rob prefers short answers in the morning');
   assert.equal(first.remembered, true);
   assert.deepEqual(refusal(await remember(store, 'Rob prefers short answers in the morning')), { remembered: false, code: 'already_remembered', entryId: first.entryId });
+});
+
+const SHARED_TURN = 'rob prefers short answers in the morning and takes the early train to the office on tuesdays';
+
+test('two distinct notes supported by the same owner turns are both stored', async t => {
+  const store = liveSession(t, [{ text: SHARED_TURN, finished: true }]);
+  const first = await remember(store, 'Rob prefers short answers in the morning');
+  const second = await remember(store, 'Rob takes the early train to the office on tuesdays');
+  assert.equal(first.remembered, true);
+  assert.equal(second.remembered, true, 'a second distinct note over the same owner turns is kept, not refused');
+  assert.notEqual(second.entryId, first.entryId);
+  assert.notEqual(entry(store, first.entryId).externalId, entry(store, second.entryId).externalId,
+    'each note carries its own source identity');
+});
+
+test('forgetting one of two notes from the same turns leaves the other, and it stays gone after a reopen', async t => {
+  const path = dir(t);
+  let store = openSession(path, [{ text: SHARED_TURN, finished: true }]);
+  const first = await remember(store, 'Rob prefers short answers in the morning');
+  const second = await remember(store, 'Rob takes the early train to the office on tuesdays');
+  assert.equal(first.remembered, true);
+  assert.equal(second.remembered, true);
+  store.transaction(tx => memory.deleteEntry(tx, String(first.entryId), new Date(NOW).toISOString(), 'principal-a'));
+  const tombstones = store.transaction(tx => tx.all("SELECT source_key AS key FROM entry_tombstones WHERE source_kind='live-voice'"));
+  assert.equal(tombstones.length, 1, 'only the forgotten note is tombstoned');
+  assert.notEqual(String(tombstones[0]?.key), String(entry(store, second.entryId).externalId));
+  store.close();
+  store = openSession(path, []);
+  t.after(() => store.close());
+  assert.ok(store.transaction(tx => tx.get('SELECT 1 AS one FROM entries WHERE id=?', [String(second.entryId)])),
+    'the other note survives the reopen');
+  assert.deepEqual(refusal(await remember(store, 'Rob prefers short answers in the morning')),
+    { remembered: false, code: 'already_remembered', entryId: first.entryId }, 'the forgotten note stays forgotten');
 });
 
 test('a note the owner marked private stays refused', async t => {

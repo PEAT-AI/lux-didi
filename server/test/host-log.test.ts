@@ -416,6 +416,11 @@ test('#610: the chat query shape reaches the log, and a stray key still refuses 
     assert.equal(safeEvent({ ...source, chat: bad }), undefined, `a malformed chat shape is refused: ${JSON.stringify(bad)}`);
   }
   assert.equal(safeEvent({ ...source, chat: 'terms=3' }), undefined, 'a string is never a chat shape');
+  // R3: a refused chat read records the reason it really failed with, as one closed token.
+  const refused = safeEvent({ ...source, outcome: 'failed', chat: { reason: 'credential-refresh-failed' } });
+  assert.equal((refused as { chat?: { reason?: string } } | undefined)?.chat?.reason, 'credential-refresh-failed', 'a refusal reason reaches the log');
+  assert.equal(safeEvent({ ...source, outcome: 'failed', chat: { reason: 'whatever_dana_said' } }), undefined, 'a reason outside the closed set is refused');
+  assert.equal(safeEvent({ ...source, chat: { ...shape, reason: 'tool-not-granted' } }), undefined, 'a reason never rides a search shape');
   assert.equal(safeEvent({ ...source, note: 'extra' }), undefined, 'an unknown field beside a chat shape still refuses the receipt');
   const serialized = JSON.stringify(admitted);
   assert.ok(!serialized.includes('dogcation'), 'no query word reaches the log');

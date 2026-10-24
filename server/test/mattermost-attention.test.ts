@@ -388,6 +388,9 @@ test('R3: a granted composite that fails for another reason is never reported as
   const text = JSON.stringify(reply);
   assert.ok(text.includes('sign in again'), `the reply keeps the real cause: ${text.slice(0, 400)}`);
   assert.ok(!text.includes('tool not granted'), 'a credential failure is never a not-granted read');
+  // R3: the receipt records the reason the read really failed with, as one closed token.
+  const shape = receipt['chat'] as { reason?: string } | undefined;
+  assert.equal(shape?.reason, 'credential-refresh-failed', 'the receipt carries the real closed reason');
 });
 
 // F17: a composite the connector cannot serve is a refusal, never a successful read of a token. The
@@ -412,6 +415,7 @@ test('F17: an ungranted composite refuses the chat sub-call with its own closed 
   const receipt = logged.find(event => event['event'] === 'research_source' && event['source'] === 'chat');
   assert.ok(receipt, 'the refused chat read is receipted');
   assert.equal(receipt['outcome'], 'failed', 'a refused composite is a failed read, never ok');
+  assert.equal((receipt['chat'] as { reason?: string } | undefined)?.reason, 'tool-not-granted', 'the receipt names the not-granted read');
   const text = JSON.stringify(reply);
   assert.ok(text.includes('tool not granted'), `the reply names the closed reason: ${text.slice(0, 400)}`);
   assert.ok(!text.includes('unknown tool'), 'the reply never reads as an unknown tool');

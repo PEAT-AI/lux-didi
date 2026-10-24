@@ -5,6 +5,7 @@
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 cd "$(dirname "$0")/.."
+root="$(pwd)"
 
 # Isolated before-state proof: compile the pre-change native parser with the new
 # contract probe and show the OLD behavior fails the new assertion (red). One
@@ -39,7 +40,7 @@ import Foundation
 }
 SWIFT
   cd "$work"
-  /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library \
+  "$root/scripts/with-compile-lock.sh" -- /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library \
     Sources/LuxDidi/InstalledRuntime.swift Sources/LuxDidi/NativeKeychainPolicy.swift probe.swift -o "$work/probe"
   cd - >/dev/null
   set +e
@@ -63,6 +64,8 @@ if [ "${1:-}" = "--leased-run" ]; then
   real_home="$HOME"
   real_store="$real_home/Library/Application Support/ai.peat.lux-didi-operator/settings.json"
   real_before="$(stat -f '%m' "$real_store" 2>/dev/null || echo absent)"
+  # The compile lock is per user on the machine, so pin it before HOME is invented.
+  export LUX_COMPILE_LOCK="${LUX_COMPILE_LOCK:-$HOME/.lux/state/compile.lock}"
   export HOME="$work/home" CFFIXED_USER_HOME="$work/home"
   mkdir -p "$HOME"
   state="$proof/state"
@@ -689,6 +692,6 @@ printf 'FIXTURE-APP payload_sha256=%s\n' "$payload_sha"
 # so no compile happens inside the lease.
 src=Tests/DidiCompanionTests/launch-probe
 /usr/bin/nice -n 10 xcrun clang -c "$src/Kernel.c" -o "$work/Kernel.o"
-/usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header "$src/Kernel.h" "$src/Identity.swift" "$src/Observer.swift" "$work/Kernel.o" -o "$work/observer"
+"$root/scripts/with-compile-lock.sh" -- /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header "$src/Kernel.h" "$src/Identity.swift" "$src/Observer.swift" "$work/Kernel.o" -o "$work/observer"
 
 lux-browser-slot run --wait 1800 -- bash "$0" --leased-run "$work" "$proof" "$node" "$app" "$fixture" "$payload_sha"

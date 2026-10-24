@@ -112,7 +112,7 @@ assert not bad, f'COMPANION FAIL: staged Node violates installed dependency poli
 print('PASS companion Node matches installed dependency policy')
 PY
 start=$SECONDS
-/usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization -D COMPANION_TEST -parse-as-library -module-cache-path "$work/cache" Sources/LuxDidi/*.swift Tests/DidiCompanionTests/*.swift -o "$work/runtime"
+"$root/scripts/with-compile-lock.sh" -- /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization -D COMPANION_TEST -parse-as-library -module-cache-path "$work/cache" Sources/LuxDidi/*.swift Tests/DidiCompanionTests/*.swift -o "$work/runtime"
 printf 'DURATION companion-compile=%ss\n' "$((SECONDS-start))"
 app="$work/Companion Proof.app"
 mkdir -p "$app/Contents/MacOS"
@@ -131,7 +131,7 @@ mkdir -p "$proof"
 # Retain actual built-binary Keychain imports before disposable bundle cleanup.
 otool -Iv "$app/Contents/MacOS/LuxDidi" | grep -E 'SecItem(Add|CopyMatching|Delete)|SecKeychain(Set|Get)UserInteractionAllowed' > "$proof/keychain-binary-imports.txt"
 /usr/bin/nice -n 10 xcrun clang -Wall -Wextra -Werror -c Tests/DidiCompanionTests/launch-probe/Kernel.c -o "$work/VerificationKernel.o"
-/usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header Tests/DidiCompanionTests/launch-probe/Kernel.h Tests/DidiCompanionTests/launch-probe/Identity.swift Tests/DidiCompanionTests/launch-probe/Observer.swift "$work/VerificationKernel.o" -o "$work/verification-observer"
+"$root/scripts/with-compile-lock.sh" -- /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header Tests/DidiCompanionTests/launch-probe/Kernel.h Tests/DidiCompanionTests/launch-probe/Identity.swift Tests/DidiCompanionTests/launch-probe/Observer.swift "$work/VerificationKernel.o" -o "$work/verification-observer"
 # Exercise diagnostics without launching a bundle or touching user state.
 forced_proof="$proof/forced-observer-failure"
 mkdir -m 700 "$forced_proof"

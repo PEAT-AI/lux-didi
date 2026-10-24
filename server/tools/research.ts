@@ -2975,7 +2975,7 @@ function capWebMetadata(reply: JsonObject): void {
  * F1/F2 (RESCAP-R3): a finding is dropped whole rather than left as a header over nothing, the reply is
  * hard-bounded, and the state and the note are derived after the cut so they always agree.
  */
-export function capReply(reply: JsonObject, limit: number): JsonObject {
+export function capReply(reply: JsonObject, limit: number, refresh?: () => void): JsonObject {
   // A requested body read and a record read page at their own 6,000 char room, so neither is held to the
   // search budget.
   if (reply['bodyProjection'] !== undefined) return reply;
@@ -2983,8 +2983,9 @@ export function capReply(reply: JsonObject, limit: number): JsonObject {
   capWebMetadata(reply);
   const rawWebReason = isRecord(reply['unavailable']) ? reply['unavailable']['web'] : undefined;
   if (typeof rawWebReason === 'string' && rawWebReason.startsWith('web_insufficient:')) webInsufficient(reply, rawWebReason.slice('web_insufficient:'.length));
-  // #634: the header counts inside the cap; a trim only ever shortens it, because the counts go down and a
-  // status word never lengthens, so measuring the header the reply was built with under-counts nothing.
+  // #634: the header counts inside the cap, so a caller that can rebuild it hands over `refresh` and every
+  // pass measures the header it would ship. A status word can lengthen when a trim drops a source's last
+  // line, so the header is never measured once and reused.
   const size = (): number => spokenReplySize(reply);
   const hitsOf = (page: JsonObject): unknown[] => Array.isArray(page['hits']) ? page['hits'] as unknown[] : [];
   let trimmed = false;
@@ -3001,6 +3002,7 @@ export function capReply(reply: JsonObject, limit: number): JsonObject {
   let guard = 4096;
   while (guard-- > 0) {
     settle();
+    refresh?.();
     if (size() <= limit) break;
     const pages = Array.isArray(reply['historyPages']) ? reply['historyPages'] as JsonObject[] : [];
     const widestPage = pages.reduce<JsonObject | undefined>((best, page) => best === undefined || hitsOf(page).length > hitsOf(best).length ? page : best, undefined);
@@ -3256,14 +3258,14 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   if (compactItems > 0) (result as CompactionReply)[compactionDelivery] = { items: compactItems };
   if (calendarReads.length > 0) result[calendarDelivery] = { researchId: run.researchId, runId: run.runId, keys: remaining.slice(0, shownOf(groups.find(group => group.source === 'calendar') ?? { lines: [] })).map(([key]) => key) };
   if (webDropped && !findings.some(finding => finding.source === 'web')) webInsufficient(result, 'reply_budget');
-  const capped = capReply(result, limit);
+  // #634: the header is rebuilt inside every measured pass, so its counts match the evidence that ships and
+  // the reply is measured with the header it carries.
+  const capped = capReply(result, limit, () => {
+    if (typeof result['coverage'] === 'string') result['coverage'] = coverageOf(Array.isArray(result['findings']) ? result['findings'] as unknown as FindingLike[] : []);
+  });
   // #575: what this reply actually carried is what the session must not hand over again.
   for (const finding of (Array.isArray(capped['findings']) ? capped['findings'] as { text?: string }[] : [])) {
     if (typeof finding.text === 'string' && finding.text.length > 0 && !finding.text.includes(ALREADY_GIVEN)) run.deliveredFindings.add(findingKey(finding.text));
-  }
-  // #621: the header is derived after the final trim, so its counts match the evidence the voice hears.
-  if (typeof capped['coverage'] === 'string') {
-    capped['coverage'] = coverageOf(Array.isArray(capped['findings']) ? capped['findings'] as unknown as FindingLike[] : []);
   }
   return capped;
 }

@@ -395,7 +395,8 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       const calendarId = input.calendarId;
       if (typeof calendarId !== 'string' || calendarId.length < 1 || calendarId.length > 4096) return { state: 'refused', reason: 'invalid-calendar-id' };
       bounded.args['calendarId'] = calendarId;
-      return dispatch('calendar_list_events', bounded.args, signal);
+      // #574: a single-calendar day read carries the same attendee and organizer projection as a merged one.
+      return dispatch('calendar_list_events', { ...bounded.args, ...includeArgs() }, signal);
     },
   };
 }

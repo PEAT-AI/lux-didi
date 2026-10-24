@@ -349,9 +349,9 @@ test('the public character, voice surface and tool conduct are the authored verb
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '8ca5a9ef9bd2ba4a7debcaa25fb9f95f593af9e708f2aac7bb23fec3c1826287');
   assert.equal(sha(NAYA_VOICE_SURFACE), 'b371a4e39ee8f4c218e19094da86862d44b65372c6dbbcb04f51af813d857856');
-  assert.equal(sha(NAYA_VOICE_TOOLS), 'ca6aac13131468d2e5cc1bc93d3e15b0b27f00343c1d42f28e99522f48c5f4b9');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '1f0479d58a4955a4ab84a0b52c523cb22ced2c737e47c6bd3c74429a64f7f47a');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '8a41b4537fd70c245e02c9b8f3911f88dcd5cfb794b246067ef5d9ea6e806574');
-  assert.equal(sha(NAYA_TOOLS), 'c7e7eb9abcbef5a71850afe65178e055e437b2d51e8aae8852ed9986aa9ee5a0');
+  assert.equal(sha(NAYA_TOOLS), '8392a299309d4a77312320fa98e763a67ae9791a8bc56789ad388c178a2c1f0c');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));

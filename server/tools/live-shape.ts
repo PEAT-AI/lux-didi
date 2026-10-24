@@ -13,7 +13,8 @@
 /** Per-tool budgets for the text a tool result puts in front of the Live model. Each bound is
  * named so a reviewer can see the size policy: 3 knowledge hits with 400-character bodies, 8
  * Mattermost posts with 250-character bodies, 10 mail messages with 300-character excerpts (1500
- * for one requested message), and 8 calendar events of 150 characters. LIVE_RESULT_CHARS is the
+ * for one requested message), and 8 calendar events of 300 characters, which holds time, title, the
+ * open handle line and the eight attendee names a schedule answer needs. LIVE_RESULT_CHARS is the
  * hard ceiling on any single model-visible result, and LIVE_COMBINED_CHARS the larger ceiling for
  * a result that combines several sources. */
 import { bodySourceLinks, withOpenHandles, mintOpenLine } from './open-handles.js';
@@ -21,7 +22,9 @@ export const GMAIL_BODY_CHARS = 1500;
 export const GMAIL_LIST_MESSAGES = 10;
 export const GMAIL_LIST_EXCERPT_CHARS = 300;
 export const CALENDAR_EVENTS = 8;
-export const CALENDAR_EVENT_CHARS = 150;
+export const CALENDAR_EVENT_CHARS = 300;
+/** How many attendee names one event line carries; the rest are "and others" (#574). */
+export const CALENDAR_ATTENDEE_NAMES = 8;
 export const MATTERMOST_MESSAGE_CHARS = 250;
 export const MATTERMOST_MESSAGES = 8;
 /** How many ranked channels ever reach the connector-internal projection. A company archive can
@@ -50,7 +53,10 @@ export interface CalendarPage { upstreamIncomplete?: boolean; events: CalendarEv
 export interface CalendarScope { received: number; partial: boolean }
 export interface MailMessage { id: string; threadId: string; internalDate: string; line: string; bodyTruncated: boolean }
 export interface MailPage { messages: MailMessage[]; received: number; invalid: number; localOmitted: number; nextPageToken?: string; upstreamIncomplete?: boolean }
+/** #6: the ranker's own retrieval metadata, read before the preamble is stripped and carried for research. */
+export interface KnowledgeConfidence { confidence: string; top?: string; candidates?: string }
 export interface ShapedResult {
+  knowledgeConfidence?: KnowledgeConfidence;
   mailPage?: MailPage;
   calendarPage?: CalendarPage;
   calendarScope?: CalendarScope;
@@ -351,8 +357,9 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const lines = [`- ${start}, ${title}${location ? `, ${location}` : ''}${calendar ? ` | ${calendar}` : ''}${eventId ? ` [id ${eventId}]` : ''}`];
     const attendees = Array.isArray(entry['attendees']) ? entry['attendees'] : [];
     const names = attendees.filter(isRecord).map(a => field(a, 'displayName', 'email')).filter(Boolean);
-    // R6: the helper caps the list at 25 and sets attendeesOmitted, so a long list is never spoken as complete.
-    if (names.length) lines.push(`  attendees: ${names.join(', ')}${entry['attendeesOmitted'] === true ? ' and others' : ''}`);
+    // #574: eight names fit a spoken line; the ninth and beyond are "and others", and the helper's own
+    // attendeesOmitted caps a 25-name list it truncated, so a long list is never spoken as complete.
+    if (names.length) lines.push(`  attendees: ${names.slice(0, CALENDAR_ATTENDEE_NAMES).join(', ')}${names.length > CALENDAR_ATTENDEE_NAMES || entry['attendeesOmitted'] === true ? ' and others' : ''}`);
     const organizer = isRecord(entry['organizer']) ? field(entry['organizer'], 'displayName', 'email') : '';
     if (organizer) lines.push(`  organizer: ${organizer}`);
     const conference = field(entry, 'hangoutLink') || (isRecord(entry['conferenceData']) ? 'yes' : '');
@@ -363,11 +370,19 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     if (link) sources.push({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' });
     const openLine = link ? mintOpenLine({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' }) : undefined;
     if (openLine) lines.splice(1, 0, openLine);
-    const cut = cutAtSentence(lines.join('\n'), CALENDAR_EVENT_CHARS);
+    // #7: the first line is the event's own identity (time, title, place), so it is never the part a
+    // cut removes: a long company name survives whole and only the body is trimmed against the bound.
+    const headerLine = lines[0]!;
+    // A header longer than the whole per-event bound is no title but a wall of text, and it is cut as
+    // one with the rest so a hostile fixture cannot blow the result budget.
+    const titleFits = headerLine.length <= CALENDAR_EVENT_CHARS;
+    const bodyLines = titleFits ? lines.slice(1) : lines;
+    const budget = titleFits ? Math.max(0, CALENDAR_EVENT_CHARS - headerLine.length - 1) : CALENDAR_EVENT_CHARS;
+    const cut = cutAtSentence(bodyLines.join('\n'), budget);
     if (cut.omitted === 0) { const line = lines.join('\n'); normalized.push({ id: eventId, start, line, bodyTruncated: false }); return line; }
     const note = (omitted: number): string => ` [+${omitted} chars]`;
-    const recut = cutAtSentence(lines.join('\n'), Math.max(0, CALENDAR_EVENT_CHARS - note(cut.omitted).length));
-    const line = `${recut.text}${note(recut.omitted)}`;
+    const recut = cutAtSentence(bodyLines.join('\n'), Math.max(0, budget - note(cut.omitted).length));
+    const line = titleFits ? [headerLine, `${recut.text}${note(recut.omitted)}`].filter(part => part.length > 0).join('\n') : `${recut.text}${note(recut.omitted)}`;
     normalized.push({ id: eventId, start, line, bodyTruncated: true });
     return line;
   });
@@ -549,6 +564,18 @@ export function shapeMattermost(tool: string, data: unknown): ShapedResult {
  * the answer card (#254); the hits and their ids stay untouched. */
 const KNOWLEDGE_HEADER = /^#\s*Knowledge Search\b.*$/u;
 const KNOWLEDGE_METADATA = /^_.*(?:confidence:|top score:|relevant candidate:).*$/u;
+/** #6: the confidence line is stripped from the model text but never lost: research reads it here. */
+function knowledgeConfidenceOf(raw: string): KnowledgeConfidence | undefined {
+  for (const line of raw.split('\n')) {
+    if (!KNOWLEDGE_METADATA.test(line.trim())) continue;
+    const confidence = /confidence:\s*([a-z]+)/u.exec(line)?.[1];
+    if (confidence === undefined) continue;
+    const top = /top score:\s*([\d.]+)/u.exec(line)?.[1];
+    const candidates = /relevant candidate:\s*([a-z]+)/u.exec(line)?.[1];
+    return { confidence, ...(top === undefined ? {} : { top }), ...(candidates === undefined ? {} : { candidates }) };
+  }
+  return undefined;
+}
 function stripKnowledgePreamble(raw: string): string {
   return raw.split('\n').filter(line => {
     const trimmed = line.trim();
@@ -602,12 +629,14 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
       }
     }
   }
+  const confidence = knowledgeConfidenceOf(raw);
+  const carry = (result: ShapedResult): ShapedResult => confidence === undefined ? result : { ...result, knowledgeConfidence: confidence };
   const ranked = knowledgeRanked(raw);
-  if (ranked) return ranked;
+  if (ranked) return carry(ranked);
   const clean = stripKnowledgePreamble(raw);
   const cut = cutAtSentence(clean, GMAIL_BODY_CHARS);
   const note = cut.omitted > 0 ? `\n\n[omitted: ${cut.omitted} characters; final, this read has no paging argument]` : '';
-  return withOpenHandles({ text: cut.text + note, partial: cut.omitted > 0, originalCharacters: clean.length, omittedCharacters: cut.omitted, sources: bodySourceLinks(cut.text) });
+  return carry(withOpenHandles({ text: cut.text + note, partial: cut.omitted > 0, originalCharacters: clean.length, omittedCharacters: cut.omitted, sources: bodySourceLinks(cut.text) }));
 }
 
 const KNOWLEDGE_HIT_START = /^(?:- )?\*\*#([0-9]+)\*\*/u;

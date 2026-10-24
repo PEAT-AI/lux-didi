@@ -281,10 +281,27 @@ export function normalizeLookups(value: unknown): ResearchLookup[] {
 /** The declared calendar window grammar; the resolver accepts these forms and refuses every other one. */
 const CALENDAR_WINDOW = /^(?:today|tomorrow|week|this week|next week|(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?: this week)?|\d{4}-\d{2}-\d{2})$/u;
 
-/** Recognize only explicit supported calendar grammar; unknown text never widens a read. */
-export function calendarWindowOf(query: string, fallback = 'today'): string {
+/** #5: the same grammar found anywhere in the owner's sentence, longest form first, never a bare
+ *  `week` on its own, since "the week after next" names no window this grammar can read. */
+/** #5: a window or date word that is present but not in the grammar, so it is unparsed, never today. */
+const CALENDAR_WINDOW_WORD = /\b(?:week|weeks|month|months|weekend|year|after next)\b/u;
+const CALENDAR_WINDOW_IN_TEXT = /\b(?:next week|this week|today|tomorrow|(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?: this week)?|\d{4}-\d{2}-\d{2})\b/gu;
+
+/**
+ * #5: recognize only explicit supported calendar grammar, read out of the owner's own sentence. Two
+ * window words in one sentence name no single window, and a sentence with none returns the fallback,
+ * so a caller that needs today asks for it and a read never silently widens to today.
+ */
+export function calendarWindowOf(query: string, fallback = ''): string {
   const value = query.trim().toLowerCase().replace(/[?.!]+$/, '').replace(/^(?:what is on|what's on|show me|what meetings do i have) /, '').replace(/^(?:my )?(?:meetings|events|calendar|schedule)(?: on| for)?(?: |$)/, '');
-  return CALENDAR_WINDOW.test(value) ? value : fallback;
+  if (CALENDAR_WINDOW.test(value)) return value;
+  const found = [...new Set([...value.matchAll(CALENDAR_WINDOW_IN_TEXT)].map(match => match[0]))];
+  if (found.length === 0) {
+    // #5: a date or window word the grammar cannot resolve ("the week after next") is unparsed, not
+    // today; only a sentence that names no window at all takes the caller's fallback.
+    return CALENDAR_WINDOW_WORD.test(value) ? '' : fallback;
+  }
+  return found.length === 1 ? found[0]! : '';
 }
 
 /**
@@ -748,7 +765,9 @@ export function fallbackQuery(kind: CandidateKind, question: string, _nowMs: num
     return { query: dated || terms === '' ? `after:yesterday${terms ? ` ${terms}` : ''}` : terms };
   }
   if (kind === 'calendar_window') {
-    return { window: calendarWindowOf(question) };
+    // #5: an unparseable window names no window at all, rather than reading today's by default.
+    const window = calendarWindowOf(question, 'today');
+    return window === '' ? {} : { window };
   }
   return {};
 }
@@ -1075,8 +1094,13 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     return [search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(query, projectHintOf(config.question), meeting), 'k0')];
   }
   if (kind === 'calendar_window') {
-    // Research keeps the declared primary-calendar scope.
-    const range = windowRange(config.window ?? 'today', config.nowMs ?? Date.now(), config.timeZone);
+    // Research keeps the declared primary-calendar scope. #5: the window is the owner's own, and a
+    // window the grammar cannot parse dispatches nothing instead of silently reading today.
+    let range: { timeMin: string; timeMax: string };
+    // A question that names no window reads today, the connector's own default; an ambiguous or
+    // unreadable one dispatches nothing.
+    try { range = windowRange(config.window ?? calendarWindowOf(config.question, 'today'), config.nowMs ?? Date.now(), config.timeZone); }
+    catch { return []; }
     return [search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar }, 'cal0')];
   }
   if (kind === 'mail_search') return [search(INTERNAL.mailList, { q: config.query === undefined ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone), maxResults: RESEARCH.pageResults.mail }, 'm0')];
@@ -1912,11 +1936,16 @@ function knowledgeConfidenceLine(confidence: KnowledgeConfidence): string {
 const KNOWLEDGE_TRUNCATED = /^truncated: (yes|no)\b/u;
 
 /** Knowledge headings collapse to `#id title | body`, one per insight, in the shaped and raw forms. */
-function insightItems(raw: readonly string[], bodyWindow?: number): string[] {
+function insightItems(raw: readonly string[], bodyWindow?: number, carried?: KnowledgeConfidence): string[] {
   const items: string[] = [];
   // K5: the ranker's confidence line leads the finding, so the model can hedge a weak match.
-  const confidence = knowledgeConfidenceOf(raw);
-  if (confidence !== undefined) items.push(knowledgeConfidenceLine(confidence));
+  // #6: the shape reads the line before stripping it and carries it here; the raw text is the fallback.
+  const confidence = carried ?? knowledgeConfidenceOf(raw);
+  if (confidence !== undefined) {
+    items.push(knowledgeConfidenceLine(confidence));
+    // #6: a weak match with no relevant candidate is voiced as nothing matching, never as a hit.
+    if (confidence.confidence !== 'high' && confidence.confidence !== 'medium' && confidence.candidates !== 'yes') items.push('knowledge: nothing matched this ask');
+  }
   let heading: { id: string | undefined; title: string } | undefined;
   let body: string[] = [];
   const flush = (): void => {
@@ -1954,12 +1983,13 @@ interface CalendarEvent { id: string; start: string; line: string }
 function calendarEvents(raw: readonly string[]): CalendarEvent[] {
   const items: CalendarEvent[] = [];
   let current: CalendarEvent | undefined;
-  let attendees: number | undefined;
+  let attendees: string | undefined;
   let open: string | undefined;
   const flush = (): void => {
     if (current === undefined) return;
     // Open2: the item's own handle line stays with it, as a segment the day line can carry.
-    items.push({ ...current, line: `${current.line}${attendees !== undefined ? ` | ${attendees} attendees` : ''}${open !== undefined ? ` ; ${open}` : ''}` });
+    // #574: who is in the meeting rides with the event, already capped at eight names by the shape.
+    items.push({ ...current, line: `${current.line}${attendees !== undefined ? ` | ${attendees}` : ''}${open !== undefined ? ` ; ${open}` : ''}` });
     current = undefined; attendees = undefined; open = undefined;
   };
   for (const line of raw) {
@@ -1981,7 +2011,7 @@ function calendarEvents(raw: readonly string[]): CalendarEvent[] {
       // never has to guess whether a pipe segment is a place or a calendar name.
       current = { id, start, line: `${start}, ${title}${location ? `, ${location}` : ''}${calendar ? ` | ${calendar}` : ''}` };
     } else if (line.startsWith('attendees: ') && current !== undefined) {
-      attendees = line.slice('attendees: '.length).split(',').map(part => part.trim()).filter(Boolean).length;
+      attendees = line.trim();
     } else if (line.startsWith('open: ') && current !== undefined) {
       open = line;
     }
@@ -2109,7 +2139,7 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
     } else if (result.name === INTERNAL.knowledgeSearch || result.name === INTERNAL.knowledgeRead) {
       // K2: a search snippet stays short, the hydration hop's body gets the wider window, and an
       // explicit read by id stays whole, as Q5-R1 promises.
-      const items = insightItems(raw);
+      const items = insightItems(raw, undefined, result.knowledgeConfidence);
       lines.push(...items); total += items.length;
     } else if (result.name === INTERNAL.calendarList) {
       const items = calendarEvents(raw).map(event => event.line);
@@ -2318,6 +2348,14 @@ function compactCalendarWindow(events: readonly RetainedCalendarEvent[], zone: s
     catch { return undefined; }
   };
   const days = new Map<string, string[]>();
+  const calendarStamp = (start: string, allDay: boolean): string | undefined => {
+    const at = allDay ? Date.parse(`${start}T12:00:00Z`) : Date.parse(start);
+    if (!Number.isFinite(at)) return undefined;
+    return format({ year: 'numeric', month: 'numeric', day: 'numeric', ...(allDay ? { timeZone: 'UTC' } : {}) }, at);
+  };
+  // One day of timed events means the owner asked for that day; a multi-day window names several.
+  const timed = new Set(events.filter(event => !/^\d{4}-\d{2}-\d{2}$/u.test(event.start)).map(event => calendarStamp(event.start, false)).filter((stamp): stamp is string => stamp !== undefined));
+  const singleDay = timed.size === 1 ? [...timed][0] : undefined;
   for (const event of events) {
     // One grammar: `start, title, location | calendar`, so the comma fields are the event and the last
     // pipe segment is the calendar it came from, never a title.
@@ -2326,9 +2364,17 @@ function compactCalendarWindow(events: readonly RetainedCalendarEvent[], zone: s
     const fields = (pipeAt < 0 ? body : body.slice(0, pipeAt)).split(', ');
     const head = fields[0] ?? '';
     const rest = fields.slice(1).filter(part => part.length > 0).join(', ');
-    const at = Date.parse(event.start);
-    const day = Number.isFinite(at) ? format({ weekday: 'short', day: 'numeric', month: 'short' }, at) ?? head : head;
-    const time = Number.isFinite(at) ? format({ hour: '2-digit', minute: '2-digit', hour12: false }, at) ?? '' : '';
+    // #7: an all-day entry starts as a bare date; reading it as a UTC instant would shift it into the
+    // previous day west of UTC, so its own calendar day is written directly and it carries no time.
+    const dateOnly = /^\d{4}-\d{2}-\d{2}$/u.test(event.start);
+    const at = dateOnly ? Date.parse(`${event.start}T12:00:00Z`) : Date.parse(event.start);
+    const day = dateOnly
+      ? format({ weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }, at) ?? head
+      : Number.isFinite(at) ? format({ weekday: 'short', day: 'numeric', month: 'short' }, at) ?? head : head;
+    const time = dateOnly ? '' : Number.isFinite(at) ? format({ hour: '2-digit', minute: '2-digit', hour12: false }, at) ?? '' : '';
+    // #7: a single-day read answers for the one day its timed events fall on, so an all-day entry from
+    // another day (the overlap the helper returns) is that day's, not this answer's, and is dropped.
+    if (dateOnly && singleDay !== undefined && calendarStamp(event.start, true) !== singleDay) continue;
     const entries = days.get(day) ?? [];
     entries.push([time, rest].filter(part => part.length > 0).join(' '));
     days.set(day, entries);
@@ -2623,7 +2669,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; configu
   if (lookup.source === 'calendar') {
     let range: { timeMin: string; timeMax: string };
     // An unnamed window is unresolved, never widened: only the declared grammar resolves here.
-    try { range = windowRange(calendarWindowOf(query, ''), context.now(), context.timeZone); }
+    try { range = windowRange(calendarWindowOf(query) || calendarWindowOf(context.question), context.now(), context.timeZone); }
     catch { return { source: 'calendar', kind: 'calendar_window', subs: [], unresolved: true, reason: 'window_unparsed' }; }
     return { source: 'calendar', kind: 'calendar_window', subs: [
       { key: 'cal0', name: INTERNAL.calendarList, args: { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar } as JsonObject },

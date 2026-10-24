@@ -120,8 +120,8 @@ app="$work/LaunchProbe.app"
 mkdir -p "$app/Contents/MacOS"
 cd "$root"
 /usr/bin/nice -n 10 xcrun clang -c "$src/Kernel.c" -o "$work/Kernel.o"
-/usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header "$src/Kernel.h" "$src/Identity.swift" Sources/LuxDidi/SingleInstanceGuard.swift "$src/App.swift" "$work/Kernel.o" -o "$app/Contents/MacOS/LaunchProbe"
-/usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header "$src/Kernel.h" "$src/Identity.swift" "$src/Observer.swift" "$work/Kernel.o" -o "$work/observer"
+"$root/scripts/with-compile-lock.sh" -- /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header "$src/Kernel.h" "$src/Identity.swift" Sources/LuxDidi/SingleInstanceGuard.swift "$src/App.swift" "$work/Kernel.o" -o "$app/Contents/MacOS/LaunchProbe"
+"$root/scripts/with-compile-lock.sh" -- /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header "$src/Kernel.h" "$src/Identity.swift" "$src/Observer.swift" "$work/Kernel.o" -o "$work/observer"
 python3 - "$app" <<'PY'
 import plistlib,sys,uuid
 with open(sys.argv[1]+'/Contents/Info.plist','wb') as f:

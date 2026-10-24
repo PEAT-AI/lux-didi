@@ -32,7 +32,7 @@ import Foundation
 let resource = URL(fileURLWithPath:CommandLine.arguments[1]).resolvingSymlinksInPath().standardizedFileURL
 print(resource.appendingPathComponent("server/dist/host/index.js").resolvingSymlinksInPath().standardizedFileURL.path)
 SWIFT
-xcrun swiftc -module-cache-path "$work/cache" "$work/path.swift" -o "$work/path"
+scripts/with-compile-lock.sh -- xcrun swiftc -j 1 -num-threads 1 -module-cache-path "$work/cache" "$work/path.swift" -o "$work/path"
 argvEntry="$("$work/path" "$bundle/Contents/Resources")"
 realEntry="$("$node" -e 'console.log(require("node:fs").realpathSync(process.argv[1]))' "$argvEntry")"
 printf 'EXACT-NODE=%s\nACTUAL-RESOURCE-PIPELINE-ARGV=%s\nMODULE-REALPATH=%s\nMATCHED-PRESERVED-ENTRY-SHA256=%s\n' "$node" "$argvEntry" "$realEntry" "$expected"

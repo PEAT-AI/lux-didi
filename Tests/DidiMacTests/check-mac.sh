@@ -12,7 +12,7 @@ if [ "${1:-}" = "--prepare" ]; then
   cd "$root"
   app="$artifacts/Lux Didi.app"
   start=$SECONDS
-  /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization -module-cache-path "$artifacts/cache" Sources/LuxDidi/NativeNextSteps.swift Sources/LuxDidi/NativeGettingStarted.swift Sources/LuxDidi/AppPorts.swift Sources/LuxDidi/NativeKeychainPolicy.swift Sources/LuxDidi/NativeServiceRecovery.swift Sources/LuxDidi/CompanionClient.swift Sources/LuxDidi/NativeShortcuts.swift Sources/LuxDidi/NativeLoginItem.swift Sources/LuxDidi/NativeDiagnosticsSnapshot.swift Sources/LuxDidi/NativeNotifications.swift Sources/LuxDidi/PendingRequestStore.swift Sources/LuxDidi/NativeConnectedSend.swift Sources/LuxDidi/NativeMiniOrb.swift Sources/LuxDidi/SingleInstanceGuard.swift Sources/LuxDidi/PresentationCoordinator.swift Sources/LuxDidi/SingleKeyTrigger.swift Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/NativeMicMode.swift Tests/DidiMacTests/main.swift -o "$artifacts/seams"
+  "$root/scripts/with-compile-lock.sh" -- /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -whole-module-optimization -module-cache-path "$artifacts/cache" Sources/LuxDidi/NativeNextSteps.swift Sources/LuxDidi/NativeGettingStarted.swift Sources/LuxDidi/AppPorts.swift Sources/LuxDidi/NativeKeychainPolicy.swift Sources/LuxDidi/NativeServiceRecovery.swift Sources/LuxDidi/CompanionClient.swift Sources/LuxDidi/NativeShortcuts.swift Sources/LuxDidi/NativeLoginItem.swift Sources/LuxDidi/NativeDiagnosticsSnapshot.swift Sources/LuxDidi/NativeNotifications.swift Sources/LuxDidi/PendingRequestStore.swift Sources/LuxDidi/NativeConnectedSend.swift Sources/LuxDidi/NativeMiniOrb.swift Sources/LuxDidi/SingleInstanceGuard.swift Sources/LuxDidi/PresentationCoordinator.swift Sources/LuxDidi/SingleKeyTrigger.swift Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/NativeMicMode.swift Tests/DidiMacTests/main.swift -o "$artifacts/seams"
   "$artifacts/seams"
   printf 'DURATION seam-compile-and-run=%ss (test-only duration above)\n' "$((SECONDS-start))"
   bash scripts/build-macos-app.sh "$app" --cache "$artifacts/cache"
@@ -34,6 +34,8 @@ artifacts="${LUX_MAC_ARTIFACTS:?check-mac.sh needs LUX_MAC_ARTIFACTS from the pr
 app="$artifacts/Lux Didi.app"
 cd "$root"
 start=$SECONDS
+# The compile lock is per user on the machine, so pin it before HOME is invented.
+export LUX_COMPILE_LOCK="${LUX_COMPILE_LOCK:-$HOME/.lux/state/compile.lock}"
 export HOME="$artifacts/home" CFFIXED_USER_HOME="$artifacts/home"
 if "$app/Contents/MacOS/LuxDidi" --installed-proof >"$artifacts/invalid-proof.log" 2>&1; then
   echo 'MAC-PROOF FAIL: malformed installed proof flags accepted' >&2; exit 1

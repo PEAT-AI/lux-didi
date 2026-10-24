@@ -9,11 +9,11 @@ minimum_macos="$(/usr/bin/plutil -extract LSMinimumSystemVersion raw "$root/Reso
 target="arm64-apple-macosx$minimum_macos"
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-pending-check.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
-swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+"$root/scripts/with-compile-lock.sh" -- swiftc -j 1 -num-threads 1 -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
   -emit-module -module-name DidiPendingRequest \
   "$root/Sources/LuxDidi/PendingRequestStore.swift" -emit-module-path "$work/DidiPendingRequest.swiftmodule"
-swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+"$root/scripts/with-compile-lock.sh" -- swiftc -j 1 -num-threads 1 -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
   -target "$target" \
   -D PENDING_REQUEST_TESTING \
   "$root/Sources/LuxDidi/PendingRequestStore.swift" \

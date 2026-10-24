@@ -36,7 +36,7 @@ trap cleanup EXIT INT TERM
 if [ -z "${LUX_VERIFICATION_DRIVER:-}" ]; then
   source_root="$(cd "$(dirname "$0")/../.." && pwd)"
   /usr/bin/nice -n 10 xcrun clang -Wall -Wextra -Werror -c "$source_root/Tests/DidiCompanionTests/launch-probe/Kernel.c" -o "$work/VerificationKernel.o"
-  /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header "$source_root/Tests/DidiCompanionTests/launch-probe/Kernel.h" "$source_root/Tests/DidiCompanionTests/launch-probe/Identity.swift" "$source_root/Tests/DidiCompanionTests/launch-probe/Observer.swift" "$work/VerificationKernel.o" -o "$work/verification-observer"
+  "$source_root/scripts/with-compile-lock.sh" -- /usr/bin/nice -n 10 xcrun swiftc -j 1 -num-threads 1 -parse-as-library -import-objc-header "$source_root/Tests/DidiCompanionTests/launch-probe/Kernel.h" "$source_root/Tests/DidiCompanionTests/launch-probe/Identity.swift" "$source_root/Tests/DidiCompanionTests/launch-probe/Observer.swift" "$work/VerificationKernel.o" -o "$work/verification-observer"
   export LUX_VERIFICATION_DRIVER="$work/verification-observer"
 fi
 mkdir "$work/source" "$proof/real-host"

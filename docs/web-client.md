@@ -30,7 +30,7 @@ The supported composed host is `server/dist/host/index.js`: it injects Domain
 and Chat and serves the built browser shell. The supported standalone
 `server/dist/index.js` / `npm --prefix server start` is runtime-only and does not
 supply that shell or those Domain/Chat capabilities. See
-[service-runtime.md](service-runtime.md); the two entries are not interchangeable.
+[service.md](service.md); the two entries are not interchangeable.
 No tunnel, public deployment, or scheduled task is provided. Production requests
 always go to same-origin `/api/v1`, never a hard-coded remote service.
 

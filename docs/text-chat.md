@@ -1,4 +1,7 @@
-# Durable local conversation runtime
+/tmp/intro-chat.md
+
+## Durable local conversation runtime
+
 
 `server/chat/index.ts` exports `ChatService`, `ChatPort`, `ChatError`, config/
 input/event/snapshot types and `chatMigrations`. This is an in-process engine,
@@ -8,7 +11,7 @@ MCP/notification/commitment effects. A completed answer is an assistant entry;
 it is not proof that any requested action happened. Existing manual commitment
 controls remain host-owned. No UI, voice or actual provider success is claimed.
 
-## Host composition and authority
+### Host composition and authority
 
 Use the existing Store once, with all owner migrations:
 
@@ -57,7 +60,7 @@ operation `appendAssistantEntry({sessionId,text,timeZone})` always forces role
 `assistant`. It shares the caller's Store transaction. There is **no** HTTP
 assistant-append route; the existing append-entry route rejects forged roles.
 
-## Acceptance, dispatch and durable outcomes
+### Acceptance, dispatch and durable outcomes
 
 `accept({sessionId,text,idempotencyKey,retryOf?}, context)` synchronously commits
 the domain user entry and chat run together. Its closed input includes no
@@ -109,7 +112,7 @@ A failed cancellation write does not pretend cancellation succeeded. A model
 ignoring abort cannot keep a cancelled worker's local deadline timer alive.
 Deadlines are enforced locally as well as passed to the model control.
 
-## Context accounting and capabilities
+### Context accounting and capabilities
 
 The configured host assembler uses actual DomainPort `getSession`, optional
 `recall({q,limit})` and optional `plan({date,timeZone})` in a synchronous read tx,
@@ -142,7 +145,7 @@ If the current turn cannot fit, it remains captured but fails typed
 entries cannot be reinterpreted as trusted/user history and fail unavailable.
 No summaries, copied memory SQL, inferred classification or hidden replay buffer.
 
-## Subscribers and reconnect
+### Subscribers and reconnect
 
 `get(runId, context)` returns the durable snapshot. Complete snapshots include
 `finalText` read from the exact durable domain assistant entry (not a stream
@@ -160,7 +163,7 @@ clears provisional text and supplies the entire final domain entry. A slow
 consumer must durably look up/resubscribe. Snapshots/events never include the
 private compiler trace/manifest or raw provider parts.
 
-## Focused verification
+### Focused verification
 
 Acceptance command: `bash scripts/check-chat.sh` (managed workers run it only
 through their declared controller check). It strict-compiles fresh scoped CHAT,
@@ -186,7 +189,7 @@ and maintain authenticated SSE-session liveness on every flush with explicit
 expiry/revocation closure that never cancels durable background work. A new
 valid client reconnects to the same run. HTTP/PWA/voice integration is later.
 
-### Standing connected-chat disclosure
+#### Standing connected-chat disclosure
 
 The enrollment form can explicitly remember the provider disclosure for the current provider, route and model. The server stores this as a `standing` chat consent. Existing rows remain `conversation` scoped after the additive chat migration (version 5); they are never promoted automatically. A standing grant retains its originating conversation for provenance, but the consent resolver selects it by owner and the full route tuple, not by conversation id.
 
@@ -196,7 +199,7 @@ Enrollment and generation use the same server resolver: a valid conversation gra
 
 This is separate from connector read grants, Live consent and microphone disclosure. The native WKWebView renders the same UI; no separate native consent state authorizes chat.
 
-## Approved read tools in text chat
+### Approved read tools in text chat
 
 The host passes the same tools owner, registry and connection selection used by
 Live into `composeChat`. The first tool-enabled dispatch stores a conversation
@@ -234,3 +237,72 @@ The chat system TOOLS paragraph requires tools only when the question needs
 external evidence, answers grounded in accepted evidence and explicit disclosure
 when a tool refused. Writes, per-call approval dialogs, hot capability refresh
 and connector-specific rich cards are not part of this composition.
+
+
+## Chat steps and partial answers
+
+
+Text chat runs in two phases under one run budget (90 s):
+
+- **ACQUIRE** (ends at 70 s, or after 4 model-to-tool rounds): the model calls tools, each call
+  bounded by its own 15 s timeout. A call that outlives it is aborted and returns
+  `{ status: 'failed', code: 'timeout' }`; it never hangs the round.
+- **ANSWER**: at the fence every in-flight call is aborted and the evidence gathered so far is
+  frozen. One tool-free model call answers from that evidence and says plainly what was not
+  reached. If that call fails, the server writes the answer itself from the same evidence.
+
+Gathered evidence is never discarded: it is persisted in `chat_runs.trace.toolEvidence` before
+every model request, and the answer phase reads only that frozen copy.
+
+### Step events
+
+Step events are published on the existing chat subscription, one pair per tool call. They carry a
+label and counts only, never tool content, and never the model's text.
+
+```
+{ type: "chat_step", runId, stepId, tool, phase: "start" | "end", label, resultCount?, ok?, ms? }
+```
+
+| field | meaning |
+| --- | --- |
+| `stepId` | stable id for one call, `${runId}:${n}`; the `end` event repeats it |
+| `tool` | the tool name as the model called it |
+| `phase` | `start` when the call begins, `end` when it settles |
+| `label` | short human phrase from the server map in `server/chat/tools.ts` (`listed mail`) |
+| `resultCount` | number of results, when known; omitted rather than guessed |
+| `ok` | on `end` only: whether the call completed |
+| `ms` | on `end` only: wall time of the call |
+
+The final snapshot event of a run that hit the fence carries `partial: true` and
+`notReached: [label, ...]` naming the calls the fence cut, so a client can show the answer as
+provisional and list what was not reached.
+
+### Timing receipts
+
+`host.log` records one `chat_timing` receipt per run that answered or was fenced, validated by
+`server/host/log.ts`, milliseconds and counts only and never text:
+
+```
+{ event: "chat_timing", runId, outcome: "answered" | "fenced",
+  rounds: [modelMs, ...], tools: [{ tool, ok, ms }, ...],
+  fenceMs, acquireMs, answerMs }
+```
+
+`fenceMs` is the wall time from run start to the end of acquisition; `acquireMs` and `answerMs` are the
+budgets the run was given, so a receipt shows whether the fence cut the run early or the budget did.
+
+### resultCount
+
+Every `end` event carries `resultCount`: the number of result cards the tool's response yields, the
+same `sourceCards` projection the owner evidence uses. A call that failed, was cut by the fence, or
+whose response was refused by the result gate carries `0`.
+
+### Intent wiring is not in this wagon
+
+Text chat declares exactly the raw connector tools it declared at `c70a41c`; there is no intent tool
+and no host-side interception in the loop. K3-R7 keeps that work out of this wagon: a composed read
+cannot be journaled under one connection scope (`server/tools/index.ts:147-148`,
+`intent_scope_mismatch`) and `ToolsOwner.complete` needs a journaled intent
+(`server/tools/index.ts:345-352`), so the routed-research seam is the better place for it. Follow-up:
+issue #337.
+

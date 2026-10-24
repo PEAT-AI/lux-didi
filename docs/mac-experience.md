@@ -1,6 +1,6 @@
 # Mac companion experience
 
-Naya is a regular Mac app (Dock tile, Cmd-Tab entry, menu bar item) whose resting surface is a floating orb in the top right corner. The full window is optional and is created the first time it is asked for. Both surfaces host the service's one shared web UI in WKWebView. Swift does not duplicate Conversation, Today or Memory screens and owns no business store. A compact native voice rail owns consent, lifecycle and Start, Mute and Stop. Note capture and connection details stay native and start collapsed below the shared conversation page. See [companion protocol](companion-protocol.md) for trust and credential boundaries and [architecture](architecture.md) for the whole picture.
+Naya is a regular Mac app (Dock tile, Cmd-Tab entry, menu bar item) whose resting surface is a floating orb in the top right corner. The full window is optional and is created the first time it is asked for. Both surfaces host the service's one shared web UI in WKWebView. Swift does not duplicate Conversation, Today or Memory screens and owns no business store. A compact native voice rail owns consent, lifecycle and Start, Mute and Stop. Note capture and connection details stay native and start collapsed below the shared conversation page. See [companion protocol](native-app.md#native-companion-protocol-and-trust-boundary) for trust and credential boundaries and [architecture](architecture.md) for the whole picture.
 
 ## Launch
 
@@ -82,7 +82,7 @@ existing control assertion and expanded whole-window capture. The expected
 accessible controls stay Start recording, Stop recording, Send to Naya and Save
 note.
 No real appdata, permission prompt, live microphone, playback or notification
-is involved. See [the companion protocol](companion-protocol.md) for rejection,
+is involved. See [the companion protocol](native-app.md#native-companion-protocol-and-trust-boundary) for rejection,
 reinstall/relocation and versioned reporting semantics.
 
 ## Protected operator configuration

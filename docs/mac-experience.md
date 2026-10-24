@@ -28,6 +28,8 @@ The orb (MINI) and the window (FULL) are independent; a `PresentationCoordinator
 - Service failure or WebContent termination becomes a native retry screen, not a blank view. Reconnect is explicit and reboots page authentication.
 - Native saved, failed, cancelled and unknown outcomes are distinct; uncertain saves keep a stable idempotency identity.
 
+Right-clicking the Dock icon offers the four menu bar actions as a Dock menu: **Open Naya app**, Settings, then Start Live and Mute (Mute reads Unmute while she is muted), and macOS adds Quit itself. The items carry the menu bar's own actions, so choosing **Open Naya app** there is the one Dock interaction that opens the FULL window and activates the app, exactly like the menu item; a plain Dock click still shows the orb alone.
+
 ## Native permissions and effects
 
 Permission requests are explicit native menu actions, separate from Record.

@@ -156,7 +156,7 @@ import Foundation
               "the Dock menu carries exactly Open Naya app, Settings, a separator, Start Live and Mute")
         check(menu.items.count == 5 && menu.items[2].isSeparatorItem,
               "the Dock menu separates the app actions from the call actions and adds nothing else")
-        check(menu.items.allSatisfy { $0.target === dockMenu },
+        check(menu.items.filter { !$0.isSeparatorItem }.allSatisfy { $0.target === dockMenu },
               "every Dock menu item routes to the app's own actions")
         _ = menu.items[0].target?.perform(menu.items[0].action)
         check(dock.windowFactories == windowsBeforeDock + 1 && dock.keyAndFront == 1

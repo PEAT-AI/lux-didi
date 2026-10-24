@@ -47,7 +47,7 @@ test('the public Naya character is new, bounded, neutral and names no biography'
 });
 
 test('the release character holds the installed baseline while issue 455 remains open', () => {
-  assert.equal(sha(NAYA_CHARACTER), '8ca5a9ef9bd2ba4a7debcaa25fb9f95f593af9e708f2aac7bb23fec3c1826287');
+  assert.equal(sha(NAYA_CHARACTER), '1b188117660fe12204cd542001b585fcce69add4f1cc6d27689720e193cac977');
   assert.match(NAYA_CHARACTER, /thirty to ninety seconds/, 'the baseline duration conflict remains open');
   assert.match(NAYA_CHARACTER, /never invent a message, event, date, source or action/);
   assert.match(NAYA_CHARACTER, /Hold him to the commitments he has stated/);
@@ -347,7 +347,7 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
 
 test('the public character, voice surface and tool conduct are the authored verbatim constants', () => {
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
-  assert.equal(sha(NAYA_CHARACTER), '8ca5a9ef9bd2ba4a7debcaa25fb9f95f593af9e708f2aac7bb23fec3c1826287');
+  assert.equal(sha(NAYA_CHARACTER), '1b188117660fe12204cd542001b585fcce69add4f1cc6d27689720e193cac977');
   assert.equal(sha(NAYA_VOICE_SURFACE), 'ea9e608186615ffddeb16008c55dd7d4263ee45412f679b06f8511f9b1d286d3');
   assert.equal(sha(NAYA_VOICE_TOOLS), '1f0479d58a4955a4ab84a0b52c523cb22ced2c737e47c6bd3c74429a64f7f47a');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '8a41b4537fd70c245e02c9b8f3911f88dcd5cfb794b246067ef5d9ea6e806574');
@@ -1094,7 +1094,7 @@ test('1023-N8: the calendar never leads two calls in a row', () => {
 
 test('1023-N8: the open loop is the stored column, never a cue word in a summary', () => {
   const candidates = [pastSummary(0, 'The owner said the invoice is still to be sent.')];
-  const stored = buildOpeningOptions({ candidates, openLoops: ['The owner said the deposit is still to be paid.'],
+  const stored = buildOpeningOptions({ candidates, openLoops: [storedLoop('The owner said the deposit is still to be paid.', 2)],
     now: NOW_3U, timeZone: 'UTC', rotation: 0 });
   assert.equal(optionOf(stored, 'open-loop')?.topic, 'the deposit is still to be paid', 'the stored loop is offered as written');
   const none = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', rotation: 0 });
@@ -1213,7 +1213,8 @@ test('593: an old standing loop carries its age and last-seen date', () => {
 
 // 593: the persona states the 24 hour rule once, in plain words.
 test('593: the persona carries one rule about still and loops not seen in the last day', () => {
-  assert.match(NAYA_CHARACTER, /still only about (?:an open loop|a loop)/i, 'the still rule is in the persona');
+  assert.match(NAYA_CHARACTER, /Say still about one only when it was confirmed in the last 24 hours/, 'the 24 hour still rule is in the persona');
+  assert.match(NAYA_CHARACTER, /never state as a current fact/, 'and an older loop is never a current fact');
   assert.equal(NAYA_CHARACTER.split('24 hours').length - 1, 1, 'the rule is stated once');
 });
 

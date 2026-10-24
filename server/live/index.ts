@@ -170,16 +170,16 @@ const OPEN_LOOP_SOURCES = 3;
 
 /** Contract 1023 N8: the stored open_loop column of the eligible past calls, newest first. The summary text is
  *  never mined for a cue word, so a call whose distillation stored no loop offers none. */
-function storedOpenLoops(tx: Transaction, allowedClasses: readonly DataClass[], now: number): string[] {
-  const rows = tx.all(`SELECT s.live_session_id AS id, s.open_loop AS loop FROM conversation_summaries s
+function storedOpenLoops(tx: Transaction, allowedClasses: readonly DataClass[], now: number): { text: string; lastSeenAt: number }[] {
+  const rows = tx.all(`SELECT s.live_session_id AS id, s.open_loop AS loop, s.ended_at AS seen_at FROM conversation_summaries s
     WHERE s.status='complete' AND s.open_loop IS NOT NULL AND s.ended_at IS NOT NULL AND s.ended_at<=? AND s.ended_at>=?
     ORDER BY s.ended_at DESC,s.rowid DESC LIMIT 12`, [now, now - EARLIER_CONVERSATIONS_WINDOW_MS]);
   const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
-  const loops: string[] = [];
+  const loops: { text: string; lastSeenAt: number }[] = [];
   for (const row of rows) {
     const source = historySessionEvidence(tx, String(row['id']), eligibility);
     if (!source || !allowedClasses.includes(source.dataClass)) continue;
-    loops.push(String(row['loop']));
+    loops.push({ text: String(row['loop']), lastSeenAt: Number(row['seen_at']) });
     if (loops.length === OPEN_LOOP_SOURCES) break;
   }
   return loops;
@@ -1105,6 +1105,7 @@ export class LiveSessionOwner {
         accentSelection: currentLiveAccent(),
         runtimeContext: this.#liveRuntimeContext(toolNames, timeZone),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+        now, timeZone,
         ...(calendar ? { calendar } : {}),
         ...((earlierSection || summaryGap) ? { earlierConversations: [earlierSection, summaryGap ? CONVERSATION_RECALL_COVERAGE_NOTE : undefined].filter(Boolean).join('\n') } : {}),
         ...(this.#profile.overlay ? { overlay: this.#profile.overlay } : {}),

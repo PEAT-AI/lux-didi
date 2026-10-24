@@ -32,6 +32,7 @@ import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest, LiveToolResponse, LiveToolSendOutcome, TurnFailedReason } from '../adapters/live-voice/index.js';
+import type { DebtPhase, DebtReason } from '../trace/kinds.js';
 import { headAnchor, terminalAnchor, canonicalSpeechLanguage, effectiveLanguageCode, LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
 import { currentLiveAccent } from '../config/live.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
@@ -259,8 +260,7 @@ export const RESPONSE_WATCHDOG_WINDOW_MS = 120_000;
  *  whatever text it wrote in between. The rebuild rung is seven seconds later, which is AUDIBLE_DEBT_REBUILD_MS. */
 export const AUDIBLE_DEBT_RUNG_MS = 8_000;
 export const AUDIBLE_DEBT_REBUILD_MS = AUDIBLE_DEBT_RUNG_MS + RESPONSE_WATCHDOG_RECOVERY_MS;
-/** #538: every reason the debt clock and the typed turn failure can name, a closed set with no free text in it. */
-type DebtReason = 'tool_output' | 'recreate' | 'audible' | 'owner_barge_in' | 'turn_end' | 'dead_air' | 'rebuild' | 'send_failed';
+
 /** The write tools the Live model may decline or call, and the resource each one is pinned to. */
 const OWNER_WRITE_RESOURCES = new Map([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault']]);
 /** #592: the closed set of causes an idle arm may name, in the host log and in the arm itself. */
@@ -1753,7 +1753,7 @@ export class LiveSessionOwner {
     handle.debtRequeued = false;
     // One silence, one clock: the sliding watchdog stands down for the silence the debt clock now owns.
     this.#cancelWatchdog(handle);
-    this.#noteDebt('start', reason);
+    this.#noteDebt(handle, 'start', reason);
     this.#scheduleDebt(handle, AUDIBLE_DEBT_RUNG_MS, 'rung');
   }
 
@@ -1770,11 +1770,13 @@ export class LiveSessionOwner {
     handle.debtTimer?.cancel(); handle.debtTimer = undefined;
     handle.debtSince = undefined; handle.debtStep = undefined; handle.debtOutputs = undefined;
     handle.debtRequeued = false;
-    this.#noteDebt('clear', reason);
+    this.#noteDebt(handle, 'clear', reason);
   }
 
-  #noteDebt(phase: 'start' | 'clear' | 'rung', reason: DebtReason): void {
+  /** #538: one debt phase change, as the same content-free enums in the host log and in the trace timeline. */
+  #noteDebt(handle: ActiveSession, phase: DebtPhase, reason: DebtReason): void {
     hostLogEvent({ event: 'live_debt', phase, reason });
+    this.#receipt(handle, 'live.debt', {}, { phase, reason, at: this.#now() });
   }
 
   /**
@@ -1788,7 +1790,7 @@ export class LiveSessionOwner {
     handle.debtTimer = undefined;
     if (handle.debtBargeIn) return;
     const turnAgeMs = Math.max(0, this.#now() - handle.debtSince);
-    this.#noteDebt('rung', step === 'rung' ? 'dead_air' : 'rebuild');
+    this.#noteDebt(handle, 'rung', step === 'rung' ? 'dead_air' : 'rebuild');
     if (step === 'rebuild') { await this.#watchdogRecover(handle, generation, turnAgeMs); return; }
     // The receipts the dead-air nudge has always written, whichever provider answers the rung.
     hostLogEvent({ event: 'live_dead_air', msSinceTool: turnAgeMs,
@@ -1816,14 +1818,19 @@ export class LiveSessionOwner {
    */
   async #recreateForDeadAir(handle: ActiveSession, reason: 'send_failed' | 'dead_air'): Promise<boolean> {
     if (this.#settled(handle) || handle.debtBargeIn) return false;
-    if (reason === 'send_failed') this.#noteDebt('rung', 'send_failed');
+    if (reason === 'send_failed') this.#noteDebt(handle, 'rung', 'send_failed');
     const outputs = handle.debtOutputs ?? [];
     const requeue = outputs.length > 0 && handle.debtRequeued !== true;
     const opened = await this.#recoverFromDrop(handle, undefined, true, 'model_mute');
-    if (!opened || this.#settled(handle)) { if (reason === 'dead_air') this.#turnFailed(handle, handle.generation, 'recreate_failed'); return false; }
+    // F3: a recreate that could not open is the speakable failure, whichever rung started the ladder.
+    if (!opened || this.#settled(handle)) { this.#turnFailed(handle, handle.generation, 'recreate_failed'); return false; }
     if (requeue) {
       handle.debtRequeued = true;
-      try { handle.session.sendToolResponse({ responses: outputs }); } catch { /* the new transport settles itself */ }
+      // F3: the re-queue's own outcome is read, never dropped. A fresh session has no such pending batch, so a
+      // refusal here is recorded and the seeded answer carries on; it is not a second failure of the same kind.
+      let requeued: LiveToolSendOutcome = 'failed';
+      try { requeued = handle.session.sendToolResponse({ responses: outputs }); } catch { /* the new transport settles itself */ }
+      if (requeued === 'failed') this.#noteDebt(handle, 'rung', 'send_failed');
     }
     this.#armDebt(handle, outputs, 'recreate');
     this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');

@@ -3941,6 +3941,48 @@ test('D3: one audible frame restarts the deadline from that frame, never from th
   attachment.close();
 });
 
+test('#538: the Gemini path sends its one Continue at 8 s and never closes or recreates the session', async t => {
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'gemini-debt', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'g1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] }));
+  await settlePort();
+  for (let elapsed = 0; elapsed < 8_500; elapsed += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
+  assert.deepEqual(fake.texts, ['Continue.'], 'the 8 s rung on this path is the one neutral continuation input');
+  assert.equal(fake.closes, 0, 'a Continue rung never closes the provider session');
+  assert.equal(fake.sessionsOpened, 1, 'and never recreates it');
+  for (let elapsed = 0; elapsed < 7_500; elapsed += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
+  assert.equal(fake.sessionsOpened, 2, 'the 15 s rung is the one path that opens a fresh session');
+  assert.equal(fake.closes, 1, 'and it closes the old one exactly once');
+  attachment.close();
+});
+
+test('#538: the trace timeline records the debt clock as content-free enums', async t => {
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'trace-debt', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 't1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] }));
+  await settlePort();
+  for (let elapsed = 0; elapsed < 8_500; elapsed += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
+  fake.emit(audibleFrame);
+  await settlePort();
+  const rows = h.store.transaction(tx => tx.all(
+    "SELECT detail FROM trace_event WHERE live_session_id=? AND kind='live.debt' ORDER BY seq", [session.liveSessionId]));
+  const seen = rows.map(row => JSON.parse(String(row['detail'])) as { phase: string; reason: string });
+  assert.deepEqual(seen.map(entry => [entry.phase, entry.reason]), [['start', 'tool_output'], ['rung', 'dead_air'], ['clear', 'audible']],
+    'the start, the rung and the clear, in order');
+  for (const entry of seen) {
+    assert.deepEqual(Object.keys(entry).sort(), ['at', 'phase', 'reason'], 'a time and two enums, never text');
+  }
+  attachment.close();
+});
+
 test('D3: an audible frame followed by silence still recovers on the same clock', async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-progress-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));

@@ -636,6 +636,8 @@ class OutputChannel {
 }
 
 const normalized = (text: string) => text.toLowerCase().replace(/\s+/g, ' ').trim().replace(/[.!?,;:]+$/, '').trim();
+/** The note's own half of its source identity: the same note twice hashes the same, a different note does not. */
+const noteDiscriminator = (text: string) => createHash('sha256').update(normalized(text)).digest('hex').slice(0, 8);
 // A leading request phrase is scaffolding, not the note: the qualifier test and the stored text both read past it.
 const command = /^(?:naya\s*,?\s+)?(?:(?:please\s+)?remember\b(?:\s+that\b)?|(?:please\s+)?note\s+that\b|(?:please\s+)?keep\s+in\s+mind\b(?:\s+that\b)?)[\s:,]*/i;
 const classified = /^(?:privately\b|(?:this\s+)?(?:is\s+|as\s+)?(?:private|sensitive)\b)/i;
@@ -781,9 +783,11 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
   if (noteFeels !== ask.feels && (noteFeels === 'deny' || ask.feels === 'deny')) return receipt({ remembered: false, code: 'owner_text_mismatch' }, metrics);
   const utterance = ask.turn.text.trim();
   if (classified.test(utterance.replace(command, '').trim()) || classified.test(noteText)) return receipt({ remembered: false, code: 'private_memory_unsupported' }, metrics);
-  // One entry per owner utterance: the source identity is the canonical `session:journal-sequence` that
-  // the domain's deletion tombstone matches, so a note is keyed by the utterance, not by its own text.
-  const externalId = `${liveSessionId}:${ask.turn.seq}`;
+  // One entry per note: the source identity is the canonical `session:journal-sequence` plus a
+  // discriminator over the note's own normalised text, so two different notes supported by the same
+  // owner turn are both kept while the same note said twice is refused. The deletion tombstone matches
+  // exactly this shape, so a forgotten note stays forgotten without touching its sibling.
+  const externalId = `${liveSessionId}:${ask.turn.seq}:${noteDiscriminator(noteText)}`;
   const existing = memory.rememberedLiveEntry(tx, externalId);
   if (existing) return receipt({ remembered: false, code: 'already_remembered', entryId: existing }, metrics);
   const clock = { now: () => now };

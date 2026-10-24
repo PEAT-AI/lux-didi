@@ -395,7 +395,7 @@ test('a later remember_note cannot recreate a deleted note from the retained voi
   assert.deepEqual(refusal(repeated), { remembered: false, code: 'already_remembered', entryId: result.entryId });
   const tombstone = h.store.transaction(tx => tx.get('SELECT * FROM entry_tombstones WHERE entry_id = ?', [String(result.entryId)]));
   assert.equal(tombstone?.source_kind, 'live-voice');
-  assert.match(String(tombstone?.source_key), /^[0-9a-f-]{36}:\d+$/);
+  assert.match(String(tombstone?.source_key), /^[0-9a-f-]{36}:\d+:[0-9a-f]{8}$/);
   assert.equal(JSON.stringify(tombstone).includes(payload), false);
   assert.equal(rows(h).some(row => row.text === payload), false, 'retained voice turn must not resurrect deleted memory');
 });

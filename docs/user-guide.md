@@ -137,7 +137,8 @@ When the Google connector fails, Naya says which kind of failure it was. A sign-
 permission problem (the grant is missing, revoked, unreadable, or without that family's
 read scopes, or the account is not the one you configured) makes her say that a fresh
 sign-in is needed and name the helper's own command, `lux-google-mcp authorize --family
-gmail` or `--family calendar`; asking again before you run it changes nothing, because
+gmail` or `--family calendar`, which you complete with the token path and account your
+configuration already names; asking again before you run it changes nothing, because
 the helper repeats the same refusal until its credential file changes. A transient
 failure (a refresh that could not reach Google, or a Google API error) is retried on
 your next request, so just ask again. A tool or argument problem on her side is her

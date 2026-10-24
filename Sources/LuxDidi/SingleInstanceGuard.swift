@@ -129,7 +129,7 @@ enum OrbFirstAutoConnect {
     static let calendarStepMs = 200
 
     /// The probe and the clock are injected, so the bound is provable with no host and no waiting.
-    static func waitForCalendar(published: () async -> Bool,
+    @MainActor static func waitForCalendar(published: () async -> Bool,
                                 sleep: (Int) async -> Void,
                                 boundMs: Int = calendarBoundMs,
                                 stepMs: Int = calendarStepMs) async -> Bool {

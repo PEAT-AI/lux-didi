@@ -2394,14 +2394,20 @@ test('L7: a response that began under the mute is dropped at unmute, and the mut
   const played: string[] = [];
   void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
   attachment.setInputMuted(true);
-  // The answer starts under the mute: its frame is dropped and the answer is held.
+  // The answer starts under the mute: its frame is dropped and the answer is held. The transcription sent
+  // after it is an ordered receipt on the same socket: a later journal event proves the host has handled
+  // the frame, so no wall-clock tick is asked to stand in for delivery.
   h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
-  await tick(); await tick();
+  let handled = h.owner.get(session.liveSessionId).journal.events;
+  h.f.send({ serverContent: { outputTranscription: { text: 'held answer', finished: true } } });
+  await drain(h, session.liveSessionId, handled + 1);
   h.advance(25_000); scheduler.runDue();
   attachment.setInputMuted(false);
   // The same response streams on after the unmute: not one frame of it is played.
   h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
-  await tick(); await tick();
+  handled = h.owner.get(session.liveSessionId).journal.events;
+  h.f.send({ serverContent: { outputTranscription: { text: 'stale answer', finished: true } } });
+  await drain(h, session.liveSessionId, handled + 1);
   assert.equal(played.length, 0, 'a stale answer is never played at unmute');
   // The dropped response ends before the next turn begins.
   h.f.send({ serverContent: { turnComplete: true } });

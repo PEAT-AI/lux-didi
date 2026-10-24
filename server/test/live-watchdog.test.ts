@@ -148,8 +148,7 @@ test('#591: an ambient-only turn closes at the watchdog without a nudge and its 
   assert.deepEqual(phases(live), ['armed', 'closed', 'recovered'], 'no nudge: the turn is closed and the session rebuilt');
   assert.equal(live.fake.sessionsOpened, 2, 'the silent turn still rebuilds the provider session');
   assert.equal(openingText(live), undefined, 'nothing asks the rebuilt session to speak, so no "I am back"');
-  assert.deepEqual(continuityEvents(live).filter(event => event !== 'resumed'), [], 'no reconnect chime is requested');
-  assert.deepEqual(live.output.filter(chunk => chunk.kind === 'audio'), [], 'the rebuilt session plays no audio');
+  assert.deepEqual(continuityEvents(live), [], 'no reconnect marker reaches the native shell, so no ring and no chime');
   assert.deepEqual(rebuildTriggers(live), ['no_output_after_ambient'], 'the rebuild names ambient sound as its trigger');
 });
 

@@ -6020,3 +6020,20 @@ test('R1 evidence release cannot skip provider close or the typed terminal', asy
   assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'voice_stop' });
   assert.equal(frames.filter(frame => frame !== 'binary' && JSON.parse(frame).type === 'terminal').length, 1);
 });
+
+test('R1 a failed terminal write with working reads still delivers the in-memory terminal', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const session = h.owner.create({ idempotencyKey: 'stop-write-only-failure', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  h.store.transaction(tx => tx.run("CREATE TRIGGER synthetic_terminal_failure BEFORE UPDATE OF terminal_outcome ON live_sessions WHEN NEW.terminal_outcome IS NOT NULL BEGIN SELECT RAISE(FAIL,'synthetic terminal write failure'); END"));
+  const frames: string[] = [];
+  const pump = pumpOutput(recordingSocket(frames), attachment, () => { assert.fail('terminal was skipped'); }, 1_000_000);
+  fake.emit({ type: 'inputTranscription', text: 'Naya stop listening', finished: false });
+  await pump;
+  const snapshot = await attachment.done;
+  assert.deepEqual(snapshot.terminal, { state: 'closed', code: 'voice_stop' });
+  assert.equal(snapshot.journal.complete, false, 'a failed write is never reported as durable');
+  assert.equal(frames.filter(frame => frame !== 'binary' && JSON.parse(frame).type === 'terminal').length, 1);
+});

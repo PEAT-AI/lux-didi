@@ -920,8 +920,15 @@ class Session implements LiveVoiceSession {
   private ownerTurnEnded(): void {
     if (this.terminal) return;
     const now = this.clock.now();
-    if (this.heldAudibleBytes > 0 || this.playbackUntil > now) return;
     this.endTurnTranscripts();
+    if (this.heldAudibleBytes > 0 || this.playbackUntil > now) {
+      const token = this.episodeToken, epoch = this.socket;
+      this.episodeQuiet = this.clock.setTimer(Math.max(1, this.heldAudibleBytes > 0 ? 100 : this.playbackUntil - now), () => {
+        if (this.terminal || token !== this.episodeToken || epoch !== this.socket) return;
+        this.endInputEpisode();
+      });
+      return;
+    }
     this.emit({ type: 'modelTurnStarted' });
     this.touch();
   }
@@ -1758,6 +1765,11 @@ class Session implements LiveVoiceSession {
     const status = code === 'closed' ? 'closed' : code === 'cancelled' ? 'cancelled' : code === 'deadline' ? 'deadline' : 'failed';
     const providerSideFailure = this.isReady && code === 'protocol_error';
     this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}), ...(upstream ? { upstream } : {}) });
+    this.discardHeadStart();
+    if ((code === 'closed' || code === 'cancelled') && this.delegatedOutstanding && this.currentResponse !== undefined && this.socket?.readyState === WebSocket.OPEN) {
+      try { this.socket.send(JSON.stringify({ type: 'response.cancel', event_id: `stop_${++this.commandSequence}`, response_id: this.currentResponse })); }
+      catch { this.diagnostic.localWriteCallbackErrorCalls++; }
+    }
     this.clearUploadBlock();
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);

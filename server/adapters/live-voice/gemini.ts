@@ -530,8 +530,8 @@ class Session implements LiveVoiceSession {
           || ('text' in transcription && typeof transcription.text !== 'string')) fail('protocol_error');
         // Gemini's Transcription.text is optional: a carrier frame may hold the audio modelTurn and a
         // text-less outputTranscription together. Skipping the empty transcription keeps the audio.
-        if ('text' in transcription) {
-          const text = this.text(transcription.text);
+        if ('text' in transcription || transcription.finished === true) {
+          const text = 'text' in transcription ? this.text(transcription.text) : '';
           if (type === 'inputTranscription') { this.diagnostic.inputTranscriptionEvents++; this.diagnostic.inputTranscriptionCharacters += text.length; }
           events.push({ type, text, ...('finished' in transcription ? { finished: transcription.finished as boolean } : {}) });
         }

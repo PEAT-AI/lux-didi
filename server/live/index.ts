@@ -37,7 +37,7 @@ import { currentLiveAccent } from '../config/live.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
 import { parseTerminal, persistedKinds, readFragmentPage, retainedBytes } from './journal.js';
-import { stopPhrase } from './stop-phrase.js';
+import { normalizeStopSpeech, stopNameId, stopPhrase, STOP_WORD_LIMIT } from './stop-phrase.js';
 import {
   LiveError,
   type CreateLiveSession, type JournalKind, type LiveAttachment, type LiveConsumerState, type LiveContext,
@@ -350,6 +350,9 @@ function stepActionOf(name: string): string {
 
 interface ActiveSession {
   inputFinal?: boolean;
+  stopWords?: string[];
+  stopInputAt?: number;
+  stopFinalJournalId?: number;
   inputAt?: number;
   /** When the owner's turn finished, to measure dead air until the first model audio. */
   inputFinalAt: number | undefined;
@@ -1495,9 +1498,15 @@ export class LiveSessionOwner {
       diagnosticTerminalCode: 'outcome_unknown', diagnosticsEmitted: false,
       loopDone: deferred<void>(), done: deferred<LiveSessionSnapshot>(), resolveDone: () => {}, persistFailure: undefined,
     };
+    const initialSnapshot = this.#readSnapshot(liveSessionId);
     handle.resolveDone = () => {
       try { handle.done.resolve(this.#readSnapshot(liveSessionId)); }
-      catch (error) { handle.done.reject(error); }
+      catch (error) {
+        if (!handle.terminalOutcome) { handle.done.reject(error); return; }
+        handle.persistFailure ??= error;
+        handle.done.resolve({ ...initialSnapshot, ready: handle.ready, terminal: handle.terminalOutcome,
+          consumerState: 'ended', journal: { ...initialSnapshot.journal, complete: false } });
+      }
     };
     session.ready.then(() => {
       if (handle.generation !== 0 || this.#settled(handle)) return;
@@ -2051,7 +2060,7 @@ export class LiveSessionOwner {
    *  finalized transcript with no text in it is not a question and owes no answer. */
   #ownerWordsSinceModelOutput(liveSessionId: string): boolean {
     return this.#store.transaction(tx => !!tx.get(
-      "SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND finished=1 AND TRIM(COALESCE(text,''))<>''"
+      "SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND TRIM(COALESCE(text,''))<>''"
       + " AND journal_id > COALESCE((SELECT MAX(journal_id) FROM live_journal WHERE live_session_id=? AND kind='outputTranscription'),0) LIMIT 1",
       [liveSessionId, liveSessionId]));
   }
@@ -2449,6 +2458,11 @@ export class LiveSessionOwner {
         if (this.#settled(handle) || generation !== handle.generation) break;
         // 3j: the watchdog sees every port event before the per-type dispatch, because the arms sit on events
         // this loop handles early (modelTurnStarted) and on ones it consumes later.
+        this.#voiceStopGate(handle, event, generation);
+        if (handle.terminal) break;
+        if ((event.type === 'audio' && event.audible !== false) || event.type === 'outputTranscription' || event.type === 'modelText') {
+          handle.stopWords = []; handle.stopInputAt = undefined;
+        }
         this.#watchdogEvent(handle, event);
         if (event.type === 'modelText' || event.type === 'outputTranscription') handle.modelTextSinceOpen = true;
         // D3: only audio the adapter measured as audible is output. A fill frame is forwarded to playback and
@@ -2648,7 +2662,7 @@ export class LiveSessionOwner {
           if (handle.inputFinal) for (const resolve of handle.inputFinalWaiters ?? []) resolve();
         }
         this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, kind, persisted, ++handle.markerSequence) });
-        this.#voiceStopGate(handle, event, generation);
+        if (event.type === 'inputTranscription' && event.finished === true) this.#finalizeOwnerInput(handle, generation, event.finalOrigin);
       }
     } catch (error) {
       handle.persistFailure = error;
@@ -2695,6 +2709,8 @@ export class LiveSessionOwner {
     const journalId = handle.inputJournalId, generation = handle.generation;
     handle.inputFinalTimer = this.#schedule(() => {
       if (this.#settled(handle) || handle.generation !== generation || handle.inputJournalId !== journalId) return;
+      this.#finalizeOwnerInput(handle, generation, 'app_model_start');
+      if (handle.terminal) return;
       try {
         this.#store.transaction(tx => tx.run("UPDATE live_journal SET finished=1,final_origin='app_model_start',finalized_at=?,finalized_mono_ms=? WHERE journal_id=? AND live_session_id=? AND kind='inputTranscription'", [this.#now(), hostMonotonicMs(), journalId, handle.liveSessionId]));
       } catch (error) {
@@ -3302,47 +3318,39 @@ export class LiveSessionOwner {
 
   #settle(handle: ActiveSession, outcome: LiveTerminalOutcome, complete: boolean, consumerState: LiveConsumerState, rejected: { kind: JournalKind; sequence: number } | null): void {
     if (handle.terminal) return;
-    // O1b-A: a session that ends owes no open turn: the turn closes as session_end so the timeline shows the
-    // boundary the call really had.
-    this.#closeTurn(handle, 'session_end');
+    // Fence input and output before any operation that can fail or reenter.
     handle.terminal = true;
-    handle.researchLedger.close();
-    this.#tools?.owner.releaseEvidence(handle.liveSessionId);
     handle.terminalOutcome = outcome;
     handle.diagnosticTerminalCode = 'code' in outcome ? outcome.code : outcome.state;
-    handle.sessionTimer?.cancel(); handle.callTimer?.cancel(); handle.idleTimer?.cancel();
-    handle.muteTimer?.cancel(); handle.mutedOfferTimer?.cancel();
-    handle.session.close();
-    let journalSequence: number;
+    const attempt = (action: () => void): void => {
+      try { action(); } catch (error) { handle.persistFailure ??= error; }
+    };
+    let journalSequence: number | undefined;
     try {
-      journalSequence = this.#store.transaction(tx => {
-        // Only the owner's own stop can leave speech unheard; a revocation or a failure ends differently.
-        if (outcome.state === 'closed') this.#keepUnheard(handle, tx);
-        if (handle.pendingDiagnosticLoss) tx.run("UPDATE live_sessions SET diagnostic_metadata_state='partial',diagnostic_content_state='partial',diagnostic_failures=MAX(COALESCE(diagnostic_failures,0),1),diagnostic_last_reason='store_unavailable' WHERE live_session_id=?", [handle.liveSessionId]);
-        return this.#terminalInTx(tx,handle.liveSessionId,outcome,complete,this.#now(),consumerState,rejected);
+      attempt(() => handle.abort.abort());
+      attempt(() => handle.researchLedger.close());
+      attempt(() => handle.consumer.dropAudio());
+      attempt(() => handle.session.close());
+    } finally {
+      attempt(() => this.#closeTurn(handle, 'session_end'));
+      attempt(() => this.#tools?.owner.releaseEvidence(handle.liveSessionId));
+      attempt(() => { handle.sessionTimer?.cancel(); handle.callTimer?.cancel(); handle.idleTimer?.cancel();
+        handle.muteTimer?.cancel(); handle.mutedOfferTimer?.cancel(); handle.inputFinalTimer?.cancel(); });
+      attempt(() => {
+        journalSequence = this.#store.transaction(tx => {
+          if (outcome.state === 'closed') this.#keepUnheard(handle, tx);
+          if (handle.pendingDiagnosticLoss) tx.run("UPDATE live_sessions SET diagnostic_metadata_state='partial',diagnostic_content_state='partial',diagnostic_failures=MAX(COALESCE(diagnostic_failures,0),1),diagnostic_last_reason='store_unavailable' WHERE live_session_id=?", [handle.liveSessionId]);
+          return this.#terminalInTx(tx, handle.liveSessionId, outcome, complete, this.#now(), consumerState, rejected);
+        });
       });
-    } catch (error) {
-      // The durable write failed, but the typed terminal fact must still reach the app. Log the failure
-      // (bounded fields only) and resolve done with the in-memory outcome so the socket sends the real code.
-      handle.persistFailure = error;
-      console.error(JSON.stringify({ event: 'live_terminal_write_failed', liveSessionId: handle.liveSessionId,
-        code: handle.diagnosticTerminalCode,
-        class: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.constructor.name) ? error.constructor.name : 'Unknown' }));
-      handle.consumer?.close();
-      handle.abort.abort();
+      attempt(() => this.#observeState(handle, 'ended', 'settle'));
+      attempt(() => this.#onSessionTerminal?.(handle.liveSessionId));
+      if (journalSequence !== undefined) attempt(() => this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'terminal', sequence: null, journalSequence: journalSequence!, text: null, finished: null, value: null } }));
+      attempt(() => handle.consumer.close());
       handle.resolveDone();
-      return;
     }
-    // The terminal projection is written as it happens: a session that ends with no web poll open still leaves
-    // its last transition in host.log (GL2-R1).
-    this.#observeState(handle, 'ended', 'settle');
-    // The terminal fact is durable before it is emitted; committed markers stay queued on overflow.
-    // Distillation is scheduled here, never awaited: close returns immediately.
-    this.#onSessionTerminal?.(handle.liveSessionId);
-    this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'terminal', sequence: null, journalSequence, text: null, finished: null, value: null } });
-    handle.consumer?.close();
-    handle.abort.abort();
-    handle.resolveDone();
+    if (handle.persistFailure) console.error(JSON.stringify({ event: 'live_terminal_write_failed', liveSessionId: handle.liveSessionId,
+      code: handle.diagnosticTerminalCode, class: 'Error' }));
   }
 
   /**
@@ -3351,12 +3359,35 @@ export class LiveSessionOwner {
    * session (cancelling any answer in flight), drops every later mic frame and sends the one end frame
    * native acts on, the session's own terminal.
    */
-  #voiceStopGate(handle: ActiveSession, event: LiveVoiceEvent, generation: number): void {
-    if (event.type !== 'inputTranscription' || event.finished !== true) return;
-    if (handle.muted || handle.terminal || generation !== handle.generation) return;
-    if (event.finalOrigin === 'typed') return;
-    const spoken = this.#store.transaction(tx => finishedOwnerTurn(tx, handle.liveSessionId));
-    if (stopPhrase(spoken) === null) return;
+  #finalizeOwnerInput(handle: ActiveSession, generation: number, finalOrigin?: string): void {
+    if (handle.stopFinalJournalId === handle.inputJournalId || handle.terminal || generation !== handle.generation) return;
+    handle.stopFinalJournalId = handle.inputJournalId;
+    // A fallback can finalize the last text row rather than writing an empty final marker.
+    const text = this.#store.transaction(tx => {
+      const rows = tx.all("SELECT text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id DESC", [handle.liveSessionId]);
+      const pending: string[] = [];
+      for (const [i, row] of rows.entries()) {
+        if (i > 0 && Number(row['finished']) === 1) break;
+        pending.unshift(String(row['text'] ?? ''));
+      }
+      return pending.join('');
+    });
+    this.#voiceStopGate(handle, { type: 'inputTranscription', text, finished: true, finalOrigin } as LiveVoiceEvent, generation, true);
+  }
+
+  #voiceStopGate(handle: ActiveSession, event: LiveVoiceEvent, generation: number, final = false): void {
+    if (event.type !== 'inputTranscription') return;
+    if (handle.muted || handle.terminal || generation !== handle.generation || event.finalOrigin === 'typed') return;
+    const now = this.#now();
+    if (handle.stopInputAt === undefined || now - handle.stopInputAt >= 3_000) handle.stopWords = [];
+    const words = normalizeStopSpeech(event.text).split(' ').filter(Boolean);
+    const window = final ? words.slice(-STOP_WORD_LIMIT) : [...(handle.stopWords ?? []), ...words].slice(-STOP_WORD_LIMIT);
+    if (!final && words.length) { handle.stopWords = window; handle.stopInputAt = now; }
+    const aliasId = window.map(stopNameId).find(id => id >= 0);
+    if (aliasId === undefined) return;
+    const matched = stopPhrase(window.join(' ')) !== null;
+    hostLogEvent({ event: 'voice_stop_candidate', aliasId, windowWords: window.length, matched, finished: event.finished === true });
+    if (!matched) return;
     this.#settle(handle, { state: 'closed', code: 'voice_stop' }, true, 'ended', null);
     hostLogEvent({ event: 'voice_stop' });
   }

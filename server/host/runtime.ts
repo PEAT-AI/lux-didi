@@ -467,11 +467,12 @@ export async function startHost(config: HostConfig) {
     const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match, endpointId) => log.event({ event: 'connector_identity', connector, proven, match, ...(endpointId === undefined ? {} : { endpointId }) }), lifecycleLog: connectorLifecycleSink({ log: event => log.event(event), onRecovered: endpointId => refreshCalendarDigest(endpointId), onConnected: endpointId => refreshCalendarFirstConnect(endpointId) }) });
     // 1015: the digest's background owner. It reads once at host start and every 15 minutes after, with
     // the connector's own 30 s budget and off every request path, and keeps the fetch time with the text.
-    const digestTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const digestNow = config.now ?? Date.now;
+    // #595: the owner travels, so every digest read asks the host for its zone instead of starting with one.
+    const hostTimeZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone;
     const calendarDigest = new CalendarDigestCache(
-      async () => await readCalendarDigest(calendarDigestReader(mcp), { now: digestNow, timeZone: digestTimeZone }),
-      { now: digestNow, timeZone: digestTimeZone, log: event => log.event(event) });
+      async () => await readCalendarDigest(calendarDigestReader(mcp), { now: digestNow, timeZone: hostTimeZone() }),
+      { now: digestNow, timeZone: hostTimeZone(), log: event => log.event(event) });
     const digestRefreshLog: CalendarDigestRefreshLog = event => log.event(event);
     refreshCalendarDigest = bindCalendarRecovery({ digest: calendarDigest, endpoints: () => mcp.status().endpoints, grantOf: id => mcp.registry.currentGrant(id), now: digestNow, log: digestRefreshLog });
     // The supervised host defers connector start (deferConnectors), so every connector_connected lands after
@@ -490,7 +491,9 @@ export async function startHost(config: HostConfig) {
     const summarizer = createSummarizer({ store, model: summaryModel, modelId: summaryModelId ?? 'unconfigured',
       modelAllowedClasses: providerLoaded.status === 'ready' ? providerLoaded.route.dataClasses : [],
       assistantName: owner.snapshot.displayName,
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, now: config.now ?? Date.now, log: event => log.event(event) });
+      // #595: a summary written after the owner moved names the zone he is in now, not the host start's.
+      get timeZone(): string { return Intl.DateTimeFormat().resolvedOptions().timeZone; },
+      now: config.now ?? Date.now, log: event => log.event(event) });
     const liveTools: LiveToolsComposition & { onSessionTerminal?: (liveSessionId: string) => void; log?: (event: { event: string } & Record<string, unknown>) => void } = {
       owner: mcp.owner,
       connectionIds: () => mcp.connectionIds(),

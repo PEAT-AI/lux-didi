@@ -578,6 +578,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.msSinceLastModelAudio)) return;
     return { event: 'live_turn_open', msSinceLastModelAudio: value.msSinceLastModelAudio };
   }
+  if (value.event === 'live_idle_arm') {
+    // #592: which closed cause last restarted the idle clock, and how long the clock now runs.
+    const causes = ['opened', 'unmuted', 'tool_result', 'turn_failed', 'typed', 'owner_speech', 'model_audio'];
+    if (!closedKeys(value, ['event', 'idleMs', 'resetBy'])) return;
+    if (typeof value.resetBy !== 'string' || !causes.includes(value.resetBy)) return;
+    if (!isSafeCount(value.idleMs)) return;
+    return { event: 'live_idle_arm', resetBy: value.resetBy, idleMs: value.idleMs };
+  }
   if (value.event === 'live_mute') {
     // The owner's mute, one record per change: which session and generation, whether the provider
     // session was still open after it, and how long the mute had lasted. A held answer that could

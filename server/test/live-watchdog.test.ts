@@ -7,10 +7,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { createLiveSessionOwner, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
+import { createLiveSessionOwner, IDLE_RESET_CAUSES, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
   validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
+import { safeEvent } from '../host/log.js';
 import { fakeLiveVoicePort, type FakeLiveVoice, type FakeLiveVoiceEvent } from './fixtures/fake-live-voice.js';
 import type { LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
 import { pcm } from './live-voice-fixture.js';
@@ -73,7 +74,8 @@ async function openLive(t: TestContext, overrides: { limits?: Record<string, num
   const receipts: Record<string, unknown>[] = [];
   const detach = attachHostLogSink({ event: raw => {
     const record = raw as Record<string, unknown>;
-    if (record.event === 'live_watchdog' || record.event === 'live_turn_open' || record.event === 'live_dead_air_nudge' || record.event === 'live_recovery') receipts.push(record);
+    if (record.event === 'live_watchdog' || record.event === 'live_turn_open' || record.event === 'live_dead_air_nudge' || record.event === 'live_recovery'
+      || record.event === 'live_idle_arm') receipts.push(record);
   } });
   t.after(() => { detach(); rmSync(dir, { recursive: true, force: true }); });
   const owner = createLiveSessionOwner({ store, voice: port, profile, now: () => scheduler.now, timeZone: 'Asia/Kolkata', schedule: scheduler.schedule });
@@ -87,6 +89,9 @@ async function openLive(t: TestContext, overrides: { limits?: Record<string, num
     advance: async ms => { scheduler.now += ms; scheduler.runDue(); await flush(); },
   };
 }
+
+/** The provider's VAD edges predate the fixture's event union; the host reads this shape all the same. */
+const vadEdge = (value: boolean): FakeLiveVoiceEvent => ({ type: 'waitingForInput', value } as unknown as FakeLiveVoiceEvent);
 
 const phases = (live: Live): unknown[] => live.receipts.filter(record => record.event === 'live_watchdog').map(record => record.phase);
 const ownerTurnEnd = (live: Live): Promise<void> => live.emit({ type: 'inputTranscription', text: 'what is on my plate', finished: true });
@@ -198,6 +203,57 @@ test('idle measures silence, so it fires with mic frames flowing and no speech, 
     await live.advance(500);
   }
   assert.ok(live.receipts.some(record => record.event === 'live_turn_open'), 'an open model turn with no turnComplete is witnessed');
+  assert.equal(terminalCode(live), 'idle_timeout');
+});
+
+test('an unattended call ends at the idle limit even while VAD only events, a nudge and a rebuild fire', async t => {
+  const live = await openLive(t, { limits: { idleMs: 300_000 } });
+  // The opener is the last real activity: model audio, then nothing the owner said.
+  await live.emit({ type: 'audio', pcm: new Uint8Array(8), rate: 24_000 });
+  const lastActivity = live.now();
+  // Ambient VAD and provider bookkeeping only: no owner speech, an empty finalized transcript, a
+  // model turn that carries no audio at all.
+  for (let spent = 0; spent < 120_000 && terminalCode(live) === undefined; spent += 20_000) {
+    // The VAD edges the provider sends on ambient sound, both of them: a start is not speech.
+    await live.emit(vadEdge(true));
+    await live.emit(vadEdge(false));
+    await live.emit({ type: 'modelTurnStarted' });
+    await live.emit({ type: 'inputTranscription', text: '', finished: true });
+    await live.advance(20_000);
+  }
+  // The silent turn arms the watchdog: the nudge and its fresh-seeded rebuild both happen here.
+  await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 30_000);
+  assert.ok(phases(live).includes('nudged'), 'the silent turn was nudged');
+  assert.equal(live.fake.sessionsOpened, 2, 'the recovery rebuilt the provider session');
+  await until(live, () => terminalCode(live) !== undefined, 400_000);
+  assert.equal(terminalCode(live), 'idle_timeout');
+  assert.equal(live.now() - lastActivity, 300_000, 'nothing but real activity moved the idle clock');
+  const resets = live.receipts.filter(record => record.event === 'live_idle_arm').map(record => record.resetBy);
+  assert.deepEqual([...new Set(resets)], ['opened', 'model_audio'], 'only the opener reset the clock');
+});
+
+test('the idle arm receipt is a closed set the host log accepts for every cause', () => {
+  // The closed set lives in the host log; every cause the arm can name must survive it, or an arm
+  // would be silently dropped from the only record of what restarted the idle clock.
+  for (const resetBy of IDLE_RESET_CAUSES) {
+    assert.deepEqual(safeEvent({ event: 'live_idle_arm', resetBy, idleMs: 300_000 }),
+      { event: 'live_idle_arm', resetBy, idleMs: 300_000 }, `the host log keeps the ${resetBy} cause`);
+  }
+  assert.equal(safeEvent({ event: 'live_idle_arm', resetBy: 'vad_start', idleMs: 1_000 }), undefined,
+    'a cause outside the closed set never reaches the host log');
+});
+
+test('a finalized owner transcript with content and model audio each reset the idle clock', async t => {
+  const live = await openLive(t, { limits: { idleMs: 300_000 } });
+  await live.emit({ type: 'audio', pcm: new Uint8Array(8), rate: 24_000 });
+  await live.advance(250_000);
+  await live.emit({ type: 'inputTranscription', text: 'book the standup for nine tomorrow', finished: true });
+  await live.advance(250_000);
+  assert.equal(terminalCode(live), undefined, 'owner speech with content restarted the idle clock');
+  await live.emit({ type: 'audio', pcm: new Uint8Array(8), rate: 24_000 });
+  await live.advance(250_000);
+  assert.equal(terminalCode(live), undefined, 'model audio restarted the idle clock');
+  await live.advance(50_000);
   assert.equal(terminalCode(live), 'idle_timeout');
 });
 

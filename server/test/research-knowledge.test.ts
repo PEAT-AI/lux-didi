@@ -93,7 +93,7 @@ test('#580: the projection carries the ranker confidence on the response, not on
 test('#580: a no-candidate low-confidence knowledge read carries the confidence and is voiced as no match', () => {
   const shaped = shapeLuxKnowledge('search_knowledge', NO_CANDIDATE);
   assert.deepEqual(shaped.knowledgeConfidence, { confidence: 'low', top: '0.11', candidates: 'no' }, 'the shape reads the ranker line before it strips it');
-  const block = shapeBlock('knowledge_search', [sub('search_knowledge', shaped.text)]);
+  const block = shapeBlock('knowledge_search', [{ ...sub('search_knowledge', shaped.text), knowledgeConfidence: shaped.knowledgeConfidence }]);
   assert.ok(block.lines.includes('knowledge: confidence=low top=0.11 candidates=no'), `the finding leads with the confidence, got ${JSON.stringify(block.lines)}`);
   assert.ok(block.lines.includes('knowledge: nothing matched this ask'), 'a low-confidence no-candidate match is voiced as no match');
   assert.equal(block.lines.some(line => line.includes('relevant candidate:')), false, 'the raw ranker line is never voiced as a hit');

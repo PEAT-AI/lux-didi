@@ -45,8 +45,8 @@ export function projectLuxResult(evidence: ConnectorResult & { requestedIds?: re
     partial: shaped.partial, originalCharacters: shaped.originalCharacters, omittedCharacters: shaped.omittedCharacters,
     status: 'completed', text: shaped.text, source: detached(source), entitySha256: payload.sha256,
     sourceVersion: 'unknown', observedAt: evidence.observedAt, coverage: detached(evidence.coverage),
-    // #580: the ranker's own retrieval metadata rides the response as data too, beside the canonical line
-    // the shaped text leads with, so a reader of the snapshot never has to parse the text for it.
+    // #580: the ranker's own retrieval metadata rides the response as data, never as text the model
+    // reads, so a reader of the snapshot takes the field instead of parsing the shaped text.
     ...(shaped.knowledgeConfidence === undefined ? {} : { knowledgeConfidence: { ...shaped.knowledgeConfidence } }),
     ...(evidence.requestedIds === undefined ? {} : { requestedIds: [...evidence.requestedIds], requestedIdsVerified: false }),
   };

@@ -676,14 +676,34 @@ export function ownerDigits(text: string, spokenWords: string): string {
   return text.split(/\s+/u).filter(word => (word.match(/\d+/gu) ?? []).every(run => spoken.has(run))).join(' ');
 }
 
+/**
+ * #631: a source name is the route's word, never the ask's subject. Every name and spoken form of a
+ * source this run may read is dropped from the topic before any source compiles it; a name whose source
+ * this run cannot read is content (an ask about "the Mongoose release" keeps Mongoose when the company
+ * layer is off the route). "Lux Didi" is the product's own name, so a bare Lux is kept inside it.
+ */
+const ROUTE_WORDS: Partial<Record<SourceKind, RegExp>> = {
+  knowledge: /\blux\b(?!\s+didi\b)|\bknowledge base\b|\bknowledge\b|\b(?:the )?vault\b|\bdrive\b/giu,
+  mail: /\b(?:the )?(?:e-?mails?|gmail|inbox(?:es)?|mails?)\b/giu,
+  chat: /\bteam chat\b|\bchats?\b|\bmattermost\b/giu,
+  calendar: /\b(?:the )?calendar\b/giu,
+  web: /\bthe web\b|\bweb\b/giu,
+  mongoose: /\bmongoose\b/giu,
+};
+
 /** #565: the topic is the only text whose words become search terms, within the owner's own numbers. */
-export function topicTerms(topic: string | undefined, spokenWords: string): string | undefined {
+export function topicTerms(topic: string | undefined, spokenWords: string, sources: readonly SourceKind[] = RESEARCH_SOURCES): string | undefined {
   if (topic === undefined) return undefined;
-  const text = ownerDigits(topic, spokenWords).trim();
+  let text = ownerDigits(topic, spokenWords);
+  for (const source of sources) {
+    const words = ROUTE_WORDS[source];
+    if (words !== undefined) text = text.replace(words, ' ');
+  }
+  text = text.replace(/\s+/gu, ' ').trim();
   return text === '' ? undefined : text;
 }
 
-export function compileMailQuery(question: string, query: string | undefined, nowMs = Date.now(), timeZone?: string, topic?: string, ownerWords?: string, fallbackWindow?: string): string {
+export function compileMailQuery(question: string, query: string | undefined, nowMs = Date.now(), timeZone?: string, topic?: string, ownerWords?: string, fallbackWindow?: string, sources: readonly SourceKind[] = RESEARCH_SOURCES): string {
   // #564: a triage ask reads the unread inbox itself, so the host's own generic inbox scan, a prose
   // question and a topic all give way to it; its own prose is never a term and no drop-a-term retry
   // follows an empty scan, so "anything important" cannot be answered from one old thread.
@@ -691,7 +711,7 @@ export function compileMailQuery(question: string, query: string | undefined, no
   const authored = (query ?? '').replace(/\s+/gu, ' ').trim();
   const person = MAIL_DIRECTION.test(question) ? mailPersonName(question) : undefined;
   const asked = mailWindow(question, nowMs, timeZone);
-  const gated = topicTerms(topic, ownerWords ?? question);
+  const gated = topicTerms(topic, ownerWords ?? question, sources);
   const topicText = gated !== undefined && contentKeywords(gated, 1).length > 0 ? gated : undefined;
   // #565: an authored query that already carries Gmail syntax is the model's own per-source search, and
   // the owner's instruction prose never reaches it because the question is not a text this compiles.
@@ -1292,7 +1312,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
   const search = (name: string, args: JsonObject, key: string): IntentSubCall => ({ key, name, args });
   // #565: the topic's words, and only the numbers the owner said in this run, are what a source may search.
   const ownerWords = config.ownerWords ?? config.question;
-  const topicText = topicTerms(config.topic, ownerWords);
+  const topicText = topicTerms(config.topic, ownerWords, config.configured);
   if (kind === 'knowledge_search') {
     // Q5-R1: a named entry is read by id through the connector's get_insight path, never searched for
     // again; the connector returns its whole body up to the knowledge body cap.
@@ -1322,7 +1342,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     // #565: a bare inbox scan stays a scan; a topic or a model query is compiled from the topic.
     // #564: a triage ask is never a bare scan, whatever prose the selector or the model wrote for it.
     const bare = config.query === undefined && topicText === undefined && !triageAsk(config.question);
-    return [search(INTERNAL.mailList, { q: bare ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone, config.topic, ownerWords), maxResults: RESEARCH.pageResults.mail }, 'm0')];
+    return [search(INTERNAL.mailList, { q: bare ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone, config.topic, ownerWords, undefined, config.configured), maxResults: RESEARCH.pageResults.mail }, 'm0')];
   }
   if (kind === 'mail_open') { const id = config.evidence.get('mail_search'); return id ? [search(INTERNAL.mailRead, { id }, 'mo0')] : []; }
   if (kind === 'chat_search') {

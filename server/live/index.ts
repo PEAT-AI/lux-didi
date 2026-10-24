@@ -351,8 +351,8 @@ function stepActionOf(name: string): string {
 interface ActiveSession {
   inputFinal?: boolean;
   stopWords?: string[];
-  stopInputAt?: number;
-  stopFinalJournalId?: number;
+  stopInputAt?: number | undefined;
+  stopFinalJournalId?: number | undefined;
   inputAt?: number;
   /** When the owner's turn finished, to measure dead air until the first model audio. */
   inputFinalAt: number | undefined;

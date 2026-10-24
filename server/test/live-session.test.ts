@@ -857,9 +857,9 @@ const recordingSocket = (frames: string[]): VoiceStopSocket => {
 };
 
 const sayStopPhrase = async (fake: ReturnType<typeof fakeLiveVoicePort>, finalOrigin?: string): Promise<void> => {
-  fake.emit({ type: 'inputTranscription', text: 'Naya, stop ', finished: false, ...(finalOrigin ? { finalOrigin } : {}) } as LiveVoiceEvent);
+  fake.emit({ type: 'inputTranscription', text: 'Naya, stop ', finished: false, ...(finalOrigin ? { finalOrigin } : {}) });
   await tick();
-  fake.emit({ type: 'inputTranscription', text: 'listening.', finished: false, ...(finalOrigin ? { finalOrigin } : {}) } as LiveVoiceEvent);
+  fake.emit({ type: 'inputTranscription', text: 'listening.', finished: false, ...(finalOrigin ? { finalOrigin } : {}) });
   await tick();
   fake.emit({ type: 'inputTranscription', text: '', finished: true, ...(finalOrigin ? { finalOrigin } : {}) });
 };

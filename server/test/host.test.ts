@@ -510,6 +510,13 @@ for (const releaseNineCatalogue of [true, false]) {
         : ['knowledge', 'data', 'crm'].map(endpoint => http(`mongoose-${endpoint}`, 'mongoose', `mongoose-${endpoint}`, `mongoose:${endpoint}`, `/mcp/${endpoint}`))),
     ] }), { mode: 0o600 });
     if (releaseNineCatalogue) {
+      // The record release 9 wrote: one token for the retired single endpoint, with no endpoint or
+      // audience of its own, so it can never be adopted by one of the three replaced endpoints.
+      await writeFile(join(config, 'mongoose-mcp.json'), JSON.stringify({
+        schemaVersion: 2, base: url, clientId: 'client', redirectPort: 45871, account: 'synthetic',
+        accessToken: 'access-token', refreshToken: 'refresh-token', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now(),
+      }), { mode: 0o600 });
+    } else {
       for (const endpoint of ['knowledge', 'data', 'crm'] as const) {
         await writeFile(join(config, `mongoose-${endpoint}.json`), JSON.stringify({
           schemaVersion: 2, base: url, clientId: 'client', redirectPort: 45871, account: 'synthetic',
@@ -529,16 +536,20 @@ for (const releaseNineCatalogue of [true, false]) {
     assert.deepEqual(reports.map(report => [report.id, report.state, report.tools]).sort(), [
       ['lux-knowledge', 'connected', 2], ['gmail', 'connected', 3], ['calendar', 'connected', 2],
       // Each Mongoose connection is granted its own endpoint envelope, so the three publish disjoint reads.
-      ['mattermost', 'connected', 6], ['mongoose-knowledge', releaseNineCatalogue ? 'connected' : 'error', releaseNineCatalogue ? 4 : 0],
-      ['mongoose-data', releaseNineCatalogue ? 'connected' : 'error', releaseNineCatalogue ? 1 : 0],
-      ['mongoose-crm', releaseNineCatalogue ? 'connected' : 'error', releaseNineCatalogue ? 1 : 0],
+      ['mattermost', 'connected', 6], ['mongoose-knowledge', releaseNineCatalogue ? 'error' : 'connected', releaseNineCatalogue ? 0 : 4],
+      ['mongoose-data', releaseNineCatalogue ? 'error' : 'connected', releaseNineCatalogue ? 0 : 1],
+      ['mongoose-crm', releaseNineCatalogue ? 'error' : 'connected', releaseNineCatalogue ? 0 : 1],
     ].sort());
     const mongoose = reports.filter(report => report.id.startsWith('mongoose'));
     if (releaseNineCatalogue) {
-      // The release 9 catalogue is replaced, never refused: the boot reports the three published endpoints.
+      // The release 9 catalogue is replaced, never refused: the boot reports the three published
+      // endpoints, and the stored legacy token is not adopted, so each waits for its own sign-in.
       assert.deepEqual(mongoose.map(report => report.id).sort(), ['mongoose-crm', 'mongoose-data', 'mongoose-knowledge']);
+      for (const report of mongoose) assert.equal(report.reasonCode, 'not_signed_in', 'a replaced endpoint with no stored record is parked for sign-in');
     } else {
-      for (const report of mongoose) assert.equal(report.reasonCode, 'not_signed_in', 'an endpoint with no stored record is parked for sign-in');
+      // Three connections composed at once: the collision that used to answer 503 is pinned by this
+      // 200 below, and each connection holds only its own endpoint's reads, never a union.
+      assert.deepEqual(mongoose.map(report => report.tools).sort((a, b) => a - b), [1, 1, 4]);
     }
     const response = await fetch(host.descriptor.origin + '/api/v1/live-sessions', { method: 'POST', headers, body: JSON.stringify({ inputClass: 'ordinary' }) });
     const body = await response.json();

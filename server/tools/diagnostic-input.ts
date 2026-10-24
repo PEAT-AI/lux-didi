@@ -3,7 +3,7 @@ const fields: Readonly<Record<string, readonly string[]>> = {
   search_knowledge: ['query','limit','include_sensitive','detail','max_chars','snippet_chars','project_hint','meeting_date_from','meeting_date_to','deadline_ms'], get_insight: ['ids','id','include_links','detail','max_chars','deadline_ms'],
   gmail_get_profile: [], gmail_search_messages: ['q','maxResults','pageToken'], gmail_read_message: ['id','format'],
   calendar_list_calendars: ['maxResults','pageToken'], calendar_list_events: ['calendarId','calendarIds','maxResults','pageToken','timeMin','timeMax','timeZone'],
-  search: ['query','mode','limit','cursor','verbose','read'], read: ['ref','depth','cursor','verbose'],
+  search: ['query','mode','limit','cursor','verbose'], read: ['ref','depth','cursor','verbose'],
   list_companies: ['filter','limit'], get_company: ['ref','include'],
   list_tickets: ['status','kind','mine','mentioning_handle','audience','company_name','tags','search','not_updated_in_days','owner_handle','limit','offset'],
   mattermost_whoami: [], mattermost_list_channels: ['limit'], mattermost_get_channel_history: ['channel','limit'], mattermost_get_thread: ['post_id','postId'], mattermost_search: ['query','limit','after','before'], mattermost_attention: ['days','limit'],

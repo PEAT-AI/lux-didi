@@ -196,14 +196,13 @@ export interface MongooseRefused { state: 'refused'; reason: string }
 export interface MongooseUnknown { state: 'unknown'; reason: string }
 export type MongooseResult = MongooseEvidence | MongooseRefused | MongooseUnknown;
 
-/** One company lookup: mode answer answers a question, mode browse lists entities. */
+/** One company lookup: mode answer answers a question and reads its top hit; mode browse lists entities. */
 export interface SearchInput {
   query: string;
   mode?: 'answer' | 'browse';
   limit?: number;
   cursor?: string;
-  /** Depth of the second read of the top hit's ref; absent reads nothing. */
-  read?: 'summary' | 'full' | 'all';
+  verbose?: boolean;
 }
 
 export interface ReadInput { ref: string; depth?: 'summary' | 'full' | 'all'; cursor?: string }
@@ -327,7 +326,7 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
   }
 
   /** The top hit's ref, read in a second call so the answer carries the entity behind it. */
-  async function followUpRead(evidence: MongooseEvidence, depth: NonNullable<SearchInput['read']>, signal?: AbortSignal): Promise<MongooseResult> {
+  async function followUpRead(evidence: MongooseEvidence, depth: ReadInput['depth'], signal?: AbortSignal): Promise<MongooseResult> {
     const ref = topRef(evidence.decodedResult);
     if (ref === undefined) return evidence;
     const read = await dispatch('read', { ref, depth }, signal);
@@ -344,12 +343,13 @@ export function createMongooseReader(options: MongooseOptions): MongooseReader {
       if (query === undefined) return { state: 'refused', reason: 'invalid-query' };
       const bounded = limited(input.limit, MONGOOSE_DEFAULTS.searchLimit, settings.maxSearchLimit);
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
-      const args = typedArgs(input, ['query', 'mode', 'limit', 'cursor', 'read'], ['query', 'cursor']);
+      // Only the published search schema's own keys go on the wire: query, mode, limit, cursor, verbose.
+      const args = typedArgs(input, ['query', 'mode', 'limit', 'cursor', 'verbose'], ['query', 'cursor']);
       if (!args) return { state: 'refused', reason: 'invalid-search-input' };
-      const sent: Record<string, unknown> = { ...args, query, mode: input.mode ?? 'answer', ...bounded };
-      if (input.read === undefined) delete sent['read'];
-      const evidence = await dispatch('search', sent, signal);
-      if (evidence.state === 'completed' && input.read !== undefined) return followUpRead(evidence, input.read, signal);
+      const mode = input.mode ?? 'answer';
+      const evidence = await dispatch('search', { ...args, query, mode, ...bounded }, signal);
+      // A question reads the hit behind it; a browse lists and never spends a second call.
+      if (evidence.state === 'completed' && mode === 'answer') return followUpRead(evidence, 'summary', signal);
       return evidence;
     },
     async read(input: ReadInput, signal?: AbortSignal): Promise<MongooseResult> {

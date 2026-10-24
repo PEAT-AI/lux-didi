@@ -451,7 +451,7 @@ function mongooseTypedDeclarations(endpoint: MongooseEndpoint, policy: Connectio
   const limit = { type: 'integer', minimum: 1, maximum: Math.min(50, policy.bounds.maxSearchLimit) };
   if (endpoint === 'knowledge') return [
     mongooseDeclaration('search', 'Search curated company knowledge. mode answer answers a question and mode browse lists entities; read the ref a hit returns for depth.', {
-      query: text, mode: { type: 'string', enum: ['answer', 'browse'] }, limit, cursor: { type: 'string' }, read: { type: 'string', enum: ['summary', 'full', 'all'] }, verbose: { type: 'boolean' },
+      query: text, mode: { type: 'string', enum: ['answer', 'browse'] }, limit, cursor: { type: 'string' }, verbose: { type: 'boolean' },
     }, ['query']),
     mongooseDeclaration('read', 'Read one company entity by the exact ref a search returned. depth selects summary, full or all.', {
       ref: text, depth: { type: 'string', enum: ['summary', 'full', 'all'] }, cursor: { type: 'string' }, verbose: { type: 'boolean' },

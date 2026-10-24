@@ -2864,9 +2864,7 @@ export function companyLookupMode(query: string): 'answer' | 'browse' {
  * carries the entity behind the answer instead of a title alone.
  */
 function companySubs(query: string): IntentSubCall[] {
-  const mode = companyLookupMode(query);
-  const args: JsonObject = mode === 'answer' ? { query, mode, read: 'summary' } : { query, mode };
-  return [{ key: 'co0', name: INTERNAL.mongooseSearch, args }];
+  return [{ key: 'co0', name: INTERNAL.mongooseSearch, args: { query, mode: companyLookupMode(query) } }];
 }
 
 /**

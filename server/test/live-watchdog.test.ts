@@ -254,7 +254,7 @@ test('idle measures silence, so it fires with mic frames flowing and no speech, 
   assert.equal(terminalCode(live), 'idle_timeout');
 });
 
-test('an unattended call ends at the idle limit even while VAD only events, a close and a rebuild fire', async t => {
+test('an unattended call ends at the idle limit even while VAD only events and closes fire', async t => {
   const live = await openLive(t, { limits: { idleMs: 300_000 } });
   // The opener is the last real activity: model audio, then nothing the owner said.
   await live.emit({ type: 'audio', pcm: new Uint8Array(8), rate: 24_000 });
@@ -270,10 +270,9 @@ test('an unattended call ends at the idle limit even while VAD only events, a cl
     await live.advance(20_000);
   }
   // The silent turn arms the watchdog: the turn closes without a nudge and without a rebuild, because ambient
-  // sound never asked for an answer (#591). Either way the idle clock never moved.
-  await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 30_000);
+  // sound never asked for an answer (#591). The loop above already drove the close; the idle clock never moved.
+  await until(live, () => phases(live).includes('closed'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 30_000);
   assert.ok(!phases(live).includes('nudged'), 'the ambient turn was never nudged');
-  assert.ok(phases(live).includes('closed'), 'the ambient turn was closed instead');
   assert.equal(live.fake.sessionsOpened, 1, 'ambient sound never rebuilds the provider session');
   await until(live, () => terminalCode(live) !== undefined, 400_000);
   assert.equal(terminalCode(live), 'idle_timeout');

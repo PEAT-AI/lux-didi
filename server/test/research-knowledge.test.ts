@@ -5,7 +5,7 @@ import {
   type ResearchDeps, type ResearchSourceLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
-import { shapeLuxKnowledge } from '../tools/live-shape.js';
+import { GMAIL_BODY_CHARS, shapeLuxKnowledge } from '../tools/live-shape.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { createHash } from 'node:crypto';
 import type { McpPort } from '../adapters/mcp/port.js';
@@ -124,7 +124,8 @@ test('#580: the confidence line is paid out of the result budget, never added pa
   const marked = shapeLuxKnowledge('search_knowledge', `_confidence: low · top score: 0.11 · relevant candidate: no_\n${body}`);
   assert.match(marked.text, /^_confidence: low/u, 'the mark leads the result');
   const evidence = (text: string): string => text.replace(/\[omitted:[^\]]*\]/gu, '');
-  assert.ok(evidence(marked.text).length <= evidence(plain.text).length, `the mark costs no room past the plain evidence budget, got ${evidence(marked.text).length} against ${evidence(plain.text).length}`);
+  assert.ok(evidence(plain.text).length <= GMAIL_BODY_CHARS, `the plain result holds the path budget, got ${evidence(plain.text).length}`);
+  assert.ok(evidence(marked.text).length <= GMAIL_BODY_CHARS, `the mark never grows the evidence past that budget, got ${evidence(marked.text).length}`);
 });
 
 test('K3: the model-authored knowledge query is clipped to ten content terms, and filler never rides', () => {

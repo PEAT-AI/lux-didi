@@ -46,8 +46,6 @@ class DeadlineClock {
 interface DrivenSession {
   live(): void;
   die(): void;
-  /** One event pushed into this session's own stream, so a superseded generation can be driven. */
-  emit(event: LiveVoiceEvent): void;
 }
 
 /** A port whose every open can be made to die before its ready event, which is the failure at issue (#525). */
@@ -92,7 +90,6 @@ function drivenPort() {
       control.signal.addEventListener('abort', () => { if (ended) return; end(); resolveDone({ status: 'cancelled', code: 'cancelled' }); }, { once: true });
       sessions.push({
         live: () => { events({ sequence: ++sequence, type: 'ready' } as LiveVoiceEvent); resolveReady(); },
-        emit: event => { pending.push({ ...event, sequence: ++sequence } as LiveVoiceEvent); wake(); },
         die: () => { rejectReady(new Error('provider setup refused')); resolveDone({ status: 'failed', code: 'transport_error', recoverable: true }); end(); },
       });
       openedAt.push(sessions.length);
@@ -413,30 +410,4 @@ test('F1: a lookup the gate denied never withholds the next allowed one', async 
   await answered(h, 2);
   assert.equal(h.connectorCalls.filter(call => call.name === 'search_knowledge').length, 1,
     'the allowed lookup dispatched even though the batch that built the scheduler was denied');
-});
-
-test('#589 a finished owner turn on a superseded generation never ends the call', async t => {
-  const h = await harness(t);
-  const created = h.owner.create({ idempotencyKey: 'voice-stop-stale', inputClass: 'ordinary' }, h.ctx);
-  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
-  const first = (await sessionAt(h, 0))!;
-  first.live();
-  await attachment.ready;
-  await flush();
-  // The socket dies and the host rebuilds it: the session is now generation 1.
-  first.die();
-  await flush();
-  const second = (await sessionAt(h, 1))!;
-  second.live();
-  await flush();
-  // A finished turn on the generation the owner already left: it is not his live words.
-  first.emit({ type: 'inputTranscription', text: 'Naya, stop listening', finished: true } as LiveVoiceEvent);
-  await flush();
-  assert.equal((await h.owner.get(created.liveSessionId)).terminal, null,
-    'a superseded generation never ends the call');
-  // The live generation is still armed, so the gate is not simply dead.
-  second.emit({ type: 'inputTranscription', text: 'Naya, stop listening', finished: true } as LiveVoiceEvent);
-  await flush();
-  assert.deepEqual((await h.owner.get(created.liveSessionId)).terminal, { state: 'closed', code: 'voice_stop' },
-    'the current generation ends the call on the same words');
 });

@@ -1,6 +1,7 @@
 import type { HostEvidenceRef } from './types.js';
 import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history.js';
 import type { HistoryArguments } from '../domain/history-reader.js';
+import { fold, tokenize } from '../domain/util.js';
 import { calendarRange } from './calendar-window.js';
 import { randomUUID } from 'node:crypto';
 import type { ToolResultBinding, JsonObject } from '../adapters/model/types.js';
@@ -2585,11 +2586,61 @@ const findingKey = (text: string): string => text.replace(/\s+/gu, ' ').trim();
 /** #575: the one ask where her own earlier words are the evidence the owner wants. */
 const ASKS_WHAT_SHE_SAID = /\bwhat (?:did|do|have) (?:you|she) (?:say|said)\b|\bwhat (?:you|she) (?:said|answered)\b/iu;
 
-/** #575: a hit dated before the previous call's start is history; anything newer is the live conversation. */
-function memoryHitAllowed(hit: JsonObject, run: RunState, asked: boolean): boolean {
-  if (asked || hit['role'] !== 'assistant') return true;
-  const at = Date.parse(String(hit['date'] ?? ''));
-  return Number.isFinite(at) && at < (run.previousCallAt ?? run.startedAt);
+/** #615: the same words whatever the spacing or case, so the owner's own question is recognized as this turn. */
+const memoryWords = (text: string): string => fold(text).replace(/\s+/gu, ' ').trim();
+
+/**
+ * #615: the sessions this call is writing to. A row of the live session is the conversation in progress, whatever
+ * its role, so every row of that session is excluded by identity rather than by its own timestamp.
+ */
+function liveSessionIds(hits: readonly JsonObject[], question: string, startedAt: number): Set<string> {
+  const asked = new Set([question].filter(text => text.trim().length > 0).map(memoryWords));
+  const ids = new Set<string>();
+  for (const hit of hits) {
+    const id = hit['sessionId'];
+    if (typeof id !== 'string') continue;
+    const at = Date.parse(String(hit['date'] ?? ''));
+    if (asked.has(memoryWords(String(hit['snippet'] ?? ''))) || (Number.isFinite(at) && at >= startedAt)) ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * #615: an owner line leads her own line at the same match, and her line is evidence only when no owner line
+ * matches (#575 keeps it when the owner asks what she said, which is the one ask that wants her own words).
+ */
+function rankMemoryEvidence(hits: readonly JsonObject[], tokens: readonly string[], asked: boolean): JsonObject[] {
+  const scored = hits.map(hit => {
+    const words = fold(String(hit['snippet'] ?? ''));
+    const at = Date.parse(String(hit['date'] ?? ''));
+    return { hit, owner: hit['role'] === 'user', score: tokens.filter(token => words.includes(token)).length, at: Number.isFinite(at) ? at : 0 };
+  });
+  const ownerLeads = !asked && scored.some(entry => entry.owner && entry.score > 0);
+  const evidence = ownerLeads ? scored.filter(entry => entry.owner) : scored;
+  evidence.sort((left, right) => right.score - left.score
+    || (left.owner === right.owner ? 0 : left.owner ? -1 : 1)
+    || right.at - left.at);
+  return evidence.map(entry => entry.hit);
+}
+
+/**
+ * #575/#615: what a memory lookup may show as earlier conversation. The owner's current question and every row
+ * of the live session are never its own memory, and a row dated at or after the call before this one is the
+ * live conversation, so only older rows survive unless the owner asked what she said.
+ */
+function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunState, asked: boolean): JsonObject[] {
+  const keys = new Set([question, run.question ?? ''].filter(text => text.trim().length > 0).map(memoryWords));
+  const live = asked ? new Set<string>() : liveSessionIds(hits, question, run.startedAt);
+  const history = run.previousCallAt ?? run.startedAt;
+  const kept = hits.filter(hit => {
+    if (keys.has(memoryWords(String(hit['snippet'] ?? '')))) return false;
+    if (asked) return true;
+    const id = hit['sessionId'];
+    if (typeof id === 'string' && live.has(id)) return false;
+    const at = Date.parse(String(hit['date'] ?? ''));
+    return !Number.isFinite(at) || at < history;
+  });
+  return rankMemoryEvidence(kept, tokenize(question), asked);
 }
 
 /**
@@ -3392,11 +3443,14 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
       // #575: her own spoken turn from this call or the last one confirms a past answer instead of being
       // new evidence, so it is dropped unless the owner asked what she said.
       const askedWhatSheSaid = ASKS_WHAT_SHE_SAID.test(context.question);
-      const hits = (Array.isArray(page['hits']) ? page['hits'].filter(isRecord) : []).filter(hit => memoryHitAllowed(hit, run, askedWhatSheSaid));
+      const raw = Array.isArray(page['hits']) ? page['hits'].filter(isRecord) : [];
+      const hits = memoryEvidence(raw, context.question, run, askedWhatSheSaid);
       const kept = { ...page, hits };
       for (const hit of hits) if (typeof hit['recordRef'] === 'string') run.historyTokens.add(hit['recordRef']);
       const lines = typeof page['text'] === 'string' ? [page['text']] : hits.map(hit => String(hit['snippet'] ?? ''));
-      done.push({ ...settle(plan, lines.length ? 'ok' : 'empty', lines, Number(page['totalMatches'] ?? lines.length)), historyPage: kept });
+      // #615: a page trimmed to the rows this call may read never reports the rows it dropped as matches.
+      const total = hits.length === raw.length ? Number(page['totalMatches'] ?? lines.length) : hits.length;
+      done.push({ ...settle(plan, lines.length ? 'ok' : 'empty', lines, total), historyPage: kept });
     } catch { done.push(settle(plan, signal.aborted ? 'timeout' : 'failed')); } finally { cut.done(); }
   }
   const reads = plans.filter(entry => entry.read.source !== 'memory' && !entry.read.unresolved);

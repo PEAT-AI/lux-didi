@@ -2151,9 +2151,10 @@ export function clip(text: string, max: number): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   if (flat.length <= max) return flat;
   const room = flat.slice(0, Math.max(0, max - 1)).trimEnd();
-  // #621: a clip never leaves half a word, because the voice reads its last token as content.
-  const whole = room.replace(/\s+\S*$/u, '').trimEnd() || room;
-  return `${whole}\u2026`;
+  // #621: a clip never leaves half a word, because the voice reads its last token as content. A single
+  // unbroken token has no boundary to honour, so there the cut stays where the room ends.
+  const whole = room.replace(/\s+\S*$/u, '').trimEnd();
+  return `${whole.length * 2 >= room.length ? whole : room}\u2026`;
 }
 
 /** #621: the E3 states a reply must keep apart, and the E4 reason a source was never searched. */

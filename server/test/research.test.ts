@@ -175,7 +175,7 @@ test('a failed follow-up logs its real error code, never a bare failed', async (
 test('the whole serialized reply stays within the character cap', async () => {
   const h = harness({ executeText: 'x'.repeat(9_000) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'anything' }, new AbortController().signal);
-  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(reply).length} chars`);
+  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `reply was ${JSON.stringify(reply).length} chars with the coverage header`);
 });
 
 // N4 (#567): memory and knowledge findings of 10 KB each reached Live at 6,125 and 8,543 chars, so the
@@ -191,7 +191,8 @@ test('N4: memory and knowledge findings of 10 KB each still fit the capped reply
     lookups: [{ source: 'memory', history: { query: 'release scope' } }, { source: 'knowledge', query: 'release scope' }],
   }, new AbortController().signal);
   const size = JSON.stringify(reply).length;
-  assert.ok(size <= RESEARCH.replyLimitChars, `reply was ${size} chars`);
+  // #621: the coverage header has its own budget beside the prose envelope.
+  assert.ok(size <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `reply was ${size} chars with the coverage header`);
 });
 
 // N5 (#568): a completed run promised more was available, and the model's continue got
@@ -318,7 +319,7 @@ test('#567/R5: a long best knowledge hit is clipped to fit, never dropped', asyn
   const reply = await runResearch(h.deps, {
     action: 'start', question: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }],
   }, new AbortController().signal);
-  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(reply).length} chars`);
+  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `reply was ${JSON.stringify(reply).length} chars with the coverage header`);
   const shown = (reply['findings'] as { text: string }[]).map(finding => finding.text).join('\n');
   assert.match(shown, /the release ships on Friday/, 'the head of the best hit survives the cap');
   assert.match(shown, /\u2026/u, 'and the reply marks where it was cut');
@@ -1784,7 +1785,7 @@ test('LAT-1023: a wide answer is compacted to the Live budget by dropping whole 
   const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
   const text = JSON.stringify(reply);
   assert.ok(RESEARCH.replyLimitChars <= 2_500, `the Live budget is 2,500 chars, not ${RESEARCH.replyLimitChars}`);
-  assert.ok(text.length <= 2_500, `the answer to Live is ${text.length} chars`);
+  assert.ok(text.length <= 2_500 + RESEARCH.coverageLimitChars, `the answer to Live is ${text.length} chars, the prose bound plus the coverage header`);
   const findings = reply['findings'] as { text: string }[];
   const shown = findings.map(finding => finding.text).join('\n');
   const items = shown.split(/\n(?=#\d+ )/u).slice(1);
@@ -1849,7 +1850,7 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
     lookups: [{ source: 'knowledge', query: 'invoice release plan' }, { source: 'mail', query: 'from:ana' }],
   }, new AbortController().signal);
   const text = JSON.stringify(reply);
-  assert.ok(text.length <= RESEARCH.replyLimitChars, `the answer to Live is ${text.length} chars, over ${RESEARCH.replyLimitChars}`);
+  assert.ok(text.length <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `the answer to Live is ${text.length} chars, the prose bound plus the coverage header`);
   const line = h.logs.at(-1)!;
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
   assert.ok((line.answerCompacted?.items ?? 0) >= 2, 'whole items were dropped from both sources');

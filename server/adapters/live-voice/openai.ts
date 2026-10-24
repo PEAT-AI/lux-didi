@@ -1766,7 +1766,7 @@ class Session implements LiveVoiceSession {
     const providerSideFailure = this.isReady && code === 'protocol_error';
     this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}), ...(upstream ? { upstream } : {}) });
     this.discardHeadStart();
-    // GPT Live has no cancel or truncate command; stopping is local purge and provider close, with no acknowledgement.
+    // gpt-live-1 owns barge-in and has no cancel/truncate command: cancel is a no-op, stop purges playback and closes.
     this.clearUploadBlock();
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);

@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import type { ToolResultBinding, JsonObject } from '../adapters/model/types.js';
 import type { CalendarEvent as RetainedCalendarEvent, CalendarScope, MailMessage } from './live-shape.js';
 import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
+import { MAIL_QUERY_OPERATORS } from '../contracts/mail-operators.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
 import { WEB_SEARCH_ACTION, webAttribution, webDeadlineMs, webEvidenceText, webFooter, webSourceCards, type WebSearchPort } from './web-search.js';
 
@@ -632,24 +633,47 @@ export function mailWindow(question: string, nowMs = Date.now(), timeZone?: stri
   return undefined;
 }
 
-const MAIL_DATE_SHAPE = /\b\d{4}-\d{2}-\d{2}\b/gu;
-
 /**
  * E4: a spoken mail question becomes Gmail syntax. Plain words reduce to at most four salient terms,
  * a person the question is about becomes `from:<name> OR to:<name>`, and the window the question names
  * is added. ROUTE-1022 K6: an implicit two weeks is added only to a bare inbox scan, because it hid a
  * July thread from a question that carried its own terms. Explicit Gmail syntax is never rewritten.
  */
-export function compileMailQuery(question: string, query: string | undefined, nowMs = Date.now(), timeZone?: string): string {
+/** #565: the topic is names and nouns, at most eight words, as the declaration promises. */
+export const TOPIC_MAX_WORDS = 8;
+export const TOPIC_MAX_CHARS = 200;
+
+/**
+ * #576: a number enters a query only when the owner said that number. `spokenWords` is what the owner
+ * said in this run, so a later hop never re-filters the run's own topic through its own question.
+ */
+export function ownerDigits(text: string, spokenWords: string): string {
+  const spoken = new Set(spokenWords.match(/\d+/gu) ?? []);
+  return text.split(/\s+/u).filter(word => (word.match(/\d+/gu) ?? []).every(run => spoken.has(run))).join(' ');
+}
+
+/** #565: the topic is the only text whose words become search terms, within the owner's own numbers. */
+export function topicTerms(topic: string | undefined, spokenWords: string): string | undefined {
+  if (topic === undefined) return undefined;
+  const text = ownerDigits(topic, spokenWords).trim();
+  return text === '' ? undefined : text;
+}
+
+export function compileMailQuery(question: string, query: string | undefined, nowMs = Date.now(), timeZone?: string, topic?: string, ownerWords?: string): string {
   const authored = (query ?? '').replace(/\s+/gu, ' ').trim();
-  if (authored && (MAIL_AUTHORED_OPERATOR.test(authored) || authored.includes('"'))) return authored.slice(0, RESEARCH.queryLimitChars);
-  const text = `${authored || question} ${question}`.replace(MAIL_DATE_SHAPE, ' ');
-  const lower = question.toLowerCase();
   const person = MAIL_DIRECTION.test(question) ? mailPersonName(question) : undefined;
+  const asked = mailWindow(question, nowMs, timeZone);
+  const gated = topicTerms(topic, ownerWords ?? question);
+  const topicText = gated !== undefined && contentKeywords(gated, 1).length > 0 ? gated : undefined;
+  // #565: an authored query that already carries Gmail syntax is the model's own per-source search, and
+  // the owner's instruction prose never reaches it because the question is not a text this compiles.
+  if (authored && (MAIL_AUTHORED_OPERATOR.test(authored) || authored.includes('"'))) return authored.slice(0, RESEARCH.queryLimitChars);
+  // #576: a date the owner said is already the window; it is never also a term Gmail has to match.
+  const text = (topicText ?? '').replace(/\b\d{4}-\d{2}-\d{2}\b/gu, ' ');
+  const lower = question.toLowerCase();
   const flags = [/\bunread\b/u.test(lower) ? 'is:unread' : '', /\bimportant\b/u.test(lower) ? 'is:important' : ''].filter(Boolean);
   const terms = mailTerms(text, 4, person === undefined ? undefined : new Set([person]));
   const leading = [...flags, ...(person === undefined ? [] : [`from:${person} OR to:${person}`])];
-  const asked = mailWindow(question, nowMs, timeZone);
   if (leading.length === 0 && terms.length === 0) return `in:inbox ${asked ?? 'newer_than:14d'}`.slice(0, RESEARCH.queryLimitChars);
   return [...leading, ...terms, ...(asked === undefined ? [] : [asked])].join(' ').slice(0, RESEARCH.queryLimitChars);
 }
@@ -951,6 +975,17 @@ function knowledgeSearchArgs(query: string, projectHint?: string, meeting?: { fr
 const DATE_WORD = /\b(yesterday|today|tomorrow|this week|last week|next week|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b|\b(\d{4}-\d{2}-\d{2})\b/iu;
 const MEETING_WORD = /\b(meetings?|calls?|transcripts?|notes?)\b/iu;
 
+/** #576: "last meeting with X" asks for the newest notes, whatever the ranker returned. */
+const LAST_MEETING = /\b(?:last|latest|previous|most recent|recent)\b[\s\S]{0,24}?\b(?:meeting|call|sync|1:1|standup|transcript)s?\b/iu;
+export function lastMeetingQuestion(question: string): boolean { return LAST_MEETING.test(question); }
+
+/** #576: dated notes read newest first; a list with no date in it keeps the order it came in. */
+export function newestDatedFirst(lines: readonly string[]): string[] {
+  const dated = lines.map(line => ({ line, at: Date.parse(/(\d{4}-\d{2}-\d{2})/u.exec(line)?.[1] ?? '') }));
+  if (dated.some(entry => Number.isNaN(entry.at))) return [...lines];
+  return [...dated].sort((left, right) => right.at - left.at).map(entry => entry.line);
+}
+
 /**
  * MED-1022: a question that names a meeting and a day asks the corpus about that day. The connector's
  * meeting bounds are ISO days in the owner's zone; a wrong name would empty the result, so a name never
@@ -1079,8 +1114,11 @@ function isoDay(word: string, nowMs: number, timeZone: string): string | undefin
 }
 
 /** The internal sub-calls one candidate issues. `brief` fans out over every configured source. */
-export function candidateSubs(kind: CandidateKind, config: { question: string; configured: readonly SourceKind[]; evidence: ReadonlyMap<CandidateKind, string>; query?: string | undefined; window?: string | undefined; nowMs?: number | undefined; timeZone?: string | undefined }): IntentSubCall[] {
+export function candidateSubs(kind: CandidateKind, config: { question: string; topic?: string | undefined; ownerWords?: string | undefined; configured: readonly SourceKind[]; evidence: ReadonlyMap<CandidateKind, string>; query?: string | undefined; window?: string | undefined; nowMs?: number | undefined; timeZone?: string | undefined }): IntentSubCall[] {
   const search = (name: string, args: JsonObject, key: string): IntentSubCall => ({ key, name, args });
+  // #565: the topic's words, and only the numbers the owner said in this run, are what a source may search.
+  const ownerWords = config.ownerWords ?? config.question;
+  const topicText = topicTerms(config.topic, ownerWords);
   if (kind === 'knowledge_search') {
     // Q5-R1: a named entry is read by id through the connector's get_insight path, never searched for
     // again; the connector returns its whole body up to the knowledge body cap.
@@ -1088,7 +1126,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     if (ids.length) return [search(INTERNAL.knowledgeRead, { ids } as JsonObject, 'kr0')];
     // K3: a clipped keyword query, never the owner's sentence or the selector's paraphrase of it.
     // K6: with no model query, a question of pure filler is no question to search at all.
-    const query = config.query === undefined ? knowledgeQuery(config.question) : knowledgeQuery(config.query, config.question);
+    const query = config.query === undefined ? knowledgeQuery(topicText ?? '') : knowledgeQuery(ownerDigits(config.query, ownerWords), '');
     if (!query) return [];
     const meeting = meetingBounds(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
     return [search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(query, projectHintOf(config.question), meeting), 'k0')];
@@ -1103,7 +1141,11 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     catch { return []; }
     return [search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar }, 'cal0')];
   }
-  if (kind === 'mail_search') return [search(INTERNAL.mailList, { q: config.query === undefined ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone), maxResults: RESEARCH.pageResults.mail }, 'm0')];
+  if (kind === 'mail_search') {
+    // #565: a bare inbox scan stays a scan; a topic or a model query is compiled from the topic.
+    const bare = config.query === undefined && topicText === undefined;
+    return [search(INTERNAL.mailList, { q: bare ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone, config.topic, ownerWords), maxResults: RESEARCH.pageResults.mail }, 'm0')];
+  }
   if (kind === 'mail_open') { const id = config.evidence.get('mail_search'); return id ? [search(INTERNAL.mailRead, { id }, 'mo0')] : []; }
   if (kind === 'chat_search') {
     // ONE-1023: an ISO day is only what the owner's own question names, never a day the direction text
@@ -1111,14 +1153,14 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     // DATES-R1 F3 and DATES-R2 F4: with no content term left, the recency window is the only useful thing
     // to send, so an empty query is never dispatched, whoever wrote the query text.
     const dated = DATE_WORD.test(config.question);
-    const compiled = chatQuery(config.query ?? 'after:yesterday', config.nowMs, config.timeZone);
+    const compiled = chatQuery(config.query === undefined ? (topicText ?? 'after:yesterday') : ownerDigits(config.query, ownerWords), config.nowMs, config.timeZone);
     const terms = dated ? compiled : compiled.replace(CHAT_DATE_OPERATOR, '').replace(/\s+/gu, ' ').trim();
     const query = terms !== '' ? terms : chatQuery('after:yesterday', config.nowMs, config.timeZone);
     return [search(INTERNAL.chatSearch, { query, limit: RESEARCH.chatLines }, 'c0')];
   }
   if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { post_id: id }, 'ct0')] : []; }
   if (kind === 'web_search') return config.configured.includes('web')
-    ? [search(WEB_SEARCH_ACTION, { query: config.query ?? contentKeywords(config.question).join(' ') }, 'w0')] : [];
+    ? [search(WEB_SEARCH_ACTION, { query: config.query === undefined ? (topicText ?? '') : ownerDigits(config.query, ownerWords) }, 'w0')] : [];
   if (kind === 'brief') {
     const subs: IntentSubCall[] = [];
     // ROUTE-1022 K5: a brief reads his own knowledge, and the layers the question itself names. The
@@ -1135,8 +1177,8 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; c
     // K5: the question's own terms. A question with no compiled term still reads his knowledge once,
     // on its own words, so a vague question never leaves every read to another action; a pure
     // instruction start ("wait findings.") has nothing to search and reads nothing.
-    const query = knowledgeQuery(config.question);
-    const asked = query === '' && !metaOnlyQuestion(config.question) ? config.question.trim() : query;
+    const query = knowledgeQuery(topicText ?? '');
+    const asked = query === '' && !metaOnlyQuestion(config.question) ? (topicText ?? '') : query;
     if (config.configured.includes('knowledge') && asked !== '') subs.push(search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(asked, projectHintOf(config.question)), 'b3'));
     return subs;
   }
@@ -1243,6 +1285,10 @@ export interface RunState {
   calendar: Map<string, CalendarRead>; calendarDelivered: Set<string>; calendarScope?: CalendarScope;
 
   researchId: string; runId: number; questionClass: QuestionClass; direction: string | undefined;
+  /** #565: the call signatures whose query shape was already recorded, so one call is one row. */
+  shaped: Set<string>;
+  /** #565: the names and nouns this run was opened with, and the only text whose words reach a source. */
+  topic?: string;
   /** Release 4: the question this run was opened with, so a continuation hop never searches on the model's meta words alone. */
   question?: string;
   /** #451 H22: the model call this run answers, the adapter's own call id (ruling W6-R1). */
@@ -1298,13 +1344,14 @@ export class ResearchLedger {
   readonly deliveredFindings = new Set<string>();
   constructor(private readonly releaseEvidence?: (bindings: readonly ToolResultBinding[]) => void) {}
 
-  begin(input: { researchId?: string | undefined; questionClass: QuestionClass; direction?: string | undefined; question?: string | undefined; deadlineMs: number; maxRounds: number; now: number; callKey?: string | undefined }): RunState {
+  begin(input: { researchId?: string | undefined; questionClass: QuestionClass; direction?: string | undefined; question?: string | undefined; topic?: string | undefined; deadlineMs: number; maxRounds: number; now: number; callKey?: string | undefined }): RunState {
     const researchId = input.researchId ?? randomUUID();
     const previousCallAt = this.#last?.startedAt;
     const run: RunState = {
       ...(previousCallAt === undefined ? {} : { previousCallAt }), deliveredFindings: this.deliveredFindings,
-      researchId, runId: ++this.#counter, questionClass: input.questionClass, direction: input.direction,
+      researchId, runId: ++this.#counter, shaped: new Set<string>(), questionClass: input.questionClass, direction: input.direction,
       ...(input.question === undefined ? {} : { question: input.question }),
+      ...(input.topic === undefined ? {} : { topic: input.topic }),
       ...(input.callKey === undefined ? {} : { callKey: input.callKey }),
       startedAt: input.now, deadlineMs: input.deadlineMs, rounds: 0, maxRounds: input.maxRounds, ops: 0,
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
@@ -1491,8 +1538,16 @@ function cutAfter(ms: number, schedule: ResearchTimer = scheduleTimer): { signal
   return { signal: controller.signal, done: () => { timer.cancel(); } };
 }
 
+/** #565: the shape one source call searched with: counts and closed operator tokens, never a word. */
+export interface ResearchQueryShape { source: SourceKind | LookupSource; terms: number; operators: readonly string[]; topicWords: number }
+
 export interface ResearchDeps {
   timeZone?: string;
+  /**
+   * #565: one row per source call's query shape, so the next forensic review can prove what a search was
+   * built from. The Live owner binds it to the trace store; absent means nothing is persisted.
+   */
+  queryShape?: ((shape: ResearchQueryShape & { researchId: string; at: number }) => void) | undefined;
   authorizeEvidence?: (bindings: readonly ToolResultBinding[], signal: AbortSignal) => boolean;
   now(): number;
   /** Defaults to a real timer; a test supplies a fake clock to prove the progress cadence. */
@@ -1539,15 +1594,15 @@ export interface ResearchDeps {
   memo?: ResearchMemo | undefined;
 }
 
-export interface ResearchCall { cursor?: string; action: ResearchAction; question?: string; researchId?: string; sources?: string; direction?: string; lookups?: unknown; /** The model call this run answers, stamped by the Live owner so a step can name it. Never from model arguments. */ callId?: string }
+export interface ResearchCall { cursor?: string; action: ResearchAction; question?: string; /** #565: the names and nouns to search for, the only text whose words reach a source. */ topic?: string; researchId?: string; sources?: string; direction?: string; lookups?: unknown; /** The model call this run answers, stamped by the Live owner so a step can name it. Never from model arguments. */ callId?: string }
 
 
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const optionalString = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value : undefined;
 
-export const RESEARCH_ARGUMENT_FIELDS = ['action', 'question', 'researchId', 'sources', 'direction', 'lookups', 'cursor'] as const;
+export const RESEARCH_ARGUMENT_FIELDS = ['action', 'question', 'topic', 'researchId', 'sources', 'direction', 'lookups', 'cursor'] as const;
 export const RESEARCH_ARGUMENT_TYPES = ['absent', 'null', 'string', 'number', 'boolean', 'array', 'object', 'other'] as const;
-export const RESEARCH_REFUSAL_REASONS = ['root_type', 'unknown_fields', 'action_missing', 'action_invalid', 'question_type', 'question_required', 'research_id_type', 'research_id_required', 'sources_type', 'direction_type', 'cursor_type', 'cursor_action', 'cursor_lookups_conflict', 'lookups_type', 'lookups_count', 'lookups_stop', 'lookup_type', 'lookup_unknown_fields', 'lookup_source', 'lookup_query_required', 'lookup_query_length', 'lookup_history', 'lookup_mail'] as const;
+export const RESEARCH_REFUSAL_REASONS = ['root_type', 'unknown_fields', 'action_missing', 'action_invalid', 'question_type', 'question_required', 'topic_type', 'topic_required', 'topic_length', 'research_id_type', 'research_id_required', 'sources_type', 'direction_type', 'cursor_type', 'cursor_action', 'cursor_lookups_conflict', 'lookups_type', 'lookups_count', 'lookups_stop', 'lookup_type', 'lookup_unknown_fields', 'lookup_source', 'lookup_query_required', 'lookup_query_length', 'lookup_history', 'lookup_mail'] as const;
 export type ResearchRefusalReason = typeof RESEARCH_REFUSAL_REASONS[number];
 export interface ResearchArgumentShape {
   action: ResearchAction | 'missing' | 'invalid';
@@ -1583,12 +1638,15 @@ export function parseResearch(args: unknown): ParsedResearch {
   if (shape.unknownFieldCount) return refuse('unknown_fields');
   if (!Object.hasOwn(record, 'action')) return refuse('action_missing');
   if (action !== 'start' && action !== 'continue' && action !== 'stop') return refuse('action_invalid');
-  for (const [key, reason] of [['question', 'question_type'], ['researchId', 'research_id_type'], ['sources', 'sources_type'], ['direction', 'direction_type']] as const) {
+  for (const [key, reason] of [['question', 'question_type'], ['topic', 'topic_type'], ['researchId', 'research_id_type'], ['sources', 'sources_type'], ['direction', 'direction_type']] as const) {
     if (Object.hasOwn(record, key) && typeof record[key] !== 'string') return refuse(reason);
   }
   if (record['question'] !== undefined && optionalString(record['question']) === undefined) return refuse('question_required');
   if (record['researchId'] !== undefined && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
   if (action === 'start' && optionalString(record['question']) === undefined) return refuse('question_required');
+  // #565: a start without a topic has no search text at all, so it is refused before it reads anything.
+  if (action === 'start' && optionalString(record['topic']) === undefined) return refuse('topic_required');
+  if (record['topic'] !== undefined && (String(record['topic']).length > TOPIC_MAX_CHARS || String(record['topic']).trim().split(/\s+/u).filter(Boolean).length > TOPIC_MAX_WORDS)) return refuse('topic_length');
   if (action !== 'start' && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
   if (Object.hasOwn(record, 'cursor')) {
     if (typeof record['cursor'] !== 'string' || !record['cursor'].length || record['cursor'].length > 128) return refuse('cursor_type');
@@ -1622,19 +1680,22 @@ export function validateResearch(args: unknown): boolean { return parseResearch(
 
 /** F9: the one repair line a refused call gets, so a repeat attempt changes what was wrong, not just the words. */
 const REPAIR_GUIDANCE: Partial<Record<ResearchRefusalReason, string>> = {
+  topic_required: 'A start needs the topic: the names and nouns to search for, at most eight words, e.g. {"action":"start","question":"the question","topic":"Wilmar pilot"}. The question itself is never searched.',
+  topic_type: 'The topic is one short string of names and nouns, at most eight words.',
+  topic_length: `The topic is at most ${TOPIC_MAX_WORDS} words: keep only the names and nouns, and shorten anything past ${TOPIC_MAX_CHARS} characters.`,
   lookup_query_length: `The query was too long: keep it under ${RESEARCH.queryLimitChars} characters and shorten the words after source.`,
   lookup_mail: 'A mail lookup is {"source":"mail","mail":{"q":"search words"}} or {"source":"mail","mail":{"id":"message id"}}, with maxResults 1 to 50 optional; a mail lookup carries no query.',
   lookup_query_required: 'This lookup needs a query: add {"source":"the source","query":"the words to search"}.',
   lookup_source: 'The source must be one of knowledge, mail, chat, web, memory.',
   lookup_history: 'A memory lookup is {"source":"memory","history":{"topic":"..."}}; the history fields are topic and optional limit.',
   lookups_count: 'Send one to three lookups; more than three cannot be read before the answer is due.',
-  unknown_fields: 'Remove the fields not in the tool schema; only action, question, researchId, sources, direction, cursor and lookups exist.',
+  unknown_fields: 'Remove the fields not in the tool schema; only action, question, topic, researchId, sources, direction, cursor and lookups exist.',
 };
 
 export function researchRepair(reason: ResearchRefusalReason): JsonObject {
   return {
     error: 'invalid_research_arguments', state: 'refused', reason,
-    guidance: REPAIR_GUIDANCE[reason] ?? 'No lookup started. Use {"action":"start","question":"the question"}; optional lookups need source and query, or memory with history, or mail with mail. Continue needs the returned researchId. Stop needs researchId and no lookups. Cursor is only for continue, without lookups. Omit unused fields; null is not supported.',
+    guidance: REPAIR_GUIDANCE[reason] ?? 'No lookup started. Use {"action":"start","question":"the question","topic":"the names and nouns"}; optional lookups need source and query, or memory with history, or mail with mail. Continue needs the returned researchId. Stop needs researchId and no lookups. Cursor is only for continue, without lookups. Omit unused fields; null is not supported.',
   };
 }
 
@@ -1781,7 +1842,7 @@ function sourceListText(sources: readonly SourceKind[]): string {
 
 /** The declaration description names the sources this session actually configured, never a source it lacks. */
 export function researchDescription(sources: readonly SourceKind[]): string {
-  return `The owner's ${sourceListText(sources)}, in one lookup. Use it when answering requires external evidence beyond the accepted conversation context. The host decides per question which sources are worth reading and whether one more read is worth the wait. Call start with the question: its result carries the researchId the host minted, and continue and stop copy that id.`;
+  return `The owner's ${sourceListText(sources)}, in one lookup. Use it when answering requires external evidence beyond the accepted conversation context. The host decides per question which sources are worth reading and whether one more read is worth the wait. Call start with the question and a topic of names and nouns, at most eight words: only the topic is searched. Its result carries the researchId the host minted, and continue and stop copy that id.`;
 }
 
 export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH_SOURCES): { name: string; description: string; guidance: string; parameters: JsonObject; validate(args: unknown): boolean } {
@@ -1791,9 +1852,15 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
     guidance: 'Omit unused properties; null is not supported. Each generic lookup requires source and query; typed memory.history and mail.mail omit query. Cursor is continue-only and excludes lookups; stop excludes lookups and cursor. start needs {"action":"start","question":"the question"} and its result carries the researchId the host minted; continue needs {"action":"continue","researchId":"<the id from that result>"}, copied, never invented. An optional "sources" hint of exactly one source makes the first round deterministic; an optional "direction" steers a continue. A mail lookup query is short keywords in Gmail operators with a window, not the spoken question, e.g. from:dana newer_than:14d invoice, or newer_than:2d is:unread.',
     parameters: {
       type: 'object', additionalProperties: false, required: ['action'],
+      // #565: a start is declared to carry its topic, never merely described as carrying one.
+      anyOf: [
+        { properties: { action: { enum: ['start'] } }, required: ['question', 'topic'] },
+        { properties: { action: { enum: ['continue', 'stop'] } }, required: ['researchId'] },
+      ],
       properties: {
-        action: { type: 'string', enum: ['start', 'continue', 'stop'], description: 'start requires question; continue and stop require the researchId returned by start. Stop must omit lookups and cursor.' },
+        action: { type: 'string', enum: ['start', 'continue', 'stop'], description: 'start requires question and topic; continue and stop require the researchId returned by start. Stop must omit lookups and cursor.' },
         question: { type: 'string', minLength: 1, description: 'The owner question; required for start.' },
+        topic: { type: 'string', minLength: 1, maxLength: 200, description: 'Required for start. The names and nouns to search for, at most eight words, for example Wilmar pilot. Only these words become a search; the question never does.' },
         researchId: { type: 'string', minLength: 1, description: 'The id a previous reply carried; required for continue and stop.' },
         sources: { type: 'string', description: 'Optional single-source hint; valid values: calendar, mail, chat, knowledge.' },
         cursor: { type: 'string', maxLength: 128, description: 'Consumer continuation copied from nextCursor on the same researchId. This is not a source-native page token. Omit lookups when using it.' },
@@ -2090,7 +2157,7 @@ export function cutLineOf(results: readonly IntentSubResult[]): string | undefin
  * Q1-R0: one telegraphic line per item, a per-source count line, never prose. Item ids ride in the
  * shaped line so the host can open the top mail or fetch the top chat thread without a second search.
  */
-export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResult[], zone?: string): { text: string; source: SourceKind | null; lines: string[]; total: number } {
+export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResult[], zone?: string, options?: { newestFirst?: boolean }): { text: string; source: SourceKind | null; lines: string[]; total: number } {
   if (kind === 'web_search') {
     const ok = results.filter(result => result.ok && result.text.trim());
     const lines = ok.flatMap(result => result.text.split('\n').filter(Boolean));
@@ -2166,6 +2233,12 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
       flush();
     }
   }
+  // #576: a "last meeting" ask reads the newest notes first, before the relevance order.
+  if (options?.newestFirst === true && (source === 'knowledge' || source === 'memory')) {
+    const ordered = newestDatedFirst(lines);
+    lines.length = 0;
+    lines.push(...ordered);
+  }
   const cap = LINE_CAP[kind] ?? lines.length;
   const shown = lines.slice(0, cap);
   if (!shown.length) return { text: '', source, lines: [], total: 0 };
@@ -2174,6 +2247,37 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
   return { text: `${label}: ${shown.length} of ${Math.max(total, shown.length)} shown\n${shown.join('\n')}${cutLine !== undefined ? `\n${cutLine}` : ''}`, source, lines: shown, total: Math.max(total, shown.length) };
 }
 
+
+/**
+ * #565: the shape of a dispatched batch, one row per distinct call. Counts, the closed operator names and
+ * the topic's word count only, so a search word has no field to land in.
+ */
+function queryShapeOfSubs(call: IntentSubCall, topic: string | undefined): ResearchQueryShape | undefined {
+  const source = sourceKindOfKindName(call.name);
+  if (source === null) return undefined;
+  const raw = call.args['q'] ?? call.args['query'];
+  const text = typeof raw === 'string' ? raw : '';
+  const shape = mailQueryShape(text);
+  return {
+    source, terms: shape.terms,
+    operators: shape.operators.filter(operator => (MAIL_QUERY_OPERATORS as readonly string[]).includes(operator)),
+    topicWords: (topic ?? '').split(/\s+/u).filter(Boolean).length,
+  };
+}
+
+/** #565: one trace row per source call this run dispatched, and a repeated signature is one row. */
+function recordShapes(deps: ResearchDeps, run: RunState, calls: readonly IntentSubCall[], now: () => number): void {
+  const write = deps.queryShape;
+  if (write === undefined) return;
+  for (const call of calls) {
+    const signature = callSignature(call);
+    if (run.shaped.has(signature)) continue;
+    const shape = queryShapeOfSubs(call, run.topic);
+    if (shape === undefined) continue;
+    run.shaped.add(signature);
+    try { write({ ...shape, researchId: run.researchId, at: now() }); } catch { /* the receipt is never the answer */ }
+  }
+}
 
 function sourceKindOfKindName(name: string): SourceKind | null {
   switch (name) {
@@ -2666,13 +2770,13 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
  * K6: one routed lookup. `memory` is read in process; every other layer becomes the internal read that
  * source already owns, under its own per-source deadline. Nothing here consults the selector.
  */
-function routedRead(lookup: ResearchLookup, context: { question: string; configured: readonly SourceKind[]; run: RunState; now: () => number; timeZone?: string }): { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } {
+function routedRead(lookup: ResearchLookup, context: { question: string; topic?: string | undefined; ownerWords?: string | undefined; configured: readonly SourceKind[]; run: RunState; now: () => number; timeZone?: string }): { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } {
   const query = lookup.query;
   if (lookup.source === 'memory') return { source: 'memory', kind: 'memory_search', subs: [{ key: 'history', name: HISTORY_IDENTITY.name, args: { ...(lookup.history ?? { query }) } }] };
   if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: [{ key: 'co0', name: INTERNAL.mongooseSearch, args: { query } as JsonObject }] };
   // The attention digest answers "what is waiting on him"; it takes no query of its own.
   if (lookup.source === 'replies') return { source: 'chat', kind: 'chat_search', subs: [{ key: 'at0', name: INTERNAL.chatAttention, args: {} as JsonObject }] };
-  const subsConfig = { question: context.question, configured: context.configured, evidence: context.run.evidence, query };
+  const subsConfig = { question: context.question, topic: context.topic, ownerWords: context.ownerWords, configured: context.configured, evidence: context.run.evidence, query };
   // N3: a voice turn reads the primary calendar only, one bounded call. The merged read is one remote
   // call per visible calendar (22 on the smoke account) and can never finish inside the run deadline, so
   // it always came back empty and the owner heard nothing; the full merge stays on the calendar intent.
@@ -2694,7 +2798,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; configu
         source: 'mail' as const, kind: 'id' in lookup.mail ? 'mail_open' as const : 'mail_search' as const,
         subs: [{
           key: 'mail0', name: 'id' in lookup.mail ? INTERNAL.mailRead : INTERNAL.mailList,
-          args: 'id' in lookup.mail ? { ...lookup.mail } : { ...mailPageArgs(lookup.mail as JsonObject), q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone) },
+          args: 'id' in lookup.mail ? { ...lookup.mail } : { ...mailPageArgs(lookup.mail as JsonObject), q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone, context.topic, context.ownerWords) },
         }],
       }
       : { source: 'mail' as const, kind: 'mail_search' as const, subs: candidateSubs('mail_search', subsConfig) };
@@ -2928,6 +3032,7 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
     for (const read of reads) { read.inflight = true; if (read.nextPageToken) read.tokens.add(read.nextPageToken); }
     run.ops += calls.length;
     let results: IntentSubResult[];
+    recordShapes(deps, run, calls, now);
     try { results = await deps.execute(calls, signal); }
     catch { for (const read of reads) { read.inflight = false; failMailPage(read); } if (signal.aborted) run.cutShort.add('mail'); break; }
     if (parent.aborted || run.cancelled || run.stopped) { for (const read of reads) read.inflight = false; invalidateEvidence(run); break; }
@@ -3074,6 +3179,7 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     for (const read of reads) { read.inflight = true; if (read.nextPageToken) read.tokens.add(read.nextPageToken); }
     run.ops += calls.length;
     let results: IntentSubResult[];
+    recordShapes(deps, run, calls, now);
     try { results = await deps.execute(calls, signal); }
     catch { for (const read of reads) { read.failed = true; read.inflight = false; } if (signal.aborted) run.cutShort.add('calendar'); break; }
     // E8: the window this batch paid for is kept for the session, so the run that superseded it never pays again.
@@ -3186,6 +3292,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     const signal = AbortSignal.any([context.signal, cut.signal]);
     try {
       run.ops++;
+      recordShapes(deps, run, plan.read.subs, () => at);
       const [result] = await deps.execute(plan.read.subs, signal);
       if (!result?.ok || !result.binding || !result.historyPage || run.cancelled || run.stopped || signal.aborted) {
         run.unavailableReasons.set('memory', result?.code ?? 'history_unavailable'); done.push(settle(plan, signal.aborted ? 'timeout' : 'unavailable')); continue;
@@ -3263,6 +3370,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   try {
     if (pending.length === 0) results = cached.map(hit => hit!);
     else {
+      recordShapes(deps, run, subs, context.now);
       const executed = await deps.execute(subs.length === pending.length ? subs : pending.map(index => subs[index]!), signal);
       results = [...cached] as IntentSubResult[];
       pending.forEach((index, position) => {
@@ -3281,11 +3389,13 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   const cutShort = signal.aborted;
   reads.forEach((plan, index) => {
     const own = owned[index]!.map(position => results[position]).filter((result): result is IntentSubResult => result !== undefined);
-    const block = shapeBlock(plan.read.kind === 'memory_search' ? 'knowledge_search' : plan.read.kind, own, deps.timeZone);
+    const block = shapeBlock(plan.read.kind === 'memory_search' ? 'knowledge_search' : plan.read.kind, own, deps.timeZone, { newestFirst: lastMeetingQuestion(context.question) });
     // P5-R5 (F1): the execute contract resolves `{ok: false, code}` for a sub-call the host did not
     // complete, so a returned failure is a failed read, never a search that matched nothing.
     const missed = own.some(result => !result.ok);
     const outcome: LookupOutcome = block.lines.length > 0 ? 'ok' : cutShort ? 'timeout' : missed ? 'failed' : 'empty';
+    // #565: a routed read counts as read, so a continuation of this run never dispatches it again.
+    if ((outcome === 'ok' || outcome === 'empty') && plan.read.kind !== 'memory_search') run.readKinds.add(plan.read.kind);
     done.push({ ...settle(plan, outcome, block.lines, block.total, reused[index] ?? 0), ...(own.length > 0 && own.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });
   });
   cut.done();
@@ -3313,7 +3423,8 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   arm();
   // N3: group by the read a lookup resolves to, so 'company' and 'mongoose', or 'replies' and 'chat',
   // share one execution; the group keeps the order in which each source first appeared.
-  const readContext = { question, configured, run, now, ...(deps.timeZone ? { timeZone: deps.timeZone } : {}) };
+  // TOPIC-R2 F1: the routed read names the owner's words for this run, never this hop's alone.
+  const readContext = { question, topic: run.topic, ownerWords: run.question === undefined ? question : `${run.question} ${question}`.trim(), configured, run, now, ...(deps.timeZone ? { timeZone: deps.timeZone } : {}) };
   const groups = new Map<SourceKind | 'memory', RoutedPlan[]>();
   for (const lookup of lookups) {
     const plan: RoutedPlan = { lookup, read: routedRead(lookup, readContext) };
@@ -3604,6 +3715,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   }
 
   const question = call.question?.trim() ?? '';
+  // #565 and MAILQ-AUTHOR F3: only a start names a topic, and a continuation reads no new text, so the
+  // words that reach a source are the ones the run opened with.
+  const topic = call.action === 'start' ? (call.topic?.trim() ?? '') : '';
   // K8a: a start whose question carries no content ("wait findings.", "any results?") is the model asking
   // about the run already reading; cancelling it there threw away the findings it was asking for.
   if (call.action === 'start' && metaOnlyQuestion(question)) {
@@ -3616,7 +3730,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   let run: RunState;
   if (call.action === 'start') {
     deps.ledger.cancelActive();
-    run = deps.ledger.begin({ researchId: call.researchId, questionClass: 'cross_source', deadlineMs: RESEARCH.startDeadlineMs, maxRounds: RESEARCH.startRounds, now: now(), ...(question === '' ? {} : { question }), ...(call.callId === undefined ? {} : { callKey: call.callId }) });
+    run = deps.ledger.begin({ researchId: call.researchId, questionClass: 'cross_source', deadlineMs: RESEARCH.startDeadlineMs, maxRounds: RESEARCH.startRounds, now: now(), ...(question === '' ? {} : { question }), ...(topic === '' ? {} : { topic }), ...(call.callId === undefined ? {} : { callKey: call.callId }) });
   } else {
     if (call.cursor !== undefined) {
       const prior = deps.ledger.find(call.researchId ?? '');
@@ -3650,6 +3764,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     if (current()) emitProgress({ ...callKeyOf(run), ...event, sourcesDone: [...completed].filter(source => !running.has(source)), sourcesPending: [...running.keys()] });
   };
   const update = (): void => emit({ researchId: run.researchId, phase: 'round', sourcesDone: [], sourcesPending: [], elapsedMs: Math.max(0, now() - run.startedAt) });
+  // TOPIC-R2 F1: every digit gate reads the owner's words for this run, so a later hop keeps its numbers.
+  const ownerWords = run.question === undefined || run.question === question ? question : `${run.question} ${question}`.trim();
   let invocation = 0;
   /** The host's step sink threw on this run: a host fault the prime read's own catch must not read as an empty source. */
   let stepSinkFailed = false;
@@ -3809,7 +3925,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   };
   // Outcome 5: the owner's knowledge base is the prime source. Its read starts immediately, in
   // parallel with source selection, unless the owner named one certain non-knowledge source.
-  const knowledgeSubs = candidateSubs('knowledge_search', { question, configured, evidence: run.evidence, nowMs: now(), timeZone: deps.timeZone });
+  const knowledgeSubs = candidateSubs('knowledge_search', { question, topic: run.topic, ownerWords, configured, evidence: run.evidence, nowMs: now(), timeZone: deps.timeZone });
   widenFor(knowledgeSubs);
   const knowledgeWanted = configured.includes('knowledge') && knowledgeSubs.length > 0 && !run.readKinds.has('knowledge_search')
     && !(hint.length === 1 && hint[0] !== 'knowledge');
@@ -3842,7 +3958,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           // answer point, so the first answer cannot cut a read that is still working.
           const prefetchCut = new AbortController();
           const prefetchTimer = schedule(() => prefetchCut.abort(new DOMException('Source deadline elapsed', 'TimeoutError')), Math.min(RESEARCH.sourceDeadline.knowledge, remainingMs));
-          knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, prefetchCut.signal])).then(async (results: IntentSubResult[]) => {
+          recordShapes(deps, run, knowledgeSubs, now);
+        knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, prefetchCut.signal])).then(async (results: IntentSubResult[]) => {
             // ONE-1023: a past day that matched nothing still asks the topic once, without the day filter.
             await droppedDayFilterRetry(deps, knowledgeSubs, results, AbortSignal.any([signal, prefetchCut.signal]), run.droppedDayFilters);
             knowledgeEndedAt = now();
@@ -3925,7 +4042,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       for (const kind of chosen) {
         if (run.ops >= RESEARCH.maxOps) { stopReason = 'ops_exhausted'; break; }
         toRun.push(kind);
-        run.ops += Math.max(1, kind === 'calendar_window' ? 1 : candidateSubs(kind, { question, configured, evidence: run.evidence }).length);
+        run.ops += Math.max(1, kind === 'calendar_window' ? 1 : candidateSubs(kind, { question, topic: run.topic, ownerWords, configured, evidence: run.evidence }).length);
       }
       const batches: CandidateKind[][] = [];
       for (let i = 0; i < toRun.length; i += RESEARCH.maxConcurrent) batches.push(toRun.slice(i, i + RESEARCH.maxConcurrent));
@@ -3954,7 +4071,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         const reads = batch.map(async kind => {
           const action = selection.actions.find(entry => entry.kind === kind);
           let subs: IntentSubCall[];
-          try { subs = candidateSubs(kind, { question, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now(), timeZone: deps.timeZone }); }
+          try { subs = candidateSubs(kind, { question, topic: run.topic, ownerWords, configured, evidence: run.evidence, query: action?.query, window: action?.window, nowMs: now(), timeZone: deps.timeZone }); }
           catch { run.unavailableReasons.set('calendar', 'window_unparsed'); run.sourcesFailed.add('calendar'); return; }
           recordChatDate(run, action?.query, subs);
           // F2: the live step speaks the owner's words, never the compiled Gmail query.
@@ -4005,6 +4122,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           // Q1-R3(e): one retry for a transient failed sub-call, inside the round deadline.
           const executeWithRetry = async (list: IntentSubCall[]): Promise<IntentSubResult[]> => {
             let out: IntentSubResult[] = [];
+            recordShapes(deps, run, list, now);
             try { out = await deps.execute(list, readSignal); } catch { out = []; }
             const failed = list.map((_, index) => index).filter(index => list[index]?.name !== INTERNAL.mailRead && !(out[index]?.ok));
             if (failed.length > 0 && !readSignal.aborted && deadlineAt - now() > 1_000) {
@@ -4104,7 +4222,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           // one is credited and delivered on its own instead of the whole batch going uncredited.
           const parts = creditableSources(kind, results);
           for (const [index, part] of parts.entries()) {
-            const block = shapeBlock(shapeKindOf(part.source, kind), part.results, deps.timeZone);
+            const block = shapeBlock(shapeKindOf(part.source, kind), part.results, deps.timeZone, { newestFirst: lastMeetingQuestion(question) });
             // E5: the mail read's own queries, for the receipt's shape and the reply's "how I searched".
             const mailInfo = part.source !== 'mail' || mailCalls.length === 0 ? undefined : mailQueryInfo(mailRead(run, mailCalls[0]!.args));
             run.ledger.set(parts.length === 1 ? key : `${key}#${part.source ?? index}`, { kind, source: part.source, summary: block.text, lines: block.lines, total: block.total, ...(part.results.length > 0 && part.results.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });

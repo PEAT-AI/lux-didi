@@ -206,7 +206,7 @@ test('the research chat thread read uses the argument name the child declares, s
   const deps: ResearchDeps = {
     now: () => 0, configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
   };
-  const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the standup' }, new AbortController().signal);
+  const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the standup', topic: 'what did the team say about the standup' }, new AbortController().signal);
   assert.ok(dispatched.includes('mattermost_get_thread'), 'the thread follow-up runs');
   const findings = reply['findings'] as { text?: string }[];
   assert.ok(JSON.stringify(findings).includes('Standup at ten'), 'the thread body reaches the answer, never an empty failure');
@@ -250,7 +250,7 @@ test('a chat lookup settles unavailable at once when the mattermost connector is
     },
     emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
   };
-  const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the standup', lookups: [{ source: 'chat', query: 'standup' }] }, new AbortController().signal);
+  const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the standup', topic: 'what did the team say about the standup', lookups: [{ source: 'chat', query: 'standup' }] }, new AbortController().signal);
   assert.equal(reply['sources'] && (reply['sources'] as Record<string, string>)['chat'], 'unavailable');
   assert.match(String(reply['note']), /could not reach team chat/, 'the answer says chat is unreachable, never that it searched and found nothing');
   assert.deepEqual(dispatched, [], 'no sub-call is dispatched to a connector that cannot answer');

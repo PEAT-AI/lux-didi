@@ -148,4 +148,19 @@ export const traceMigrations: readonly SchemaMigration[] = [{
     `CREATE INDEX trace_utterance_at ON trace_utterance(at)`,
     `CREATE INDEX trace_call_intent_at ON trace_call(intent_at)`,
   ],
+}, {
+  owner: 'trace', version: 5, statements: [
+    // #565: what a search was built from, as counts and closed operator names. A searched word has no
+    // column to land in, so the shape is provable in a review without storing any owner text.
+    `CREATE TABLE trace_query_shape (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       at INTEGER NOT NULL,
+       research_id TEXT,
+       source TEXT NOT NULL CHECK (source IN ('memory','knowledge','calendar','mail','chat','replies','company','mongoose','web')),
+       terms INTEGER NOT NULL CHECK (terms >= 0),
+       operators TEXT NOT NULL,
+       topic_words INTEGER NOT NULL CHECK (topic_words >= 0)
+     )`,
+    `CREATE INDEX trace_query_shape_at ON trace_query_shape(at)`,
+  ],
 }];

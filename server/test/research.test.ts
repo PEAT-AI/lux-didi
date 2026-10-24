@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
-  validateResearch, worthContinuing,
+  validateResearch, worthContinuing, parseResearch, researchRepair, topicTerms,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -486,12 +486,12 @@ test('the word stop in a question never stops a run: stop is only a tool action'
 });
 
 test('validate accepts the three actions and rejects invented keys', () => {
-  assert.equal(validateResearch({ action: 'start', question: 'q' }), true);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 'wilmar pilot' }), true);
   assert.equal(validateResearch({ action: 'continue', researchId: 'abc' }), true);
   assert.equal(validateResearch({ action: 'stop', researchId: 'abc' }), true);
   assert.equal(validateResearch({ action: 'start' }), false);
-  assert.equal(validateResearch({ action: 'destroy', question: 'q' }), false);
-  assert.equal(validateResearch({ action: 'start', question: 'q', evil: 1 }), false);
+  assert.equal(validateResearch({ action: 'destroy', question: 'q', topic: 'wilmar' }), false);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 'wilmar', evil: 1 }), false);
 });
 
 // #263: the declaration names only the sources this session configured and the host loop can read. A session
@@ -673,7 +673,7 @@ test('knowledge findings rank first in the reply', async () => {
 
 test('an empty-but-successful read is a search that matched nothing, never an unreachable source', async () => {
   const h = harness({ executeText: '' });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'would you check my mail for the landlord invoice' }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'would you check my mail for the landlord invoice', topic: 'landlord invoice' }, new AbortController().signal);
   const note = String(reply['note'] ?? '');
   assert.equal(note.includes('could not reach'), false, 'a search that matched nothing is not an outage');
   assert.match(note, /I searched your mail for "[a-z]+".*found nothing matching/, 'the model gets a line it can voice');
@@ -920,7 +920,7 @@ test('R6: the source that answered keeps its own second hop, and the slow reader
   } });
   const late: ResearchLateFindings[] = [];
   h.deps.late = entry => { late.push(entry); };
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what is the release status' }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is the release status', topic: 'release status' }, new AbortController().signal);
   assert.equal(winnerSignalAborted, false, 'the winner\'s own second hop runs under its own signal');
   assert.equal(h.logs[0]!.sources.find(entry => entry.kind === 'knowledge')?.disposition, 'completed');
   assert.ok(!(h.logs[0]!.unchecked ?? []).includes('knowledge'), 'the source that answered is not named unchecked');
@@ -978,7 +978,7 @@ test('K6: a start with no lookups reads the deterministic plan and never awaits 
 test('R9: a throwing step sink still writes one failed run line, with no exception text', async () => {
   const h = harness({});
   const deps: ResearchDeps = { ...h.deps, step: () => { throw new Error('step sink gone'); } };
-  await assert.rejects(runResearch(deps, { action: 'start', question: 'what is waiting on me' }, new AbortController().signal), /step sink gone/);
+  await assert.rejects(runResearch(deps, { action: 'start', question: 'what is waiting on me', topic: 'waiting' }, new AbortController().signal), /step sink gone/);
   assert.equal(h.logs.length, 1, 'the failed run is visible once and never written twice');
   assert.equal(h.logs[0]!.status, 'failed');
   assert.equal(h.logs[0]!.stopReason, 'failed', 'a closed error code, never an exception message');
@@ -1053,7 +1053,7 @@ test('P5-R5: a connector that returns a failure is a failed read, never a search
 // --- Q5: a named entry is read by id, and a cut body is never passed as a whole one --------------
 
 test('Q5-R1: a question that names an insight routes to get_insight with that id, never a second search', () => {
-  const config = { question: 'go deep on insight 412, the release 3p decision', configured: CONFIGURED, evidence: new Map<CandidateKind, string>() };
+  const config = { question: 'go deep on insight 412, the release 3p decision', topic: 'release 3p decision', configured: CONFIGURED, evidence: new Map<CandidateKind, string>() };
   const subs = candidateSubs('knowledge_search', config);
   assert.deepEqual(subs, [{ key: 'kr0', name: 'get_insight', args: { ids: [412] } }], 'one read call by id, and no search');
   assert.deepEqual(namedInsightIds('the full text of ids=[7,8]'), [7, 8], 'an ids=[...] ask names both entries');
@@ -1152,7 +1152,7 @@ test('MED-1022: a run that compiles a chat date operator states it on the knowle
 test('ROUTE-1022 K6: an instruction-only inbox ask compiles to the recent-inbox scan', () => {
   assert.equal(compileMailQuery('show me anything in my email', undefined), 'in:inbox newer_than:14d', 'instruction words are no terms');
   assert.equal(compileMailQuery('List anything in my email', undefined), 'in:inbox newer_than:14d', 'and the list verb is no term either');
-  assert.equal(compileMailQuery('find the agricon mail', undefined), 'agricon', 'a real content term still searches');
+  assert.equal(compileMailQuery('find the agricon mail', undefined, 0, undefined, 'agricon'), 'agricon', 'a real content term still searches');
 });
 
 // MED-1022/T-R3: the dispatch keeps a tool call's arguments when every one of them is on the closed
@@ -1160,6 +1160,7 @@ test('ROUTE-1022 K6: an instruction-only inbox ask compiles to the recent-inbox 
 test('MED-1022: a voice search with a day filter keeps its arguments through the diagnostic projection', () => {
   const subs = candidateSubs('knowledge_search', {
     question: "what did we decide in yesterday's Wriggler call about pricing",
+    topic: "yesterday's Wriggler call pricing",
     configured: ['knowledge'], evidence: new Map(), nowMs: Date.parse('2026-10-22T06:00:00Z'), timeZone: 'Asia/Kolkata',
   });
   const args = subs[0]!.args;
@@ -1735,7 +1736,7 @@ function queriesOf(h: Harness, from: number, tool: string): string[] {
 test('release 4: a mail continuation never appends the model meta words after the inbox window', async () => {
   const h = harness({});
   const scheduler = new ResearchScheduler(h.deps);
-  const first = await scheduler.call({ action: 'start', question: 'budget review email from Korbi', lookups: [{ source: 'knowledge', query: 'budget review korbi' }] }, new AbortController().signal);
+  const first = await scheduler.call({ action: 'start', question: 'budget review email from Korbi', topic: 'budget review Korbi', lookups: [{ source: 'knowledge', query: 'budget review korbi' }] }, new AbortController().signal);
   const before = h.executed.length;
   await scheduler.call({ action: 'continue', researchId: String(first['researchId']), direction: 'remaining metadata business-relevant' }, new AbortController().signal);
   const searched = queriesOf(h, before, 'gmail_search_messages');
@@ -1853,4 +1854,100 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
   assert.ok((line.answerCompacted?.items ?? 0) >= 2, 'whole items were dropped from both sources');
   assert.match(String(reply['note']), /There is more available/u, 'and the reply names what it left out');
+});
+
+// --- TOPIC (#565, #576): only the topic's words reach a source, never the instruction text ---
+
+const INSTRUCTION_PARAGRAPH = 'Please explain in detail what the prior discussion identified as the relevant blocker before the pilot started, then identify what we decided since that review, including every item that requires a reaction from the team, anything about the budget around the pilot, and the rollout plan for the region that the group named in the earlier discussion';
+
+test('TOPIC 1 (#565): a forty-word instruction paragraph sends the topic terms and no instruction word', () => {
+  const config = { question: INSTRUCTION_PARAGRAPH, topic: 'Wilmar pilot', configured: CONFIGURED, evidence: new Map<CandidateKind, string>() };
+  const knowledge = candidateSubs('knowledge_search', config).map(call => String(call.args['query'] ?? '').toLowerCase());
+  assert.deepEqual(knowledge, ['wilmar pilot'], 'the knowledge search is the topic, not the instruction');
+  const mail = candidateSubs('mail_search', config).map(call => String(call.args['q'] ?? ''));
+  assert.equal(mail.length, 1);
+  for (const word of ['explain', 'prior', 'discussion', 'relevant', 'before', 'since', 'identify', 'reaction', 'requires']) {
+    assert.equal(mail[0]!.toLowerCase().includes(word), false, `the mail query carries no instruction word: ${word}`);
+  }
+  assert.match(mail[0]!, /wilmar/u, 'and it carries the topic');
+  const chat = candidateSubs('chat_search', config).map(call => String(call.args['query'] ?? '').toLowerCase());
+  assert.match(chat[0]!, /wilmar|pilot/u, 'the chat search is the topic too');
+  assert.equal(/explain|discussion|relevant/u.test(chat[0]!), false, 'with no instruction word');
+});
+
+test('TOPIC 2 (#565): a start without a topic is refused, and the repair line names the topic', () => {
+  const refused = parseResearch({ action: 'start', question: 'what did we decide about the pilot' });
+  assert.equal(refused.ok, false, 'a start with no topic is refused');
+  if (!refused.ok) assert.equal(refused.reason, 'topic_required');
+  assert.match(String(researchRepair('topic_required')['guidance']), /topic/iu, 'the repair line names the field to add');
+  assert.match(String(researchRepair('topic_required')['guidance']), /eight words/iu, 'and its budget');
+  const tooLong = parseResearch({ action: 'start', question: 'q', topic: 'one two three four five six seven eight nine' });
+  assert.equal(tooLong.ok, false, 'a topic past eight words is refused');
+  if (!tooLong.ok) assert.equal(tooLong.reason, 'topic_length');
+  assert.equal(parseResearch({ action: 'continue', researchId: 'abc', topic: 'a topic' }).ok, true, 'a continuation needs no topic');
+});
+
+test('TOPIC 3 (#576): a spoken ask with no digits sends a query with no digit', async () => {
+  const h = harness({ configured: ['knowledge'] });
+  await runResearch(h.deps, {
+    action: 'start',
+    question: 'what did we decide about the Wilmar pilot',
+    topic: 'Wilmar pilot',
+    lookups: [{ source: 'knowledge', query: '2026-10-23 14:00 agenda Wilmar pilot' }],
+  }, new AbortController().signal);
+  await settle();
+  const queries = h.executed.filter(entry => entry.name === 'search_knowledge')
+    .map(entry => String((entry.args as Record<string, unknown>)['query'] ?? ''));
+  assert.ok(queries.length > 0, 'the run searched knowledge');
+  for (const query of queries) assert.equal(/\d/u.test(query), false, `no invented digit reaches the query: ${query}`);
+  assert.match(queries[0]!, /wilmar/iu, 'the topic still reaches it');
+});
+
+test('TOPIC 4 (#576): a last-meeting ask reads the newest note first', async () => {
+  const notes = [
+    '### Weekly with Wilmar (2026-09-01) the rollout plan',
+    '### Weekly with Wilmar (2026-10-20) the pilot budget',
+    '### Weekly with Wilmar (2026-10-12) the pilot scope',
+  ].join('\n');
+  const h = harness({ configured: ['knowledge'], executeText: notes });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what did we say in the last meeting with Wilmar', topic: 'Wilmar meeting',
+    lookups: [{ source: 'knowledge', query: 'Wilmar meeting' }],
+  }, new AbortController().signal);
+  const text = JSON.stringify(reply);
+  const order = ['pilot budget', 'pilot scope', 'rollout plan'].map(word => text.indexOf(word));
+  assert.ok(order.every(at => at >= 0), `all three notes are shown: ${text.slice(0, 400)}`);
+  assert.deepEqual([...order].sort((left, right) => left - right), order, 'the newest note is read out first');
+});
+
+test('TOPIC 6 (#565): a source call reports its query shape and never one of its words', async () => {
+  const shapes: Record<string, unknown>[] = [];
+  const h = harness({ configured: ['knowledge'] });
+  const deps = { ...h.deps, queryShape: (shape: Record<string, unknown>): void => { shapes.push(shape); } } as unknown as ResearchDeps;
+  await runResearch(deps, { action: 'start', question: 'what did we decide about the Wilmar pilot budget', topic: 'Wilmar pilot budget' }, new AbortController().signal);
+  await settle();
+  assert.ok(shapes.length > 0, 'the run reported a query shape');
+  const shape = shapes[0]!;
+  assert.equal(shape['source'], 'knowledge');
+  assert.equal(typeof shape['terms'], 'number');
+  assert.equal(shape['topicWords'], 3, 'the topic word count is kept');
+  assert.deepEqual(shape['operators'], [], 'and the operator list is empty for a plain knowledge read');
+  assert.equal(JSON.stringify(shape).toLowerCase().includes('wilmar'), false, 'no word of the topic is recorded');
+});
+
+// TOPIC-R2 F1: the digit gate's authority is the owner's words in this run, never the words of the hop
+// that happens to be reading, so a numbered name the owner said survives a continuation.
+test('TOPIC-R2 F1 (#565): a later hop keeps a number the owner said when the run opened', () => {
+  const run = 'what did we decide about the iPhone 16 pilot and what about the budget';
+  assert.equal(topicTerms('iPhone 16 pilot', run), 'iPhone 16 pilot', 'the topic keeps the number the owner said');
+  assert.equal(topicTerms('iPhone 16 pilot', 'and what about the budget'), 'iPhone pilot', 'and a question that never said it still drops it');
+  const config = {
+    question: 'and what about the budget', topic: 'iPhone 16 pilot',
+    ownerWords: run, configured: CONFIGURED, evidence: new Map<CandidateKind, string>(),
+  } as unknown as Parameters<typeof candidateSubs>[1];
+  const mail = candidateSubs('mail_search', config).map(call => String(call.args['q'] ?? '').toLowerCase());
+  assert.match(mail[0]!, /16/u, 'the mail read keeps the owner-spoken number on a later hop');
+  const invented = candidateSubs('mail_search', { ...config, ownerWords: 'what did we decide about the pilot and what about the budget' } as unknown as Parameters<typeof candidateSubs>[1])
+    .map(call => String(call.args['q'] ?? '').toLowerCase());
+  assert.equal(/\d/u.test(invented[0]!), false, 'a number the owner never said still never reaches the query');
 });

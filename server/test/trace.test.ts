@@ -11,6 +11,7 @@ import { traceMigrations } from '../trace/schema.js';
 import { liveMigrations } from '../live/schema.js';
 import { domainMigrations } from '../domain/schema.js';
 import { liveTracePort, scopedTraceKey, TraceRecordError, pruneTraceContent, record, recordCallResult, recordUtterance, type RecordResult } from '../trace/record.js';
+import * as traceRecord from '../trace/record.js';
 import { IngestReject, PLAYBACK_RECEIPT_MAX_BYTES, parsePlaybackReceipt, recordPlaybackReceipt } from '../trace/ingest.js';
 import { buildTimeline, exportMetadata, missingNativeRanges, renderTimeline, resolveSession, type TraceRead } from '../trace/timeline.js';
 
@@ -246,8 +247,10 @@ test('pruneTraceContent is scoped to the two content tables', () => {
     record(store, 'call.intent', { liveSessionId: SESSION, turnId: 't1', callKey: 'c1' }, { name: 'calendar_window', argsChars: 3, intentAt: T0 + 5 });
     recordUtterance(store, { turnId: 't1', role: 'model', at: T0, final: true, text: 'hello' });
     recordCallResult(store, { callKey: 'c1', text: 'r'.repeat(20_000) });
+    const shapeWriter = (traceRecord as unknown as { recordQueryShape?: (exec: Store, shape: Record<string, unknown>, at: number) => number }).recordQueryShape!;
+    shapeWriter(store, { source: 'mail', terms: 1, operators: [], topicWords: 1 }, T0);
     const pruned = store.transaction(tx => pruneTraceContent(tx, T0 + 40 * 86_400_000));
-    assert.deepEqual(pruned, { utterances: 1, callResults: 1, journalText: 0, promptSnapshots: 0 });
+    assert.deepEqual(pruned, { utterances: 1, callResults: 1, queryShapes: 1, journalText: 0, promptSnapshots: 0 });
     assert.equal(counts(store).trace_turn, 1);
     assert.equal(counts(store).trace_call, 1);
   });
@@ -304,7 +307,7 @@ test('pruneTraceContent clears live text only where the transcript is no longer 
     const pruned = store.transaction(tx => pruneTraceContent(tx, now));
     // Three ended sessions are done with their transcript, and each clears two rows (the transcript
     // and the tool payload); all six ended sessions lose the accepted prompt snapshot.
-    assert.deepEqual(pruned, { utterances: 0, callResults: 0, journalText: 6, promptSnapshots: 6 });
+    assert.deepEqual(pruned, { utterances: 0, callResults: 0, queryShapes: 0, journalText: 6, promptSnapshots: 6 });
 
     const rows = store.transaction(tx => tx.all("SELECT live_session_id, kind, text, tool_json, payload_bytes FROM live_journal WHERE kind IN ('inputTranscription','toolCall') ORDER BY live_session_id, journal_id"));
     const bySession = new Map<string, Array<Record<string, unknown>>>();
@@ -340,7 +343,7 @@ test('pruneTraceContent clears live text only where the transcript is no longer 
     ]);
 
     const again = store.transaction(tx => pruneTraceContent(tx, now));
-    assert.deepEqual(again, { utterances: 0, callResults: 0, journalText: 0, promptSnapshots: 0 }, 'the second start finds nothing to do');
+    assert.deepEqual(again, { utterances: 0, callResults: 0, queryShapes: 0, journalText: 0, promptSnapshots: 0 }, 'the second start finds nothing to do');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -365,7 +368,7 @@ test('a prune over a migrated v3 journal clears the tool payload the migration m
         [SESSION, 'inputTranscription', 'owner words', endedAt]);
     });
     // A v2 store has no tool_json to clear, and the pruner must not fail on the column it cannot see.
-    assert.deepEqual(v2.transaction(tx => pruneTraceContent(tx, now)), { utterances: 0, callResults: 0, journalText: 0, promptSnapshots: 0 });
+    assert.deepEqual(v2.transaction(tx => pruneTraceContent(tx, now)), { utterances: 0, callResults: 0, queryShapes: 0, journalText: 0, promptSnapshots: 0 });
     v2.close();
 
     const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
@@ -379,7 +382,7 @@ test('a prune over a migrated v3 journal clears the tool payload the migration m
           VALUES (?,?,?,?,?,?,?,0,'[]',0,NULL,?,NULL)`, ['sum-migrated', SESSION, 'complete', 'a summary', endedAt, 'm', 11, endedAt]);
       });
       const pruned = store.transaction(tx => pruneTraceContent(tx, now));
-      assert.deepEqual(pruned, { utterances: 0, callResults: 0, journalText: 2, promptSnapshots: 0 }, 'the migrated journal clears its text and its tool payload');
+      assert.deepEqual(pruned, { utterances: 0, callResults: 0, queryShapes: 0, journalText: 2, promptSnapshots: 0 }, 'the migrated journal clears its text and its tool payload');
       const rows = store.transaction(tx => tx.all("SELECT kind, text, tool_json FROM live_journal WHERE live_session_id=? ORDER BY journal_id", [SESSION]));
       assert.deepEqual(rows.map(row => [row['kind'], row['text'], row['tool_json']]), [['inputTranscription', null, null], ['toolCall', null, null]]);
     } finally { store.close(); }
@@ -878,4 +881,27 @@ test('W6: a fixture session renders every turn closed, every playback on a turn,
     assert.doesNotMatch(text, /obligation=no_audible_output/);
     assert.match(text, /gaps: none/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// --- TOPIC (#565): one row per source call's query shape, counts and closed tokens only ---
+
+test('TOPIC 6 (#565): a query shape row holds the counts, the closed operator tokens and no search word', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-trace-shape-'));
+  const store = new Store(dir, []);
+  try {
+    const write = (traceRecord as unknown as { recordQueryShape?: (exec: Store, shape: Record<string, unknown>, at: number, researchId?: string) => number }).recordQueryShape;
+    assert.equal(typeof write, 'function', 'the trace store writes one query shape row per source call');
+    const id = write!(store, { source: 'mail', terms: 2, operators: ['from', 'newer_than'], topicWords: 3 }, T0, 'rs-shape-1');
+    assert.ok(id > 0, 'the row is written');
+    const row = store.transaction(tx => tx.get('SELECT research_id, source, terms, operators, topic_words FROM trace_query_shape WHERE id=?', [id]))!;
+    assert.equal(row['research_id'], 'rs-shape-1');
+    assert.equal(row['source'], 'mail');
+    assert.equal(Number(row['terms']), 2);
+    assert.equal(Number(row['topic_words']), 3);
+    assert.match(String(row['operators']), /from/u, 'the closed operator token is kept');
+    assert.match(String(row['operators']), /newer_than/u);
+    assert.throws(() => store.transaction(tx => tx.run(
+      'INSERT INTO trace_query_shape(at, source, terms, operators, topic_words) VALUES (?,?,?,?,?)',
+      [T0, 'diary', 0, '', 0])), 'a source outside the closed list has no column to land in');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

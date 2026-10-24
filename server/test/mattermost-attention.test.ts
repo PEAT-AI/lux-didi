@@ -369,3 +369,30 @@ test('#604: an ungranted composite refuses with tool-not-granted', async t => {
   assert.equal(result.state === 'refused' ? result.reason : '', UNGRANTED_COMPOSITE_REASON);
   assert.ok(!f.calls().some(call => call.name === 'mattermost_search'), 'no child read follows an ungranted composite');
 });
+
+// F17: a composite the connector cannot serve is a refusal, never a successful read of a token. The
+// chat sub-call names the closed reason and never reports the tool as unknown.
+test('F17: an ungranted composite refuses the chat sub-call with its own closed reason', async () => {
+  const logged: Record<string, unknown>[] = [];
+  let outcome = '';
+  const deps: ResearchDeps = {
+    now: () => Date.now(), configured: ['mail', 'chat', 'calendar'],
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
+      if (call.name !== INTERNAL.chatAttention) return { key: call.key, name: call.name, ok: true, text: 'a line', originalCharacters: 6, omittedCharacters: 0 };
+      outcome = call.name;
+      return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'unknown_tool' };
+    }),
+    emit: () => {},
+    log: () => {},
+    logSource: (event: ResearchSourceLog) => { logged.push(event as unknown as Record<string, unknown>); },
+    ledger: new ResearchLedger(),
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'anything urgent came in?' }, new AbortController().signal);
+  assert.equal(outcome, INTERNAL.chatAttention, 'the triage ask went to the composite');
+  const receipt = logged.find(event => event['event'] === 'research_source' && event['source'] === 'chat');
+  assert.ok(receipt, 'the refused chat read is receipted');
+  assert.equal(receipt['outcome'], 'failed', 'a refused composite is a failed read, never ok');
+  const text = JSON.stringify(reply);
+  assert.ok(text.includes('tool not granted'), `the reply names the closed reason: ${text.slice(0, 400)}`);
+  assert.ok(!text.includes('unknown tool'), 'the reply never reads as an unknown tool');
+});

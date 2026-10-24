@@ -420,3 +420,24 @@ test('F17: an ungranted composite refuses the chat sub-call with its own closed 
   assert.ok(text.includes('tool not granted'), `the reply names the closed reason: ${text.slice(0, 400)}`);
   assert.ok(!text.includes('unknown tool'), 'the reply never reads as an unknown tool');
 });
+
+// R4: the emitted reason is clamped to the closed receipt vocabulary, so a failure code this build
+// does not know still produces a receipt instead of being dropped by the host log.
+test('R4: an out-of-vocabulary chat failure still produces a receipt', async () => {
+  const logged: Record<string, unknown>[] = [];
+  const deps: ResearchDeps = {
+    now: () => Date.now(), configured: ['mail', 'chat', 'calendar'],
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => (call.name === INTERNAL.chatAttention
+      ? { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'some_future_failure' }
+      : { key: call.key, name: call.name, ok: true, text: 'a line', originalCharacters: 6, omittedCharacters: 0 })),
+    emit: () => {},
+    log: () => {},
+    logSource: (event: ResearchSourceLog) => { logged.push(event as unknown as Record<string, unknown>); },
+    ledger: new ResearchLedger(),
+  };
+  await runResearch(deps, { action: 'start', question: 'anything urgent came in?' }, new AbortController().signal);
+  const receipt = logged.find(event => event['event'] === 'research_source' && event['source'] === 'chat');
+  assert.ok(receipt, 'the receipt survives an unknown failure code');
+  assert.equal((receipt['chat'] as { reason?: string } | undefined)?.reason, 'refused', 'an unknown code clamps to the closed fallback');
+  assert.equal(receipt['outcome'], 'failed');
+});

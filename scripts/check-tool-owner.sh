@@ -15,7 +15,7 @@ mkdir -p "$out/source/"{tools,contracts,runtime,connectors,domain,test,host,adap
 # server/trace imports the domain modules (labels, history-reader, history-lifecycle): copy them too.
 cp "$root"/server/domain/*.ts "$out/source/domain/"
 cp "$root"/server/tools/*.ts "$out/source/tools/"
-cp "$root"/server/contracts/{storage,errors,domain}.ts "$out/source/contracts/"
+cp "$root"/server/contracts/{storage,errors,domain,mail-operators}.ts "$out/source/contracts/"
 cp "$root/server/runtime/store.ts" "$out/source/runtime/"
 # runtime/store.ts applies the trace store migrations and prunes its content: copy those modules too.
 cp "$root"/server/trace/*.ts "$out/source/trace/"

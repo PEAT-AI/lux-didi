@@ -247,8 +247,10 @@ test('pruneTraceContent is scoped to the two content tables', () => {
     record(store, 'call.intent', { liveSessionId: SESSION, turnId: 't1', callKey: 'c1' }, { name: 'calendar_window', argsChars: 3, intentAt: T0 + 5 });
     recordUtterance(store, { turnId: 't1', role: 'model', at: T0, final: true, text: 'hello' });
     recordCallResult(store, { callKey: 'c1', text: 'r'.repeat(20_000) });
+    const shapeWriter = (traceRecord as unknown as { recordQueryShape?: (exec: Store, shape: Record<string, unknown>, at: number) => number }).recordQueryShape!;
+    shapeWriter(store, { source: 'mail', terms: 1, operators: [], topicWords: 1 }, T0);
     const pruned = store.transaction(tx => pruneTraceContent(tx, T0 + 40 * 86_400_000));
-    assert.deepEqual(pruned, { utterances: 1, callResults: 1, journalText: 0, promptSnapshots: 0 });
+    assert.deepEqual(pruned, { utterances: 1, callResults: 1, queryShapes: 1, journalText: 0, promptSnapshots: 0 });
     assert.equal(counts(store).trace_turn, 1);
     assert.equal(counts(store).trace_call, 1);
   });
@@ -366,7 +368,7 @@ test('a prune over a migrated v3 journal clears the tool payload the migration m
         [SESSION, 'inputTranscription', 'owner words', endedAt]);
     });
     // A v2 store has no tool_json to clear, and the pruner must not fail on the column it cannot see.
-    assert.deepEqual(v2.transaction(tx => pruneTraceContent(tx, now)), { utterances: 0, callResults: 0, journalText: 0, promptSnapshots: 0 });
+    assert.deepEqual(v2.transaction(tx => pruneTraceContent(tx, now)), { utterances: 0, callResults: 0, queryShapes: 0, journalText: 0, promptSnapshots: 0 });
     v2.close();
 
     const store = new Store(dir, [...domainMigrations, ...liveMigrations]);

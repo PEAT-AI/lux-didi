@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
-  validateResearch, worthContinuing, parseResearch, researchRepair,
+  validateResearch, worthContinuing, parseResearch, researchRepair, topicTerms,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -1933,4 +1933,21 @@ test('TOPIC 6 (#565): a source call reports its query shape and never one of its
   assert.equal(shape['topicWords'], 3, 'the topic word count is kept');
   assert.deepEqual(shape['operators'], [], 'and the operator list is empty for a plain knowledge read');
   assert.equal(JSON.stringify(shape).toLowerCase().includes('wilmar'), false, 'no word of the topic is recorded');
+});
+
+// TOPIC-R2 F1: the digit gate's authority is the owner's words in this run, never the words of the hop
+// that happens to be reading, so a numbered name the owner said survives a continuation.
+test('TOPIC-R2 F1 (#565): a later hop keeps a number the owner said when the run opened', () => {
+  const run = 'what did we decide about the iPhone 16 pilot and what about the budget';
+  assert.equal(topicTerms('iPhone 16 pilot', run), 'iPhone 16 pilot', 'the topic keeps the number the owner said');
+  assert.equal(topicTerms('iPhone 16 pilot', 'and what about the budget'), 'iPhone pilot', 'and a question that never said it still drops it');
+  const config = {
+    question: 'and what about the budget', topic: 'iPhone 16 pilot',
+    ownerWords: run, configured: CONFIGURED, evidence: new Map<CandidateKind, string>(),
+  } as unknown as Parameters<typeof candidateSubs>[1];
+  const mail = candidateSubs('mail_search', config).map(call => String(call.args['q'] ?? '').toLowerCase());
+  assert.match(mail[0]!, /16/u, 'the mail read keeps the owner-spoken number on a later hop');
+  const invented = candidateSubs('mail_search', { ...config, ownerWords: 'what did we decide about the pilot and what about the budget' } as unknown as Parameters<typeof candidateSubs>[1])
+    .map(call => String(call.args['q'] ?? '').toLowerCase());
+  assert.equal(/\d/u.test(invented[0]!), false, 'a number the owner never said still never reaches the query');
 });

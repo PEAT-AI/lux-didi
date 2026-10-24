@@ -82,6 +82,7 @@ Before a release, run these twelve at the release head, one at a time, with no r
 | `Tests/DidiMacTests/check-mac.sh` | Compiles the app shell into a disposable bundle, signs it ad hoc, verifies it, then runs the native proofs in `main.swift` (surfaces, presentation coordinator, launch kinds, shortcuts, Getting started) and a real-host proof. Takes the browser slot for its launch phase. |
 | `Tests/DidiCompanionTests/check-companion.sh` | Companion and real-host proofs, including keychain, lifecycle and credential proofs. Takes the slot. |
 | `Tests/DidiCompanionTests/check-launch-services-probe.sh` | Launch through LaunchServices with bundled Node and no external descriptor. |
+| `Tests/DidiCompanionTests/check-real-host.sh` | The built app against a real host: takes the app bundle, a proof directory and a node path as three required arguments. Takes the slot. |
 
 ## Build, install and bundle
 

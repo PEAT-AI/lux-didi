@@ -5,10 +5,19 @@ Didi's canonical local store is `state.sqlite` in the service data directory. It
 Use the exact data directory reported by the installed service's launch configuration. The development service default on macOS is `~/Library/Application Support/Lux Didi`. The packaged supervisor explicitly passes `~/Library/Application Support/ai.peat.lux-didi` as `--data-dir` (Sources/LuxDidi/InstalledRuntime.swift and NativeServiceSupervisor.swift). These are different runtimes. Verify the running launch identity before choosing one. The operator should substitute the verified installed prefix in the commands below. Do not search for private configuration or print provider credentials to discover it.
 
 ```sh
-node scripts/didi-timeline latest --data-dir "$DIDI_DATA_DIR" --json
-node scripts/didi-timeline "$LIVE_SESSION_ID" --data-dir "$DIDI_DATA_DIR" --json --content
-node scripts/didi-timeline "$CHAT_RUN_ID" --data-dir "$DIDI_DATA_DIR" --json --content
+# The installed app writes here. A host started from source writes to "$HOME/Library/Application Support/Lux Didi"
+# unless it was given --data-dir; use whichever directory your host really used.
+data="$HOME/Library/Application Support/ai.peat.lux-didi"
+
+# The latest Live session, then one session by id, then one Chat run by id.
+node scripts/didi-timeline latest --data-dir "$data" --json
+node scripts/didi-timeline "<live session id>" --data-dir "$data" --json --content
+node scripts/didi-timeline "<chat run id>" --data-dir "$data" --json --content
 ```
+
+The two ids are values you read out of the store, never environment variables: a Live session id comes
+from `live_sessions.id`, and a Chat run id from `chat_runs.id` (see [Read-only SQL](#read-only-sql)
+below). Nothing exports them.
 
 The command opens SQLite read-only in one snapshot. `latest` means the latest Live session, not the latest text conversation. An explicit Chat run ID selects that run's canonical tool rows. `--turn N` filters traced Live turns, not independently associated source executions. It never assigns an unassociated source result to a guessed turn.
 
@@ -52,7 +61,7 @@ The human-readable destination is `connector/endpoint_id` with account/resource 
 [diagnostic-queries.sql](diagnostic-queries.sql) contains the named queries used by the synthetic reopened-SQLite replay. Direct owner SQL is privileged forensics and deliberately bypasses model retrieval gates. Do not expose these raw queries as model tools or use them to resurrect excluded content. Read-only access still exposes private content when a query selects text, arguments or results.
 
 ```sh
-sqlite3 -readonly "$DIDI_DATA_DIR/state.sqlite"
+sqlite3 -readonly "$HOME/Library/Application Support/ai.peat.lux-didi/state.sqlite"
 ```
 
 Inside SQLite, set the exact source identity, then paste the required named query:

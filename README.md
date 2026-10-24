@@ -1,41 +1,37 @@
 # Lux Didi
 
-Lux Didi is a local voice companion for the Mac. Her name is Naya. She lives as a small floating orb in the top right corner of the screen. Tap a key, say what you need, and she answers by voice. She can look things up in your notes, mail, calendar and team chat, remember what you tell her, and open the item you asked for. She reads your accounts and opens what you ask for. She never sends, edits or deletes mail, events or chat messages; the only thing she writes outside her own notes is a vault note you dictate.
+Lux Didi is a voice companion that lives on your Mac. Her name is Naya. She is a small floating orb in the top right corner of the screen: tap a key, say what you need, and she answers by voice. She reads your notes, mail, calendar, team chat and company knowledge, remembers what you tell her, and opens the item you asked for. She never sends, edits or deletes anything in those accounts; the only thing she writes outside her own notes is a vault note you dictate.
 
-The app runs on your Mac. The voice itself comes from a cloud voice provider (OpenAI GPT-Live or Gemini Live, chosen in Settings) once you start a call. Nothing is sent before you start one.
+The app runs locally. The voice itself comes from a cloud voice provider (OpenAI GPT Live by default, Gemini Live as the alternative, chosen in Settings) once you start a call. Nothing leaves the Mac before you start one.
 
 This is a personal prerelease: a locally built, self-signed Mac app. It is not notarized, not a public release and not tested on a clean machine.
 
-## What Naya does
+## What she can reach
 
-- **Talks.** One tap on the orb or the Right Command key starts a call. She opens with one short line drawn from the last session, and an open loop she has not seen confirmed in the last day comes to you as a question, never as a fact she states. She keeps the call light: answers are short and she speaks while she looks things up. If speech from a video makes her go quiet, she rebuilds the call silently: no chime and no "I am back". A call you start by hand waits a moment for the calendar, so her opening line can see the day. She looks live only while a call is live: when a call's state is unknown she goes cold rather than reopen the microphone, and a stop stays stopped until you start her again.
-- **Looks things up** (read only), when you connect the matching source:
-  - Lux Knowledge: your notes and past decisions.
-  - Gmail and Google Calendar: "anything important in mail?", "what is on tomorrow?". Mail triage sets bulk mail aside and reads human threads first; a mail search uses at most three words from your ask and tries a wider search once when nothing matches.
-  - Mattermost, through the `mattermost-mcp` server: "anything urgent on Mattermost?". Triage of what came in works again, and several chat searches in one ask run side by side.
-  - Mongoose: company knowledge, data and crm, each its own sign-in; admin is never connected.
-  - The web, for weather and news. A web result is never lost when the answer is trimmed to fit.
-- **Says what it searched.** Every lookup answer opens with what was searched and what was not, before the findings.
-- **Never stalls after a lookup.** Once a lookup returns she owes you an answer: if the model goes quiet she nudges it at 8 seconds and rebuilds the call at 15, so you are not left waiting in silence.
-- **Stops when told.** She reads the last ten words of every spoken fragment, so an end phrase works inside any sentence: her name may sit up to four words before or two words after it, and a name at the end of a fragment stays good for three seconds. "Stop listening", "shut down" and "stop now", and the German forms, end the call with no name; a bare "stop" still needs her name next to it.
-- **Remembers.** "Naya, remember that ..." saves a local note. Two different notes said in the same stretch of talk are both kept; the same note said twice is still refused. "Save to my vault: ..." saves a note to Lux Knowledge. Notes can be listed and deleted in the app. A memory recall reads earlier conversations only, never the call in progress or your current question.
-- **Opens things** only when you ask: a mail, a calendar event, a chat thread, a file or an app.
-- **Is honest about gaps.** A weak knowledge match is reported as "nothing matched". An empty mail or chat window says so and never says "nothing urgent".
+Every source is read only and each one is connected separately (Settings shows the status and the next step):
+
+- Lux Knowledge: your notes and past decisions.
+- Gmail and Google Calendar (through the lux-google-mcp helper, pinned to one account): "anything important in mail?", "what is on tomorrow?".
+- Mattermost (through the mattermost-mcp server): "anything urgent on Mattermost?", "find that channel".
+- Mongoose: company knowledge, business data and CRM, each endpoint with its own sign-in; the admin endpoint is never connected.
+- The web, for public facts, weather and news.
+
+What she says about a lookup is honest: an empty window says so, a source she could not search says why, and a weak match is reported as nothing matched.
 
 ## Using her
 
-1. **Start.** Open Naya. She appears as the orb in the top right. Opening the app by hand starts a call by itself, once. A login start, an install relaunch and every check start only show the orb. A click on the Dock icon only shows the orb too, and never opens the full window.
-2. **Talk, mute, resume.** Tap the orb or tap the **Right Command** key (bare tap only; a held key or a chord does nothing). First tap starts her, the next tap mutes her (the orb turns purple), the next tap lets her listen again. Muting closes the microphone at once.
-3. **End the call.** Say "Naya, stop listening" or "Naya, shut down" (also "end the call", "hang up", "goodbye", "good night", "turn off"; German: "Naya aus", "Naya, hör auf zuzuhören"). Her name is required at the start or the end, the sentence is at most 8 words, and a question about the phrase never ends the call. The microphone stops at once and a short goodbye sound plays. The menu bar **Stop** does the same. An unattended call also ends after 5 minutes of conversational silence; noise alone does not keep it alive. By default one provider session lasts at most an hour and a whole call at most four hours.
-4. **Menu bar.** Start Live, Mute, Stop, Open Naya app, Settings, Getting started, Open at login, Right Command tap, Always show Naya, Show mini orb, Reveal logs, Copy diagnostics, Quit. The full window only opens from here (or the shortcut below); it is created the first time you ask for it.
-5. **Shortcuts.** Control Option Space and Control Option Shift Space both show or hide the full window. Control Option Shift L starts Live. Control Option Shift M mutes. The orb itself is shown from the menu (**Show mini orb**) or by **Always show Naya**. If a shortcut is taken by another app, the menu says so.
-6. **Settings** (in the full window): Live voice provider, voice and accent, speaking pace (1.0 to 1.2), light or dark theme, and the status of every connector with the next step to fix it.
+1. **Start.** Open Naya. She appears as the orb. A launch by hand, including a cold click on the Dock icon, is an interactive launch: the orb appears and one call starts by itself, after a bounded wait for the calendar connector (four seconds at most). A login start shows the orb and makes no call, an install relaunch shows the orb only, and a click on the Dock icon while the app is already running shows the orb without a call. The full window opens from the menu bar (Open Naya app) or the shortcut below.
+2. **Talk, mute, resume.** Tap the orb or tap the **Right Command** key (a bare tap; a held key or a chord does nothing). The first tap starts her, the next tap mutes her (the orb turns purple), the next lets her listen again. Muting closes the microphone at once.
+3. **End the call.** Say "stop listening", "shut down" or "stop now" anywhere in a sentence, with or without her name; a bare "stop" needs her name ("Naya, stop"). The German forms work both ways ("Naya aus", "hör auf zuzuhören", and bare "aus"). A question about the phrase never ends the call. The microphone stops at once, a short goodbye sound plays and the connection to the voice provider closes; the orb stays. The menu bar **Stop** does the same. An unattended call ends after 5 minutes of conversational silence.
+4. **Menu bar.** Start Live, Mute, Stop, Open Naya app, Settings, Getting started, Open at login, Right Command tap, Always show Naya, Show mini orb, Reveal logs, Copy diagnostics, Quit.
+5. **Shortcuts.** Control Option Space shows or hides the orb, Control Option Shift Space shows or hides the full window, Control Option Shift L starts Live, Control Option Shift M mutes. If a shortcut is taken by another app, the menu says so.
+6. **Remember and save.** "Naya, remember that ..." keeps a local note. "Save to my vault: ..." writes a note to Lux Knowledge. Notes are listed and deleted in the app.
 
-More detail: [docs/user-guide.md](docs/user-guide.md).
+More: [docs/user-guide.md](docs/user-guide.md).
 
-## Install
+## Run it
 
-You need an Apple silicon Mac on macOS 26 or newer, the Xcode Command Line Tools, Node 26 or newer and npm (Node is only needed to build; the app carries its own).
+You need an Apple silicon Mac on macOS 26 or newer, the Xcode Command Line Tools, Node 26 or newer and npm (Node builds the app; the installed app carries its own runtime).
 
 ```sh
 npm --prefix server ci && npm --prefix web ci
@@ -44,11 +40,19 @@ bash scripts/build-macos-app.sh "/tmp/build/Lux Didi.app" --assets /tmp/didi-ass
 bash scripts/install-macos-app.sh "/tmp/build/Lux Didi.app" --to "$HOME/Applications"
 ```
 
-The installer replaces only the app. It keeps your settings and data, and keeps the previous app next to it until the new one validates. Connectors and the voice provider are configured separately: see [docs/macos-install.md](docs/macos-install.md) and the connector section of [docs/user-guide.md](docs/user-guide.md). A local signing identity (`scripts/create-signing-identity.sh`) keeps macOS permission grants across rebuilds.
+The installer replaces only the app. It keeps your settings and data and keeps the previous app next to the new one until it validates. A dirty tree builds an app whose `didi-runtime.json` names a commit that is not what you built; commit first. Connectors and the voice provider are configured afterwards: [docs/macos-install.md](docs/macos-install.md) and the connector section of the user guide. A local signing identity (`scripts/create-signing-identity.sh`) keeps macOS permission grants across rebuilds.
+
+## Run it from source
+
+```sh
+npm --prefix server ci && npm --prefix web ci
+bash scripts/run-local.sh --build-only
+node server/dist/host/index.js          # the host, port 8765
+```
+
+Two data directories exist and they are the most asked question: a source run writes to `~/Library/Application Support/Lux Didi`, the installed app to `~/Library/Application Support/ai.peat.lux-didi`. Each holds `state.sqlite` and `logs/` (`host.log`, `native-live.log`, `audio.log`, all content free). [docs/local-development.md](docs/local-development.md) has the flags, ports and proofs.
 
 ## How she is built
-
-Three layers, one writer:
 
 ```text
 Mac app (Swift, Sources/LuxDidi)
@@ -63,42 +67,25 @@ Web UI (TypeScript, web/)
   orb, conversation, memory, settings; the same UI in the window and in the orb
 ```
 
-Everything speaks over loopback. The host is the single source of truth; the app and the web UI hold no private records of their own. [docs/architecture.md](docs/architecture.md) explains each layer, the call lifecycle, the presence states, the research layer and the connectors.
+Three ownership rules explain most of the code: the host is the single writer of every record; the app owns the microphone and the speaker and nothing else touches audio; the web UI holds no records. A call is one provider session driven by the host, rendered by the app, with every step journalled. [docs/architecture.md](docs/architecture.md) is the full picture.
 
-## Where things live
+## Where to go next
 
-| Path | What |
+| You want to | Read |
 | --- | --- |
-| `Sources/LuxDidi/` | The Mac app: launch kinds, presence machine, orb panel, audio owner, host supervisor |
-| `server/` | The host: `host/` entry and wiring, `live/` call core, `adapters/live-voice/` providers, `tools/` research and tools, `connectors/`, `prompt/`, `domain/` and `runtime/` store |
-| `web/` | The web UI: `src/orb*.ts` orb, `src/live-view.ts`, `src/settings-view.ts`, `src/main.ts` |
-| `Tests/` | Swift test sources and the Mac check scripts |
-| `scripts/` | Build, install, every `check-*.sh`, and the log readers `naya-logs.mjs` and `didi-timeline` |
-| `docs/` | The documentation, indexed below |
-| `planning/` | The original planning backlog and its validator output (historical) |
+| use her and connect your accounts | [docs/user-guide.md](docs/user-guide.md), [docs/mcp-configuration.md](docs/mcp-configuration.md) |
+| change her | [CLAUDE.md](CLAUDE.md), then [docs/architecture.md](docs/architecture.md) and the component doc the architecture page names for your layer |
+| add a connector | [docs/connectors.md](docs/connectors.md) |
+| debug a call | [docs/debugging.md](docs/debugging.md), [docs/diagnostic-store.md](docs/diagnostic-store.md) |
+| ship a release | [docs/releases.md](docs/releases.md), [docs/checks.md](docs/checks.md) |
+| know what each release added | [docs/implementation-status.md](docs/implementation-status.md) |
 
-## Checks
+## Working in this repository
 
-There is no hosted CI. Every check is a script you run locally, one at a time: see [docs/checks.md](docs/checks.md) for each script and what it covers. The release gate for a change is the set of checks that touch it; unit tests are not run by hand.
-
-## Documentation map
-
-Start here:
-
-- [docs/user-guide.md](docs/user-guide.md): using Naya, the single key, permissions, signing, connector setup.
-- [docs/architecture.md](docs/architecture.md): how it works today.
-- [docs/checks.md](docs/checks.md): every check script.
-- [docs/macos-install.md](docs/macos-install.md): build, install, protected configuration.
-- [docs/local-development.md](docs/local-development.md): run the host and web UI from source.
-- [docs/debugging.md](docs/debugging.md): read her logs and the trace store; [docs/diagnostic-store.md](docs/diagnostic-store.md) for the database.
-- [docs/implementation-status.md](docs/implementation-status.md): what each release added.
-- [CLAUDE.md](CLAUDE.md): rules for coding agents working in this repo.
-
-Component reference (how one part is specified; read when you touch it): [mac-experience](docs/mac-experience.md), [companion-protocol](docs/companion-protocol.md), [native-live-client](docs/native-live-client.md), [native-conversation-protocol](docs/native-conversation-protocol.md), [native-request-recovery](docs/native-request-recovery.md), [live-gateway](docs/live-gateway.md), [live-session-core](docs/live-session-core.md), [live-voice-adapter](docs/live-voice-adapter.md), [tool-owner](docs/tool-owner.md), [chat-steps](docs/chat-steps.md), [conversation-runtime](docs/conversation-runtime.md), [prompt-composition](docs/prompt-composition.md), [provider-configuration](docs/provider-configuration.md), [mcp-configuration](docs/mcp-configuration.md), [mcp-adapter](docs/mcp-adapter.md), [lux-knowledge-connector](docs/lux-knowledge-connector.md), [model-adapter](docs/model-adapter.md), [domain-contract](docs/domain-contract.md), [client-service-contract](docs/client-service-contract.md), [service-runtime](docs/service-runtime.md), [local-runtime](docs/local-runtime.md), [service-packaging](docs/service-packaging.md), [web-client](docs/web-client.md), [selected-memory-context](docs/selected-memory-context.md), [selected-memory-interface](docs/selected-memory-interface.md), [memory-import](docs/memory-import.md), [owner-profile](docs/owner-profile.md), [privacy-and-authority](docs/privacy-and-authority.md).
-
-Historical planning record (October 2026, written before the product existed; not a description of current behaviour): [roadmap](docs/roadmap.md), [decisions](docs/decisions.md), [risks](docs/risks.md), [research](docs/research.md), [acceptance](docs/acceptance.md), [parallel-masters](docs/parallel-masters.md), [overnight-execution](docs/overnight-execution.md), [cloud-deployment](docs/cloud-deployment.md) (a design, nothing is deployed), and `planning/`.
+Coding agents and people follow [CLAUDE.md](CLAUDE.md): the orb look is frozen, audio belongs to one owner, connectors stay read only, tests use fakes, the repository is public and holds no private data, and a change updates the doc that describes it in the same pull request. There is no hosted CI: every check is a script under `scripts/` you run locally, and a release passes the twelve-check gate listed in [docs/checks.md](docs/checks.md).
 
 ## Provenance and privacy
 
 - `web/src/orb-classic.ts` keeps a bounded set of drawing helpers adapted from the public PEAT-AI/Vicuna repository; the exact ranges and exclusions are in `web/src/orb-provenance.md`. Third-party notices: `web/public/third-party-notices.txt` and `server/adapters/mcp/SDK-LICENSE.txt`.
-- The public persona content in `server/prompt/` is generic and new. The repository contains no credentials, personal data, private endpoints or recorded conversations; tests use fakes and synthetic fixtures only.
+- The persona content in `server/prompt/` is generic and new. The repository contains no credentials, personal data, private endpoints or recorded conversations; tests use fakes and synthetic fixtures only.
+- The planning documents from before the product existed live under [docs/history/](docs/history/README.md). [docs/privacy-and-authority.md](docs/privacy-and-authority.md) is also historical: it states the authority model as designed, and the live constraints now sit in [CLAUDE.md](CLAUDE.md) and [docs/architecture.md](docs/architecture.md).

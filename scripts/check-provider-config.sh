@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Provider profile validation: live.json, the provider union and the route classes.
+# Exits non-zero on the first failing test.
 set -euo pipefail
 . "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1

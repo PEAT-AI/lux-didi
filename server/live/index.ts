@@ -1751,6 +1751,8 @@ export class LiveSessionOwner {
     handle.debtSince = this.#now();
     handle.debtBargeIn = false;
     handle.debtRequeued = false;
+    // One silence, one clock: the sliding watchdog stands down for the silence the debt clock now owns.
+    this.#cancelWatchdog(handle);
     this.#noteDebt('start', reason);
     this.#scheduleDebt(handle, AUDIBLE_DEBT_RUNG_MS, 'rung');
   }

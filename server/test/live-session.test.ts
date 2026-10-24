@@ -3657,7 +3657,8 @@ test('a delegated response with no audible output is nudged, and audible progres
   const receipts: Record<string, unknown>[] = [];
   const detach = attachHostLogSink({ event: raw => {
     const record = raw as Record<string, unknown>;
-    if (record.event === 'live_watchdog') receipts.push(record);
+    // #538: a tool turn owes audible audio, so its silence is the debt clock's; the watchdog owns the rest.
+    if (record.event === 'live_watchdog' || record.event === 'live_debt') receipts.push(record);
   } });
   t.after(() => detach());
   const fake = fakeLiveVoicePort();
@@ -3674,18 +3675,18 @@ test('a delegated response with no audible output is nudged, and audible progres
   await advanceUntil(ms => h.advance(ms), scheduler, () => fake.toolResponses.length === 1);
   fake.emit({ type: 'modelTurnStarted' });
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
-  assert.deepEqual(phases(), ['armed'], 'the delegated response is watched from its start');
+  assert.deepEqual(phases(), ['armed', 'start'], 'the delegated response owes audible audio from its start, on its own clock');
   for (let second = 0; second < 10; second += 1) await advance(1_000);
   // Amendment B: the result completed at t=0, so ten seconds of silence after it is the defect, not a slow
   // tool. The nudge is the first stage of the obligation, not a rebuild.
-  assert.deepEqual(phases(), ['armed', 'nudged'], 'silence after the completed result earns the nudge');
+  assert.deepEqual(phases(), ['armed', 'start', 'rung'], 'silence after the completed result earns the 8 s rung');
   assert.equal(fake.sessionsOpened, 1, 'the working session is not rebuilt by a nudge');
   assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'the call is still up');
   // Audible output defers the deadline to 8 s from that frame (amendment A).
   fake.emit({ type: 'audio', pcm, rate: 24_000 });
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   for (let second = 0; second < 9; second += 1) await advance(1_000);
-  assert.deepEqual(phases(), ['armed', 'nudged', 'armed', 'nudged'], 'a reply that went silent again is watched again');
+  assert.deepEqual(phases(), ['armed', 'start', 'rung', 'clear', 'armed', 'nudged'], 'a reply that went silent again is watched again, by the watchdog that owns a model turn');
   assert.equal(fake.sessionsOpened, 1, 'a nudge is not a recovery');
   attachment.close();
 });
@@ -3875,14 +3876,16 @@ function hostLines(dir: string): Record<string, unknown>[] {
   const text = readFileSync(join(dir, 'logs', 'host.log'), 'utf8').trim();
   return text === '' ? [] : text.split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
 }
-const phasesOf = (dir: string): unknown[] => hostLines(dir).filter(line => line.event === 'live_watchdog').map(line => line.phase);
+// #538: a tool turn's silence is the audible debt clock's, and the watchdog reports only the rebuild it runs.
+const phasesOf = (dir: string): unknown[] => hostLines(dir)
+  .filter(line => line.event === 'live_watchdog' || line.event === 'live_debt').map(line => line.phase);
 const fillFrame = { type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: false, rmsDbfs: -120 } as const;
 const audibleFrame = { type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 } as const;
 /** The fixture port forwards any port event; its declared union predates tool calls and the silence model. */
 const portEvent = (event: unknown) => event as never;
 const settlePort = async (): Promise<void> => { for (let i = 0; i < 12; i++) await tick(); };
 
-test('D3: fill frames never disarm the watchdog, so a tool result with no audible answer is nudged at 8 s and recovered at 15 s', async t => {
+test('D3: fill frames never clear the debt, so a tool result with no audible answer is nudged at 8 s and recovered at 15 s', async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-fill-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));
   t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
@@ -3902,7 +3905,7 @@ test('D3: fill frames never disarm the watchdog, so a tool result with no audibl
     h.advance(100);
     scheduler.runDue();
   }
-  assert.deepEqual(phasesOf(captureDir), ['armed', 'nudged', 'recovered'], 'one clock: the nudge at 8 s and the recovery at 15 s');
+  assert.deepEqual(phasesOf(captureDir), ['start', 'rung', 'recovered'], 'one clock: the rung at 8 s and the recovery at 15 s');
   const stall = hostLines(captureDir).find(line => line.event === 'live_dead_air' && line.msSinceTool !== undefined);
   assert.ok(stall, 'the stall leaves a live_dead_air receipt');
   assert.equal(stall!['msSinceTool'], 8_000, 'the answer had been owed for eight seconds');
@@ -3933,7 +3936,7 @@ test('D3: one audible frame restarts the deadline from that frame, never from th
   const nudges = hostLines(captureDir).filter(line => line.event === 'live_dead_air');
   assert.equal(nudges.length, 1, 'one stall receipt for the one nudge');
   assert.equal(nudges[0]!['msSinceTool'], 11_000, 'the clock runs from the audible frame at 3 s');
-  assert.deepEqual(phasesOf(captureDir), ['armed', 'nudged', 'recovered'], 'and the recovery follows 7 s after that nudge');
+  assert.deepEqual(phasesOf(captureDir), ['start', 'clear', 'armed', 'nudged', 'recovered'], 'the audible frame clears the debt, and the watchdog owns the silence after it');
   assert.equal(fake.sessionsOpened, 2);
   attachment.close();
 });
@@ -3960,7 +3963,7 @@ test('D3: an audible frame followed by silence still recovers on the same clock'
   const stall = hostLines(captureDir).find(line => line.event === 'live_dead_air' && line.msSinceTool !== undefined);
   assert.ok(stall, 'audible output is not fulfilment, so the stall is still witnessed');
   assert.equal(stall!['msSinceAudible'], 8_000, 'the receipt counts the audible frame');
-  assert.deepEqual(phasesOf(captureDir), ['armed', 'nudged', 'recovered'], 'the deadline still ends in the fresh-seeded recovery');
+  assert.deepEqual(phasesOf(captureDir), ['start', 'clear', 'armed', 'nudged', 'recovered'], 'the deadline still ends in the fresh-seeded recovery');
   assert.equal(fake.sessionsOpened, 2);
   attachment.close();
 });
@@ -4452,7 +4455,7 @@ test('a delegation still open at 25 s logs its stall, speaks once and is not reb
   // session count shows the stall started nothing of its own.
   const recoveries = receipts.filter(entry => entry['event'] === 'live_recovery');
   assert.equal(fake.sessionsOpened, 1 + recoveries.length, 'the stall added no session of its own');
-  assert.ok(receipts.some(entry => entry['event'] === 'live_watchdog' && entry['phase'] === 'nudged'), 'S2 keeps its own escalation');
+  assert.ok(receipts.some(entry => entry['event'] === 'live_debt' && entry['phase'] === 'rung'), 'S2 keeps its own escalation, on the audible debt clock');
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -4754,7 +4757,8 @@ test('S5: a failed backend turn settles typed, says one honest line, and is neve
   fake.emit({ type: 'turnFailed', code: 'backend_unavailable' });
   await settlePort();
   // The typed disposition is immediate and metadata only.
-  assert.deepEqual(receipts.filter(entry => entry['event'] === 'turn_failed'), [{ event: 'turn_failed', code: 'backend_unavailable' }]);
+  assert.deepEqual(receipts.filter(entry => entry['event'] === 'turn_failed'), [{ event: 'turn_failed', reason: 'provider_error' }],
+    'the reason comes from the closed set; the provider word stays in the adapter receipt');
   assert.deepEqual(fake.commentary, [TURN_FAILED_LINE], 'one honest line: lost the thread, asked to repeat, offered the retry');
   assert.equal(fake.sessionsOpened, 1, 'a backend turn failure is never a rebuild');
   // The line never becomes audible here, so the turn is settled failed instead of left owing, and no rebuild follows.

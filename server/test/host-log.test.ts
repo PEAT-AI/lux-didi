@@ -166,7 +166,7 @@ test('the timing waterfall lines keep closed, count-only shapes (#451)', () => {
   assert.deepEqual(safeEvent(answer), answer);
   const arrived = { event: 'research_call_arrived', liveSessionId: LIVE_SESSION_ID, generation: 1, calls: 2 };
   assert.deepEqual(safeEvent(arrived), arrived);
-  const output = { event: 'tool_output_sent', liveSessionId: LIVE_SESSION_ID, generation: 1, tools: 2, msSinceArrived: 1_400 };
+  const output = { event: 'tool_output_sent', liveSessionId: LIVE_SESSION_ID, generation: 1, tools: 2, msSinceArrived: 1_400, outcome: 'sent' };
   assert.deepEqual(safeEvent(output), output);
   assert.equal(safeEvent({ ...output, msSinceArrived: -5 }), undefined, 'a negative span is refused');
 });

@@ -551,6 +551,15 @@ test('#574: a long header shortens the attendee list at a name boundary, never m
   assert.ok(spoken < 12, 'a header this long cannot carry every name');
 });
 
+test('#574: a helper that truncated its own attendee list never gets a spoken headcount', () => {
+  const party = Array.from({ length: 12 }, (_, n) => ({ displayName: `Person ${n}` }));
+  const shaped = shapeGcalList({ events: [{ id: 'a1', start: '2026-10-19T09:00:00Z', summary: 'Design review', attendees: party, attendeesOmitted: true }] });
+  const line = shaped.text.split('\n').find(entry => entry.trimStart().startsWith('attendees: '));
+  assert.ok(line !== undefined, 'the attendees line survives the event bound');
+  assert.match(line.trim(), / and others$/u, `a truncated source list only supports the unnumbered form: ${line}`);
+  assert.doesNotMatch(line, /\d+ others/u, `and never a count the helper did not send: ${line}`);
+});
+
 test('#3: an empty calendar read says the calendar was searched, never that it was skipped', async () => {
   const h = fixture([]);
   const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());

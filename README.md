@@ -13,7 +13,7 @@ This is a personal prerelease: a locally built, self-signed Mac app. It is not n
   - Lux Knowledge: your notes and past decisions.
   - Gmail and Google Calendar: "anything important in mail?", "what is on tomorrow?".
   - Mattermost, through the `mattermost-mcp` server: "anything urgent on Mattermost?".
-  - Mongoose: company knowledge.
+  - Mongoose: company knowledge, data and crm, each its own sign-in; admin is never connected.
   - The web, for weather and news.
 - **Remembers.** "Naya, remember that ..." saves a local note. Two different notes said in the same stretch of talk are both kept; the same note said twice is still refused. "Save to my vault: ..." saves a note to Lux Knowledge. Notes can be listed and deleted in the app.
 - **Opens things** only when you ask: a mail, a calendar event, a chat thread, a file or an app.

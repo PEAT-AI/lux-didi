@@ -24,6 +24,7 @@ import { composeLive, type LiveTesting } from './live.js';
 import { composeMcpRuntime, type ConnectorLifecycleEvent } from './mcp.js';
 import { spawn } from 'node:child_process';
 import { MongooseLoginError, runMongooseLogin } from './mongoose-login.js';
+import { mongooseEndpointName } from '../connectors/mongoose.js';
 import type { McpRuntimeComposition } from './mcp.js';
 import { createGoogleReader, readCalendarDigest, type CalendarDigestRead, type CalendarDigestReadResult } from '../connectors/google.js';
 import { CalendarDigestCache } from '../live/warm-context.js';
@@ -73,7 +74,10 @@ export function createMongooseSignIn(options: { configDir: string; recover: () =
     let failure: string | undefined;
     const first = new Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }>(resolve => { release = resolve; });
     pending = first;
-    void runMongooseLogin({ configDir: options.configDir, reference: entry.credentialRef, resourceUrl: entry.url, account: entry.account,
+    // One sign-in per endpoint: the catalog entry names its resource, and its audience follows from it.
+    const endpoint = mongooseEndpointName(entry.resource) ?? mongooseEndpointName(entry.url);
+    if (endpoint === undefined) return Promise.resolve({ status: 'failed' as const, reason: 'not-configured' });
+    void runMongooseLogin({ configDir: options.configDir, reference: entry.credentialRef, resourceUrl: entry.url, endpoint, account: entry.account,
       showAuthorizationUrl: (url: string) => { open(url); release({ status: 'started', url }); } })
       .then(() => options.recover())
       .catch((error: unknown) => { failure = error instanceof MongooseLoginError ? error.code : 'sign-in-did-not-finish'; })

@@ -1819,12 +1819,13 @@ export class LiveSessionOwner {
       const turnAgeMs = this.#now() - (handle.watchdogSince ?? this.#now());
       if (step === 'nudge') {
         if (handle.watchdogPhase === 'nudged') return;
-        // #591: no tool result and no owner words since the model last spoke means nothing asked for this
-        // turn, so the watchdog closes it and lets the silent rebuild run instead of nudging a reply.
+        // #591: no tool result, no model output and no owner words since the model last spoke means nothing
+        // asked for this turn, so the watchdog closes it and leaves the session listening instead of nudging a
+        // reply nobody asked for.
         if (handle.answerAt === undefined && handle.firstAudioAt === undefined && !this.#ownerWordsSinceModelOutput(handle.liveSessionId)) {
           this.#closeTurn(handle, 'recovered');
+          this.#cancelWatchdog(handle);
           hostLogEvent({ event: 'live_watchdog', phase: 'closed', turnAgeMs, generation });
-          void this.#watchdogRecover(handle, generation, turnAgeMs).catch(() => { /* recovery settles its own failures */ });
           return;
         }
         // One stall receipt per nudged deadline: how long the answer has been owed and how long since any

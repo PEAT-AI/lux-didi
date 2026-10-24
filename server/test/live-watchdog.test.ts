@@ -135,7 +135,7 @@ test('a mute owner turn is nudged once and then recovered on a fresh seeded sess
   assert.deepEqual(rebuildTriggers(live), ['no_output_after_owner'], 'the rebuild names owner speech as its trigger');
 });
 
-test('#591: an ambient-only turn closes at the watchdog without a nudge and its rebuild stays silent', async t => {
+test('#591: an ambient-only turn closes at the watchdog without a nudge, a chime or a rebuild', async t => {
   const live = await openLive(t);
   // Ambient sound near the microphone: a VAD start, a finalized transcript with no words in it, and a
   // model turn that opens and delivers nothing.
@@ -144,12 +144,15 @@ test('#591: an ambient-only turn closes at the watchdog without a nudge and its 
   await live.emit({ type: 'modelTurnStarted' });
   await live.emit({ type: 'inputTranscription', text: '', finished: true });
   assert.deepEqual(phases(live), ['armed'], 'the silent turn owes a reply the watchdog must judge');
-  await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
-  assert.deepEqual(phases(live), ['armed', 'closed', 'recovered'], 'no nudge: the turn is closed and the session rebuilt');
-  assert.equal(live.fake.sessionsOpened, 2, 'the silent turn still rebuilds the provider session');
-  assert.equal(openingText(live), undefined, 'nothing asks the rebuilt session to speak, so no "I am back"');
+  await until(live, () => phases(live).includes('closed'), RESPONSE_WATCHDOG_NUDGE_MS + 5_000);
+  assert.deepEqual(phases(live), ['armed', 'closed'], 'no nudge and no rebuild: the turn is closed and the call listens on');
+  assert.equal(live.fake.sessionsOpened, 1, 'ambient sound never rebuilds the provider session');
+  assert.equal(openingText(live), undefined, 'nothing is told to speak, so there is no "I am back"');
   assert.deepEqual(continuityEvents(live), [], 'no reconnect marker reaches the native shell, so no ring and no chime');
-  assert.deepEqual(rebuildTriggers(live), ['no_output_after_ambient'], 'the rebuild names ambient sound as its trigger');
+  assert.deepEqual(rebuildTriggers(live), [], 'and no rebuild to name');
+  await live.advance(RESPONSE_WATCHDOG_RECOVERY_MS + 30_000);
+  assert.deepEqual(phases(live), ['armed', 'closed'], 'the closed turn leaves no watchdog work behind');
+  assert.equal(terminalCode(live), undefined, 'the call is still up for the owner');
 });
 
 test('the rebuild trigger is a closed set the host log accepts for every token', () => {
@@ -169,6 +172,10 @@ test('an open model turn that emits one chunk and then nothing is nudged once an
   await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
   assert.deepEqual(phases(live), ['armed', 'nudged', 'recovered'], 'a turn that opens and goes quiet is watched to recovery');
   assert.equal(live.fake.sessionsOpened, 2);
+  // #591: the model spoke, but the owner never did, so nothing is owed and the rebuild arrives unannounced.
+  assert.equal(openingText(live), undefined, 'no owner words since the model spoke means no pickup to answer');
+  assert.deepEqual(continuityEvents(live), [], 'and no reconnect marker for the native ring to chime on');
+  assert.deepEqual(rebuildTriggers(live), ['no_output_after_ambient'], 'the rebuild names the silence it walked into');
 });
 
 test('model output after the nudge disarms the watchdog', async t => {
@@ -262,12 +269,12 @@ test('an unattended call ends at the idle limit even while VAD only events, a cl
     await live.emit({ type: 'inputTranscription', text: '', finished: true });
     await live.advance(20_000);
   }
-  // The silent turn arms the watchdog: the turn closes without a nudge, and the fresh-seeded rebuild runs
-  // quiet, because ambient sound never asked for an answer (#591). Either way the idle clock never moved.
+  // The silent turn arms the watchdog: the turn closes without a nudge and without a rebuild, because ambient
+  // sound never asked for an answer (#591). Either way the idle clock never moved.
   await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 30_000);
   assert.ok(!phases(live).includes('nudged'), 'the ambient turn was never nudged');
   assert.ok(phases(live).includes('closed'), 'the ambient turn was closed instead');
-  assert.equal(live.fake.sessionsOpened, 2, 'the recovery rebuilt the provider session');
+  assert.equal(live.fake.sessionsOpened, 1, 'ambient sound never rebuilds the provider session');
   await until(live, () => terminalCode(live) !== undefined, 400_000);
   assert.equal(terminalCode(live), 'idle_timeout');
   assert.equal(live.now() - lastActivity, 300_000, 'nothing but real activity moved the idle clock');

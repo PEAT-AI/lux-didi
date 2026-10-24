@@ -76,6 +76,7 @@ Before a release, run these eleven at the release head, one at a time, with no r
 | Script | Covers |
 | --- | --- |
 | `check-asset-bundle.sh` | The asset-only bundle: a planted bad bundle must be refused first (so green is never vacuous), then the real bundle is built and verified. |
+| `check-install-smoke.sh` | The install research smoke (`server/test/smoke/install-research-smoke.mjs`) against the repo build: a synthetic mail endpoint with every fetch intercepted, both research paths (the scheduler and a live tool call) started from arguments derived from the tool's declared input schema. The installer runs the same file against a bundle, so a newly required input field fails here instead of at install. |
 | `check-macos-install.sh` | Composes the real app, drives it through LaunchServices, and checks signatures, artifact hygiene, the configure matrix and install with rollback. Takes the slot. |
 | `test-npm-offline.sh` | The offline npm install helper fails loud on an empty cache and is a pure swap on a warm one. |
 

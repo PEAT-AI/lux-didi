@@ -404,6 +404,15 @@ test('LAT-1023: a run receipt carries the round cap and the compaction counts as
   assert.equal(safeEvent({ ...run, answerCompacted: { items: 1.5, chars: 400 } }), undefined, 'a count is a whole number');
 });
 
+test('#606 stop candidates carry only bounded alias ids, counts and flags', () => {
+  const candidate = { event: 'voice_stop_candidate', aliasId: 1, windowWords: 10, matched: false, finished: false };
+  assert.deepEqual(safeEvent(candidate), candidate);
+  assert.equal(safeEvent({ ...candidate, text: 'synthetic transcript' }), undefined);
+  assert.equal(safeEvent({ ...candidate, aliasId: 'naya' }), undefined);
+  assert.equal(safeEvent({ ...candidate, aliasId: 7 }), undefined);
+  assert.equal(safeEvent({ ...candidate, windowWords: 11 }), undefined);
+});
+
 // F7 / #610: the chat read's own shape rides the receipt, so a slow chat search can be judged from
 // the log. Counts, operator names and closed tokens only; the query words never arrive.
 test('#610: the chat query shape reaches the log, and a stray key still refuses the receipt', () => {

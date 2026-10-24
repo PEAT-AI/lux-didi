@@ -2030,3 +2030,38 @@ test('research 469: unavailable output preserves completed transport receipt wit
   assert.equal(outputs.length, 1); assert.deepEqual(JSON.parse(outputs[0]!.item!.output!), response);
   assert.equal(captured.events.filter(event => event.type === 'toolCall').length, 1, 'no locally generated retry');
 });
+
+test('#606 owner finalization is independent of queued or held playback and exactly once', async t => {
+  for (const samples of [2_400, 36_000]) {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    sendAudio(opened.f, samples);
+    await quiet();
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'Naya stop listening' });
+    await quiet();
+    clock.advance(700);
+    await quiet();
+    const finals = () => opened.captured.events.filter(event => event.type === 'inputTranscription' && event.finished === true);
+    assert.equal(finals().length, 1, 'the owner is final within 700 ms even during playback');
+    clock.advance(3_000);
+    await quiet();
+    assert.equal(finals().length, 1, 'the deferred think transition never repeats the final');
+  }
+});
+
+test('R4 GPT close purges held audio and closes the socket without a cancel command or acknowledgement', async t => {
+  const clock = new FakeClock();
+  const opened = await fakeReady(t, { clock });
+  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-stop-response' } }));
+  opened.socket.deliver({ type: 'session.output_audio.delta', delta: b64(pcm16(2_400)) });
+  await quiet();
+  assert.equal(audioBytes(opened.captured), 0, 'the short audible stretch is still held');
+  opened.session.close();
+  assert.equal(opened.socket.readyState, 3, 'provider close is synchronous and requires no acknowledgement');
+  assert.equal(opened.socket.sent.some(frame => JSON.parse(frame).type === 'response.cancel'), false, 'GPT Live has no cancel command');
+  clock.advance(5_000);
+  opened.socket.deliver({ type: 'session.output_audio.delta', delta: b64(pcm16(2_400)) });
+  await quiet();
+  assert.equal(audioBytes(opened.captured), 0, 'held and late audio never plays after close');
+  assert.equal((await opened.session.done).status, 'closed');
+});

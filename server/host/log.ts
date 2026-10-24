@@ -1,4 +1,5 @@
 import { CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_REFUSAL_REASONS } from '../tools/research.js';
+import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -523,6 +524,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (value.reason !== 'user_stop' && value.reason !== 'consumer_closed' && value.reason !== 'app_quit') return;
     if (!isSafeCount(value.msAfterStop)) return;
     return { event: 'session_end', reason: value.reason, msAfterStop: value.msAfterStop };
+  }
+  if (value.event === 'voice_stop_candidate') {
+    if (Object.keys(value).sort().join(',') !== ['event', 'aliasId', 'windowWords', 'matched', 'finished'].sort().join(',')) return;
+    if (!isSafeCount(value.aliasId) || value.aliasId >= STOP_NAMES.length) return;
+    if (!isSafeCount(value.windowWords) || value.windowWords < 1 || value.windowWords > STOP_WORD_LIMIT) return;
+    if (typeof value.matched !== 'boolean' || typeof value.finished !== 'boolean') return;
+    return { event: value.event, aliasId: value.aliasId, windowWords: value.windowWords, matched: value.matched, finished: value.finished };
   }
   if (value.event === 'voice_stop') {
     // #589: the owner's own sentence ended the call on the host's phrase gate. No words, no audio, no code.

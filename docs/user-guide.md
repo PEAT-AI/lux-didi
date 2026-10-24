@@ -6,7 +6,7 @@ Open Lux Didi like any app. Naya appears as a small floating orb in the top righ
 
 Naya does not connect when macOS starts her at login, when an install relaunches her, or during any check. In those cases you only see the orb, and a tap starts the call.
 
-The full window is separate and optional. It opens only when you ask: **Open Naya app** in the menu bar, a click on the Dock icon, or a shortcut. The orb and the window can be on screen together. Closing the window never ends a call.
+The full window is separate and optional. It opens only when you ask: **Open Naya app** in the menu bar, **Open Naya app** in the Dock icon's right-click menu (a plain click shows the orb), or a shortcut. The orb and the window can be on screen together. Closing the window never ends a call.
 
 ## Talking with her
 

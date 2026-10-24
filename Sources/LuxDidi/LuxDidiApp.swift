@@ -683,6 +683,13 @@ struct RootView: View {
         prepare: { [weak self] target, generation in self?.preparePresentation(target, generation: generation) },
         didCommit: { [weak self] mode, _ in self?.presentationCommitted(mode) },
         requestChanged: { [weak self] in self?.cancelPresentationPreparation() })
+    /// #625: the Dock icon's menu reuses the menu bar's own actions; Open Naya app is the same
+    /// selector the menu item sends, so the Dock opens the window by that one path.
+    private(set) lazy var dockMenu = DockMenu(
+        show: { [weak self] in self?.show() },
+        openSettings: { [weak self] in self?.openSettingsFromMenu() },
+        startLive: { [weak self] in self?.startLiveFromMenu() },
+        mute: { [weak self] in self?.muteLiveFromMenu() })
     /// ORBFIRST: the app window is built the first time the owner opens it, so a launch that shows
     /// only the orb builds the web host and no window at all.
     @discardableResult
@@ -1429,6 +1436,11 @@ struct RootView: View {
         model.forwardLaunchReceipt(LaunchKind.reopen)
         _ = coordinator.presentOrbFromDock()
         return false
+    }
+    /// #625: right-clicking the Dock icon offers the menu bar's four actions, so the owner can
+    /// open the full app from the Dock itself without a second icon or process.
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        dockMenu.build(muted: model.live?.isMuted == true)
     }
     @objc func quit() { NSApp.terminate(nil) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }

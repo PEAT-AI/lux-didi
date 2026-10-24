@@ -254,3 +254,44 @@ enum WindowMenu {
         return main
     }
 }
+
+/// #625: the Dock icon's right-click menu. macOS supplies Quit itself; these four items are the
+/// menu bar's own actions, and Open Naya app is the one Dock interaction that opens the full
+/// window, by the same activating path as the menu item.
+@MainActor
+final class DockMenu: NSObject {
+    static let openTitle = "Open Naya app"
+    static let settingsTitle = "Settings"
+    static let startLiveTitle = "Start Live"
+    /// The menu bar's own Mute title is state dependent, so the Dock menu says the same word.
+    static func muteTitle(muted: Bool) -> String { muted ? "Unmute" : "Mute" }
+
+    private let show: @MainActor () -> Void
+    private let openSettings: @MainActor () -> Void
+    private let startLive: @MainActor () -> Void
+    private let mute: @MainActor () -> Void
+
+    init(show: @escaping @MainActor () -> Void, openSettings: @escaping @MainActor () -> Void,
+         startLive: @escaping @MainActor () -> Void, mute: @escaping @MainActor () -> Void) {
+        self.show = show; self.openSettings = openSettings
+        self.startLive = startLive; self.mute = mute
+    }
+
+    @objc func dockShow() { show() }
+    @objc func dockOpenSettings() { openSettings() }
+    @objc func dockStartLive() { startLive() }
+    @objc func dockMute() { mute() }
+
+    func build(muted: Bool) -> NSMenu {
+        let menu = NSMenu(title: "Dock")
+        func add(_ title: String, _ action: Selector) {
+            menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self
+        }
+        add(Self.openTitle, #selector(dockShow))
+        add(Self.settingsTitle, #selector(dockOpenSettings))
+        menu.addItem(.separator())
+        add(Self.startLiveTitle, #selector(dockStartLive))
+        add(Self.muteTitle(muted: muted), #selector(dockMute))
+        return menu
+    }
+}

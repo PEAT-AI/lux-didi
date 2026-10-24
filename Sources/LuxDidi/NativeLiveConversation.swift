@@ -124,8 +124,10 @@ enum State: String, CaseIterable {
             // landed meanwhile voided it, so the restart never fires behind the owner's back.
             let seenEpoch = self.latch.epoch
             await self.stop(reason: .audioInterruption)
-            guard self.generation == token, self.latch.allowsRestart(seenEpoch: seenEpoch) else { return }
-            guard live, self.claimAutomaticRestart() else {
+            guard self.generation == token else { return }
+            // #613: a stop that landed inside the await voids the restart, exactly as the 60 s window does,
+            // and either way the owner is told to start again himself.
+            guard live, self.latch.allowsRestart(seenEpoch: seenEpoch), self.claimAutomaticRestart() else {
                 self.failure = "Live audio could not recover. Capture released. Restart explicitly to try again."
                 self.state = .failed
                 return

@@ -1,6 +1,6 @@
 # Architecture
 
-How Lux Didi works at release 9. File names are given so each claim can be checked; a line number is not, because they move.
+How Lux Didi works at release 10. File names are given so each claim can be checked; a line number is not, because they move.
 
 ## The shape in one picture
 

@@ -10,6 +10,8 @@ export interface GeminiOptions {
 const origin = 'https://generativelanguage.googleapis.com';
 const object = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const safetyReasons = new Set(['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'IMAGE_SAFETY', 'IMAGE_PROHIBITED_CONTENT']);
+/** 541: the two throw classes that survive the adapter's catch as they are; everything else is the provider's own failure. */
+const ADAPTER_FAILURES = new Set(['transport_error', 'credential_unavailable']);
 
 /** Gemini uses SSE JSON messages, not line-by-line JSON or OpenAI [DONE]. */
 async function* frames(response: Response, signal: AbortSignal): AsyncGenerator<unknown, boolean> {
@@ -114,13 +116,16 @@ export class GeminiAdapter implements ModelPort {
         const body = JSON.stringify(payload);
         if (Buffer.byteLength(body) > 1_000_000) throw Error('request_limit');
         prompt.hash = createHash('sha256').update(body).digest('hex');
-        const key = await this.options.credentials.resolve(this.options.keyReference);
+        const key = await this.options.credentials.resolve(this.options.keyReference)
+          .catch((): string => { throw Error('credential_unavailable'); });
         if (signal.aborted) throw Error('interrupted');
         if (!key || /[\r\n]/.test(key)) throw Error('credential_unavailable');
         const url = `${origin}/v1beta/models/${this.options.modelId}:streamGenerateContent?alt=sse`;
         const response = await (this.options.transport ?? fetch)(url, { method: 'POST', redirect: 'error', signal,
-          headers: { 'content-type': 'application/json', 'x-goog-api-key': key }, body });
-        if (!response.ok || response.redirected || (response.url && response.url !== url)) throw Error('transport_error');
+          headers: { 'content-type': 'application/json', 'x-goog-api-key': key }, body })
+          .catch((error: unknown): Response => { if (signal.aborted) throw error; throw Error('transport_error'); });
+        if (response.redirected || (response.url && response.url !== url)) throw Error('transport_error');
+        if (!response.ok) throw Error('model_request_failed');
         if (!response.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream')) throw Error('invalid_stream_type');
         let reason: string | undefined;
         let blocked = false;
@@ -162,7 +167,10 @@ export class GeminiAdapter implements ModelPort {
       });
     } catch (error) {
       // Never propagate transport exceptions, response bodies or credential resolver errors.
-      return finish(error instanceof Interrupted ? error.status : 'error', error instanceof Interrupted ? error.status : 'model_request_failed');
+      if (error instanceof Interrupted) return finish(error.status, error.status);
+      // 541: a transport or credential throw keeps its own class, so the receipt names the real cause.
+      if (error instanceof Error && ADAPTER_FAILURES.has(error.message)) return finish('error', error.message);
+      return finish('error', 'model_request_failed');
     }
   }
 }

@@ -33,13 +33,14 @@ bash scripts/build-asset-bundle.sh OUTDIR              # needs a clean committed
 bash scripts/build-macos-app.sh "OUT/Lux Didi.app" --assets OUTDIR
 bash scripts/install-macos-app.sh "OUT/Lux Didi.app" --to "$HOME/Applications"
 node scripts/naya-logs.mjs --help                      # read content-free logs
+bash scripts/check-install-smoke.sh                    # install research smoke against the repo build
 ```
 
 Do not launch the installed app from an agent session and do not start a call. Runtime proof of the app goes through the check scripts.
 
 ## Checks
 
-There is no hosted CI. Run the `scripts/check-*.sh` that cover your change, one at a time, and paste the output into the PR; [docs/checks.md](docs/checks.md) maps each script to what it covers. The release gate is eleven checks at the release head (listed there). Browser-backed and native-launch checks need `lux-browser-slot`; without it they are blocked, not passed. Do not run the unit suites by hand for their own sake.
+There is no hosted CI. Run the `scripts/check-*.sh` that cover your change, one at a time, and paste the output into the PR; [docs/checks.md](docs/checks.md) maps each script to what it covers. The release gate is twelve checks at the release head (listed there), `check-install-smoke.sh` among them. Browser-backed and native-launch checks need `lux-browser-slot`; without it they are blocked, not passed. Do not run the unit suites by hand for their own sake.
 
 ## Working rules
 

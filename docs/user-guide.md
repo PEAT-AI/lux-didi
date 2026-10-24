@@ -12,8 +12,8 @@ The full window is separate and optional. It opens only when you ask: **Open Nay
 
 - **Start, mute, resume.** Tap the orb, or tap the Right Command key (see below). The first tap starts a call, the next one mutes, the next one lets her listen again. While she is muted the orb is purple; she does not hear you and does not speak by herself.
 - **Stop the call.** Say "Naya, stop listening" or "Naya, shut down". Other forms that work: "end the call", "hang up", "goodbye", "good night", "turn off", with or without "please", and the German "Naya aus" and "Naya, hör auf zuzuhören". Rules: her name must be at the start or the end, the sentence is at most 8 words, and a question about the phrase ("what happens if I say Naya shut down?") never ends the call, nor does a typed message. The microphone stops at once, a short goodbye sound plays, and the call ends exactly as if you pressed Stop. The menu bar **Stop** does the same.
-- **If you say nothing.** An unattended call ends after 5 minutes without conversation. Background noise does not count as conversation. Muting suspends the clock. A single provider session lasts at most an hour by default and a whole call at most four hours.
-- **Her first line.** Every new call opens with one short line of her own, based on the last session.
+- **If you say nothing.** An unattended call ends after 5 minutes without conversation. Background noise does not count as conversation. Muting suspends the clock. A single provider session lasts at most an hour by default and a whole call at most four hours. When a provider session has to be replaced and the switch came from background speech with nothing from you since her last words, she stays quiet: no chime and no "I am back". After your own speech she greets you as before.
+- **Her first line.** Every new call opens with one short line of her own, based on the last session. An open loop she has not seen confirmed in the last day reaches you as a question ("is that done?"), never as a fact she states.
 - **Ask for things.** For example: "anything important in mail?" (unread mail from the last 2 days, newest first), "anything urgent on Mattermost?" (mentions and replies of the last 7 days), "what is on tomorrow?", "what did we decide about X?", "weather in Lisbon". She says plainly when a source returned nothing or is not connected. She opens a mail, event, thread, file or app only when you ask her to.
 
 ## Shortcuts and the menu
@@ -38,6 +38,8 @@ Turn on **Right Command tap** in the menu bar menu (on by default). Then the rig
 ## Remembering and deleting
 
 Say “Naya, remember that ...” during Live to ask Naya to save a memory.
+Each note is kept on its own, so two different notes said in the same stretch
+of talk are both saved; only the same note said twice is refused.
 Check the Memories list to confirm it was saved. Use **Delete memory** on a
 memory you no longer want Didi to use. Deletion removes it from future memory
 reads and future Live session context. The current live conversation keeps

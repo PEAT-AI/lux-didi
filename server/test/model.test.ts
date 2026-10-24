@@ -74,6 +74,17 @@ test('redirect, upstream errors and credential failures are redacted', async () 
   assert.throws(() => adapter(async () => sse([stop()]), { modelId: '../evil?key=x' }));
 });
 
+test('541: a transport throw reports network and a credential throw keeps its own class', async () => {
+  const down = await adapter(async () => { throw Error('fetch failed: connect ECONNREFUSED'); }).generate(request(), control());
+  assert.equal(down.reason, 'transport_error', 'a transport throw is not a provider failure');
+  const refused = await adapter(async () => { throw Object.assign(new TypeError('terminated'), { code: 'ECONNRESET' }); }).generate(request(), control());
+  assert.equal(refused.reason, 'transport_error', 'any throw from the transport is that class');
+  for (const resolve of [async () => { throw Error('keychain locked'); }, async () => '', async () => 'line\nbreak']) {
+    const missing = await adapter(async () => sse([stop()]), { credentials: { resolve } }).generate(request(), control());
+    assert.equal(missing.reason, 'credential_unavailable', 'a credential that cannot be read says so, not a provider failure');
+  }
+});
+
 test('invalid stream, premature EOF, blocked, empty, truncated and model errors stay distinct', async () => {
   const cases: [Response, string][] = [
     [sse([{ error: { message: key } }]), 'error'],

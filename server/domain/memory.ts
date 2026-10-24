@@ -452,11 +452,11 @@ export function deleteEntry(tx: Transaction, id: string, deletedAt: string, acto
   const existing = tx.get('SELECT * FROM entry_tombstones WHERE entry_id = ?', [id]);
   if (existing) return { entryId: id, deletedAt: String(existing.deleted_at), actor: String(existing.actor), reasonCode: 'owner_request' };
   readEntry(tx, id);
-  // Live owns exactly one source turn per remembered entry. Only its canonical
-  // UUID:sequence identity is retained, never arbitrary source labels or text.
+  // Live owns exactly one source identity per remembered note: the canonical
+  // UUID:sequence:note-digest identity, never arbitrary source labels or text.
   const source = tx.get("SELECT external_id FROM source_references WHERE owner_kind = 'entry' AND owner_id = ? AND provider = 'live-voice'", [id]);
   const key = source?.external_id;
-  const sourceKey = typeof key === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:\d+$/.test(key) ? key : null;
+  const sourceKey = typeof key === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:\d+:[0-9a-f]{8}$/.test(key) ? key : null;
   tx.run("DELETE FROM source_references WHERE owner_kind = 'entry' AND owner_id = ?", [id]);
   tx.run('DELETE FROM entries WHERE id = ?', [id]);
   tx.run('INSERT INTO entry_tombstones(entry_id, deleted_at, actor, reason_code, source_kind, source_key) VALUES (?, ?, ?, ?, ?, ?)', [id, deletedAt, actor, 'owner_request', sourceKey ? 'live-voice' : null, sourceKey]);

@@ -25,7 +25,7 @@ import { composeMcpRuntime, type ConnectorLifecycleEvent } from './mcp.js';
 import { spawn } from 'node:child_process';
 import { MongooseLoginError, runMongooseLogin } from './mongoose-login.js';
 import type { McpRuntimeComposition } from './mcp.js';
-import { createGoogleReader, readCalendarDigest, type CalendarDigestRead } from '../connectors/google.js';
+import { createGoogleReader, readCalendarDigest, type CalendarDigestRead, type CalendarDigestReadResult } from '../connectors/google.js';
 import { CalendarDigestCache } from '../live/warm-context.js';
 import { loadProviderConfig } from '../config/index.js';
 import { createSummarizer } from '../services/summarize.js';
@@ -242,6 +242,13 @@ function calendarDigestReader(mcp: McpRuntimeComposition): CalendarDigestRead | 
   if (grant === undefined) return undefined;
   return createGoogleReader({ port: mcp.port, registry: mcp.registry,
     config: { endpointId: grant.endpointId, account: grant.account, resource: grant.resource, schemaDigest: grant.schemaDigest, generation: grant.generation, family: 'calendar' } });
+}
+/**
+ * 556: one digest read that dies with the host. The cache's signal, and its ten second deadline, reach the
+ * connector read itself, so a closed host leaves no request running to answer after host_exit.
+ */
+export function digestRead(reader: CalendarDigestRead | undefined, signal: AbortSignal, input: { now: () => number; timeZone: string }): Promise<CalendarDigestReadResult> {
+  return readCalendarDigest(reader === undefined ? undefined : { gcalList: async listInput => await reader.gcalList(listInput, signal) }, input);
 }
 export function defaultDataDir(): string {
   if (platform() === 'darwin') return join(homedir(), 'Library', 'Application Support', 'Lux Didi');
@@ -471,7 +478,7 @@ export async function startHost(config: HostConfig) {
     // #595: the owner travels, so every digest read asks the host for its zone instead of starting with one.
     const hostTimeZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone;
     const calendarDigest = new CalendarDigestCache(
-      async () => await readCalendarDigest(calendarDigestReader(mcp), { now: digestNow, timeZone: hostTimeZone() }),
+      async signal => await digestRead(calendarDigestReader(mcp), signal, { now: digestNow, timeZone: hostTimeZone() }),
       { now: digestNow, timeZone: hostTimeZone(), log: event => log.event(event) });
     const digestRefreshLog: CalendarDigestRefreshLog = event => log.event(event);
     refreshCalendarDigest = bindCalendarRecovery({ digest: calendarDigest, endpoints: () => mcp.status().endpoints, grantOf: id => mcp.registry.currentGrant(id), now: digestNow, log: digestRefreshLog });

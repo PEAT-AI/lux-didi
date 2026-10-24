@@ -35,17 +35,17 @@ function dir(t: TestContext): string {
   return path;
 }
 
-function openSession(path: string, rows: readonly Row[]): Store {
+function openSession(path: string, rows: readonly Row[], session = SESSION): Store {
   const f = openMemoryFixture(path, model, {}, [...chatMigrations, ...liveMigrations]);
   f.store.transaction(tx => {
     tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
         client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events,
         journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,'active',1,1,?,0,0,'attached',NULL,NULL,?,?)`,
-      [SESSION, f.store.assistantId, f.store.authorityEpoch, 'key-note', 'fp-note', 'client', 'audit', 'profile', 'prompt', rows.length, NOW, NOW]);
+      [session, f.store.assistantId, f.store.authorityEpoch, 'key-note', 'fp-note', 'client', 'audit', 'profile', 'prompt', rows.length, NOW, NOW]);
     for (const row of rows) {
       tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?)',
-        [SESSION, row.kind ?? 'inputTranscription', row.text, row.finished === false ? 0 : 1, row.text.length, row.at ?? NOW]);
+        [session, row.kind ?? 'inputTranscription', row.text, row.finished === false ? 0 : 1, row.text.length, row.at ?? NOW]);
     }
   });
   return f.store;
@@ -58,8 +58,8 @@ function refusal(result: Record<string, unknown>): Record<string, unknown> {
   return rest;
 }
 
-function remember(store: Store, text: string, now = NOW) {
-  return store.transaction(tx => rememberOwnerNote(tx, SESSION, { text, kind: 'preference' }, now));
+function remember(store: Store, text: string, now = NOW, session = SESSION) {
+  return store.transaction(tx => rememberOwnerNote(tx, session, { text, kind: 'preference' }, now));
 }
 
 function entry(store: Store, entryId: unknown) {
@@ -127,10 +127,12 @@ test('two distinct notes supported by the same owner turns are both stored', asy
 });
 
 test('forgetting one of two notes from the same turns leaves the other, and it stays gone after a reopen', async t => {
+  // The deletion tombstone keeps only the canonical identity, so this session is a real UUID.
+  const session = '7f2f4a1e-0d3c-4a7a-9d3e-0e5b1c2d3f40';
   const path = dir(t);
-  let store = openSession(path, [{ text: SHARED_TURN, finished: true }]);
-  const first = await remember(store, 'Rob prefers short answers in the morning');
-  const second = await remember(store, 'Rob takes the early train to the office on tuesdays');
+  let store = openSession(path, [{ text: SHARED_TURN, finished: true }], session);
+  const first = await remember(store, 'Rob prefers short answers in the morning', NOW, session);
+  const second = await remember(store, 'Rob takes the early train to the office on tuesdays', NOW, session);
   assert.equal(first.remembered, true);
   assert.equal(second.remembered, true);
   store.transaction(tx => memory.deleteEntry(tx, String(first.entryId), new Date(NOW).toISOString(), 'principal-a'));
@@ -138,11 +140,11 @@ test('forgetting one of two notes from the same turns leaves the other, and it s
   assert.equal(tombstones.length, 1, 'only the forgotten note is tombstoned');
   assert.notEqual(String(tombstones[0]?.key), String(entry(store, second.entryId).externalId));
   store.close();
-  store = openSession(path, []);
+  store = openSession(path, [], session);
   t.after(() => store.close());
   assert.ok(store.transaction(tx => tx.get('SELECT 1 AS one FROM entries WHERE id=?', [String(second.entryId)])),
     'the other note survives the reopen');
-  assert.deepEqual(refusal(await remember(store, 'Rob prefers short answers in the morning')),
+  assert.deepEqual(refusal(await remember(store, 'Rob prefers short answers in the morning', NOW, session)),
     { remembered: false, code: 'already_remembered', entryId: first.entryId }, 'the forgotten note stays forgotten');
 });
 

@@ -188,6 +188,7 @@ test('ONE-1023: a filtered search that matched nothing retries once without the 
   const searches = executed.filter(call => call.name === 'search_knowledge');
   assert.equal(searches.length, 2, 'one retry, never more');
   assert.equal('meeting_date_from' in searches[0]!.args, true, 'the first read carries the past day');
+  assert.equal(searches[0]!.args['meeting_date_from'], '2026-10-22', 'the past day is the owner zone day before the run clock');
   assert.equal('meeting_date_from' in searches[1]!.args, false, 'the retry drops it');
   assert.match(JSON.stringify(reply), /budget review is agreed/u, 'the hit reaches the reply');
   const receipt = h.sources.filter(entry => entry.source === 'knowledge').at(-1);

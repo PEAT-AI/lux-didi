@@ -125,6 +125,7 @@ async function harness(t: TestContext, overrides: {
   model?: string;
   provider?: 'gemini' | 'openai';
   tools?: boolean;
+  releaseEvidenceError?: boolean;
   history?: boolean;
   mattermost?: boolean;
   calendar?: boolean;
@@ -377,6 +378,7 @@ async function harness(t: TestContext, overrides: {
     }
     toolOwner.projectConnection('lux');
     mark('lux', 'lux-knowledge');
+    if (overrides.releaseEvidenceError) toolOwner.releaseEvidence = () => { throw new Error('synthetic evidence release failure'); };
     tools = { ...(overrides.recover ? { recover: overrides.recover } : {}), owner: toolOwner,
       connectionIds: () => [...published],
       status: () => ({ endpoints: endpointStates.map(state => ({ ...state })) }) };
@@ -857,9 +859,9 @@ const recordingSocket = (frames: string[]): VoiceStopSocket => {
 };
 
 const sayStopPhrase = async (fake: ReturnType<typeof fakeLiveVoicePort>, finalOrigin?: string): Promise<void> => {
-  fake.emit({ type: 'inputTranscription', text: 'Naya, stop ', finished: false });
+  fake.emit({ type: 'inputTranscription', text: 'Naya, stop ', finished: false, ...(finalOrigin ? { finalOrigin } : {}) });
   await tick();
-  fake.emit({ type: 'inputTranscription', text: 'listening.', finished: false });
+  fake.emit({ type: 'inputTranscription', text: 'listening.', finished: false, ...(finalOrigin ? { finalOrigin } : {}) });
   await tick();
   fake.emit({ type: 'inputTranscription', text: '', finished: true, ...(finalOrigin ? { finalOrigin } : {}) });
 };
@@ -5802,4 +5804,273 @@ test('TOPIC 6 (#565): a live research call writes a query shape row to the trace
   assert.equal(Number(knowledge['topic_words']), 3, 'the topic word count is kept');
   assert.equal(typeof Number(knowledge['terms']), 'number');
   assert.equal(JSON.stringify(rows).toLowerCase().includes('wilmar'), false, 'no search word is recorded');
+});
+
+test('#606 unfinished fragments stop immediately across recognizer noise and a 700 ms pause', async t => {
+  const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'stop-fragments', inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+  const frames: string[] = [];
+  const pump = pumpOutput(recordingSocket(frames), attachment, () => {}, 1_000_000);
+  for (const text of ['Nayas.', 'Okay, Naya,']) {
+    fake.emit({ type: 'inputTranscription', text, finished: false });
+    await settlePort();
+    assert.equal(h.owner.get(session.liveSessionId).terminal, null);
+    scheduler.now += 700; scheduler.runDue();
+  }
+  fake.emit({ type: 'inputTranscription', text: 'stop listening now', finished: false });
+  await settlePort();
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
+  await pump;
+  assert.equal(h.owner.get(session.liveSessionId).consumerState, 'ended');
+  assert.equal(frames.filter(frame => frame !== 'binary' && JSON.parse(frame).type === 'terminal').length, 1);
+});
+
+test('#606 long unfinished room speech cannot hide a stop at the end', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const session = h.owner.create({ idempotencyKey: 'stop-room', inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+  fake.emit({ type: 'inputTranscription', text: `${'room '.repeat(60)}naya stop listening`, finished: false });
+  await settlePort();
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
+});
+
+test('#606 the stop window expires after three seconds and resets on model output', async t => {
+  for (const reset of ['silence', 'output'] as const) {
+    const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
+    const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+    const session = h.owner.create({ idempotencyKey: `stop-reset-${reset}`, inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+    fake.emit({ type: 'inputTranscription', text: 'Naya', finished: false });
+    await settlePort();
+    if (reset === 'silence') { scheduler.now += 3_000; scheduler.runDue(); }
+    else fake.emit({ type: 'outputTranscription', text: 'yes', finished: false });
+    await settlePort();
+    fake.emit({ type: 'inputTranscription', text: 'stop', finished: false });
+    await settlePort();
+    assert.equal(h.owner.get(session.liveSessionId).terminal, null, reset);
+    attachment.close(); await attachment.done;
+  }
+});
+
+test('R1 twenty direct requests stop on unfinished fragments with a fake clock', async t => {
+  const positives = [
+    'Naya, stop listening', 'Naya stop listening', 'stop listening Naya',
+    'Naya shut down', 'Naya please stop listening', 'Naya stop', 'Naya hör auf zuzuhören',
+    'Naya, stop', 'Naja stop listening', 'Nayah stop listening', 'Naia stop listening',
+    'Nia stop listening', 'Nayer stop listening', 'Nayla stop listening', 'NAYA STOP LISTENING!',
+    'Naya could you stop listening now please', 'Could you stop listening Naya',
+    'Please Naya stop listening', 'Naya bitte hör auf zuzuhören', 'Naya schalt dich aus',
+  ];
+  assert.equal(positives.length, 20);
+  for (const [i, text] of positives.entries()) {
+    const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
+    const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+    const session = h.owner.create({ idempotencyKey: `positive-${i}`, inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+    fake.emit({ type: 'inputTranscription', text, finished: false });
+    await settlePort();
+    assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' }, text);
+    await attachment.done;
+  }
+});
+
+test('R1 a name at a fragment edge keeps its grace across quiet finals for under three seconds', async t => {
+  const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'name-grace', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit({ type: 'inputTranscription', text: 'Naja', finished: false });
+  fake.emit({ type: 'inputTranscription', text: '', finished: true, finalOrigin: 'app_quiet' });
+  await settlePort();
+  scheduler.now += 2_999; scheduler.runDue();
+  fake.emit({ type: 'inputTranscription', text: 'stop', finished: false });
+  await settlePort();
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
+});
+
+test('#606 modelTurnStarted finalization admits a phrase only visible after joining provider deltas', async t => {
+  const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'stop-fallback', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit({ type: 'inputTranscription', text: 'Na', finished: false });
+  fake.emit({ type: 'inputTranscription', text: 'ya stop', finished: false });
+  await settlePort();
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'the fragment word boundary hides the name until finalization');
+  fake.emit({ type: 'modelTurnStarted' });
+  await settlePort();
+  scheduler.now += 300; scheduler.runDue(); await settlePort();
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
+  await attachment.done;
+});
+
+test('R1 terminal delivery survives a provider close failure and a store failure', async t => {
+  for (const failure of ['provider', 'store'] as const) {
+    const fake = fakeLiveVoicePort();
+    let closed = false;
+    const port: LiveVoicePort = { capabilities: fake.port.capabilities, open: (request, control) => {
+      const session = fake.port.open(request, control);
+      return { ...session, close: () => { closed = true; session.close(); if (failure === 'provider') throw new Error('synthetic close failure'); } };
+    } };
+    const h = await harness(t, { port, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+    const session = h.owner.create({ idempotencyKey: `stop-failure-${failure}`, inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+    const frames: string[] = [];
+    const pump = pumpOutput(recordingSocket(frames), attachment, () => { assert.fail('terminal delivery was skipped'); }, 1_000_000);
+    const transaction = h.store.transaction.bind(h.store);
+    if (failure === 'store') h.store.transaction = () => { throw new Error('synthetic store failure'); };
+    fake.emit({ type: 'inputTranscription', text: 'Naya stop listening', finished: false });
+    const snapshot = await attachment.done;
+    h.store.transaction = transaction;
+    await pump;
+    assert.equal(closed, true, 'provider close was attempted despite cleanup failure');
+    assert.deepEqual(snapshot.terminal, { state: 'closed', code: 'voice_stop' });
+    assert.equal(frames.filter(frame => frame !== 'binary' && JSON.parse(frame).type === 'terminal').length, 1);
+    if (failure === 'store') assert.equal(snapshot.journal.complete, false, 'no durable success is fabricated');
+  }
+});
+
+test('R1 no false stop from typed or assistant speech, negation, quotation or an expired name', async t => {
+  const cases: { text: string; origin?: 'typed'; output?: boolean; expired?: boolean }[] = [
+    { text: 'what happens if I say Naya stop listening' }, { text: 'Naya said stop listening' },
+    { text: 'Naya do not stop listening' }, { text: "Naya don't stop" },
+    { text: 'tell Maya to stop listening to podcasts' }, { text: 'stop listening to podcasts' },
+    { text: 'Naya stop listening', origin: 'typed' }, { text: 'Naya stop listening', output: true },
+    { text: 'stop', expired: true }, { text: 'Naya why stop listening' },
+    { text: 'Naya what should I stop listening to' }, { text: 'Naya never stop listening' },
+    { text: 'Naya how do I stop listening' }, { text: 'Naya when should I stop listening' },
+    { text: 'Nadia said stop listening' }, { text: 'nayas said stop listening' },
+    { text: 'please stop listening to podcasts' }, { text: 'Naya stop listening to podcasts' },
+    { text: 'Naya please do not shut down' }, { text: 'Naya if you stop listening' },
+  ];
+  assert.equal(cases.length, 20);
+  for (const [i, input] of cases.entries()) {
+    const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
+    const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+    const session = h.owner.create({ idempotencyKey: `negative-${i}`, inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+    if (input.expired) {
+      fake.emit({ type: 'inputTranscription', text: 'Naya ', finished: false }); await settlePort();
+      scheduler.now += 4_000; scheduler.runDue(); await settlePort();
+    }
+    fake.emit(input.output ? { type: 'outputTranscription', text: input.text, finished: true }
+      : { type: 'inputTranscription', text: input.text, finished: true, ...(input.origin ? { finalOrigin: input.origin } : {}) });
+    await settlePort();
+    assert.equal(h.owner.get(session.liveSessionId).terminal, null, `case ${i}: ${input.text}`);
+    attachment.close(); await attachment.done;
+  }
+});
+
+test('R1 admission precedes journal overflow and drops queued host audio', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, limits: { journalMaxEvents: 2, idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'stop-full-journal', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit({ type: 'audio', pcm: new Uint8Array([1, 0]), rate: 24000 }); await settlePort();
+  fake.emit({ type: 'inputTranscription', text: 'Naya stop listening', finished: false }); await settlePort();
+  assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'voice_stop' });
+  const chunks = [];
+  for await (const chunk of attachment.output) chunks.push(chunk);
+  assert.equal(chunks.some(chunk => chunk.kind === 'audio'), false, 'previously queued speech is purged');
+});
+
+test('R2 the three named forensic stop shapes terminate before any final marker', async t => {
+  for (const scenario of ['question-after-command', 'recognizer-prefix', 'long-room-turn'] as const) {
+    const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
+    const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+    const session = h.owner.create({ idempotencyKey: `forensic-${scenario}`, inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+    const fragments = scenario === 'question-after-command' ? ['Naya,', 'stop listening.', 'Can you react to stop listening?']
+      : scenario === 'recognizer-prefix' ? ['Nayas.', 'Okay, Naya,', 'stop listening now']
+      : [...Array.from({ length: 21 }, (_, i) => 'room '.repeat(i < 12 ? 4 : 3)), 'naya stop listening now'];
+    for (const text of fragments) {
+      fake.emit({ type: 'inputTranscription', text, finished: false });
+      await settlePort();
+      scheduler.now += scenario === 'long-room-turn' ? 2_000 : 300;
+      scheduler.runDue();
+    }
+    assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'voice_stop' }, scenario);
+  }
+});
+
+
+test('R1 evidence release cannot skip provider close or the typed terminal', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, tools: true, releaseEvidenceError: true });
+  const session = h.owner.create({ idempotencyKey: 'stop-evidence-failure', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const frames: string[] = [];
+  const pump = pumpOutput(recordingSocket(frames), attachment, () => { assert.fail('terminal was skipped'); }, 1_000_000);
+  fake.emit({ type: 'inputTranscription', text: 'Naya stop listening', finished: false });
+  await pump;
+  assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'voice_stop' });
+  assert.equal(frames.filter(frame => frame !== 'binary' && JSON.parse(frame).type === 'terminal').length, 1);
+});
+
+test('R1 a failed terminal write with working reads still delivers the in-memory terminal', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const session = h.owner.create({ idempotencyKey: 'stop-write-only-failure', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  h.store.transaction(tx => tx.run("CREATE TRIGGER synthetic_terminal_failure BEFORE UPDATE OF terminal_outcome ON live_sessions WHEN NEW.terminal_outcome IS NOT NULL BEGIN SELECT RAISE(FAIL,'synthetic terminal write failure'); END"));
+  const frames: string[] = [];
+  const pump = pumpOutput(recordingSocket(frames), attachment, () => { assert.fail('terminal was skipped'); }, 1_000_000);
+  fake.emit({ type: 'inputTranscription', text: 'Naya stop listening', finished: false });
+  await pump;
+  const snapshot = await attachment.done;
+  assert.deepEqual(snapshot.terminal, { state: 'closed', code: 'voice_stop' });
+  assert.equal(snapshot.journal.complete, false, 'a failed write is never reported as durable');
+  assert.equal(frames.filter(frame => frame !== 'binary' && JSON.parse(frame).type === 'terminal').length, 1);
+});
+
+test('R1 a candidate diagnostic sink cannot prevent admitted stop teardown', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const session = h.owner.create({ idempotencyKey: 'stop-log-failure', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const detach = attachHostLogSink({ event: raw => {
+    if ((raw as { event?: string }).event === 'voice_stop_candidate') throw new Error('synthetic log failure');
+  } });
+  t.after(detach);
+  fake.emit({ type: 'inputTranscription', text: 'Naya stop listening', finished: false });
+  assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'voice_stop' });
+});
+
+
+test('R3 bare commands close the real fake-provider socket and consumer, not the host owner', async t => {
+  for (const [i, text] of ['stop listening', 'Okay, like stop listening. You need to shut down now.'].entries()) {
+    const h = await harness(t);
+    const { session, attachment } = await attached(h, `bare-stop-${i}`);
+    const provider = h.f.clients[0]!;
+    const closed = new Promise<void>(resolve => provider.once('close', () => resolve()));
+    const frames: string[] = [];
+    const pump = pumpOutput(recordingSocket(frames), attachment, () => { assert.fail('terminal was skipped'); }, 1_000_000);
+    h.f.send({ serverContent: { inputTranscription: { text, finished: false } } });
+    await settlePort();
+    assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
+    await pump; await closed;
+    assert.equal(provider.readyState, 3, 'no provider socket remains open after admission');
+    assert.equal(h.f.clients.every(client => client.readyState === 3), true);
+    assert.equal((await attachment.done).consumerState, 'ended', 'the microphone uplink consumer is closed');
+    assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
+    const next = h.owner.create({ idempotencyKey: `host-still-running-${i}`, inputClass: 'ordinary' }, h.ctx);
+    assert.equal(next.terminal, null, 'ending a call does not shut down the host owner');
+    assert.equal(frames.filter(frame => frame !== 'binary' && JSON.parse(frame).type === 'terminal').length, 1);
+  }
 });

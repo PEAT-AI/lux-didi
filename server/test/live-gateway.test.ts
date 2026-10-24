@@ -1,3 +1,5 @@
+import { pumpOutput } from '../http/live-upgrade.js';
+import type { LiveAttachment } from '../live/index.js';
 import { FRESH_OPENING } from '../adapters/live-voice/openai.js';
 import { ConnectorCompositionError } from '../connectors/index.js';
 import { domainMigrations } from '../domain/schema.js';
@@ -1084,4 +1086,36 @@ test('OC1: an open action is a native_action control frame and its ack is the to
   // A duplicate ack settles nothing and never closes the conversation socket.
   ws.send(JSON.stringify({ type: 'native_action_result', id: action.id, ok: true, code: 'opened' }));
   assert.equal(ws.readyState, WebSocket.OPEN, 'a duplicate ack is ignored, not fatal');
+});
+
+
+test('#606 a terminal takes priority over queued binary output without draining speech', async () => {
+  const frames: unknown[] = [];
+  const socket = { readyState: 1, bufferedAmount: 0,
+    send: (frame: unknown) => { frames.push(frame); }, close: () => { socket.readyState = 3; } };
+  const attachment = {
+    output: (async function* () { for (let i = 0; i < 20; i++) yield { kind: 'audio', pcm: new Uint8Array([1, 0]), rate: 24000 }; })(),
+    done: Promise.resolve({ ready: true, terminal: { state: 'closed', code: 'voice_stop' }, journal: { complete: true } }),
+    overflow: () => { assert.fail('terminal must win over backpressure'); },
+  } as unknown as LiveAttachment;
+  await pumpOutput(socket as unknown as Parameters<typeof pumpOutput>[0], attachment, () => { assert.fail('not detached'); }, 1_000);
+  assert.equal(frames.length, 1, 'all twenty queued audio chunks were discarded');
+  assert.deepEqual(JSON.parse(String(frames[0])), { type: 'terminal', state: 'closed', code: 'voice_stop', complete: true });
+  assert.equal(socket.readyState, 3);
+});
+
+test('#606 a normal close drains the queued markers before the terminal frame', async () => {
+  const frames: unknown[] = [];
+  const socket = { readyState: 1, bufferedAmount: 0,
+    send: (frame: unknown) => { frames.push(frame); }, close: () => { socket.readyState = 3; } };
+  const marker = (sequence: number) => ({ kind: 'turnComplete' as const, sequence, journalSequence: sequence + 1,
+    text: null, finished: null, value: null });
+  const attachment = {
+    output: (async function* () { for (let i = 0; i < 20; i++) yield { kind: 'marker', marker: marker(i) }; })(),
+    done: Promise.resolve({ ready: true, terminal: { state: 'closed', code: 'synthetic_code' }, journal: { complete: true } }),
+    overflow: () => { assert.fail('a normal close never wins over the queue'); },
+  } as unknown as LiveAttachment;
+  await pumpOutput(socket as unknown as Parameters<typeof pumpOutput>[0], attachment, () => { assert.fail('not detached'); }, 1_000);
+  assert.equal(frames.length, 21, 'twenty queued markers then the terminal frame');
+  assert.deepEqual(JSON.parse(String(frames[20])), { type: 'terminal', state: 'closed', code: 'synthetic_code', complete: true });
 });

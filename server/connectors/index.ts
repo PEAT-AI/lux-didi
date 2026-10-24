@@ -9,7 +9,8 @@ import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
 import type { GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
 import { googleToolStatus, projectGoogleResult } from '../tools/google.js';
 import { createMongooseReader, MONGOOSE_READ_TOOLS, type SearchInput, type KnowledgeItemInput, type KnowledgeBodyInput, type CompanyProfileInput, type TicketInput } from './mongoose.js';
-import { createMattermostReader, MATTERMOST_TOOLS } from './mattermost.js';
+import { createMattermostReader, MATTERMOST_ATTENTION_TOOL, MATTERMOST_DEFAULTS, MATTERMOST_TOOLS } from './mattermost.js';
+import { createHash } from 'node:crypto';
 
 import { projectMongooseResult } from '../tools/mongoose.js';
 import { projectMattermostResult } from '../tools/mattermost.js';
@@ -327,6 +328,19 @@ const isText = (value: unknown, max: number): boolean => typeof value === 'strin
 const isCount = (value: unknown, min: number, max: number): boolean => typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max;
 
 /** A declaration whose tool takes more than one text field and a limit: the Mattermost read surface. */
+/**
+ * #604: a connector's own composite view. It is granted under its own name only when every child
+ * read it stands on is granted, and never by a server publishing a name that looks like it.
+ */
+export interface ConnectorComposedTool {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: { properties: Record<string, unknown>; required: readonly string[] };
+  /** The child reads it needs; every one must be granted for the composite to be granted. */
+  readonly requires: readonly string[];
+  readonly validate: (args: Record<string, unknown>) => boolean;
+}
+
 function mattermostDeclaration(name: string, description: string, properties: Record<string, unknown>, required: readonly string[], validate: (args: Record<string, unknown>) => boolean, extra: Pick<ConnectorToolDeclaration, 'normalize' | 'guidance'> = {}): ConnectorToolDeclaration {
   return {
     name, description, effect: 'read',
@@ -345,11 +359,57 @@ function threadArgs(args: Record<string, unknown>): boolean {
   return Object.keys(args).every(key => key === 'postId' || key === 'post_id') && threadPostId(args) !== '';
 }
 function searchArgs(args: Record<string, unknown>, maxText: number, maxLimit: number): boolean {
-  if (!Object.keys(args).every(key => ['query', 'limit', 'after', 'before'].includes(key))) return false;
+  if (!Object.keys(args).every(key => ['query', 'limit', 'after', 'before', 'channel'].includes(key))) return false;
+  if (args['channel'] !== undefined && !isText(args['channel'], 60)) return false;
   if (!isText(args['query'], maxText)) return false;
   if (args['limit'] !== undefined && !isCount(args['limit'], 1, maxLimit)) return false;
   return ['after', 'before'].every(key => args[key] === undefined || isText(args[key], 40));
 }
+/** The declaration a composed tool publishes; the host digests exactly these fields. */
+function composedDeclaration(tool: ConnectorComposedTool): ConnectorToolDeclaration {
+  return mattermostDeclaration(tool.name, tool.description, tool.parameters.properties, tool.parameters.required, tool.validate);
+}
+
+/** The composed tools each connector may be granted, beside the read tools it publishes. */
+export const CONNECTOR_COMPOSED_TOOLS: Readonly<Record<string, readonly ConnectorComposedTool[]>> = {
+  mattermost: [{
+    name: MATTERMOST_ATTENTION_TOOL,
+    description: 'What needs a reply from the owner, newest first: mentions, direct and group messages, and threads the owner posted in or was mentioned in where the newest post is not theirs. Each item carries channel, author, ISO time, permalink and one line. Use it for "do I need to reply", "anything new for me", "what did I miss".',
+    parameters: {
+      required: [],
+      properties: { days: { type: 'integer', minimum: 1, maximum: 30, description: 'Window in days; 7 by default.' }, limit: { type: 'integer', minimum: 1, maximum: 20 } },
+    },
+    requires: MATTERMOST_TOOLS,
+    validate: args => attentionArgs(args),
+  }],
+};
+
+/** The composed names a connector may hold, given the child names it already holds. */
+export function composedGrantedNames(connector: string, granted: readonly string[]): string[] {
+  const present = new Set(granted);
+  return (CONNECTOR_COMPOSED_TOOLS[connector] ?? []).filter(tool => tool.requires.every(name => present.has(name))).map(tool => tool.name);
+}
+
+/** One composed tool's declaration, by name; absent for a name the connector does not own. */
+export function composedToolDeclaration(connector: string, name: string): ConnectorToolDeclaration | undefined {
+  const tool = (CONNECTOR_COMPOSED_TOOLS[connector] ?? []).find(candidate => candidate.name === name);
+  return tool === undefined ? undefined : composedDeclaration(tool);
+}
+
+/**
+ * #604: the host-computed digest of a composed declaration, so a changed composite is a catalog
+ * change the owner approval covers and a later review can compare.
+ */
+export function composedDeclarationDigest(tool: ConnectorComposedTool): string {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([key, entry]) => [key, canonical(entry)]));
+    return value;
+  };
+  const body = { name: tool.name, description: tool.description, parameters: tool.parameters, requires: [...tool.requires], effect: 'read' };
+  return createHash('sha256').update(JSON.stringify(canonical(body))).digest('hex');
+}
+
 function attentionArgs(args: Record<string, unknown>): boolean {
   if (!Object.keys(args).every(key => key === 'days' || key === 'limit')) return false;
   if (args['days'] !== undefined && !isCount(args['days'], 1, 30)) return false;
@@ -383,7 +443,7 @@ const mattermostDescriptor: ConnectorDescriptor = {
   id: 'mattermost', envelope: MATTERMOST_TOOLS,
   declarations(policy) {
     const text = Math.min(200, policy.bounds.maxQueryChars);
-    const limit = Math.min(60, policy.bounds.maxSearchLimit);
+    const limit = Math.min(MATTERMOST_DEFAULTS.maxLimit, policy.bounds.maxSearchLimit);
     return [
       companyDeclaration('mattermost_whoami', 'Read the authenticated Mattermost identity.', text),
       companyDeclaration('mattermost_get_channel_history', 'Read bounded history from a Mattermost channel, newest first. channel is a channel name or display name; no channel list needed. An id still works. Returns at most 8 posts, 250 characters each.', text, 'channel', limit),
@@ -391,13 +451,13 @@ const mattermostDescriptor: ConnectorDescriptor = {
         { postId: { type: 'string', minLength: 1, maxLength: text }, post_id: { type: 'string', minLength: 1, maxLength: text } }, ['postId'], threadArgs,
         { normalize: args => (isRecord(args) && threadPostId(args) !== '' ? { args: { postId: threadPostId(args) } } : undefined) }),
       mattermostDeclaration('mattermost_search', 'Search bounded Mattermost messages by query, newest first, over the last 90 days unless after names an older start. No channel id needed: search first, no channel list needed. Put filters inside the query: From:<user>, After:<date>, In:<channel>, so "what did X say about Y" or "what happened in channel Z this week" is one call. Results are shaped newest first, at most 8 posts of 250 characters, not whole threads.',
-        { query: { type: 'string', minLength: 1, maxLength: text }, limit: { type: 'integer', minimum: 1, maximum: limit }, after: { type: 'string', minLength: 1, maxLength: 40, description: 'ISO instant the window starts at; 90 days before now by default.' }, before: { type: 'string', minLength: 1, maxLength: 40 } }, ['query'], args => searchArgs(args, text, limit)),
-      mattermostDeclaration('mattermost_attention', 'What needs a reply from the owner, newest first: mentions, direct and group messages, and threads the owner posted in or was mentioned in where the newest post is not theirs. Each item carries channel, author, ISO time, permalink and one line. Use it for "do I need to reply", "anything new for me", "what did I miss".',
-        { days: { type: 'integer', minimum: 1, maximum: 30, description: 'Window in days; 7 by default.' }, limit: { type: 'integer', minimum: 1, maximum: 20 } }, [], args => attentionArgs(args)),
+        { query: { type: 'string', minLength: 1, maxLength: text }, limit: { type: 'integer', minimum: 1, maximum: limit }, after: { type: 'string', minLength: 1, maxLength: 40, description: 'ISO instant the window starts at; 90 days before now by default.' }, before: { type: 'string', minLength: 1, maxLength: 40 }, channel: { type: 'string', minLength: 1, maxLength: 60, description: 'One channel name, display name or id the ask names; resolved through the channel list.' } }, ['query'], args => searchArgs(args, text, limit)),
+      // #604: the composite's own declaration, so one table feeds the grant and the dispatch.
+      composedDeclaration(CONNECTOR_COMPOSED_TOOLS['mattermost']![0]!),
     ];
   },
   createReader({ port, registry, endpoint, schemaDigest, generation, policy }) {
-    const reader = createMattermostReader({ port, registry, config: { endpointId: endpoint.id, account: endpoint.account, resource: endpoint.resource, schemaDigest, generation, maxLimit: Math.min(60, policy.bounds.maxSearchLimit), queryChars: Math.min(200, policy.bounds.maxQueryChars) } });
+    const reader = createMattermostReader({ port, registry, config: { endpointId: endpoint.id, account: endpoint.account, resource: endpoint.resource, schemaDigest, generation, maxLimit: Math.min(MATTERMOST_DEFAULTS.maxLimit, policy.bounds.maxSearchLimit), queryChars: Math.min(200, policy.bounds.maxQueryChars), names: policy.toolNames } });
     return { async call(tool, args, signal) {
       switch (tool) {
         case 'mattermost_whoami': return reader.whoami(signal);

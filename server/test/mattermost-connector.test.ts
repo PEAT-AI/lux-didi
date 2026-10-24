@@ -56,7 +56,7 @@ test('channel history projects Markdown with bounded fields and permalink source
   const projected = projectMattermostResult(f.adapter, result);
   assert.equal(projected.ok, true);
   if (!projected.ok) return;
-  assert.match(projected.projection.text, /town-square \| Rob \| 2026-10-11T10:00:00Z/);
+  assert.match(projected.projection.text, /town-square \| rob \| 2026-10-11T10:00:00\.000Z/);
   assert.match(projected.projection.text, /Standup at ten/);
   assert.equal(/https?:\/\//.test(projected.projection.text), false, 'mattermost model text holds no raw url');
   // get_channel_history shapes newest first (M1, commit 5d75587); permalink sources follow that order.
@@ -282,4 +282,45 @@ test('#581: a chat window ask sends from_date and sort newest and no inline Afte
   assert.equal(first.arguments['sort'], 'newest', 'a windowed read is newest first');
   assert.ok(!String(first.arguments['query']).includes('After:'), 'no inline operator rides the query text');
   assert.ok((reply['findings'] as unknown[]).length > 0, 'the read reaches the answer');
+});
+
+// #610: a channel named in the ask is resolved through list_channels, then searched once with the
+// filter the child declares; an unknown name is one closed refusal, not another archive search.
+test('#610: a channel named in the ask resolves through the channel list and filters the search', async t => {
+  const f = setup('ok');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.adapter, f.registry));
+  const result = await r.search({ query: 'latest topics', channel: 'Dogcation' });
+  assert.equal(result.state, 'completed');
+  const names = f.calls().map(call => call.name);
+  assert.deepEqual(names, ['mattermost_list_channels', 'mattermost_search']);
+  const search = f.calls().find(call => call.name === 'mattermost_search');
+  assert.equal(search?.arguments['channel'], 'chanDogcation', 'the resolved id carries the filter');
+  assert.equal(search?.arguments['sort'], 'newest');
+});
+
+test('#610: an unknown channel name is one closed refusal with no archive search', async t => {
+  const f = setup('ok');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.adapter, f.registry));
+  const result = await r.search({ query: 'latest topics', channel: 'nowhere' });
+  assert.equal(result.state === 'refused' ? result.reason : result.state, 'channel-not-found: nowhere; closest names: Town Square, Dogcation');
+  assert.ok(!f.calls().some(call => call.name === 'mattermost_search'), 'no archive search follows a missing channel');
+});
+
+// #614: the fixture answers the installed child's real envelopes, so a decode that only knew the
+// old {posts} shape would read nothing here.
+test('#614: the installed child envelopes reach the model as posts', async t => {
+  const f = setup('ok');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.adapter, f.registry));
+  const history = await r.getChannelHistory({ channel: 'town-square', limit: 8 });
+  const projected = projectMattermostResult(f.adapter, history);
+  assert.equal(projected.ok, true);
+  if (!projected.ok) return;
+  assert.ok(projected.projection.text.includes('Standup at ten'), 'a results envelope is a post list');
+  assert.equal(projected.projection.itemCount, 3);
+  const thread = await r.getThread({ postId: 'postStandup' });
+  const threadText = projectMattermostResult(f.adapter, thread);
+  assert.ok(threadText.ok && threadText.projection.text.includes('On it'), 'a root and replies envelope reaches the model');
 });

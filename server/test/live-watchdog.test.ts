@@ -355,3 +355,13 @@ test('a port with different declarations runs the same watchdog path', async t =
     assert.equal(live.fake.sessionsOpened, 2, 'the recovery is fresh seeded even when resumption is supported');
   }
 });
+
+test('#607 unfinished owner fragments before an empty final produce a pickup rebuild', async t => {
+  const live = await openLive(t);
+  await live.emit({ type: 'inputTranscription', text: `${'synthetic '.repeat(20)}`, finished: false });
+  await live.emit({ type: 'inputTranscription', text: '', finished: true });
+  await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
+  assert.deepEqual(rebuildTriggers(live), ['no_output_after_owner']);
+  assert.ok(continuityEvents(live).includes('rebuilding'));
+  assert.ok(openingText(live), 'the pickup rebuild carries its owner-facing marker');
+});

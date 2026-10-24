@@ -139,7 +139,7 @@ python3 scripts/backlog_validate.py --all --report planning/backlog-validation.m
 
 ## How this page was verified
 
-Cross-checked against `scripts/run-local.sh`, `server/package.json`, `web/package.json`, `server/host/index.ts` and the `scripts/check-*.sh` producers at release 7 (7c968615).
+Cross-checked against `scripts/run-local.sh`, `server/package.json`, `web/package.json`, `server/host/index.ts` and the `scripts/check-*.sh` producers at release 9 (6d60a00f).
 
 ### Companion gate failure evidence
 

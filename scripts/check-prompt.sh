@@ -17,7 +17,7 @@ trap 'rm -rf "$out"' EXIT
 cd "$root"
 # Stage only this unit under a temporary ESM marker, so the isolated worktree
 # follows SERVICE's actual NodeNext conventions without a competing manifest.
-mkdir -p "$out/source/adapters/model" "$out/source/adapters/live-voice" "$out/source/adapters/mcp" "$out/source/connectors" "$out/source/test" "$out/source/prompt" "$out/source/tools" "$out/source/host" "$out/source/http" "$out/source/config" "$out/source/contracts" "$out/source/trace" "$out/source/domain"
+mkdir -p "$out/source/adapters/model" "$out/source/adapters/live-voice" "$out/source/adapters/mcp" "$out/source/connectors" "$out/source/test" "$out/source/prompt" "$out/source/tools" "$out/source/host" "$out/source/http" "$out/source/config" "$out/source/contracts" "$out/source/trace" "$out/source/domain" "$out/source/live"
 cp server/adapters/model/*.ts "$out/source/adapters/model/"
 cp server/adapters/live-voice/types.ts "$out/source/adapters/live-voice/"
 # #562: the prompt content test reads the accepted Live instruction through the adapter, so the adapter
@@ -33,6 +33,8 @@ cp server/tools/redact.ts "$out/source/tools/"
 cp server/tools/declarations.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts server/tools/open-handles.ts server/tools/types.ts server/tools/history.ts server/tools/diagnostic-input.ts server/tools/canonical.ts server/tools/received-body.ts server/tools/remember.ts server/tools/calendar-window.ts server/tools/web-search.ts "$out/source/tools/"
 cp server/prompt/*.ts "$out/source/prompt/"
 cp server/host/log.ts "$out/source/host/"
+# host/log.ts names the stop gate constants, so stage the module it imports.
+cp server/live/stop-phrase.ts "$out/source/live/"
 cp server/http/routes.ts "$out/source/http/"
 cp server/config/files.ts "$out/source/config/"
 cp server/contracts/*.ts "$out/source/contracts/"

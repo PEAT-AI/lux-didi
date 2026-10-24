@@ -1100,3 +1100,16 @@ test('an elevated upstream queue is surfaced once, above 64 KB', async t => {
   session.close();
   await captured.done;
 });
+
+test('#606 Gemini preserves a text-less owner final after transcript fragments', async t => {
+  const f = await providerFixture(t);
+  const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request(), control());
+  t.after(() => session.close());
+  const captured = collect(session);
+  await f.frame(1); f.send({ setupComplete: {} }); await session.ready;
+  f.send({ serverContent: { inputTranscription: { text: 'Naya', finished: false } } });
+  f.send({ serverContent: { inputTranscription: { finished: true } } });
+  for (let i = 0; i < 10; i++) await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(captured.events.flatMap(event => event.type === 'inputTranscription' ? [{ text: event.text, finished: event.finished }] : []),
+    [{ text: 'Naya', finished: false }, { text: '', finished: true }]);
+});

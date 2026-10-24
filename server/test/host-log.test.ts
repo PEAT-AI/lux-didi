@@ -403,3 +403,34 @@ test('LAT-1023: a run receipt carries the round cap and the compaction counts as
   assert.equal(safeEvent({ ...run, answerCompacted: { items: 4, chars: 400, text: 'the mail said' } }), undefined, 'and never carries content');
   assert.equal(safeEvent({ ...run, answerCompacted: { items: 1.5, chars: 400 } }), undefined, 'a count is a whole number');
 });
+
+test('#606 stop candidates carry only bounded alias ids, counts and flags', () => {
+  const candidate = { event: 'voice_stop_candidate', aliasId: 1, windowWords: 10, matched: false, finished: false };
+  assert.deepEqual(safeEvent(candidate), candidate);
+  assert.equal(safeEvent({ ...candidate, text: 'synthetic transcript' }), undefined);
+  assert.equal(safeEvent({ ...candidate, aliasId: 'naya' }), undefined);
+  assert.equal(safeEvent({ ...candidate, aliasId: 7 }), undefined);
+  assert.equal(safeEvent({ ...candidate, windowWords: 11 }), undefined);
+});
+
+// F7 / #610: the chat read's own shape rides the receipt, so a slow chat search can be judged from
+// the log. Counts, operator names and closed tokens only; the query words never arrive.
+test('#610: the chat query shape reaches the log, and a stray key still refuses the receipt', () => {
+  const source = { event: 'research_source', researchId: 'r1', source: 'chat', outcome: 'ok', ms: 4_800, deadlineMs: 12_000, coalesced: 1 };
+  const shape = { terms: 3, operators: ['in', 'after'], limit: 8, sort: 'newest' };
+  const admitted = safeEvent({ ...source, chat: shape });
+  assert.ok(admitted !== undefined, 'a chat receipt with its shape is admitted');
+  assert.deepEqual((admitted as { chat?: unknown }).chat, shape);
+  for (const bad of [{ ...shape, terms: -1 }, { ...shape, terms: 1.5 }, { ...shape, operators: ['subject'] }, { ...shape, limit: 0 }, { ...shape, sort: 'relevance-x' }, { ...shape, query: 'dogcation' }]) {
+    assert.equal(safeEvent({ ...source, chat: bad }), undefined, `a malformed chat shape is refused: ${JSON.stringify(bad)}`);
+  }
+  assert.equal(safeEvent({ ...source, chat: 'terms=3' }), undefined, 'a string is never a chat shape');
+  // R3: a refused chat read records the reason it really failed with, as one closed token.
+  const refused = safeEvent({ ...source, outcome: 'failed', chat: { reason: 'credential-refresh-failed' } });
+  assert.equal((refused as { chat?: { reason?: string } } | undefined)?.chat?.reason, 'credential-refresh-failed', 'a refusal reason reaches the log');
+  assert.equal(safeEvent({ ...source, outcome: 'failed', chat: { reason: 'whatever_dana_said' } }), undefined, 'a reason outside the closed set is refused');
+  assert.equal(safeEvent({ ...source, chat: { ...shape, reason: 'tool-not-granted' } }), undefined, 'a reason never rides a search shape');
+  assert.equal(safeEvent({ ...source, note: 'extra' }), undefined, 'an unknown field beside a chat shape still refuses the receipt');
+  const serialized = JSON.stringify(admitted);
+  assert.ok(!serialized.includes('dogcation'), 'no query word reaches the log');
+});

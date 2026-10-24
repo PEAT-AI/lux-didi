@@ -10,7 +10,7 @@ import { isMcpFailureStage, isToolFailureCode } from '../adapters/model/types.js
 import { validateEndpointUrl, validateApprovedStdioEnv } from '../adapters/mcp/registry.js';
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type SourceDispatchRef, endpointBinding, bindingDigestOf, sourceBindingOf } from '../adapters/mcp/port.js';
 import { isLiveVoiceProvider } from '../adapters/live-voice/types.js';
-import { ConnectorCompositionError, connectorDescriptor, CONNECTOR_ENVELOPES } from '../connectors/index.js';
+import { ConnectorCompositionError, composedGrantedNames, connectorDescriptor, CONNECTOR_COMPOSED_TOOLS, CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { canonicalJSON, detached, sha256 } from './canonical.js';
 import { redactSecretsWithCount } from './redact.js';
 import { createHistoryReader, historyEvidenceCurrent } from '../domain/history-reader.js';
@@ -68,7 +68,12 @@ export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
   // Local read grants use the connector envelope, independently of Live reader support.
   const envelope = CONNECTOR_ENVELOPES[p.connector];
   if (!envelope) throw Error('invalid_connector');
-  if (!Array.isArray(p.toolNames) || p.toolNames.length < 1 || p.toolNames.length > envelope.length || new Set(p.toolNames).size !== p.toolNames.length || p.toolNames.some(n => typeof n !== 'string' || !envelope.includes(n)) || !/^[a-f0-9]{64}$/.test(p.schemaDigest)) throw Error('invalid_read_tools');
+  // #604: a connector composite is a grantable name of its own, but only beside every child read it
+  // stands on, so the policy can never widen the envelope one composed name at a time.
+  const composed = CONNECTOR_COMPOSED_TOOLS[p.connector] ?? [];
+  const grantable = [...envelope, ...composed.map(tool => tool.name)];
+  if (!Array.isArray(p.toolNames) || p.toolNames.length < 1 || p.toolNames.length > grantable.length || new Set(p.toolNames).size !== p.toolNames.length || p.toolNames.some(n => typeof n !== 'string' || !grantable.includes(n)) || !/^[a-f0-9]{64}$/.test(p.schemaDigest)) throw Error('invalid_read_tools');
+  if (composed.some(tool => p.toolNames.includes(tool.name) && !tool.requires.every(child => p.toolNames.includes(child)))) throw Error('invalid_read_tools');
   exact(p.sourcePolicy, ['id', 'revision', 'unknownClass', 'allowedClasses']); text(p.sourcePolicy.id); positive(p.sourcePolicy.revision); classSet(p.sourcePolicy.allowedClasses);
   if ((p.bindingMode === 'connection' && p.sourcePolicy.unknownClass === null) || (p.sourcePolicy.unknownClass !== null && !classes.includes(p.sourcePolicy.unknownClass))) throw Error('invalid_unknown_class');
   exact(p.route, ['identity', 'allowedClasses']); text(p.route.identity); classSet(p.route.allowedClasses);
@@ -614,7 +619,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         if (!descriptor) throw new ConnectorCompositionError('unknown_connector', p.connectionId, p.connector);
         const reader = descriptor.createReader({ port: dispatch.port, registry, endpoint: p.endpoint, schemaDigest: p.schemaDigest, generation: p.generation, policy: p });
         const declarations = descriptor.declarations(p);
-        for (const name of p.toolNames) {
+        // #604/F17: a composite is registered only when the approved policy names it, so the model table
+        // and the dispatch table never offer a read the approval does not cover.
+        const composedNames = composedGrantedNames(p.connector, [...p.toolNames]);
+        for (const name of [...new Set([...p.toolNames, ...composedNames])]) {
           if (definitions.some(d => d.name === name)) throw new ConnectorCompositionError('ambiguous_model_tool_name', p.connectionId, p.connector);
           const declaration = declarations.find(candidate => candidate.name === name);
           // A connector capability granted for internal use (Mattermost channel-name resolution)
@@ -632,7 +640,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               // connector whose current generation is not published and ready never reaches its
               // handler, even when a stale run snapshot still names one of its tools.
               const grant = registry.currentGrant(p.endpoint.id);
-              if (!grant || grant.generation !== p.generation || !grant.toolNames.includes(name)) { return { status: 'failed' }; }
+              if (!grant || grant.generation !== p.generation) { return { status: 'failed' }; }
+              // #604: a composite is authorized by the approved policy name; the registry grant keeps
+              // the published child names, so a granted composite is never in `grant.toolNames`.
+              const policyComposite = composedNames.includes(name) && p.toolNames.includes(name);
+              if (!grant.toolNames.includes(name) && !policyComposite) { return { status: 'failed' }; }
               if (!declaration.validate(args)) { return { status: 'failed' }; }
               // Normalize at the boundary; the intent hash below stays over the model's original args.
               const prepared = declaration.normalize === undefined ? undefined : declaration.normalize(args);

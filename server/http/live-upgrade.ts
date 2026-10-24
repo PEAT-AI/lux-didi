@@ -121,28 +121,39 @@ export function onceDetach(attachment: LiveAttachment): () => void {
 /** The socket surface the output pump needs, so a test can drive a socket that goes CLOSING. */
 type OutputSocket = Pick<WebSocket, 'readyState' | 'bufferedAmount' | 'send' | 'close'>;
 
+/** The owner's stop is the one terminal that outranks queued speech and consumer backpressure. */
+function stopTerminal(snapshot: LiveSessionSnapshot | null): boolean {
+  const terminal = snapshot?.terminal;
+  return terminal?.state === 'closed' && (terminal.code === 'user_stop' || terminal.code === 'voice_stop');
+}
+
 /** Drain the session's output onto its socket, then report the terminal the session really reached. */
 export async function pumpOutput(ws: OutputSocket, attachment: LiveAttachment, detach: () => void, maxBufferedBytes: number): Promise<void> {
+  let snapshot: LiveSessionSnapshot | null = null;
+  const terminal = attachment.done.then(value => ({ terminal: value }), () => ({ terminal: null }));
+  const output = attachment.output[Symbol.asyncIterator]();
+  let racing: Promise<{ terminal: LiveSessionSnapshot | null }> = terminal;
+  // One pending read, kept across the race so a terminal that loses it never drops a queued chunk.
+  let queued = output.next().then(chunk => ({ chunk }));
   try {
-    for await (const chunk of attachment.output) {
-      // A socket the app already gave up on is a consumer that is gone: detach at once, never write into it.
+    while (true) {
+      const next = await Promise.race([racing, queued]);
+      if ('terminal' in next) {
+        // A stop wins at once; any other terminal lets the queue drain and is sent after it.
+        if (!stopTerminal(next.terminal)) { racing = new Promise<never>(() => {}); continue; }
+        snapshot = next.terminal; void output.return?.(); break;
+      }
+      if (next.chunk.done) { snapshot = await attachment.done.catch(() => null); break; }
+      const chunk = next.chunk.value;
       if (ws.readyState !== WebSocket.OPEN) { detach(); return; }
       try {
         if (chunk.kind === 'audio') ws.send(chunk.pcm, { binary: true });
         else if (chunk.marker.kind !== 'terminal') ws.send(JSON.stringify(markerFrame(chunk.marker)), { binary: false });
-      } catch {
-        // A send that throws is the same fact as a closed socket, and the session must end, not wait out the net.
-        detach();
-        return;
-      }
+      } catch { detach(); return; }
       if (ws.bufferedAmount > maxBufferedBytes) { attachment.overflow(); ws.close(1013, 'consumer_backpressure'); return; }
+      queued = output.next().then(chunk => ({ chunk }));
     }
-  } catch {
-    // The output itself failed: the app is told no terminal it never earned, but nobody is listening any more.
-    detach();
-  }
-  let snapshot: LiveSessionSnapshot | null = null;
-  try { snapshot = await attachment.done; } catch { snapshot = null; }
+  } catch { detach(); }
   if (ws.readyState !== WebSocket.OPEN) return;
   if (snapshot?.terminal) {
     const terminal = snapshot.terminal as { state: string; code?: string };

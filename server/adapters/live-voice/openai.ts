@@ -920,8 +920,15 @@ class Session implements LiveVoiceSession {
   private ownerTurnEnded(): void {
     if (this.terminal) return;
     const now = this.clock.now();
-    if (this.heldAudibleBytes > 0 || this.playbackUntil > now) return;
     this.endTurnTranscripts();
+    if (this.heldAudibleBytes > 0 || this.playbackUntil > now) {
+      const token = this.episodeToken, epoch = this.socket;
+      this.episodeQuiet = this.clock.setTimer(Math.max(1, this.heldAudibleBytes > 0 ? 100 : this.playbackUntil - now), () => {
+        if (this.terminal || token !== this.episodeToken || epoch !== this.socket) return;
+        this.endInputEpisode();
+      });
+      return;
+    }
     this.emit({ type: 'modelTurnStarted' });
     this.touch();
   }
@@ -1758,6 +1765,8 @@ class Session implements LiveVoiceSession {
     const status = code === 'closed' ? 'closed' : code === 'cancelled' ? 'cancelled' : code === 'deadline' ? 'deadline' : 'failed';
     const providerSideFailure = this.isReady && code === 'protocol_error';
     this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}), ...(upstream ? { upstream } : {}) });
+    this.discardHeadStart();
+    // gpt-live-1 owns barge-in and has no cancel/truncate command: cancel is a no-op, stop purges playback and closes.
     this.clearUploadBlock();
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);
@@ -1767,7 +1776,6 @@ class Session implements LiveVoiceSession {
     if (this.outputSilence !== undefined) { this.clock.clearTimer(this.outputSilence); this.outputSilence = undefined; }
     // 3r B: a closed session retires its calls and delegations, so a late answer reaches no new one.
     this.retireCalls();
-    this.discardHeadStart();
     this.reportUnknownFrames();
     this.secret = '';
     this.readiness.reject(new LiveVoiceError(code));

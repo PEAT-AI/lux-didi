@@ -18,7 +18,7 @@ export const MATTERMOST_TOOLS = [
 export type MattermostTool = (typeof MATTERMOST_TOOLS)[number];
 
 /** Bounded argument defaults; a caller may only narrow these, never widen them. */
-export const MATTERMOST_DEFAULTS = { limit: 12, maxLimit: 60, queryChars: 200 } as const;
+export const MATTERMOST_DEFAULTS = { limit: 12, maxLimit: 50, queryChars: 200 } as const;
 
 /** The one label a caller shows when the child has no usable session. Never an empty success. */
 export const MATTERMOST_AUTH_NEEDED = 'auth needed: run mattermost_login once';
@@ -41,10 +41,16 @@ export interface MattermostConfig {
   schemaDigest: string;
   /** Approved read-grant generation; must match the current registry grant. */
   generation: number;
-  /** Largest `limit` any caller may select. Defaults 60, never above 60. */
+  /** Largest `limit` any caller may select. Defaults 50, never above the child's own 50. */
   maxLimit?: number;
   /** Bound on a query or identifier in characters. Defaults 200, never above 200. */
   queryChars?: number;
+  /**
+   * #604: the names the approved policy holds. A connector composite is one of these, never a name
+   * the endpoint publishes, so it is the policy that authorizes it while the registry grant keeps
+   * the published names the child reads stand on.
+   */
+  names?: readonly string[];
 }
 
 /** A child tool read, or the connector's own synthesized digest over several reads. */
@@ -68,7 +74,7 @@ export type MattermostResult = MattermostEvidence | MattermostRefused | Mattermo
 export interface BoundedInput { limit?: number }
 export interface ChannelInput { channel: string; limit?: number }
 export interface ThreadInput { postId: string }
-export interface QueryInput { query: string; limit?: number; after?: string; before?: string }
+export interface QueryInput { query: string; limit?: number; after?: string; before?: string; /** A channel the ask names: name, display name or id. */ channel?: string }
 export interface AttentionInput { days?: number; limit?: number }
 export type AttentionReason = 'mention' | 'dm' | 'thread';
 
@@ -221,12 +227,20 @@ function childPost(raw: Record<string, unknown>): ChildPost | undefined {
   };
 }
 
-/** The post list of any shape a child read carries: a bare array, a `posts` list or map, or `items`. */
+/**
+ * The post list of any shape a child read carries: the installed child's `results` envelope for a
+ * search or a channel history, its `root` and `replies` for a thread, and the older bare array,
+ * `posts` list or map, or `items` (#614).
+ */
 function postsIn(decoded: unknown): Record<string, unknown>[] | undefined {
   const data = contentJson(decoded);
   if (Array.isArray(data)) return data.filter(isRecord);
   if (!isRecord(data)) return undefined;
-  const list = data['posts'] ?? data['items'];
+  if (isRecord(data['root']) || Array.isArray(data['replies'])) {
+    const replies = Array.isArray(data['replies']) ? data['replies'].filter(isRecord) : [];
+    return [...(isRecord(data['root']) ? [data['root']] : []), ...replies];
+  }
+  const list = data['results'] ?? data['posts'] ?? data['items'];
   if (Array.isArray(list)) return list.filter(isRecord);
   if (isRecord(list)) return Object.values(list).filter(isRecord);
   return undefined;
@@ -261,11 +275,11 @@ function snippetOf(text: string): string {
 
 interface Settings {
   endpointId: string; account: string; resource: string; schemaDigest: string; generation: number;
-  maxLimit: number; queryChars: number;
+  maxLimit: number; queryChars: number; names: readonly string[];
 }
 
 /** Pre-dispatch gate over the accepted registry. No discovery, no approval, no egress change. */
-function preflight(registry: McpRegistry, settings: Settings, tool: MattermostTool): string | undefined {
+function preflight(registry: McpRegistry, settings: Settings, tool: MattermostEvidenceTool): string | undefined {
   let grant: ReadGrant | undefined;
   try {
     registry.endpoint(settings.endpointId);
@@ -277,6 +291,9 @@ function preflight(registry: McpRegistry, settings: Settings, tool: MattermostTo
   if (grant.effect !== 'read') return 'grant-not-read';
   const visible = registry.visibleTools(settings.endpointId).map(definition => definition.name);
   if (visible.some(name => !ELIGIBLE.has(name))) return 'ineligible-tool-granted';
+  // #604: the composite is Didi's own view over granted children, never a name the endpoint
+  // publishes, so the approved policy name authorizes it and each child read checks its own grant.
+  if (tool === MATTERMOST_ATTENTION_TOOL) return settings.names.includes(tool) ? undefined : 'tool-not-granted';
   if (!grant.toolNames.includes(tool)) return 'tool-not-granted';
   if (!visible.includes(tool)) return 'required-definition-absent';
   return undefined;
@@ -292,6 +309,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     generation: requirePositiveSafeInteger(config.generation),
     maxLimit: Math.min(positive(config.maxLimit, MATTERMOST_DEFAULTS.maxLimit), MATTERMOST_DEFAULTS.maxLimit),
     queryChars: Math.min(positive(config.queryChars, MATTERMOST_DEFAULTS.queryChars), MATTERMOST_DEFAULTS.queryChars),
+    names: config.names ?? MATTERMOST_TOOLS,
   };
 
   const schemaValidator = new AjvJsonSchemaValidator();
@@ -329,10 +347,15 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
   function boundedText(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim().length > 0 && value.length <= settings.queryChars ? value : undefined;
   }
-  function limited(value: unknown): Record<string, unknown> | undefined {
+  /**
+   * A caller may narrow the page, never widen it. A search limit over the maximum is clamped, because
+   * the child's own cap is the real one (#610); every other read refuses the budget outright.
+   */
+  function limited(value: unknown, clamp = false): Record<string, unknown> | undefined {
     if (value === undefined) return { limit: Math.min(MATTERMOST_DEFAULTS.limit, settings.maxLimit) };
-    if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > settings.maxLimit) return undefined;
-    return { limit: value as number };
+    if (!Number.isSafeInteger(value) || (value as number) < 1) return undefined;
+    if ((value as number) <= settings.maxLimit) return { limit: value as number };
+    return clamp ? { limit: settings.maxLimit } : undefined;
   }
 
   /** One list_channels read per session serves every channel name this reader resolves. */
@@ -412,11 +435,26 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     }
     const declared = declaredSearchArguments();
     for (const key of Object.keys(window)) if (!declared.includes(key)) delete window[key];
+    // #610: a bounded window is read newest first, and only where the child declares the sort.
+    if (declared.includes('sort')) window['sort'] = 'newest';
     return window;
+  }
+
+  /**
+   * #610: a channel the ask names is resolved through the channel list, so the child's own channel
+   * filter carries it. A name that matches nothing is one closed refusal, never a wider archive read.
+   */
+  async function searchChannel(reference: string, signal?: AbortSignal): Promise<{ channel: string } | { error: string }> {
+    const channels = await loadChannels(signal);
+    if (!Array.isArray(channels)) return { error: channels.error };
+    return resolveChannelReference(reference, channels);
   }
 
   /** What needs a reply: mentions, direct and group messages, and threads whose newest post is not the owner's. */
   async function attention(input: AttentionInput, signal?: AbortSignal): Promise<MattermostResult> {
+    // #604: an ungranted composite refuses here, with its own closed reason, before any child read.
+    const denied = preflight(registry, settings, MATTERMOST_ATTENTION_TOOL);
+    if (denied) return { state: 'refused', reason: denied };
     const days = input.days === undefined ? MATTERMOST_ATTENTION.days : input.days;
     if (!Number.isSafeInteger(days) || days < 1 || days > MATTERMOST_ATTENTION.maxDays) return { state: 'refused', reason: 'invalid-days' };
     const limit = input.limit === undefined ? MATTERMOST_ATTENTION.limit : input.limit;
@@ -440,20 +478,25 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       const root = post.rootId ?? post.id;
       if (root !== undefined) threads.add(root);
     };
-    // Threads the owner wrote in anywhere: the child's own-author search seeds them whatever the
-    // channel, because a thread nobody mentioned the owner in never reaches the handle search.
-    const written = await read('mattermost_search', { query: `from:${who.owner.username}`, limit: settings.maxLimit }, signal);
-    if (!written.ok) return written.result;
-    capture(written.evidence);
-    for (const raw of postsIn(written.evidence.decodedResult) ?? []) {
+    // #610: the independent reads run under one budget. The two attention searches and the channel
+    // list answer on their own, so they go out together at the attention page size, never the maximum.
+    const attentionLimit = Math.min(MATTERMOST_ATTENTION.limit, settings.maxLimit);
+    const written = read('mattermost_search', { query: `from:${who.owner.username}`, limit: attentionLimit }, signal);
+    const mentions = read('mattermost_search', { query: `@${who.owner.username}`, limit: attentionLimit }, signal);
+    const channelList = loadChannels(signal);
+    const [writtenRead, mentionsRead, channels] = await Promise.all([written, mentions, channelList]);
+    // The owner's own-author search seeds threads whatever the channel: a thread nobody mentioned the
+    // owner in never reaches the handle search.
+    if (!writtenRead.ok) return writtenRead.result;
+    capture(writtenRead.evidence);
+    for (const raw of postsIn(writtenRead.evidence.decodedResult) ?? []) {
       const post = childPost(raw);
       if (post !== undefined && post.at >= cutoff) threadCandidate(post);
     }
     // Mentions: the child's own handle search, with the window and the handle itself checked here.
-    const mentions = await read('mattermost_search', { query: `@${who.owner.username}`, limit: settings.maxLimit }, signal);
-    if (!mentions.ok) return mentions.result;
-    capture(mentions.evidence);
-    for (const raw of postsIn(mentions.evidence.decodedResult) ?? []) {
+    if (!mentionsRead.ok) return mentionsRead.result;
+    capture(mentionsRead.evidence);
+    for (const raw of postsIn(mentionsRead.evidence.decodedResult) ?? []) {
       const post = childPost(raw);
       if (post === undefined || post.at < cutoff) continue;
       if (isOwnerPost(who.owner, post.author)) { threadCandidate(post); continue; }
@@ -462,15 +505,18 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       threadCandidate(post);
     }
     // Direct and group conversations: the owner's own posts await no reply, but they seed the thread rule.
-    const channels = await loadChannels(signal);
     if (!Array.isArray(channels)) return { state: 'refused', reason: channels.error };
     if (channelIndex.origin) children.push(channelIndex.origin);
-    for (const channel of channels.filter(entry => isDirectChannel(entry, who.owner)).slice(0, MATTERMOST_ATTENTION.maxDmChannels)) {
+    const direct = channels.filter(entry => isDirectChannel(entry, who.owner)).slice(0, MATTERMOST_ATTENTION.maxDmChannels);
+    const histories = await Promise.all(direct.map(async channel => {
       const reference = channel.name ?? channel.id;
-      if (reference === undefined) continue;
-      const history = await read('mattermost_get_channel_history', { channel: reference, limit: MATTERMOST_ATTENTION.historyLimit }, signal);
+      if (reference === undefined) return undefined;
+      return read('mattermost_get_channel_history', { channel: reference, limit: MATTERMOST_ATTENTION.historyLimit }, signal);
+    }));
+    for (const history of histories) {
+      if (history === undefined) continue;
       if (!history.ok) return history.result;
-    capture(history.evidence);
+      capture(history.evidence);
       for (const raw of postsIn(history.evidence.decodedResult) ?? []) {
         const post = childPost(raw);
         if (post === undefined || post.at < cutoff) continue;
@@ -478,9 +524,11 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
         threadCandidate(post);
       }
     }
-    // Threads the owner started or joined: only a newest post from someone else awaits a reply.
-    for (const rootId of [...threads].slice(0, MATTERMOST_ATTENTION.maxThreads)) {
-      const thread = await read('mattermost_get_thread', { post_id: rootId }, signal);
+    // Threads the owner started or joined: only a newest post from someone else awaits a reply. The
+    // reads run together, and the cap keeps the scan's tail short.
+    const roots = [...threads].slice(0, MATTERMOST_ATTENTION.maxThreads);
+    const threadReads = await Promise.all(roots.map(async rootId => read('mattermost_get_thread', { post_id: rootId }, signal)));
+    for (const thread of threadReads) {
       if (!thread.ok) continue;
       capture(thread.evidence);
       const posts = (postsIn(thread.evidence.decodedResult) ?? []).map(childPost).filter((post): post is ChildPost => post !== undefined);
@@ -526,13 +574,19 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (denied) return { state: 'refused', reason: denied };
       const query = boundedText(input.query);
       if (query === undefined) return { state: 'refused', reason: 'invalid-query' };
-      const bounded = limited(input.limit);
+      // #610: a search limit over the maximum is clamped to it, never sent as the child would refuse it.
+      const bounded = limited(input.limit, true);
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
       const window = searchWindow(input.after, input.before);
       if (window === undefined) return { state: 'refused', reason: 'invalid-window' };
-      // #581: newest first, because a bounded window is a window the owner wants read from the top.
-      const sort = declaredSearchArguments().includes('sort') ? { sort: 'newest' } : {};
-      return dispatch('mattermost_search', { query, ...bounded, ...window, ...sort }, signal);
+      // #610/F10: the channel an ask names is only sent where the child declares the filter, so a
+      // child without one searches its whole archive rather than refusing the read.
+      const named = input.channel === undefined ? undefined : boundedText(input.channel);
+      const declaredChannel = declaredSearchArguments().includes('channel');
+      const resolved = named === undefined || !declaredChannel ? undefined : await searchChannel(named, signal);
+      if (resolved !== undefined && 'error' in resolved) return { state: 'refused', reason: resolved.error };
+      const filter = resolved === undefined ? {} : { channel: (resolved as { channel: string }).channel };
+      return dispatch('mattermost_search', { query, ...bounded, ...window, ...filter }, signal);
     },
     async listChannels(input: BoundedInput, signal?: AbortSignal): Promise<MattermostResult> {
       const denied = preflight(registry, settings, 'mattermost_list_channels');

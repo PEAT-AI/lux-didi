@@ -174,7 +174,7 @@ test('calendar delivery advances exact event identities even when bounded text i
   h.deps.replyLimit = 1_000;
   const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
   const shown = Number((first['calendarCoverage'] as Record<string, unknown>)['shown']);
-  assert.ok(shown > 0 && shown < 10, 'a reply over its byte budget leaves identical events for the continuation');
+  assert.ok(shown > 0 && shown < 10, `a reply over its byte budget leaves identical events for the continuation: ${JSON.stringify(first['calendarCoverage'])} ${JSON.stringify(first['note'])}`);
   assert.match(String(first['note']), /left out \d+ calendar events/u);
   h.deps.replyLimit = 6_000;
   const second = await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, signal());

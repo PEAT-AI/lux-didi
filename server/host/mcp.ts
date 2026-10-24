@@ -1,4 +1,4 @@
-import { CONNECTOR_COMPOSED_TOOLS, CONNECTOR_DESCRIPTORS, ConnectorCompositionError, composedDeclarationDigest, composedGrantedNames } from '../connectors/index.js';
+import { CONNECTOR_COMPOSED_TOOLS, CONNECTOR_DESCRIPTORS, ConnectorCompositionError, composedDeclarationDigest, composedGrantedNames, connectionEnvelope } from '../connectors/index.js';
 import type { Store } from '../runtime/store.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { assertToolsOwnerBinding, createToolsOwner, validatePolicy } from '../tools/index.js';
@@ -12,7 +12,6 @@ import { MongooseCredentialError, MONGOOSE_CONSENT_CAP_MS, mongooseAccessToken, 
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
-import { CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { identityAction, identityProofMemo, proveIdentity, refusalCode, IDENTITY_TIMEOUT_MS, type IdentityErrorCode, type IdentityProof } from '../connectors/identity.js';
 
 export interface McpConnectionBundle {
@@ -81,7 +80,6 @@ export interface McpRuntimeComposition {
   close(): Promise<void>;
 }
 /** The local read candidate list per connector; the Mongoose classifier narrows it at discovery. */
-const connectorEnvelopes: Readonly<Record<string, readonly string[]>> = CONNECTOR_ENVELOPES;
 /** Connectors that classify one discovered tool themselves, instead of trusting a static name list. */
 const readClassifiers: Readonly<Record<string, (tool: ToolDefinition) => boolean>> = { mongoose: mongooseReadOnly };
 /**
@@ -455,7 +453,7 @@ export async function composeMcpRuntime(options: {
         // is scheduled for it, and a real 4xx refusal keeps its own park-for-sign-in behaviour.
         return { retryable: stage === 'first_call' || discovery.reason === 'credential-refresh-unavailable' };
       }
-      const envelope = connectorEnvelopes[entry.connector] ?? [];
+      const envelope = connectionEnvelope(entry.connector, entry);
       const accepts = readClassifiers[entry.connector] ?? (() => true);
       const names = grantMode === 'owner-trusted-reads'
         ? discovery.tools.filter(tool => envelope.includes(tool.name) && accepts(tool)).map(tool => tool.name).sort()

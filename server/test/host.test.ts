@@ -528,11 +528,10 @@ for (const releaseNineCatalogue of [true, false]) {
     const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; tools: number; reasonCode?: string }>;
     assert.deepEqual(reports.map(report => [report.id, report.state, report.tools]).sort(), [
       ['lux-knowledge', 'connected', 2], ['gmail', 'connected', 3], ['calendar', 'connected', 2],
-      // The host grants the connector's whole read envelope on each Mongoose connection and narrows to
-      // the endpoint's own tools at dispatch, so all three report the six published read names.
-      ['mattermost', 'connected', 6], ['mongoose-knowledge', releaseNineCatalogue ? 'connected' : 'error', releaseNineCatalogue ? 6 : 0],
-      ['mongoose-data', releaseNineCatalogue ? 'connected' : 'error', releaseNineCatalogue ? 6 : 0],
-      ['mongoose-crm', releaseNineCatalogue ? 'connected' : 'error', releaseNineCatalogue ? 6 : 0],
+      // Each Mongoose connection is granted its own endpoint envelope, so the three publish disjoint reads.
+      ['mattermost', 'connected', 6], ['mongoose-knowledge', releaseNineCatalogue ? 'connected' : 'error', releaseNineCatalogue ? 4 : 0],
+      ['mongoose-data', releaseNineCatalogue ? 'connected' : 'error', releaseNineCatalogue ? 1 : 0],
+      ['mongoose-crm', releaseNineCatalogue ? 'connected' : 'error', releaseNineCatalogue ? 1 : 0],
     ].sort());
     const mongoose = reports.filter(report => report.id.startsWith('mongoose'));
     if (releaseNineCatalogue) {

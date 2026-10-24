@@ -387,6 +387,19 @@ export const CONNECTOR_COMPOSED_TOOLS: Readonly<Record<string, readonly Connecto
   }],
 };
 
+/**
+ * The read names one connection may be granted. Mongoose serves three separate endpoints of one
+ * connector, each with its own disjoint envelope, so a knowledge grant never names a data or crm
+ * read and the three connections declare no shared tool.
+ */
+export function connectionEnvelope(connector: string, endpoint: { resource: string; url?: unknown } | undefined): readonly string[] {
+  if (connector !== 'mongoose') return CONNECTOR_ENVELOPES[connector] ?? [];
+  if (endpoint === undefined) return [];
+  const byResource = mongooseEndpointName(endpoint.resource);
+  const name = byResource ?? (typeof endpoint.url === 'string' ? mongooseEndpointName(endpoint.url) : undefined);
+  return name === undefined ? [] : MONGOOSE_ENDPOINT_TOOLS[name];
+}
+
 /** The composed names a connector may hold, given the child names it already holds. */
 export function composedGrantedNames(connector: string, granted: readonly string[]): string[] {
   const present = new Set(granted);

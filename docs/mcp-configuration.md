@@ -102,6 +102,30 @@ is null for healthy connections or one of `credential_missing`, `unreachable`,
 `discovery_failed`, `handshake_failed`, `unknown`. Diagnostics and configuration
 payloads are not returned. `/api/v1/tools/status` remains operator bearer-only.
 
+## Google helper failure vocabulary
+
+The Google helper answers a failed call with `isError: true`, one text content item shaped `<code>: <message>`, and no `structuredContent`. Didi reads only the leading code: the message is never parsed, spoken or logged. `server/tools/google.ts` holds one closed table keyed by that code, and every row names the class, whether the refusal is pinned, the one clause Naya says, and what the host does. Provenance: `tools/google-mcp/error-contract.json` of lux-cli commit `6ee466f0bce423ce76102970efa9909bfd697530` on `train/google-ipc-1024`, pinned as a candidate because it is source-reviewed but not yet installed; the verbatim copy is `server/test/fixtures/google-error-contract-6ee466f0.json`, and a test fails if the fixture and the table disagree about a code or its pinning.
+
+| code | class | pinned | Naya says | host action |
+| --- | --- | --- | --- | --- |
+| `credential-missing` | credential | yes | run `lux-google-mcp authorize --family <family>` to sign in again | none until the credential file changes |
+| `credential-revoked` | credential | yes | the same sign-in line | none until the credential file changes |
+| `credential-unreadable` | credential | yes | the same sign-in line | none until the credential file changes |
+| `credential-scope-mismatch` | credential | yes | run the authorize command to grant the read scopes again | none until the credential file changes |
+| `credential-overwrite-refused` | credential | yes | the authorize command replaces a sign-in file that belongs to another account | authorize surface only |
+| `account-mismatch` | identity | yes | run the authorize command for the account you configured | none until the credential file changes |
+| `identity-unverified` | identity | yes | run the authorize command and sign in as the account you configured | none until the credential file changes |
+| `credential-refresh-failed` | transient | no | the refresh failed just now, ask again and she retries | one retry on the next ask |
+| `provider-failure` | provider | no | the Google service failed just now, ask again and she retries | one retry on the next ask |
+| `binding-unknown` | caller | no | the helper was started without the family she asked for | logged as a Didi defect with the tool name, no retry |
+| `family-unknown` | caller | no | the helper does not serve that family | logged as a Didi defect, no retry |
+| `tool-argument` | caller | no | she built the wrong arguments for the helper | logged as a Didi defect, no retry |
+| `tool-unknown` | caller | no | the helper does not have that tool | logged as a Didi defect, no retry |
+| `google-helper-error` | provider | no | the helper could not write its sign-in file | authorize surface only |
+| any other code | unknown | no | the helper answered with an error she does not know, with a later retry offered | `unknown_helper_code`, logged content-free by the first 32 characters hashed |
+
+A pinned credential or identity code marks the endpoint's connector status auth-needed with the helper's own authorize command, and the call is not retried in that process. Two legacy spellings, `credential-missing-env` and `credential_missing`, map to the `credential-missing` row until the release carrying this contract is installed; one test pins them, with the retirement comment.
+
 ## Required source classification per catalog entry
 
 Every `mcp.json` endpoint, HTTP or stdio, must explicitly supply `unknownClass` as `ordinary`, `private` or `sensitive`, for example `"unknownClass": "private"`. This value is owner-controlled local configuration, not remote MCP metadata. It is the connection's approved fallback source class. No value is inferred from connector descriptions, transport, credentials, route identity or an ordinal privacy hierarchy.

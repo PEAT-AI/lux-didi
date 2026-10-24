@@ -2,7 +2,7 @@ import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/
 import type { SourceDispatchEvidence, CompletedResult, McpPort, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
 import type { DataClass } from '../adapters/model/types.js';
-import { HOST_EVIDENCE, type ConnectionEndpoint, type ConnectionPolicy, type ModelSnapshot } from '../tools/types.js';
+import { HOST_EVIDENCE, type ConnectionEndpoint, type ConnectionPolicy, type ModelSnapshot, type ToolFailureEvent } from '../tools/types.js';
 import { createLuxKnowledgeReader, isCalendarDay, KNOWLEDGE_BODY_MAX_CHARS, KNOWLEDGE_BODY_MIN_CHARS, KNOWLEDGE_DEADLINE_MAX_MS, KNOWLEDGE_DEADLINE_MIN_MS, KNOWLEDGE_SNIPPET_MAX_CHARS, KNOWLEDGE_SNIPPET_MIN_CHARS, LUX_KNOWLEDGE_TOOLS } from './lux-knowledge.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
@@ -69,8 +69,9 @@ export interface ConnectorDescriptor {
   createReader(input: { port: McpPort; registry: McpRegistry; endpoint: ConnectionEndpoint; schemaDigest: string; generation: number; policy: ConnectionPolicy }): ConnectorReader;
   /** Model-visible projection of one completed result, using only locally accepted data. */
   project(evidence: ConnectorEvidence, port: McpPort, policy: ConnectionPolicy): ModelSnapshot;
-  /** Connection status for a non-completed result, when the connector can classify it (R4). */
-  status?(evidence: ConnectorEvidence): { state: 'configured'; reason: string } | undefined;
+  /** Connection status for a non-completed result, when the connector can classify it (R4). A classified
+   * failure may also carry the one content-free log line the host must write for it. */
+  status?(evidence: ConnectorEvidence): { state: 'configured'; reason: string; log?: ToolFailureEvent } | undefined;
   /** The connector's own-account identity probe for one approved policy, when it has one (release 3f). */
   identity?(policy: ConnectionPolicy): IdentitySource | null;
 }
@@ -274,9 +275,9 @@ function googleProject(evidence: ConnectorEvidence, port: McpPort, policy: Conne
     ...(projection.projection[HOST_EVIDENCE] ? { [HOST_EVIDENCE]: projection.projection[HOST_EVIDENCE] } : {}),
   };
 }
-function googleStatus(evidence: ConnectorEvidence): { state: 'configured'; reason: string } | undefined {
+function googleStatus(evidence: ConnectorEvidence): { state: 'configured'; reason: string; log?: ToolFailureEvent } | undefined {
   const status = googleToolStatus(evidence);
-  return status && status.state === 'configured' ? { state: 'configured', reason: status.reason } : undefined;
+  return status && status.state === 'configured' ? { state: 'configured', reason: status.reason, ...(status.log ? { log: status.log } : {}) } : undefined;
 }
 const googleDescriptor: ConnectorDescriptor = {
   id: 'google',

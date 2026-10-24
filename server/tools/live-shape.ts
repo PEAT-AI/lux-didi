@@ -651,14 +651,16 @@ export function shapeLuxKnowledge(tool: string, raw: string): ShapedResult {
   const confidence = knowledgeConfidenceOf(raw);
   // #580: the ranker line is stripped from the noise, so it rides one canonical line at the head of the
   // shaped text instead, where research reads it back and voices the hedge. Never invented: only the
-  // fields the server itself sent. The mark is added before the hard per-result ceiling is applied, so the
-  // ceiling still holds with the line in place.
-  const carry = (result: ShapedResult): ShapedResult => confidence === undefined ? result
-    : capped({ ...result, text: `${knowledgeConfidenceMark(confidence)}\n${result.text}`, knowledgeConfidence: confidence });
-  const ranked = knowledgeRanked(raw);
+  // fields the server itself sent. Its room is taken out of the shape's own budget first, so the result
+  // never grows past the bound the shape promises.
+  const mark = confidence === undefined ? undefined : knowledgeConfidenceMark(confidence);
+  const reserve = mark === undefined ? 0 : mark.length + 1;
+  const carry = (result: ShapedResult): ShapedResult => mark === undefined || confidence === undefined ? result
+    : { ...result, text: `${mark}\n${result.text}`, knowledgeConfidence: confidence };
+  const ranked = knowledgeRanked(raw, reserve);
   if (ranked) return carry(ranked);
   const clean = stripKnowledgePreamble(raw);
-  const cut = cutAtSentence(clean, GMAIL_BODY_CHARS);
+  const cut = cutAtSentence(clean, Math.max(0, GMAIL_BODY_CHARS - reserve));
   const note = cut.omitted > 0 ? `\n\n[omitted: ${cut.omitted} characters; final, this read has no paging argument]` : '';
   return carry(withOpenHandles({ text: cut.text + note, partial: cut.omitted > 0, originalCharacters: clean.length, omittedCharacters: cut.omitted, sources: bodySourceLinks(cut.text) }));
 }
@@ -676,7 +678,7 @@ function statedHitCount(raw: string): number | undefined {
 }
 
 /** A ranked Markdown search reply: every '**#id**' block is one hit, and no hit is dropped silently. */
-function knowledgeRanked(raw: string): ShapedResult | undefined {
+function knowledgeRanked(raw: string, reserve = 0): ShapedResult | undefined {
   const clean = stripKnowledgePreamble(raw);
   const parts = clean.split(/^(?=(?:- )?\*\*#[0-9]+\*\*)/mu).filter(part => KNOWLEDGE_HIT_START.test(part));
   if (parts.length === 0) return undefined;
@@ -701,7 +703,7 @@ function knowledgeRanked(raw: string): ShapedResult | undefined {
     const id = KNOWLEDGE_HIT_START.exec(header)?.[1];
     const note = cut.omitted > 0 ? `[excerpt cut: ${cut.omitted} characters omitted; ask research again with ids=[${id ?? 'the id above'}] for this note's whole text]` : '';
     const text = [header, cut.text, score, note].filter(line => line.length > 0).join('\n');
-    if (kept.length > 0 && used + text.length + 2 > KNOWLEDGE_RANKED_TOTAL_CHARS) { trimmed += 1; omitted += block.length; continue; }
+    if (kept.length > 0 && used + text.length + 2 > KNOWLEDGE_RANKED_TOTAL_CHARS - reserve) { trimmed += 1; omitted += block.length; continue; }
     kept.push(text);
     used += text.length + 2;
     omitted += cut.omitted;

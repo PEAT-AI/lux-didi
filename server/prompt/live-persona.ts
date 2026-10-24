@@ -512,7 +512,10 @@ export const OPENING_OPTIONS_CHARS = 700;
 /** The closed set of opener kinds. Family, health and fitness are deliberately absent. */
 export const OPENING_OPTION_KINDS = Object.freeze(['calendar', 'open-loop', 'recent-thread'] as const);
 export type OpeningOptionKind = (typeof OPENING_OPTION_KINDS)[number];
-export interface OpeningOption { readonly kind: OpeningOptionKind; readonly topic: string; readonly sourceId?: string }
+export interface OpeningOption { readonly kind: OpeningOptionKind; readonly topic: string; readonly sourceId?: string; readonly lastSeenAt?: number }
+/** One stored open loop with the moment it was last seen: the age and status every option must carry. */
+export interface StoredOpenLoop { readonly text: string; readonly lastSeenAt: number }
+export type OpenLoopInput = string | StoredOpenLoop;
 export interface OpeningOptionsInput {
   /** The stored summaries, newest first; the same candidates the earlier-conversations section reads. */
   readonly candidates: readonly EarlierConversationCandidate[];
@@ -523,7 +526,7 @@ export interface OpeningOptionsInput {
   /** The persisted start counter: it selects which stored open loop this start offers. */
   readonly rotation: number;
   /** The stored open_loop column of the earlier calls, newest first. The open-loop option comes from here alone. */
-  readonly openLoops?: readonly string[];
+  readonly openLoops?: readonly OpenLoopInput[];
   /** The last owner words of the call that just ended, offered while its summary is still pending. */
   readonly freshThread?: string;
   /** The kinds the previous call's plan offered, so the calendar never leads two calls in a row. */
@@ -602,11 +605,11 @@ function calendarTopic(digest: string | undefined, now: number, timeZone: string
 
 /** The stored open loops of the earlier calls, newest first and deduplicated as written. The summary text is
  *  never mined for a cue word: a loop is offered only when the distillation stored one. */
-function openLoopTopics(openLoops: readonly string[] | undefined): string[] {
+function openLoopTopics(openLoops: readonly OpenLoopInput[] | undefined): string[] {
   const seen = new Set<string>();
   const loops: string[] = [];
   for (const stored of openLoops ?? []) {
-    const sentence = sentencesOf(stored)[0];
+    const sentence = sentencesOf(typeof stored === 'string' ? stored : stored.text)[0];
     if (sentence === undefined || !isOpenerSentence(sentence)) continue;
     const topic = topicOfSentence(sentence);
     if (topic === undefined) continue;
@@ -736,6 +739,8 @@ export function composeLiveSessionInstruction(input: {
   /** Release 3u: the start's own opening options, already bounded by the builder in this module. */
   readonly openingOptions?: string;
   readonly runtimeContext?: string; readonly ownerProfile?: OwnerProfileSnapshot;
+  /** The injected clock and the owner's zone: ages of stored loops are read in them, never a host zone. */
+  readonly now?: number; readonly timeZone?: string;
   /** R7: today's calendar digest as the warm cache holds it ("09:00 standup, 15:00 review"), or absent. */
   readonly calendar?: string;
   readonly earlierConversations?: string;

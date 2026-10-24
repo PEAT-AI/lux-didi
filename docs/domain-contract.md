@@ -24,6 +24,31 @@ it adds no second copy of the storage or domain contract.
   the service injects. It composes every mutation with its reminder/outbox
   insert or supersession inside the ONE transaction the service opened.
 
+## Schema inventory
+
+The domain declares eight owner versions and the head is version 8; `domainMigrations` in
+`server/domain/schema.ts` is the authority for the exact statements, and the runtime applies them in
+order. No migration rewrites a v1 table and there is no backfill: a column added later reads as null
+on an older row.
+
+| table | created in | later change |
+| --- | --- | --- |
+| `sessions` | v1 | |
+| `entries` | v1 | |
+| `source_references` | v1 | v3 adds the owner index |
+| `preferences` | v1 | |
+| `commitments` | v1 | |
+| `commitment_revisions` | v1 | |
+| `routing_labels` | v2 | |
+| `entry_tombstones` | v4 | |
+| `conversation_summaries` | v5 | v6 adds `open_loop`, `prompt_version` and `skip_reason`; v8 adds `data_class` and `source_revision` |
+| `history_sessions` | v7 | |
+| `history_exclusions` | v7 | |
+| `history_dependencies` | v7 | v8 adds `parent_revision` |
+
+Twelve tables, no views and no triggers of their own. A query that names a table not in this list is
+reading someone else's database.
+
 ## Operations (`createDomainPort(...).execute(tx, operation, input, context)`)
 
 Session/entry/memory: `createSession`, `listSessions`, `getSession`,
@@ -33,7 +58,7 @@ Session/entry/memory: `createSession`, `listSessions`, `getSession`,
 maps public operations onto `/api/v1` routes and injects ids/identity, never the body.
 `appendAssistantEntry` and the routing-label methods below are not public HTTP bindings.
 
-## Durable routing labels (Domain migration v2)
+## Durable routing labels (added in domain migration v2, still current)
 
 Domain owns one append-only `routing_labels` table. Its primary key is
 `(subject_kind, subject_id, revision)`; subject kind, class and writer have SQLite

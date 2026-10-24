@@ -2,7 +2,7 @@
 
 > Historical document. Written in October 2026, before most of the product existed. The milestones and lanes below are the original plan, not the current state; for what exists see [implementation-status.md](implementation-status.md).
 
-Status: proposed plan. Every capability described here is planned work, not a built feature; a partially implemented baseline exists and is recorded in [implementation-status.md](implementation-status.md). The structured plan is [planning/backlog.json](../planning/backlog.json): 120 nodes, one program tracker (P00), thirteen epics (E01 to E13) and one hundred and six work items (A, B, C, D and F leaves). When published, the same nodes are GitHub issues with stable IDs, labels and milestones; the mapping is recorded in `planning/issue-map.json`.
+Status: proposed plan. Every capability described here is planned work, not a built feature; a partially implemented baseline exists and is recorded in [implementation-status.md](implementation-status.md). The structured plan was kept in a machine-readable backlog that came from one October 2026 program tracker; it was not maintained and has been removed (history stays in git): 120 nodes, one program tracker (P00), thirteen epics (E01 to E13) and one hundred and six work items (A, B, C, D and F leaves). When published, the same nodes are GitHub issues with stable IDs, labels and milestones; the mapping is recorded in `planning/issue-map.json`.
 
 ## Numbering
 
@@ -24,7 +24,7 @@ Turn the open evidence and interface questions into contracts the other lanes ca
 
 ### M1, useful daily loop
 
-Make one person's day work end to end without optional infrastructure. Entry points: A05 to A08 and A15 to A18 (durable tasks, receipts, tool turns, outbox, diagnostics and the integration gate); B02 to B05, B08 and B09, B11, B13 and B16; C03 to C05, C12 and C15 to C17; D02 to D10 and D17; F01, F02, F09, F10, F13 and the Stage A half of F15. A08 (action receipts) and C12 (grant broker) are first-loop prerequisites, not late hardening, and the essential source-injection, account-isolation, egress-denial and revocation cases (C16, C17) gate this milestone too. Exit criteria: the scenarios in [acceptance.md](acceptance.md) pass on the Stage A pilot with the real surfaces they name, and the first loop in that document works from a clean account with one Google account.
+Make one person's day work end to end without optional infrastructure. Entry points: A05 to A08 and A15 to A18 (durable tasks, receipts, tool turns, outbox, diagnostics and the integration gate); B02 to B05, B08 and B09, B11, B13 and B16; C03 to C05, C12 and C15 to C17; D02 to D10 and D17; F01, F02, F09, F10, F13 and the Stage A half of F15. A08 (action receipts) and C12 (grant broker) are first-loop prerequisites, not late hardening, and the essential source-injection, account-isolation, egress-denial and revocation cases (C16, C17) gate this milestone too. Exit criteria: the scenarios in [acceptance.md](history/acceptance.md) pass on the Stage A pilot with the real surfaces they name, and the first loop in that document works from a clean account with one Google account.
 
 ### M2, voice and proactive beta
 
@@ -66,7 +66,7 @@ What the first slice deliberately does not include: sending mail or messages, de
 
 ## Dependency order
 
-The backlog is a directed acyclic graph. All edges live in one machine-readable field, `depends_on`, and every edge means a completion or integration prerequisite, not a prohibition on starting. A producer contract can be authored and tested against a consumer's fixtures before its own consumers finish, so lanes overlap deliberately; [parallel-masters.md](parallel-masters.md) names which leaves may start on fixture contracts. There is no second completion graph and no speculative universal engine.
+The backlog is a directed acyclic graph. All edges live in one machine-readable field, `depends_on`, and every edge means a completion or integration prerequisite, not a prohibition on starting. A producer contract can be authored and tested against a consumer's fixtures before its own consumers finish, so lanes overlap deliberately; [parallel-masters.md](history/parallel-masters.md) names which leaves may start on fixture contracts. There is no second completion graph and no speculative universal engine.
 
 Key cross-track edges (all genuine completion dependencies):
 
@@ -84,7 +84,7 @@ The validator derives labels from node fields so the published issues cannot dri
 
 ## Where to start
 
-Read [the P00 program tracker](https://github.com/PEAT-AI/lux-didi/issues/1) first: its body names the five lanes and the entry point for each milestone. Then [parallel-masters.md](parallel-masters.md) for ownership and start packets, [architecture.md](architecture.md) for the invariants, and [decisions.md](decisions.md) for the choices already made and the questions still open. The stable-ID to issue-number mapping is in [planning/issue-map.json](../planning/issue-map.json). The separate first-night execution plan is [overnight-execution.md](overnight-execution.md); it is proposed and does not change the issue scope.
+Read [the P00 program tracker](https://github.com/PEAT-AI/lux-didi/issues/1) first: its body names the five lanes and the entry point for each milestone. Then [parallel-masters.md](history/parallel-masters.md) for ownership and start packets, [architecture.md](architecture.md) for the invariants, and [decisions.md](history/decisions.md) for the choices already made and the questions still open. A stable-ID to issue-number mapping lived in a generated file that has been removed. The separate first-night execution plan is [overnight-execution.md](history/overnight-execution.md); it is proposed and does not change the issue scope.
 
 ## Revision record
 

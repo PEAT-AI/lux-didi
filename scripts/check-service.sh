@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# The local service: type-check and build, then the runtime store and HTTP tests.
+# Exits non-zero on the first failing test; the compiled copy proves nothing about a stale dist.
 set -euo pipefail
 . "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1

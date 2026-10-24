@@ -1,11 +1,11 @@
 # Architecture
 
-How Lux Didi works at release 10. File names are given so each claim can be checked; a line number is not, because they move.
+How Lux Didi works at release 10. File names are given so each claim can be checked; line numbers are not, because they move. This page describes today's behaviour only; the planning documents are under [history/](history/README.md).
 
-## The shape in one picture
+## Shape
 
 ```text
-              voice provider (OpenAI GPT-Live or Gemini Live, over the internet)
+              voice provider (OpenAI GPT-Live by default, Gemini Live by choice)
                          ^
                          | one audio-and-text socket per call, opened by the host
                          |
@@ -19,118 +19,114 @@ How Lux Didi works at release 10. File names are given so each claim can be chec
         ^ HTTP + one WebSocket (loopback, private credential)    ^ serves
         |                                                        |
  +------+------------------------+          +--------------------+---+
- | Mac app (Swift, Sources/LuxDidi) |  hosts  | Web UI (web/, TypeScript) |
- |  presence machine, menu bar,     +-------->|  orb, conversation,       |
- |  orb panel, window, audio owner, | web view|  memory, settings         |
- |  hotkeys, host supervisor        |         +---------------------------+
- +----------------------------------+
+ | Mac app (Swift, Sources/LuxDidi) |          | Web UI (TypeScript, web/) |
+ |  orb, window, mic, speaker, keys |          |  orb, conversation,      |
+ |  presence machine, host watcher  |          |  memory, settings        |
+ +---------------------------------+          +--------------------------+
 ```
 
-Rules that hold everywhere:
+Three ownership rules explain most of the code:
 
-- Everything between app, host and web UI is loopback. The host is the only writer of the database (`state.sqlite`); the app and the web UI keep no private records.
-- The app owns the microphone and the speaker. The host never touches audio devices. Audio crosses the local socket as frames.
-- The web UI is one codebase shown in two places: the full window and the orb panel. There is no second native UI for business screens.
-- The host prints nothing on stdout except the supervision protocol (`writeProtocolFrame` in `server/host/index.ts`); `scripts/check-host.sh` fails on any `console.log` in server source.
+1. **The host is the single writer.** Every record (notes, memory, commitments, the call journal, the trace) is written by the host through one SQLite connection with one writer lock. Neither the app nor the web UI writes a record.
+2. **The app owns audio.** `AudioOwner.swift` is the only place that opens the microphone or the speaker. The host never touches audio hardware and the web UI never plays.
+3. **The web UI is presentation.** It renders state the host publishes and posts intents the host validates. It holds no records and survives a reload with nothing lost.
 
-## Native layer: `Sources/LuxDidi`
+## Processes at runtime
 
-| Part | Files | Job |
+1. macOS starts the app through LaunchServices. `SingleInstanceGuard.swift` decides the launch kind: `interactive` (the owner opened it, maybe from the Dock), `loginItem`, `installRelaunch`, `reopen` (a Dock click while running), and the proof kinds. Only `interactive` brings the app to the front and only it connects by itself.
+2. The app starts the host as its own child through `NativeServiceSupervisor.swift`: the bundled node binary, `server/dist/host/index.js --supervised`, with the app's environment.
+3. The supervisor writes one bounded JSON line on the child's stdin (`type: start`, a nonce, the schema version). The host answers with exactly one ready frame (`type`, `schemaVersion`, `nonce`, `pid`, `origin`, `authorityEpoch`, `assistantId`); any other byte, or a second line, fails the start. The nonce is how the app knows the host it talks to is the one it started.
+4. The supervisor reads `admin-credential`, the owner-only file the host writes in its data directory on first start, and from then on every request carries it. The credential never appears in a command line, an environment variable or a log line.
+5. The host closes when its stdin reaches EOF, so the app's exit is the host's exit. There is no orphan daemon.
+6. A host started by hand (`node server/dist/host/index.js`, or `bash scripts/run-local.sh`) is the same program without the supervised contract: it prints its origin and runs in the foreground.
+
+## The host
+
+Entry and flags: `host/index.ts`. `--data-dir`, `--web-root`, `--port`, `--descriptor`, `--config-dir`, `--owner-profile`, `--supervised`, and the `pair` and `--mongoose-login` subcommands. The environment mirrors three of them (`DIDI_STATE_DIR`, `DIDI_WEB_ROOT`, `DIDI_PORT`); every other setting is a flag or a file.
+
+| Area | Where | Job |
 | --- | --- | --- |
-| Launch kind | `SingleInstanceGuard.swift` | Decides what a start may do. `interactive` (owner opened the app): shows the orb and connects once, by itself. `loginItem`: shows the orb, never connects. `installRelaunch` (`--install-relaunch`): shows the orb, never connects. `installedProof`, `selfCheck`, `uiProof`, `verification`: proof launches that host a window and never connect. A second instance yields. |
-| Presence machine | `NativePresence.swift` | One state machine for "is Naya listening", shared by Right Command, the orb click and the window's mic control. See states below. |
-| Surfaces | `PresentationCoordinator.swift`, `NativeMiniOrb.swift`, `LuxDidiApp.swift` | The orb (MINI) and the window (FULL) are independent and can be shown at the same time. The orb is the resting surface and defaults to the top right under the menu bar clock; its saved position is clamped back onto a connected screen. The window is created the first time it is asked for, from the menu or a shortcut. Switching surfaces never starts or ends a call. |
-| Keys | `SingleKeyTrigger.swift`, `NativeShortcuts.swift` | Right Command bare tap drives the presence machine (held or chorded presses do nothing; needs the Input Monitoring grant). Global hotkeys (Carbon): Control Option Space and Control Option Shift Space both toggle the full window, Control Option Shift L starts Live, Control Option Shift M mutes. `NativeShortcuts.swift` also registers a second Control Option Space for the orb pill; the first registration (`GlobalHotkey` in `LuxDidiApp.swift`) wins, so that second one is expected to report unavailable. Not verified at runtime. |
-| Audio | `AudioOwner.swift`, `NativeLiveAudioDevice.swift`, `NativeMicMode.swift`, `NativeVoice.swift` | The single owner of capture and playback. Mute closes the capture fence immediately and drops queued speech. Voice processing is always on; the app reports the macOS Mic Mode. |
-| Live client | `LiveSessionCoordinator.swift`, `LiveSocketTransport.swift`, `NativeLiveConversation.swift`, `NativeLiveJournal.swift` | Opens the local Live socket, sends mic frames, plays the reply, keeps a content-free journal of the call. |
-| Host supervision | `NativeServiceSupervisor.swift`, `NativeServiceRecovery.swift`, `InstalledRuntime.swift`, `CompanionClient.swift` | Starts the bundled Node host with `--supervised`, reads its ready frame, restarts it if it dies, and talks to it with the private credential file. State lives in `Library/Application Support/ai.peat.lux-didi` in the user's home. |
-| Bridge | `NativeBridge.swift`, `CompanionWeb.swift` | The narrow message channel between the web view and the app (presence, Mic Mode, native actions). It cannot grant authority. |
-| Setup | `OperatorSettings.swift`, `NativeGettingStarted.swift`, `NativeNextSteps.swift`, `NativeLoginItem.swift`, `NativeNotifications.swift` | `--configure`, the Getting started page, Open at login, notifications. |
+| Store | `runtime/`, `domain/` | SQLite through `node:sqlite`. Notes, memory, commitments, the trace spine, the call journal. One writer, private files. Migrations are owned per domain, and [domain-contract.md](domain-contract.md) lists the tables. |
+| Text chat | `chat/` | The connected text conversation: consent, steps, partial answers, selected memory. See [text-chat.md](text-chat.md). |
+| Live call core | `live/` | One call at a time: lifecycle, the journal of finalized transcripts, timers, reconnect with resumption, mute, the stop gate, the debt clock. See [live-call.md](live-call.md). |
+| Voice providers | `adapters/live-voice/` | `openai.ts` (GPT-Live, the default) and `gemini.ts`. Both implement one `LiveVoicePort`; the checked union is `liveVoiceProviders`. |
+| Prompt | `prompt/` | The public persona, the runtime context (clock, timezone, connected sources), the opening line, and the composition of the instruction sections. See [prompt-composition.md](prompt-composition.md). |
+| Tools and research | `tools/` | What the model may call, and the research layer that answers one ask in one turn. See [tool-owner.md](tool-owner.md). |
+| Connectors | `connectors/` | Lux Knowledge, Google (Gmail and Calendar), Mattermost and Mongoose, each a descriptor over MCP. Mongoose is three separate endpoints (knowledge, data, CRM) with three separate sign-ins, and the admin endpoint is never connected. See [connectors.md](connectors.md). |
+| Host wiring | `host/` | Flags, supervision, the local HTTP server, the WebSocket upgrade, the logs, the config mounts. |
+| Config | `config/` | The protected profile: `live.json`, the MCP profile, credentials, route classes. See [provider-configuration.md](provider-configuration.md) and [mcp-configuration.md](mcp-configuration.md). |
 
-Sound: a soft pad while connecting, a rising chime on arrival, the pad again while a dropped call reconnects, and a short goodbye when a voice stop ends the call.
+## One call, end to end
 
-### Presence states
+1. **Start.** A tap of the orb, a bare Right Command tap, the menu's Start Live, or the one auto-connect of an interactive launch moves presence from `cold` to `connecting`. The app asks the host for a Live session; the host composes the session grant: provider, model, voice, key reference, permitted data classes and the chosen input class (`live_grants`).
+2. **Grants.** The tool table for the session is composed from the definitions the tool owner accepts for this session's connection ids and allowed data classes, and the acceptance is frozen with a sha256 (`snapshotRun`). The model is advertised only the tools that grant allows; a calendar read is never advertised when the connection grants only the calendar-list sibling.
+3. **Opening.** Naya opens every new call with one short line of her own, drawn from the stored record (the last session's opening, not the calendar twice in a row). The opener is composed before the first audio and does not wait on a connector beyond its bound.
+4. **Conversation.** The app streams microphone frames up; the host forwards them to the provider and streams audio and transcripts back. Only finalized owner turns reach the journal; interim transcription is used for the stop gate and dropped.
+5. **The stop gate.** Every transcription fragment, interim or final, is normalized and matched against the stop phrases (`live/stop-phrase.ts`) inside a ten-word rolling window that resets after three seconds of no input. A phrase inside a sentence matches; a bare "stop" needs one of her names in the same window; a negated or quoted phrase ("do not stop listening", "she said stop now") does not. Her names have a three second grace, so a name and a phrase split across a pause still match. The German phrases match the same way.
+6. **The priority terminal frame.** A matched voice stop (`voice_stop`) and an owner stop (`user_stop`) are the only two terminals that outrank queued output: the socket closes at once and queued speech is dropped. Every other terminal drains the queue first and is sent after it, because a settled answer is worth more than a fast close. GPT-Live has no `response.cancel`, so the stop purges held playback and closes the provider session instead of cancelling a response.
+7. **Mute.** `live` to `hotMuted`: capture stops at once, and the response watchdog and the idle clock are suspended. An answer that arrives while muted is never played; its audio is dropped and the unmute offers it in one sentence, and a response that began under the mute is dropped until its turn ends. A tap resumes.
+8. **Reconnect.** If the provider drops, the host retries with backoff (0, 2, 4, 8, then 8 s) and resumes with the provider's handle, inside the call's own generation, so a stale attempt can never speak into a newer call.
+9. **Dead air.** A tool output creates a debt: the model owes an answer. The audible debt clock is non-sliding. It starts when the write for the answer succeeds, when a continuation is sent, or when the owner's turn closes with no call pending; it stops when audio becomes audible. It is not reset by progress that the owner cannot hear, which is the point: the receipt (`live_dead_air`) names the turn's age, whether any audio arrived, and the inaudible milliseconds.
+10. **End.** One path for every cause: the menu or the orb's Stop, a voice stop, the idle limit, the call limit, a provider-terminal error, or app exit. The microphone stops, the provider session closes, the journal stores the terminal reason, and presence returns to `cold`. The orb stays.
+11. **After.** The host distils the finished call into a private conversation summary off the request path. The journal keeps finalized transcripts; the summary is what a later call reads first.
+
+Timer defaults live in `adapters/live-voice/types.ts` and `live/config.ts`, and the owner's `live.json` may change them: a 1 hour provider session, a 5 minute idle limit and a 4 hour call limit unless the profile says otherwise.
+
+## One question, end to end
+
+1. The model calls a typed tool (`search`, a mail or calendar read, a chat read, an attention scan, a brief, memory search, remember, vault save, a web read, open). The tool layer validates the argument shape at the boundary and refuses an unusable one with a one-try guidance line.
+2. The research layer routes the ask to the sources that can answer it (`tools/research.ts`) and runs those reads in parallel. One table owns every bound: 12 s for a connector read (knowledge, mail, calendar, chat, Mongoose), 8 s for the in-process memory read, 4 s for a web read, and a whole call of the slowest source it reads plus slack, never past its cap. At 4.5 s the host answers with what it has while the slow readers keep running to their own deadlines, and each one that settles later is reported once. A progress line keeps dead air under 3 s.
+3. Every reply opens with a coverage header, always: one line that says, per source, what came back and what did not, with a status word for each (completed with findings, completed with nothing relevant, not configured, unavailable, refused). The header sits outside the prose envelope and has its own budget, so the trim that keeps a reply inside its limit can never take away the line that says what was searched.
+4. The reply is allocated in two passes. The floor first: one whole finding line per source that returned a hit, so a capped reply never hides a source. Then proportional fill, which takes from the source furthest above its share of the room. Only when even the floor overruns is a line clipped, at a word boundary.
+5. A triage ask ("anything important in mail?", "what came in?") is not a keyword search. It runs one fixed read per source: the unread inbox of the last two days, newest first, with promotions, social and forum mail excluded; the chat read covers mentions and replies of the last seven days; the calendar read covers the day named in the ask. When a triage ask and a topic both apply, the triage ask wins, and an empty window says so instead of "nothing matched".
+6. The evidence freeze: the result the model sees is the locally accepted projection of the accepted result (`tools/<id>.ts`), never raw MCP content. A weak knowledge match travels as a confidence field and is voiced as "nothing matched", never as raw ranker text.
+7. The journal keeps the run: which sources were searched, what each returned, what was dropped and why. The debugger reads the same record through [debugging.md](debugging.md).
+
+## Presence
+
+Four states, one machine (`NativePresence.swift`), shared by Right Command, the orb click and the window's mic control:
 
 | State | Meaning | Orb |
 | --- | --- | --- |
 | `cold` | No call. The orb is still there. A tap starts one. | grey, dim, silent |
-| `connecting` | A call is opening. Nothing is captured until the provider is ready. A tap cancels. | grey with the connecting look and pad |
+| `connecting` | A call is opening. Nothing is captured until the provider is ready. A tap cancels. | grey with motion |
 | `live` | Microphone open, conversation running. A tap mutes. | colour follows her state |
-| `hotMuted` | Call stays open, capture closed, queued speech dropped. The idle clock is suspended. A tap resumes. | purple |
+| `hotMuted` | Call stays open, capture closed, queued speech dropped. A tap resumes. | purple |
 
-A trigger names what moved the machine: `hotkey`, `click`, `app`, `timer`, `sleep`, `error` or `voice` (the owner's own stop phrase). Every move leaves a receipt in `host.log`.
-
-## Host layer: `server/`
-
-Entry and wiring: `host/index.ts` parses flags (`--data-dir`, `--web-root`, `--port`, `--descriptor`, `--config-dir`, `--owner-profile`, `--supervised`, `pair`, `--mongoose-login`, `--no-browser`, `--help`), opens the store, composes everything and serves the web UI and API from `http/`.
-
-| Area | Where | Job |
-| --- | --- | --- |
-| Store | `runtime/`, `domain/` | SQLite via `node:sqlite`. Notes, memory, commitments, the trace tables, the call journal. Single writer, private `0700` directory. |
-| Text chat | `chat/` | The connected text conversation: consent, steps and partial answers, selected memory. |
-| Live call core | `live/` | One call at a time: lifecycle, journal of finalized transcripts, timers, reconnect with resumption, mute handling, the stop-phrase gate (`stop-phrase.ts`), warm context (`warm-context.ts`), tool-result cache (`tool-cache.ts`). |
-| Voice providers | `adapters/live-voice/` | `openai.ts` (GPT-Live) and `gemini.ts`. The provider is a setting; both speak the same host port. GPT Live owns barge-in and has no response cancel command, so a stop purges the playback the host still holds and closes the provider session. |
-| Prompt | `prompt/` | Public persona, runtime context (clock, timezone, connected groups), opening options drawn from the stored record only. Content ships like code and is covered by `check-prompt.sh`. |
-| Tools and research | `tools/` | What the voice model can call; see the research layer. |
-| Connectors | `connectors/`, `adapters/mcp/` | Read-only access to outside systems through MCP; see below. |
-| Config | `config/` | Protected configuration files (`live.json` for voice, provider and MCP catalogs) read from the selected config directory. Restart to apply edits. |
-| Trace and logs | `trace/`, `host/log.ts` | Content-free `host.log` and the joinable trace tables. See [debugging.md](debugging.md). |
-
-### Call lifecycle
-
-1. **Start.** A tap (or the one auto-connect of an interactive launch) moves presence `cold` to `connecting`. The app asks the host for a Live session; the host builds the instruction (persona, runtime context, memory, the last session's summary, opening options) and opens the provider socket. Warm context is assembled while Naya is silent so the start is fast. A calendar digest read has a 10 s deadline, and closing the host aborts a digest read already in flight.
-2. **Opening.** Naya opens every new call with one short line of her own, drawn from the last session and not from the calendar twice in a row. The opening directive is never recorded as the owner's speech.
-3. **Conversation.** The app streams mic frames up; the host forwards them to the provider and streams audio and transcripts back. Only finalized owner transcripts and the model's audio count as conversational activity. The model may call tools (below); results return to the provider and the journal.
-4. **Mute.** `live` to `hotMuted`: capture stops at once, the response watchdog and idle clock are suspended, speech that arrives is held.
-5. **Reconnect.** If the provider drops, the host retries with backoff (0, 2, 4, 8, then 8 s) and resumes with the provider's handle, inside the call's own deadlines. The pad plays while it does. Every rebuild names its trigger in `host.log` from a closed set: `no_output_after_ambient`, `no_output_after_owner`, `line_dropped`, `session_window`. A rebuild whose trigger is ambient sound, with no owner speech since the last model output, stays silent: no reconnect chime and no greeting.
-6. **Dead air.** After a tool output the model owes an answer, so the host starts an audible debt clock: it begins when the write for the answer succeeded or was deferred, and it never slides. Model text, a model turn start and output transcription are not audio the owner heard, so they leave the deadline where it is; only the first audible frame, an owner barge-in or the end of the turn clears it. At 8 s of debt the path forks: Gemini receives one neutral continuation input, and gpt-live-1, which has no `response.cancel` and no truncate, has its provider session closed and recreated with the conversation seed, the pending tool outputs re-queued exactly once and never under an owner barge-in. At 15 s the existing rebuild runs, so a second mute inside the 120 s window keeps its `model_unresponsive` or `uplink_starved` end. A write the adapter reports as failed is already a lost answer: it opens the recovery at once. A provider error on an open response, and a recreate that could not open, become one typed `turn_failed` she can speak in a line.
-7. **End.** One path for every cause: the Stop button or menu item, a voice stop phrase, the idle timeout (5 minutes without conversational activity), the provider session limit (1 hour by default), the call limit (4 hours), or a fatal error. A voice stop is decided by the host on every owner transcription fragment, before the fragment is handled: the last 10 normalised words must hold her name within 4 words before or 2 words after an end phrase, a name that ends a fragment stays good for 3 seconds across quiet fragments, "stop listening", "shut down", "stop now" and the German forms end the call without the name, and the bare word "stop" needs it. Typed, quoted, negated and echoed speech never stops a call, and neither does an object such as "stop listening to podcasts". The uplink stops at the match, the goodbye sounds, and the call closes exactly like the Stop button. For the owner's stop, the terminal frame is delivered first, ahead of the closing write that can fail, so the app never stays live on a call that has ended.
-7. **After.** The host distils the finished call into a private summary off the request path (`services/summarize.ts`). The journal keeps finalized transcripts and boundary facts, not audio or the model's thoughts.
-
-Defaults for the timers are in `adapters/live-voice/types.ts` and `live/config.ts`; the owner's `live.json` can change them.
-
-### The research layer (`tools/research.ts`)
-
-The voice model asks one question in plain words; the host decides which sources to read.
-
-- **Topic argument.** Only the topic reaches a search, never the model's instruction prose, and no dates the owner did not say. "Last meeting with X" returns the newest note first.
-- **Routing words.** Words like email, Gmail, message, DM, calendar, weekday names and dates route the ask to mail, chat or calendar; memory and "what needs my attention" asks have their own route. Calendar reads list attendees, understand "tomorrow" and weekdays, and keep full titles.
-- **Triage scans.** "Anything important in mail?" runs a fixed read of the unread inbox of the last 2 days, newest first, with sender and date, one page. "Anything urgent on Mattermost?" reads mentions and replies of the last 7 days, newest first. An empty window says so and never says "nothing urgent". When both a triage ask and a topic apply, the triage ask wins.
-- **Budgets.** At most two tool rounds per run (the parallel first round plus one continuation) and at most four lookups at once. Each source has a deadline (12 s for connector reads, 8 s for memory, a longer one for weather and news); the whole call is bounded by the slowest source plus 2 s. The first answer point is 4.5 s: she answers with what has arrived and reports late sources once.
-- **Reply cap.** The answer a voice model receives is at most 2,500 characters including the envelope. A long knowledge hit is clipped, not dropped; the "more available" note is true; her own earlier answers never come back as evidence.
-- **Remembered notes.** A remembered note carries its own source identity: the call's `session:journal-sequence` key plus a short hash of the note's normalised text. Two different notes supported by the same owner turns are both kept; the same note said twice is refused as already remembered, and a deletion tombstone matches the same shape so a forgotten note stays forgotten.
-- **Knowledge confidence** travels as a field, never as raw ranker text. A weak match is voiced as "nothing matched".
-- Other tools: typed intent tools (`search`, `mail`, `calendar`, `chat`, `attention`, `brief`), memory search and history, `remember`, vault save, web search, and the open tools (`open_source`, `open_home`, `open_file`, `open_app`). Open tools act only when the owner asked in that turn, check the item is the kind asked for, and never type, click or send.
-
-### Connectors
-
-A research reply is one host turn, not a page the voice model has to walk. When the model asks `research`, the host reads the routed sources in parallel, retries a source that matched nothing once with a broadened query, reads the top body itself when the ask wants the content of a message, and answers with one reply that opens with a deterministic coverage header: each searched source with its status and the hits it returned of the hits it matched, and each source the ask wanted but nobody read with the reason and the one clause the voice can say. The header rides outside the 2,500 character prose budget, so bounding the answer never removes it, and the voice therefore never has to say an unconfigured or failed source came back empty.
-
-All connectors are optional, read-only MCP connections declared in the protected config directory, with an explicit endpoint, account identity and credential reference. A missing one shows a next step in Settings and the call still works with the rest. A composite read such as the attention scan is a grantable name of its own, but only beside every child read it stands on, so the approved policy can never widen the envelope one composed name at a time; a composite the policy does not name is never registered, and its sub-calls answer with a closed refusal reason.
-
-| Connector | Reads | Notes |
-| --- | --- | --- |
-| Lux Knowledge | `search_knowledge`, `get_insight`; vault note via `save_insight` on "save to my vault" | `connectors/lux-knowledge.ts`, `tools/vault-write.ts` |
-| Gmail and Google Calendar | search, read, list calendars and events | `connectors/google.ts`; two families (gmail, calendar), each its own stdio MCP endpoint |
-| Mattermost | search, channel and thread reads, attention scan | via the `mattermost-mcp` server (stdio); sign in once with its own login tool |
-| Mongoose | company knowledge reads | HTTP MCP with OAuth; `server/dist/host/index.js --mongoose-login` signs in, the session refreshes itself |
-
-Credentials live in owner-only files in the config directory, never in argv, logs, chat or this repository.
-
-## Web layer: `web/`
-
-Vite and TypeScript, no framework. `src/main.ts` holds the tabs (Conversation, Today, Memory, Settings). `src/live-view.ts` renders the call; `src/settings-view.ts` renders Settings; `src/connected.ts` the text conversation.
-
-The orb: `orb-classic.ts` draws it, `orb-states.ts` maps presence and call state to a look, and `orb-motion.ts` holds the single motion coordinator that both orbs use. Her voice level moves the body and her state sets the colour, so thinking to speaking does not flicker. The orb's visual design is frozen (see [CLAUDE.md](../CLAUDE.md)). The mini page (`mini.ts`) is orb-only and shows one glance state. The page reads presence pushed by the app (`window.didiPresence`), and the app reads nothing private back.
-
-The browser keeps no private records, token or queue in persistent storage, and makes no external font, analytics or CDN request.
+A trigger names what moved the machine: `hotkey`, `click`, `app`, `timer`, `sleep`, `error`, `voice`. Every move leaves a content-free presence receipt (state, trigger, source) in the host log, so a missing orb can be explained after the fact.
 
 ## Where the data is
 
 | Path | Holds |
 | --- | --- |
-| `Library/Application Support/ai.peat.lux-didi/` in the user's home | Installed app state: `state.sqlite`, `logs/host.log`, `logs/native-live.log`, `logs/audio.log`, host credential file |
-| `Library/Application Support/ai.peat.lux-didi-operator/settings.json` in the user's home | The selected config directory (`--configure`) |
-| the selected config directory | `live.json`, MCP catalog, credentials (owner-only) |
+| `~/Library/Application Support/ai.peat.lux-didi/` | The installed app's state: `state.sqlite`, `admin-credential` (owner-only), `logs/host.log`, `logs/native-live.log`, `logs/audio.log` |
+| `~/Library/Application Support/ai.peat.lux-didi-operator/settings.json` | The selected config directory (`--configure`) |
+| the selected config directory | `live.json`, the MCP profile, the credential records (owner-only) |
+| `~/Library/Application Support/Lux Didi/` | A host started by hand without `--data-dir`, the same layout |
 
-A development host started by hand uses `--data-dir` or `DIDI_STATE_DIR`, else `Library/Application Support/Lux Didi` in the user's home.
+`--data-dir` or `DIDI_STATE_DIR` overrides the development directory. [debugging.md](debugging.md) says what each file holds and how to read it; [diagnostic-store.md](diagnostic-store.md) has the query recipes.
+
+## The boundaries
+
+What the code deliberately does not do:
+
+- No writing into a connected account. Every connector is read only, and the only write outside her own store is a vault note the owner dictated.
+- No background reading. A source is read inside a turn the owner started; nothing polls an account.
+- No audio outside `AudioOwner`. The host forwards frames; it never opens a device.
+- No credentials in the repository, in a log line, in a command line or in an environment variable. Credentials live in owner-only records and are redacted by construction in the log layer: enums, counts and timings only.
+- No silent failure. A source that could not be read says so in the coverage header; a check that cannot run prints a blocked line and exits non-zero.
+- No hosted CI, no notarization, no multi-user support. It is one owner on one Mac.
+
+## Reading order
+
+| You are touching | Read first |
+| --- | --- |
+| the local service, its wire contract or its packaging | [service.md](service.md) |
+| the text conversation | [text-chat.md](text-chat.md) |
+| a live call or a voice provider | [live-call.md](live-call.md), then [provider-configuration.md](provider-configuration.md) |
+| the Swift app | [native-app.md](native-app.md), then [mac-experience.md](mac-experience.md) |
+| the store or the tables | [domain-contract.md](domain-contract.md) |
+| selected memory | [selected-memory.md](selected-memory.md) |
+| the prompt or the persona | [prompt-composition.md](prompt-composition.md), [tool-owner.md](tool-owner.md) |
+| a source of data | [connectors.md](connectors.md), [mcp-configuration.md](mcp-configuration.md) |
+| the checks or a release | [checks.md](checks.md), [releases.md](releases.md) |

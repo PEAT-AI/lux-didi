@@ -52,22 +52,22 @@ at startup.
 Start the host in the foreground, against a private state directory of your choosing and the build you just produced:
 
 ```sh
-DIDI_STATE_DIR="$PWD/.local-state"
-DIDI_CONFIG_DIR="$PWD/.local-config"
-bash scripts/run-local.sh --data-dir "$DIDI_STATE_DIR" --web-root "$PWD/web/dist" --port 0 --config-dir "$DIDI_CONFIG_DIR"
+state_dir="$PWD/.local-state"
+config_dir="$PWD/.local-config"
+bash scripts/run-local.sh --data-dir "$state_dir" --web-root "$PWD/web/dist" --port 0 --config-dir "$config_dir"
 ```
 
 The wrapper builds and then runs, so it is safe on its own. For a two-stage launch that skips the rebuild:
 
 ```sh
 bash scripts/run-local.sh --build-only
-bash scripts/run-local.sh --run-built --data-dir "$DIDI_STATE_DIR" --web-root "$PWD/web/dist" --port 0 --config-dir "$DIDI_CONFIG_DIR"
+bash scripts/run-local.sh --run-built --data-dir "$state_dir" --web-root "$PWD/web/dist" --port 0 --config-dir "$config_dir"
 ```
 
 `--run-built` reuses the previous build and does not check whether sources changed. After any source edit, use the
 default path or repeat `--build-only`.
 
-`--config-dir` (or `DIDI_CONFIG_DIR`) selects the provider profile directory; the portable default is
+`--config-dir` selects the provider profile directory; the portable default is
 `<dataDir>/provider-config`. The host validates the profile at startup and fixes it for the process, so restart to
 activate edits. The profile holds the provider, the model and a key reference; the key material lives in a separate owner-only
 secret file (mode 0600) and is reread on each dispatch. The status line reports unconfigured, disabled, error (a safe code only), or
@@ -88,7 +88,7 @@ The low-level service entry, `npm --prefix server start`, runs `node dist/index.
 - `DIDI_WEB_ROOT` or `--web-root` selects the built web client; the default is a `web/dist` directory beside the checkout.
 - `DIDI_PORT` or `--port` selects the port; the default is 8765, and `--port 0` asks the operating system for a free loopback port. Command-line options take precedence over the environment.
 - `DIDI_DESCRIPTOR` or `--descriptor` selects the descriptor path.
-- `DIDI_CONFIG_DIR` or `--config-dir` selects the provider profile directory; the portable default is
+- `--config-dir` selects the provider profile directory; the portable default is
   `<dataDir>/provider-config`. See [provider configuration](provider-configuration.md) for the profile and key
   initialization and for the status values it reports.
 - The store creates and uses a private `0700` data directory. The owner-only `admin-credential` file is `0600`, and the SQLite store keeps a single-writer lock. A competing writer fails loudly; there is no seed, reset or overwrite fallback.
@@ -99,7 +99,7 @@ The low-level service entry, `npm --prefix server start`, runs `node dist/index.
 The browser does not receive the admin credential. Pair it with a short-lived code instead, from a second terminal:
 
 ```sh
-node server/dist/host/index.js pair --data-dir "$DIDI_STATE_DIR"
+node server/dist/host/index.js pair --data-dir "$state_dir"
 ```
 
 That command reads the existing owner-only credential at run time, checks the current service identity, and prints only a single-use pairing code. The code expires after five minutes. Open the exact origin the foreground host printed and enter the code into the pairing screen. The browser then holds an `HttpOnly`, `SameSite=Strict`, `path=/` session cookie, and keeps its CSRF token in memory rather than in persistent storage.
@@ -139,7 +139,7 @@ python3 scripts/backlog_validate.py --all --report planning/backlog-validation.m
 
 ## How this page was verified
 
-Cross-checked against `scripts/run-local.sh`, `server/package.json`, `web/package.json`, `server/host/index.ts` and the `scripts/check-*.sh` producers at release 9 (6d60a00f).
+Cross-checked against `scripts/run-local.sh`, `server/package.json`, `web/package.json`, `server/host/index.ts` and the `scripts/check-*.sh` producers at release 10 (7c1a26ae, the release 10 merge on main).
 
 ### Companion gate failure evidence
 

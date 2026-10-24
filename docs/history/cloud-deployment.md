@@ -1,6 +1,6 @@
 # Cloud deployment path
 
-> Historical document. A design only. Nothing has been provisioned or deployed. For the product as it runs today see [architecture.md](architecture.md).
+> Historical document. A design only. Nothing has been provisioned or deployed. For the product as it runs today see [architecture.md](../architecture.md).
 
 Status: designed path, not a deployment. Nothing here has been provisioned, purchased or run, and
 no cloud account exists for this project. The decision that makes this path reachable is recorded

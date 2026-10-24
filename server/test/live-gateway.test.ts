@@ -1103,3 +1103,19 @@ test('#606 a terminal takes priority over queued binary output without draining 
   assert.deepEqual(JSON.parse(String(frames[0])), { type: 'terminal', state: 'closed', code: 'voice_stop', complete: true });
   assert.equal(socket.readyState, 3);
 });
+
+test('#606 a normal close drains the queued markers before the terminal frame', async () => {
+  const frames: unknown[] = [];
+  const socket = { readyState: 1, bufferedAmount: 0,
+    send: (frame: unknown) => { frames.push(frame); }, close: () => { socket.readyState = 3; } };
+  const marker = (sequence: number) => ({ kind: 'turnComplete' as const, sequence, journalSequence: sequence + 1,
+    text: null, finished: null, value: null });
+  const attachment = {
+    output: (async function* () { for (let i = 0; i < 20; i++) yield { kind: 'marker', marker: marker(i) }; })(),
+    done: Promise.resolve({ ready: true, terminal: { state: 'closed', code: 'synthetic_code' }, journal: { complete: true } }),
+    overflow: () => { assert.fail('a normal close never wins over the queue'); },
+  } as unknown as LiveAttachment;
+  await pumpOutput(socket as unknown as Parameters<typeof pumpOutput>[0], attachment, () => { assert.fail('not detached'); }, 1_000);
+  assert.equal(frames.length, 21, 'twenty queued markers then the terminal frame');
+  assert.deepEqual(JSON.parse(String(frames[20])), { type: 'terminal', state: 'closed', code: 'synthetic_code', complete: true });
+});

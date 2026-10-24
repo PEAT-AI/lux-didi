@@ -2496,6 +2496,8 @@ const REASON_WORDS: Record<string, string> = {
   'credential-refresh-failed': 'sign in again',
   // #500: a source the identity server will not publish a read grant for.
   source_not_granted: 'read grant not published',
+  // F17: the chat triage read is the connector's own composite, which the approved policy may not grant.
+  'tool-not-granted': 'tool not granted',
   window_unparsed: 'could not resolve that date or window, ask for a day or a week',
   history_unavailable: 'unavailable',
   history_reference_unavailable: 'unavailable',
@@ -4375,7 +4377,12 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               run.emptySearches.set(part.source, served.some(sub => sub.name === INTERNAL.chatAttention)
                 ? ` in the last ${TRIAGE_DAYS} days`
                 : mailInfo === undefined ? queryShapeOf(served) : mailEmptyPhrase(mailInfo, queryShapeOf(served)));
-            } else if (!run.sourcesDone.has(part.source)) run.sourcesFailed.add(part.source);
+            } else if (!run.sourcesDone.has(part.source)) {
+              run.sourcesFailed.add(part.source);
+              // F17: a chat triage ask rides the connector's own composite, which a policy may not grant.
+              // The refusal is closed and named, so the reply never reports an unknown tool or a success.
+              if (part.source === 'chat' && served.some(sub => sub.name === INTERNAL.chatAttention)) run.unavailableReasons.set('chat', 'tool-not-granted');
+            }
             // P5 outcome 4: one receipt per source read, with the deadline it was actually given.
             logSource({
               event: 'research_source', researchId: run.researchId, source: lookupSourceOf(part.source),

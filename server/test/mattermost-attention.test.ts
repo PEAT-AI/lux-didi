@@ -12,7 +12,6 @@ import type { ConnectionPolicy } from '../tools/types.js';
 import { connectorDescriptor, createMattermostReader, MATTERMOST_ATTENTION, MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS } from '../connectors/index.js';
 import type { AttentionItem, MattermostAttention } from '../connectors/index.js';
 import { projectMattermostResult, renderAttention } from '../tools/mattermost.js';
-import { UNGRANTED_COMPOSITE_REASON } from '../tools/index.js';
 import { INTENT_TOOL_NAMES, INTERNAL, planIntent, validateIntent } from '../tools/intent.js';
 import { RESEARCH, ResearchLedger, runResearch, type ResearchDeps, type ResearchSourceLog } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -365,8 +364,6 @@ test('#604: an ungranted composite refuses with tool-not-granted', async t => {
   const r = reader(f.adapter, f.registry, digestValue, [...names]);
   const result = await r.attention({});
   assert.equal(result.state === 'refused' ? result.reason : result.state, 'tool-not-granted');
-  // The dispatch guard answers an ungranted composite with the same closed reason the connector gives.
-  assert.equal(result.state === 'refused' ? result.reason : '', UNGRANTED_COMPOSITE_REASON);
   assert.ok(!f.calls().some(call => call.name === 'mattermost_search'), 'no child read follows an ungranted composite');
 });
 

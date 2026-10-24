@@ -26,11 +26,6 @@ export type * from './types.js';
 
 const ownedStores = new WeakSet<object>();
 /** One closed stage for a dispatched call's unknown outcome: a stage itself, else the policy reason's closest stage. */
-/**
- * #604/F8: the one closed reason an ungranted connector composite answers with, on the dispatch guard
- * and in the connector's own preflight, so a caller can tell it from an unknown tool.
- */
-export const UNGRANTED_COMPOSITE_REASON = 'tool-not-granted';
 function dispatchedFailureCode(reason: string): ToolFailureCode {
   if (isMcpFailureStage(reason)) return reason;
   return reason === 'response-oversize' ? 'invalid_result' : 'sdk_protocol_rejected';
@@ -624,9 +619,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         if (!descriptor) throw new ConnectorCompositionError('unknown_connector', p.connectionId, p.connector);
         const reader = descriptor.createReader({ port: dispatch.port, registry, endpoint: p.endpoint, schemaDigest: p.schemaDigest, generation: p.generation, policy: p });
         const declarations = descriptor.declarations(p);
-        // #604/F8: a composite keeps its declaration for a bound connector whether or not the policy
-        // grants it, so a caller routed to it hears the closed not-granted reason, never `unknown_tool`.
-        const composedNames = composedGrantedNames(p.connector, [...(CONNECTOR_ENVELOPES[p.connector] ?? []), ...p.toolNames]);
+        // #604/F17: a composite is registered only when the approved policy names it, so the model table
+        // and the dispatch table never offer a read the approval does not cover.
+        const composedNames = composedGrantedNames(p.connector, [...p.toolNames]);
         for (const name of [...new Set([...p.toolNames, ...composedNames])]) {
           if (definitions.some(d => d.name === name)) throw new ConnectorCompositionError('ambiguous_model_tool_name', p.connectionId, p.connector);
           const declaration = declarations.find(candidate => candidate.name === name);
@@ -649,10 +644,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               // #604: a composite is authorized by the approved policy name; the registry grant keeps
               // the published child names, so a granted composite is never in `grant.toolNames`.
               const policyComposite = composedNames.includes(name) && p.toolNames.includes(name);
-              // F8: an ungranted composite answers with its own closed not-granted reason, exactly as
-              // the connector would, so the chat sub-call never reads as an unknown tool or a bare failure.
-              const ungrantedComposite = composedNames.includes(name) && !policyComposite;
-              if (!grant.toolNames.includes(name) && !policyComposite && !ungrantedComposite) { return { status: 'failed' }; }
+              if (!grant.toolNames.includes(name) && !policyComposite) { return { status: 'failed' }; }
               if (!declaration.validate(args)) { return { status: 'failed' }; }
               // Normalize at the boundary; the intent hash below stays over the model's original args.
               const prepared = declaration.normalize === undefined ? undefined : declaration.normalize(args);
@@ -672,9 +664,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 return expected;
               });
               if (!call) return { status: 'failed' };
-              // F8: the closed not-granted answer, in the same completed-refusal shape the open tool
-              // uses, so the sub-call carries a reason instead of a generic failure.
-              if (ungrantedComposite) return { status: 'completed', result: complete(call, { tool: name, text: UNGRANTED_COMPOSITE_REASON, partial: false, originalCharacters: UNGRANTED_COMPOSITE_REASON.length, omittedCharacters: 0 }, []) };
               let evidence: Awaited<ReturnType<typeof reader.call>>;
               try { evidence = await dispatch.run({call,bound,snapshotSha256:sha256(canonicalJSON(snapshot)),allowedClasses:snapshot.acceptance.allowedClasses.filter(c => snapshot.acceptance.route.allowedClasses.includes(c))},() => reader.call(name, callArgs, context.signal)); } catch (error) {
                 const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : 'handler_outcome';

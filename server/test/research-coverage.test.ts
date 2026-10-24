@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ResearchLedger, clip, runResearch, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
+import { ResearchLedger, broaderQueryOf, clip, runResearch, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 function sub(name: string, text: string, ok = true, key = name): IntentSubResult {
@@ -94,6 +94,12 @@ test('COMPOSE 1: a mail ask whose first query matches nothing broadens once and 
   assert.match(String(reply['coverage']), /mail complete/u);
   assert.notEqual(reply['canContinue'], true, 'the ask is answered, nothing is left to page through');
   assert.equal(h.logs.length, 1, 'one research invocation');
+});
+
+test('COMPOSE 1b: the broadened query drops fillers and never an authored operator', () => {
+  assert.equal(broaderQueryOf('what did the landlord say about the deposit'), 'landlord about deposit', 'the fillers go, the name and the content stay');
+  assert.equal(broaderQueryOf('from:ana invoice'), undefined, 'an authored operator is the owner predicate');
+  assert.equal(broaderQueryOf('"release plan"'), undefined, 'and so is a quoted phrase');
 });
 
 test('COMPOSE 2: every reply opens with the coverage header, and a reply at the cap keeps the header, the note and one line per source', async () => {

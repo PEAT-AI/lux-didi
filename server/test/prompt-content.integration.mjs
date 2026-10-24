@@ -44,6 +44,12 @@ for(const system of [ownerText.system,fullLive,openAiInstructions(none.text)]){
  assert(!system.includes(unknownRule));
 }
 assert(prompt.NAYA_CHARACTER.includes('thirty to ninety seconds'),'baseline duration conflict remains explicitly open in issue 455');
+// #621: the voice reads the coverage header once, and never mistakes a missing source for an empty one.
+assert(fullLive.includes('Every research reply opens with a coverage line'),'the voice learns the coverage header');
+for(const word of ['complete','partial_timeout','truncated_to_budget','empty_after_retry','not_connected','not_configured','grant_missing','provider_failed','skipped_by_route']){
+ assert(fullLive.includes(word),`the header status word ${word} reaches the voice`);
+}
+assert(fullLive.includes('Never say a source came back empty'),'and the empty-versus-missing rule rides with it');
 assert(fullLive.includes(prompt.NAYA_VOICE_TOOLS));
 assert(text.system.includes('Missing coverage is not proof that an event did not happen.'));
 console.log(JSON.stringify({case:'excluded_character_release_subset',baseline:'b3bae881',excludedCandidateAbsent:true,ownerText:true,fullPublicOpenAiLive:true,noToolsVoice:true,truthfulToolProceduresRetained:true,defaultTextExistingRule:true,mandatoryDurationConflictOpen:true,behaviorAccepted:false}));

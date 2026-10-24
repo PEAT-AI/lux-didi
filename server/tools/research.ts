@@ -3834,6 +3834,35 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
 }
 
 /**
+ * #621: the one broader read a source that matched nothing may run: the same query with its fillers dropped,
+ * and the owner's names, numbers, window and exclusion kept, because the RETRIEVAL rule says a broaden never
+ * removes a sender, recipient, window, exclusion or a pronoun's antecedent.
+ */
+export function broaderQueryOf(query: string): string | undefined {
+  // An authored operator, a quoted phrase or an exclusion is the owner's own predicate, never a filler.
+  if (/[:"]|(^|\s)-\S/u.test(query)) return undefined;
+  const kept = contentKeywords(query, 8);
+  const wider = kept.join(' ');
+  return wider.length === 0 || wider === query.trim().toLowerCase() ? undefined : wider;
+}
+
+/** The rewritten plans for that one retry, or undefined when this source cannot broaden or already has. */
+function broadenedPlans(run: RunState, plans: readonly RoutedPlan[], context: Parameters<typeof routedRead>[1]): RoutedPlan[] | undefined {
+  const first = plans[0];
+  if (first === undefined) return undefined;
+  const source = first.read.source;
+  // Mail and the web own their broader query; a calendar window and her own memory have nothing to widen.
+  if (source === 'memory' || source === 'mail' || source === 'web' || source === 'calendar' || source === 'mongoose') return undefined;
+  if (run.retried.has(source)) return undefined;
+  const wider = broaderQueryOf(first.lookup.query ?? '');
+  if (wider === undefined) return undefined;
+  return plans.map(plan => {
+    const lookup: ResearchLookup = { ...plan.lookup, query: wider };
+    return { lookup, read: routedRead(lookup, context) };
+  });
+}
+
+/**
  * #621: an ask that wants the content of a message, not just its subject line.
  */
 const DEPTH_ASK = /\b(?:what|which)\b[^.?!]*\b(?:writ(?:e|es|ten)?|wrote|sa(?:y|ys|id)|sen(?:d|ds|t)|mean(?:s|t)?)\b|\bread (?:it|that|this|them)\b|\bfull (?:text|message|thread|mail)\b|\bwhole (?:message|thread|mail)\b/iu;
@@ -3954,6 +3983,15 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         const batch = await routedGroup(deps, run, plans, { question, configured, unavailable, unavailableReason, signal, now });
         record(batch);
         outcomes.push(...batch);
+        // #621: a source that matched nothing gets exactly one broadened retry inside this same call, so the
+        // voice never spends a round asking the same thing with fewer words.
+        const retryPlans = broadenedPlans(run, plans, readContext);
+        if (retryPlans !== undefined && batch.every(outcome => outcome.outcome === 'empty')) {
+          run.retried.add(retryPlans[0]!.read.source as SourceKind);
+          const retried = await routedGroup(deps, run, retryPlans, { question, configured, unavailable, unavailableReason, signal, now });
+          record(retried);
+          outcomes.push(...retried);
+        }
         first.historyPages = outcomes.flatMap(outcome => outcome.historyPage ? [outcome.historyPage] : []);
         const source = batch[0]?.source;
         if (source) {

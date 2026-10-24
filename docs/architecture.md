@@ -103,6 +103,8 @@ The voice model asks one question in plain words; the host decides which sources
 
 ### Connectors
 
+A research reply is one host turn, not a page the voice model has to walk. When the model asks `research`, the host reads the routed sources in parallel, retries a source that matched nothing once with a broadened query, reads the top body itself when the ask wants the content of a message, and answers with one reply that opens with a deterministic coverage header: each searched source with its status and the hits it returned of the hits it matched, and each source the ask wanted but nobody read with the reason and the one clause the voice can say. The header rides outside the 2,500 character prose budget, so bounding the answer never removes it, and the voice therefore never has to say an unconfigured or failed source came back empty.
+
 All connectors are optional, read-only MCP connections declared in the protected config directory, with an explicit endpoint, account identity and credential reference. A missing one shows a next step in Settings and the call still works with the rest. A composite read such as the attention scan is a grantable name of its own, but only beside every child read it stands on, so the approved policy can never widen the envelope one composed name at a time; a composite the policy does not name is never registered, and its sub-calls answer with a closed refusal reason.
 
 | Connector | Reads | Notes |

@@ -279,7 +279,9 @@ function googleProject(evidence: ConnectorEvidence, port: McpPort, policy: Conne
 }
 function googleStatus(evidence: ConnectorEvidence): { state: 'configured' | 'error'; reason: string; log?: ToolFailureEvent } | undefined {
   const status = googleToolStatus(evidence);
-  return status === undefined ? undefined : { state: status.state, reason: status.reason, ...(status.log ? { log: status.log } : {}) };
+  // A failure the helper's vocabulary names speaks its line and says how dead the endpoint is; a bodiless
+  // one stays a plain failed call, so a lost mail page is never mistaken for an answer.
+  return status !== undefined && status.code !== 'no_content' ? { state: status.state, reason: status.reason, ...(status.log ? { log: status.log } : {}) } : undefined;
 }
 const googleDescriptor: ConnectorDescriptor = {
   id: 'google',

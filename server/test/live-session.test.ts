@@ -6037,3 +6037,17 @@ test('R1 a failed terminal write with working reads still delivers the in-memory
   assert.equal(snapshot.journal.complete, false, 'a failed write is never reported as durable');
   assert.equal(frames.filter(frame => frame !== 'binary' && JSON.parse(frame).type === 'terminal').length, 1);
 });
+
+test('R1 a candidate diagnostic sink cannot prevent admitted stop teardown', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const session = h.owner.create({ idempotencyKey: 'stop-log-failure', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const detach = attachHostLogSink({ event: raw => {
+    if ((raw as { event?: string }).event === 'voice_stop_candidate') throw new Error('synthetic log failure');
+  } });
+  t.after(detach);
+  fake.emit({ type: 'inputTranscription', text: 'Naya stop listening', finished: false });
+  assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'voice_stop' });
+});

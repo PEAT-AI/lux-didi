@@ -22,7 +22,9 @@ function violations(schema: unknown, path: string): string[] {
 }
 
 test('every composed Live connector and built-in declaration conforms to provider schema dialect', () => {
-  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 } } as ConnectionPolicy;
+  // A mongoose descriptor declares one endpoint's envelope, so the policy names a knowledge endpoint.
+  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 },
+    endpoint: { id: 'mongoose-knowledge', transport: 'streamable-http', url: 'https://synthetic.invalid/mcp/knowledge', account: 'synthetic', resource: 'mongoose:knowledge', credentialRef: 'mongoose-knowledge' } } as unknown as ConnectionPolicy;
   const originals = Object.values(CONNECTOR_DESCRIPTORS).flatMap(descriptor => descriptor.declarations(policy));
   // The one research tool is declared to the Live model alongside remember_note (#241).
   const intents = [researchDeclaration()].map(({ name, description, parameters, guidance }) => ({ name, description, parameters, guidance }));
@@ -42,7 +44,9 @@ test('every composed Live connector and built-in declaration conforms to provide
 // schema named only `ids` and set additionalProperties:false, while the validator accepted
 // more and refused include_links, which the upstream MCP get_insight itself accepts.
 test('X2: the get_insight declaration names every key its validator accepts', () => {
-  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 } } as ConnectionPolicy;
+  // A mongoose descriptor declares one endpoint's envelope, so the policy names a knowledge endpoint.
+  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 },
+    endpoint: { id: 'mongoose-knowledge', transport: 'streamable-http', url: 'https://synthetic.invalid/mcp/knowledge', account: 'synthetic', resource: 'mongoose:knowledge', credentialRef: 'mongoose-knowledge' } } as unknown as ConnectionPolicy;
   const declaration = CONNECTOR_DESCRIPTORS['lux-knowledge']!.declarations(policy).find(tool => tool.name === 'get_insight')!;
   const properties = declaration.parameters['properties'] as Record<string, unknown>;
   assert.deepEqual(Object.keys(properties).sort(), ['ids', 'include_links'], 'the declared keys are exactly the accepted keys');

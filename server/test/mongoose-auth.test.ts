@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   MONGOOSE_CONSENT_CAP_MS, MONGOOSE_LOCK_STALE_MS, MONGOOSE_OAUTH_KEYS, MONGOOSE_REFRESH_MARGIN_MS, MongooseCredentialError,
-  mongooseAccessToken, mongooseCredentialPresent, readMongooseOAuth, writeMongooseOAuth, type MongooseOAuthRecord,
+  mongooseAccessToken, mongooseCredentialPresent, mongooseCredentialRefusal, readMongooseOAuth, writeMongooseOAuth, type MongooseOAuthRecord,
 } from '../host/mongoose-auth.js';
 import { MongooseLoginError, runMongooseLogin } from '../host/mongoose-login.js';
 
@@ -23,6 +23,7 @@ function configDir(): { dir: string; cleanup: () => void } {
 function record(overrides: Partial<MongooseOAuthRecord> = {}): MongooseOAuthRecord {
   return {
     schemaVersion: 2, base: 'https://mongoose.test', clientId: 'mcp_client', redirectPort: 8768, account: 'local',
+    endpoint: 'knowledge', audience: 'mongoose:knowledge',
     accessToken: 'access-token-old', refreshToken: 'refresh-token-old',
     expiresAt: NOW + 3_600_000, consentStartedAt: NOW, ...overrides,
   };
@@ -48,7 +49,12 @@ async function authorizationServer() {
   const server: Server = createServer(async (request, response) => {
     const origin = `http://${request.headers.host}`;
     const url = new URL(request.url ?? '/', origin);
-    if (request.method === 'GET' && url.pathname === '/.well-known/oauth-protected-resource') return json(response, 200, { resource: `${origin}/mcp`, authorization_servers: [origin] });
+    // RFC 9728 path form: each endpoint publishes its own protected-resource document.
+    const protectedResource = url.pathname.match(/^\/\.well-known\/oauth-protected-resource(\/mcp\/[a-z]+)$/);
+    if (request.method === 'GET' && protectedResource) {
+      const name = protectedResource[1]!.slice('/mcp/'.length);
+      return json(response, 200, { resource: `mongoose:${name}`, resource_url: `${origin}/mcp/${name}`, authorization_servers: [origin] });
+    }
     if (request.method === 'GET' && url.pathname === '/.well-known/oauth-authorization-server') {
       return json(response, 200, { issuer: origin, authorization_endpoint: `${origin}/oauth/authorize`, token_endpoint: `${origin}/oauth/token`, registration_endpoint: `${origin}/oauth/register` });
     }
@@ -72,7 +78,7 @@ test('login registers one client with the exact body, proves PKCE S256 and write
   try {
     let challenge: string | null = null;
     const result = await runMongooseLogin({
-      configDir: dir, reference: 'mongoose-mcp', resourceUrl: `${as.origin}/mcp/`, account: 'local', redirectPort: 0,
+      configDir: dir, reference: 'mongoose-knowledge', resourceUrl: `${as.origin}/mcp/knowledge`, endpoint: 'knowledge', account: 'local', redirectPort: 0,
       timeoutMs: 5_000, now: () => NOW,
       openBrowser: url => {
         const authorize = new URL(url);
@@ -99,6 +105,8 @@ test('login registers one client with the exact body, proves PKCE S256 and write
     assert.equal(exchange['grant_type'], 'authorization_code');
     assert.equal(exchange['code'], 'auth-code');
     assert.equal(exchange['client_id'], 'mcp_registered');
+    // RFC 8707: the token is bound to this endpoint's audience, never the whole server.
+    assert.equal(exchange['resource'], 'mongoose:knowledge');
     const verifier = exchange['code_verifier']!;
     assert.match(verifier, /^[A-Za-z0-9_-]{43}$/);
     const expected = createHash('sha256').update(verifier).digest('base64url');
@@ -106,13 +114,15 @@ test('login registers one client with the exact body, proves PKCE S256 and write
     assert.equal(result.refreshToken, 'refresh-token-new');
     assert.equal(result.expiresAt, NOW + 3_600_000);
     assert.equal(result.consentStartedAt, NOW);
-    const stored = readMongooseOAuth(dir, 'mongoose-mcp');
+    const stored = readMongooseOAuth(dir, 'mongoose-knowledge');
     assert.deepEqual(stored, result);
+    assert.equal(stored?.endpoint, 'knowledge');
+    assert.equal(stored?.audience, 'mongoose:knowledge');
     assert.deepEqual(Object.keys(stored!).sort(), [...MONGOOSE_OAUTH_KEYS].sort());
-    assert.equal(statSync(join(dir, 'mongoose-mcp.json')).mode & 0o777, 0o600);
+    assert.equal(statSync(join(dir, 'mongoose-knowledge.json')).mode & 0o777, 0o600);
     // The S256 challenge that was sent to the server is the hash of the code verifier it received.
     assert.equal(challenge, expected);
-    assert.deepEqual(readdirSync(dir), ['mongoose-mcp.json']);
+    assert.deepEqual(readdirSync(dir), ['mongoose-knowledge.json']);
   } finally { await as.close(); cleanup(); }
 });
 
@@ -121,7 +131,7 @@ test('a mismatched state is refused and nothing is written', async () => {
   const as = await authorizationServer();
   try {
     await assert.rejects(runMongooseLogin({
-      configDir: dir, reference: 'mongoose-mcp', resourceUrl: `${as.origin}/mcp/`, account: 'local', redirectPort: 0,
+      configDir: dir, reference: 'mongoose-knowledge', resourceUrl: `${as.origin}/mcp/knowledge`, endpoint: 'knowledge', account: 'local', redirectPort: 0,
       timeoutMs: 5_000, now: () => NOW,
       openBrowser: url => {
         const authorize = new URL(url);
@@ -131,7 +141,7 @@ test('a mismatched state is refused and nothing is written', async () => {
         void fetch(callback).then(response => response.text());
       },
     }), (error: unknown) => error instanceof MongooseLoginError && error.code === 'state-mismatch');
-    assert.equal(readMongooseOAuth(dir, 'mongoose-mcp'), undefined);
+    assert.equal(readMongooseOAuth(dir, 'mongoose-knowledge'), undefined);
     assert.equal(as.tokenCalls.length, 0);
     assert.deepEqual(readdirSync(dir), []);
   } finally { await as.close(); cleanup(); }
@@ -144,7 +154,7 @@ test('missing OAuth metadata is one closed code, with no hang', async () => {
   const address = server.address();
   try {
     await assert.rejects(runMongooseLogin({
-      configDir: dir, reference: 'mongoose-mcp', resourceUrl: `http://127.0.0.1:${(address as { port: number }).port}/mcp/`, account: 'local',
+      configDir: dir, reference: 'mongoose-knowledge', resourceUrl: `http://127.0.0.1:${(address as { port: number }).port}/mcp/knowledge`, endpoint: 'knowledge', account: 'local',
       redirectPort: 0, timeoutMs: 2_000, now: () => NOW,
     }), (error: unknown) => error instanceof MongooseLoginError && error.code === 'metadata-unavailable');
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); cleanup(); }
@@ -153,14 +163,14 @@ test('missing OAuth metadata is one closed code, with no hang', async () => {
 test('a cached access token is used until the two minute margin, then one refresh runs', async () => {
   const { dir, cleanup } = configDir();
   try {
-    writeMongooseOAuth(dir, 'mongoose-mcp', record({ expiresAt: NOW + MONGOOSE_REFRESH_MARGIN_MS + 1 }));
+    writeMongooseOAuth(dir, 'mongoose-knowledge', record({ expiresAt: NOW + MONGOOSE_REFRESH_MARGIN_MS + 1 }));
     let calls = 0;
     const post = (async () => { calls += 1; return new Response(JSON.stringify({ access_token: 'access-token-new', refresh_token: 'refresh-token-new', expires_in: 3600 }), { status: 200 }); }) as unknown as typeof fetch;
-    assert.equal(await mongooseAccessToken(dir, 'mongoose-mcp', { now: () => NOW, fetch: post }), 'access-token-old');
+    assert.equal(await mongooseAccessToken(dir, 'mongoose-knowledge', { now: () => NOW, fetch: post }), 'access-token-old');
     assert.equal(calls, 0);
     const expiring = record({ expiresAt: NOW + MONGOOSE_REFRESH_MARGIN_MS });
-    writeMongooseOAuth(dir, 'mongoose-mcp', expiring);
-    assert.equal(await mongooseAccessToken(dir, 'mongoose-mcp', { now: () => NOW, fetch: post }), 'access-token-new');
+    writeMongooseOAuth(dir, 'mongoose-knowledge', expiring);
+    assert.equal(await mongooseAccessToken(dir, 'mongoose-knowledge', { now: () => NOW, fetch: post }), 'access-token-new');
     assert.equal(calls, 1);
   } finally { cleanup(); }
 });
@@ -168,7 +178,7 @@ test('a cached access token is used until the two minute margin, then one refres
 test('two concurrent callers make exactly one token request and the rotated refresh token replaces the old one', async () => {
   const { dir, cleanup } = configDir();
   try {
-    writeMongooseOAuth(dir, 'mongoose-mcp', record({ expiresAt: NOW }));
+    writeMongooseOAuth(dir, 'mongoose-knowledge', record({ expiresAt: NOW }));
     let calls = 0;
     let release = (): void => { /* replaced below */ };
     const gate = new Promise<void>(resolve => { release = resolve; });
@@ -177,52 +187,52 @@ test('two concurrent callers make exactly one token request and the rotated refr
       await gate;
       return new Response(JSON.stringify({ access_token: 'access-token-new', refresh_token: 'refresh-token-new', token_type: 'Bearer', expires_in: 3600 }), { status: 200 });
     }) as unknown as typeof fetch;
-    const firstCall = mongooseAccessToken(dir, 'mongoose-mcp', { now: () => NOW, fetch: post });
-    const secondCall = mongooseAccessToken(dir, 'mongoose-mcp', { now: () => NOW, fetch: post });
+    const firstCall = mongooseAccessToken(dir, 'mongoose-knowledge', { now: () => NOW, fetch: post });
+    const secondCall = mongooseAccessToken(dir, 'mongoose-knowledge', { now: () => NOW, fetch: post });
     release();
     const [first, second] = await Promise.all([firstCall, secondCall]);
     assert.equal(calls, 1);
     assert.equal(first, 'access-token-new');
     assert.equal(second, 'access-token-new');
-    const stored = readMongooseOAuth(dir, 'mongoose-mcp');
+    const stored = readMongooseOAuth(dir, 'mongoose-knowledge');
     assert.equal(stored?.refreshToken, 'refresh-token-new');
     assert.equal(stored?.accessToken, 'access-token-new');
     assert.equal(stored?.consentStartedAt, NOW);
-    assert.equal(statSync(join(dir, 'mongoose-mcp.json')).mode & 0o777, 0o600);
-    assert.deepEqual(readdirSync(dir), ['mongoose-mcp.json']);
+    assert.equal(statSync(join(dir, 'mongoose-knowledge.json')).mode & 0o777, 0o600);
+    assert.deepEqual(readdirSync(dir), ['mongoose-knowledge.json']);
   } finally { cleanup(); }
 });
 
 test('invalid_grant is one closed code and carries no token bytes', async () => {
   const { dir, cleanup } = configDir();
   try {
-    writeMongooseOAuth(dir, 'mongoose-mcp', record({ expiresAt: NOW }));
+    writeMongooseOAuth(dir, 'mongoose-knowledge', record({ expiresAt: NOW }));
     const post = (async () => new Response(JSON.stringify({ error: 'invalid_grant', error_description: 'refresh token reuse detected' }), { status: 400 })) as unknown as typeof fetch;
     let failure: unknown;
-    try { await mongooseAccessToken(dir, 'mongoose-mcp', { now: () => NOW, fetch: post }); } catch (error) { failure = error; }
+    try { await mongooseAccessToken(dir, 'mongoose-knowledge', { now: () => NOW, fetch: post }); } catch (error) { failure = error; }
     assert.ok(failure instanceof MongooseCredentialError);
     assert.equal(failure.code, 'credential-refresh-failed');
     const surface = JSON.stringify({ message: failure.message, code: failure.code });
     assert.doesNotMatch(surface, /refresh-token-old|access-token-old/);
     // The record is untouched, so the next attempt can still be made after a re-consent.
-    assert.equal(readMongooseOAuth(dir, 'mongoose-mcp')?.refreshToken, 'refresh-token-old');
+    assert.equal(readMongooseOAuth(dir, 'mongoose-knowledge')?.refreshToken, 'refresh-token-old');
   } finally { cleanup(); }
 });
 
 test('the 90 day consent cap is its own code, and the last days raise one owner notice', async () => {
   const { dir, cleanup } = configDir();
   try {
-    writeMongooseOAuth(dir, 'mongoose-mcp', record({ expiresAt: NOW, consentStartedAt: NOW - MONGOOSE_CONSENT_CAP_MS }));
+    writeMongooseOAuth(dir, 'mongoose-knowledge', record({ expiresAt: NOW, consentStartedAt: NOW - MONGOOSE_CONSENT_CAP_MS }));
     let calls = 0;
     const post = (async () => { calls += 1; return new Response(JSON.stringify({ access_token: 'access-token-new', refresh_token: 'refresh-token-new', expires_in: 3600 }), { status: 200 }); }) as unknown as typeof fetch;
-    await assert.rejects(mongooseAccessToken(dir, 'mongoose-mcp', { now: () => NOW, fetch: post }), (error: unknown) => error instanceof MongooseCredentialError && error.code === 'credential-consent-expired');
+    await assert.rejects(mongooseAccessToken(dir, 'mongoose-knowledge', { now: () => NOW, fetch: post }), (error: unknown) => error instanceof MongooseCredentialError && error.code === 'credential-consent-expired');
     assert.equal(calls, 0);
 
-    writeMongooseOAuth(dir, 'mongoose-mcp', record({ expiresAt: NOW, consentStartedAt: NOW - MONGOOSE_CONSENT_CAP_MS + 24 * 60 * 60 * 1000 }));
+    writeMongooseOAuth(dir, 'mongoose-knowledge', record({ expiresAt: NOW, consentStartedAt: NOW - MONGOOSE_CONSENT_CAP_MS + 24 * 60 * 60 * 1000 }));
     const notices: string[] = [];
     const ok = (async () => new Response(JSON.stringify({ access_token: 'access-token-new', refresh_token: 'refresh-token-new', expires_in: 3600 }), { status: 200 })) as unknown as typeof fetch;
-    await mongooseAccessToken(dir, 'mongoose-mcp', { now: () => NOW, fetch: ok, notify: reason => notices.push(reason) });
-    await mongooseAccessToken(dir, 'mongoose-mcp', { now: () => NOW + 7_200_000, fetch: ok, notify: reason => notices.push(reason) });
+    await mongooseAccessToken(dir, 'mongoose-knowledge', { now: () => NOW, fetch: ok, notify: reason => notices.push(reason) });
+    await mongooseAccessToken(dir, 'mongoose-knowledge', { now: () => NOW + 7_200_000, fetch: ok, notify: reason => notices.push(reason) });
     assert.deepEqual(notices, ['consent-expiring']);
   } finally { cleanup(); }
 });
@@ -230,8 +240,8 @@ test('the 90 day consent cap is its own code, and the last days raise one owner 
 test('only a complete v2 record counts as present, and a pasted bearer keeps its own path', () => {
   const { dir, cleanup } = configDir();
   try {
-    writeMongooseOAuth(dir, 'mongoose-mcp', record());
-    assert.equal(mongooseCredentialPresent(dir, 'mongoose-mcp'), true);
+    writeMongooseOAuth(dir, 'mongoose-knowledge', record());
+    assert.equal(mongooseCredentialPresent(dir, 'mongoose-knowledge'), true);
     assert.equal(mongooseCredentialPresent(dir, 'absent'), false);
     writeFileSync(join(dir, 'pasted.json'), JSON.stringify({ schemaVersion: 1, token: 'pasted-bearer' }), { mode: 0o600 });
     assert.equal(readMongooseOAuth(dir, 'pasted'), undefined);
@@ -244,16 +254,16 @@ test('the login writer and the runtime reader agree on one exact record key set'
   const { dir, cleanup } = configDir();
   try {
     const full = record();
-    writeMongooseOAuth(dir, 'mongoose-mcp', full);
-    assert.deepEqual(Object.keys(readMongooseOAuth(dir, 'mongoose-mcp')!).sort(), [...MONGOOSE_OAUTH_KEYS].sort());
+    writeMongooseOAuth(dir, 'mongoose-knowledge', full);
+    assert.deepEqual(Object.keys(readMongooseOAuth(dir, 'mongoose-knowledge')!).sort(), [...MONGOOSE_OAUTH_KEYS].sort());
     // An added or a missing field is refused, never silently ignored: the two sides cannot drift.
-    writeFileSync(join(dir, 'mongoose-mcp.json'), JSON.stringify({ ...full, pastedBearer: 'stale-field' }), { mode: 0o600 });
-    assert.equal(readMongooseOAuth(dir, 'mongoose-mcp'), undefined);
+    writeFileSync(join(dir, 'mongoose-knowledge.json'), JSON.stringify({ ...full, pastedBearer: 'stale-field' }), { mode: 0o600 });
+    assert.equal(readMongooseOAuth(dir, 'mongoose-knowledge'), undefined);
     const { refreshToken: _dropped, ...incomplete } = full;
-    writeFileSync(join(dir, 'mongoose-mcp.json'), JSON.stringify(incomplete), { mode: 0o600 });
-    assert.equal(readMongooseOAuth(dir, 'mongoose-mcp'), undefined);
-    writeFileSync(join(dir, 'mongoose-mcp.json'), JSON.stringify({ ...full, schemaVersion: 1, token: 'pasted' }), { mode: 0o600 });
-    assert.equal(readMongooseOAuth(dir, 'mongoose-mcp'), undefined);
+    writeFileSync(join(dir, 'mongoose-knowledge.json'), JSON.stringify(incomplete), { mode: 0o600 });
+    assert.equal(readMongooseOAuth(dir, 'mongoose-knowledge'), undefined);
+    writeFileSync(join(dir, 'mongoose-knowledge.json'), JSON.stringify({ ...full, schemaVersion: 1, token: 'pasted' }), { mode: 0o600 });
+    assert.equal(readMongooseOAuth(dir, 'mongoose-knowledge'), undefined);
   } finally { cleanup(); }
 });
 
@@ -262,25 +272,25 @@ test('a lock held by a live writer refuses, a stale one is reclaimed, and no loc
   try {
     const ok = (async () => new Response(JSON.stringify({ access_token: 'access-token-new', refresh_token: 'refresh-token-new', expires_in: 3600 }), { status: 200 })) as unknown as typeof fetch;
 
-    const lock = join(dir, '.mongoose-mcp.json.lock');
+    const lock = join(dir, '.mongoose-knowledge.json.lock');
     writeFileSync(lock, '', { mode: 0o600 });
     // The record's own clock starts now, so only the lock's age is under test.
     const written = Math.round(statSync(lock).mtimeMs);
-    writeMongooseOAuth(dir, 'mongoose-mcp', record({ expiresAt: written, consentStartedAt: written }));
-    await assert.rejects(mongooseAccessToken(dir, 'mongoose-mcp', { now: () => written, fetch: ok }), (error: unknown) => error instanceof MongooseCredentialError && error.code === 'credential-refresh-busy');
+    writeMongooseOAuth(dir, 'mongoose-knowledge', record({ expiresAt: written, consentStartedAt: written }));
+    await assert.rejects(mongooseAccessToken(dir, 'mongoose-knowledge', { now: () => written, fetch: ok }), (error: unknown) => error instanceof MongooseCredentialError && error.code === 'credential-refresh-busy');
     // The holder crashed a minute ago: the lock is stale and the next caller takes it.
-    await mongooseAccessToken(dir, 'mongoose-mcp', { now: () => written + MONGOOSE_LOCK_STALE_MS + 1, fetch: ok });
-    assert.equal(readMongooseOAuth(dir, 'mongoose-mcp')?.accessToken, 'access-token-new');
-    assert.equal(readdirSync(dir).includes('.mongoose-mcp.json.lock'), false);
+    await mongooseAccessToken(dir, 'mongoose-knowledge', { now: () => written + MONGOOSE_LOCK_STALE_MS + 1, fetch: ok });
+    assert.equal(readMongooseOAuth(dir, 'mongoose-knowledge')?.accessToken, 'access-token-new');
+    assert.equal(readdirSync(dir).includes('.mongoose-knowledge.json.lock'), false);
   } finally { cleanup(); }
 });
 
 test('1022: a refresh that cannot reach the network is unavailable, not a refusal that needs a sign-in', async () => {
   const { dir, cleanup } = configDir();
   try {
-    writeMongooseOAuth(dir, 'mongoose-mcp', record({ expiresAt: NOW }));
+    writeMongooseOAuth(dir, 'mongoose-knowledge', record({ expiresAt: NOW }));
     const offline = (async () => { throw new TypeError('fetch failed'); }) as unknown as typeof fetch;
-    await assert.rejects(mongooseAccessToken(dir, 'mongoose-mcp', { now: () => NOW, fetch: offline }),
+    await assert.rejects(mongooseAccessToken(dir, 'mongoose-knowledge', { now: () => NOW, fetch: offline }),
       (error: unknown) => error instanceof MongooseCredentialError && error.code === 'credential-refresh-unavailable');
   } finally { cleanup(); }
 });
@@ -288,9 +298,70 @@ test('1022: a refresh that cannot reach the network is unavailable, not a refusa
 test('1022: a 4xx answer to the refresh keeps the refused code, so only a new sign-in fixes it', async () => {
   const { dir, cleanup } = configDir();
   try {
-    writeMongooseOAuth(dir, 'mongoose-mcp', record({ expiresAt: NOW }));
+    writeMongooseOAuth(dir, 'mongoose-knowledge', record({ expiresAt: NOW }));
     const refused = (async () => new Response('{"error":"invalid_grant"}', { status: 400 })) as unknown as typeof fetch;
-    await assert.rejects(mongooseAccessToken(dir, 'mongoose-mcp', { now: () => NOW, fetch: refused }),
+    await assert.rejects(mongooseAccessToken(dir, 'mongoose-knowledge', { now: () => NOW, fetch: refused }),
       (error: unknown) => error instanceof MongooseCredentialError && error.code === 'credential-refresh-failed');
   } finally { cleanup(); }
+});
+
+test('each endpoint signs in against its own RFC 9728 document and binds its own audience', async () => {
+  const { dir, cleanup } = configDir();
+  const as = await authorizationServer();
+  try {
+    const audiences: string[] = [];
+    for (const endpoint of ['knowledge', 'data', 'crm'] as const) {
+      const result = await runMongooseLogin({
+        configDir: dir, reference: `mongoose-${endpoint}`, resourceUrl: `${as.origin}/mcp/${endpoint}`, endpoint, account: 'local', redirectPort: 0,
+        timeoutMs: 5_000, now: () => NOW,
+        openBrowser: url => {
+          const authorize = new URL(url);
+          const callback = new URL(authorize.searchParams.get('redirect_uri')!);
+          callback.searchParams.set('code', `code-${endpoint}`);
+          callback.searchParams.set('state', authorize.searchParams.get('state')!);
+          void fetch(callback).then(response => response.text());
+        },
+      });
+      assert.equal(result.endpoint, endpoint);
+      assert.equal(result.audience, `mongoose:${endpoint}`);
+      audiences.push(as.tokenCalls[as.tokenCalls.length - 1]!.form['resource']!);
+    }
+    assert.deepEqual(audiences, ['mongoose:knowledge', 'mongoose:data', 'mongoose:crm']);
+    assert.deepEqual(readdirSync(dir).sort(), ['mongoose-crm.json', 'mongoose-data.json', 'mongoose-knowledge.json']);
+  } finally { await as.close(); cleanup(); }
+});
+
+test('a protected-resource document that names another audience is refused, and the refresh keeps the audience', async () => {
+  const { dir, cleanup } = configDir();
+  const server = createServer((request, response) => {
+    const origin = `http://${request.headers.host}`;
+    const url = new URL(request.url ?? '/', origin);
+    if (url.pathname === '/.well-known/oauth-protected-resource/mcp/data') return json(response, 200, { resource: 'mongoose:knowledge', authorization_servers: [origin] });
+    response.writeHead(404).end();
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+  const address = server.address();
+  try {
+    assert(address && typeof address !== 'string');
+    await assert.rejects(runMongooseLogin({
+      configDir: dir, reference: 'mongoose-data', resourceUrl: `http://127.0.0.1:${(address as { port: number }).port}/mcp/data`, endpoint: 'data', account: 'local', redirectPort: 0,
+      timeoutMs: 5_000, now: () => NOW, openBrowser: () => {},
+    }), (error: unknown) => error instanceof MongooseLoginError && error.code === 'metadata-unavailable');
+    writeMongooseOAuth(dir, 'mongoose-data', record({ endpoint: 'data', audience: 'mongoose:data', expiresAt: NOW }));
+    let form: Record<string, string> = {};
+    const as = (async (_input: string | URL | Request, init?: RequestInit) => {
+      form = Object.fromEntries(new URLSearchParams(String(init?.body)));
+      return new Response(JSON.stringify({ access_token: 'access-token-new', refresh_token: 'refresh-token-new', expires_in: 3600 }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const token = await mongooseAccessToken(dir, 'mongoose-data', { now: () => NOW, fetch: as });
+    assert.equal(token, 'access-token-new');
+    assert.equal(form['resource'], 'mongoose:data');
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); cleanup(); }
+});
+
+test('a 401 with resource_metadata is one closed credential reason and names its endpoint', () => {
+  assert.equal(mongooseCredentialRefusal(401, 'https://mongoose.dev.peat-cloud.com/.well-known/oauth-protected-resource/mcp/knowledge'), 'credential-unavailable');
+  assert.equal(mongooseCredentialRefusal(403, undefined), undefined);
+  assert.equal(mongooseCredentialRefusal(401, undefined), undefined);
+  assert.equal(mongooseCredentialRefusal(200, 'https://example.invalid/x'), undefined);
 });

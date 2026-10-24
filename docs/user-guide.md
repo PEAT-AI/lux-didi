@@ -104,8 +104,11 @@ for connected chat, [Live configuration](provider-configuration.md#live-profile-
 for Live, and [MCP configuration](mcp-configuration.md) for connector endpoints,
 classification and explicit network approval.
 
-Mongoose is the one connector Lux Didi can sign in to for you. Run the bundled host
-once with the same configuration directory you selected above, then restart Lux Didi:
+Mongoose is the one connector Lux Didi can sign in to for you, and it is three
+endpoints: knowledge, data and crm. Each one signs in on its own, because each is
+its own OAuth resource and a token for one is refused on another. Sign in to each
+endpoint you want, once, with the same configuration directory you selected above,
+then restart Lux Didi:
 
 ```sh
 "$HOME/Applications/Lux Didi.app/Contents/MacOS/node" \
@@ -113,11 +116,20 @@ once with the same configuration directory you selected above, then restart Lux 
   --mongoose-login --config-dir /absolute/path/to/your/config-directory
 ```
 
-Your default browser opens the Mongoose consent page, where you sign in with
-Google. To keep the current window focused, add `--no-browser`; the command
-prints a sign-in URL for you to open yourself. The complete attempt expires five
-minutes after it starts. After sign-in, the callback page confirms receipt and
-can be closed; no token is ever copied, pasted or printed. The session refreshes itself while you use it. If it ever
+Run it once per endpoint, in this order if you want all three: knowledge first,
+then data, then crm. Your default browser opens that endpoint's Mongoose consent
+page, where you sign in with Google. To keep the current window focused, add
+`--no-browser`; the command prints a sign-in URL for you to open yourself. The
+complete attempt expires five minutes after it starts. After sign-in, the callback
+page confirms receipt and can be closed; no token is ever copied, pasted or
+printed. Each session refreshes itself while you use it.
+
+Two of the three need one more step from you. Data reads use your own Lightdash
+permissions, so connect a Lightdash personal access token once at
+`https://mongoose.dev.peat-cloud.com/settings/connections`; until you do, Naya
+says your Lightdash token is not connected in Mongoose settings instead of
+answering from data. CRM is open to the Mongoose CRM teams only; if your account
+is not in them, Naya says so in one line and knowledge and data keep working. If it ever
 goes stale, the connector next step says **Mongoose session expired, reconnect
 Mongoose** with the same command.
 

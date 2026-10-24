@@ -209,8 +209,7 @@ function optionalUsername(value: unknown): string | null {
   if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) fail('invalid_profile');
   return value;
 }
-/** Installed <dataDir>/provider-config/mcp.json: a small, owner-only, secret-free endpoint catalog. */
-export interface HttpMcpEndpointEntry {
+/** Installed <dataDir>/provider-config/mcp.json: a small, owner-only, secret-free endpoint catalog. */export interface HttpMcpEndpointEntry {
   id: string; transport: 'streamable-http'; url: string; connector: string;
   unknownClass: DataClass | null; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid';
   account: string; resource: string; credentialRef: string | null; enabled: boolean; allowEgress: boolean;
@@ -260,8 +259,37 @@ function endpointEntry(raw: unknown): McpEndpointEntry {
   const credentialRef = e['credentialRef'];
   if (credentialRef !== null && (typeof credentialRef !== 'string' || !refPattern.test(credentialRef))) fail('invalid_reference');
   if (typeof e['enabled'] !== 'boolean' || typeof e['allowEgress'] !== 'boolean') fail('invalid_profile');
+  if (e['connector'] === mongooseConnector) mongooseEndpointEntry(url, e['resource'], credentialRef);
   return { ...classification, id: e['id'] as string, transport: 'streamable-http', url, connector: e['connector'] as string, account: e['account'] as string, resource: e['resource'] as string, credentialRef: credentialRef as string | null, enabled: e['enabled'], allowEgress: e['allowEgress'] };
 }
+const mongooseConnector = 'mongoose';
+const mongoosePaths = ['/mcp/knowledge', '/mcp/data', '/mcp/crm'] as const;
+const mongooseAudiences = ['mongoose:knowledge', 'mongoose:data', 'mongoose:crm'] as const;
+
+/**
+ * One Mongoose endpoint: exactly one of the three release-1023b paths, its own audience and its own
+ * credential reference. `/mcp`, `/mcp/`, a toolset query, a retired name and admin are all refused,
+ * because a token bound to one audience is refused on another and admin is never connected.
+ */
+function mongooseEndpointEntry(url: string, resource: unknown, credentialRef: string | null): void {
+  if (typeof resource !== 'string' || !(mongooseAudiences as readonly string[]).includes(resource)) fail('invalid_source');
+  if (credentialRef === null) fail('invalid_source');
+  let path: string;
+  try { path = new URL(url).pathname.replace(/\/$/, ''); } catch { return fail('invalid_source'); }
+  if (!(mongoosePaths as readonly string[]).includes(path)) fail('invalid_source');
+  if (path.replace('/mcp/', 'mongoose:') !== resource) fail('invalid_source');
+}
+
+/** The catalog carries all three Mongoose endpoints, once each, with three distinct resources and refs. */
+function mongooseEndpointSet(endpoints: readonly McpEndpointEntry[]): void {
+  const mongoose = endpoints.filter(endpoint => endpoint.connector === mongooseConnector);
+  if (!mongoose.length) return;
+  if (mongoose.length !== mongoosePaths.length) fail('invalid_source');
+  if (new Set(mongoose.map(endpoint => endpoint.resource)).size !== mongoosePaths.length) fail('invalid_source');
+  if (new Set(mongoose.map(endpoint => endpoint.credentialRef)).size !== mongoosePaths.length) fail('invalid_source');
+  if (new Set(mongoose.map(endpoint => endpoint.id)).size !== mongoosePaths.length) fail('invalid_source');
+}
+
 /** Missing mcp.json is a defined state, never an error: startup continues with no approved source. */
 export function loadMcpEndpoints(options: { configDir: string }): McpEndpointSelection {
   const { configDir } = options;
@@ -283,5 +311,6 @@ export function loadMcpEndpoints(options: { configDir: string }): McpEndpointSel
   if (!Array.isArray(rawEndpoints) || rawEndpoints.length > 64) fail('invalid_profile');
   const seen = new Set<string>(); const endpoints: McpEndpointEntry[] = [];
   for (const item of rawEndpoints) { const entry = endpointEntry(item); if (seen.has(entry.id)) fail('invalid_profile'); seen.add(entry.id); endpoints.push(entry); }
+  mongooseEndpointSet(endpoints);
   return { state: 'configured', catalog: { grantMode, endpoints, ownerIdentity, ownerChatUsername } };
 }

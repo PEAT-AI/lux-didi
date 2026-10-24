@@ -943,7 +943,9 @@ test('the installed five-endpoint shape reports every endpoint and connects ever
   const shape = fixture.endpoints.map(endpoint => {
     if (endpoint['connector'] === 'google') return localEndpoint(endpoint, '', [googleChild, 'ok']);
     if (endpoint['connector'] === 'mattermost') return localEndpoint(endpoint, '', [join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'stdio-mattermost-child.mjs'), 'ok']);
-    // lux-knowledge and mongoose keep their streamable-http shape and point at a refusing local port.
+    // lux-knowledge and the three mongoose endpoints keep their streamable-http shape, each on its own
+    // path, and point at a refusing local port.
+    if (endpoint['connector'] === 'mongoose') return { ...endpoint, url: `http://127.0.0.1:1${new URL(String(endpoint['url'])).pathname}` };
     return { ...endpoint, url: 'http://127.0.0.1:1/mcp' };
   });
   const { source: _source, ...profile } = fixture as typeof fixture & { source?: string };
@@ -957,7 +959,7 @@ test('the installed five-endpoint shape reports every endpoint and connects ever
     });
     try {
       const reports = runtime.status().endpoints;
-      assert.deepEqual(reports.map(report => report.id).sort(), ['calendar', 'gmail', 'lux-knowledge', 'mattermost', 'mongoose'],
+      assert.deepEqual(reports.map(report => report.id).sort(), ['calendar', 'gmail', 'lux-knowledge', 'mattermost', 'mongoose-crm', 'mongoose-data', 'mongoose-knowledge'],
         'one report per installed endpoint: none vanishes');
       assert.deepEqual(runtime.connectionIds().sort(), ['calendar', 'gmail', 'mattermost']);
       const gmail = reports.find(report => report.id === 'gmail');
@@ -968,7 +970,7 @@ test('the installed five-endpoint shape reports every endpoint and connects ever
       assert.ok(grant, 'a calendar grant exists, so the digest reader is composed');
       // Every endpoint that did not connect says so exactly once, in closed codes.
       const failed = failures.map(failure => failure.detail?.endpointId).sort();
-      assert.deepEqual(failed, ['lux-knowledge', 'mongoose']);
+      assert.deepEqual(failed, ['lux-knowledge', 'mongoose-crm', 'mongoose-data', 'mongoose-knowledge']);
       for (const failure of failures) {
         assert.match(failure.stage, /^(config|credential|spawn|handshake|first_call)$/);
         assert.match(String(failure.detail?.reason ?? ''), /^[A-Za-z][A-Za-z0-9_-]{0,63}$/, 'closed reason only');

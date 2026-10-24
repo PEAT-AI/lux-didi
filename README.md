@@ -13,7 +13,7 @@ This is a personal prerelease: a locally built, self-signed Mac app. It is not n
   - Lux Knowledge: your notes and past decisions.
   - Gmail and Google Calendar: "anything important in mail?", "what is on tomorrow?". Mail triage sets bulk mail aside and reads human threads first; a mail search uses at most three words from your ask and tries a wider search once when nothing matches.
   - Mattermost, through the `mattermost-mcp` server: "anything urgent on Mattermost?". Triage of what came in works again, and several chat searches in one ask run side by side.
-  - Mongoose: company knowledge.
+  - Mongoose: company knowledge, data and crm, each its own sign-in; admin is never connected.
   - The web, for weather and news. A web result is never lost when the answer is trimmed to fit.
 - **Stops when told.** She reads the last ten words of every spoken fragment, so an end phrase works inside any sentence: her name may sit up to four words before or two words after it, and a name at the end of a fragment stays good for three seconds. "Stop listening", "shut down" and "stop now", and the German forms, end the call with no name; a bare "stop" still needs her name next to it.
 - **Remembers.** "Naya, remember that ..." saves a local note. Two different notes said in the same stretch of talk are both kept; the same note said twice is still refused. "Save to my vault: ..." saves a note to Lux Knowledge. Notes can be listed and deleted in the app.

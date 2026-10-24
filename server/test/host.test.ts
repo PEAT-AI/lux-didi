@@ -465,8 +465,8 @@ for (const missingMongoose of [true, false]) {
     const tools = [
       'search_knowledge', 'get_insight', 'gmail_get_profile', 'gmail_search_messages', 'gmail_read_message',
       'calendar_list_calendars', 'calendar_list_events', 'mattermost_whoami', 'mattermost_get_channel_history',
-      'mattermost_get_thread', 'mattermost_search', 'mattermost_list_channels', 'ask_mongoose',
-      'search_mongoose', 'get_knowledge_item', 'read_knowledge_body', 'get_company_profile', 'list_tickets', 'get_ticket',
+      'mattermost_get_thread', 'mattermost_search', 'mattermost_list_channels',
+      'search', 'read', 'list_companies', 'get_company', 'list_tickets',
     ].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
     const reply = (message: { id?: unknown; method: string; params?: { name?: string } }) => message.id === undefined ? undefined : {
       jsonrpc: '2.0', id: message.id, result: message.method === 'initialize'

@@ -23,7 +23,7 @@ const endpoints = [
   { id: 'gmail', connector: 'google', tool: 'gmail_search_messages', args: {} },
   { id: 'calendar', connector: 'google', tool: 'calendar_list_calendars', args: {} },
   { id: 'mattermost', connector: 'mattermost', tool: 'mattermost_whoami', args: {} },
-  { id: 'mongoose', connector: 'mongoose', tool: 'get_company_profile', args: {} },
+  { id: 'mongoose', connector: 'mongoose', tool: 'list_companies', args: {} },
 ];
 const pair = ['lux-knowledge', 'gmail'];
 const all = endpoints.map(e => e.id);

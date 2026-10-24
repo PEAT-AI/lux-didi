@@ -1,11 +1,9 @@
 import { connectorDescriptor } from '../connectors/index.js';
-import type { ConnectionPolicy } from '../tools/types.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer, type IncomingMessage } from 'node:http';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { once } from 'node:events';
-import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
@@ -13,48 +11,74 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { McpPort, ToolDefinition } from '../adapters/mcp/port.js';
-import { createMongooseReader, mongooseReadOnly, MONGOOSE_KNOWN_WRITES, MONGOOSE_READ_TOOLS, MONGOOSE_TOOLS, MONGOOSE_FAILURE_STAGES, mongooseCredentialAtStart, mongooseFailureStage } from '../connectors/index.js';
-import { projectMongooseResult } from '../tools/mongoose.js';
-import { mongooseAccessToken } from '../host/mongoose-auth.js';
-import { Store } from '../runtime/store.js';
-import { composeMcpRuntime } from '../host/mcp.js';
-import { toolsMigrations } from '../tools/index.js';
-import { plainReason, unreachableSourcesForSession } from '../tools/research.js';
+import {
+  createMongooseReader, mongooseReadOnly, mongooseClosedReason, mongooseOwnerLine, mongooseProfileRoute, MONGOOSE_DENIED_TOOLS,
+  MONGOOSE_ENDPOINTS, MONGOOSE_ENDPOINT_AUDIENCES, MONGOOSE_ENDPOINT_PATHS, MONGOOSE_ENDPOINT_TOOLS, MONGOOSE_READ_TOOLS,
+  MONGOOSE_FAILURE_STAGES, mongooseCredentialAtStart, mongooseFailureStage, type MongooseEndpoint,
+} from '../connectors/index.js';
+import { projectMongooseResult, mongooseToolStatus } from '../tools/mongoose.js';
+import { loadMcpEndpoints, mcpErrorCode } from '../config/mcp.js';
 
 const ACCOUNT = 'account-a';
-const RESOURCE = 'resource-a';
 
-const readTools: ToolDefinition[] = MONGOOSE_TOOLS.map(name => ({ name, inputSchema: { type: 'object' } }));
-// Advisory readOnlyHint must never turn a writer into authority.
-const writeTools: ToolDefinition[] = [
-  { name: 'create_ticket', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
-  { name: 'claim_ticket', inputSchema: { type: 'object' } },
-];
+/**
+ * The published input schemas at aa105bc6, not a permissive stand-in: `search` and `read` carry their real
+ * key sets with additionalProperties false, so the dispatch gate refuses any argument the real server
+ * would refuse. Every other tool keeps an open object because its own schema is the server's business.
+ */
+const PUBLISHED_SCHEMAS: Record<string, Record<string, unknown>> = {
+  search: {
+    type: 'object', additionalProperties: false, required: ['query'],
+    properties: { query: { type: 'string' }, mode: { type: 'string', enum: ['answer', 'browse'] }, limit: { type: 'integer' }, cursor: { type: 'string' }, verbose: { type: 'boolean' } },
+  },
+  read: {
+    type: 'object', additionalProperties: false, required: ['ref'],
+    properties: { ref: { type: 'string' }, depth: { type: 'string', enum: ['summary', 'full', 'all'] }, cursor: { type: 'string' }, verbose: { type: 'boolean' } },
+  },
+};
+const endpointTools: Record<MongooseEndpoint, ToolDefinition[]> = {
+  knowledge: MONGOOSE_ENDPOINT_TOOLS.knowledge.map(name => ({ name, inputSchema: PUBLISHED_SCHEMAS[name] ?? { type: 'object' }, annotations: { readOnlyHint: true } })),
+  data: MONGOOSE_ENDPOINT_TOOLS.data.map(name => ({ name, inputSchema: PUBLISHED_SCHEMAS[name] ?? { type: 'object' }, annotations: { readOnlyHint: true } })),
+  crm: MONGOOSE_ENDPOINT_TOOLS.crm.map(name => ({ name, inputSchema: PUBLISHED_SCHEMAS[name] ?? { type: 'object' }, annotations: { readOnlyHint: true } })),
+};
 
-async function body(req: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks);
-}
+const SEARCH_TEXT = JSON.stringify({
+  outcome: 'evidence',
+  items: [{ type: 'knowledge_item', ref: 'item-9', name: 'Agri input pricing', url: 'https://mongoose.dev.peat-cloud.com/knowledge/agri-pricing' }],
+  next_cursor: null, next_tool: null, restriction: null, request_id: 'req-1',
+});
+const READ_TEXT = JSON.stringify({
+  outcome: 'evidence', ref: 'item-9', depth: 'summary',
+  items: [{ type: 'knowledge_item', ref: 'item-9', name: 'Agri input pricing', url: 'https://mongoose.dev.peat-cloud.com/knowledge/agri-pricing' }],
+  next_cursor: null, coverage: { depth: 'summary', complete: true }, restriction: null, request_id: 'req-1',
+  body: 'Agri input pricing reached 41 companies in 2025.',
+});
 
-interface FixtureOptions { text?: string; requireBearer?: boolean; tools?: Array<{ name: string; inputSchema: Record<string, unknown> }> }
-async function fixture(options: FixtureOptions = {}) {
-  const calls: { name: unknown; arguments: unknown }[] = [];
-  const requireBearer = options.requireBearer ?? true;
-  const sdk = new Server({ name: 'synthetic-mongoose', version: '1' }, { capabilities: { tools: { listChanged: false } } });
-  sdk.setRequestHandler('tools/list', () => ({ tools: options.tools ?? [...readTools, ...writeTools] }) as never);
+interface FixtureOptions { replies?: Record<string, string>; text?: string; status?: number }
+
+async function fixture(endpoint: MongooseEndpoint, options: FixtureOptions = {}) {
+  const calls: { name: string; arguments: Record<string, unknown> }[] = [];
+  const authorization: (string | undefined)[] = [];
+  const sdk = new Server({ name: `synthetic-mongoose-${endpoint}`, version: '1' }, { capabilities: { tools: { listChanged: false } } });
+  sdk.setRequestHandler('tools/list', () => ({ tools: endpointTools[endpoint] }) as never);
   sdk.setRequestHandler('tools/call', request => {
     const params = request.params as { name: string; arguments: Record<string, unknown> };
     calls.push({ name: params.name, arguments: params.arguments });
-    return { content: [{ type: 'text', text: options.text ?? JSON.stringify({ items: [{ title: 'Agri input pricing', url: 'https://mongoose.dev.peat-cloud.com/knowledge/agri-pricing' }] }) }] } as never;
+    const text = options.replies?.[params.name] ?? options.text ?? SEARCH_TEXT;
+    return { content: [{ type: 'text', text }] } as never;
   });
-  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => 's' });
   await sdk.connect(transport);
   const listener = createServer(async (req, res) => {
     try {
-      const bytes = await body(req);
-      const method = bytes.length ? (JSON.parse(bytes.toString()) as { method?: string }).method : undefined;
-      if (requireBearer && method !== 'tools/list' && req.headers.authorization !== 'Bearer test-token') { res.writeHead(401); res.end(); return; }
+      authorization.push(req.headers.authorization);
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk as Buffer));
+      const bytes = Buffer.concat(chunks);
+      // A refusing endpoint refuses the read call, not the discovery a client needs to get there.
+      if (options.status !== undefined && options.status !== 200 && bytes.toString('utf8').includes('"tools/call"')) {
+        res.writeHead(options.status, { 'www-authenticate': `Bearer resource_metadata="${MONGOOSE_ENDPOINT_AUDIENCES[endpoint]}"` }); res.end(); return;
+      }
       const headers = new Headers();
       for (const [key, value] of Object.entries(req.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(',') : value);
       const request = new Request(`http://${req.headers.host}${req.url}`, { method: req.method ?? 'GET', headers, ...(bytes.length ? { body: new Uint8Array(bytes) } : {}) });
@@ -69,592 +93,283 @@ async function fixture(options: FixtureOptions = {}) {
   });
   listener.listen(0, '127.0.0.1'); await once(listener, 'listening');
   const address = listener.address(); assert(address && typeof address !== 'string');
-  const url = `http://127.0.0.1:${address.port}/mcp`;
-  return { url, calls, async close() { await sdk.close().catch(() => {}); await new Promise<void>(resolve => listener.close(() => resolve())); } };
+  const url = `http://127.0.0.1:${address.port}${MONGOOSE_ENDPOINT_PATHS[endpoint]}`;
+  return { url, calls, get authorization() { return authorization.filter(value => value !== undefined); }, async close() { await sdk.close().catch(() => {}); await new Promise<void>(resolve => listener.close(() => resolve())); } };
 }
 
-function adapterFor(url: string, resolveCredential: (ref: string) => Promise<string> = async () => 'test-token') {
+function adapterFor(endpoint: MongooseEndpoint, url: string, token: string) {
   const registry = new McpRegistry();
-  registry.register({ id: 'source', url, account: ACCOUNT, resource: RESOURCE, credentialRef: 'mongoose-mcp' });
-  registry.enable('source'); registry.allowEgress('source');
-  const store = new MemoryResultStore();
-  const adapter = createMcpAdapter({ registry, store, resolveCredential });
-  return { registry, store, adapter };
+  const endpointId = `mongoose-${endpoint}`;
+  registry.register({ id: endpointId, url, account: ACCOUNT, resource: MONGOOSE_ENDPOINT_AUDIENCES[endpoint], credentialRef: `mongoose-${endpoint}` });
+  registry.enable(endpointId); registry.allowEgress(endpointId);
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), resolveCredential: async () => token });
+  return { registry, adapter, endpointId };
 }
 
-async function approve(adapter: McpPort, registry: McpRegistry, names: readonly string[] = [...MONGOOSE_TOOLS]) {
-  const discovery = await adapter.discover('source');
+async function approve(adapter: McpPort, registry: McpRegistry, endpoint: MongooseEndpoint, endpointId: string, names?: readonly string[]) {
+  const discovery = await adapter.discover(endpointId);
   assert.equal(discovery.state, 'discovered');
   if (discovery.state !== 'discovered') throw new Error('discovery failed');
-  registry.approve({ endpointId: 'source', schemaDigest: discovery.schemaDigest, toolNames: names, effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+  registry.approve({ endpointId, schemaDigest: discovery.schemaDigest, toolNames: names ?? MONGOOSE_ENDPOINT_TOOLS[endpoint], effect: 'read', account: ACCOUNT, resource: MONGOOSE_ENDPOINT_AUDIENCES[endpoint], generation: 1 });
   return discovery.schemaDigest;
 }
 
-function reader(adapter: McpPort, registry: McpRegistry, schemaDigest: string) {
-  return createMongooseReader({ port: adapter, registry, config: { endpointId: 'source', account: ACCOUNT, resource: RESOURCE, schemaDigest, generation: 1, maxSearchLimit: 10, maxListLimit: 10, queryChars: 200 } });
+function readerFor(adapter: McpPort, registry: McpRegistry, endpoint: MongooseEndpoint, endpointId: string, schemaDigest: string) {
+  return createMongooseReader({ port: adapter, registry, config: {
+    endpointId, account: ACCOUNT, resource: MONGOOSE_ENDPOINT_AUDIENCES[endpoint], endpoint, schemaDigest, generation: 1,
+    maxSearchLimit: 10, maxListLimit: 10, queryChars: 200 } });
 }
 
-test('search round trip: exact outgoing arguments and opaque unknown/local-only evidence', async t => {
-  const f = await fixture(); t.after(() => f.close());
-  const { registry, adapter } = adapterFor(f.url);
-  const digest = await approve(adapter, registry);
-  try {
-    const result = await reader(adapter, registry, digest).search({ query: 'agri pricing', limit: 3 });
-    assert.equal(result.state, 'completed');
-    assert.deepEqual(f.calls, [{ name: 'search_mongoose', arguments: { query: 'agri pricing', limit: 3 } }]);
-    const projected = projectMongooseResult(adapter, result);
-    assert.equal(projected.ok, true);
-    if (!projected.ok) return;
-    assert.match(projected.projection.text, /- Agri input pricing/);
-    assert.match(projected.projection.text, /source: https:\/\/mongoose\.dev\.peat-cloud\.com\/knowledge\/agri-pricing/);
-  } finally { await adapter.close(); }
-});
-
-test('bearer missing is a typed refusal before an empty success', async t => {
-  const f = await fixture(); t.after(() => f.close());
-  let authed = true;
-  const registry = new McpRegistry();
-  registry.register({ id: 'source', url: f.url, account: ACCOUNT, resource: RESOURCE, credentialRef: 'mongoose-mcp' });
-  registry.enable('source'); registry.allowEgress('source');
-  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), resolveCredential: async () => { if (!authed) throw new Error('revoked'); return 'test-token'; } });
-  const digest = await approve(adapter, registry);
-  try {
-    authed = false;
-    const result = await reader(adapter, registry, digest).search({ query: 'secret' });
-    assert.ok(result.state === 'refused' || result.state === 'unknown', `expected a typed refusal, got ${result.state}`);
-    assert.equal(projectMongooseResult(adapter, result).ok, false);
-  } finally { await adapter.close(); }
-});
-
-test('only the read envelope is eligible; a granted writer refuses the whole call', async t => {
-  const f = await fixture(); t.after(() => f.close());
-  const { registry, adapter } = adapterFor(f.url);
-  const digest = await approve(adapter, registry, [...MONGOOSE_TOOLS, 'create_ticket']);
-  try {
-    const result = await reader(adapter, registry, digest).search({ query: 'agri' });
-    assert.equal(result.state, 'refused');
-    assert.equal(result.state === 'refused' ? result.reason : '', 'ineligible-tool-granted');
-    assert.equal(f.calls.length, 0);
-  } finally { await adapter.close(); }
-});
-
-test('a tool outside the read grant refuses before dispatch', async t => {
-  const f = await fixture(); t.after(() => f.close());
-  const { registry, adapter } = adapterFor(f.url);
-  const digest = await approve(adapter, registry, MONGOOSE_TOOLS.filter(name => name !== 'get_ticket'));
-  try {
-    const result = await reader(adapter, registry, digest).getTicket({ number: 'ticket-1' });
-    assert.equal(result.state, 'refused');
-    assert.equal(result.state === 'refused' ? result.reason : '', 'tool-not-granted');
-  } finally { await adapter.close(); }
-});
-
-test('input budgets refuse malformed arguments before any wire call', async t => {
-  const f = await fixture(); t.after(() => f.close());
-  const { registry, adapter } = adapterFor(f.url);
-  const digest = await approve(adapter, registry);
-  const r = reader(adapter, registry, digest);
-  try {
-    assert.equal((await r.search({ query: '   ' })).state, 'refused');
-    assert.equal((await r.search({ query: 'ok', limit: 999 })).state, 'refused');
-    assert.equal((await r.listTickets({ limit: 0 })).state, 'refused');
-    assert.equal((await r.getTicket({ number: '' })).state, 'refused');
-    assert.equal(f.calls.length, 0);
-  } finally { await adapter.close(); }
-});
-
-test('a large Mongoose answer is projected as bounded, partial-marked Markdown', async t => {
-  const f = await fixture({ text: 'x'.repeat(4096) }); t.after(() => f.close());
-  const { registry, adapter } = adapterFor(f.url);
-  const digest = await approve(adapter, registry);
-  try {
-    const result = await reader(adapter, registry, digest).companyProfile({ company_name: 'Synthetic Company' });
-    assert.equal(result.state, 'completed');
-    const projected = projectMongooseResult(adapter, result);
-    assert.equal(projected.ok, true);
-    if (!projected.ok) return;
-    assert.equal(projected.projection.partial, true);
-    assert.equal(projected.projection.text.length, 4000);
-    assert.equal(projected.projection.originalCharacters, 4096);
-    assert.equal(projected.projection.omittedCharacters, 96);
-  } finally { await adapter.close(); }
-});
-
-test('owner-trusted-reads grants exactly the connector envelope through the runtime', async () => {
-  const f = await fixture({ requireBearer: false });
-  const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-runtime-'));
-  let store: Store | undefined;
-  let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
-  try {
-    const configDir = join(dir, 'provider-config');
-    mkdirSync(configDir, { recursive: true, mode: 0o700 });
-    writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
-      schemaVersion: 1, grantMode: 'owner-trusted-reads',
-      endpoints: [{ id: 'mongoose', transport: 'streamable-http', url: f.url, connector: 'mongoose', account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' }],
-    }), { mode: 0o600 });
-    store = new Store(join(dir, 'data'), toolsMigrations);
-    runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
-    const grant = runtime.registry.currentGrant('mongoose');
-    assert.ok(grant, 'the runtime must approve a read grant');
-    assert.deepEqual([...grant.toolNames].sort(), [...MONGOOSE_TOOLS].sort());
-    assert.equal(grant.toolNames.includes('create_ticket' as never), false);
-    assert.equal(runtime.status().endpoints[0]?.tools, MONGOOSE_TOOLS.length);
-    assert.equal(runtime.status().endpoints[0]?.state, 'connected');
-    assert.deepEqual(runtime.connectionIds(), ['mongoose']);
-    await runtime.refresh();
-    assert.equal(runtime.status().endpoints[0]?.state, 'connected');
-    assert.deepEqual(runtime.connectionIds(), ['mongoose']);
-    assert.deepEqual(runtime.registry.currentGrant('mongoose')?.toolNames.slice().sort(), [...MONGOOSE_TOOLS].sort());
-  } finally {
-    if (runtime) await runtime.close();
-    if (store) store.close();
-    await f.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-for (const [connector, tool] of [['mongoose', 'search_mongoose'], ['mattermost', 'mattermost_search']] as const) {
-  test(`${connector} Live descriptor validates bounds and dispatches against the original MCP schema`, async () => {
-    const f = await fixture({ requireBearer: false, tools: [{ name: tool, inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', maximum: 1 } }, required: ['query'], additionalProperties: false } }] });
-    const dir = mkdtempSync(join(tmpdir(), 'didi-company-descriptor-'));
-    const store = new Store(join(dir, 'data'), toolsMigrations);
-    let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
-    try {
-      const configDir = join(dir, 'provider-config'); mkdirSync(configDir, { recursive: true, mode: 0o700 });
-      writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [{ id: connector, connector, transport: 'streamable-http', url: f.url, account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' }] }), { mode: 0o600 });
-      runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
-      const row = store.transaction(tx => tx.get('SELECT policy_json FROM tool_connections WHERE owner_id=? AND connection_id=?', [store.assistantId, connector]));
-      assert.ok(row);
-      const policy = JSON.parse(String(row.policy_json)) as ConnectionPolicy;
-      const descriptor = connectorDescriptor(connector); assert.ok(descriptor);
-      const declaration = descriptor.declarations(policy).find(candidate => candidate.name === tool); assert.ok(declaration);
-      assert.equal(declaration.validate({ query: 'agri', limit: 2 }), true, 'local bounds allow two results');
-      assert.equal(declaration.validate({ query: '', limit: 1 }), false);
-      assert.equal(declaration.validate({ query: 'agri', limit: 101 }), false);
-      assert.equal(declaration.validate({ query: 'agri', limit: 1, write: true }), false);
-      const reader = descriptor.createReader({ port: runtime.port, registry: runtime.registry, endpoint: policy.endpoint, schemaDigest: policy.schemaDigest, generation: policy.generation, policy });
-      const refused = await reader.call(tool, { query: 'agri', limit: 2 });
-      assert.equal(refused.state, 'refused', 'original MCP schema is stricter than the local declaration');
-      assert.equal(f.calls.length, 0, 'schema rejection happens before remote dispatch');
-      const accepted = await reader.call(tool, { query: 'agri', limit: 1 });
-      assert.equal(accepted.state, 'completed');
-      assert.deepEqual(f.calls, [{ name: tool, arguments: { query: 'agri', limit: 1 } }]);
-      if (accepted.state === 'completed') {
-        assert.throws(() => descriptor.project(accepted, runtime!.port, { ...policy, sourcePolicy: { ...policy.sourcePolicy, unknownClass: null } }), /unknown_source_denied/);
-        // The synthetic fixture's opaque payload is explicitly classified, never production consent.
-        const classified = { ...policy, sourcePolicy: { ...policy.sourcePolicy, unknownClass: 'ordinary' as const } };
-        const snapshot = descriptor.project(accepted, runtime.port, classified);
-        assert.equal(snapshot.response['tool'], tool);
-        assert.equal(typeof snapshot.response['text'], 'string');
-        assert.deepEqual(snapshot.dataClasses, ['ordinary']);
-      }
-    } finally { await runtime?.close(); store.close(); await f.close(); rmSync(dir, { recursive: true, force: true }); }
-  });
+/** One knowledge endpoint wired end to end, approved, with a live reader. */
+async function knowledge(options: FixtureOptions = {}) {
+  const f = await fixture('knowledge', options);
+  const a = adapterFor('knowledge', f.url, 'knowledge-token');
+  const digest = await approve(a.adapter, a.registry, 'knowledge', a.endpointId);
+  return { f, a, reader: readerFor(a.adapter, a.registry, 'knowledge', a.endpointId, digest) };
 }
 
-// Fake MCP HTTP server at the real guarded-fetch seam, no listening socket or corpus.
-test('search_mongoose projects an SSE MCP entity from separately decodedResult', async t => {
-  const sdk = new Server({ name: 'synthetic-sse', version: '1' }, { capabilities: { tools: {} } });
-  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: false });
-  const tool = { name: 'search_mongoose', inputSchema: { type: 'object' } };
-  sdk.setRequestHandler('tools/list', () => ({ tools: [tool] }) as never);
-  sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: JSON.stringify({ items: [{ id: 'synthetic-id', title: 'Synthetic SSE', body: 'Public synthetic body' }] }) }], structuredContent: { marker: 'synthetic-unclassified' }, isError: false }) as never);
-  await sdk.connect(transport);
-  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
-    const request = new Request(input, init);
-    return request.method === 'GET' ? new Response(null, { status: 405 }) : transport.handleRequest(request);
-  });
-  const registry = new McpRegistry();
-  registry.register({ id: 'sse', url: 'http://127.0.0.1:18766/mcp', account: 'synthetic', resource: 'synthetic' });
-  registry.enable('sse'); registry.allowEgress('sse');
-  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore() });
-  t.after(async () => { await adapter.close(); await sdk.close(); });
-  const discovery = await adapter.discover('sse'); assert.equal(discovery.state, 'discovered');
-  if (discovery.state !== 'discovered') throw Error('discovery failed');
-  registry.approve({ endpointId: 'sse', schemaDigest: discovery.schemaDigest, toolNames: ['search_mongoose'], effect: 'read', account: 'synthetic', resource: 'synthetic', generation: 1 });
-  const result = await createMongooseReader({ port: adapter, registry, config: { endpointId: 'sse', account: 'synthetic', resource: 'synthetic', schemaDigest: discovery.schemaDigest, generation: 1, maxSearchLimit: 10, maxListLimit: 10, queryChars: 200 } }).search({ query: 'synthetic' });
-  assert.equal(result.state, 'completed');
-  if (result.state !== 'completed' || result.response.state !== 'available') throw Error('missing result');
-  const wire = adapter.readSlice({ ...result.source, handle: result.response.handle, offset: 0, length: 16 });
-  assert.equal(wire.state, 'available');
-  if (wire.state === 'available') assert.match(new TextDecoder().decode(wire.bytes), /^event:|^data:/);
-  const projected = projectMongooseResult(adapter, result); assert.equal(projected.ok, true);
-  if (!projected.ok) throw Error('projection failed');
-  assert(projected.projection.text.includes('Synthetic SSE'));
-  assert(!projected.projection.text.includes('synthetic-unclassified'));
-});
+// --- acceptance 1: the installed catalog carries exactly three mongoose endpoints ---
 
-test("mongoose connect failures map to a closed stage", () => {
-  assert.deepEqual(MONGOOSE_FAILURE_STAGES, ["credential", "spawn", "handshake", "first_call"]);
-  assert.equal(mongooseFailureStage("credential-unavailable"), "credential");
-  assert.equal(mongooseFailureStage("unknown", "credential-unavailable"), "credential");
-  assert.equal(mongooseFailureStage("child_exited"), "spawn");
-  assert.equal(mongooseFailureStage("pipe_closed"), "spawn");
-  assert.equal(mongooseFailureStage("discovery-required"), "handshake");
-  assert.equal(mongooseFailureStage("unknown", "discovery-unavailable"), "handshake");
-  assert.equal(mongooseFailureStage("timeout"), "first_call");
-  assert.equal(mongooseFailureStage("cancelled-before-dispatch"), "first_call");
-});
+function configDir(): { dir: string; close: () => void } {
+  const dir = join(realpathSync(mkdtempSync(join(tmpdir(), 'didi-mongoose-config-'))), 'provider-config');
+  mkdirSync(dir, { mode: 0o700 });
+  return { dir, close: () => rmSync(dir, { recursive: true, force: true }) };
+}
 
-// The published 64-tool surface, as documented in the Mongoose catalog. The classifier must agree
-// with it: 49 reads and 15 writes, disjoint, with no name left unclassified.
-const CATALOG_64 = [
-  'ask_mongoose', 'check_data_capability', 'claim_ticket', 'create_knowledge_item',
-  'create_ticket', 'get_commercial_paths', 'get_company_crm', 'get_company_profile',
-  'get_knowledge_graph', 'get_knowledge_item', 'get_knowledge_versions', 'get_market_profile',
-  'get_reach', 'get_schema', 'get_started', 'get_ticket',
-  'inbound_lead_events', 'lightdash_create_content', 'lightdash_create_scheduled_delivery', 'lightdash_edit_content',
-  'lightdash_find_content', 'lightdash_generate_hashes', 'lightdash_get_context', 'lightdash_get_current_project',
-  'lightdash_get_lightdash_version', 'lightdash_get_metadata', 'lightdash_get_query_result', 'lightdash_grep_fields',
-  'lightdash_list_content', 'lightdash_list_explores', 'lightdash_list_projects', 'lightdash_list_verified_content',
-  'lightdash_read_content', 'lightdash_resolve_url', 'lightdash_run_metric_query', 'lightdash_run_sql',
-  'lightdash_search_field_values', 'lightdash_set_project', 'lint_knowledge', 'list_companies',
-  'list_company_products', 'list_data_capabilities', 'list_inbound_leads', 'list_knowledge_domains',
-  'list_knowledge_edges', 'list_knowledge_items', 'list_markets', 'list_offerings',
-  'list_seed_conflicts', 'list_tickets', 'list_user_handles', 'list_users',
-  'lookup_efficacy_evidence', 'patch_knowledge_body', 'provision_user', 'read_knowledge_body',
-  'resolve_seed_conflict', 'search_mongoose', 'set_knowledge_edge', 'set_knowledge_item_status',
-  'set_user_access', 'summarize_email_engagements', 'update_knowledge_item', 'update_ticket',
-];
-
-const CATALOG_READS = [...MONGOOSE_READ_TOOLS];
-const CATALOG_WRITES = [...MONGOOSE_KNOWN_WRITES];
-
-test('the read classifier covers the published 64-tool catalog and never admits a write', () => {
-  assert.equal(CATALOG_READS.length, 49);
-  assert.equal(CATALOG_WRITES.length, 15);
-  assert.deepEqual([...new Set([...CATALOG_READS, ...CATALOG_WRITES])].sort(), [...CATALOG_64].sort());
-  for (const name of CATALOG_READS) {
-    // A read needs the server's own annotation once it sends any.
-    assert.equal(mongooseReadOnly({ name, annotations: { readOnlyHint: true } }), true, name);
-    // With no annotations at all, only a read prefix stands; the rest needs the annotation.
-    const prefixed = ['get_', 'list_', 'search_', 'ask_', 'read_', 'lookup_', 'check_'].some(prefix => name.startsWith(prefix));
-    assert.equal(mongooseReadOnly({ name }), prefixed, name);
-  }
-  for (const name of CATALOG_WRITES) {
-    // A known write is never authority, even when the remote annotates it read-only.
-    assert.equal(mongooseReadOnly({ name, annotations: { readOnlyHint: true } }), false, name);
-    assert.equal(mongooseReadOnly({ name }), false, name);
-  }
-});
-
-test('annotations without a read hint never authorize a name on its spelling alone', () => {
-  assert.equal(mongooseReadOnly({ name: 'get_schema', annotations: {} }), false);
-  assert.equal(mongooseReadOnly({ name: 'get_schema', annotations: { destructiveHint: false } }), false);
-  assert.equal(mongooseReadOnly({ name: 'get_schema', annotations: { readOnlyHint: 'yes' } }), false);
-  assert.equal(mongooseReadOnly({ name: 'get_schema', annotations: { readOnlyHint: false } }), false);
-  assert.equal(mongooseReadOnly({ name: 'custom_reader' }), false);
-  assert.equal(mongooseReadOnly({ name: 'ask_mongoose' }), true);
-});
-
-test('the runtime grants every annotated read tool and no write, and forwards one widened read', async () => {
-  const reads: ToolDefinition[] = [
-    { name: 'get_schema', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } },
-    { name: 'list_markets', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } },
-    { name: 'create_ticket', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
-    { name: 'lightdash_run_sql', inputSchema: { type: 'object', properties: { sql: { type: 'string' } } }, annotations: { readOnlyHint: true } },
-  ];
-  const f = await fixture({ requireBearer: false, tools: reads });
-  const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-widened-'));
-  let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
-  try {
-    const configDir = join(dir, 'provider-config');
-    mkdirSync(configDir, { recursive: true, mode: 0o700 });
-    writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
-      schemaVersion: 1, grantMode: 'owner-trusted-reads',
-      endpoints: [{ id: 'mongoose', transport: 'streamable-http', url: f.url, connector: 'mongoose', account: ACCOUNT, resource: RESOURCE, credentialRef: 'mongoose-mcp', enabled: true, allowEgress: true, unknownClass: 'ordinary' }],
-    }), { mode: 0o600 });
-    writeFileSync(join(configDir, 'mongoose-mcp.json'), JSON.stringify({ schemaVersion: 1, token: 'test-token' }), { mode: 0o600 });
-    const store = new Store(join(dir, 'data'), toolsMigrations);
-    runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
-    const grant = runtime.registry.currentGrant('mongoose');
-    assert.ok(grant);
-    assert.deepEqual([...grant.toolNames].sort(), ['get_schema', 'lightdash_run_sql', 'list_markets']);
-    assert.equal(grant.toolNames.includes('create_ticket'), false);
-  } finally {
-    if (runtime) await runtime.close();
-    await f.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('an OAuth record carries the bearer through one tool call and logs no credential stage', async () => {
-  const f = await fixture();
-  // A schemaVersion 2 record whose access token is the one the fixture server accepts: the call can
-  // only succeed if the host resolved the bearer from the record.
-  const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-oauth-'));
-  const configDir = join(dir, 'provider-config');
-  mkdirSync(configDir, { recursive: true, mode: 0o700 });
-  const NOW = Date.now();
-  const oauth = {
-    schemaVersion: 2, base: f.url.replace(/\/mcp$/, ''), clientId: 'mcp_client', redirectPort: 8768, account: ACCOUNT,
-    accessToken: 'test-token', refreshToken: 'refresh-token', expiresAt: NOW + 3_600_000, consentStartedAt: NOW,
+function mongooseEntry(endpoint: MongooseEndpoint, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: `mongoose-${endpoint}`, transport: 'streamable-http', connector: 'mongoose', unknownClass: 'sensitive',
+    account: 'local', resource: MONGOOSE_ENDPOINT_AUDIENCES[endpoint], credentialRef: `mongoose-${endpoint}`,
+    enabled: true, allowEgress: true, url: `https://mongoose.dev.peat-cloud.com${MONGOOSE_ENDPOINT_PATHS[endpoint]}`, ...overrides,
   };
-  writeFileSync(join(configDir, 'mongoose-mcp.json'), JSON.stringify(oauth), { mode: 0o600 });
-  let store: Store | undefined;
-  let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
-  const stages: string[] = [];
-  try {
-    writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
-      schemaVersion: 1, grantMode: 'owner-trusted-reads',
-      endpoints: [{ id: 'mongoose', transport: 'streamable-http', url: f.url, connector: 'mongoose', account: ACCOUNT, resource: RESOURCE, credentialRef: 'mongoose-mcp', enabled: true, allowEgress: true, unknownClass: 'ordinary' }],
-    }), { mode: 0o600 });
-    store = new Store(join(dir, 'data'), toolsMigrations);
-    runtime = await composeMcpRuntime({
-      store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
-      connectorLog: (_connector, stage) => { stages.push(stage); },
-    });
-    assert.equal(runtime.status().endpoints[0]?.state, 'connected');
-    assert.equal(runtime.status().endpoints[0]?.error, undefined);
-    assert.deepEqual(stages, []);
-    assert.ok(runtime.registry.currentGrant('mongoose'));
-    assert.equal(f.calls.length, 0, 'no tool call ran during discovery');
-    assert.deepEqual(stages, []);
-  } finally {
-    if (runtime) await runtime.close();
-    await f.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-
-test('one widened read tool call carries the bearer resolved from the OAuth record', async () => {
-  const f = await fixture({ tools: [{ name: 'get_schema', inputSchema: { type: 'object', properties: {} } }] });
-  const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-oauth-call-'));
-  const configDir = join(dir, 'provider-config');
-  mkdirSync(configDir, { recursive: true, mode: 0o700 });
-  const NOW = Date.now();
-  writeFileSync(join(configDir, 'mongoose-mcp.json'), JSON.stringify({
-    schemaVersion: 2, base: f.url.replace(/\/mcp$/, ''), clientId: 'mcp_client', redirectPort: 8768, account: ACCOUNT,
-    accessToken: 'test-token', refreshToken: 'refresh-token', expiresAt: NOW + 3_600_000, consentStartedAt: NOW,
-  }), { mode: 0o600 });
-  const adapter = adapterFor(f.url, ref => mongooseAccessToken(configDir, ref));
-  try {
-    const digest = await approve(adapter.adapter, adapter.registry, ['get_schema']);
-    const result = await reader(adapter.adapter, adapter.registry, digest).call('get_schema', {});
-    assert.equal(result.state, 'completed');
-    assert.deepEqual(f.calls, [{ name: 'get_schema', arguments: {} }]);
-  } finally {
-    await adapter.adapter.close();
-    await f.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('Mongoose current contract: typed detail reads send ref, ticket number and company name through original schema validation', async t => {
-  const schemas = [
-    { name: 'read_knowledge_body', inputSchema: { type: 'object', properties: { ref: { type: 'string' }, cursor: { type: 'string' }, max_chars: { type: 'integer', minimum: 1, maximum: 9000 } }, required: ['ref'], additionalProperties: false } },
-    { name: 'get_ticket', inputSchema: { type: 'object', properties: { number: { type: ['integer', 'string'] }, body_offset: { type: 'integer' }, detail: { type: 'string', enum: ['summary', 'full'] } }, required: ['number'], additionalProperties: false } },
-    { name: 'get_company_profile', inputSchema: { type: 'object', properties: { company_name: { type: 'string' }, detail: { type: 'string', enum: ['overview', 'summary', 'commercial', 'full'] }, sections: { type: 'array', items: { type: 'string' } } }, required: ['company_name'], additionalProperties: false } },
-  ];
-  const f = await fixture({ tools: schemas }); t.after(() => f.close());
-  const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
-  const digest = await approve(adapter, registry, schemas.map(schema => schema.name));
-  const source = reader(adapter, registry, digest);
-  const body = await source.readKnowledgeBody({ ref: 'synthetic-ref', cursor: '1200', max_chars: 1200 });
-  assert.equal(body.state, 'completed');
-  assert.equal((await source.getTicket({ number: 17, body_offset: 1200, detail: 'full' })).state, 'completed');
-  assert.equal((await source.companyProfile({ company_name: 'Synthetic Company', detail: 'full', sections: ['overview'] })).state, 'completed');
-  assert.deepEqual(f.calls, [
-    { name: 'read_knowledge_body', arguments: { ref: 'synthetic-ref', cursor: '1200', max_chars: 1200 } },
-    { name: 'get_ticket', arguments: { number: 17, body_offset: 1200, detail: 'full' } },
-    { name: 'get_company_profile', arguments: { company_name: 'Synthetic Company', detail: 'full', sections: ['overview'] } },
-  ]);
-  const before = f.calls.length;
-  assert.equal((await source.call('read_knowledge_body', { id: 'synthetic-ref' })).state, 'refused', 'old id arguments remain refused by the original schema');
-  assert.equal(f.calls.length, before);
-});
-
-for (const [label, tool, data] of [
-  ['flat', 'search_mongoose', { results: [{ entity_type: 'knowledge', id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active', url: 'https://example.invalid/kb/17' }], has_more: true, next_cursor: 1, total_estimate: 2 }],
-  ['grouped', 'search_mongoose', { hits: { company: [{ company_name: 'Synthetic Company', name: 'Synthetic Company', snippet: 'Company evidence.' }], knowledge: [{ id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active' }], offering: [], ticket: [{ number: 17, title: 'Synthetic ticket', snippet: 'Ticket evidence.' }] }, has_more: true, next_cursor: 1, total: 4 }],
-  ['ask', 'ask_mongoose', { found: false, has_more: false, results: { hits: { knowledge: [{ id: 'kb-17', title: 'Synthetic launch', snippet: 'Launch delayed to Monday.', status: 'active' }] } } }],
-] as const) {
-  test(`Mongoose evidence projection: ${label} preserves entity identity, snippets and answerability through the actual SDK`, async t => {
-    const f = await fixture({ text: JSON.stringify(data) }); t.after(() => f.close());
-    const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
-    const digest = await approve(adapter, registry);
-    const result = await reader(adapter, registry, digest).call(tool, tool === 'ask_mongoose' ? { question: 'synthetic launch' } : { query: 'synthetic launch' });
-    const projected = projectMongooseResult(adapter, result); assert.equal(projected.ok, true); if (!projected.ok) return;
-    assert.match(projected.projection.text, /kb-17/); assert.match(projected.projection.text, /Launch delayed to Monday/); assert.match(projected.projection.text, /active/);
-    if (label !== 'ask') { assert.equal(projected.projection.partial, true); assert.match(projected.projection.text, /next_cursor: 1/); }
-    else { assert.match(projected.projection.text, /answerable: false/); assert.equal(projected.projection.partial, false, 'bounded ask with no source or local omissions remains complete'); }
-    if (label === 'grouped') { assert.match(projected.projection.text, /company_name: Synthetic Company/); assert.match(projected.projection.text, /number: 17/); }
-  });
 }
-test('Mongoose evidence projection: a complete chunk is not a whole body and preserves its source cursor', async t => {
-  const f = await fixture({ text: JSON.stringify({ body: 'First received piece.', complete: true, whole_body: false, next_cursor: '17', body_char_count: 9000 }) }); t.after(() => f.close());
-  const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
-  const digest = await approve(adapter, registry);
-  const result = await reader(adapter, registry, digest).readKnowledgeBody({ ref: 'synthetic-ref' });
-  const projected = projectMongooseResult(adapter, result); assert.equal(projected.ok, true); if (!projected.ok) return;
-  assert.equal(projected.projection.partial, true); assert.equal(projected.projection.omittedCharacters, 0);
-  assert.match(projected.projection.text, /whole_body: false/); assert.match(projected.projection.text, /next_cursor: 17/);
+
+function load(entries: unknown[]) {
+  const c = configDir();
+  try {
+    writeFileSync(join(c.dir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, endpoints: entries }), { mode: 0o600 });
+    return loadMcpEndpoints({ configDir: c.dir });
+  } finally { c.close(); }
+}
+
+test('the installed catalog carries exactly three mongoose endpoints with distinct resources', () => {
+  const loaded = load(MONGOOSE_ENDPOINTS.map(endpoint => mongooseEntry(endpoint)));
+  assert.equal(loaded.state, 'configured');
+  if (loaded.state !== 'configured') return;
+  const mongoose = loaded.catalog.endpoints.filter(endpoint => endpoint.connector === 'mongoose');
+  assert.equal(mongoose.length, 3);
+  assert.deepEqual(mongoose.map(endpoint => endpoint.id).sort(), ['mongoose-crm', 'mongoose-data', 'mongoose-knowledge']);
+  assert.deepEqual(mongoose.map(endpoint => endpoint.resource).sort(), ['mongoose:crm', 'mongoose:data', 'mongoose:knowledge']);
+  assert.equal(new Set(mongoose.map(endpoint => endpoint.credentialRef)).size, 3);
 });
 
-test('Mongoose literal projection: knowledge subtype is not an entity type and ask trimming retains its answerability contract', async t => {
-  const literal = JSON.parse(readFileSync(new URL('../../test/fixtures/mongoose-literal-sanitized.json', import.meta.url), 'utf8')) as Record<string, unknown>;
-  const ask = { found: true, answer_state: 'answered', has_more: false, results: { hits: { knowledge: [{ id: 'kb-17', name: 'Synthetic evidence', snippet: 'A received citation.', snippet_truncated: true }] }, hits_total: 12, hits_truncated: true }, answerability: { decision: 'read_evidence', next_tool: { name: 'read_knowledge_body', arguments: { ref: 'engineering/synthetic' } } } };
-  for (const [label, tool, data] of [['flat', 'search_mongoose', literal['flat']], ['grouped', 'search_mongoose', literal['grouped']], ['body', 'read_knowledge_body', literal['bodyChunk']], ['ask', 'ask_mongoose', ask]] as const) {
-    const f = await fixture({ text: JSON.stringify(data) }); t.after(() => f.close());
-    const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
-    const digest = await approve(adapter, registry);
-    const result = await reader(adapter, registry, digest).call(tool, tool === 'ask_mongoose' ? { question: 'synthetic' } : tool === 'read_knowledge_body' ? { ref: 'engineering/synthetic' } : { query: 'synthetic' });
-    const projected = projectMongooseResult(adapter, result); assert.equal(projected.ok, true); if (!projected.ok) continue;
-    assert.equal(projected.projection.partial, true);
-    assert.doesNotMatch(projected.projection.text, /fixture@example.invalid|system_role/);
-    if (label === 'flat') { assert.match(projected.projection.text, /entity: knowledge/); assert.doesNotMatch(projected.projection.text, /entity: reference/); }
-    if (label === 'ask') { assert.match(projected.projection.text, /hits_truncated: true/); assert.match(projected.projection.text, /answerability.decision: read_evidence/); assert.match(projected.projection.text, /read_knowledge_body/); assert.match(projected.projection.text, /snippet_truncated: true/); assert.equal(projected.projection.omittedCharacters, 0); }
+test('a mongoose endpoint naming /mcp, a toolset or admin is refused with a closed reason', () => {
+  const cases: unknown[][] = [
+    [mongooseEntry('knowledge', { url: 'https://mongoose.dev.peat-cloud.com/mcp' }), mongooseEntry('data'), mongooseEntry('crm')],
+    [mongooseEntry('knowledge', { url: 'https://mongoose.dev.peat-cloud.com/mcp/' }), mongooseEntry('data'), mongooseEntry('crm')],
+    [mongooseEntry('knowledge', { url: 'https://mongoose.dev.peat-cloud.com/mcp?toolset=core' }), mongooseEntry('data'), mongooseEntry('crm')],
+    [mongooseEntry('knowledge', { url: 'https://mongoose.dev.peat-cloud.com/mcp/knowledge', resource: 'mongoose:knowledge' }), mongooseEntry('data'), mongooseEntry('crm'), mongooseEntry('crm', { id: 'mongoose-admin', url: 'https://mongoose.dev.peat-cloud.com/mcp/admin', resource: 'mongoose:admin', credentialRef: 'mongoose-admin' })],
+    [mongooseEntry('knowledge'), mongooseEntry('data')],
+    [mongooseEntry('knowledge'), mongooseEntry('data'), mongooseEntry('crm', { resource: 'mongoose:knowledge' })],
+  ];
+  for (const entries of cases) {
+    assert.throws(() => load(entries), (error: unknown) => mcpErrorCode(error) === 'invalid_source');
   }
 });
 
-test('Mongoose literal projection: local coverage clipping remains bounded and character accounting is exact', async t => {
-  const f = await fixture({ text: JSON.stringify({ found: false, has_more: false, results: { hits: { knowledge: [{ id: 'synthetic', name: 'Synthetic evidence', snippet: 'A received citation.' }] } }, answerability: { decision: 'requires_tool', next_tool: { name: 'search_mongoose', arguments: { query: 'q'.repeat(6000) } } } }) }); t.after(() => f.close());
-  const { registry, adapter } = adapterFor(f.url); t.after(() => adapter.close());
-  const digest = await approve(adapter, registry);
-  const projected = projectMongooseResult(adapter, await reader(adapter, registry, digest).ask({ question: 'synthetic' })); assert.equal(projected.ok, true); if (!projected.ok) return;
-  assert(projected.projection.text.length <= 4000); assert.equal(projected.projection.partial, true);
-  assert.equal(projected.projection.text.length + projected.projection.omittedCharacters, projected.projection.originalCharacters);
-  assert.equal(f.calls.length, 1, 'source next-tool advice is never executed by projection');
+// --- acceptance 2: one audience per endpoint, never crossed ---
+
+test('each endpoint carries its own audience and its own token, never the other endpoint token', async t => {
+  const servers = [] as Awaited<ReturnType<typeof fixture>>[];
+  t.after(async () => { for (const server of servers) await server.close(); });
+  for (const endpoint of MONGOOSE_ENDPOINTS) {
+    const f = await fixture(endpoint, { text: endpoint === 'knowledge' ? SEARCH_TEXT : JSON.stringify({ outcome: 'evidence', items: [] }) });
+    servers.push(f);
+    const a = adapterFor(endpoint, f.url, `${endpoint}-token`);
+    const digest = await approve(a.adapter, a.registry, endpoint, a.endpointId);
+    const reader = readerFor(a.adapter, a.registry, endpoint, a.endpointId, digest);
+    const first = MONGOOSE_ENDPOINT_TOOLS[endpoint][0] as string;
+    const result = await reader.call(first, first === 'search' ? { query: 'agri' } : {}, undefined);
+    assert.equal(result.state, 'completed', `${endpoint} completed`);
+    // Every authenticated request carried this endpoint's own token, and never another endpoint's.
+    assert(f.authorization.length > 0, `${endpoint} sent an authenticated request`);
+    for (const header of f.authorization) assert.equal(header, `Bearer ${endpoint}-token`);
+    await a.adapter.close();
+  }
+  assert.deepEqual(MONGOOSE_ENDPOINTS.map(endpoint => MONGOOSE_ENDPOINT_AUDIENCES[endpoint]), ['mongoose:knowledge', 'mongoose:data', 'mongoose:crm']);
 });
 
+// --- acceptance 3: search answer then read, browse lists, restricted stays restricted ---
 
-// H19: 92 connector_failure credential rows, one at every start, for a connector no research route
-// uses. A mongoose endpoint with no stored credential is not signed in yet: the start says so once and
-// opens nothing, and the next connect after a login probes it for real.
-test('a mongoose endpoint with no stored credential is not probed at start', () => {
+test('a company question runs search mode answer then read on the top ref and renders a source card', async t => {
+  const k = await knowledge({ replies: { search: SEARCH_TEXT, read: READ_TEXT } });
+  t.after(() => k.f.close());
+  t.after(() => k.a.adapter.close());
+  const result = await k.reader.searchCompany({ query: 'agri input pricing' });
+  assert.equal(result.state, 'completed');
+  // Every wire argument is one the published search schema carries; the depth read is a second call.
+  assert.deepEqual(k.f.calls, [
+    { name: 'search', arguments: { query: 'agri input pricing', mode: 'answer', limit: 5 } },
+    { name: 'read', arguments: { ref: 'item-9', depth: 'summary' } },
+  ]);
+  const projected = projectMongooseResult(k.a.adapter, result);
+  assert.equal(projected.ok, true);
+  if (!projected.ok) return;
+  assert.match(projected.projection.text, /Agri input pricing/);
+  assert.match(projected.projection.text, /source: https:\/\/mongoose\.dev\.peat-cloud\.com\/knowledge\/agri-pricing/);
+});
+
+test('a listing ask runs search mode browse and reads nothing', async t => {
+  const k = await knowledge();
+  t.after(() => k.f.close());
+  t.after(() => k.a.adapter.close());
+  const result = await k.reader.searchCompany({ query: 'companies', mode: 'browse' });
+  assert.equal(result.state, 'completed');
+  assert.deepEqual(k.f.calls, [{ name: 'search', arguments: { query: 'companies', mode: 'browse', limit: 5 } }]);
+});
+
+test('a restricted search yields the restricted reason, never empty evidence', async t => {
+  const k = await knowledge({ text: JSON.stringify({ outcome: 'restricted', items: [], next_cursor: null, next_tool: null, restriction: { code: 'restricted', message: 'Team gate' }, request_id: 'req-2' }) });
+  t.after(() => k.f.close());
+  t.after(() => k.a.adapter.close());
+  const result = await k.reader.searchCompany({ query: 'payroll numbers' });
+  assert.equal(result.state, 'completed');
+  if (result.state !== 'completed') return;
+  assert.equal(mongooseClosedReason('restricted'), 'restricted');
+  const projected = projectMongooseResult(k.a.adapter, result);
+  assert.equal(projected.ok, true);
+  if (!projected.ok) return;
+  assert.match(projected.projection.text, /restricted/);
+});
+
+// --- acceptance 4: closed owner lines, never a failure ---
+
+test('a data read without a Lightdash token is one closed owner line, not a failure', async t => {
+  const f = await fixture('data', { text: JSON.stringify({ error_code: 'data_not_connected', message: 'Lightdash is not connected for your account.', retryable: false, suggestions: [] }) });
+  t.after(() => f.close());
+  const a = adapterFor('data', f.url, 'data-token');
+  const digest = await approve(a.adapter, a.registry, 'data', a.endpointId);
+  t.after(() => a.adapter.close());
+  const reader = readerFor(a.adapter, a.registry, 'data', a.endpointId, digest);
+  const result = await reader.call('run_metric_query', {});
+  assert.equal(result.state, 'completed');
+  if (result.state !== 'completed') return;
+  const projected = projectMongooseResult(a.adapter, result);
+  assert.equal(projected.ok, true);
+  if (!projected.ok) return;
+  assert.equal(mongooseOwnerLine('data_not_connected'), 'your Lightdash token is not connected in Mongoose settings');
+  assert.match(projected.projection.text, /your Lightdash token is not connected in Mongoose settings/);
+  assert.equal(mongooseToolStatus(result), undefined);
+});
+
+test('R2: get_company on crm carries a company profile, knowledge list_companies plus read is the fallback', () => {
+  assert.deepEqual(mongooseProfileRoute(true), { endpoint: 'crm', tool: 'get_company' });
+  assert.deepEqual(mongooseProfileRoute(false), { endpoint: 'knowledge', tool: 'list_companies', then: 'read' });
+  assert.equal(MONGOOSE_ENDPOINT_TOOLS.crm.includes('get_company'), true);
+  assert.equal(MONGOOSE_ENDPOINT_TOOLS.knowledge.includes('list_companies'), true);
+  assert.equal(MONGOOSE_ENDPOINT_TOOLS.knowledge.includes('read'), true);
+});
+
+test('an unauthenticated endpoint is a typed refusal, never an empty success', async t => {
+  const f = await fixture('knowledge', { status: 401 });
+  t.after(() => f.close());
+  const a = adapterFor('knowledge', f.url, 'knowledge-token');
+  const digest = await approve(a.adapter, a.registry, 'knowledge', a.endpointId);
+  t.after(() => a.adapter.close());
+  const result = await readerFor(a.adapter, a.registry, 'knowledge', a.endpointId, digest).searchCompany({ query: 'agri' });
+  assert.notEqual(result.state, 'completed');
+  assert.equal(f.calls.length, 0);
+});
+
+test('argument budgets refuse malformed input before any wire call', async t => {
+  const k = await knowledge();
+  t.after(() => k.f.close());
+  t.after(() => k.a.adapter.close());
+  const empty = await k.reader.searchCompany({ query: '   ' });
+  assert.equal(empty.state, 'refused');
+  assert.equal(empty.state === 'refused' ? empty.reason : '', 'invalid-query');
+  const wide = await k.reader.searchCompany({ query: 'agri', limit: 11 });
+  assert.equal(wide.state === 'refused' ? wide.reason : '', 'limit-out-of-budget');
+  const extra = await k.reader.searchCompany({ query: 'agri', cursor: 'c', extra: 1 } as never);
+  assert.equal(extra.state === 'refused' ? extra.reason : '', 'invalid-search-input');
+  assert.equal(k.f.calls.length, 0);
+});
+
+test('a large answer is projected as bounded and partial-marked', async t => {
+  const k = await knowledge({ text: JSON.stringify({ outcome: 'evidence', ref: 'x', depth: 'full', items: [], body: 'z'.repeat(9000), next_cursor: null, coverage: { depth: 'full', complete: true }, restriction: null, request_id: 'r' }) });
+  t.after(() => k.f.close());
+  t.after(() => k.a.adapter.close());
+  const result = await k.reader.searchCompany({ query: 'agri' });
+  assert.equal(result.state, 'completed');
+  if (result.state !== 'completed') return;
+  const projected = projectMongooseResult(k.a.adapter, result);
+  assert.equal(projected.ok, true);
+  if (!projected.ok) return;
+  assert.equal(projected.projection.partial, true);
+  assert(projected.projection.omittedCharacters > 0);
+  assert(projected.projection.text.length <= 4000);
+});
+
+test('a crm sign-in refused for teams is one closed owner line', () => {
+  assert.equal(mongooseClosedReason('endpoint_not_allowed'), 'endpoint_not_allowed');
+  assert.equal(mongooseOwnerLine('endpoint_not_allowed'), 'your account is not in the Mongoose CRM teams');
+});
+
+test('a knowledge endpoint with no stored credential parks the sign-in line naming that endpoint', () => {
   assert.equal(mongooseCredentialAtStart('mongoose', { hasRefreshMaterial: false, consentExpired: false }), 'not_signed_in');
   assert.equal(mongooseCredentialAtStart('mongoose', { hasRefreshMaterial: true, consentExpired: false }), 'probe');
-  assert.equal(mongooseCredentialAtStart('google', { hasRefreshMaterial: false, consentExpired: false }), 'probe', 'a read connector still reports its missing credential');
+  assert.equal(mongooseCredentialAtStart('mongoose', { hasRefreshMaterial: true, consentExpired: true }), 'not_signed_in');
   assert.equal(mongooseCredentialAtStart('mattermost', { hasRefreshMaterial: false, consentExpired: true }), 'probe');
 });
 
+// --- acceptance 5: no write tool name in any envelope ---
 
-// R9: the sign-in is finished by the product, not by a restart. After a login writes the credential,
-// recover() settles the parked endpoint again and it opens for real.
-test('a mongoose endpoint parked at not_signed_in connects on recover after a login', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-login-'));
-  const config = join(dir, 'provider-config');
-  mkdirSync(config, { recursive: true, mode: 0o700 });
-  writeFileSync(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [
-    { id: 'mongoose', transport: 'streamable-http', url: 'http://127.0.0.1:9/mcp', connector: 'mongoose', account: 'alpha', resource: 'mongodb', credentialRef: 'mongoose-token', enabled: true, allowEgress: true, unknownClass: 'ordinary' },
-  ] }), { mode: 0o600 });
-  const store = new Store(join(dir, 'state'), [...toolsMigrations]);
-  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: config, lookupAuthority: async () => null });
-  const report = (): { state: string; error?: string } | undefined =>
-    runtime.status().endpoints.find((endpoint: { id: string }) => endpoint.id === 'mongoose');
-  try {
-    assert.deepEqual([report()?.state, report()?.error], ['error', 'not_signed_in'], 'nothing is opened before a sign-in');
-    writeFileSync(join(config, 'mongoose-token.json'), JSON.stringify({ schemaVersion: 1, token: 'synthetic-token' }), { mode: 0o600 });
-    await runtime.recover();
-    assert.notEqual(report()?.error, 'not_signed_in', 'the parked endpoint is settled again once the credential exists');
-  } finally {
-    await runtime.close();
-    store.close();
-    rmSync(dir, { recursive: true, force: true });
+test('no write tool name appears in any endpoint envelope', () => {
+  for (const endpoint of MONGOOSE_ENDPOINTS) {
+    for (const name of MONGOOSE_ENDPOINT_TOOLS[endpoint]) {
+      assert.equal(MONGOOSE_DENIED_TOOLS.includes(name), false, `${endpoint} never carries ${name}`);
+    }
+  }
+  assert.equal(new Set(MONGOOSE_ENDPOINTS.flatMap(endpoint => [...MONGOOSE_ENDPOINT_TOOLS[endpoint]])).size, MONGOOSE_READ_TOOLS.length, 'the three envelopes are disjoint');
+  for (const name of ['run_sql', 'create_content', 'update_content', 'create_scheduled_delivery', 'set_project', 'create_ticket', 'update_ticket', 'claim_ticket', 'get_ticket', 'ask_mongoose', 'search_mongoose', 'get_knowledge_item', 'read_knowledge_body', 'get_company_profile', 'get_company_crm', 'get_access_report', 'provision_user']) {
+    assert.equal(MONGOOSE_READ_TOOLS.includes(name), false, `${name} is not a read`);
+    assert.equal(MONGOOSE_DENIED_TOOLS.includes(name), true, `${name} is denied`);
   }
 });
 
-// #502: a refresh the server refuses (invalid_grant) is a typed credential failure, not an unknown
-// transport failure, and the source is named as needing a sign-in again.
-test('a refused token refresh reports credential-refresh-failed and one closed line', async () => {
-  const f = await fixture({ requireBearer: false });
-  const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-refresh-'));
-  const configDir = join(dir, 'provider-config');
-  mkdirSync(configDir, { recursive: true, mode: 0o700 });
-  // A synthetic token endpoint that refuses the refresh exactly as the server does: invalid_grant.
-  const tokenServer = createServer((req, res) => { req.resume(); req.on('end', () => { res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'invalid_grant' })); }); });
-  tokenServer.listen(0, '127.0.0.1'); await once(tokenServer, 'listening');
-  const tokenPort = (tokenServer.address() as { port: number }).port;
-  const NOW = Date.now();
-  writeFileSync(join(configDir, 'mongoose-mcp.json'), JSON.stringify({
-    schemaVersion: 2, base: `http://127.0.0.1:${tokenPort}`, clientId: 'mcp_client', redirectPort: 8768, account: ACCOUNT,
-    accessToken: 'stale-token', refreshToken: 'refresh-token', expiresAt: NOW - 60_000, consentStartedAt: NOW - 1_000,
-  }), { mode: 0o600 });
-  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
-    schemaVersion: 1, grantMode: 'owner-trusted-reads',
-    endpoints: [{ id: 'mongoose', transport: 'streamable-http', url: f.url, connector: 'mongoose', account: ACCOUNT,
-      resource: RESOURCE, credentialRef: 'mongoose-mcp', enabled: true, allowEgress: true, unknownClass: 'sensitive' }],
-  }), { mode: 0o600 });
-  let store: Store | undefined;
-  let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
-  const failures: { connector: string; stage: string; detail?: { reason?: string; endpointId?: string } }[] = [];
-  try {
-    store = new Store(join(dir, 'data'), toolsMigrations);
-    runtime = await composeMcpRuntime({
-      store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
-      connectorLog: (connector, stage, detail) => { failures.push({ connector, stage, ...(detail ? { detail } : {}) }); },
-    });
-    // The refresh the host needs before its first read is refused: discovery never gets a bearer.
-    const report = runtime.status().endpoints[0];
-    assert.equal(report?.state, 'error');
-    assert.equal(report?.reasonCode ?? report?.exception?.code ?? report?.error, 'credential-refresh-failed',
-      `the endpoint report names the cause, saw ${JSON.stringify(report)}`);
-    const line = failures.filter(failure => failure.detail?.reason === 'credential-refresh-failed');
-    assert.equal(line.length, 1, `exactly one closed line, saw ${JSON.stringify(failures)}`);
-    assert.equal(failures.length, 1, `and no second line for the same endpoint, saw ${JSON.stringify(failures)}`);
-    assert.equal(line[0]?.detail?.endpointId, 'mongoose');
-    assert.equal(line[0]?.stage, 'credential');
-    // And the source is named as unreachable with that closed reason, so the reply can say sign in again.
-    assert.deepEqual(unreachableSourcesForSession([], [report as never]),
-      [{ source: 'mongoose', reason: 'credential-refresh-failed' }]);
-    assert.equal(plainReason('credential-refresh-failed'), 'sign in again');
-  } finally {
-    if (runtime) await runtime.close();
-    store?.close(); await f.close();
-    tokenServer.closeAllConnections(); await new Promise<void>(done => tokenServer.close(() => done()));
-    rmSync(dir, { recursive: true, force: true });
-  }
+test('a tool outside the endpoint envelope refuses before dispatch', async t => {
+  const k = await knowledge();
+  t.after(() => k.f.close());
+  t.after(() => k.a.adapter.close());
+  const result = await k.reader.call('run_sql', { sql: 'select 1' });
+  assert.equal(result.state, 'refused');
+  assert.equal(result.state === 'refused' ? result.reason : '', 'tool-not-in-envelope');
+  assert.equal(k.f.calls.length, 0);
 });
 
-// SIGNIN: a refused refresh parks the endpoint, and the sign-in that lands in place reconnects it.
-// The owner finishes a sign-in and the connector comes back with no host restart (R9).
-test('a refused refresh parks mongoose and the landing sign-in reconnects it', async () => {
-  const f = await fixture({ requireBearer: true });
-  const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-landing-'));
-  const configDir = join(dir, 'provider-config');
-  mkdirSync(configDir, { recursive: true, mode: 0o700 });
-  let refreshes = 0;
-  const tokenServer = createServer((req, res) => {
-    req.resume(); req.on('end', () => {
-      refreshes += 1;
-      res.writeHead(400, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: 'invalid_grant' }));
-    });
-  });
-  tokenServer.listen(0, '127.0.0.1'); await once(tokenServer, 'listening');
-  const tokenPort = (tokenServer.address() as { port: number }).port;
-  const NOW = Date.now();
-  const record = (refreshToken: string, accessToken: string, expiresAt: number) => JSON.stringify({
-    schemaVersion: 2, base: `http://127.0.0.1:${tokenPort}`, clientId: 'mcp_client', redirectPort: 8768, account: ACCOUNT,
-    accessToken, refreshToken, expiresAt, consentStartedAt: NOW - 1_000,
-  });
-  writeFileSync(join(configDir, 'mongoose-mcp.json'), record('refresh-token', 'stale-token', NOW - 60_000), { mode: 0o600 });
-  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
-    schemaVersion: 1, grantMode: 'owner-trusted-reads',
-    endpoints: [{ id: 'mongoose', transport: 'streamable-http', url: f.url, connector: 'mongoose', account: ACCOUNT,
-      resource: RESOURCE, credentialRef: 'mongoose-mcp', enabled: true, allowEgress: true, unknownClass: 'sensitive' }],
-  }), { mode: 0o600 });
-  let store: Store | undefined;
-  let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
-  try {
-    store = new Store(join(dir, 'data'), toolsMigrations);
-    runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
-    assert.equal(runtime.status().endpoints[0]?.error, 'credential-refresh-failed', 'the refused refresh is a credential failure');
-    // Nothing was signed in, so a recover pass must not re-probe the same dead record.
-    await runtime.recover();
-    assert.equal(refreshes, 1, `the dead record is not re-probed, saw ${refreshes} refreshes`);
-    assert.equal(runtime.status().endpoints[0]?.error, 'credential-refresh-failed');
-    // The sign-in lands: a fresh record with a valid access token replaces the refused one.
-    writeFileSync(join(configDir, 'mongoose-mcp.json'), record('fresh-refresh', 'test-token', NOW + 3_600_000), { mode: 0o600 });
-    await runtime.recover();
-    const after = runtime.status().endpoints[0];
-    assert.equal(after?.state, 'connected', `the signed-in connector reconnects, saw ${JSON.stringify(after)}`);
-    assert.equal(after?.error, undefined);
-  } finally {
-    if (runtime) await runtime.close();
-    store?.close(); await f.close();
-    tokenServer.closeAllConnections(); await new Promise<void>(done => tokenServer.close(() => done()));
-    rmSync(dir, { recursive: true, force: true });
+test('the read classifier never admits a write whatever the annotations say', () => {
+  for (const name of MONGOOSE_DENIED_TOOLS) assert.equal(mongooseReadOnly({ name, annotations: { readOnlyHint: true } }), false, name);
+  assert.equal(mongooseReadOnly({ name: 'search', annotations: { readOnlyHint: true } }), true);
+  // R2: only the server's own readOnlyHint makes a read; a name is never read on its spelling.
+  assert.equal(mongooseReadOnly({ name: 'list_companies' }), false);
+  assert.equal(mongooseReadOnly({ name: 'search' }), false);
+  assert.equal(mongooseReadOnly({ name: 'search', annotations: {} }), false);
+});
+
+test('mongoose connect failures map to a closed stage', () => {
+  assert.deepEqual([...MONGOOSE_FAILURE_STAGES], ['credential', 'spawn', 'handshake', 'first_call']);
+  assert.equal(mongooseFailureStage('credential-missing'), 'credential');
+  assert.equal(mongooseFailureStage('protocol', 'child_exited'), 'spawn');
+  assert.equal(mongooseFailureStage('discovery-required'), 'handshake');
+  assert.equal(mongooseFailureStage('tool-error'), 'first_call');
+});
+
+test('the mongoose descriptor declares only the three endpoint envelopes', () => {
+  const descriptor = connectorDescriptor('mongoose');
+  assert(descriptor);
+  if (!descriptor) return;
+  assert.deepEqual([...descriptor.envelope].sort(), [...MONGOOSE_READ_TOOLS].sort());
+  for (const endpoint of MONGOOSE_ENDPOINTS) {
+    for (const name of MONGOOSE_ENDPOINT_TOOLS[endpoint]) assert(descriptor.envelope.includes(name), `${endpoint} declares ${name}`);
   }
 });

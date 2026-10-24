@@ -1,6 +1,7 @@
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, openSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { fields, parseJson, readPrivate } from '../config/files.js';
+import { MONGOOSE_ENDPOINTS, MONGOOSE_ENDPOINT_AUDIENCES, type MongooseEndpoint } from '../connectors/mongoose.js';
 
 /**
  * Host-owned OAuth state for the Mongoose connector. One record, one writer (this host), one file in
@@ -11,8 +12,10 @@ import { fields, parseJson, readPrivate } from '../config/files.js';
  * closed code and never a token, a URL query or a response body.
  */
 export const MONGOOSE_RECORD_SCHEMA = 2;
+/** One protected-resource probe is bounded, so a hung discovery never holds a bootstrap. */
+export const MONGOOSE_DISCOVERY_TIMEOUT_MS = 5_000;
 /** Exactly the keys the login writes and the runtime accepts, so doc and reader cannot drift. */
-export const MONGOOSE_OAUTH_KEYS = ['schemaVersion', 'base', 'clientId', 'redirectPort', 'account', 'accessToken', 'refreshToken', 'expiresAt', 'consentStartedAt'] as const;
+export const MONGOOSE_OAUTH_KEYS = ['schemaVersion', 'base', 'clientId', 'redirectPort', 'account', 'endpoint', 'audience', 'accessToken', 'refreshToken', 'expiresAt', 'consentStartedAt'] as const;
 export const MONGOOSE_RECORD_LIMIT = 8 * 1024;
 /** Refresh this long before the advertised expiry so a request never races the deadline. */
 export const MONGOOSE_REFRESH_MARGIN_MS = 120_000;
@@ -28,6 +31,10 @@ export interface MongooseOAuthRecord {
   clientId: string;
   redirectPort: number;
   account: string;
+  /** Which of the three endpoints this record signs in to; one record per endpoint. */
+  endpoint: MongooseEndpoint;
+  /** The OAuth resource this token is bound to, and the only endpoint it may be presented at. */
+  audience: string;
   accessToken: string;
   refreshToken: string;
   /** Epoch milliseconds when the access token stops being accepted. */
@@ -40,7 +47,7 @@ export interface MongooseOAuthRecord {
  * A refresh that never reached the server is its own code: a network blip is not a refusal, so the
  * host retries it instead of asking the owner to sign in again.
  */
-export type MongooseCredentialCode = 'credential-missing' | 'credential-refresh-failed' | 'credential-refresh-unavailable' | 'credential-refresh-busy' | 'credential-consent-expired';
+export type MongooseCredentialCode = 'credential-missing' | 'credential-refresh-failed' | 'credential-refresh-unavailable' | 'credential-refresh-busy' | 'credential-consent-expired' | 'credential-unavailable';
 
 export class MongooseCredentialError extends Error {
   constructor(readonly code: MongooseCredentialCode) { super(code); }
@@ -64,12 +71,14 @@ export function readMongooseOAuth(configDir: string, reference: string): Mongoos
   let record: Record<string, unknown>;
   try { record = fields(raw, MONGOOSE_OAUTH_KEYS, 'invalid_secret'); }
   catch { return undefined; }
-  const { base, clientId, redirectPort, account, accessToken, refreshToken, expiresAt, consentStartedAt } = record;
+  const { base, clientId, redirectPort, account, endpoint, audience, accessToken, refreshToken, expiresAt, consentStartedAt } = record;
   if (typeof base !== 'string' || !/^https?:\/\/[^\s/?#]+$/.test(base)) return undefined;
+  if (typeof endpoint !== 'string' || !(MONGOOSE_ENDPOINTS as readonly string[]).includes(endpoint)) return undefined;
+  if (typeof audience !== 'string' || audience !== MONGOOSE_ENDPOINT_AUDIENCES[endpoint as MongooseEndpoint]) return undefined;
   if (!secret(clientId) || !secret(account) || !secret(accessToken) || !secret(refreshToken)) return undefined;
   if (!Number.isSafeInteger(redirectPort) || (redirectPort as number) < 1 || (redirectPort as number) > 65535) return undefined;
   if (!timestamp(expiresAt) || !timestamp(consentStartedAt)) return undefined;
-  return { schemaVersion: MONGOOSE_RECORD_SCHEMA, base, clientId, redirectPort: redirectPort as number, account, accessToken, refreshToken, expiresAt: expiresAt as number, consentStartedAt: consentStartedAt as number };
+  return { schemaVersion: MONGOOSE_RECORD_SCHEMA, base, clientId, redirectPort: redirectPort as number, account, endpoint: endpoint as MongooseEndpoint, audience, accessToken, refreshToken, expiresAt: expiresAt as number, consentStartedAt: consentStartedAt as number };
 }
 
 /** Atomic replace: a private temp file in the same directory, then one rename. */
@@ -93,9 +102,43 @@ export function writeMongooseOAuth(configDir: string, reference: string, record:
   }
 }
 
+/**
+ * RFC 9728 discovery of one endpoint's protected-resource document: the audience the token must be
+ * bound to and the authorization server that issues it. A document that names another audience is
+ * undefined, so a data token can never be handed to the knowledge endpoint.
+ */
+export async function discoverMongooseResource(
+  post: typeof fetch, resourceUrl: string, audience: string, timeoutMs = MONGOOSE_DISCOVERY_TIMEOUT_MS,
+): Promise<{ audience: string; authorizationServer: string } | undefined> {
+  let target: URL;
+  try { target = new URL(resourceUrl); } catch { return undefined; }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const document = await post(`${target.origin}/.well-known/oauth-protected-resource${target.pathname.replace(/\/$/, '')}`,
+      { method: 'GET', headers: { accept: 'application/json' }, signal: controller.signal });
+    if (!document.ok) return undefined;
+    const body: unknown = await document.json();
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) return undefined;
+    const declared = (body as Record<string, unknown>)['resource'];
+    if (declared !== audience) return undefined;
+    const servers = (body as Record<string, unknown>)['authorization_servers'];
+    const issuer = Array.isArray(servers) && secret(servers[0]) ? servers[0] : target.origin;
+    return { audience, authorizationServer: issuer };
+  } catch { return undefined; } finally { clearTimeout(timer); }
+}
+
+/**
+ * One 401 that advertises its protected-resource document is the token being refused for this audience:
+ * a closed credential reason for this endpoint only, never a retry against another endpoint. Any other
+ * status is not that verdict.
+ */
+export function mongooseCredentialRefusal(status: number, resourceMetadata: string | undefined): 'credential-unavailable' | undefined {
+  return status === 401 && resourceMetadata !== undefined && resourceMetadata.length > 0 ? 'credential-unavailable' : undefined;
+}
+
 /** The startup presence check: a usable record exists, without refreshing and without any network. */
-export function mongooseCredentialPresent(configDir: string, reference: string): boolean {
-  const record = readMongooseOAuth(configDir, reference);
+export function mongooseCredentialPresent(configDir: string, reference: string): boolean {  const record = readMongooseOAuth(configDir, reference);
   return record !== undefined && secret(record.refreshToken);
 }
 
@@ -181,7 +224,7 @@ interface TokenResponse { access_token?: unknown; refresh_token?: unknown; expir
 async function refreshMongooseOAuth(record: MongooseOAuthRecord, options: MongooseAuthOptions): Promise<MongooseOAuthRecord> {
   const now = options.now ?? Date.now;
   const post = options.fetch ?? fetch;
-  const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: record.refreshToken, client_id: record.clientId });
+  const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: record.refreshToken, client_id: record.clientId, resource: record.audience });
   let response: Response;
   try {
     response = await post(`${record.base}/oauth/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body });

@@ -341,13 +341,15 @@ test('mcp credential resolver reads an owner-only synthetic file and refuses a m
   const configDir = join(dir, 'provider-config');
   mkdirSync(configDir, { recursive: true, mode: 0o700 }); chmodSync(configDir, 0o700);
   privateJSON(join(configDir, 'mcp.json'), { schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [
-    { id: 'mongo', transport: 'streamable-http', url: 'https://synthetic.invalid/mcp', connector: 'mongoose', account: 'alpha', resource: 'mongodb', credentialRef: 'mongo', enabled: true, allowEgress: true, unknownClass: 'ordinary' },
+    { id: 'mongoose-knowledge', transport: 'streamable-http', url: 'https://synthetic.invalid/mcp/knowledge', connector: 'mongoose', account: 'alpha', resource: 'mongoose:knowledge', credentialRef: 'mongoose-knowledge', enabled: true, allowEgress: true, unknownClass: 'ordinary' },
+    { id: 'mongoose-data', transport: 'streamable-http', url: 'https://synthetic.invalid/mcp/data', connector: 'mongoose', account: 'alpha', resource: 'mongoose:data', credentialRef: 'mongoose-data', enabled: true, allowEgress: true, unknownClass: 'ordinary' },
+    { id: 'mongoose-crm', transport: 'streamable-http', url: 'https://synthetic.invalid/mcp/crm', connector: 'mongoose', account: 'alpha', resource: 'mongoose:crm', credentialRef: 'mongoose-crm', enabled: true, allowEgress: true, unknownClass: 'ordinary' },
   ] });
   const store = new Store(join(dir, 'data'), toolsMigrations);
   t.after(() => store.close());
   const runtime = await host.composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
   t.after(async () => { await runtime.close(); });
-  const report = runtime.status().endpoints.find((endpoint: { id: string }) => endpoint.id === 'mongo');
+  const report = runtime.status().endpoints.find((endpoint: { id: string }) => endpoint.id === 'mongoose-knowledge');
   // H19: no stored mongoose credential is a not-signed-in state, not a failing probe at every start.
   assert.equal(report?.state, 'error');
   assert.equal(report?.error, 'not_signed_in');
@@ -357,13 +359,17 @@ test('mcp credential resolver reads an owner-only synthetic file and refuses a m
 
 test('owner-created synthetic catalog preserves explicit bounded source classes for all five connectors', async () => {
   const config = await import('../config/mcp.js');
-  const classes = { calendar: 'ordinary', gmail: 'private', 'lux-knowledge': 'sensitive', mattermost: 'private', mongoose: 'ordinary' };
+  // Mongoose contributes its three endpoints, each with its own path, audience and credential reference.
+  const classes = { calendar: 'ordinary', gmail: 'private', 'lux-knowledge': 'sensitive', mattermost: 'private', 'mongoose-knowledge': 'ordinary', 'mongoose-data': 'ordinary', 'mongoose-crm': 'ordinary' };
+  const mongoosePath: Record<string, string> = { 'mongoose-knowledge': '/mcp/knowledge', 'mongoose-data': '/mcp/data', 'mongoose-crm': '/mcp/crm' };
   const endpoints = Object.entries(classes).map(([id, unknownClass]) => ({
-    id, connector: id, unknownClass, account: 'synthetic-owner', resource: 'synthetic-corpus',
+    id, connector: id.startsWith('mongoose-') ? 'mongoose' : id, unknownClass, account: 'synthetic-owner', resource: 'synthetic-corpus',
     credentialRef: null, enabled: false, allowEgress: false,
     ...(id === 'gmail' || id === 'calendar' || id === 'mattermost'
       ? { transport: 'stdio', command: '/synthetic/node', args: [`/synthetic/${id}.mjs`], env: { HOME: '/synthetic', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' } }
-      : { transport: 'streamable-http', url: `https://synthetic.invalid/${id}` }),
+      : id.startsWith('mongoose-')
+        ? { transport: 'streamable-http', url: `https://synthetic.invalid${mongoosePath[id]}`, resource: `mongoose:${id.slice('mongoose-'.length)}`, credentialRef: id }
+        : { transport: 'streamable-http', url: `https://synthetic.invalid/${id}` }),
   }));
   const dir = mkdtempSync(join(tmpdir(), 'didi-owner-catalog-'));
   try {

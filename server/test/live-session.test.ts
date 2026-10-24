@@ -285,8 +285,11 @@ async function harness(t: TestContext, overrides: {
     }
     let mongooseSdk: Server | undefined;
     let mongooseTransport: WebStandardStreamableHTTPServerTransport | undefined;
-    const mongooseEndpoint = { id: 'mongoose', url: 'https://fixture.invalid/mongoose', account: 'account', resource: 'resource' };
-    const mongooseSchemas = [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query'], additionalProperties: false } }];
+    const mongooseEndpoint = { id: 'mongoose-knowledge', url: 'https://fixture.invalid/mcp/knowledge', account: 'account', resource: 'mongoose:knowledge' };
+    const mongooseSchemas = [
+      { name: 'search', inputSchema: { type: 'object', properties: { query: { type: 'string' }, mode: { type: 'string' }, limit: { type: 'integer' }, cursor: { type: 'string' }, verbose: { type: 'boolean' } }, required: ['query'], additionalProperties: false } },
+      { name: 'read', inputSchema: { type: 'object', properties: { ref: { type: 'string' }, depth: { type: 'string' }, cursor: { type: 'string' }, verbose: { type: 'boolean' } }, required: ['ref'], additionalProperties: false } },
+    ];
     if (overrides.mongoose) {
       registry.register(mongooseEndpoint); registry.enable(mongooseEndpoint.id); registry.allowEgress(mongooseEndpoint.id);
       mongooseSdk = new Server({ name: 'live-mongoose-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
@@ -294,7 +297,7 @@ async function harness(t: TestContext, overrides: {
       mongooseSdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(mongooseSchemas) }) as never);
       mongooseSdk.setRequestHandler('tools/call', req => {
         calls.push({ name: req.params.name, args: req.params.arguments });
-        return { content: [{ type: 'text', text: JSON.stringify(overrides.mongooseData ?? { results: [{ entity_type: 'knowledge', id: 'synthetic-company-item', title: 'Synthetic company evidence', snippet: 'A current source answer.' }] }) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(overrides.mongooseData ?? { outcome: 'evidence', items: [{ type: 'knowledge_item', ref: 'knowledge/synthetic-company-item', name: 'Synthetic company evidence', url: 'https://source.example.invalid/knowledge/synthetic' }], next_cursor: null, next_tool: null, restriction: null, request_id: 'req-fixture' }) }] };
       });
       await mongooseSdk.connect(mongooseTransport);
     }
@@ -368,11 +371,11 @@ async function harness(t: TestContext, overrides: {
     }
     if (overrides.mongoose) {
       toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mongoose', generation: 1, enabled: true, connector: 'mongoose',
-        endpoint: { ...mongooseEndpoint, credentialRef: null }, toolNames: ['search_mongoose'], schemaDigest: canonicalToolDigest(mongooseSchemas),
+        endpoint: { ...mongooseEndpoint, credentialRef: null }, toolNames: ['search', 'read'], schemaDigest: canonicalToolDigest(mongooseSchemas),
         sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
         route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
         bounds: { maxQueryChars: 200, maxSearchLimit: 10, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
-      assert.equal((await port.discover('mongoose')).state, 'discovered');
+      assert.equal((await port.discover('mongoose-knowledge')).state, 'discovered');
       toolOwner.projectConnection('mongoose');
       mark('mongoose', 'mongoose');
     }
@@ -4863,9 +4866,9 @@ test('Mongoose current contract: approved company research reaches the actual SD
   const h = await harness(t, { tools: true, mongoose: true });
   await attached(h, 'mongoose-configured-research');
   await settleLiveTool(h, 'company-start', 'research', { action: 'start', question: 'Synthetic company evidence', topic: 'Synthetic company evidence', lookups: [{ source: 'company', query: 'synthetic' }] });
-  assert.equal(h.calls.filter(call => call.name === 'search_mongoose').length, 1, 'an approved company source must be dispatched');
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
-  assert.equal((frame.toolResponse.functionResponses[0]!.response['sources'] as Record<string, unknown>)['company'], 'ok');
+  assert.equal((frame.toolResponse.functionResponses[0]!.response['sources'] as Record<string, unknown>)['company'], 'ok', JSON.stringify(frame.toolResponse.functionResponses[0]!.response));
+  assert.equal(h.calls.filter(call => call.name === 'search').length, 1, 'an approved company source must be dispatched');
   assert.match(JSON.stringify(frame), /Synthetic company evidence/);
 });
 
@@ -4940,12 +4943,14 @@ test('history integration: parallel sibling await cannot publish deleted or rela
 });
 
 test('Mongoose evidence projection: grouped SDK hits survive actual Live research adaptation', async t => {
-  const h = await harness(t, { tools: true, mongoose: true, mongooseData: { hits: { company: [], offering: [], knowledge: [{ id: 'kb-17', title: 'Synthetic grouped evidence', snippet: 'Synthetic launch delayed to Monday.', status: 'active' }], ticket: [] }, has_more: false, total: 1 } });
+  const h = await harness(t, { tools: true, mongoose: true, mongooseData: { outcome: 'evidence', items: [{ type: 'knowledge_item', ref: 'kb-17', name: 'Synthetic grouped evidence', url: 'https://source.example.invalid/knowledge/kb-17' }], next_cursor: null, next_tool: null, restriction: null, request_id: 'req-fixture' } });
   await attached(h, 'mongoose-grouped-research');
   await settleLiveTool(h, 'grouped-start', 'research', { action: 'start', question: 'Synthetic company evidence', topic: 'Synthetic company evidence', lookups: [{ source: 'company', query: 'synthetic' }] });
   const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
   assert.equal((frame.toolResponse.functionResponses[0]!.response['sources'] as Record<string, unknown>)['company'], 'ok');
-  assert.match(JSON.stringify(frame), /kb-17/); assert.match(JSON.stringify(frame), /Synthetic launch delayed to Monday/);
+  assert.match(JSON.stringify(frame), /kb-17/); assert.match(JSON.stringify(frame), /Synthetic grouped evidence/);
+  // The finding keeps the entity and the ref a read needs; the source card itself is the projection's.
+  assert.match(JSON.stringify(frame), /entity: knowledge_item/); assert.match(JSON.stringify(frame), /ref: kb-17/);
 
 });
 

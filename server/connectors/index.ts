@@ -8,13 +8,13 @@ import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
 import type { GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
 import { googleToolStatus, projectGoogleResult } from '../tools/google.js';
-import { createMongooseReader, MONGOOSE_READ_TOOLS, type SearchInput, type KnowledgeItemInput, type KnowledgeBodyInput, type CompanyProfileInput, type TicketInput } from './mongoose.js';
+import { createMongooseReader, mongooseEndpointName, MONGOOSE_ENDPOINT_TOOLS, MONGOOSE_READ_TOOLS, type MongooseEndpoint, type SearchInput } from './mongoose.js';
 import { createMattermostReader, MATTERMOST_ATTENTION_TOOL, MATTERMOST_DEFAULTS, MATTERMOST_TOOLS } from './mattermost.js';
 import { createHash } from 'node:crypto';
 
 import { projectMongooseResult } from '../tools/mongoose.js';
 import { projectMattermostResult } from '../tools/mattermost.js';
-import { calendarIdentityValues, gmailIdentityValues, mattermostIdentityValues, type IdentitySource } from './identity.js';
+import { calendarIdentityValues, gmailIdentityValues, mattermostIdentityValues, mongooseIdentityValues, type IdentitySource } from './identity.js';
 
 export * from './lux-knowledge.js';
 export * from './google.js';
@@ -43,6 +43,8 @@ export interface ConnectorEvidence extends SourceDispatchEvidence {
   coverage: CompletedResult['coverage'];
   projection: CompletedResult['projection'];
   response: StoredPayload;
+  /** The verified second read a reader asked for after a hit (Mongoose depth reads only). */
+  followUp?: { tool: string; decodedResult: unknown; payload: StoredPayload };
 }
 export type ConnectorResult = ConnectorEvidence | { state: 'refused' | 'unknown'; reason: string };
 
@@ -492,52 +494,63 @@ function mongooseDeclaration(name: string, description: string, properties: Reco
   const validate = mongooseSchemaValidator.getValidator(parameters as Parameters<AjvJsonSchemaValidator['getValidator']>[0]);
   return { name, description, effect: 'read', parameters, validate: args => isRecord(args) && JSON.stringify(args).length <= 4000 && validate(args).valid };
 }
-const mongooseTypedDeclarations = (policy: ConnectionPolicy): readonly ConnectorToolDeclaration[] => {
+
+/** The endpoint one connection speaks to, from its resource; undefined for an endpoint this build does not serve. */
+function mongooseEndpointOf(policy: ConnectionPolicy): MongooseEndpoint | undefined {
+  const endpoint = (policy as { endpoint?: ConnectionEndpoint }).endpoint;
+  if (endpoint === undefined) return undefined;
+  const byResource = mongooseEndpointName(endpoint.resource);
+  if (byResource !== undefined) return byResource;
+  const url = (endpoint as { url?: unknown }).url;
+  return typeof url === 'string' ? mongooseEndpointName(url) : undefined;
+}
+
+/** The typed declarations that carry a real argument schema; every other envelope name is pass-through. */
+function mongooseTypedDeclarations(endpoint: MongooseEndpoint, policy: ConnectionPolicy): readonly ConnectorToolDeclaration[] {
   const text = { type: 'string', minLength: 1, maxLength: Math.min(500, policy.bounds.maxQueryChars) };
   const limit = { type: 'integer', minimum: 1, maximum: Math.min(50, policy.bounds.maxSearchLimit) };
-  const offset = { type: 'integer', minimum: 0 };
-  const detail = { type: 'string', enum: ['summary', 'full'] };
-  return [
-    mongooseDeclaration('ask_mongoose', 'Ask company knowledge and preserve the returned evidence and answerability.', { question: text, limit }, ['question']),
-    mongooseDeclaration('search_mongoose', 'Search curated company, product, knowledge and ticket evidence. Use returned entity identifiers for precise reads; offset follows source-native pagination.', {
-      query: text, limit, offset, scope: { type: 'string', enum: ['all', 'knowledge'] }, domain: { type: ['string', 'null'] },
-      include: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }, { type: 'null' }] }, include_strong: { type: 'boolean' },
+  if (endpoint === 'knowledge') return [
+    mongooseDeclaration('search', 'Search curated company knowledge. mode answer answers a question and mode browse lists entities; read the ref a hit returns for depth.', {
+      query: text, mode: { type: 'string', enum: ['answer', 'browse'] }, limit, cursor: { type: 'string' }, verbose: { type: 'boolean' },
     }, ['query']),
-    mongooseDeclaration('get_knowledge_item', 'Read one company knowledge item using id, item_id or identifier. detail selects summary or full.', { id: text, item_id: text, identifier: text, detail }),
-    mongooseDeclaration('read_knowledge_body', 'Read a company knowledge body chunk by returned ref. Continue with its exact cursor; max_chars controls this chunk.', { ref: text, cursor: { type: 'string' }, max_chars: { type: 'integer', minimum: 1 } }, ['ref']),
-    mongooseDeclaration('get_company_profile', 'Read a named company profile; detail and sections select the evidence.', { company_name: text, detail: { type: 'string', enum: ['overview', 'summary', 'commercial', 'full'] }, sections: { type: ['array', 'null'], items: { type: 'string' } }, flagship_only: { type: 'boolean' }, launch_year: { type: ['number', 'null'] } }, ['company_name']),
-    companyDeclaration('list_tickets', 'List bounded company tickets.', Math.min(500, policy.bounds.maxQueryChars), undefined, Math.min(100, policy.bounds.maxSearchLimit)),
-    mongooseDeclaration('get_ticket', 'Read a company ticket by its returned number. body_offset continues its body; offset and limit continue its related lists.', { number: { type: ['number', 'string'] }, detail, body_offset: offset, limit, offset }, ['number']),
+    mongooseDeclaration('read', 'Read one company entity by the exact ref a search returned. depth selects summary, full or all.', {
+      ref: text, depth: { type: 'string', enum: ['summary', 'full', 'all'] }, cursor: { type: 'string' }, verbose: { type: 'boolean' },
+    }, ['ref']),
+    mongooseDeclaration('list_companies', 'List the companies Mongoose tracks, one bounded page at a time. The company profile is read on the ref this returns.', { limit }, []),
   ];
-};
+  return [];
+}
+
 const mongooseDescriptor: ConnectorDescriptor = {
   id: 'mongoose', envelope: MONGOOSE_READ_TOOLS,
   declarations(policy) {
-    // The typed seven first, then one pass-through declaration for every other tool of the read
-    // envelope: the model table in tools/index.ts keeps only the granted names, and the reader
-    // validates each call's arguments against the schema the server discovered.
-    const typed = mongooseTypedDeclarations(policy);
-    const other = MONGOOSE_READ_TOOLS
+    const endpoint = mongooseEndpointOf(policy);
+    if (endpoint === undefined) return [];
+    // The typed few carry real argument schemas; every other envelope name of this one endpoint stays a
+    // pass-through, so a knowledge grant can never reach a data or crm tool.
+    const typed = mongooseTypedDeclarations(endpoint, policy);
+    const other = MONGOOSE_ENDPOINT_TOOLS[endpoint]
       .filter(name => !typed.some(declaration => declaration.name === name))
       .map(name => mongooseForwardDeclaration(name));
     return [...typed, ...other];
   },
   createReader({ port, registry, endpoint, schemaDigest, generation, policy }) {
-    const reader = createMongooseReader({ port, registry, config: { endpointId: endpoint.id, account: endpoint.account, resource: endpoint.resource, schemaDigest, generation, maxSearchLimit: Math.min(50, policy.bounds.maxSearchLimit), maxListLimit: Math.min(100, policy.bounds.maxSearchLimit), queryChars: Math.min(500, policy.bounds.maxQueryChars) } });
+    const name = mongooseEndpointOf(policy);
+    if (name === undefined) throw new Error('mongoose-endpoint-unrecognised');
+    const reader = createMongooseReader({ port, registry, config: {
+      endpointId: endpoint.id, endpoint: name, account: endpoint.account, resource: endpoint.resource, schemaDigest, generation,
+      maxSearchLimit: Math.min(50, policy.bounds.maxSearchLimit), maxListLimit: Math.min(100, policy.bounds.maxSearchLimit), queryChars: Math.min(500, policy.bounds.maxQueryChars) } });
     return { async call(tool, args, signal) {
       switch (tool) {
-        case 'ask_mongoose': return reader.ask(args as { question: string; limit?: number }, signal);
-        case 'search_mongoose': return reader.search(args as unknown as SearchInput, signal);
-        case 'get_knowledge_item': return reader.getKnowledgeItem(args as KnowledgeItemInput, signal);
-        case 'read_knowledge_body': return reader.readKnowledgeBody(args as unknown as KnowledgeBodyInput, signal);
-        case 'get_company_profile': return reader.companyProfile(args as unknown as CompanyProfileInput, signal);
-        case 'list_tickets': return reader.listTickets(args, signal);
-        case 'get_ticket': return reader.getTicket(args as unknown as TicketInput, signal);
+        case 'search': return reader.searchCompany(args as unknown as SearchInput, signal);
+        case 'read': return reader.read(args as { ref: string; depth?: 'summary' | 'full' | 'all'; cursor?: string }, signal);
+        case 'list_companies': return reader.listCompanies(args as { limit?: number; filter?: Record<string, unknown> }, signal);
         default: return reader.call(tool, args, signal);
       }
     } };
   },
   project(evidence, port, policy) { return companyProjection(evidence, policy, projectMongooseResult(port, evidence)); },
+  identity() { return { tool: 'get_started', args: {}, values: mongooseIdentityValues }; },
 };
 
 export const CONNECTOR_DESCRIPTORS: Readonly<Record<string, ConnectorDescriptor>> = {

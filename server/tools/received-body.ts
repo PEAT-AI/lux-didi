@@ -1,7 +1,7 @@
 import type { JsonObject, ToolResultRef } from '../adapters/model/types.js';
 
 export const RECEIVED_BODY = { name: 'read_received_body', accountId: 'gateway:received-body', resourceId: 'current-run' } as const;
-export const RECEIVED_BODY_TOOLS: ReadonlySet<string> = new Set(['get_insight', 'gmail_read_message', 'get_knowledge_item', 'read_knowledge_body', 'get_company_profile', 'get_ticket']);
+export const RECEIVED_BODY_TOOLS: ReadonlySet<string> = new Set(['get_insight', 'gmail_read_message', 'read', 'get_company', 'list_tickets']);
 export const RECEIVED_BODY_PARAMETERS = { type: 'object', properties: { cursor: { type: 'string', minLength: 1, maxLength: 128 } }, required: ['cursor'], additionalProperties: false };
 export interface RemoteResultLineage { executionId: string; name: string; callId?: string; result: ToolResultRef }
 export interface ReceivedBodyPage {

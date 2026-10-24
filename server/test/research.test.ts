@@ -175,7 +175,7 @@ test('a failed follow-up logs its real error code, never a bare failed', async (
 test('the whole serialized reply stays within the character cap', async () => {
   const h = harness({ executeText: 'x'.repeat(9_000) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'anything' }, new AbortController().signal);
-  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `reply was ${JSON.stringify(reply).length} chars with the coverage header`);
+  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(reply).length} chars with the coverage header`);
 });
 
 // N4 (#567): memory and knowledge findings of 10 KB each reached Live at 6,125 and 8,543 chars, so the
@@ -191,8 +191,30 @@ test('N4: memory and knowledge findings of 10 KB each still fit the capped reply
     lookups: [{ source: 'memory', history: { query: 'release scope' } }, { source: 'knowledge', query: 'release scope' }],
   }, new AbortController().signal);
   const size = JSON.stringify(reply).length;
-  // #621: the coverage header has its own budget beside the prose envelope.
-  assert.ok(size <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `reply was ${size} chars with the coverage header`);
+  // #634: the coverage header counts inside the prose envelope.
+  assert.ok(size <= RESEARCH.replyLimitChars, `reply was ${size} chars with the coverage header`);
+});
+
+// #634: the coverage header counts inside the same cap, so a reply that fills the budget still fits with a
+// long header, and the header keeps every source it names.
+test('CAPHEADER 1: a reply at the cap carries a long coverage header inside the 2,500 characters', async () => {
+  const h = harness({
+    configured: ['memory', 'knowledge'],
+    executeText: 'k'.repeat(10_000),
+    memory: () => ({ lines: [`he said ${'m'.repeat(10_000)}`], text: 'ignored', total: 1 }),
+  });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what is the release scope',
+    lookups: [{ source: 'memory', history: { query: 'release scope' } }, { source: 'knowledge', query: 'release scope' }, { source: 'web', query: 'release scope' }],
+  }, new AbortController().signal);
+  const header = String(reply['coverage']);
+  const size = JSON.stringify(reply).length;
+  assert.ok(header.length >= 100, `the header is long enough to matter: ${header.length} chars`);
+  assert.match(header, /^coverage: /u);
+  assert.match(header, /knowledge [a-z_]+ \d+ of \d+ shown/u, 'the searched source keeps its counts');
+  assert.match(header, /web not_configured/u, 'the source nobody read is named in the header');
+  assert.ok(size >= 2_300, `the reply really fills the cap: ${size} chars`);
+  assert.ok(size <= RESEARCH.replyLimitChars, `reply was ${size} chars with the coverage header at a ${RESEARCH.replyLimitChars} cap`);
 });
 
 // N5 (#568): a completed run promised more was available, and the model's continue got
@@ -323,7 +345,7 @@ test('#567/R5: a long best knowledge hit is clipped to fit, never dropped', asyn
   const reply = await runResearch(h.deps, {
     action: 'start', question: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }],
   }, new AbortController().signal);
-  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `reply was ${JSON.stringify(reply).length} chars with the coverage header`);
+  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(reply).length} chars with the coverage header`);
   const shown = (reply['findings'] as { text: string }[]).map(finding => finding.text).join('\n');
   assert.match(shown, /the release ships on Friday/, 'the head of the best hit survives the cap');
   assert.match(shown, /\u2026/u, 'and the reply marks where it was cut');
@@ -1789,7 +1811,7 @@ test('LAT-1023: a wide answer is compacted to the Live budget by dropping whole 
   const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
   const text = JSON.stringify(reply);
   assert.ok(RESEARCH.replyLimitChars <= 2_500, `the Live budget is 2,500 chars, not ${RESEARCH.replyLimitChars}`);
-  assert.ok(text.length <= 2_500 + RESEARCH.coverageLimitChars, `the answer to Live is ${text.length} chars, the prose bound plus the coverage header`);
+  assert.ok(text.length <= 2_500, `the answer to Live is ${text.length} chars, the coverage header included`);
   const findings = reply['findings'] as { text: string }[];
   const shown = findings.map(finding => finding.text).join('\n');
   const items = shown.split(/\n(?=#\d+ )/u).slice(1);
@@ -1854,7 +1876,7 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
     lookups: [{ source: 'knowledge', query: 'invoice release plan' }, { source: 'mail', query: 'from:ana' }],
   }, new AbortController().signal);
   const text = JSON.stringify(reply);
-  assert.ok(text.length <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `the answer to Live is ${text.length} chars, the prose bound plus the coverage header`);
+  assert.ok(text.length <= RESEARCH.replyLimitChars, `the answer to Live is ${text.length} chars, the coverage header included`);
   const line = h.logs.at(-1)!;
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
   assert.ok((line.answerCompacted?.items ?? 0) >= 2, 'whole items were dropped from both sources');
@@ -2039,8 +2061,8 @@ test('WEB-1024: an early answer with two pending readers keeps its final cap and
   const call = runResearch(h.deps, { action: 'start', question: 'what is remembered and recorded', lookups: [{ source: 'memory', query: 'remembered' }, { source: 'knowledge', query: 'recorded' }, { source: 'chat', query: 'recorded' }] }, new AbortController().signal);
   await tick(); clock.advance(RESEARCH.firstAnswerMs);
   const reply = await call;
-  // #621: the coverage header has its own budget beside the 2,500 char prose envelope.
-  assert.ok(JSON.stringify(reply).length <= 2_500 + RESEARCH.coverageLimitChars, JSON.stringify(reply).length.toString());
+  // #634: the coverage header counts inside the 2,500 char reply envelope.
+  assert.ok(JSON.stringify(reply).length <= 2_500, JSON.stringify(reply).length.toString());
   assert.ok(String(reply['note']).includes(RESEARCH.moreAvailableNote), String(reply['note']));
   assert.deepEqual(reply['pending'], ['knowledge', 'chat']);
   gate.resolve(); await reading;

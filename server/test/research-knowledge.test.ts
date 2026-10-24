@@ -237,9 +237,8 @@ test('ROUTE-1022: a knowledge reply that would overrun the reply budget is trimm
   const h = harness({ execute: async subs => subs.map(call => sub(call.name, longBody, true, call.key)) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline', topic: 'retrieval deadline' }, new AbortController().signal);
   const bytes = JSON.stringify(reply).length;
-  // #621: the coverage header has its own budget beside the prose envelope, so the whole reply may carry
-  // both bounds and the prose it bounds stays at the reply limit.
-  assert.ok(bytes <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `reply bytes ${bytes} over the ${RESEARCH.replyLimitChars} prose budget plus the coverage header`);
+  // #634: the coverage header counts inside the reply cap, so the whole reply keeps the one bound.
+  assert.ok(bytes <= RESEARCH.replyLimitChars, `reply bytes ${bytes} over the ${RESEARCH.replyLimitChars} reply budget`);
 });
 
 // --- ONE-1023: notes live in the past, and a day filter never hides them -----------------------

@@ -123,7 +123,8 @@ test('COMPOSE 2: every reply opens with the coverage header, and a reply at the 
     assert.ok(findings.some(finding => finding.source === source), `one finding line for ${source}`);
   }
   assert.match(String(reply['note'] ?? ''), /more available/iu, 'the note survives the trim');
-  assert.ok(JSON.stringify(reply).length <= 900 + 1_200, 'the prose envelope keeps its bound and the header rides outside it');
+  assert.doesNotMatch(String(reply['note'] ?? ''), /I did not search/u, 'the header is the one place an unread source is named');
+  assert.ok(JSON.stringify(reply).length <= 900, `the header counts inside the cap: ${JSON.stringify(reply).length} chars`);
 });
 
 test('COMPOSE 3: a source the ask routes to but the session never configured is not_configured, and a failed source is provider_failed', async () => {

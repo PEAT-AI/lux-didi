@@ -5803,3 +5803,49 @@ test('TOPIC 6 (#565): a live research call writes a query shape row to the trace
   assert.equal(typeof Number(knowledge['terms']), 'number');
   assert.equal(JSON.stringify(rows).toLowerCase().includes('wilmar'), false, 'no search word is recorded');
 });
+
+test('#606 unfinished fragments stop immediately across recognizer noise and a 700 ms pause', async t => {
+  const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler });
+  const { session, attachment } = await attached(h, 'stop-fragments');
+  const frames: string[] = [];
+  const pump = pumpOutput(recordingSocket(frames), attachment, () => {}, 1_000_000);
+  for (const text of ['Nayas.', 'Okay, Naya,']) {
+    fake.emit({ type: 'inputTranscription', text, finished: false });
+    await settlePort();
+    assert.equal(h.owner.get(session.liveSessionId).terminal, null);
+    scheduler.now += 700; scheduler.runDue();
+  }
+  fake.emit({ type: 'inputTranscription', text: 'stop listening now', finished: false });
+  await settlePort();
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
+  await pump;
+  assert.equal(h.owner.get(session.liveSessionId).consumerState, 'ended');
+  assert.equal(frames.filter(frame => frame !== 'binary' && JSON.parse(frame).type === 'terminal').length, 1);
+});
+
+test('#606 long unfinished room speech cannot hide a stop at the end', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const { session } = await attached(h, 'stop-room');
+  fake.emit({ type: 'inputTranscription', text: `${'room '.repeat(60)}naya stop listening`, finished: false });
+  await settlePort();
+  assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'voice_stop' });
+});
+
+test('#606 the stop window expires after three seconds and resets on model output', async t => {
+  for (const reset of ['silence', 'output'] as const) {
+    const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
+    const h = await harness(t, { port: fake.port, scheduler });
+    const { session, attachment } = await attached(h, `stop-reset-${reset}`);
+    fake.emit({ type: 'inputTranscription', text: 'Naya', finished: false });
+    await settlePort();
+    if (reset === 'silence') { scheduler.now += 3_000; scheduler.runDue(); }
+    else fake.emit({ type: 'outputTranscription', text: 'yes', finished: false });
+    await settlePort();
+    fake.emit({ type: 'inputTranscription', text: 'stop listening', finished: false });
+    await settlePort();
+    assert.equal(h.owner.get(session.liveSessionId).terminal, null, reset);
+    attachment.close(); await attachment.done;
+  }
+});

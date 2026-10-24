@@ -70,3 +70,36 @@ test('a German phrase is only how it is said, after the name, never before it', 
   assert.equal(stopPhrase('Naya tschüss'), 'tschuss');
   assert.equal(stopPhrase('tschüss Naya'), null);
 });
+
+test('#606 the last ten words admit a nearby name and ignore earlier room speech', () => {
+  for (const spoken of [
+    'Nayas. Okay, Naya, stop listening now',
+    `${'room '.repeat(60)}naya stop listening`,
+    'Please Naya stop listening', 'Naja stop listening', 'Nayah stop listening',
+    'Naia stop listening', 'Nia stop listening', 'Nayla stop listening', 'Nayer stop listening',
+    'stop listening please Naya',
+  ]) assert.equal(stopPhrase(spoken), 'stop listening', spoken);
+  for (const spoken of ['Naya stop', 'Naya, stop', 'stop Naya']) assert.equal(stopPhrase(spoken), 'stop', spoken);
+  assert.equal(stopPhrase('Naya stop now'), 'stop now');
+  assert.equal(stopPhrase('Naya stop, please'), 'stop please');
+  for (const spoken of [
+    'Naya, what should I stop listening to?', 'Naya said stop listening',
+    'stop listening', 'nayas stop listening', 'Naya please stop',
+    'Naya please okay thanks now stop listening', 'stop listening please okay Naya',
+  ]) assert.equal(stopPhrase(spoken), null, spoken);
+});
+
+test('R1 zero of twenty quoted, negated or unrelated phrases are stops', () => {
+  const negatives = [
+    'what happens if I say Naya stop listening', 'Naya said stop listening',
+    'Naya says stop listening', 'Naya do not stop listening', "Naya don't stop",
+    'Naya never stop listening', 'Naya what should I stop listening to',
+    'Naya why stop listening', 'Naya how do I stop listening',
+    'Naya when should I stop listening', 'tell Maya to stop listening to podcasts',
+    'Maya stop listening', 'Nadia stop listening', 'nayas stop listening',
+    'stop listening', 'stop', 'please stop listening', 'Naya stop listening to podcasts',
+    'Naya please do not shut down', 'Naya if you stop listening',
+  ];
+  assert.equal(negatives.length, 20);
+  assert.deepEqual(negatives.filter(text => stopPhrase(text) !== null), []);
+});

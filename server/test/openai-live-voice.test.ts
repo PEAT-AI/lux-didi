@@ -2030,3 +2030,35 @@ test('research 469: unavailable output preserves completed transport receipt wit
   assert.equal(outputs.length, 1); assert.deepEqual(JSON.parse(outputs[0]!.item!.output!), response);
   assert.equal(captured.events.filter(event => event.type === 'toolCall').length, 1, 'no locally generated retry');
 });
+
+test('#606 owner finalization is independent of queued or held playback and exactly once', async t => {
+  for (const samples of [2_400, 36_000]) {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    sendAudio(opened.f, samples);
+    await quiet();
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'Naya stop listening' });
+    await quiet();
+    clock.advance(700);
+    await quiet();
+    const finals = () => opened.captured.events.filter(event => event.type === 'inputTranscription' && event.finished === true);
+    assert.equal(finals().length, 1, 'the owner is final within 700 ms even during playback');
+    clock.advance(3_000);
+    await quiet();
+    assert.equal(finals().length, 1, 'the deferred think transition never repeats the final');
+  }
+});
+
+test('#606 closing explicitly cancels an active delegated response before socket close', async t => {
+  const opened = await ready(t);
+  opened.f.send(delegated('response.created', { response: { id: 'synthetic-stop-response' } }));
+  await quiet();
+  opened.session.close();
+  await quiet();
+  const cancel = opened.f.frames.find(frame => frame.type === 'response.cancel');
+  assert.equal(cancel?.['response_id'], 'synthetic-stop-response');
+  const before = audioBytes(opened.captured);
+  speak(opened.f);
+  await quiet();
+  assert.equal(audioBytes(opened.captured), before, 'no audio after close');
+});

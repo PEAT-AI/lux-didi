@@ -649,6 +649,8 @@ struct RootView: View {
     private var muteMenuItem: NSMenuItem?
     private var loginMenuItem: NSMenuItem?
     private var gettingStartedSheet: NSWindow?
+    /// #620: the grant alert and the Getting Started sheet wait for the owner to open the window.
+    private var deferredPrompts = DeferredPrompts()
     private(set) var window: NSWindow!
     private var statusItem: NSStatusItem!
     private var liveCallTimer: Timer?
@@ -722,6 +724,7 @@ struct RootView: View {
         model.appendPresenceReceipt(launchKind.launchRecord)
         // #613: the same fields reach the host, so host.log carries the launch kind too.
         model.forwardLaunchReceipt(launchKind)
+        recordPrompts(deferredPrompts.launchDecisions())
         OwnedWindowReadiness.trace("app:didFinishLaunching-entry",
             ["activationPolicy": NSApp.activationPolicy().rawValue, "isActive": NSApp.isActive])
         // UI3A-R1: a regular app for the interactive, login-item and install
@@ -792,7 +795,8 @@ struct RootView: View {
         bindRightCommandKey(singleKey, to: presence, present: { [weak self] in self?.presentShortcutMini() })
         singleKey.presenceState = { [weak presence] in presence?.state ?? .cold }
         singleKey.onReceipt = { [weak self] record in self?.model.appendPresenceReceipt(record) }
-        SingleKeyTrigger.requestGrantIfNeeded(for: launchKind, version: model.shortcutGrantVersion)
+        // #620: the grant alert waits for the owner to open the full window, so a launch that
+        // shows only the orb asks nothing.
         singleKey.start()
         syncSingleKeyGrantWatch()
         model.onShellChanged = { [weak self] in
@@ -871,7 +875,6 @@ struct RootView: View {
             // retried here and the auto-connect waits for the same two facts.
             if launchKind.presentsOrbAtLaunch, !coordinator.miniShown { _ = coordinator.presentMini(trigger: .other) }
             autoConnectIfReady()
-            if window != nil, NativeGettingStartedOnce.consume(UserDefaults.standard) { showGettingStarted() }
         }
     }
     @objc private func revealLogs() {
@@ -980,6 +983,8 @@ struct RootView: View {
         }
         OwnedWindowReadiness.trace("app:present-after",
             ["isVisible": window.isVisible, "isKey": window.isKeyWindow, "isMain": window.isMainWindow, "isActive": NSApp.isActive])
+        // #620: only the owner's own open runs the prompts a launch deferred.
+        if activating { showDeferredPrompts() }
     }
     private var launchedAtLogin: Bool {
         NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
@@ -1060,6 +1065,32 @@ struct RootView: View {
     @objc func muteLiveFromMenu() { summonActions.mute() }
     @objc func stopLiveFromMenu() { model.stopTrigger.arm(.menu); menuBridge.stop() }
     private var gettingStartedProofRows: [NativeGettingStartedItem]?
+
+    /// #620: a prompt that is not shown at launch, and the decision the owner moment reached, are
+    /// one content-free line in native-live.log.
+    private func recordPrompts(_ decisions: [(DeferredPrompts.Prompt, DeferredPrompts.Decision)]) {
+        for (prompt, decision) in decisions {
+            model.recordSurfaceReceipt(["event": "startup_prompt", "prompt": prompt.rawValue,
+                                        "decision": decision.rawValue])
+        }
+    }
+
+    /// #620: the owner opened the full window. The grant alert is asked exactly where it was asked
+    /// before (once per app version, interactive launches only) and the sheet appears once.
+    private func showDeferredPrompts() {
+        recordPrompts(deferredPrompts.ownerOpenedWindow { prompt in
+            switch prompt {
+            case .grantAlert:
+                guard launchKind == .interactive else { return false }
+                SingleKeyTrigger.requestGrantIfNeeded(for: launchKind, version: model.shortcutGrantVersion)
+                return true
+            case .gettingStarted:
+                guard window != nil, NativeGettingStartedOnce.consume(UserDefaults.standard) else { return false }
+                showGettingStarted()
+                return true
+            }
+        })
+    }
     @objc private func showGettingStarted() {
         show()
         guard gettingStartedSheet == nil else { return }
@@ -1390,10 +1421,13 @@ struct RootView: View {
     /// the mini orb and keeps running; otherwise the window hides and the app
     /// stays in the Dock.
     func windowShouldClose(_ sender: NSWindow) -> Bool { coordinator.closeFull(); return false }
-    /// A Dock click always presents the FULL window and never leaves the orb
-    /// beside it.
+    /// #619: a Dock click shows the orb. It is its own launch kind with no window, so no window is
+    /// created, nothing becomes key and the app never activates; the menu item, the hotkey and an
+    /// install relaunch still open the full window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        coordinator.presentFull(activating: true)
+        model.appendPresenceReceipt(LaunchKind.reopen.launchRecord)
+        model.forwardLaunchReceipt(LaunchKind.reopen)
+        _ = coordinator.presentOrbFromDock()
         return false
     }
     @objc func quit() { NSApp.terminate(nil) }

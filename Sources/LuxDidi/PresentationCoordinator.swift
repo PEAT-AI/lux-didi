@@ -9,7 +9,7 @@ enum LaunchActivation: Equatable { case regular, accessory }
 extension LaunchKind {
     var activation: LaunchActivation {
         switch self {
-        case .interactive, .loginItem, .installRelaunch: return .regular
+        case .interactive, .loginItem, .installRelaunch, .reopen: return .regular
         case .installedProof, .selfCheck, .uiProof, .verification: return .accessory
         }
     }
@@ -85,9 +85,12 @@ final class PresentationCoordinator {
     /// ORBFIRST: a show of an orb that is already on screen does nothing. The hotkey, the menu
     /// item and the window's own button repeat it, and a second show cycle was the flicker.
     @discardableResult
-    func presentMini(trigger: SurfaceTrigger = .other) -> MiniPresentOutcome {
+    func presentMini(trigger: SurfaceTrigger = .other, reorder: Bool = false) -> MiniPresentOutcome {
         self.trigger = trigger
-        if miniShown, pending == nil { return .alreadyPresented }
+        if miniShown, pending == nil {
+            guard reorder else { return .alreadyPresented }
+            return commitMini()
+        }
         requestChanged()
         explicitlyHidden = false
         desired = .mini
@@ -120,6 +123,11 @@ final class PresentationCoordinator {
         guard !explicitlyHidden, pending == nil, !miniShown else { return }
         _ = presentMini()
     }
+
+    /// #619: a Dock reopen shows the orb alone. The orb is ordered front even when it is already
+    /// on screen, and no window is created, raised or activated.
+    @discardableResult
+    func presentOrbFromDock() -> MiniPresentOutcome { presentMini(trigger: .other, reorder: true) }
 
     func allowPresenceReveal() {
         explicitlyHidden = false
@@ -189,6 +197,30 @@ final class PresentationCoordinator {
         case .deferred: break
         }
         return outcome
+    }
+}
+
+/// #620: the two prompts that wait for the owner. A launch defers them, so a login or cold start
+/// shows no grant alert and no Getting Started sheet; the first explicit open of the FULL window
+/// runs each once and every decision is a content-free enum.
+struct DeferredPrompts {
+    enum Prompt: String, CaseIterable, Equatable {
+        case grantAlert = "grant_alert"
+        case gettingStarted = "getting_started"
+    }
+    enum Decision: String, Equatable { case deferred, shown, skipped }
+
+    private var pending = Set(Prompt.allCases)
+
+    /// A launch shows neither prompt and records the wait instead.
+    func launchDecisions() -> [(Prompt, Decision)] { Prompt.allCases.map { ($0, .deferred) } }
+
+    /// The owner opened the window: each pending prompt runs once, and one whose own
+    /// once-a-version gate refuses is recorded as skipped, never shown.
+    mutating func ownerOpenedWindow(_ show: (Prompt) -> Bool) -> [(Prompt, Decision)] {
+        let due = Prompt.allCases.filter { pending.contains($0) }
+        pending.subtract(due)
+        return due.map { ($0, show($0) ? .shown : .skipped) }
     }
 }
 

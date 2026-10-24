@@ -124,7 +124,7 @@ import Foundation
 
         // 3. A screen change re-places the orb on a visible screen and keeps the saved origin.
         let small = CGRect(x: 0, y: 0, width: 900, height: 600)
-        let orb = CGRect(x: 1226, y: 697, width: 220, height: 220)
+        let orb = CGRect(x: 1200, y: 660, width: 220, height: 220)
         let moved = MiniOrbFrameRestore.afterScreenChange(current: orb, saved: nil, screens: [small])
         check(moved.minX >= small.minX && moved.minY >= small.minY
             && moved.maxX <= small.maxX && moved.maxY <= small.maxY,

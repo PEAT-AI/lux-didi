@@ -2213,37 +2213,21 @@ const HEADER_SHARE_OF_CAP = 4;
  * #621: the deterministic header every reply opens with. It names each searched source with its status and
  * the hits it returned over the hits it matched, and each source the route wanted but never read with the
  * reason, so an empty findings list never stands for any of them.
- * #634: past a quarter of the reply cap the header keeps each source's status word only, so the counts and
- * the spoken clauses never crowd out the evidence.
+ * #634: past a quarter of the cap in force the header keeps each source's status word and drops only the
+ * counts and the spoken clauses, so no source ever vanishes from it and it never eats the prose.
  */
-export function coverageLine(searched: readonly CoverageSearched[], unsearched: readonly CoverageUnsearched[]): string {
-  const bound = Math.floor(RESEARCH.replyLimitChars / HEADER_SHARE_OF_CAP);
-  const fitted = (entries: readonly string[]): string => {
-    const kept: string[] = [];
-    let length = 'coverage: '.length;
-    for (const entry of entries) {
-      if (length + entry.length + 2 > bound) break;
-      kept.push(entry);
-      length += entry.length + 2;
-    }
-    const left = entries.length - kept.length;
-    if (left > 0) kept.push(`+${left} not shown`);
-    return kept.length === 0 ? 'coverage: none' : `coverage: ${kept.join('; ')}`;
-  };
-  const detailed = fitted([
+export function coverageLine(searched: readonly CoverageSearched[], unsearched: readonly CoverageUnsearched[], limit: number = RESEARCH.replyLimitChars): string {
+  const bound = Math.floor(limit / HEADER_SHARE_OF_CAP);
+  const line = (entries: readonly string[]): string => entries.length === 0 ? 'coverage: none' : `coverage: ${entries.join('; ')}`;
+  const detailed = line([
     ...searched.map(entry => `${entry.source} ${entry.status} ${entry.shown} of ${entry.total} shown${entry.confidence === undefined ? '' : ` confidence=${entry.confidence}`}`),
     ...unsearched.map(entry => `${entry.source} ${entry.reason} (say: ${UNSEARCHED_CLAUSE[entry.reason](SOURCE_LABEL[entry.source])})`),
   ]);
   if (detailed.length <= bound) return detailed;
-  return fitted([
+  return line([
     ...searched.map(entry => `${entry.source} ${entry.status}`),
     ...unsearched.map(entry => `${entry.source} ${entry.reason}`),
   ]);
-}
-
-/** The header of a reply that carries no findings yet, which is how a stopped or repeated call answers. */
-export function coverageOfRun(run: RunState, configured: readonly SourceKind[]): string {
-  return coverageTextOf(run, configured, [], new Map());
 }
 
 /** The fields the header reads off a finding: which source it came from and the count line it leads with. */
@@ -2256,7 +2240,7 @@ const FINDING_HEAD = /^\S[^:\n]*: (\d+) of (\d+) shown$/mu;
  * #621: the header of a reply with findings, derived from the findings the voice will actually hear, so the
  * counts can never drift from the evidence after a trim.
  */
-function coverageTextOf(run: RunState, configured: readonly SourceKind[], findings: readonly FindingLike[], totals: ReadonlyMap<SourceKind, number>): string {
+function coverageTextOf(run: RunState, configured: readonly SourceKind[], findings: readonly FindingLike[], totals: ReadonlyMap<SourceKind, number>, limit: number): string {
   const searched: CoverageSearched[] = [];
   for (const source of SOURCE_ORDER) {
     if (!configured.includes(source)) continue;
@@ -2281,7 +2265,7 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
     if (searched.some(entry => entry.source === source)) continue;
     unsearched.push({ source, reason: unsearchedReasonGiven(run, configured, source) });
   }
-  return coverageLine(searched, unsearched);
+  return coverageLine(searched, unsearched, limit);
 }
 
 function unsearchedReasonGiven(run: RunState, configured: readonly SourceKind[], source: SourceKind): UnsearchedReason {
@@ -3162,7 +3146,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // `2 of 9 shown` truthfully after the reply is bounded.
   const totals = new Map<SourceKind, number>();
   for (const group of groups) totals.set(group.source, Math.max(group.total, group.lines.length));
-  const coverageOf = (findings: readonly FindingLike[]): string => coverageTextOf(run, configured, findings, totals);
+  const coverageOf = (findings: readonly FindingLike[]): string => coverageTextOf(run, configured, findings, totals, limit);
   const render = (): { findings: ReplyFinding[]; reply: JsonObject } => {
     const calendarShown = shownOf(groups.find(group => group.source === 'calendar') ?? { lines: [] });
     const calendarPending = calendarUpstream || calendarShown < remaining.length;

@@ -1766,10 +1766,7 @@ class Session implements LiveVoiceSession {
     const providerSideFailure = this.isReady && code === 'protocol_error';
     this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}), ...(upstream ? { upstream } : {}) });
     this.discardHeadStart();
-    if ((code === 'closed' || code === 'cancelled') && this.delegatedOutstanding && this.currentResponse !== undefined && this.socket?.readyState === WebSocket.OPEN) {
-      try { this.socket.send(JSON.stringify({ type: 'response.cancel', event_id: `stop_${++this.commandSequence}`, response_id: this.currentResponse })); }
-      catch { this.diagnostic.localWriteCallbackErrorCalls++; }
-    }
+    // GPT Live has no cancel or truncate command; stopping is local purge and provider close, with no acknowledgement.
     this.clearUploadBlock();
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear(); this.signal.removeEventListener('abort', this.onAbort);
@@ -1779,7 +1776,6 @@ class Session implements LiveVoiceSession {
     if (this.outputSilence !== undefined) { this.clock.clearTimer(this.outputSilence); this.outputSilence = undefined; }
     // 3r B: a closed session retires its calls and delegations, so a late answer reaches no new one.
     this.retireCalls();
-    this.discardHeadStart();
     this.reportUnknownFrames();
     this.secret = '';
     this.readiness.reject(new LiveVoiceError(code));

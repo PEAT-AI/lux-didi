@@ -6,6 +6,7 @@ import {
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { safeEvent } from '../host/log.js';
+import { shapeGmailList } from '../tools/live-shape.js';
 
 // The web candidate's own suite rides with the research suite, so one run covers the candidate set.
 import './research-web.test.js';
@@ -394,4 +395,36 @@ test('OPEN2-2: a mail item keeps its open: line in the reply the model is given'
   const block = shapeBlock('mail_search', [sub('gmail_search_messages', text)], undefined);
   assert.match(block.text, /open: L2 = Gmail: Standup notes/u, 'the reply keeps the mail item handle');
   assert.match(block.text, /Standup notes/u);
+});
+
+// E3 (#611): "last meeting notes" read the newest note first, and the undated confidence line stays put.
+test('E3: a last meeting block reads its dated notes newest first and keeps the undated line at its index', () => {
+  const text = [
+    '### Earlier scope (DECISION | 2026-10-01) [id 1]',
+    '### Later scope (DECISION | 2026-10-20) [id 2]',
+    '### Middle scope (DECISION | 2026-10-12) [id 3]',
+    '### Undated note [id 4]',
+  ].join('\n');
+  const block = shapeBlock('knowledge_search', [sub('search_knowledge', text)], undefined, { newestFirst: true });
+  assert.match(block.lines[0]!, /2026-10-20/u, `newest first, got ${JSON.stringify(block.lines[0])}`);
+  assert.match(block.lines[1]!, /2026-10-12/u);
+  assert.match(block.lines[2]!, /2026-10-01/u);
+  assert.match(block.lines[3]!, /Undated note/u, 'the undated note keeps the index it came in at');
+});
+
+// E5 (#612): a triage mail block ranks what needs an answer before the cap, and counts the rest out.
+test('E5: a triage mail block ranks the owner thread, then people, then bulk, and counts what it left out', () => {
+  const bulk = (n: number) => ({ id: `n${n}`, threadId: `tn${n}`, headers: { Subject: `Sale ${n}`, From: `Shop ${n} <news${n}@shop.invalid>`, Date: 'Mon', ...(n === 3 ? { 'List-Id': '<offers.market.invalid>' } : { 'List-Unsubscribe': `<mailto:u${n}@shop.invalid>` }) }, snippet: 'buy now' });
+  const machine = (n: number) => ({ id: `x${n}`, threadId: `tx${n}`, headers: { Subject: `Notice ${n}`, From: `System ${n} <noreply${n}@service.invalid>`, Date: 'Mon' }, snippet: 'your code' });
+  const human = (n: number) => ({ id: `h${n}`, threadId: `th${n}`, headers: { Subject: `Question ${n}`, From: `Person ${n} <p${n}@example.invalid>`, Date: 'Mon' }, snippet: 'can you check' });
+  const owner = { id: 'o1', threadId: 'th1', headers: { Subject: 'Re: Question 1', From: 'Rob <rob@example.invalid>', Date: 'Mon' }, labelIds: ['SENT'], snippet: 'on it' };
+  const shaped = shapeGmailList({ messages: [bulk(1), bulk(2), bulk(3), machine(1), machine(2), human(1), owner, human(2), human(3), human(4)] });
+  const block = shapeBlock('mail_search', [{ ...sub('gmail_search_messages', shaped.text), ...(shaped.mailPage === undefined ? {} : { mailPage: shaped.mailPage }) }]);
+  assert.equal(block.lines.length, 8, 'the eight line cap still holds');
+  assert.match(block.lines[0]!, /Question 1/u, `the owner's thread comes first, got ${block.lines[0]}`);
+  assert.match(block.lines[1]!, /on it/u, 'the owner message in that thread rides beside it');
+  const people = block.lines.slice(0, 5);
+  assert.equal(people.every(line => /Question|on it/u.test(line)), true, `the five human rows fill the cap first, got ${JSON.stringify(people)}`);
+  assert.equal(block.lines.slice(0, 5).some(line => /Sale/u.test(line)), false, 'no newsletter before a person');
+  assert.match(block.text, /2 left out/u, 'the block counts the rows the cap dropped');
 });

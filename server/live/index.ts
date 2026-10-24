@@ -893,6 +893,12 @@ export function feedJobs(jobs: readonly ToolJob[], liveSessionId: string, now: n
     .map(jobRow);
 }
 
+/** E4 (#611): one accepted batch answer as the sub-result research shapes, one place for both live paths. */
+export function subResultOf(key: string, name: string, response: Record<string, unknown>, ok: boolean): IntentSubResult {
+  const text = typeof response['text'] === 'string' ? response['text'] : '';
+  return { key, name, ok, text, originalCharacters: typeof response['originalCharacters'] === 'number' ? response['originalCharacters'] : text.length, omittedCharacters: typeof response['omittedCharacters'] === 'number' ? response['omittedCharacters'] : 0 };
+}
+
 export class LiveSessionOwner {
   readonly #jobs: LiveToolJobs;
   readonly #tools: LiveToolsComposition | undefined;
@@ -3076,10 +3082,8 @@ export class LiveSessionOwner {
         const slot = source?.bindings.findIndex(binding => binding.callId === key) ?? -1;
         const record = slot >= 0 ? source!.tools[slot] : undefined;
         const accepted = source?.accepted.find(result => result.binding.callId === key);
-        const response = accepted?.response ?? {};
-        const text = typeof response.text === 'string' ? response.text : '';
         const ok = record?.status === 'completed' && accepted !== undefined;
-        return { key, name, ok, text, originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0 };
+        return subResultOf(key, name, accepted?.response ?? {}, ok);
       };
       const raced = await this.#withCeiling(runBatch(subCalls, step), outcome => {
         for (const unit of pending) hostLogEvent({ event: 'tool_ceiling_late', tool: unit.call.name, outcome });

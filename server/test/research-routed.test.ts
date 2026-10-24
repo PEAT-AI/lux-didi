@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, candidateSubs, lookupBound, normalizeLookups, ownerScheduleQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
+  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, candidateSubs, fallbackSelection, lookupBound, normalizeLookups, ownerScheduleQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
   validateResearch,
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchRoutedLog, type ResearchSubcallLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
@@ -746,7 +746,7 @@ test('#579/TRIAGE-R1 5: every new word form routes to its source and a window wo
     ['what did the chats say about the freeze', ['chat']],
     ['anything from the dms yesterday', ['chat']],
     ['what did the mattermost team decide', ['chat']],
-    ['any messages', ['mail', 'chat']],
+    ['any messages', ['chat']],
     ['any important emails today', ['mail']],
     ['what happened in the chats this week', ['chat']],
     ["what's on thursday", ['calendar']],
@@ -787,4 +787,24 @@ test('TRIAGE-R3: a recall ask routes to memory', () => {
     assert.deepEqual(requiredSources(question), ['memory'], question);
     assert.equal(routedSelection(question, CONFIGURED, Date.parse('2026-10-21T05:30:00Z')), undefined, `${question} is a memory read, not a router candidate`);
   }
+});
+
+// E1 (#605): the routed chat read used the question's prose as its search text, so the topic never
+// reached the search. The topic words are the search; a model query only fills in when none was named.
+test('E1: a message ask searches chat on the topic words and never reads mail', () => {
+  const question = 'did anyone message me about the budget';
+  assert.deepEqual(requiredSources(question), ['chat'], 'a message is a chat word alone');
+  const selection = fallbackSelection(question, CONFIGURED, Date.parse('2026-10-21T05:30:00Z'));
+  assert.equal(selection.actions.some(action => action.kind === 'mail_search'), false, 'no mail lookup is offered');
+  const subs = candidateSubs('chat_search', { question, topic: 'budget', query: question, configured: CONFIGURED, evidence: new Map(), nowMs: Date.parse('2026-10-21T05:30:00Z'), timeZone: 'Asia/Kolkata' });
+  assert.equal(subs[0]?.args['query'], 'budget', 'the topic is the chat search text');
+});
+
+// E2 (#605): the discussion forms never reached memory, and the attention form never named Rob.
+test('E2: a two-name discussion ask routes to memory and chat, and an attention ask to the three inboxes', () => {
+  assert.deepEqual(requiredSources('What did Rob and Naya discuss about the boat'), ['memory', 'chat']);
+  assert.deepEqual(requiredSources("What needs Rob's attention"), ['mail', 'chat', 'calendar']);
+  const selection = routedSelection("what needs rob's attention", CONFIGURED, Date.parse('2026-10-21T05:30:00Z'));
+  assert.ok(selection !== undefined, 'an attention ask is a deterministic selection');
+  assert.deepEqual(selection.actions.map(action => action.kind).sort(), ['calendar_window', 'chat_search', 'knowledge_search', 'mail_search']);
 });

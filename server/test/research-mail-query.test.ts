@@ -411,3 +411,23 @@ test('#564: an empty triage scan names the unread window it read', async () => {
   }, new AbortController().signal);
   assert.match(String(reply['note']), /I searched your mail for anything unread in the last two days and found nothing matching\./u);
 });
+
+// E6 (#609): Gmail has no hour operator, so a short hours ask is the day that holds it.
+test('E6: an hours ask compiles to a day window, a person and at most three AND terms', () => {
+  assert.equal(compileMailQuery('any mail from Thomas about the pipeline in the last 25 hours', undefined, NOW, ZONE, 'any mail from Thomas about the pipeline in the last 25 hours'),
+    'from:thomas OR to:thomas pipeline newer_than:2d');
+  assert.match(compileMailQuery('mail about the invoice in the last 5 hours', undefined, NOW, ZONE, 'invoice'), /newer_than:1d/u, 'a day or less reads one day');
+  assert.match(compileMailQuery('mail about the invoice in the last 50 hours', undefined, NOW, ZONE, 'invoice'), /newer_than:14d/u, 'a window past two days is no hours ask');
+});
+
+// E6 (#609): five AND terms were why a prose search matched nothing, so the tail is one OR clause.
+test('E6: five content words become three AND terms and one joined OR clause', () => {
+  assert.equal(compileMailQuery('mail about the offsite venue inspection budget review', undefined, NOW, ZONE, 'offsite venue inspection budget review'),
+    'offsite venue inspection budget OR review');
+});
+
+// E6 (#609): the empty-result retry drops the joined OR clause, the least specific part of the query.
+test('E6: the one broader retry drops a joined OR clause, never a sender filter', () => {
+  assert.equal(broaderMailQuery('in:inbox newer_than:14d offsite venue inspection budget OR review OR card'), 'in:inbox newer_than:14d offsite venue inspection');
+  assert.equal(broaderMailQuery('from:thomas OR to:thomas pipeline newer_than:2d'), 'from:thomas OR to:thomas pipeline newer_than:7d', 'a sender OR is never dropped');
+});

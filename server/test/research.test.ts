@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, offerableCandidates, shapeBlock, windowRange,
+  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, newestDatedFirst, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing, parseResearch, researchRepair, topicTerms,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
@@ -1958,4 +1958,44 @@ test('TRIAGE-R3: a recall ask reads the owner history, never the knowledge store
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we say about the pricing deck' }, new AbortController().signal);
   assert.ok(!h.executed.some(call => call.name === 'search_knowledge'), 'the knowledge store is not searched for a recall ask');
   assert.match(JSON.stringify(reply['findings']), /remembered: .*pricing deck/u, 'the remembered line reaches the answer');
+});
+
+// E3 (#611): the confidence line is undated, so the whole list used to keep the ranker's order.
+test('E3: dated notes read newest first and an undated line keeps the index it came in at', () => {
+  assert.deepEqual(
+    newestDatedFirst(['knowledge: confidence=high', 'a | 2026-10-01', 'b | 2026-10-20', 'c | 2026-10-12']),
+    ['knowledge: confidence=high', 'b | 2026-10-20', 'c | 2026-10-12', 'a | 2026-10-01'],
+  );
+});
+
+// E3 (#611): "last meeting" names no day, so the note read is bounded instead of unbounded.
+test('E3: a last meeting ask with no date word reads the last sixty days', () => {
+  assert.deepEqual(meetingBounds('last meeting notes', undefined, Date.parse('2026-10-21T12:00:00Z'), 'UTC'),
+    { from: '2026-08-22', to: '2026-10-21' });
+  assert.equal(meetingBounds('what did we decide about the roadmap', undefined, Date.parse('2026-10-21T12:00:00Z'), 'UTC'), undefined,
+    'a question with no meeting word and no last meeting phrase stays unbounded');
+});
+
+// E6 (#609): the fallback recipe used to hand Gmail an already-written operator string, so the sender
+// filter and the term cap never ran. It now hands the compiler its window and its own words.
+test('E6: a fallback inbox search is compiled, so its terms are capped and ORed', () => {
+  const selection = fallbackSelection('any mail about the offsite venue inspection budget review card', ['mail'], Date.parse('2026-10-21T05:30:00Z'));
+  const mailQuery = selection.actions.find(action => action.kind === 'mail_search')?.query;
+  assert.equal(typeof mailQuery, 'string', 'the fallback offers a mail search');
+  assert.match(mailQuery!, /^in:inbox newer_than:14d /u, `the fallback window is compiled in: ${mailQuery}`);
+  assert.match(mailQuery!, /offsite venue inspection budget OR review OR card/u, `three AND terms and the rest ORed: ${mailQuery}`);
+});
+
+// #617: the action and depth words of an ask are instructions, never search terms.
+test('#617: an action word and a depth word never reach the mail search', () => {
+  const q = compileMailQuery('write me a summary of the mail from Thomas about the pipeline', undefined, Date.parse('2026-10-21T05:30:00Z'), 'UTC', 'write me a summary of the mail from Thomas about the pipeline');
+  assert.equal(/write|summary/u.test(q), false, `no action or depth word, got ${q}`);
+  assert.match(q, /pipeline/u);
+});
+
+// #617: the calendar is read when the ask names a day or a schedule, never as filler on a knowledge ask.
+test('#617: a knowledge ask about no calendar words reads no calendar', () => {
+  const selection = fallbackSelection('what do we know about the dark triad', ['knowledge', 'calendar', 'mail', 'chat'], Date.parse('2026-10-21T05:30:00Z'));
+  assert.equal(selection.actions.some(action => action.kind === 'calendar_window'), false,
+    `no calendar lookup, got ${JSON.stringify(selection.actions.map(action => action.kind))}`);
 });

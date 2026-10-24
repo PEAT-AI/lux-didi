@@ -1,6 +1,6 @@
 # Architecture
 
-How Lux Didi works at release 7. File names are given so each claim can be checked; a line number is not, because they move.
+How Lux Didi works at release 9. File names are given so each claim can be checked; a line number is not, because they move.
 
 ## The shape in one picture
 
@@ -69,7 +69,7 @@ Entry and wiring: `host/index.ts` parses flags (`--data-dir`, `--web-root`, `--p
 | Store | `runtime/`, `domain/` | SQLite via `node:sqlite`. Notes, memory, commitments, the trace tables, the call journal. Single writer, private `0700` directory. |
 | Text chat | `chat/` | The connected text conversation: consent, steps and partial answers, selected memory. |
 | Live call core | `live/` | One call at a time: lifecycle, journal of finalized transcripts, timers, reconnect with resumption, mute handling, the stop-phrase gate (`stop-phrase.ts`), warm context (`warm-context.ts`), tool-result cache (`tool-cache.ts`). |
-| Voice providers | `adapters/live-voice/` | `openai.ts` (GPT-Live) and `gemini.ts`. The provider is a setting; both speak the same host port. |
+| Voice providers | `adapters/live-voice/` | `openai.ts` (GPT-Live) and `gemini.ts`. The provider is a setting; both speak the same host port. GPT Live owns barge-in and has no response cancel command, so a stop purges the playback the host still holds and closes the provider session. |
 | Prompt | `prompt/` | Public persona, runtime context (clock, timezone, connected groups), opening options drawn from the stored record only. Content ships like code and is covered by `check-prompt.sh`. |
 | Tools and research | `tools/` | What the voice model can call; see the research layer. |
 | Connectors | `connectors/`, `adapters/mcp/` | Read-only access to outside systems through MCP; see below. |
@@ -83,7 +83,7 @@ Entry and wiring: `host/index.ts` parses flags (`--data-dir`, `--web-root`, `--p
 3. **Conversation.** The app streams mic frames up; the host forwards them to the provider and streams audio and transcripts back. Only finalized owner transcripts and the model's audio count as conversational activity. The model may call tools (below); results return to the provider and the journal.
 4. **Mute.** `live` to `hotMuted`: capture stops at once, the response watchdog and idle clock are suspended, speech that arrives is held.
 5. **Reconnect.** If the provider drops, the host retries with backoff (0, 2, 4, 8, then 8 s) and resumes with the provider's handle, inside the call's own deadlines. The pad plays while it does. Every rebuild names its trigger in `host.log` from a closed set: `no_output_after_ambient`, `no_output_after_owner`, `line_dropped`, `session_window`. A rebuild whose trigger is ambient sound, with no owner speech since the last model output, stays silent: no reconnect chime and no greeting.
-6. **End.** One path for every cause: the Stop button or menu item, a voice stop phrase, the idle timeout (5 minutes without conversational activity), the provider session limit (1 hour by default), the call limit (4 hours), or a fatal error. A voice stop is decided by the host on the owner's finalized sentence: Naya's name at the start or end, one of the end phrases, at most 8 words, no question words, and never from typed text or an old session. The uplink stops at the match, the goodbye sounds, and the call closes exactly like the Stop button.
+6. **End.** One path for every cause: the Stop button or menu item, a voice stop phrase, the idle timeout (5 minutes without conversational activity), the provider session limit (1 hour by default), the call limit (4 hours), or a fatal error. A voice stop is decided by the host on every owner transcription fragment, before the fragment is handled: the last 10 normalised words must hold her name within 4 words before or 2 words after an end phrase, a name that ends a fragment stays good for 3 seconds across quiet fragments, "stop listening", "shut down", "stop now" and the German forms end the call without the name, and the bare word "stop" needs it. Typed, quoted, negated and echoed speech never stops a call, and neither does an object such as "stop listening to podcasts". The uplink stops at the match, the goodbye sounds, and the call closes exactly like the Stop button. The terminal frame is delivered first, ahead of the closing write that can fail, so the app never stays live on a call that has ended.
 7. **After.** The host distils the finished call into a private summary off the request path (`services/summarize.ts`). The journal keeps finalized transcripts and boundary facts, not audio or the model's thoughts.
 
 Defaults for the timers are in `adapters/live-voice/types.ts` and `live/config.ts`; the owner's `live.json` can change them.
@@ -103,7 +103,7 @@ The voice model asks one question in plain words; the host decides which sources
 
 ### Connectors
 
-All connectors are optional, read-only MCP connections declared in the protected config directory, with an explicit endpoint, account identity and credential reference. A missing one shows a next step in Settings and the call still works with the rest.
+All connectors are optional, read-only MCP connections declared in the protected config directory, with an explicit endpoint, account identity and credential reference. A missing one shows a next step in Settings and the call still works with the rest. A composite read such as the attention scan is a grantable name of its own, but only beside every child read it stands on, so the approved policy can never widen the envelope one composed name at a time; a composite the policy does not name is never registered, and its sub-calls answer with a closed refusal reason.
 
 | Connector | Reads | Notes |
 | --- | --- | --- |

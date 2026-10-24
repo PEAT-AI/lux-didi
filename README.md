@@ -11,10 +11,11 @@ This is a personal prerelease: a locally built, self-signed Mac app. It is not n
 - **Talks.** One tap on the orb or the Right Command key starts a call. She opens with one short line drawn from the last session, and an open loop she has not seen confirmed in the last day comes to you as a question, never as a fact she states. She keeps the call light: answers are short and she speaks while she looks things up. If speech from a video makes her go quiet, she rebuilds the call silently: no chime and no "I am back".
 - **Looks things up** (read only), when you connect the matching source:
   - Lux Knowledge: your notes and past decisions.
-  - Gmail and Google Calendar: "anything important in mail?", "what is on tomorrow?".
-  - Mattermost, through the `mattermost-mcp` server: "anything urgent on Mattermost?".
+  - Gmail and Google Calendar: "anything important in mail?", "what is on tomorrow?". Mail triage sets bulk mail aside and reads human threads first; a mail search uses at most three words from your ask and tries a wider search once when nothing matches.
+  - Mattermost, through the `mattermost-mcp` server: "anything urgent on Mattermost?". Triage of what came in works again, and several chat searches in one ask run side by side.
   - Mongoose: company knowledge.
-  - The web, for weather and news.
+  - The web, for weather and news. A web result is never lost when the answer is trimmed to fit.
+- **Stops when told.** She reads the last ten words of every spoken fragment, so an end phrase works inside any sentence: her name may sit up to four words before or two words after it, and a name at the end of a fragment stays good for three seconds. "Stop listening", "shut down" and "stop now", and the German forms, end the call with no name; a bare "stop" still needs her name next to it.
 - **Remembers.** "Naya, remember that ..." saves a local note. Two different notes said in the same stretch of talk are both kept; the same note said twice is still refused. "Save to my vault: ..." saves a note to Lux Knowledge. Notes can be listed and deleted in the app.
 - **Opens things** only when you ask: a mail, a calendar event, a chat thread, a file or an app.
 - **Is honest about gaps.** A weak knowledge match is reported as "nothing matched". An empty mail or chat window says so and never says "nothing urgent".

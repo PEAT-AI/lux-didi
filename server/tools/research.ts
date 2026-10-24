@@ -8,7 +8,7 @@ import type { CalendarEvent as RetainedCalendarEvent, CalendarScope, MailMessage
 import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
 import { MAIL_QUERY_OPERATORS } from '../contracts/mail-operators.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
-import { WEB_SEARCH_ACTION, webAttribution, webDeadlineMs, webEvidenceText, webFooter, webSourceCards, type WebSearchPort } from './web-search.js';
+import { WEB_SEARCH_ACTION, broaderWebQuery, clipWebEvidence, sentencePrefix, webAttribution, webDeadlineMs, webEvidenceText, webFooter, webSourceCards, type WebSearchPort } from './web-search.js';
 
 /**
  * The one declared Live read tool (#241). The model may answer with no tool at all; when it looks
@@ -775,7 +775,7 @@ export function fallbackQuery(kind: CandidateKind, question: string, _nowMs: num
   const keywords = contentKeywords(question);
   const terms = keywords.join(' ');
   if (kind === 'knowledge_search') return terms ? { query: terms } : {};
-  if (kind === 'web_search') return terms ? { query: terms.slice(0, 120) } : {};
+  if (kind === 'web_search') { const query = broaderWebQuery(question, 120); return query ? { query } : {}; }
   if (kind === 'mail_search') {
     const flags: string[] = [];
     if (/\bimportant\b/.test(text)) flags.push('is:important');
@@ -933,7 +933,8 @@ export function fallbackSelection(question: string, configured: readonly SourceK
     actions.push({ kind, ...fallbackQuery(kind, question, nowMs) });
     pUseful[kind] = p;
   };
-  const webWords = WEB_WORDS.test(text);
+  const webWords = !/\b(?:mail|calendar|chat|our|my|we)\b/u.test(text)
+    && (WEB_WORDS.test(text) || /\b(?:price of|how much is|latest version|who is \p{L}+|when did|release date|population of|exchange rate|score|results of)\b/u.test(text));
   const mailWords = MAIL_WORDS.test(text);
   // #579: a time word alone never replaces the source the ask named with the calendar.
   const calendarWords = CALENDAR_WORDS.test(text) || (!mailWords && !CHAT_WORDS.test(text) && (CALENDAR_DAY_WORDS.test(text) || CALENDAR_TIME_WORDS.test(text)));
@@ -1555,7 +1556,8 @@ export const SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavaila
 export type SkipReason = typeof SKIP_REASONS[number];
 
 /** N6 (#569): a cut web read is its own closed reason, so a deadline never reads as an endpoint outage. */
-function webReasonOf(code: string): string {
+function webReasonOf(code: string, reason?: string): string {
+  if (code === 'web_insufficient') return `web_insufficient:${reason ?? 'ungrounded'}`;
   return code === 'web_timeout' ? 'timeout' : code;
 }
 
@@ -2592,6 +2594,27 @@ function memoryHitAllowed(hit: JsonObject, run: RunState, asked: boolean): boole
   return Number.isFinite(at) && at < (run.previousCallAt ?? run.startedAt);
 }
 
+/** Citation metadata has its own 12,000 character envelope, outside the spoken reply budget. */
+function spokenReplySize(reply: JsonObject): number {
+  const { markdown: _markdown, webSources: _sources, webAttribution: _attribution, ...spoken } = reply;
+  return JSON.stringify(spoken).length;
+}
+
+function webInsufficient(reply: JsonObject, reason: string): void {
+  reply['webInsufficient'] = { code: 'web_insufficient', reason };
+  reply['sources'] = { ...(isRecord(reply['sources']) ? reply['sources'] : {}), web: 'web_insufficient' };
+}
+
+function capWebMetadata(reply: JsonObject): void {
+  const sources = Array.isArray(reply['webSources']) ? reply['webSources'] : [];
+  const attribution = Array.isArray(reply['webAttribution']) ? reply['webAttribution'] : [];
+  const size = (): number => JSON.stringify({ markdown: reply['markdown'], webSources: sources, webAttribution: attribution }).length;
+  while (size() > 12_000 && (sources.length || attribution.length)) {
+    if (attribution.length) attribution.pop(); else sources.pop();
+    reply['markdown'] = webFooter(sources as { title: string; url: string }[], attribution as { title: string; url: string }[]);
+  }
+}
+
 /**
  * N4 (#567): the budget is measured on the whole serialized reply, after every section is attached, so a
  * block appended after the trim loop can never overrun it. Duplicated evidence goes first, the history
@@ -2604,7 +2627,10 @@ export function capReply(reply: JsonObject, limit: number): JsonObject {
   // search budget.
   if (reply['bodyProjection'] !== undefined) return reply;
   if (Array.isArray(reply['historyPages']) && (reply['historyPages'] as JsonObject[]).some(page => typeof page['text'] === 'string')) return reply;
-  const size = (): number => JSON.stringify(reply).length;
+  capWebMetadata(reply);
+  const rawWebReason = isRecord(reply['unavailable']) ? reply['unavailable']['web'] : undefined;
+  if (typeof rawWebReason === 'string' && rawWebReason.startsWith('web_insufficient:')) webInsufficient(reply, rawWebReason.slice('web_insufficient:'.length));
+  const size = (): number => spokenReplySize(reply);
   const hitsOf = (page: JsonObject): unknown[] => Array.isArray(page['hits']) ? page['hits'] as unknown[] : [];
   let trimmed = false;
   // F1 (review): the state and the note are derived with every cut, so a capped reply never says nothing is
@@ -2624,17 +2650,26 @@ export function capReply(reply: JsonObject, limit: number): JsonObject {
     const pages = Array.isArray(reply['historyPages']) ? reply['historyPages'] as JsonObject[] : [];
     const widestPage = pages.reduce<JsonObject | undefined>((best, page) => best === undefined || hitsOf(page).length > hitsOf(best).length ? page : best, undefined);
     if (widestPage !== undefined && hitsOf(widestPage).length > 0) { hitsOf(widestPage).pop(); trimmed = true; continue; }
-    const findings = (Array.isArray(reply['findings']) ? reply['findings'] as { text?: string; chars?: number }[] : [])
+    const findings = (Array.isArray(reply['findings']) ? reply['findings'] as { source?: string; text?: string; chars?: number }[] : [])
       .filter(finding => typeof finding.text === 'string' && finding.text.includes('\n'))
       .sort((left, right) => (right.text ?? '').length - (left.text ?? '').length);
     const widest = findings[0];
     const lines = widest?.text?.split('\n') ?? [];
     if (widest === undefined || lines.length <= 1) break;
     const head = lines.shift() ?? '';
+    if (widest.source === 'web') {
+      const kept = clipWebEvidence(widest.text!, widest.text!.length - (size() - limit) - RESEARCH.moreAvailableNote.length - 80);
+      if (kept !== undefined) { widest.text = kept; widest.chars = kept.length; }
+      else {
+        reply['findings'] = (reply['findings'] as JsonObject[]).filter(finding => finding !== widest);
+        webInsufficient(reply, 'reply_budget');
+      }
+      trimmed = true; continue;
+    }
     if (lines.length === 1) {
       // R5 (RESCAP-R5): the last evidence line is clipped to the room left, so a long best hit still answers.
       // #5: the clipped hit is still shown, so the header it keeps counts it.
-      const kept = clip(lines[0]!, lines[0]!.length - (size() - limit) - 1);
+      const kept = sentencePrefix(lines[0]!, lines[0]!.length - (size() - limit) - 1);
       if (kept.length >= RESEARCH.clipFloorChars) { widest.text = [head, kept].join('\n'); widest.chars = kept.length; trimmed = true; continue; }
     }
     // #5: only a line this pass really removes is counted out of the header, never one it clipped.
@@ -2651,7 +2686,10 @@ export function capReply(reply: JsonObject, limit: number): JsonObject {
     // The last bound: only the identity, the honest state and the note survive, because nothing else can be
     // cut without breaking the structure, and the note already says the rest was left out.
     const researchId = reply['researchId'];
-    for (const key of Object.keys(reply)) delete reply[key];
+    const lostWeb = Array.isArray(reply['findings']) && reply['findings'].some(finding => isRecord(finding) && finding['source'] === 'web');
+    const insufficiency = reply['webInsufficient'];
+    for (const key of Object.keys(reply)) if (!['markdown', 'webSources', 'webAttribution'].includes(key)) delete reply[key];
+    if (lostWeb || insufficiency !== undefined) webInsufficient(reply, isRecord(insufficiency) ? String(insufficiency['reason']) : 'reply_budget');
     reply['researchId'] = researchId;
     reply['status'] = 'partial';
     reply['canContinue'] = true;
@@ -2801,9 +2839,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // line wider than the budget is dropped whole rather than left to overrun it (LAT-1023 B3). R5 (RESCAP-R5):
   // when that line is a source's only evidence, it is clipped to the room left instead, because dropping it
   // emptied the answer for a long best hit.
+  let webDropped = false;
   let guard = 4096;
   while (guard-- > 0) {
-    const rendered = JSON.stringify(render().reply).length;
+    const rendered = spokenReplySize(render().reply);
     if (rendered <= limit) break;
     const removable = groups.filter(group => shownOf(group) > (group.days === undefined ? 0 : 1));
     if (removable.length === 0) break;
@@ -2814,6 +2853,12 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // event while the header still claimed it. Its last event stays, so the answer keeps the day it read.
     if (trimmed.days !== undefined) { trimCalendarEvent(trimmed); continue; }
     const last = trimmed.lines[trimmed.lines.length - 1]!;
+    if (trimmed.source === 'web') {
+      const kept = clipWebEvidence(last, last.length - (rendered - limit) - RESEARCH.moreAvailableNote.length - 80);
+      if (kept !== undefined) trimmed.lines[trimmed.lines.length - 1] = kept;
+      else { trimmed.lines.pop(); webDropped = true; dropped += 1; }
+      continue;
+    }
     if (trimmed.lines.length === 1) {
       const room = last.length - (rendered - limit) - 1;
       if (room >= RESEARCH.clipFloorChars) { trimmed.lines[0] = clip(last, room); continue; }
@@ -2838,6 +2883,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   }
   if (compactItems > 0) (result as CompactionReply)[compactionDelivery] = { items: compactItems };
   if (calendarReads.length > 0) result[calendarDelivery] = { researchId: run.researchId, runId: run.runId, keys: remaining.slice(0, shownOf(groups.find(group => group.source === 'calendar') ?? { lines: [] })).map(([key]) => key) };
+  if (webDropped && !findings.some(finding => finding.source === 'web')) webInsufficient(result, 'reply_budget');
   const capped = capReply(result, limit);
   // #575: what this reply actually carried is what the session must not hand over again.
   for (const finding of (Array.isArray(capped['findings']) ? capped['findings'] as { text?: string }[] : [])) {
@@ -3350,7 +3396,7 @@ async function webGroup(deps: ResearchDeps, run: RunState, plans: readonly Route
     const call = plan.read.subs[0];
     const query = String(call?.args['query'] ?? plan.lookup.query);
     const outcome = await deps.web!.search({ query, signal, deadlineMs: webDeadlineMs(query) });
-    if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code)); return { plan }; }
+    if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return { plan }; }
     run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
     run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));
     run.evidence.set('web_search', outcome.evidence.answer);
@@ -3732,7 +3778,7 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
     ...early,
     status: partial || early['canContinue'] === true ? 'partial' : 'complete',
     canContinue: partial || early['canContinue'] === true,
-    note: partial ? `${RESEARCH.stillReadingNote}${pending.join(', ')}` : (typeof early['note'] === 'string' ? early['note'] : RESEARCH.completeNote),
+    note: partial ? `${RESEARCH.stillReadingNote}${pending.join(', ')}.${String(early['note'] ?? '').includes(RESEARCH.moreAvailableNote) ? ` ${RESEARCH.moreAvailableNote}` : ''}` : (typeof early['note'] === 'string' ? early['note'] : RESEARCH.completeNote),
   };
   first.mailShown = new Set((reply as MailReply)[mailDelivery]?.keys ?? []);
   const shown = Array.isArray(reply['findings']) ? reply['findings'] as { text?: string }[] : [];
@@ -3746,7 +3792,7 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   view.run.answeredAt = first.at;
   const researchId = typeof reply['researchId'] === 'string' ? reply['researchId'] : '';
   (deps.logFirstAnswer ?? ((event: ResearchFirstAnswer): void => { hostLogEvent(event); }))({ event: 'research_first_answer', researchId, ms: RESEARCH.firstAnswerMs, settled: [...view.run.sourcesDone], pending });
-  return { ...reply, pending };
+  return capReply({ ...reply, pending }, view.limit);
 }
 
 /** The bounded loop. One call runs it start to finish within the run deadline. */
@@ -4239,7 +4285,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             return Promise.all(webCalls.map(async (call): Promise<IntentSubResult> => {
               const empty = { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0 };
               const outcome = await deps.web!.search({ query: String(call.args['query'] ?? ''), signal: readSignal, deadlineMs: webDeadlineMs(String(call.args['query'] ?? '')) });
-              if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code)); return empty; }
+              if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return empty; }
               run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
               run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));
               run.evidence.set('web_search', outcome.evidence.answer);

@@ -1,32 +1,32 @@
 import type { Credentials } from '../adapters/model/types.js';
 
 /**
- * WEB-1021: one typed action, no provider abstraction. Gemini `gemini-2.5-flash` generateContent with
+ * WEB-1021: one typed action, no provider abstraction. Gemini `gemini-3.8-flash` generateContent with
  * the `google_search` tool answers one public query and returns citation-linked evidence Naya speaks
  * from. The query is the only thing that egresses; claims ride with their sources and never a URL in
  * the spoken text.
  */
 export const WEB_SEARCH_ACTION = 'web_search';
-export const WEB_MODEL = 'gemini-2.5-flash';
+export const WEB_MODEL = 'gemini-3.8-flash';
 /** The council's hard deadline: the transport is cancelled at this point, never left running. */
-export const WEB_DEADLINE_MS = 4_000;
+export const WEB_DEADLINE_MS = 6_000;
 /**
  * N6 (#569): a weather or news read settles in 3.3 to 4.4 s, so those asks get a budget that holds them.
  * The routed lookup kind is `web_search` for every ask, so the ask itself is what names the longer budget.
  */
-export const WEB_SLOW_DEADLINE_MS = 8_000;
+export const WEB_SLOW_DEADLINE_MS = 10_000;
 const SLOW_ASK = /\b(?:weather|forecast|temperature|rain|rains|raining|rainfall|snow|snowing|wind|windy|storm|humidity|sunrise|sunset|air quality|pollen|news|headlines?|breaking)\b/i;
 
 export function webDeadlineMs(query: string): number {
   return SLOW_ASK.test(query) ? WEB_SLOW_DEADLINE_MS : WEB_DEADLINE_MS;
 }
-export const WEB_SOURCE_CAP = 3;
-export const WEB_WORDS_CAP = 150;
+export const WEB_SOURCE_CAP = 5;
+export const WEB_WORDS_CAP = 220;
 export const WEB_QUERY_CHARS = 200;
 
 const origin = 'https://generativelanguage.googleapis.com';
 const attribution =
-  'Answer in at most 150 words of plain sentences, using only what the search results support. '
+  'Answer in at most 220 words of plain sentences, using only what the search results support. '
   + 'Never write a URL, never greet the reader, never add a list of links.';
 
 export type WebFailureCode = 'web_timeout' | 'web_unavailable' | 'web_rate_limited' | 'web_ungrounded' | 'web_private_question';
@@ -44,7 +44,9 @@ export interface WebEvidence {
   searchEntryPoint?: string;
 }
 
-export type WebOutcome = { ok: true; evidence: WebEvidence } | { ok: false; code: WebFailureCode };
+export type WebInsufficientReason = 'empty' | 'ungrounded' | 'capped' | 'reply_budget';
+export type WebOutcome = { ok: true; evidence: WebEvidence } | { ok: false; code: WebFailureCode }
+  | { ok: false; code: 'web_insufficient'; reason: WebInsufficientReason };
 
 export interface WebSearchPort {
   /** N6: an ask may carry its own deadline, so a slow weather or news read is not held to the short one. */
@@ -93,9 +95,46 @@ const publishedOf = (web: Record<string, unknown>): string | undefined => {
 };
 
 /** Claims trimmed with their citations: a claim outside the spoken answer is dropped, and a source left with no claim goes with it. */
+/** Keep whole sentences only; an unfinished supported claim is not evidence. */
+export function sentencePrefix(value: string, max: number): string {
+  const prefix = value.slice(0, Math.max(0, max));
+  const sentences = [...prefix.matchAll(/[.!?](?=\s|$)/gu)];
+  const last = sentences.at(-1);
+  return last?.index === undefined ? '' : prefix.slice(0, last.index + 1).trim();
+}
+
+const QUERY_FILLERS = /^(?:a|an|the|what|is|are|was|were|please|could|would|can|you|tell|me|find|search|for|about|of|in|on|at|to|and|latest|current|today|how|much|price|date|when|did|who)$/iu;
+/** Drop fillers before bounding a query; never split a name or date token. */
+export function broaderWebQuery(value: string, max = WEB_QUERY_CHARS): string {
+  const tokens = value.replace(/[?!,]/gu, '').split(/\s+/u).filter(token => token && !QUERY_FILLERS.test(token));
+  const kept: string[] = [];
+  for (const token of tokens) if ([...kept, token].join(' ').length <= max) kept.push(token);
+  return kept.join(' ');
+}
+
+/** Shrink the web finding as evidence, never by popping its only multi-line result. */
+export function clipWebEvidence(value: string, max: number): string | undefined {
+  if (value.length <= max) return value;
+  const lines = value.split('\n');
+  const head = lines[0]?.startsWith('web answer:') ? '' : lines.shift()! + '\n';
+  const sourceLine = lines.find(line => line.startsWith('web sources:'))?.split(' | ')[0];
+  const claims = lines.filter(line => line.startsWith('web claim:'));
+  if (!sourceLine || claims.length === 0) return undefined;
+  const note = 'You may ask for the full result.';
+  const answer = lines.find(line => line.startsWith('web answer:'))?.slice('web answer: '.length) ?? '';
+  for (let count = claims.length; count > 0; count -= 1) {
+    const kept = claims.slice(0, count);
+    const tail = '\n' + kept.join('\n') + '\n' + sourceLine + '\n' + note;
+    const prefix = head + 'web answer: ';
+    const clipped = sentencePrefix(answer, max - prefix.length - tail.length);
+    if (clipped && kept.every(claim => clipped.includes(claim.slice('web claim: '.length).replace(/ \[[^\]]*\]$/u, '')))) return prefix + clipped + tail;
+  }
+  return undefined;
+}
+
 function capped(answer: string, sources: readonly WebSource[], claims: readonly WebClaim[]): { answer: string; sources: WebSource[]; claims: WebClaim[] } {
   const words = answer.split(/\s+/);
-  const spoken = words.length > WEB_WORDS_CAP ? words.slice(0, WEB_WORDS_CAP).join(' ') : answer;
+  const spoken = words.length > WEB_WORDS_CAP ? sentencePrefix(words.slice(0, WEB_WORDS_CAP).join(' '), answer.length) : answer;
   const kept = claims.filter(claim => claim.sourceIndexes.length > 0 && spoken.includes(claim.text));
   const used = [...new Set(kept.flatMap(claim => claim.sourceIndexes))]
     .filter(index => sources[index] !== undefined).sort((a, b) => a - b).slice(0, WEB_SOURCE_CAP);
@@ -116,7 +155,8 @@ function grounded(body: unknown, retrievedAt: string): WebOutcome {
   const parts = content !== undefined && Array.isArray(content['parts']) ? content['parts'] : [];
   const answer = parts.flatMap(part => object(part) ? [text(part['text']) ?? ''] : []).join(' ').trim();
   const metadata = candidate !== undefined && object(candidate['groundingMetadata']) ? candidate['groundingMetadata'] : undefined;
-  if (metadata === undefined) return { ok: false, code: 'web_ungrounded' };
+  if (!answer) return { ok: false, code: 'web_insufficient', reason: 'empty' };
+  if (metadata === undefined) return { ok: false, code: 'web_insufficient', reason: 'ungrounded' };
   const chunks = Array.isArray(metadata['groundingChunks']) ? metadata['groundingChunks'] : [];
   const sources: WebSource[] = [];
   // A dropped chunk must never re-point a later citation, so every kept chunk remembers where it moved.
@@ -146,9 +186,10 @@ function grounded(body: unknown, retrievedAt: string): WebOutcome {
     if (sourceIndexes.length === 0) continue;
     claims.push({ text: claim, sourceIndexes });
   }
-  if (answer.length === 0 || sources.length === 0) return { ok: false, code: 'web_ungrounded' };
+  if (answer.length === 0 || sources.length === 0) return { ok: false, code: 'web_insufficient', reason: 'ungrounded' };
   const searchEntryPoint = text(metadata['searchEntryPoint'] && object(metadata['searchEntryPoint']) ? metadata['searchEntryPoint']['renderedContent'] : undefined);
   const trimmed = capped(answer, sources, claims);
+  if (trimmed.claims.length === 0 || trimmed.sources.length === 0) return { ok: false, code: 'web_insufficient', reason: 'capped' };
   return {
     ok: true,
     evidence: {
@@ -173,22 +214,27 @@ export function createWebSearch(options: WebSearchOptions): WebSearchPort {
       const cut = new AbortController();
       const timer = setTimeout(() => cut.abort(new Error('web_timeout')), deadlineMs ?? defaultDeadlineMs);
       timer.unref?.();
-      const body = {
-        systemInstruction: { parts: [{ text: attribution }] },
-        contents: [{ role: 'user', parts: [{ text: publicQuery }] }],
-        tools: [{ google_search: {} }],
-        generationConfig: { candidateCount: 1, maxOutputTokens: 700, thinkingConfig: { thinkingBudget: 0 } },
-      };
       try {
-        const response = await transport(`${origin}/v1beta/models/${model}:generateContent`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-          body: JSON.stringify(body),
-          signal: AbortSignal.any([signal, cut.signal]),
-        });
-        if (response.status === 429) return { ok: false, code: 'web_rate_limited' };
-        if (!response.ok) return { ok: false, code: 'web_unavailable' };
-        return grounded(await response.json(), new Date(now()).toISOString());
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          if (signal.aborted || cut.signal.aborted) return { ok: false, code: 'web_timeout' };
+          const body = {
+            systemInstruction: { parts: [{ text: attribution }] },
+            contents: [{ role: 'user', parts: [{ text: attempt === 0 ? publicQuery : broaderWebQuery(publicQuery) }] }],
+            tools: [{ google_search: {} }],
+            generationConfig: { candidateCount: 1, maxOutputTokens: 1100, thinkingConfig: { thinkingLevel: 'low' } },
+          };
+          const response = await transport(`${origin}/v1beta/models/${model}:generateContent`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+            body: JSON.stringify(body),
+            signal: AbortSignal.any([signal, cut.signal]),
+          });
+          if (response.status === 429) return { ok: false, code: 'web_rate_limited' };
+          if (!response.ok) return { ok: false, code: 'web_unavailable' };
+          const result = grounded(await response.json(), new Date(now()).toISOString());
+          if (result.ok || result.code !== 'web_insufficient' || attempt === 1) return result;
+        }
+        return { ok: false, code: 'web_insufficient', reason: 'empty' };
       } catch {
         return { ok: false, code: cut.signal.aborted || signal.aborted ? 'web_timeout' : 'web_unavailable' };
       } finally {
@@ -206,7 +252,7 @@ export function webEvidenceText(evidence: WebEvidence): string {
   const listed = evidence.sources.map((source, index) => `${index + 1}. ${source.title}${source.publishedAt === undefined ? '' : ` (${source.publishedAt})`}`);
   lines.push(`web sources: ${listed.join(' | ')}`);
   lines.push(`retrieved: ${evidence.retrievedAt}`);
-  lines.push('the source links are on screen, so never read a link or a URL aloud');
+  lines.push('The source links are on screen; never read a link or a URL aloud. You may ask for the full result.');
   return lines.join('\n');
 }
 

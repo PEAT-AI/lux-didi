@@ -327,7 +327,7 @@ test('#567/R5: a long best knowledge hit is clipped to fit, never dropped', asyn
 test('#567/R5: capReply clips the only evidence line instead of dropping the finding', () => {
   const reply = {
     researchId: 'r-5', status: 'partial', canContinue: true,
-    findings: [{ source: 'knowledge', text: `knowledge: 1 of 1 shown\n${'y'.repeat(4_000)}`, chars: 4_000 }],
+    findings: [{ source: 'knowledge', text: `knowledge: 1 of 1 shown\n${'A full sentence. '.repeat(250)}`, chars: 4_000 }],
   };
   const capped = capReply(reply, RESEARCH.replyLimitChars);
   assert.ok(JSON.stringify(capped).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(capped).length}`);
@@ -336,7 +336,7 @@ test('#567/R5: capReply clips the only evidence line instead of dropping the fin
   const lines = findings[0]!.text.split('\n');
   assert.equal(lines.length, 2, 'it keeps its header and one evidence line');
   assert.ok((lines[1] ?? '').length >= RESEARCH.clipFloorChars, 'the evidence line is clipped, never removed');
-  assert.match(lines[1] ?? '', /\u2026/u, 'the clip is marked');
+  assert.match(lines[1] ?? '', /[.!?]$/u, 'the clip ends at a complete sentence');
 });
 
 test('#567/R5: the knowledge body request is sized to fit the reply budget', () => {
@@ -1966,4 +1966,26 @@ test('WEB-1024: the final pending envelope remains bounded and preserves the mor
   assert.ok(JSON.stringify(reply).length <= 2500);
   assert.match(String(reply['note']), new RegExp(RESEARCH.moreAvailableNote.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   for (const finding of (reply['findings'] as { text: string }[])) assert.match(finding.text, /[.!?]$/);
+});
+
+
+test('WEB-1024: an early answer with two pending readers keeps its final cap and continuation note', async () => {
+  const clock = fakeClock();
+  const gate = deferred<void>();
+  const h = harness({
+    now: clock.now, schedule: clock.schedule,
+    configured: ['memory', 'knowledge', 'chat'],
+    memory: () => ({ lines: ['A complete remembered sentence. '.repeat(120)], text: '', total: 1 }),
+    execute: async (subs: readonly IntentSubCall[]) => { await gate.promise; return subs.map(call => sub(call.name, '## Result\nA complete late sentence.', true, call.key)); },
+  });
+  let reading: Promise<void> | undefined;
+  h.deps.background = done => { reading = done; };
+  h.deps.logFirstAnswer = () => {};
+  const call = runResearch(h.deps, { action: 'start', question: 'what is remembered and recorded', lookups: [{ source: 'memory', query: 'remembered' }, { source: 'knowledge', query: 'recorded' }, { source: 'chat', query: 'recorded' }] }, new AbortController().signal);
+  await tick(); clock.advance(RESEARCH.firstAnswerMs);
+  const reply = await call;
+  assert.ok(JSON.stringify(reply).length <= 2500, JSON.stringify(reply).length.toString());
+  assert.ok(String(reply['note']).includes(RESEARCH.moreAvailableNote), String(reply['note']));
+  assert.deepEqual(reply['pending'], ['knowledge', 'chat']);
+  gate.resolve(); await reading;
 });

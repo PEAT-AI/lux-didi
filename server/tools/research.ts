@@ -2789,7 +2789,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
         source: 'mail' as const, kind: 'id' in lookup.mail ? 'mail_open' as const : 'mail_search' as const,
         subs: [{
           key: 'mail0', name: 'id' in lookup.mail ? INTERNAL.mailRead : INTERNAL.mailList,
-          args: 'id' in lookup.mail ? { ...lookup.mail } : { ...mailPageArgs(lookup.mail as JsonObject), q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone) },
+          args: 'id' in lookup.mail ? { ...lookup.mail } : { ...mailPageArgs(lookup.mail as JsonObject), q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone, context.topic) },
         }],
       }
       : { source: 'mail' as const, kind: 'mail_search' as const, subs: candidateSubs('mail_search', subsConfig) };

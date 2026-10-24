@@ -11,6 +11,7 @@ import { createLiveSessionOwner, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RES
   validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
+import { safeEvent } from '../host/log.js';
 import { fakeLiveVoicePort, type FakeLiveVoice, type FakeLiveVoiceEvent } from './fixtures/fake-live-voice.js';
 import type { LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
 import { pcm } from './live-voice-fixture.js';
@@ -223,6 +224,13 @@ test('an unattended call ends at the idle limit even while VAD only events, a nu
   assert.equal(live.now() - lastActivity, 300_000, 'nothing but real activity moved the idle clock');
   const resets = live.receipts.filter(record => record.event === 'live_idle_arm').map(record => record.resetBy);
   assert.deepEqual([...new Set(resets)], ['opened', 'model_audio'], 'only the opener reset the clock');
+});
+
+test('the idle arm receipt is a closed set the host log accepts', () => {
+  assert.deepEqual(safeEvent({ event: 'live_idle_arm', resetBy: 'model_audio', idleMs: 300_000 }),
+    { event: 'live_idle_arm', resetBy: 'model_audio', idleMs: 300_000 }, 'a known cause keeps its receipt');
+  assert.equal(safeEvent({ event: 'live_idle_arm', resetBy: 'vad_start', idleMs: 1_000 }), undefined,
+    'a cause outside the closed set never reaches the host log');
 });
 
 test('a finalized owner transcript with content and model audio each reset the idle clock', async t => {

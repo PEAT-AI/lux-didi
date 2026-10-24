@@ -2600,10 +2600,17 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // N5 (#568): the note offers a continuation only when this reply can serve one, so the model never
     // spends a round on a continue the run answers with continuation_unavailable.
     const canRepeat = complete ? false : canContinue || trimmed;
-    const settledNote = complete ? (note === undefined ? RESEARCH.completeNote : `${note} ${RESEARCH.completeNote}`)
+    // #4: the left-out count is derived inside the measured reply, so the header's total and this sentence
+    // never drift apart when a later trim takes one more event out.
+    const calendarGroup = groups.find(group => group.source === 'calendar');
+    const calendarLeftOut = calendarGroup === undefined ? 0 : Math.max(0, calendarGroup.total - shownOf(calendarGroup));
+    const spokenNote = calendarLeftOut === 0 ? note
+      : note === undefined ? `I left out ${calendarLeftOut} calendar ${calendarLeftOut === 1 ? 'event' : 'events'} to keep this answer short.`
+        : `${note} I left out ${calendarLeftOut} calendar ${calendarLeftOut === 1 ? 'event' : 'events'} to keep this answer short.`;
+    const settledNote = complete ? (spokenNote === undefined ? RESEARCH.completeNote : `${spokenNote} ${RESEARCH.completeNote}`)
       : stillReading.length > 0 ? `${RESEARCH.stillReadingNote}${stillReading.map(source => SOURCE_LABEL[source]).join(', ')}`
-        : canRepeat ? (moreAvailable ? (note === undefined ? RESEARCH.moreAvailableNote : `${note} ${RESEARCH.moreAvailableNote}`) : note)
-          : unsearched.length === 0 ? note : `${note === undefined ? '' : `${note} `}${RESEARCH.notSearchedNote}${sourceListText(unsearched)}.`;
+        : canRepeat ? (moreAvailable ? (spokenNote === undefined ? RESEARCH.moreAvailableNote : `${spokenNote} ${RESEARCH.moreAvailableNote}`) : spokenNote)
+          : unsearched.length === 0 ? spokenNote : `${spokenNote === undefined ? '' : `${spokenNote} `}${RESEARCH.notSearchedNote}${sourceListText(unsearched)}.`;
     return { findings, reply: { researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, down to a source's last line: the Live budget is a hard bound, so a kept
@@ -2629,12 +2636,6 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     trimmed.lines.pop(); dropped += 1;
   }
   const compactItems = dropped + droppedEvents;
-  // #4: shown plus left out is the total in every reply, so the sentence counts what the header's total
-  // does not show, whatever took it out of the answer.
-  const calendarGroup = groups.find(group => group.source === 'calendar');
-  const calendarLeftOut = calendarGroup === undefined ? 0 : Math.max(0, calendarGroup.total - shownOf(calendarGroup));
-  const omission = calendarLeftOut === 0 ? undefined : `I left out ${calendarLeftOut} calendar ${calendarLeftOut === 1 ? 'event' : 'events'} to keep this answer short.`;
-  if (omission !== undefined) note = note === undefined ? omission : `${note} ${omission}`;
   const { findings, reply } = render();
   const result: CalendarReply & MailReply = { ...reply, findings };
   if (mailReads.length) {

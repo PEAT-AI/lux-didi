@@ -455,6 +455,7 @@ enum State: String, CaseIterable {
         muted = false; speaking = false
         adoptSession(nil)
     }
+}
 
 /// #613: the one place a conversation state names the presence move, so the N1 mapping is provable
 /// without a window: an unknown outcome reaches `sessionUncertain`, never the ignored tail.

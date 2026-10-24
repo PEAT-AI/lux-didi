@@ -41,7 +41,7 @@ import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
 import { NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
-import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse } from '../adapters/live-voice/index.js';
+import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse, LiveToolSendOutcome } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createDomainPort } from '../domain/facade.js';
@@ -4035,6 +4035,9 @@ function progressPort() {
   const toolResponses: LiveToolResponse[][] = [];
   let emit: (event: unknown) => void = () => {};
   let sessionsOpened = 0;
+  /** #538: what the adapter reports back for the next tool answer, so a failed write can be driven here. */
+  let sendOutcome: LiveToolSendOutcome = 'sent';
+  let closes = 0;
   const port: LiveVoicePort = {
     capabilities: { ...fakeLiveVoicePort().port.capabilities, provider: 'openai', supportsResumption: true },
     open(_request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession {
@@ -4063,18 +4066,21 @@ function progressPort() {
       };
       return {
         ready: Promise.resolve(), events, done,
-        sendToolResponse(input: { responses: LiveToolResponse[] }): void { toolResponses.push(input.responses); },
+        sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome { toolResponses.push(input.responses); return sendOutcome; },
         sendAudio(): void {}, sendText(input: { text: string }): void { texts.push(input.text); }, endAudioStream(): void {},
         sendCommentary(input: { text: string }): boolean {
           if (!commentaryDelivered) return false;
           commentary.push(input.text);
           return true;
         },
-        close(): void { if (closed) return; closed = true; wake(); resolveDone({ status: 'closed', code: 'closed' }); },
+        close(): void { if (closed) return; closed = true; closes += 1; wake(); resolveDone({ status: 'closed', code: 'closed' }); },
       };
     },
   };
   return { port, commentary, thinking, texts, toolResponses, emit: (event: unknown) => emit(event),
+    /** #538: what the next tool answer reports, and how many provider sessions the host closed. */
+    reportToolSend: (outcome: LiveToolSendOutcome) => { sendOutcome = outcome; },
+    get closes() { return closes; },
     /** W4: a transport with no open delegation refuses the append, exactly as the GPT-Live wire does. */
     refuseCommentary: () => { commentaryDelivered = false; },
     get sessionsOpened() { return sessionsOpened; } };
@@ -4569,6 +4575,71 @@ test('S4a-R2 (f): silence on the commentary channel never satisfies the answer w
   h.advance(6_000); scheduler.runDue(); await settlePort();
   assert.equal(nudges(), before, 'audible audio, not an ack, is what the watchdog accepts');
   answered.attachment.close();
+});
+
+test('#538: a tool output whose send outcome is failed opens the recovery at once with a typed reason', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'send-failed');
+  const reasons = (): unknown[] => receipts.filter(record => record.event === 'live_debt').map(record => record.reason);
+  fake.reportToolSend('failed');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'sf1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  assert.deepEqual(reasons(), ['start', 'send_failed'], 'the failed write starts the debt and names it in the same tick');
+  assert.equal(fake.sessionsOpened, 2, 'the recovery opened one fresh provider session at once, not at 8 s');
+  assert.equal(fake.closes, 1, 'the stalled provider session was closed');
+});
+
+test('#538: model text never slides the audible debt, so the OpenAI path recreates once at 8 s and re-queues once', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  const { attachment } = await openPort(h, 'debt-text-only');
+  const played: string[] = [];
+  void (async () => { for await (const chunk of attachment.output) if (chunk.kind === 'audio') played.push(chunk.kind); })();
+  fake.emit({ type: 'toolCall', calls: [{ id: 'd1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the tool answer went out once on the first session');
+  assert.equal(fake.sessionsOpened, 1, 'nothing is rebuilt before the rung');
+  // The provider writes text and no audio, which used to postpone recovery forever.
+  for (let spent = 0; spent < 6_000; spent += 2_000) {
+    h.advance(2_000); scheduler.runDue(); await settlePort();
+    fake.emit({ type: 'outputTranscription', text: 'partial answer', finished: false });
+    fake.emit({ type: 'modelText', text: 'partial answer', thought: false });
+    await settlePort();
+  }
+  assert.equal(fake.sessionsOpened, 1, 'text deltas never slide the debt clock');
+  h.advance(2_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.closes, 1, 'at 8 s of audible debt the stalled provider session is closed');
+  assert.equal(fake.sessionsOpened, 2, 'and one fresh session replaces it');
+  assert.equal(fake.toolResponses.length, 2, 'the pending tool outputs are re-queued exactly once');
+  assert.deepEqual(fake.toolResponses[1], fake.toolResponses[0], 'the same answers, not a second batch');
+  h.advance(4_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.toolResponses.length, 2, 'the re-queue is never replayed twice');
+  // The recreated session answers audibly, which is what the owner hears.
+  fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
+  await settlePort();
+  assert.ok(played.length > 0, 'audio from the recreated session reaches the owner');
+  assert.equal(fake.sessionsOpened, 2, 'audible audio ends the recovery ladder');
+});
+
+test('#538: an owner barge-in inside the debt window clears the clock and triggers no recreate', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'debt-barge-in');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'b1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  h.advance(3_000); scheduler.runDue(); await settlePort();
+  fake.emit({ type: 'interrupted' });
+  await settlePort();
+  h.advance(10_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.closes, 0, 'the owner owns the turn, so no provider session is closed');
+  assert.equal(fake.sessionsOpened, 1, 'no recreate after an owner barge-in');
 });
 
 test('W4: a research-only batch still gets its silent line', async t => {

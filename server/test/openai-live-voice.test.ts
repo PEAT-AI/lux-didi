@@ -1322,6 +1322,19 @@ describe('openai gpt-live turn states', () => {
   const starts = (captured: Captured) => captured.events.filter(event => event.type === 'modelTurnStarted').length;
   const inputFinals = (captured: Captured) => captured.events.filter(event => event.type === 'inputTranscription' && event.finished === true).length;
 
+  test('#538: a generic provider error on an open response is a typed turn failure the voice can name', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    opened.f.send({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'resp_dead_air' } } });
+    await quiet();
+    // A generic error on an open response used to be logged and then dropped, so the voice never learned why.
+    opened.f.send({ type: 'error', event_id: 'event_dead_air', error: { type: 'mystery_error', code: 'something_new', param: 'field', message: 'unknown', client_event_id: null } });
+    await until(() => opened.captured.events.some(event => event.type === 'turnFailed'));
+    const failed = opened.captured.events.filter(event => event.type === 'turnFailed');
+    assert.equal(failed.length, 1, 'one typed failure for the open response');
+    assert.equal(failed[0]?.type === 'turnFailed' ? failed[0].code : undefined, 'provider_error', 'the closed reason set, never the provider word');
+    opened.session.close();
+  });
   test('a plain answer goes listening, thinking, speaking, listening, and completes at two seconds', async t => {
     const clock = new FakeClock();
     const opened = await ready(t, { clock });

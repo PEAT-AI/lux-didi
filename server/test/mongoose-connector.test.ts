@@ -39,7 +39,6 @@ const READ_TEXT = JSON.stringify({
   body: 'Agri input pricing reached 41 companies in 2025.',
 });
 
-interface Reply { tool: string; text: string }
 interface FixtureOptions { replies?: Record<string, string>; text?: string; status?: number }
 
 async function fixture(endpoint: MongooseEndpoint, options: FixtureOptions = {}) {
@@ -79,7 +78,7 @@ async function fixture(endpoint: MongooseEndpoint, options: FixtureOptions = {})
   listener.listen(0, '127.0.0.1'); await once(listener, 'listening');
   const address = listener.address(); assert(address && typeof address !== 'string');
   const url = `http://127.0.0.1:${address.port}${MONGOOSE_ENDPOINT_PATHS[endpoint]}`;
-  return { url, calls, authorization: authorization.filter(value => value !== undefined), async close() { await sdk.close().catch(() => {}); await new Promise<void>(resolve => listener.close(() => resolve())); } };
+  return { url, calls, get authorization() { return authorization.filter(value => value !== undefined); }, async close() { await sdk.close().catch(() => {}); await new Promise<void>(resolve => listener.close(() => resolve())); } };
 }
 
 function adapterFor(endpoint: MongooseEndpoint, url: string, token: string) {
@@ -176,7 +175,9 @@ test('each endpoint carries its own audience and its own token, never the other 
     const first = MONGOOSE_ENDPOINT_TOOLS[endpoint][0] as string;
     const result = await reader.call(first, first === 'search' ? { query: 'agri' } : {}, undefined);
     assert.equal(result.state, 'completed', `${endpoint} completed`);
-    assert.deepEqual(f.authorization, [`Bearer ${endpoint}-token`]);
+    // Every authenticated request carried this endpoint's own token, and never another endpoint's.
+    assert(f.authorization.length > 0, `${endpoint} sent an authenticated request`);
+    for (const header of f.authorization) assert.equal(header, `Bearer ${endpoint}-token`);
     await a.adapter.close();
   }
   assert.deepEqual(MONGOOSE_ENDPOINTS.map(endpoint => MONGOOSE_ENDPOINT_AUDIENCES[endpoint]), ['mongoose:knowledge', 'mongoose:data', 'mongoose:crm']);
@@ -191,7 +192,7 @@ test('a company question runs search mode answer then read on the top ref and re
   const result = await k.reader.searchCompany({ query: 'agri input pricing', read: 'summary' });
   assert.equal(result.state, 'completed');
   assert.deepEqual(k.f.calls, [
-    { name: 'search', arguments: { query: 'agri input pricing', mode: 'answer', read: 'summary' } },
+    { name: 'search', arguments: { query: 'agri input pricing', mode: 'answer', read: 'summary', limit: 5 } },
     { name: 'read', arguments: { ref: 'item-9', depth: 'summary' } },
   ]);
   const projected = projectMongooseResult(k.a.adapter, result);
@@ -207,7 +208,7 @@ test('a listing ask runs search mode browse and reads nothing', async t => {
   t.after(() => k.a.adapter.close());
   const result = await k.reader.searchCompany({ query: 'companies', mode: 'browse' });
   assert.equal(result.state, 'completed');
-  assert.deepEqual(k.f.calls, [{ name: 'search', arguments: { query: 'companies', mode: 'browse' } }]);
+  assert.deepEqual(k.f.calls, [{ name: 'search', arguments: { query: 'companies', mode: 'browse', limit: 5 } }]);
 });
 
 test('a restricted search yields the restricted reason, never empty evidence', async t => {
@@ -284,7 +285,9 @@ test('a tool outside the endpoint envelope refuses before dispatch', async t => 
 test('the read classifier never admits a write whatever the annotations say', () => {
   for (const name of MONGOOSE_DENIED_TOOLS) assert.equal(mongooseReadOnly({ name, annotations: { readOnlyHint: true } }), false, name);
   assert.equal(mongooseReadOnly({ name: 'search', annotations: { readOnlyHint: true } }), true);
-  assert.equal(mongooseReadOnly({ name: 'search' }), true);
+  // No annotations at all falls back to the read prefixes; a bare name is not a read on its spelling.
+  assert.equal(mongooseReadOnly({ name: 'list_companies' }), true);
+  assert.equal(mongooseReadOnly({ name: 'search' }), false);
   assert.equal(mongooseReadOnly({ name: 'search', annotations: {} }), false);
 });
 

@@ -349,7 +349,7 @@ test('a protected-resource document that names another audience is refused, and 
     }), (error: unknown) => error instanceof MongooseLoginError && error.code === 'metadata-unavailable');
     writeMongooseOAuth(dir, 'mongoose-data', record({ endpoint: 'data', audience: 'mongoose:data', expiresAt: NOW }));
     let form: Record<string, string> = {};
-    const as = (async (input: string | URL | Request, init?: RequestInit) => {
+    const as = (async (_input: string | URL | Request, init?: RequestInit) => {
       form = Object.fromEntries(new URLSearchParams(String(init?.body)));
       return new Response(JSON.stringify({ access_token: 'access-token-new', refresh_token: 'refresh-token-new', expires_in: 3600 }), { status: 200 });
     }) as unknown as typeof fetch;

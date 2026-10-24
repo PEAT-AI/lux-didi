@@ -2453,6 +2453,13 @@ const REASON_WORDS: Record<string, string> = {
   history_unavailable: 'unavailable',
   history_reference_unavailable: 'unavailable',
   cancelled: 'the run stopped before it was read',
+  // Mongoose 1023b carries closed reasons of its own; restricted is a state, never an empty answer.
+  restricted: 'restricted for this account, not missing',
+  not_found: 'not in the company knowledge base',
+  data_not_connected: 'the Lightdash token is not connected in Mongoose settings',
+  endpoint_not_allowed: 'this account is not in the Mongoose CRM teams',
+  cursor_stale: 'that page of results expired, search again',
+  cursor_invalid: 'that page of results was not readable, search again',
 };
 /**
  * ROUTE-1022 K5: the plan a brief actually ran, as one closed token. A brief that read nothing but
@@ -2846,6 +2853,22 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   return capped;
 }
 
+/** A listing ask browses entities; anything else is a question the answer mode answers. */
+const COMPANY_LISTING = /\b(?:list|which|what|who)\b[^?]{0,60}\b(?:companies|company|products|markets|offerings|tickets)\b/iu;
+export function companyLookupMode(query: string): 'answer' | 'browse' {
+  return COMPANY_LISTING.test(query) ? 'browse' : 'answer';
+}
+
+/**
+ * The company lookup: one search, and for a question one read of the top hit's ref, so the finding
+ * carries the entity behind the answer instead of a title alone.
+ */
+function companySubs(query: string): IntentSubCall[] {
+  const mode = companyLookupMode(query);
+  const args: JsonObject = mode === 'answer' ? { query, mode, read: 'summary' } : { query, mode };
+  return [{ key: 'co0', name: INTERNAL.mongooseSearch, args }];
+}
+
 /**
  * K6: one routed lookup. `memory` is read in process; every other layer becomes the internal read that
  * source already owns, under its own per-source deadline. Nothing here consults the selector.
@@ -2853,7 +2876,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
 function routedRead(lookup: ResearchLookup, context: { question: string; topic?: string | undefined; ownerWords?: string | undefined; configured: readonly SourceKind[]; run: RunState; now: () => number; timeZone?: string }): { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } {
   const query = lookup.query;
   if (lookup.source === 'memory') return { source: 'memory', kind: 'memory_search', subs: [{ key: 'history', name: HISTORY_IDENTITY.name, args: { ...(lookup.history ?? { query }) } }] };
-  if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: [{ key: 'co0', name: INTERNAL.mongooseSearch, args: { query } as JsonObject }] };
+  if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: companySubs(query) };
   // The attention digest answers "what is waiting on him"; it takes no query of its own.
   if (lookup.source === 'replies') return { source: 'chat', kind: 'chat_search', subs: [{ key: 'at0', name: INTERNAL.chatAttention, args: {} as JsonObject }] };
   const subsConfig = { question: context.question, topic: context.topic, ownerWords: context.ownerWords, configured: context.configured, evidence: context.run.evidence, query, nowMs: context.now(), timeZone: context.timeZone };

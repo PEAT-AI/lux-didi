@@ -120,6 +120,17 @@ export function mattermostIdentityValues(decoded: unknown): string[] {
   return isRecord(payload) ? [...strings(payload['username']), ...strings(payload['email'])] : [];
 }
 
+/**
+ * Mongoose proves itself with the access card `get_started` returns: the identity block names the
+ * signed-in employee, and its email is the only value compared. The card's endpoints are not identity.
+ */
+export function mongooseIdentityValues(decoded: unknown): string[] {
+  const payload = payloadOf(decoded);
+  if (!isRecord(payload)) return [];
+  const identity = payload['identity'];
+  return isRecord(identity) ? strings(identity['email']) : [];
+}
+
 /** Classify one identity probe: a refused/unknown result or an empty value set is unproven. */
 export function classifyIdentity(result: ConnectorResult, source: IdentitySource, expected: readonly string[]): IdentityProof {
   if (!('decodedResult' in result)) {

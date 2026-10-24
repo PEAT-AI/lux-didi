@@ -1,6 +1,7 @@
 import type { ConnectorEvidence, ConnectorResult } from '../connectors/index.js';
 import type { McpPort, StoredPayload } from '../adapters/mcp/port.js';
-import type { MongooseEvidence, MongooseResult, MongooseTool } from '../connectors/mongoose.js';
+import type { MongooseResult } from '../connectors/mongoose.js';
+import { mongooseClosedReason, mongooseOwnerLine } from '../connectors/mongoose.js';
 import { sha256 } from './canonical.js';
 
 /** Hard projection bound for one Mongoose answer (list or body). */
@@ -16,7 +17,7 @@ export interface MongooseProjection {
 
 export interface ConnectorStatus { state: 'configured' | 'error'; reason: string }
 
-const CREDENTIAL_CODES = new Set(['credential-missing', 'credential-unreadable', 'credential-insufficient-scope', 'credential-revoked', 'credential-refresh-failed']);
+const CREDENTIAL_CODES = new Set(['credential-missing', 'credential-unreadable', 'credential-insufficient-scope', 'credential-revoked', 'credential-refresh-failed', 'credential-unavailable']);
 
 /** Markdown projection of the bounded MCP result. Never returns the full body unbounded. */
 export function boundedProjection(text: string, bound = MONGOOSE_PROJECTION_CHARS): MongooseProjection {
@@ -28,29 +29,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** Reconstruct the bounded stored MCP payload, verifying its hash, never inventing bytes. */
-export function readMongoosePayload(port: McpPort, evidence: ConnectorEvidence): { ok: true; text: string } | { ok: false; reason: string } {
-  const payload: StoredPayload = evidence.response;
-  if (payload.state !== 'available' || payload.encoding !== 'http-response-entity' || !Number.isSafeInteger(payload.byteLength) || payload.byteLength < 1 || !/^[a-f0-9]{64}$/.test(payload.sha256) || payload.expiresAt <= Date.now()) return { ok: false, reason: 'entity_unavailable_or_oversize' };
+/** Verify a bounded stored MCP payload byte for byte against its handle and hash, never inventing bytes. */
+function verifyPayload(port: McpPort, source: ConnectorEvidence['source'], payload: StoredPayload): boolean {
+  if (payload.state !== 'available' || payload.encoding !== 'http-response-entity' || !Number.isSafeInteger(payload.byteLength) || payload.byteLength < 1 || !/^[a-f0-9]{64}$/.test(payload.sha256) || payload.expiresAt <= Date.now()) return false;
   const chunks: Uint8Array[] = [];
   for (let offset = 0; offset < payload.byteLength;) {
     const length = Math.min(512, payload.byteLength - offset);
-    const slice = port.readSlice({ handle: payload.handle, endpointId: evidence.source.endpointId, generation: evidence.source.generation, account: evidence.source.account, resource: evidence.source.resource, offset, length });
-    if (slice.state !== 'available' || slice.bytes.byteLength !== length) return { ok: false, reason: 'entity_slice_incomplete' };
+    const slice = port.readSlice({ handle: payload.handle, endpointId: source.endpointId, generation: source.generation, account: source.account, resource: source.resource, offset, length });
+    if (slice.state !== 'available' || slice.bytes.byteLength !== length) return false;
     chunks.push(slice.bytes.slice()); offset += length;
   }
   const bytes = Buffer.concat(chunks);
-  if (bytes.byteLength !== payload.byteLength || sha256(bytes) !== payload.sha256) return { ok: false, reason: 'entity_hash_mismatch' };
-  return decodeMcpContentText(evidence.decodedResult);
+  return bytes.byteLength === payload.byteLength && sha256(bytes) === payload.sha256;
 }
 
-/** Extracts the first text content item from the stored envelope (full JSON-RPC message or bare result). */
-export function decodeMcpContentText(parsed: unknown): { ok: true; text: string } | { ok: false; reason: string } {
-  if (!isRecord(parsed)) return { ok: false, reason: 'unsupported_mcp_envelope' };
-  const result = isRecord(parsed['result']) ? parsed['result'] : parsed;
-  const content = result['content'];
-  if (!Array.isArray(content) || content.length < 1 || !isRecord(content[0]) || typeof content[0]['text'] !== 'string') return { ok: false, reason: 'unsupported_mcp_envelope' };
-  return { ok: true, text: content[0]['text'] as string };
+/** The verified text of one stored payload, decoded from the result the adapter already parsed. */
+export function readMongoosePayload(port: McpPort, evidence: ConnectorEvidence): { ok: true; text: string } | { ok: false; reason: string } {
+  if (!verifyPayload(port, evidence.source, evidence.response)) return { ok: false, reason: 'entity_unavailable_or_oversize' };
+  return decodeMcpContentText(evidence.decodedResult);
 }
 
 /** The helper's typed credential error is a tool-error whose text starts with a stable code. */
@@ -58,6 +54,16 @@ export function credentialFailure(text: string): boolean {
   const separator = text.indexOf(':');
   const code = (separator === -1 ? text : text.slice(0, separator)).trim();
   return CREDENTIAL_CODES.has(code);
+}
+
+function decodeMcpContentText(decoded: unknown): { ok: true; text: string } | { ok: false; reason: string } {
+  let parsed: unknown = decoded;
+  if (typeof parsed === 'string') { try { parsed = JSON.parse(parsed); } catch { return { ok: true, text: parsed as string }; } }
+  if (!isRecord(parsed)) return { ok: false, reason: 'unsupported_mcp_envelope' };
+  const result = isRecord(parsed['result']) ? parsed['result'] : parsed;
+  const content = result['content'];
+  if (!Array.isArray(content) || content.length < 1 || !isRecord(content[0]) || typeof content[0]['text'] !== 'string') return { ok: false, reason: 'unsupported_mcp_envelope' };
+  return { ok: true, text: content[0]['text'] as string };
 }
 
 /** Configured/auth-needed status for a non-completed read, never an empty success. */
@@ -76,10 +82,10 @@ function scalar(value: unknown): string | undefined {
 
 function itemLine(item: Record<string, unknown>, group?: string): string[] {
   const title = scalar(item['title']) ?? scalar(item['name']) ?? scalar(item['company_name']) ?? scalar(item['id']) ?? 'item';
-  const entity = scalar(item['entity_type']) ?? group;
+  const entity = scalar(item['type']) ?? scalar(item['entity_type']) ?? group;
   const fields: string[] = [];
   if (entity) fields.push(`entity: ${entity}`);
-  for (const key of ['id', 'ref', 'number', 'company_name', 'slug', 'domain', 'status', 'type']) {
+  for (const key of ['ref', 'id', 'number', 'company_name', 'slug', 'domain', 'status']) {
     const value = scalar(item[key]); if (value !== undefined) fields.push(`${key}: ${value}`);
   }
   for (const key of ['snippet_truncated', 'name_truncated']) if (item[key] === true) fields.push(`${key}: true`);
@@ -90,11 +96,10 @@ function itemLine(item: Record<string, unknown>, group?: string): string[] {
 }
 
 function hitLines(data: Record<string, unknown>): string[] | undefined {
-  for (const key of ['items', 'results', 'hits']) {
+  for (const key of ['items', 'results', 'hits'] as const) {
     const value = data[key];
-    if (Array.isArray(value)) return value.flatMap(entry => isRecord(entry) ? itemLine(entry, data['scope'] === 'knowledge' ? 'knowledge' : undefined) : [`- ${String(entry)}`]);
+    if (Array.isArray(value)) return value.flatMap(entry => isRecord(entry) ? itemLine(entry) : []);
     if (isRecord(value)) {
-      if (key === 'results') { const nested = hitLines(value); if (nested !== undefined) return nested; }
       if (key === 'hits') {
         const groups = Object.entries(value);
         if (groups.every(([, entries]) => Array.isArray(entries))) return groups.flatMap(([group, entries]) => (entries as unknown[]).flatMap(entry => isRecord(entry) ? itemLine(entry, group) : []));
@@ -102,6 +107,23 @@ function hitLines(data: Record<string, unknown>): string[] | undefined {
     }
   }
   return undefined;
+}
+
+/** The one owner line a closed state carries; absent when the answer is ordinary data. */
+export function mongooseOwnerText(data: Record<string, unknown>): string | undefined {
+  const code = scalar(data['error_code']) ?? scalar(data['code']);
+  if (code === undefined) return undefined;
+  const reason = mongooseClosedReason(code);
+  return reason === undefined ? undefined : mongooseOwnerLine(reason);
+}
+
+/** The restriction block of one envelope, rendered as the closed reason, never as empty data. */
+function restrictionText(data: Record<string, unknown>): string | undefined {
+  const restriction = data['restriction'];
+  const message = isRecord(restriction) ? scalar(restriction['message']) : undefined;
+  const code = isRecord(restriction) ? scalar(restriction['code']) ?? 'restricted' : 'restricted';
+  if (data['outcome'] !== 'restricted' && restriction === null) return undefined;
+  return message === undefined ? `restricted: ${code}` : `restricted: ${message}`;
 }
 
 function coverageLines(data: Record<string, unknown>): { lines: string[]; partial: boolean } {
@@ -113,49 +135,79 @@ function coverageLines(data: Record<string, unknown>): { lines: string[]; partia
     lines.push(`${key}: ${text}`);
   };
   const visit = (value: Record<string, unknown>, prefix = ''): void => {
-    for (const key of ['found', 'answer_state', 'response_mode', 'has_more', 'total', 'total_estimate', 'next_cursor', 'complete', 'whole_body', 'body_complete', 'body_char_count', 'returned_chars', 'cursor', 'body_offset', 'next_body_offset', 'hits_total', 'hits_truncated', 'omitted_due_to_char_budget']) add(`${prefix}${key === 'found' ? 'answerable' : key}`, value[key]);
+    for (const key of ['outcome', 'has_more', 'total', 'next_cursor', 'complete', 'whole_body', 'next_body_offset', 'returned_chars']) add(`${prefix}${key}`, value[key]);
+    const coverage = value['coverage'];
+    if (isRecord(coverage)) { add(`${prefix}coverage.depth`, coverage['depth']); add(`${prefix}coverage.complete`, coverage['complete']); partial ||= coverage['complete'] === false; }
+    const nextTool = value['next_tool'];
+    if (isRecord(nextTool)) { add(`${prefix}next_tool.endpoint`, nextTool['endpoint']); add(`${prefix}next_tool.tool`, nextTool['tool']); }
     const cursor = value['next_cursor'];
-    partial ||= value['has_more'] === true || value['complete'] === false || value['whole_body'] === false || value['body_complete'] === false || value['hits_truncated'] === true || (typeof value['omitted_due_to_char_budget'] === 'number' && value['omitted_due_to_char_budget'] > 0) || (cursor !== undefined && cursor !== null && cursor !== '') || value['next_body_offset'] !== undefined;
-    const hits = value['hits'];
-    const items = Array.isArray(value['results']) ? value['results'] : Array.isArray(value['items']) ? value['items'] : Array.isArray(hits) ? hits : isRecord(hits) ? Object.values(hits).flatMap(entries => Array.isArray(entries) ? entries : []) : [];
-    partial ||= items.some(item => isRecord(item) && (item['snippet_truncated'] === true || item['name_truncated'] === true));
+    partial ||= value['has_more'] === true || value['complete'] === false || value['whole_body'] === false || (cursor !== undefined && cursor !== null && cursor !== '');
   };
   visit(data);
-  if (isRecord(data['results'])) visit(data['results'], 'results.');
-  if (isRecord(data['answerability'])) {
-    add('answerability.decision', data['answerability']['decision']);
-    add('answerability.next_tool', data['answerability']['next_tool']);
-  }
   if (data['_truncation'] !== undefined) { add('upstream_truncation', data['_truncation']); partial = true; }
   return { lines, partial };
 }
 
+/** The source card of the second read: the entity behind the top hit, named and attributed. */
+function followUpText(followUp: unknown): string | undefined {
+  if (!isRecord(followUp)) return undefined;
+  const data = followUp['data'];
+  if (!isRecord(data)) return undefined;
+  const read = hitLines(data);
+  const body = scalar(data['body']);
+  const head = read !== undefined && read.length ? read.join('\n') : undefined;
+  if (head === undefined && body === undefined) return undefined;
+  return ['', 'read:', ...(head === undefined ? [] : [head]), ...(body === undefined ? [] : [body])].join('\n');
+}
+
 /** Preserves source identity and coverage while bounding only the displayed projection. */
-export function renderMongooseTool(tool: string, data: unknown): MongooseProjection {
+export function renderMongooseTool(data: unknown, followUp?: unknown): MongooseProjection {
   if (typeof data === 'string') return boundedProjection(data);
   if (!isRecord(data)) return boundedProjection(JSON.stringify(data));
+  const owner = mongooseOwnerText(data);
+  if (owner !== undefined) return boundedProjection(owner);
+  const restricted = restrictionText(data);
   const items = hitLines(data);
   const coverage = coverageLines(data);
   let text: string;
-  if (items !== undefined) text = items.join('\n');
-  else if (tool === 'read_knowledge_body' && typeof data['body'] === 'string') text = data['body'];
-  else if (tool === 'get_company_profile' && typeof data['profile'] === 'string') text = data['profile'];
+  if (items !== undefined && items.length) text = items.join('\n');
+  else if (restricted !== undefined) text = restricted;
+  else if (typeof data['body'] === 'string') text = data['body'];
+  else if (typeof data['profile'] === 'string') text = data['profile'];
   else text = JSON.stringify(data);
+  const card = followUpText(followUp);
+  if (card !== undefined) text = `${text}${card}`;
   const fullTrailer = coverage.lines.length ? `\ncoverage: ${coverage.lines.join(' | ')}` : '';
   const trailer = fullTrailer.length <= 1500 ? fullTrailer : `${fullTrailer.slice(0, 1450)} [coverage metadata clipped]`;
   const projected = boundedProjection(text, MONGOOSE_PROJECTION_CHARS - trailer.length);
-  return { text: `${projected.text}${trailer}`, partial: projected.partial || coverage.partial || fullTrailer.length > trailer.length, originalCharacters: text.length + fullTrailer.length, omittedCharacters: projected.omittedCharacters + Math.max(0, fullTrailer.length - trailer.length) };
+  return { text: `${projected.text}${trailer}`, partial: projected.partial || coverage.partial, originalCharacters: projected.originalCharacters, omittedCharacters: projected.omittedCharacters };
+}
+
+/** One decoded envelope behind its verified payload; a connector that set no follow-up decodes nothing. */
+function decodeStored(port: McpPort, source: ConnectorEvidence['source'], payload: StoredPayload, decoded: unknown): { ok: true; data: unknown } | { ok: false; reason: string } {
+  if (!verifyPayload(port, source, payload)) return { ok: false, reason: 'entity_unavailable_or_oversize' };
+  const read = decodeMcpContentText(decoded);
+  if (!read.ok) return { ok: false, reason: read.reason };
+  let data: unknown = read.text;
+  try { data = JSON.parse(read.text); } catch { data = read.text; }
+  return { ok: true, data };
+}
+
+/** A completed read: the projection of its envelope, plus the source card of its follow-up read. */
+function isCompleted(evidence: ConnectorResult): evidence is ConnectorEvidence {
+  return evidence.state === 'completed' || evidence.state === 'tool-error' || evidence.state === 'protocol-error';
 }
 
 /** Full projection of a completed Mongoose read: decode, render, report partial. Never throws on a bad envelope. */
-export function projectMongooseResult(port: McpPort, evidence: ConnectorResult): { ok: true; projection: MongooseProjection } | { ok: false; reason: string } {
-  if (evidence.state === 'refused' || evidence.state === 'unknown') return { ok: false, reason: evidence.reason };
-  if (evidence.state !== 'completed') return { ok: false, reason: `tool-error: ${evidence.state}` };
-  const payload = readMongoosePayload(port, evidence);
+export function projectMongooseResult(port: McpPort, result: ConnectorResult): { ok: true; projection: MongooseProjection } | { ok: false; reason: string } {
+  if (!isCompleted(result)) return { ok: false, reason: result.reason };
+  const payload = readMongoosePayload(port, result);
   if (!payload.ok) return { ok: false, reason: payload.reason };
   let data: unknown = payload.text;
   try { data = JSON.parse(payload.text); } catch { data = payload.text; }
-  return { ok: true, projection: renderMongooseTool(evidence.tool, data) };
+  const followUp = result.followUp === undefined ? undefined : decodeStored(port, result.source, result.followUp.payload, result.followUp.decodedResult);
+  const attachment = followUp !== undefined && followUp.ok ? { data: followUp.data } : undefined;
+  return { ok: true, projection: renderMongooseTool(data, attachment) };
 }
 
-export type { MongooseEvidence, MongooseResult, MongooseTool };
+export type { MongooseResult };

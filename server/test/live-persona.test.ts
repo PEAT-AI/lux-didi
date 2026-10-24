@@ -1012,9 +1012,11 @@ test('3u: five successive starts rotate across at least three stored open loops'
   const shared = 'The owner said the tax form is still to be filed.';
   const candidates = [pastSummary(0, shared), pastSummary(1, shared), pastSummary(2, shared),
     pastSummary(3, 'The owner said he still has to call the accountant.'), pastSummary(4, 'The owner said the passport is still to be renewed.')];
+  // Contract 1023 N8: the loop comes from the stored open_loop column, not from a cue word in a summary.
+  const openLoops = candidates.map(candidate => candidate.summary);
   const offered = new Set<string>();
   for (let rotation = 0; rotation < 5; rotation += 1) {
-    const plan = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', rotation });
+    const plan = buildOpeningOptions({ candidates, openLoops, now: NOW_3U, timeZone: 'UTC', rotation });
     const loop = optionOf(plan, 'open-loop');
     assert.ok(loop !== undefined, 'every start offers an open loop when one exists');
     offered.add(loop.topic);
@@ -1027,10 +1029,12 @@ test('3u: no candidate text appears that is not in the inputs', () => {
   const calendar = '09:00 standup, 15:00 review';
   const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.'),
     pastSummary(1, 'Naya found the release branch merged cleanly. The owner said he still has to call the accountant.')];
-  const plan = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar, rotation: 1 });
+  const openLoops = ['The owner said he still has to call the accountant.'];
+  const plan = buildOpeningOptions({ candidates, openLoops, now: NOW_3U, timeZone: 'UTC', calendar, rotation: 0 });
   assert.ok(plan.options.some(option => option.kind === 'calendar') && plan.options.some(option => option.kind === 'open-loop'));
   for (const option of plan.options) {
-    const source = option.kind === 'calendar' ? calendar : candidates.map(candidate => candidate.summary).join(' ');
+    const source = option.kind === 'calendar' ? calendar
+      : option.kind === 'open-loop' ? openLoops.join(' ') : candidates.map(candidate => candidate.summary).join(' ');
     assert.ok(source.includes(option.topic), `${option.kind} "${option.topic}" is drawn from its own input, never invented`);
     assert.ok(plan.section.includes(option.topic), 'the section carries the option text as it was read');
   }
@@ -1042,15 +1046,81 @@ test('3u: health, family, fitness, sleep and personal habits are never an opener
     pastSummary(1, 'He said the gym membership is still to be renewed.'),
     pastSummary(2, 'The owner said he still has to fix his sleep and the late-night habit.')], now: NOW_3U, timeZone: 'UTC', rotation: 0 });
   assert.equal(plan.options.length, 0, 'a family, health, fitness, sleep or habit loop is never offered');
-  const digest = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', calendar: '09:00 doctor, 15:00 sleep clinic, 17:00 review', rotation: 0 });
-  assert.equal(digest.options[0]?.topic, '17:00 review', 'a closed digest item is skipped, never offered');
+  const digest = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', calendar: '09:00 doctor, 11:00 sleep clinic, 14:00 review', rotation: 0 });
+  assert.equal(digest.options[0]?.topic, '14:00 review', 'a closed digest item is skipped, never offered');
   assert.equal(plan.section, '', 'a plan with no stored opener adds no section');
   const mixed = buildOpeningOptions({ candidates: [
-    pastSummary(0, 'The owner said his mother is still in hospital. The owner said the tax form is still to be filed.')],
-  now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+    pastSummary(0, 'The owner said his mother is still in hospital.')],
+  openLoops: ['The owner said the tax form is still to be filed.', 'The owner said his mother is still in hospital and he still has to visit her.'],
+  now: NOW_3U, timeZone: 'UTC', rotation: 1 });
   assert.equal(optionOf(mixed, 'open-loop')?.topic, 'the tax form is still to be filed', 'the work loop is offered, its attribution dropped so the line reads as a phrase');
   assert.ok(!mixed.section.includes('hospital'), 'the health sentence never reaches the plan');
   assert.ok(mixed.options.every(option => (OPENING_OPTION_KINDS as readonly string[]).includes(option.kind)), 'the kinds stay a closed set');
+});
+
+// --- contract 1023 N8: the plan draws on the last sessions, never on narration or a fragment -----
+
+test('1023-N8: the newest call leads the plan, and a calendar item inside six hours takes the lead', () => {
+  const candidates = [pastSummary(0, 'The owner said the invoice is still to be sent.'),
+    pastSummary(1, 'The owner said the roof quote is still to be chased.')];
+  const openLoops = ['The owner said the invoice is still to be sent.'];
+  const plain = buildOpeningOptions({ candidates, openLoops, now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.deepEqual(plain.options.map(option => option.kind), ['recent-thread', 'open-loop'],
+    'the call he just had is the subject the plan leads with');
+  const near = buildOpeningOptions({ candidates, openLoops, now: NOW_3U, timeZone: 'UTC', rotation: 0,
+    calendar: '09:00 standup, 15:00 review' });
+  assert.deepEqual(near.options.map(option => option.kind), ['calendar', 'recent-thread', 'open-loop'],
+    'an event five and a half hours out still leads');
+});
+
+test('1023-N8: a calendar item more than six hours out is no opener option', () => {
+  const plan = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said the invoice is still to be sent.')],
+    now: NOW_3U, timeZone: 'UTC', calendar: '09:00 standup, 22:00 drinks', rotation: 0 });
+  assert.equal(optionOf(plan, 'calendar'), undefined, 'a night item never becomes the reason she speaks first');
+  assert.equal(plan.options[0]?.kind, 'recent-thread');
+});
+
+test('1023-N8: the calendar never leads two calls in a row', () => {
+  const candidates = [pastSummary(0, 'The owner said the invoice is still to be sent.')];
+  const plan = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', calendar: '15:00 review', rotation: 0,
+    previousKinds: ['calendar', 'recent-thread'] });
+  assert.deepEqual(plan.options.map(option => option.kind), ['recent-thread', 'calendar'],
+    'the same subject twice in a row is what the owner reported');
+});
+
+test('1023-N8: the open loop is the stored column, never a cue word in a summary', () => {
+  const candidates = [pastSummary(0, 'The owner said the invoice is still to be sent.')];
+  const stored = buildOpeningOptions({ candidates, openLoops: ['The owner said the deposit is still to be paid.'],
+    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.equal(optionOf(stored, 'open-loop')?.topic, 'the deposit is still to be paid', 'the stored loop is offered as written');
+  const none = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.equal(optionOf(none, 'open-loop'), undefined, 'a summary sentence is never promoted to a loop');
+});
+
+test('1023-N8: a narration sentence about the call itself is never an option', () => {
+  const plan = buildOpeningOptions({ candidates: [pastSummary(0,
+    'During a call, Naya summarized the release plan. The owner said the tax form is still to be filed.')],
+    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.equal(optionOf(plan, 'recent-thread')?.topic, 'the tax form is still to be filed');
+  assert.ok(!plan.section.includes('Naya summarized'), 'the call describing itself is never the opener');
+});
+
+test('1023-N8: a candidate that does not end in a sentence stop is dropped, never clipped', () => {
+  const unterminated = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said the tax form is still to be filed')],
+    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.equal(optionOf(unterminated, 'recent-thread'), undefined, 'a fragment cut mid-clause is what the owner heard');
+  const tooLong = buildOpeningOptions({ candidates: [pastSummary(0,
+    `The owner said ${'the weekly supplier reconciliation sheet '.repeat(5)}is still to be filed.`)],
+    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.equal(optionOf(tooLong, 'recent-thread'), undefined, 'clipping at the limit would cut the sentence mid-clause');
+});
+
+test('1023-N8: a summary still pending falls back to the last owner words of the call that just ended', () => {
+  const plan = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0,
+    freshThread: 'Fine. The Mongoose mint delivery window moves to Friday. Nothing else.' });
+  assert.equal(optionOf(plan, 'recent-thread')?.topic, 'The Mongoose mint delivery window moves to Friday',
+    'the topic he named last is the one she can open on before the summary lands');
+  assert.equal(plan.options.length, 1, 'no other option is invented from thin air');
 });
 
 test('3u: the plan is bounded and the composed session instruction stays under the existing limits', () => {

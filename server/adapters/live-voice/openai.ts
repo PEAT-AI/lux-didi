@@ -70,7 +70,7 @@ export function openAiInstructions(persona: string): string {
   return `${persona}\n\n${OPENAI_TOOLS_SECTION}\n\n${OPENAI_DELIVERY_SECTION}\n\n${OPENAI_LISTENING_SECTION}`;
 }
 /** Release 4: Naya opens every new call, seeded history or not, with one short dry and edgy line in her own voice. */
-export const FRESH_OPENING = 'Start the call with one short line of your own, twelve words at most, dry and a little edgy and specific to the moment or to one of the opening options; no greeting formula, no offer of help, no list of questions, no tool call before it; then stop and listen.';
+export const FRESH_OPENING = 'Start the call with one short line of your own, twelve words at most, dry and a little edgy and specific to the moment, to the last thing you and the owner were on in the earlier conversation above, or to one of the opening options; no greeting formula, no offer of help, no list of questions, no tool call before it; then stop and listen.';
 /** Documented startup-history ceiling: 128 messages and 8,192 combined tokens (4 characters per token is the cap proxy). */
 const SEED_MESSAGE_LIMIT = 128;
 const SEED_CHAR_LIMIT = 8192 * 4;
@@ -363,7 +363,9 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
       || control.deadlineMs <= 0 || control.deadlineMs - Date.now() > 2_147_483_647) fail('invalid_request');
     // #1022 D1: a recovery seed carries the pickup, which the provider never answers on its own, so the
     // session asks for that response once it is live. A normal connect seeds no pickup and asks for nothing.
-    return new Session(settings, start, control.signal, control.deadlineMs, control.idleResetMs ?? settings.limits.idleMs, request.openingText !== undefined);
+    // Contract 1023 N3: a fresh model-first call owns no seeded line, so the start asks for the opener itself.
+    return new Session(settings, start, control.signal, control.deadlineMs, control.idleResetMs ?? settings.limits.idleMs,
+      request.openingText !== undefined, request.openingText === undefined && request.opening === 'model_first');
   }
 
   /**
@@ -548,7 +550,7 @@ class Session implements LiveVoiceSession {
 
   constructor(private readonly settings: Settings, private readonly start: string,
     private readonly signal: AbortSignal, private readonly deadlineMs: number, private readonly idleResetMs: number,
-    private readonly answerOnReady = false) {
+    private readonly answerOnReady = false, private readonly openerOnReady = false) {
     void this.ready.catch(() => {});
     this.clock = settings.clock ?? REAL_CLOCK;
     let consumed = false;
@@ -769,6 +771,7 @@ class Session implements LiveVoiceSession {
     this.readiness.resolve();
     this.touch();
     if (this.answerOnReady) this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }));
+    else if (this.openerOnReady) this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }));
   }
 
   private audioDelta(message: ObjectValue): Uint8Array | undefined {

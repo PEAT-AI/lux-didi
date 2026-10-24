@@ -8,6 +8,7 @@ import { CANARY, collect, control, FakeClock, FakeSocket, fakeReady, fixture, op
 import { Pcm16Upsampler } from '../adapters/live-voice/resample.js';
 import { safeEvent } from '../host/log.js';
 import { NAYA_BACKEND_PROCEDURE } from '../prompt/backend-procedure.js';
+import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -388,6 +389,8 @@ describe('openai gpt-live adapter', () => {
     assert.match(FRESH_OPENING, /no offer of help/);
     assert.match(FRESH_OPENING, /no tool call before it/);
     assert.match(FRESH_OPENING, /then stop and listen/);
+    assert.match(FRESH_OPENING, /the last thing you and the owner were on in the earlier conversation above/,
+      'the seed history is an allowed subject, so a pending summary still grounds the line');
     assert.doesNotMatch(FRESH_OPENING, /\b(hello|hi|hey|good morning|good evening|how can i help|what can i do)\b/i);
   });
 
@@ -401,13 +404,58 @@ describe('openai gpt-live adapter', () => {
       'the seeded answer request is the only frame after the start, so the provider answers without being spoken to');
   });
 
-  test('D1: a normal connect with history seeds the opening directive inside the start and sends no other frame', async t => {
+  test('D1: a normal connect with history seeds the opening directive inside the start', async t => {
     const history = [{ role: 'user' as const, text: 'Plan the week', dataClass: 'ordinary' as const }, { role: 'model' as const, text: 'Monday first', dataClass: 'ordinary' as const }];
     const { f } = await ready(t, {}, { history, opening: 'model_first' });
-    await quiet();
-    assert.deepEqual(f.frames.map(frame => (frame as unknown as Start).type), ['session.start'], 'a connect with history sends the start and nothing else');
     const input = (f.frames[0] as unknown as Start).session['input'] as { role?: string }[];
-    assert.equal(input.at(-1)?.role, 'developer', 'the opening directive rides in the start, so no separate frame asks for the line');
+    assert.equal(input.at(-1)?.role, 'developer', 'the opening directive rides in the start');
+  });
+
+  test('1023-N3: a fresh model-first call asks for the opener with exactly one response.create at session.started', async t => {
+    const history = [{ role: 'user' as const, text: 'Plan the week', dataClass: 'ordinary' as const }];
+    const { f } = await ready(t, {}, { history, opening: 'model_first' });
+    await tally(f.frames, 2);
+    assert.deepEqual(withoutIds(f.frames.slice(1)), [{ type: 'response.create' }], 'the provider is asked once, so she opens without being spoken to');
+    const input = (f.frames[0] as unknown as Start).session['input'] as { role?: string }[];
+    assert.equal(input.some(item => item.role === 'user' && JSON.stringify(item).includes(FRESH_OPENING)), false,
+      '1023-R1: the directive is a developer item, never seeded as owner speech');
+    await quiet();
+    assert.equal(f.frames.length, 2, 'exactly one opener request, never a second');
+  });
+
+  test('1023-N3: owner speech cannot reach the provider before the ready settle, so the opener never races him', async t => {
+    const f = await fixture(t);
+    const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open(request({ opening: 'model_first' }), control());
+    t.after(() => session.close());
+    await f.frame(1);
+    // Every owner byte goes through sendAudio, and sendAudio refuses until session.started, so the opener request
+    // below is the first thing the provider hears on a fresh call: there is no window in which he can speak first.
+    assert.throws(() => session.sendAudio({ pcm: pcm16(), dataClass: 'ordinary' }), code('not_ready'),
+      'the microphone is closed before the ready settle');
+    f.send({ type: 'session.started', session: { id: 'sess_opener_race' } });
+    await session.ready;
+    await tally(f.frames, 2);
+    assert.deepEqual(withoutIds(f.frames.slice(1)), [{ type: 'response.create' }], 'the one opener request, with no owner audio ahead of it');
+    session.sendAudio({ pcm: pcm16(), dataClass: 'ordinary' });
+    await quiet();
+    assert.equal(f.frames.some(frame => (frame as unknown as Start).type === 'session.input_audio.append'), true,
+      'the same call accepts owner audio once it is ready');
+  });
+
+  test('1023-N3: the owner speaking first asks for no opener at all', async t => {
+    const { f } = await ready(t, {}, { opening: 'user_first' });
+    await quiet();
+    assert.deepEqual(f.frames.map(frame => (frame as unknown as Start).type), ['session.start'], 'no opener is requested before the owner speaks');
+  });
+
+  test('1023-N3: a recovery seed asks for its pickup once and carries no fresh opening directive', async t => {
+    const { f } = await ready(t, {}, { opening: 'model_first', openingText: LIVE_RECOVERY_PICKUP });
+    await tally(f.frames, 2);
+    const input = (f.frames[0] as unknown as Start).session['input'] as { role?: string; content: { text: string }[] }[];
+    assert.equal(input.at(-1)!.content[0]!.text, LIVE_RECOVERY_PICKUP, 'the pickup is the seeded line');
+    assert.equal(JSON.stringify(f.frames[0]).includes(FRESH_OPENING), false, 'a recovery seed never carries a fresh opener');
+    await quiet();
+    assert.deepEqual(withoutIds(f.frames.slice(1)), [{ type: 'response.create' }], 'the pickup answer is the one request');
   });
 
   test('#1023: a 128-turn warm history still starts, the directive costs the oldest turn', async t => {

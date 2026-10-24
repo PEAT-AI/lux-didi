@@ -773,3 +773,18 @@ test('TRIAGE-R1 6: a triage ask routes to mail, chat and calendar, with the memo
     assert.ok(selection.pUseful[kind] !== undefined, `${kind} is offered`);
   }
 });
+
+// TRIAGE-R3: a recall ask is her own remembered history, so it reads memory and never the knowledge
+// store, and the deterministic router does not turn it into a chat search on the word "said".
+test('TRIAGE-R3: a recall ask routes to memory', () => {
+  const table = [
+    'what did we say about the pricing deck',
+    'last time we talked about the deadline',
+    'you told me the release was friday',
+    'do you remember the hawthorn decision',
+  ];
+  for (const question of table) {
+    assert.deepEqual(requiredSources(question), ['memory'], question);
+    assert.equal(routedSelection(question, CONFIGURED, Date.parse('2026-10-21T05:30:00Z')), undefined, `${question} is a memory read, not a router candidate`);
+  }
+});

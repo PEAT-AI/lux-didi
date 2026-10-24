@@ -1854,3 +1854,11 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
   assert.ok((line.answerCompacted?.items ?? 0) >= 2, 'whole items were dropped from both sources');
   assert.match(String(reply['note']), /There is more available/u, 'and the reply names what it left out');
 });
+
+// TRIAGE-R3: the recall route reads her own history, and what she remembers reaches the answer.
+test('TRIAGE-R3: a recall ask reads the owner history, never the knowledge store', async () => {
+  const h = harness({ configured: ['memory', 'knowledge'], memory: query => ({ lines: [`remembered: ${query}`], text: '', total: 1 }) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did we say about the pricing deck' }, new AbortController().signal);
+  assert.ok(!h.executed.some(call => call.name === 'search_knowledge'), 'the knowledge store is not searched for a recall ask');
+  assert.match(JSON.stringify(reply['findings']), /remembered: pricing deck/u, 'the remembered line reaches the answer');
+});

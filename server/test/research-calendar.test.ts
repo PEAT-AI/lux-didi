@@ -438,7 +438,9 @@ function scheduleFixture(opts: { unavailable?: readonly { source: SourceKind; re
 
 test('ROUTE-1022: a failed gmail endpoint leaves the calendar readable on a schedule question', async () => {
   const h = scheduleFixture({ unavailable: [{ source: 'mail', reason: 'identity_unverified' }] });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'check my mail and my calls tomorrow' }, signal());
+  // TRIAGE-R3: a bare "calls" is the product's daily language, so this ask names its schedule by a word
+  // the calendar class keeps, and stays a mail-plus-calendar question.
+  const reply = await runResearch(h.deps, { action: 'start', question: 'check my mail and my meetings tomorrow' }, signal());
   assert.ok(h.calls.some(call => call.name === 'calendar_list_events'), 'the calendar endpoint connected, so its read runs');
   assert.equal(h.calls.some(call => call.name === 'gmail_search_messages'), false, 'the mail endpoint is never dispatched to');
   const rows = h.logs.at(-1)!.sources;

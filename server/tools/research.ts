@@ -2593,14 +2593,14 @@ const memoryWords = (text: string): string => fold(text).replace(/\s+/gu, ' ').t
  * #615: the sessions this call is writing to. A row of the live session is the conversation in progress, whatever
  * its role, so every row of that session is excluded by identity rather than by its own timestamp.
  */
-function liveSessionIds(hits: readonly JsonObject[], question: string, startedAt: number): Set<string> {
+function liveSessionIds(hits: readonly JsonObject[], question: string, history: number): Set<string> {
   const asked = new Set([question].filter(text => text.trim().length > 0).map(memoryWords));
   const ids = new Set<string>();
   for (const hit of hits) {
     const id = hit['sessionId'];
     if (typeof id !== 'string') continue;
     const at = Date.parse(String(hit['date'] ?? ''));
-    if (asked.has(memoryWords(String(hit['snippet'] ?? ''))) || (Number.isFinite(at) && at >= startedAt)) ids.add(id);
+    if (asked.has(memoryWords(String(hit['snippet'] ?? ''))) || (Number.isFinite(at) && at >= history)) ids.add(id);
   }
   return ids;
 }
@@ -2630,11 +2630,14 @@ function rankMemoryEvidence(hits: readonly JsonObject[], tokens: readonly string
  */
 function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunState, asked: boolean): JsonObject[] {
   const keys = new Set([question, run.question ?? ''].filter(text => text.trim().length > 0).map(memoryWords));
-  const live = asked ? new Set<string>() : liveSessionIds(hits, question, run.startedAt);
   const history = run.previousCallAt ?? run.startedAt;
+  const live = asked ? new Set<string>() : liveSessionIds(hits, question, history);
   const kept = hits.filter(hit => {
     if (keys.has(memoryWords(String(hit['snippet'] ?? '')))) return false;
     if (asked) return true;
+    // A remembered note is memory even when it was written in this call; the recording of the
+    // conversation itself, and every summary of it, never is.
+    if (hit['sourceKind'] === 'entry') return true;
     const id = hit['sessionId'];
     if (typeof id === 'string' && live.has(id)) return false;
     const at = Date.parse(String(hit['date'] ?? ''));

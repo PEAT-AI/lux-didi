@@ -217,11 +217,15 @@ test('N5: a trimmed reply that can continue still says more is available', async
 // #575: a memory hit that is her own earlier voice confirms a past answer instead of finding new
 // evidence, so it is dropped unless the owner asks what she said.
 test('#575: memory drops her own earlier turns and keeps the owner turns', async () => {
+  // #615: an honest clock, so the call before this one really starts at 09:00:00.
+  let at = Date.parse('2026-10-23T09:00:00.000Z');
   const hits = [
-    { snippet: 'he said the release ships on Friday', role: 'user', date: '2026-10-23T09:00:00.000Z' },
-    { snippet: 'I said the release ships on Friday', role: 'assistant', date: '2026-10-23T09:00:05.000Z' },
+    { snippet: 'he said the release ships on Friday', role: 'user', date: '2026-10-23T08:59:50.000Z' },
+    { snippet: 'I said the release ships on Friday', role: 'assistant', date: '2026-10-23T09:00:10.000Z' },
   ];
-  const h = harness({ configured: ['memory'], memory: () => ({ lines: hits.map(hit => hit.snippet), hits, text: '', total: 2 }) });
+  const h = harness({ configured: ['memory'], now: () => at, memory: () => ({ lines: hits.map(hit => hit.snippet), hits, text: '', total: 2 }) });
+  await runResearch(h.deps, { action: 'start', question: 'anything for today' }, new AbortController().signal);
+  at = Date.parse('2026-10-23T09:00:30.000Z');
   const reply = await runResearch(h.deps, {
     action: 'start', question: 'what did we say about the release', lookups: [{ source: 'memory', history: { query: 'release ships' } }],
   }, new AbortController().signal);
@@ -259,7 +263,7 @@ test('#567: a reply capped after its note was built advertises the continuation 
   const ledger = new ResearchLedger();
   const hits = Array.from({ length: 20 }, (_, index) => ({ snippet: `memory line ${index} ${'m'.repeat(150)}`, role: 'user', date: '2026-09-01T09:00:00.000Z' }));
   const h = harness({
-    ledger, configured: ['memory', 'knowledge'],
+    ledger, configured: ['memory', 'knowledge'], now: () => Date.parse('2026-10-24T12:00:00.000Z'),
     executeText: '### Release scope [id 12] the release ships on Friday',
     memory: () => ({ lines: hits.map(hit => hit.snippet), hits, text: '', total: hits.length }),
   });

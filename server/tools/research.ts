@@ -50,6 +50,9 @@ export const CANDIDATES: readonly Candidate[] = Object.freeze([
 /** LAT-1023: the round cap, shared by every run kind so a continuation never buys a third round. */
 const ROUND_CAP_ROUNDS = 2;
 
+/** #581: the number of mail lines one reply shows, and so the number a read must collect before it pages again. */
+const MAIL_LINES_SHOWN = 8;
+
 /** Every constant of the loop lives in this one exported object, the calibration record's basis. */
 export const RESEARCH = Object.freeze({
   tool: RESEARCH_TOOL_NAME,
@@ -660,6 +663,10 @@ export function topicTerms(topic: string | undefined, spokenWords: string): stri
 }
 
 export function compileMailQuery(question: string, query: string | undefined, nowMs = Date.now(), timeZone?: string, topic?: string, ownerWords?: string): string {
+  // #564: a triage ask reads the unread inbox itself, so the host's own generic inbox scan, a prose
+  // question and a topic all give way to it; its own prose is never a term and no drop-a-term retry
+  // follows an empty scan, so "anything important" cannot be answered from one old thread.
+  if (triageAsk(question)) return TRIAGE_MAIL_QUERY;
   const authored = (query ?? '').replace(/\s+/gu, ' ').trim();
   const person = MAIL_DIRECTION.test(question) ? mailPersonName(question) : undefined;
   const asked = mailWindow(question, nowMs, timeZone);
@@ -812,10 +819,47 @@ export function ownerScheduleQuestion(question: string): boolean {
   return OWNER_SCHEDULE.test(question.toLowerCase());
 }
 
+/** Whether a question asks what came in, rather than naming something to look up. */
+export function triageAsk(question: string): boolean {
+  const ask = question.toLowerCase();
+  if (!TRIAGE_ASK.test(ask)) return false;
+  return contentKeywords(ask.replace(TRIAGE_ASK, ' '), 8).every(word => TRIAGE_REST.has(word));
+}
+
+/** Whether a question asks her to recall something the two of them already said. */
+export function recallQuestion(question: string): boolean {
+  return MEMORY_WORDS.test(question.toLowerCase());
+}
+
 /** ROUTE-1022: the word classes a spoken question is routed by, shared by the fallback recipe and the router. */
-const MAIL_WORDS = /\b(mail|email|e-mail|inbox|wrote|sent|reply)\b/u;
-const CALENDAR_WORDS = /\b(calendar|schedule|meeting|agenda|free|busy|tomorrow|today|week)\b/u;
-const CHAT_WORDS = /\b(chat|team|channel|slack|mattermost|said|posted|discussed)\b/u;
+const MAIL_WORDS = /\b(mails?|emails?|e-mails?|gmail|inbox(?:es)?|messages?|wrote|sent|repl(?:y|ies|ied))\b/u;
+const CALENDAR_WORDS = /\b(calendar|schedule|meetings?|agenda|free|busy)\b/u;
+/**
+ * #579: a time word is the product's daily language. The router's own class (SCHEDULE_WORDS) never carries
+ * one; only this fallback recipe does, and only when no mail or chat word named a source.
+ */
+const CALENDAR_TIME_WORDS = /\b(tomorrow|today|week)\b/u;
+/**
+ * TRIAGE-R3: a recall ask is her own remembered history, in the words a spoken recall uses. It reads the
+ * memory layer, never the knowledge store.
+ */
+const MEMORY_WORDS = /\b(?:did we say|last time we (?:talked|spoke)|you told me|do you remember|remember when|recall when|our (?:last )?conversation)\b/u;
+const CHAT_WORDS = /\b(chats?|team|channels?|slack|mattermost|messages?|dms?|said|posted|discussed)\b/u;
+/**
+ * #564/#572: a triage ask is "what came in", never a keyword search. The host runs the fixed read below
+ * instead of the question's prose, so a relevance ranker can never answer it from an old thread.
+ */
+const TRIAGE_ASK = /\b(?:anything (?:new|important|urgent|unread)|any (?:new|important|urgent|unread)|what came in|came in|what needs me|needs me|what did i miss|unread)\b/u;
+/** The only words a triage ask may add beside the phrase itself, so a question with a real noun stays a lookup. */
+const TRIAGE_REST = new Set(['anything', 'any', 'new', 'important', 'urgent', 'unread', 'came', 'come', 'comes', 'in', 'what', 'needs', 'need', 'needed', 'me', 'reply', 'replies', 'respond', 'attention', 'miss', 'missed', 'did', 'i', 'today', 'tomorrow', 'yesterday', 'week', 'this', 'last', 'morning', 'afternoon', 'evening', 'my', 'mail', 'mails', 'email', 'emails', 'e-mail', 'e-mails', 'gmail', 'inbox', 'inboxes', 'message', 'messages', 'chat', 'chats', 'dm', 'dms', 'team', 'channel', 'channels', 'slack', 'mattermost', 'posted', 'said', 'discussed', 'wrote', 'sent', 'from', 'the', 'a', 'an', 'and', 'or', 'to', 'for', 'of', 'on', 'at', 'it', 'there', 'anything', 'has', 'have', 'got', 'get', 'arrived', 'landed', 'waiting', 'act', 'action', 'reaction', 'you', 'please']);
+/** #564: the one inbox scan a triage read runs, with no prose term and no drop-a-term retry. */
+const TRIAGE_MAIL_QUERY = 'in:inbox is:unread newer_than:2d';
+/** #572: the window a chat triage read rolls back over. */
+const TRIAGE_DAYS = 7;
+/** #564/#572/TRIAGE-R1 6: what came in is a mail, a chat and a calendar read alike, plus her own memory. */
+const TRIAGE_SOURCES: readonly SourceKind[] = ['mail', 'chat', 'calendar'];
+/** TRIAGE-R1 5 (#578): a weekday or an exact date is a calendar window in the words a spoken ask uses. */
+const CALENDAR_DAY_WORDS = /\b(?:(?:next )?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)|\d{4}-\d{2}-\d{2})\b/u;
 /** MED-1022: a web read is for explicit public intent only. `latest`, `cost` and `price` are how the
  * owner asks about his own work (the 18:34 call spent a web read on "the latest" and got a soap
  * result), so only the public list below offers the web. */
@@ -834,7 +878,14 @@ const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp }[] = [
 export function requiredSources(question: string): SourceKind[] {
   const text = question.toLowerCase();
   if (WEB_WORDS.test(text)) return [];
-  return ROUTE_CLASSES.filter(route => route.words.test(text)).slice(0, 2).map(route => route.source);
+  // TRIAGE-R3: a recall ask reads her own remembered history, whatever day or word it also carries.
+  if (recallQuestion(text)) return ['memory'];
+  const named = ROUTE_CLASSES.filter(route => route.words.test(text)).slice(0, 2).map(route => route.source);
+  if (named.length > 0) return named;
+  // #564/#572: "anything urgent" names no source, and what came in is a mail and a chat read alike.
+  if (triageAsk(text)) return [...TRIAGE_SOURCES];
+  // #578: a weekday or an exact date names the calendar when the ask names no other source.
+  return CALENDAR_DAY_WORDS.test(text) ? ['calendar'] : [];
 }
 
 /**
@@ -845,11 +896,24 @@ export function requiredSources(question: string): SourceKind[] {
 export function routedSelection(question: string, configured: readonly SourceKind[], nowMs = Date.now()): SelectorOutput | undefined {
   const text = question.toLowerCase().trim();
   if (!text || WEB_WORDS.test(text)) return undefined;
+  // TRIAGE-R3: a recall ask is the memory lookup the run builds, so the router claims no candidate for
+  // it; without this, the word "said" would turn it into a chat search.
+  if (recallQuestion(text)) return undefined;
   const matched = ROUTE_CLASSES.filter(route => route.words.test(text) && configured.includes(route.source));
   if (matched.length > 2) return undefined;
   if (matched.length > 0) {
     const selection = fallbackSelection(question, configured, nowMs);
     return selection.actions.some(action => sourceKindOf(action.kind) !== 'knowledge') ? selection : undefined;
+  }
+  // #564/#572: "anything urgent" named no source at all, and the triage read is what answers it.
+  if (triageAsk(text)) {
+    const selection = fallbackSelection(question, configured, nowMs);
+    return selection.actions.some(action => sourceKindOf(action.kind) !== 'knowledge') ? selection : undefined;
+  }
+  // #578: a weekday or an exact date is the calendar window the ask named.
+  if (CALENDAR_DAY_WORDS.test(text)) {
+    const selection = fallbackSelection(question, configured, nowMs);
+    return selection.actions.some(action => action.kind === 'calendar_window') ? selection : undefined;
   }
   if (!KNOWLEDGE_WORDS.test(text)) return undefined;
   return {
@@ -871,18 +935,20 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   };
   const webWords = WEB_WORDS.test(text);
   const mailWords = MAIL_WORDS.test(text);
-  const calendarWords = CALENDAR_WORDS.test(text);
+  // #579: a time word alone never replaces the source the ask named with the calendar.
+  const calendarWords = CALENDAR_WORDS.test(text) || (!mailWords && !CHAT_WORDS.test(text) && (CALENDAR_DAY_WORDS.test(text) || CALENDAR_TIME_WORDS.test(text)));
   const chatWords = CHAT_WORDS.test(text);
-  const matched = mailWords || calendarWords || chatWords;
+  const triage = triageAsk(text) && !mailWords && !chatWords;
+  const matched = mailWords || calendarWords || chatWords || triage;
   if (!matched) {
     offer('brief', 0.5, null); offer('knowledge_search', 0.4, 'knowledge');
     if (webWords) offer('web_search', 0.45, 'web');
     return { questionClass: 'cross_source', actions, pUseful };
   }
   offer('knowledge_search', 0.4, 'knowledge');
-  if (mailWords) offer('mail_search', 0.4, 'mail');
-  if (calendarWords) offer('calendar_window', 0.4, 'calendar');
-  if (chatWords) offer('chat_search', 0.4, 'chat');
+  if (mailWords || triage) offer('mail_search', 0.4, 'mail');
+  if (calendarWords || triage) offer('calendar_window', 0.4, 'calendar');
+  if (chatWords || triage) offer('chat_search', 0.4, 'chat');
   if (webWords) offer('web_search', 0.45, 'web');
   return { questionClass: 'cross_source', actions, pUseful };
 }
@@ -1092,11 +1158,18 @@ export function chatQuery(query: string, nowMs = Date.now(), timeZone = Intl.Dat
     .join(' ');
 }
 
+/** #581: the day a chat ask names, ready for the tool's own window argument instead of an inline `After:`. */
+function chatWindowDay(question: string, nowMs: number, timeZone: string): string | undefined {
+  const word = DATE_WORD.exec(question)?.[0];
+  return word === undefined ? undefined : isoDay(word, nowMs, timeZone);
+}
+
 /** MED-1022/T-R2: the closed token for a chat date operator, so the receipt never carries query text. */
 export type ChatDateOperator = 'compiled' | 'dropped' | 'none';
 
-/** Whether the chat wire carries an ISO date operator, lost one the caller wrote, or had none. */
-export function chatDateOperator(original: string | undefined, compiled: string): ChatDateOperator {
+/** Whether the chat wire carries an ISO day, lost one the caller wrote, or had none. */
+export function chatDateOperator(original: string | undefined, compiled: string, windowDay?: string): ChatDateOperator {
+  if (windowDay !== undefined && windowDay !== '') return 'compiled';
   if (/\b(?:after|before|on):/iu.test(compiled)) return 'compiled';
   return original !== undefined && /\b(?:after|before|on):/iu.test(original) ? 'dropped' : 'none';
 }
@@ -1143,7 +1216,8 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
   }
   if (kind === 'mail_search') {
     // #565: a bare inbox scan stays a scan; a topic or a model query is compiled from the topic.
-    const bare = config.query === undefined && topicText === undefined;
+    // #564: a triage ask is never a bare scan, whatever prose the selector or the model wrote for it.
+    const bare = config.query === undefined && topicText === undefined && !triageAsk(config.question);
     return [search(INTERNAL.mailList, { q: bare ? 'in:inbox newer_than:2d' : compileMailQuery(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone, config.topic, ownerWords), maxResults: RESEARCH.pageResults.mail }, 'm0')];
   }
   if (kind === 'mail_open') { const id = config.evidence.get('mail_search'); return id ? [search(INTERNAL.mailRead, { id }, 'mo0')] : []; }
@@ -1153,10 +1227,16 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     // DATES-R1 F3 and DATES-R2 F4: with no content term left, the recency window is the only useful thing
     // to send, so an empty query is never dispatched, whoever wrote the query text.
     const dated = DATE_WORD.test(config.question);
+    // #572: a triage ask reads what needs an answer, newest first over its own window, never a search
+    // ranked by relevance over the whole archive.
+    if (triageAsk(config.question)) return [search(INTERNAL.chatAttention, { days: TRIAGE_DAYS } as JsonObject, 'ca0')];
     const compiled = chatQuery(config.query === undefined ? (topicText ?? 'after:yesterday') : ownerDigits(config.query, ownerWords), config.nowMs, config.timeZone);
-    const terms = dated ? compiled : compiled.replace(CHAT_DATE_OPERATOR, '').replace(/\s+/gu, ' ').trim();
+    // #581: the day rides the tool's own window argument, so a windowed ask never makes the child rank
+    // the whole archive by relevance before it filters.
+    const day = dated ? chatWindowDay(config.question, config.nowMs ?? Date.now(), config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone) : undefined;
+    const terms = compiled.replace(CHAT_DATE_OPERATOR, '').replace(/\s+/gu, ' ').trim();
     const query = terms !== '' ? terms : chatQuery('after:yesterday', config.nowMs, config.timeZone);
-    return [search(INTERNAL.chatSearch, { query, limit: RESEARCH.chatLines }, 'c0')];
+    return [search(INTERNAL.chatSearch, { query, limit: RESEARCH.chatLines, ...(day === undefined ? {} : { after: day }) }, 'c0')];
   }
   if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { post_id: id }, 'ct0')] : []; }
   if (kind === 'web_search') return config.configured.includes('web')
@@ -2617,7 +2697,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const cursorPage = run.mailCursorRequested ? run.mailCursors.get(run.mailCursorRequested) : undefined;
   const mailRemaining = cursorPage?.ids.length ? allMailRemaining.filter(([key]) => cursorPage.ids.includes(key)) : allMailRemaining;
   const mailReads = [...run.mail.values()];
-  if (mailRemaining.length) groups.push({ source: 'mail', label: SOURCE_LABEL.mail, lines: mailRemaining.slice(0, 8).map(([, message]) => message.line), total: receivedMail.size });
+  if (mailRemaining.length) groups.push({ source: 'mail', label: SOURCE_LABEL.mail, lines: mailRemaining.slice(0, MAIL_LINES_SHOWN).map(([, message]) => message.line), total: receivedMail.size });
   const mailUpstream = mailReads.some(read => !read.failed && !read.exhausted);
   const mailIncomplete = mailReads.some(read => read.failed || read.upstreamIncomplete || read.invalid > 0 || [...read.messages.values()].some(message => message.bodyTruncated));
   if ((mailIncomplete || mailUpstream || mailRemaining.length > 8) && status === 'answered' && (sources === undefined || receivedMail.size > 0)) status = 'partial';
@@ -2776,7 +2856,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
   if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: [{ key: 'co0', name: INTERNAL.mongooseSearch, args: { query } as JsonObject }] };
   // The attention digest answers "what is waiting on him"; it takes no query of its own.
   if (lookup.source === 'replies') return { source: 'chat', kind: 'chat_search', subs: [{ key: 'at0', name: INTERNAL.chatAttention, args: {} as JsonObject }] };
-  const subsConfig = { question: context.question, topic: context.topic, ownerWords: context.ownerWords, configured: context.configured, evidence: context.run.evidence, query };
+  const subsConfig = { question: context.question, topic: context.topic, ownerWords: context.ownerWords, configured: context.configured, evidence: context.run.evidence, query, nowMs: context.now(), timeZone: context.timeZone };
   // N3: a voice turn reads the primary calendar only, one bounded call. The merged read is one remote
   // call per visible calendar (22 on the smoke account) and can never finish inside the run deadline, so
   // it always came back empty and the owner heard nothing; the full merge stays on the calendar intent.
@@ -2826,7 +2906,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
 function recordChatDate(run: RunState, original: string | undefined, subs: readonly IntentSubCall[]): void {
   const sub = subs.find(call => call.name === INTERNAL.chatSearch);
   if (sub === undefined) return;
-  const status = chatDateOperator(original, String(sub.args['query'] ?? ''));
+  const status = chatDateOperator(original, String(sub.args['query'] ?? ''), String(sub.args['after'] ?? ''));
   if (status === 'compiled' || run.chatDate === undefined) run.chatDate = status;
 }
 
@@ -2969,6 +3049,8 @@ function mailReceiptField(info: MailQueryInfo | undefined): { mail?: MailQuerySh
 
 /** E5: how an empty mail search is voiced, naming the words and the window it really used. */
 function mailEmptyPhrase(info: MailQueryInfo | undefined, fallback: string): string {
+  // #564: the triage scan names its own window and its own filter, never "nothing urgent".
+  if (info?.q === TRIAGE_MAIL_QUERY) return ' for anything unread in the last two days';
   return info === undefined ? fallback : mailSearchPhrase(info.retried ?? info.q);
 }
 
@@ -3025,7 +3107,9 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
   const signal = AbortSignal.any([parent, cut.signal]);
   try {
   while (now() < run.mailDeadlineAt && run.ops < RESEARCH.maxOps && evidenceAllowed(deps, run, signal)) {
-    const reads = [...run.mail.values()].filter(read => !read.exhausted && !read.failed && !read.inflight && read.pages < RESEARCH.mailPageCap).slice(0, RESEARCH.maxOps - run.ops);
+    // #581: a page answers the read unless the lines this reply shows still need more, so four pages are
+    // never spent to show four lines.
+    const reads = [...run.mail.values()].filter(read => !read.exhausted && !read.failed && !read.inflight && read.pages < RESEARCH.mailPageCap && read.messages.size < MAIL_LINES_SHOWN).slice(0, RESEARCH.maxOps - run.ops);
     if (reads.length === 0) break;
     const calls = reads.map((read, n) => ({ key: `mail${run.ops + n}`, name: INTERNAL.mailList, args: { ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}) } }));
     if (!evidenceAllowed(deps, run, signal)) break;
@@ -3474,7 +3558,12 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         continue;
       }
       if (outcome.outcome === 'ok') { run.sourcesDone.add(outcome.source); run.sourcesFailed.delete(outcome.source); run.emptySearches.delete(outcome.source); run.cutShort.delete(outcome.source); }
-      else if (outcome.outcome === 'empty') { run.emptySearches.set(outcome.source, mailEmptyPhrase(outcome.mail, ` for "${outcome.lookup.query.slice(0, 60)}"`)); }
+      else if (outcome.outcome === 'empty') {
+        // #572: the attention read names its window, so an empty digest is a window, never a bare no.
+        run.emptySearches.set(outcome.source, outcome.tool === INTERNAL.chatAttention
+          ? ` in the last ${TRIAGE_DAYS} days`
+          : mailEmptyPhrase(outcome.mail, ` for "${(outcome.lookup.query ?? '').slice(0, 60)}"`));
+      }
       else if (outcome.outcome === 'timeout') { run.cutShort.add(outcome.source); }
       else run.sourcesFailed.add(outcome.source);
     }
@@ -3857,6 +3946,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   const lookups = normalizeLookups(call.lookups);
   if (call.action === 'continue' && run.historyTokens.size > 0 && lookups.length === 0) return { researchId: run.researchId, status: 'partial', findings: [], canContinue: true, note: 'Continue local history with a memory lookup containing history.recordRef or history.cursor from historyPages.' };
   if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, unavailable, unavailableReason, signal, now, limit, first);
+  // TRIAGE-R3: a recall ask reads her own remembered history, so it takes the memory lookup the routed
+  // path already serves with its binding, page and continuation, never a knowledge search.
+  if (call.action === 'start' && recallQuestion(question)) return routedResearch(deps, run, question, [{ source: 'memory', query: contentKeywords(question, 8).join(' ') }], configured, unavailable, unavailableReason, signal, now, limit, first);
 
   const perRound: ResearchRunLog['perRound'] = [];
   const sourceLog: ResearchRunLog['sources'] = [];
@@ -4232,7 +4324,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             } else if (part.results.some(result => result.ok)) {
               // The connector answered and matched nothing: that is a search, not an outage.
               run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source);
-              run.emptySearches.set(part.source, mailInfo === undefined ? queryShapeOf(served) : mailEmptyPhrase(mailInfo, queryShapeOf(served)));
+              // #572: the attention read names its window, so an empty digest is a window, never a bare no.
+              run.emptySearches.set(part.source, served.some(sub => sub.name === INTERNAL.chatAttention)
+                ? ` in the last ${TRIAGE_DAYS} days`
+                : mailInfo === undefined ? queryShapeOf(served) : mailEmptyPhrase(mailInfo, queryShapeOf(served)));
             } else if (!run.sourcesDone.has(part.source)) run.sourcesFailed.add(part.source);
             // P5 outcome 4: one receipt per source read, with the deadline it was actually given.
             logSource({

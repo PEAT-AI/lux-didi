@@ -4840,7 +4840,8 @@ test('Mongoose evidence projection: grouped SDK hits survive actual Live researc
 
 test('mail integration: exact native query pages and retained remainder reach later messages without replay', async t => {
   const messages = Array.from({ length: 13 }, (_, n) => ({ id: `mail-id-${n}`, threadId: 'shared-thread', internalDate: String(1700000000000 - n), headers: [{ name: 'Subject', value: `Synthetic mail ${n}` }], snippet: `Snippet ${n}` }));
-  const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => args['pageToken'] ? { messages: messages.slice(8) } : { messages: messages.slice(0, 8), nextPageToken: 'private-native-mail-next' } });
+  // #581: a page that already fills the reply stops the read, so the first page is short by construction.
+  const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => args['pageToken'] ? { messages: messages.slice(3) } : { messages: messages.slice(0, 3), nextPageToken: 'private-native-mail-next' } });
   await attached(h, 'mail-all-pages');
   const last = (): Record<string, unknown> => {
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
@@ -4889,7 +4890,8 @@ test('mail integration: a failed dispatched native page is terminal and truthful
   const messages = Array.from({ length: 8 }, (_, n) => ({ id: `failure-message-${n}`, headers: [{ name: 'Subject', value: `Received before failure ${n}` }] }));
   const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => {
     if (args['pageToken']) throw Error('synthetic_source_unavailable');
-    return { messages, nextPageToken: 'failed-native-page' };
+    // #581: three lines still need the next page.
+    return { messages: messages.slice(0, 3), nextPageToken: 'failed-native-page' };
   } }); await attached(h, 'mail-failed-page');
   const last = (): Record<string, unknown> => {
     const frame = h.f.frames.filter(frame => typeof frame === 'object' && frame !== null && 'toolResponse' in frame).at(-1) as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } };
@@ -4897,7 +4899,7 @@ test('mail integration: a failed dispatched native page is terminal and truthful
   };
   await settleLiveTool(h, 'start', 'research', { action: 'start', question: 'List synthetic mail', topic: 'List synthetic mail', lookups: [{ source: 'mail', query: 'synthetic' }] });
   const reply = last(); assert.equal(reply['status'], 'partial'); assert.equal(reply['canContinue'], false);
-  assert.equal((reply['mailCoverage'] as Record<string, unknown>)['failed'], true); assert.match(JSON.stringify(reply['findings']), /Received before failure 7/);
+  assert.equal((reply['mailCoverage'] as Record<string, unknown>)['failed'], true); assert.match(JSON.stringify(reply['findings']), /Received before failure 2/);
   await settleLiveTool(h, 'continue', 'research', { action: 'continue', researchId: reply['researchId'] });
   assert.equal(h.calls.filter(call => call.name === 'gmail_search_messages').length, 2, 'the failed native page is not replayed');
 });
@@ -4906,7 +4908,7 @@ test('mail integration: a failed dispatched native page is terminal and truthful
 test('mail integration: the deterministic plan shares the native page collector', async t => {
   const messages = Array.from({ length: 13 }, (_, n) => ({ id: `selector-mail-${n}`, headers: [{ name: 'Subject', value: `Selector mail ${n}` }] }));
   const h = await harness(t, { tools: true, mail: true, knowledgeSearchLimit: 6,
-    mailData: (_name, args) => args['pageToken'] ? { messages: messages.slice(8) } : { messages: messages.slice(0, 8), nextPageToken: 'selector-native-next' },
+    mailData: (_name, args) => args['pageToken'] ? { messages: messages.slice(3) } : { messages: messages.slice(0, 3), nextPageToken: 'selector-native-next' },
   }); await attached(h, 'mail-selector');
   try { await settleLiveTool(h, 'selector-start', 'research', { action: 'start', question: 'List anything in my email', topic: 'List anything in my email' }); }
   catch (error) { throw new Error(`Selector source calls: ${JSON.stringify(h.calls)}; ${String(error)}`); }
@@ -5217,7 +5219,7 @@ for (const source of ['mail', 'calendar'] as const) test(`progress recovery: act
   const messages = Array.from({ length: 13 }, (_, n) => ({ id: `progress-mail-${n}`, headers: [{ name: 'Subject', value: `Synthetic progress mail ${n}` }] }));
   const events = Array.from({ length: 13 }, (_, n) => ({ id: `progress-event-${n}`, start: '2023-11-15T10:00:00Z', summary: `Synthetic progress event ${n}` }));
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits,
-    ...(source === 'mail' ? { mail: true, mailData: (_name: string, args: Record<string, unknown>) => args['pageToken'] ? { messages: messages.slice(8) } : { messages: messages.slice(0, 8), nextPageToken: 'next' } }
+    ...(source === 'mail' ? { mail: true, mailData: (_name: string, args: Record<string, unknown>) => args['pageToken'] ? { messages: messages.slice(3) } : { messages: messages.slice(0, 3), nextPageToken: 'next' } }
       : { calendar: true, calendarData: (name: string, args: Record<string, unknown>) => name === 'calendar_list_calendars' ? { calendars: [{ id: 'primary' }] } : args['pageToken'] ? { events: events.slice(8) } : { events: events.slice(0, 8), nextPageToken: 'next' } }),
   });
   const { session } = await openPort(h, `progress-pages-${source}`);

@@ -13,6 +13,8 @@ import { connectorDescriptor, createMattermostReader, MATTERMOST_ATTENTION, MATT
 import type { AttentionItem, MattermostAttention } from '../connectors/index.js';
 import { projectMattermostResult, renderAttention } from '../tools/mattermost.js';
 import { INTENT_TOOL_NAMES, INTERNAL, planIntent, validateIntent } from '../tools/intent.js';
+import { ResearchLedger, runResearch, type ResearchDeps } from '../tools/research.js';
+import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const child = join(here, 'fixtures', 'stdio-mattermost-attention-child.mjs');
@@ -222,4 +224,40 @@ test('the attention tool is declared for text and voice, with its window bounds'
   const plan = planIntent('attention', { days: 3 });
   assert.deepEqual(plan.calls, [{ key: '0', name: INTERNAL.chatAttention, args: { days: 3 } }]);
   assert.equal(MATTERMOST_ATTENTION.days, 7);
+});
+
+// #572: "anything urgent" was answered from relevance-ranked posts dated 2025 while the archive is
+// current. A chat triage ask is the attention read over its own window, newest first.
+test('#572: a chat triage ask reads what needs an answer in the window, and the old post never wins', async t => {
+  const f = setup('window');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter));
+  const dispatched: string[] = [];
+  const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => Promise.all(subs.map(async call => {
+    dispatched.push(call.name);
+    if (call.name !== INTERNAL.chatAttention) return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0 };
+    const result = await r.attention({ days: Number(call.args['days']) });
+    const projected = projectMattermostResult(f.adapter, result);
+    const text = projected.ok ? projected.projection.text : '';
+    return { key: call.key, name: call.name, ok: projected.ok, text, originalCharacters: text.length, omittedCharacters: 0 };
+  }));
+  const deps: ResearchDeps = {
+    now: () => Date.now(), configured: ['mail', 'chat', 'calendar'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'anything urgent came in?' }, new AbortController().signal);
+  assert.ok(dispatched.includes(INTERNAL.chatAttention), 'the triage read is the attention digest, never a relevance search');
+  const findings = JSON.stringify(reply['findings'] ?? []);
+  assert.ok(findings.includes('can you confirm the 3k release'), 'the fresh post is in the answer');
+  assert.ok(!findings.includes('did you see this last week'), 'the ten-day-old post is outside the window');
+});
+
+// #572: an empty triage window is a window, never a bare "nothing urgent".
+test('#572: an empty chat triage names the window it read', async () => {
+  const deps: ResearchDeps = {
+    now: () => 0, configured: ['mail', 'chat', 'calendar'],
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => ({ key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0 })),
+    emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'anything urgent came in?' }, new AbortController().signal);
+  assert.match(String(reply['note']), /I searched your team chat in the last 7 days and found nothing matching\./u);
 });

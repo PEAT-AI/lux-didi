@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,17 +21,18 @@ const child = join(here, 'fixtures', 'stdio-mattermost-child.mjs');
 const ACCOUNT = 'local';
 const RESOURCE = 'mattermost';
 
-function config(id: string, mode: string, home: string): EndpointConfig {
-  return { id, transport: 'stdio', command: process.execPath, args: [child, mode], env: { HOME: home, PATH: process.env.PATH ?? '/usr/bin', MATTERMOST_URL: 'https://chat.peat-cloud.com', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: ACCOUNT, resource: RESOURCE };
+function config(id: string, mode: string, home: string, log?: string): EndpointConfig {
+  return { id, transport: 'stdio', command: process.execPath, args: [child, mode], env: { HOME: home, PATH: process.env.PATH ?? '/usr/bin', MATTERMOST_URL: 'https://chat.peat-cloud.com', LOGNAME: '', SHELL: '', TERM: '', USER: '', ...(log === undefined ? {} : { DIDI_FAKE_MATTERMOST_LOG: log }) }, account: ACCOUNT, resource: RESOURCE };
 }
 
 function setup(mode: string) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-mattermost-'));
+  const log = join(dir, 'calls.log');
   const registry = new McpRegistry();
-  registry.register(config('mattermost', mode, dir));
+  registry.register(config('mattermost', mode, dir, log));
   registry.enable('mattermost'); registry.allowEgress('mattermost');
   const adapter = createMcpAdapter({ registry, store: new MemoryResultStore() });
-  return { dir, registry, adapter };
+  return { dir, registry, adapter, calls: (): { name: string; arguments: Record<string, unknown> }[] => existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as { name: string; arguments: Record<string, unknown> }) : [] };
 }
 
 async function approve(adapter: McpPort, registry: McpRegistry, names: readonly string[] = [...MATTERMOST_TOOLS]) {
@@ -254,4 +255,31 @@ test('a chat lookup settles unavailable at once when the mattermost connector is
   assert.equal(reply['sources'] && (reply['sources'] as Record<string, string>)['chat'], 'unavailable');
   assert.match(String(reply['note']), /could not reach team chat/, 'the answer says chat is unreachable, never that it searched and found nothing');
   assert.deepEqual(dispatched, [], 'no sub-call is dispatched to a connector that cannot answer');
+});
+
+// #581: a chat window written as an inline `After:` made the child rank the whole archive by relevance
+// before it filtered. The window now rides the child's own from_date, with sort=newest.
+test('#581: a chat window ask sends from_date and sort newest and no inline After:', async t => {
+  const f = setup('ok');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const digest = await approve(f.adapter, f.registry);
+  const research = reader(f.adapter, f.registry, digest);
+  const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => Promise.all(subs.map(async call => {
+    const window = typeof call.args['after'] === 'string' ? { after: call.args['after'] } : {};
+    const result = await research.search({ query: String(call.args['query'] ?? ''), limit: Number(call.args['limit'] ?? 5), ...window });
+    const projected = result.state === 'completed' ? projectMattermostResult(f.adapter, result) : { ok: false as const };
+    const text = projected.ok ? projected.projection.text : '';
+    return { key: call.key, name: call.name, ok: projected.ok, text, originalCharacters: text.length, omittedCharacters: 0 };
+  }));
+  const deps: ResearchDeps = {
+    now: () => Date.parse('2026-10-21T05:30:00Z'), timeZone: 'Asia/Kolkata', configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the release freeze this week' }, new AbortController().signal);
+  const searches = f.calls().filter(call => call.name === 'mattermost_search');
+  assert.ok(searches.length > 0, 'the chat read reached the child');
+  const first = searches[0]!;
+  assert.equal(first.arguments['from_date'], '2026-10-21', 'the window is the day the ask named, in the child own argument');
+  assert.equal(first.arguments['sort'], 'newest', 'a windowed read is newest first');
+  assert.ok(!String(first.arguments['query']).includes('After:'), 'no inline operator rides the query text');
+  assert.ok((reply['findings'] as unknown[]).length > 0, 'the read reaches the answer');
 });

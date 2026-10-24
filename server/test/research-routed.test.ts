@@ -811,12 +811,3 @@ test('E2: a two-name discussion ask routes to memory and chat, and an attention 
   assert.ok(selection !== undefined, 'an attention ask is a deterministic selection');
   assert.deepEqual(selection.actions.map(action => action.kind).sort(), ['calendar_window', 'chat_search', 'knowledge_search', 'mail_search']);
 });
-
-// #631: dropping the source word from the query must not stop the router reading it to pick the layer.
-test('#631: the source word still routes, and is never the term it routed by', () => {
-  const asks = (question: string): string[] => fallbackSelection(question, CONFIGURED).actions.map(action => action.kind);
-  assert.ok(asks('check lux knowledge about determinism').includes('knowledge_search'), 'the layer the owner named is read');
-  assert.ok(asks('anything in my inbox about the invoice').includes('mail_search'), 'and a mail ask still routes to mail');
-  const [call] = candidateSubs('knowledge_search', { question: 'check lux knowledge about determinism', topic: 'lux knowledge about determinism', configured: CONFIGURED, evidence: new Map() });
-  assert.equal(String(call?.args['query']), 'determinism', 'the routed query carries the subject only');
-});

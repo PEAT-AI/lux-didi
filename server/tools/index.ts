@@ -687,8 +687,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                   return { status: 'failed', code: failureCode };
                 }
                 // A classified failure is visible: the endpoint flips to configured and the call
-                // returns the plain reason as its projection, never an empty success.
+                // returns the plain reason as its projection, never an empty success. A status that
+                // names a content-free log line (an unknown helper code, a Didi defect) writes it too.
                 reportToolStatus?.(p.endpoint.id, status);
+                if (status.log) options.log?.(status.log);
                 return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0 }, []) };
               }
               reportToolStatus?.(p.endpoint.id, null);

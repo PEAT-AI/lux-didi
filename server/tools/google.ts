@@ -19,22 +19,86 @@ export interface GoogleProjection {
   sources?: ShapedSource[];
 }
 
-export interface GoogleStatus { state: 'configured' | 'error'; reason: string }
+/** A content-free line for a failure Didi must log: a code or a hashed code head, never helper text. */
+export interface GoogleStatusLog {
+  event: 'tool_failure'; code: 'connector_error';
+  tool: string; connector: 'google'; errorClass: 'Error'; messageHead: string;
+}
 
-const CREDENTIAL_CODES = new Set([
-  'credential-missing',
-  'credential-unreadable',
-  'credential-insufficient-scope',
-  'credential-revoked',
-  'credential-refresh-failed',
-  // The pinned-account helper (lux-cli E2) refuses a missing variable with this code; both spellings
-  // are accepted so a code is never mistaken for an untyped failure. The message is never read.
-  'credential-missing-env',
-  'credential_missing',
-]);
+export interface GoogleStatus {
+  state: 'configured' | 'error';
+  /** The closed reason: the helper's own code, unknown_helper_code, or a local reason for a bodiless error. */
+  code: string;
+  /** The one clause Naya says for this failure; never an empty result. */
+  reason: string;
+  log?: GoogleStatusLog;
+}
 
-/** The helper refuses the account itself with these codes: an identity refusal, not a missing grant. */
-const IDENTITY_REFUSAL_CODES = new Set(['account_mismatch', 'account-mismatch', 'identity_unverified', 'identity-unverified']);
+export type GoogleErrorClass = 'credential' | 'identity' | 'caller' | 'transient' | 'provider';
+/** What the host does about one failure class: nothing while pinned, one retry on the next ask, or a logged defect. */
+export type GoogleErrorRecovery = 'none' | 'retry_next_ask' | 'log_defect';
+
+/** One row of the helper's published failure vocabulary (lux-cli tools/google-mcp/error-contract.json). */
+export interface GoogleErrorEntry {
+  readonly class: GoogleErrorClass;
+  /** A pinned refusal cannot be changed by a fresh retry in this process until the credential file changes. */
+  readonly pinned: boolean;
+  /** The one clause Naya says; AUTHORIZE becomes the helper's own authorize command for this family. */
+  readonly ownerLine: string;
+  readonly recovery: GoogleErrorRecovery;
+}
+
+const AUTHORIZE = '{authorize}';
+
+/**
+ * Didi's one source of truth for the Google helper's closed failure vocabulary. Every emitted code of
+ * the published contract has a row, so a code the helper adds is unknown until this table grows.
+ * Provenance: lux-cli candidate 6ee466f0bce423ce76102970efa9909bfd697530 on train/google-ipc-1024,
+ * pinned as a candidate because it is source-reviewed but not yet installed.
+ */
+export const GOOGLE_ERROR_TABLE: Readonly<Record<string, GoogleErrorEntry>> = {
+  'account-mismatch': { class: 'identity', pinned: true, ownerLine: `auth needed: run ${AUTHORIZE} for the account you configured`, recovery: 'none' },
+  'binding-unknown': { class: 'caller', pinned: false, ownerLine: 'the Google helper was started without the account family I asked for, so I stopped and logged it', recovery: 'log_defect' },
+  'credential-missing': { class: 'credential', pinned: true, ownerLine: `auth needed: run ${AUTHORIZE} to sign in again`, recovery: 'none' },
+  'credential-overwrite-refused': { class: 'credential', pinned: true, ownerLine: `auth needed: run ${AUTHORIZE} to replace a sign-in file that belongs to another account`, recovery: 'none' },
+  'credential-refresh-failed': { class: 'transient', pinned: false, ownerLine: 'the Google sign-in could not be refreshed just now, ask me again and I will retry', recovery: 'retry_next_ask' },
+  'credential-revoked': { class: 'credential', pinned: true, ownerLine: `auth needed: run ${AUTHORIZE} to sign in again`, recovery: 'none' },
+  'credential-scope-mismatch': { class: 'credential', pinned: true, ownerLine: `auth needed: run ${AUTHORIZE} to grant the read scopes again`, recovery: 'none' },
+  'credential-unreadable': { class: 'credential', pinned: true, ownerLine: `auth needed: run ${AUTHORIZE} to sign in again`, recovery: 'none' },
+  'family-unknown': { class: 'caller', pinned: false, ownerLine: 'the Google helper does not serve that account family, so I stopped and logged it', recovery: 'log_defect' },
+  'google-helper-error': { class: 'provider', pinned: false, ownerLine: 'the Google helper could not write its sign-in file, so I stopped and logged it', recovery: 'log_defect' },
+  'identity-unverified': { class: 'identity', pinned: true, ownerLine: `auth needed: run ${AUTHORIZE} and sign in as the account you configured`, recovery: 'none' },
+  'provider-failure': { class: 'provider', pinned: false, ownerLine: 'the Google service failed just now, ask me again and I will retry', recovery: 'retry_next_ask' },
+  'tool-argument': { class: 'caller', pinned: false, ownerLine: 'I built the wrong arguments for the Google helper, so I stopped and logged it', recovery: 'log_defect' },
+  'tool-unknown': { class: 'caller', pinned: false, ownerLine: 'the Google helper does not have that tool, so I stopped and logged it', recovery: 'log_defect' },
+  // The two spellings the installed helper still emits. Delete both rows, and the test that pins
+  // them, when the lux-cli release carrying error-contract.json 6ee466f0 is installed.
+  'credential-missing-env': { class: 'credential', pinned: true, ownerLine: `auth needed: run ${AUTHORIZE} to sign in again`, recovery: 'none' },
+  credential_missing: { class: 'credential', pinned: true, ownerLine: `auth needed: run ${AUTHORIZE} to sign in again`, recovery: 'none' },
+};
+
+/** The closed reason for a code outside the table: never silent, never a raw helper line. */
+export const UNKNOWN_HELPER_REASON = 'unknown_helper_code';
+export const UNKNOWN_HELPER_OWNER_LINE = 'the Google helper answered with an error I do not know, say the word and I will try again later';
+
+export function googleErrorEntry(code: string): GoogleErrorEntry | undefined {
+  return Object.hasOwn(GOOGLE_ERROR_TABLE, code) ? GOOGLE_ERROR_TABLE[code] : undefined;
+}
+
+/** The owner line for one row, with the helper's own consent command filled in for this family. */
+export function googleOwnerLine(entry: GoogleErrorEntry, family: string): string {
+  return entry.ownerLine.split(AUTHORIZE).join(authorizeCommandFor(family));
+}
+
+/** A code outside the table is logged by its first 32 characters, hashed, so no helper text travels. */
+export function googleUnknownLog(code: string, tool: string): GoogleStatusLog {
+  return { event: 'tool_failure', code: 'connector_error', tool, connector: 'google', errorClass: 'Error', messageHead: sha256(code.slice(0, 32)) };
+}
+
+/** A caller-class code is a Didi defect: the closed code and the tool name, nothing else. */
+export function googleDefectLog(code: string, tool: string): GoogleStatusLog {
+  return { event: 'tool_failure', code: 'connector_error', tool, connector: 'google', errorClass: 'Error', messageHead: code };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -79,16 +143,6 @@ export function readGooglePayload(port: McpPort, evidence: ConnectorEvidence): {
   return decodeMcpContentText(evidence.decodedResult);
 }
 
-/** The helper's typed credential error is a tool-error whose text starts with a stable code. */
-export function credentialFailure(text: string): boolean {
-  return CREDENTIAL_CODES.has(codeOf(text));
-}
-
-/** An identity refusal is the helper's pinned-account gate, never a missing grant. */
-export function identityRefusal(text: string): boolean {
-  return IDENTITY_REFUSAL_CODES.has(codeOf(text));
-}
-
 /** The stable leading code of one helper error text; the rest of the message is never read. */
 function codeOf(text: string): string {
   const separator = text.indexOf(':');
@@ -96,23 +150,31 @@ function codeOf(text: string): string {
 }
 
 /**
- * Status for a completed-but-failed tool call. A typed credential error maps to a visible
- * configured/auth-needed status naming the helper's own authorize command, an identity refusal
- * maps to a named identity error, and any other failure is an error. Never an empty success.
+ * Status for a completed-but-failed tool call, driven by the one vocabulary table. A pinned credential
+ * or identity code is the auth-needed status naming the helper's own authorize command; a transient,
+ * caller or provider code says its own line; a code outside the table is unknown_helper_code, logged
+ * by its hashed head. Never an empty success.
  */
 export function googleToolStatus(evidence: ConnectorEvidence): GoogleStatus | undefined {
   if (evidence.state === 'completed') return undefined;
   const content = decodeMcpContentText(evidence.decodedResult);
-  if (!content.ok) return { state: 'error', reason: 'tool call failed; no content' };
-  if (identityRefusal(content.text)) return { state: 'error', reason: `identity refused: ${codeOf(content.text)}` };
-  if (credentialFailure(content.text)) return { state: 'configured', reason: `auth needed: run ${authorizeCommand(evidence)}` };
-  return { state: 'error', reason: 'tool call failed' };
+  if (!content.ok) return { state: 'error', code: 'no_content', reason: 'tool call failed; no content' };
+  const code = codeOf(content.text);
+  const entry = googleErrorEntry(code);
+  if (entry === undefined) {
+    return { state: 'configured', code: UNKNOWN_HELPER_REASON, reason: UNKNOWN_HELPER_OWNER_LINE, log: googleUnknownLog(code, evidence.tool) };
+  }
+  const log = entry.recovery === 'log_defect' ? googleDefectLog(code, evidence.tool) : undefined;
+  return { state: 'configured', code, reason: googleOwnerLine(entry, googleFamilyOf(evidence)), ...(log ? { log } : {}) };
 }
 
 /** The helper's own consent command for this family: a command name only, never a token path. */
-function authorizeCommand(evidence: ConnectorEvidence): string {
-  const family = typeof evidence.tool === 'string' && evidence.tool.startsWith('gmail') ? 'gmail' : 'calendar';
+function authorizeCommandFor(family: string): string {
   return `lux-google-mcp authorize --family ${family}`;
+}
+
+function googleFamilyOf(evidence: ConnectorEvidence): string {
+  return typeof evidence.tool === 'string' && evidence.tool.startsWith('gmail') ? 'gmail' : 'calendar';
 }
 
 /** Rich, clean projection of one tool's decoded envelope data (see live-shape.ts). */

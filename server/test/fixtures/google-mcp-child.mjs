@@ -2,9 +2,12 @@
 // Synthetic stdio MCP child for check-google-connector.sh.
 // No real account, network, credential or application file is touched. It exposes the five
 // Gmail/Calendar read tools plus a decoy write tool so a test can prove the write is never granted.
-// argv[2] = mode (ok | credential | flaky), argv[3] = optional pid file.
+// argv[2] = mode (ok | credential | flaky | code:<helper code> | first:<helper code>), argv[3] = pid file.
 // flaky fails the first calendar_list_events call with the credential error and succeeds afterwards.
-import { writeFileSync } from 'node:fs';
+// code:<helper code> fails every tool call with that one code, so a test maps each published code
+// through the real connector; first:<helper code> fails only the first call, so a test can prove the
+// next ask retries. Every tool call is appended to <pid file>.calls so a test can count dispatches.
+import { appendFileSync, writeFileSync } from 'node:fs';
 import { Server } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 
@@ -67,10 +70,16 @@ function envelopeFor(name, args) {
 
 const server = new Server({ name: 'synthetic-google-mcp', version: '0.0.1' }, { capabilities: { tools: {} } });
 let calendarCalls = 0;
+let toolCalls = 0;
 server.setRequestHandler('tools/list', () => ({ tools: TOOLS }));
 server.setRequestHandler('tools/call', request => {
   const name = request.params?.name;
   const args = request.params?.arguments ?? {};
+  if (pidFile) appendFileSync(`${pidFile}.calls`, `${name}\n`);
+  if (mode.startsWith('code:') || (mode.startsWith('first:') && toolCalls++ === 0)) {
+    const code = mode.slice(mode.indexOf(':') + 1);
+    return { content: [{ type: 'text', text: `${code}: synthetic helper refusal` }], isError: true };
+  }
   const failsFirst = mode === 'flaky' && name === 'calendar_list_events' && calendarCalls++ === 0;
   if (name === 'calendar_list_events' && (mode === 'credential' || failsFirst)) {
     return { content: [{ type: 'text', text: 'credential-missing: no calendar token is available; run the interactive login once' }], isError: true };

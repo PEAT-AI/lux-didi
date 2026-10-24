@@ -145,4 +145,17 @@ A configured connector connects when Live needs it. If a connector fails, use
 **Copy diagnostics** in the menu bar and paste that support snapshot for help.
 It copies safe status information, not credential files or conversation text.
 
+When the Google connector fails, Naya says which kind of failure it was. A sign-in or
+permission problem (the grant is missing, revoked, unreadable, or without that family's
+read scopes, or the account is not the one you configured) makes her say that a fresh
+sign-in is needed and name the helper's own command, `lux-google-mcp authorize --family
+gmail` or `--family calendar`, which you complete with the token path and account your
+configuration already names; asking again before you run it changes nothing, because
+the helper repeats the same refusal until its credential file changes. A transient
+failure (a refresh that could not reach Google, or a Google API error) is retried on
+your next request, so just ask again. A tool or argument problem on her side is her
+own defect: she stops, says so, and records a content-free line in the diagnostics.
+An error code she does not recognise she reports as one she does not know, offers a
+later retry, and logs only a hashed head of the code, never the helper's message.
+
 If Live cannot start, its message now distinguishes a missing microphone, unavailable audio format, voice-processing failure, or audio-engine startup failure. Check the microphone and output device in System Settings, Sound, then try Live again; the local diagnostic records a numeric audio error when available, not a device label. Voice processing stays enabled, and Live never silently starts without it.

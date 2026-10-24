@@ -403,7 +403,9 @@ export interface SelectorOutput {
 const STOP_WORDS = new Set(['a', 'an', 'and', 'any', 'anything', 'are', 'around', 'as', 'at', 'be', 'been', 'but', 'by', 'can', 'check', 'could', 'did', 'do', 'does', 'find', 'for', 'from', 'get', 'give', 'had', 'has', 'have', 'how', 'i', 'in', 'into', 'is', 'it', 'its', 'just', 'know', 'latest', 'like', 'look', 'me', 'more', 'most', 'my', 'need', 'new', 'newest', 'of', 'on', 'or', 'our', 'out', 'over', 'please', 'said', 'say', 'search', 'see', 'show', 'so', 'some', 'tell', 'that', 'the', 'their', 'them', 'then', 'there', 'these', 'they', 'this', 'to', 'up', 'us', 'want', 'was', 'we', 'were', 'what', 'whats', 'when', 'where', 'which', 'who', 'why', 'will', 'with', 'would', 'you', 'your',
   'anything', 'calendar', 'chat', 'email', 'emails', 'gmail', 'important', 'inbox', 'knowledge', 'mail', 'mattermost', 'messages', 'notes', 'recent', 'slack', 'something', 'team', 'things', 'today', 'tomorrow', 'unread', 'urgent', 'yesterday', 'week', 'month', 'day',
   // ROUTE-1022 K7: instruction words the model writes into a query; never content in this product.
-  'wait', 'continue', 'verify', 'verified', 'findings', 'finding', 'exact', 'reliable', 'specific', 'detailed', 'lookup', 'lookups', 'searching', 'requested']);
+  'wait', 'continue', 'verify', 'verified', 'findings', 'finding', 'exact', 'reliable', 'specific', 'detailed', 'lookup', 'lookups', 'searching', 'requested',
+  // #617: the action and depth words of an ask are how she should answer, never what to search for.
+  'write', 'writes', 'draft', 'formulate', 'deeper', 'detail', 'summary', 'summaries', 'summarize', 'summarise']);
 /**
  * Release 4: the words a continuation hop writes about its own search, never about the owner's question.
  * They are filler to every source, so no hop spends a search term on them.
@@ -632,8 +634,20 @@ export function mailWindow(question: string, nowMs = Date.now(), timeZone?: stri
       return monthWindow(monthIndex, year, nowMs, zone);
     }
   } catch { /* an unresolved day or month keeps the rolling window below */ }
+  // E6 (#609): Gmail has no hour operator, so a short hours window is the day that holds it, and the
+  // read filters the messages by their own date afterwards.
+  const hours = mailHours(question);
+  if (hours !== undefined) return hours <= 24 ? 'newer_than:1d' : 'newer_than:2d';
   for (const [pattern, window] of MAIL_RELATIVE_WINDOWS) if (pattern.test(text)) return window;
   return undefined;
+}
+
+/** E6 (#609): the hours an ask named when it is under two days, so the read can bound the day it compiled. */
+export function mailHours(question: string): number | undefined {
+  const match = /\b(?:in )?(?:the )?(?:last|past) (\d{1,2}) hours?\b/u.exec(question.toLowerCase());
+  if (match === null) return undefined;
+  const hours = Number(match[1]);
+  return Number.isFinite(hours) && hours > 0 && hours < 48 ? hours : undefined;
 }
 
 /**
@@ -662,7 +676,7 @@ export function topicTerms(topic: string | undefined, spokenWords: string): stri
   return text === '' ? undefined : text;
 }
 
-export function compileMailQuery(question: string, query: string | undefined, nowMs = Date.now(), timeZone?: string, topic?: string, ownerWords?: string): string {
+export function compileMailQuery(question: string, query: string | undefined, nowMs = Date.now(), timeZone?: string, topic?: string, ownerWords?: string, fallbackWindow?: string): string {
   // #564: a triage ask reads the unread inbox itself, so the host's own generic inbox scan, a prose
   // question and a topic all give way to it; its own prose is never a term and no drop-a-term retry
   // follows an empty scan, so "anything important" cannot be answered from one old thread.
@@ -676,18 +690,26 @@ export function compileMailQuery(question: string, query: string | undefined, no
   // the owner's instruction prose never reaches it because the question is not a text this compiles.
   if (authored && (MAIL_AUTHORED_OPERATOR.test(authored) || authored.includes('"'))) return authored.slice(0, RESEARCH.queryLimitChars);
   // #576: a date the owner said is already the window; it is never also a term Gmail has to match.
-  const text = (topicText ?? '').replace(/\b\d{4}-\d{2}-\d{2}\b/gu, ' ');
+  // E6 (#609): an hours phrase is already the window, never also a term.
+  const text = (topicText ?? '').replace(/\b\d{4}-\d{2}-\d{2}\b/gu, ' ').replace(/\b(?:in\s+)?(?:the\s+)?(?:last|past)\s+\d{1,2}\s+hours?\b/giu, ' ');
   const lower = question.toLowerCase();
   const flags = [/\bunread\b/u.test(lower) ? 'is:unread' : '', /\bimportant\b/u.test(lower) ? 'is:important' : ''].filter(Boolean);
-  const terms = mailTerms(text, 4, person === undefined ? undefined : new Set([person]));
+  // E6 (#609): three AND terms at most, and the rest of the words joined with OR, so a five word
+  // question no longer asks Gmail for five coincidences at once and matches nothing.
+  const words = mailTerms(text, 8, person === undefined ? undefined : new Set([person]));
+  const terms = words.length > 3 ? [...words.slice(0, 3), words.slice(3).join(' OR ')] : words;
   const leading = [...flags, ...(person === undefined ? [] : [`from:${person} OR to:${person}`])];
-  if (leading.length === 0 && terms.length === 0) return `in:inbox ${asked ?? 'newer_than:14d'}`.slice(0, RESEARCH.queryLimitChars);
-  return [...leading, ...terms, ...(asked === undefined ? [] : [asked])].join(' ').slice(0, RESEARCH.queryLimitChars);
+  // E6 (#609): the window the caller's own recipe asked for, so a fallback search is compiled here once.
+  const window = asked ?? fallbackWindow;
+  const inbox = fallbackWindow === undefined ? [] : ['in:inbox'];
+  if (leading.length === 0 && terms.length === 0) return `in:inbox ${window ?? 'newer_than:14d'}`.slice(0, RESEARCH.queryLimitChars);
+  return [...inbox, ...leading, ...terms, ...(window === undefined ? [] : [window])].join(' ').slice(0, RESEARCH.queryLimitChars);
 }
 
 /** The shape of one mail query for a receipt: term count, operators and window, never the words. */
 export interface MailQueryShape { terms: number; operators: string[]; window?: string }
-const OPERATOR_TOKEN = /^([a-z_]+):(.+)$/iu;
+// E5 (#612): an excluding filter is an operator, never a content term.
+const OPERATOR_TOKEN = /^-?([a-z_]+):(.+)$/iu;
 const WINDOW_OPERATORS = new Set(['newer_than', 'older_than', 'after', 'before']);
 const isOperatorToken = (token: string): boolean => OPERATOR_TOKEN.test(token) || token.toUpperCase() === 'OR';
 
@@ -722,6 +744,11 @@ function termSalience(term: string): number {
 
 export function broaderMailQuery(q: string): string | undefined {
   const tokens = q.split(/\s+/).filter(Boolean);
+  // E6 (#609): a joined OR clause is the least specific part of the query, so dropping it is the one
+  // broader try; Gmail binds OR tighter than the implicit AND, so the rest of the query is untouched.
+  const orAt = tokens.findIndex((token, index) => token === 'OR' && index > 0
+    && !isOperatorToken(tokens[index - 1]!) && !isOperatorToken(tokens[index + 1] ?? ''));
+  if (orAt > 1) return tokens.slice(0, orAt - 1).join(' ').slice(0, RESEARCH.queryLimitChars);
   const termIndexes = tokens.map((token, index) => isOperatorToken(token) ? -1 : index).filter(index => index >= 0);
   const windowIndex = tokens.findIndex(token => /^newer_than:[a-z0-9]+$/u.test(token));
   const step = windowIndex >= 0 ? WINDOW_STEPS[/^newer_than:(.+)$/u.exec(tokens[windowIndex]!)?.[1] ?? ''] : undefined;
@@ -770,24 +797,20 @@ export function mailSearchPhrase(q: string): string {
 }
 
 /** The deterministic fallback query per source: never the raw sentence. */
-export function fallbackQuery(kind: CandidateKind, question: string, _nowMs: number): { query?: string; window?: string } {
+export function fallbackQuery(kind: CandidateKind, question: string, nowMs = Date.now()): { query?: string; window?: string } {
   const text = question.toLowerCase();
   const keywords = contentKeywords(question);
   const terms = keywords.join(' ');
   if (kind === 'knowledge_search') return terms ? { query: terms } : {};
   if (kind === 'web_search') return terms ? { query: terms.slice(0, 120) } : {};
   if (kind === 'mail_search') {
-    const flags: string[] = [];
-    if (/\bimportant\b/.test(text)) flags.push('is:important');
-    if (/\bunread\b/.test(text)) flags.push('is:unread');
-    // INTEG-R2: the instruction words of the ask ('list', 'show', 'anything') are no Gmail terms, so a
-    // bare inbox ask is the same recent-inbox scan the compiler builds: in:inbox, 14 days, its flags.
-    const mailKeywords = keywords.filter(word => !MAIL_FILLER.has(word));
+    // E6 (#609): the fallback recipe hands the compiler its own window and its own words, so the query
+    // Gmail reads is compiled once here and never handed back to the model as already authored syntax.
     const window = /\btoday\b/.test(text) ? 'newer_than:1d'
       : /\b(this week|week)\b/.test(text) ? 'newer_than:7d'
       : /\byesterday\b/.test(text) ? 'newer_than:2d'
       : 'newer_than:14d';
-    return { query: ['in:inbox', window, ...flags, ...mailKeywords].join(' ') };
+    return { query: compileMailQuery(question, undefined, nowMs, undefined, question, question, window) };
   }
   // ONE-1023: the day operator is the owner's own day. DATES-R1 F3: the no-operator rule applies to
   // content terms, and with none left the base recency window stays, never an empty query.
@@ -828,12 +851,19 @@ export function triageAsk(question: string): boolean {
 
 /** Whether a question asks her to recall something the two of them already said. */
 export function recallQuestion(question: string): boolean {
-  return MEMORY_WORDS.test(question.toLowerCase());
+  return MEMORY_WORDS.test(question.toLowerCase()) || NAMED_DISCUSSION.test(question);
+}
+
+/** E2 (#605): whether the recall ask also names the chat, so the routed read covers both layers. */
+export function discussionQuestion(question: string): boolean {
+  return NAMED_DISCUSSION.test(question) || DISCUSSION_ASK.test(question.toLowerCase());
 }
 
 /** ROUTE-1022: the word classes a spoken question is routed by, shared by the fallback recipe and the router. */
-const MAIL_WORDS = /\b(mails?|emails?|e-mails?|gmail|inbox(?:es)?|messages?|wrote|sent|repl(?:y|ies|ied))\b/u;
-const CALENDAR_WORDS = /\b(calendar|schedule|meetings?|agenda|free|busy)\b/u;
+// E1 (#605): a message is a chat word, never a mail word, so one word no longer pulls two sources.
+const MAIL_WORDS = /\b(mails?|emails?|e-mails?|gmail|inbox(?:es)?|wrote|sent|repl(?:y|ies|ied))\b/u;
+// #617: a birthday is a calendar day like a meeting, so naming one reads the calendar.
+const CALENDAR_WORDS = /\b(calendar|schedule|meetings?|agenda|birthdays?|free|busy)\b/u;
 /**
  * #579: a time word is the product's daily language. The router's own class (SCHEDULE_WORDS) never carries
  * one; only this fallback recipe does, and only when no mail or chat word named a source.
@@ -843,17 +873,23 @@ const CALENDAR_TIME_WORDS = /\b(tomorrow|today|week)\b/u;
  * TRIAGE-R3: a recall ask is her own remembered history, in the words a spoken recall uses. It reads the
  * memory layer, never the knowledge store.
  */
-const MEMORY_WORDS = /\b(?:did we say|last time we (?:talked|spoke)|you told me|do you remember|remember when|recall when|our (?:last )?conversation)\b/u;
+const MEMORY_WORDS = /\b(?:did we say|last time we (?:talked|spoke)|you told me|do you remember|remember when|recall when|our (?:last )?conversation|what did we (?:discuss|talk about)|we (?:talked|spoke) about)\b/u;
+/** E2 (#605): two capitalised names and a discussion verb is a recall ask, whatever the names are. */
+const NAMED_DISCUSSION = /\b(?:what did|did)\s+[A-Z][\w'’-]*\s+and\s+[A-Z][\w'’-]*\s+(?:discuss|talk about|say about)\b/u;
+/** E2 (#605): the discussion forms read her own memory and the chat beside it. */
+const DISCUSSION_ASK = /\b(?:what did we (?:discuss|talk about)|we (?:talked|spoke) about)\b/u;
 const CHAT_WORDS = /\b(chats?|team|channels?|slack|mattermost|messages?|dms?|said|posted|discussed)\b/u;
 /**
  * #564/#572: a triage ask is "what came in", never a keyword search. The host runs the fixed read below
  * instead of the question's prose, so a relevance ranker can never answer it from an old thread.
  */
-const TRIAGE_ASK = /\b(?:anything (?:new|important|urgent|unread)|any (?:new|important|urgent|unread)|what came in|came in|what needs me|needs me|what did i miss|unread)\b/u;
+// E2 (#605): "what needs <name>" and "needs <name>'s attention" are the same ask as "what needs me".
+const TRIAGE_ASK = /\b(?:anything (?:new|important|urgent|unread)|any (?:new|important|urgent|unread)|what came in|came in|what needs me|needs me|needs? (?:[a-z][\w'’-]*'s )?attention|what needs [a-z][\w'’-]*(?:'s)?|what did i miss|unread)\b/u;
 /** The only words a triage ask may add beside the phrase itself, so a question with a real noun stays a lookup. */
 const TRIAGE_REST = new Set(['anything', 'any', 'new', 'important', 'urgent', 'unread', 'came', 'come', 'comes', 'in', 'what', 'needs', 'need', 'needed', 'me', 'reply', 'replies', 'respond', 'attention', 'miss', 'missed', 'did', 'i', 'today', 'tomorrow', 'yesterday', 'week', 'this', 'last', 'morning', 'afternoon', 'evening', 'my', 'mail', 'mails', 'email', 'emails', 'e-mail', 'e-mails', 'gmail', 'inbox', 'inboxes', 'message', 'messages', 'chat', 'chats', 'dm', 'dms', 'team', 'channel', 'channels', 'slack', 'mattermost', 'posted', 'said', 'discussed', 'wrote', 'sent', 'from', 'the', 'a', 'an', 'and', 'or', 'to', 'for', 'of', 'on', 'at', 'it', 'there', 'anything', 'has', 'have', 'got', 'get', 'arrived', 'landed', 'waiting', 'act', 'action', 'reaction', 'you', 'please']);
 /** #564: the one inbox scan a triage read runs, with no prose term and no drop-a-term retry. */
-const TRIAGE_MAIL_QUERY = 'in:inbox is:unread newer_than:2d';
+// E5 (#612): promotions, social and forum mail are not what needs him, so the scan never reads them.
+const TRIAGE_MAIL_QUERY = 'in:inbox is:unread newer_than:2d -category:promotions -category:social -category:forums';
 /** #572: the window a chat triage read rolls back over. */
 const TRIAGE_DAYS = 7;
 /** #564/#572/TRIAGE-R1 6: what came in is a mail, a chat and a calendar read alike, plus her own memory. */
@@ -879,7 +915,8 @@ export function requiredSources(question: string): SourceKind[] {
   const text = question.toLowerCase();
   if (WEB_WORDS.test(text)) return [];
   // TRIAGE-R3: a recall ask reads her own remembered history, whatever day or word it also carries.
-  if (recallQuestion(text)) return ['memory'];
+  // E2 (#605): a discussion ask reads the chat beside it, because that is where the exchange was said.
+  if (recallQuestion(question)) return discussionQuestion(question) ? ['memory', 'chat'] : ['memory'];
   const named = ROUTE_CLASSES.filter(route => route.words.test(text)).slice(0, 2).map(route => route.source);
   if (named.length > 0) return named;
   // #564/#572: "anything urgent" names no source, and what came in is a mail and a chat read alike.
@@ -1045,11 +1082,14 @@ const MEETING_WORD = /\b(meetings?|calls?|transcripts?|notes?)\b/iu;
 const LAST_MEETING = /\b(?:last|latest|previous|most recent|recent)\b[\s\S]{0,24}?\b(?:meeting|call|sync|1:1|standup|transcript)s?\b/iu;
 export function lastMeetingQuestion(question: string): boolean { return LAST_MEETING.test(question); }
 
-/** #576: dated notes read newest first; a list with no date in it keeps the order it came in. */
+/** #576: dated notes read newest first; a line with no date keeps the place it came in at. */
 export function newestDatedFirst(lines: readonly string[]): string[] {
   const dated = lines.map(line => ({ line, at: Date.parse(/(\d{4}-\d{2}-\d{2})/u.exec(line)?.[1] ?? '') }));
-  if (dated.some(entry => Number.isNaN(entry.at))) return [...lines];
-  return [...dated].sort((left, right) => right.at - left.at).map(entry => entry.line);
+  // E3 (#611): the confidence line and any other undated line are not a reason to keep the whole list in
+  // the ranker's order, so only the dated lines move.
+  const sorted = dated.filter(entry => !Number.isNaN(entry.at)).sort((left, right) => right.at - left.at);
+  let next = 0;
+  return dated.map(entry => (Number.isNaN(entry.at) ? entry.line : sorted[next++]!.line));
 }
 
 /**
@@ -1061,8 +1101,10 @@ export function meetingBounds(question: string, query: string | undefined, nowMs
   const text = `${question} ${query ?? ''}`;
   if (!MEETING_WORD.test(text)) return undefined;
   const word = DATE_WORD.exec(text)?.[0].toLowerCase();
-  if (word === undefined) return undefined;
   const today = localDay(new Date(nowMs).toISOString(), timeZone);
+  // E3 (#611): "last meeting" names no day, so the note read is bounded to the last sixty days rather
+  // than the whole corpus.
+  if (word === undefined) return lastMeetingQuestion(question) ? { from: dayShift(today, -60), to: today } : undefined;
   // Notes exist only for meetings that already happened, so a day that has not passed yet narrows nothing.
   if (word === 'yesterday' || word === 'today' || word === 'tomorrow') {
     if (word !== 'yesterday') return undefined;
@@ -1199,7 +1241,10 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     if (ids.length) return [search(INTERNAL.knowledgeRead, { ids } as JsonObject, 'kr0')];
     // K3: a clipped keyword query, never the owner's sentence or the selector's paraphrase of it.
     // K6: with no model query, a question of pure filler is no question to search at all.
-    const query = config.query === undefined ? knowledgeQuery(topicText ?? '') : knowledgeQuery(ownerDigits(config.query, ownerWords), '');
+    // E1 (#605): the topic is the search text; a model written query only fills in when no topic was named.
+    const modelQuery = config.query === undefined ? undefined : ownerDigits(config.query, ownerWords);
+    const fromTopic = topicText === undefined ? '' : knowledgeQuery(topicText);
+    const query = fromTopic !== '' ? fromTopic : knowledgeQuery(modelQuery ?? '', '');
     if (!query) return [];
     const meeting = meetingBounds(config.question, config.query, config.nowMs ?? Date.now(), config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
     return [search(INTERNAL.knowledgeSearch, knowledgeSearchArgs(query, projectHintOf(config.question), meeting), 'k0')];
@@ -1230,7 +1275,11 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     // #572: a triage ask reads what needs an answer, newest first over its own window, never a search
     // ranked by relevance over the whole archive.
     if (triageAsk(config.question)) return [search(INTERNAL.chatAttention, { days: TRIAGE_DAYS } as JsonObject, 'ca0')];
-    const compiled = chatQuery(config.query === undefined ? (topicText ?? 'after:yesterday') : ownerDigits(config.query, ownerWords), config.nowMs, config.timeZone);
+    // E1 (#605): the topic is the chat search text; a model written query only fills in when no topic
+    // was named, so the question's own prose never becomes the search.
+    const chatModelQuery = config.query === undefined ? undefined : ownerDigits(config.query, ownerWords);
+    const fromTopic = topicText === undefined ? '' : chatQuery(topicText, config.nowMs, config.timeZone);
+    const compiled = fromTopic !== '' ? fromTopic : chatQuery(chatModelQuery ?? 'after:yesterday', config.nowMs, config.timeZone);
     // #581: the day rides the tool's own window argument, so a windowed ask never makes the child rank
     // the whole archive by relevance before it filters.
     const day = dated ? chatWindowDay(config.question, config.nowMs ?? Date.now(), config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone) : undefined;
@@ -1357,6 +1406,8 @@ export interface RunState {
   historyBindings: ToolResultBinding[]; historyTokens: Set<string>;
   /** F2: the owner's own words behind each compiled Gmail query, so a live step speaks them. */
   ownerQueries: Map<string, string>;
+  /** E6 (#609): the message date a read may not go behind, for an ask that named only hours. */
+  mailSince: Map<string, number>;
   /** ONE-1023: the day-filtered knowledge reads whose filter was dropped for a retry, by their own args. */
   droppedDayFilters: Set<string>;
   calendarScopeAttempted?: boolean;
@@ -1437,7 +1488,7 @@ export class ResearchLedger {
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), ownerQueries: new Map(), droppedDayFilters: new Set(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -2237,6 +2288,19 @@ export function cutLineOf(results: readonly IntentSubResult[]): string | undefin
  * Q1-R0: one telegraphic line per item, a per-source count line, never prose. Item ids ride in the
  * shaped line so the host can open the top mail or fetch the top chat thread without a second search.
  */
+/** E5 (#612): rank 0 when the owner already wrote in the thread, 1 for a person, 2 for bulk or machine mail. */
+function mailReplyNeed(messages: readonly MailMessage[]): (bullet: string) => number {
+  const byId = new Map(messages.map(message => [message.id, message]));
+  const ownerThreads = new Set(messages.filter(message => message.sent === true).map(message => message.threadId));
+  return (bullet: string): number => {
+    const id = /\[id ([A-Za-z0-9_-]+)\]/u.exec(bullet)?.[1];
+    const message = id === undefined ? undefined : byId.get(id);
+    if (message === undefined) return 2;
+    if (ownerThreads.has(message.threadId)) return 0;
+    return message.bulk === true ? 2 : 1;
+  };
+}
+
 export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResult[], zone?: string, options?: { newestFirst?: boolean }): { text: string; source: SourceKind | null; lines: string[]; total: number } {
   if (kind === 'web_search') {
     const ok = results.filter(result => result.ok && result.text.trim());
@@ -2255,6 +2319,10 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
   for (const result of ok) {
     const raw = itemLines(result.text);
     if (result.name === INTERNAL.mailList) {
+      // E5 (#612): a triage read ranks before the cap, so what needs an answer is never pushed out by
+      // newsletters and machine notice; the shaper carried the two facts the rank reads.
+      const need = mailReplyNeed(result.mailPage?.messages ?? []);
+      const shown: { text: string; rank: number }[] = [];
       for (const line of withItemOpenLines(raw).filter(entry => entry.startsWith('- '))) {
         // Open2: the handle line the shaper attached stays on the message line it belongs to.
         const open = line.indexOf('\nopen: ') < 0 ? '' : line.slice(line.indexOf('\nopen: '));
@@ -2269,7 +2337,10 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
           else rest.push(part);
         }
         const excerpt = clip(rest.join(' | '), RESEARCH.mailSnippetChars);
-        lines.push(`${[sender, subject, date, excerpt].filter(value => value !== '').join(' | ')}${open}`);
+        shown.push({ text: `${[sender, subject, date, excerpt].filter(value => value !== '').join(' | ')}${open}`, rank: need(bullet) });
+      }
+      for (const entry of shown.sort((left, right) => left.rank - right.rank)) {
+        lines.push(entry.text);
         total += 1;
       }
     } else if (result.name === INTERNAL.mailRead) {
@@ -2324,7 +2395,11 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
   if (!shown.length) return { text: '', source, lines: [], total: 0 };
   const label = SOURCE_LABEL[source ?? 'knowledge'];
   const cutLine = cutLineOf(results);
-  return { text: `${label}: ${shown.length} of ${Math.max(total, shown.length)} shown\n${shown.join('\n')}${cutLine !== undefined ? `\n${cutLine}` : ''}`, source, lines: shown, total: Math.max(total, shown.length) };
+  // E5 (#612): what the eight line cap left behind is counted, so a triage read is never mistaken for a
+  // clear inbox.
+  const shown0 = Math.max(total, shown.length);
+  const leftOut = kind === 'mail_search' && lines.length > shown.length ? `\n${lines.length - shown.length} left out` : '';
+  return { text: `${label}: ${shown.length} of ${shown0} shown\n${shown.join('\n')}${cutLine !== undefined ? `\n${cutLine}` : ''}${leftOut}`, source, lines: shown, total: shown0 };
 }
 
 
@@ -2887,6 +2962,9 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
     for (const sub of plan.subs) {
       const compiled = (sub.args as JsonObject)['q'];
       if (typeof compiled === 'string' && owned !== undefined) context.run.ownerQueries.set(compiled, owned);
+      // E6 (#609): an hours ask became a day window above, so the read keeps its own finer bound here.
+      const hours = mailHours(context.question);
+      if (typeof compiled === 'string' && hours !== undefined) context.run.mailSince.set(compiled, context.now() - hours * 3_600_000);
     }
     return plan;
   }
@@ -3160,7 +3238,10 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
       if (result.binding) read.bindings.push(result.binding);
       if (!evidenceAllowed(deps, run, parent)) { run.cancelled = true; return; }
       const page = result.mailPage;
-      for (const message of page.messages) if (!read.messages.has(message.id)) read.messages.set(message.id, message);
+      // E6 (#609): an hours ask is a day query upstream, so the day's earlier messages are dropped here.
+      const since = run.mailSince.get(String(read.args['q'] ?? ''));
+      const inWindow = (message: MailMessage): boolean => since === undefined || !(Date.parse(message.internalDate) < since);
+      for (const message of page.messages) if (inWindow(message) && !read.messages.has(message.id)) read.messages.set(message.id, message);
       read.received += page.received; read.invalid += page.invalid; read.upstreamIncomplete ||= page.upstreamIncomplete === true;
       const next = page.nextPageToken;
       if (next && (next.length > 4096 || read.tokens.has(next))) { failMailPage(read); return; }
@@ -3948,7 +4029,13 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, unavailable, unavailableReason, signal, now, limit, first);
   // TRIAGE-R3: a recall ask reads her own remembered history, so it takes the memory lookup the routed
   // path already serves with its binding, page and continuation, never a knowledge search.
-  if (call.action === 'start' && recallQuestion(question)) return routedResearch(deps, run, question, [{ source: 'memory', query: contentKeywords(question, 8).join(' ') }], configured, unavailable, unavailableReason, signal, now, limit, first);
+  // E2 (#605): a discussion ask reads the chat beside her memory, because that is where it was said.
+  if (call.action === 'start' && recallQuestion(question)) {
+    const recall = contentKeywords(question, 8).join(' ');
+    const lookups: ResearchLookup[] = [{ source: 'memory', query: recall }];
+    if (discussionQuestion(question) && configured.includes('chat')) lookups.push({ source: 'chat', query: recall });
+    return routedResearch(deps, run, question, lookups, configured, unavailable, unavailableReason, signal, now, limit, first);
+  }
 
   const perRound: ResearchRunLog['perRound'] = [];
   const sourceLog: ResearchRunLog['sources'] = [];
@@ -4168,6 +4255,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           recordChatDate(run, action?.query, subs);
           // F2: the live step speaks the owner's words, never the compiled Gmail query.
           if (kind === 'mail_search' && action?.query !== undefined) for (const sub of subs) run.ownerQueries.set(String(sub.args['q']), action.query);
+          // E6 (#609): the same finer bound on the loop path, keyed by the query the read will run.
+          const mailHoursAsked = mailHours(question);
+          if (mailHoursAsked !== undefined) for (const sub of subs) run.mailSince.set(String(sub.args['q']), now() - mailHoursAsked * 3_600_000);
           if (subs.length === 0) return;
           widenFor(subs);
           readStarted.add(kind);

@@ -896,7 +896,9 @@ export function feedJobs(jobs: readonly ToolJob[], liveSessionId: string, now: n
 /** E4 (#611): one accepted batch answer as the sub-result research shapes, one place for both live paths. */
 export function subResultOf(key: string, name: string, response: Record<string, unknown>, ok: boolean): IntentSubResult {
   const text = typeof response['text'] === 'string' ? response['text'] : '';
-  return { key, name, ok, text, originalCharacters: typeof response['originalCharacters'] === 'number' ? response['originalCharacters'] : text.length, omittedCharacters: typeof response['omittedCharacters'] === 'number' ? response['omittedCharacters'] : 0 };
+  return { key, name, ok, text, originalCharacters: typeof response['originalCharacters'] === 'number' ? response['originalCharacters'] : text.length, omittedCharacters: typeof response['omittedCharacters'] === 'number' ? response['omittedCharacters'] : 0,
+    // E4 (#611): the ranker's confidence was dropped here only, so the scheduled read lost the hedge.
+    ...(ok && response['knowledgeConfidence'] ? { knowledgeConfidence: response['knowledgeConfidence'] as { confidence: string; top?: string; candidates?: string } } : {}) };
 }
 
 export class LiveSessionOwner {

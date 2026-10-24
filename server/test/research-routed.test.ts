@@ -779,7 +779,6 @@ test('TRIAGE-R1 6: a triage ask routes to mail, chat and calendar, with the memo
 test('TRIAGE-R3: a recall ask routes to memory', () => {
   const table = [
     'what did we say about the pricing deck',
-    'last time we talked about the deadline',
     'you told me the release was friday',
     'do you remember the hawthorn decision',
   ];
@@ -787,6 +786,10 @@ test('TRIAGE-R3: a recall ask routes to memory', () => {
     assert.deepEqual(requiredSources(question), ['memory'], question);
     assert.equal(routedSelection(question, CONFIGURED, Date.parse('2026-10-21T05:30:00Z')), undefined, `${question} is a memory read, not a router candidate`);
   }
+  // E2 (#605): a discussion form also reads the chat, because that is where the exchange was said.
+  const discussion = 'last time we talked about the deadline';
+  assert.deepEqual(requiredSources(discussion), ['memory', 'chat'], discussion);
+  assert.equal(routedSelection(discussion, CONFIGURED, Date.parse('2026-10-21T05:30:00Z')), undefined, `${discussion} is a memory read, not a router candidate`);
 });
 
 // E1 (#605): the routed chat read used the question's prose as its search text, so the topic never

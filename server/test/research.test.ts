@@ -1982,7 +1982,7 @@ test('E6: a fallback inbox search is compiled, so its terms are capped and ORed'
   const selection = fallbackSelection('any mail about the offsite venue inspection budget review card', ['mail'], Date.parse('2026-10-21T05:30:00Z'));
   const mailQuery = selection.actions.find(action => action.kind === 'mail_search')?.query;
   assert.equal(typeof mailQuery, 'string', 'the fallback offers a mail search');
-  assert.match(mailQuery!, /^in:inbox newer_than:14d /u, `the fallback window is compiled in: ${mailQuery}`);
+  assert.match(mailQuery!, /^in:inbox offsite venue inspection budget OR review OR card newer_than:14d$/u, `the fallback window is compiled in: ${mailQuery}`);
   assert.match(mailQuery!, /offsite venue inspection budget OR review OR card/u, `three AND terms and the rest ORed: ${mailQuery}`);
 });
 
@@ -1991,6 +1991,16 @@ test('#617: an action word and a depth word never reach the mail search', () => 
   const q = compileMailQuery('write me a summary of the mail from Thomas about the pipeline', undefined, Date.parse('2026-10-21T05:30:00Z'), 'UTC', 'write me a summary of the mail from Thomas about the pipeline');
   assert.equal(/write|summary/u.test(q), false, `no action or depth word, got ${q}`);
   assert.match(q, /pipeline/u);
+});
+
+// #617: a meeting or a birthday named in the ask is a calendar read with the window it named.
+test('#617: a named meeting or birthday reads the calendar', () => {
+  for (const question of ["what's on for the meeting this afternoon", "when is Naya's birthday"]) {
+    const offered = fallbackSelection(question, ['knowledge', 'calendar', 'mail', 'chat'], Date.parse('2026-10-21T05:30:00Z')).actions.map(action => action.kind);
+    assert.equal(offered.includes('calendar_window'), true, `${question} reads the calendar, got ${JSON.stringify(offered)}`);
+    const calendar = fallbackSelection(question, ['knowledge', 'calendar'], Date.parse('2026-10-21T05:30:00Z')).actions.find(action => action.kind === 'calendar_window');
+    assert.equal(calendar?.window, 'today', `${question} carries the window it named`);
+  }
 });
 
 // #617: the calendar is read when the ask names a day or a schedule, never as filler on a knowledge ask.

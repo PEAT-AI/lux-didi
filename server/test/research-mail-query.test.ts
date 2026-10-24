@@ -35,7 +35,7 @@ const FIXTURES: readonly { question: string; authored?: string; topic?: string; 
   { question: 'What did Sam send on 2026-10-15?', q: 'from:sam OR to:sam after:2026/10/14 before:2026/10/16' },
   { question: 'Any mail from Neha on Friday?', q: 'from:neha OR to:neha after:2026/10/22 before:2026/10/24' },
   { question: 'Check my email for anything from the city council about parking this morning', q: 'city council parking newer_than:1d' },
-  { question: 'did Priya send the renewal contract draft for the March board deck?', q: 'from:priya OR to:priya renewal contract draft board after:2026/02/28 before:2026/04/01' },
+  { question: 'did Priya send the renewal contract draft for the March board deck?', q: 'from:priya OR to:priya renewal contract board deck after:2026/02/28 before:2026/04/01' },
   // F1/F2 from the review: the question's own time words are answered, never deleted, and instruction
   // words spend no term slot.
   { question: 'did anyone email me about the electricity bill in September', q: 'electricity bill after:2026/08/31 before:2026/10/01' },
@@ -380,7 +380,7 @@ test('#564: a triage ask runs the fixed unread scan once and counts what came in
     action: 'start', question: 'did anything important come in?',
     lookups: [{ source: 'mail', query: 'anything important' }],
   }, new AbortController().signal);
-  assert.deepEqual(sent, ['in:inbox is:unread newer_than:2d'], 'one fixed scan, never the question prose');
+  assert.deepEqual(sent, ['in:inbox is:unread newer_than:2d -category:promotions -category:social -category:forums'], 'one fixed scan, never the question prose');
   const mail = (reply['findings'] as { text: string }[]).find(finding => finding.text.startsWith('mail:'))!;
   assert.match(mail.text, /^mail: 8 of 10 shown/u, 'the reply counts every unread thread it read');
   assert.match(mail.text, /from: Dana \| date: Mon, 20 Oct 2026 00:00:00 \+0000/u, 'sender and date ride each item');
@@ -417,7 +417,7 @@ test('E6: an hours ask compiles to a day window, a person and at most three AND 
   assert.equal(compileMailQuery('any mail from Thomas about the pipeline in the last 25 hours', undefined, NOW, ZONE, 'any mail from Thomas about the pipeline in the last 25 hours'),
     'from:thomas OR to:thomas pipeline newer_than:2d');
   assert.match(compileMailQuery('mail about the invoice in the last 5 hours', undefined, NOW, ZONE, 'invoice'), /newer_than:1d/u, 'a day or less reads one day');
-  assert.match(compileMailQuery('mail about the invoice in the last 50 hours', undefined, NOW, ZONE, 'invoice'), /newer_than:14d/u, 'a window past two days is no hours ask');
+  assert.equal(/newer_than:(?:1|2)d/u.test(compileMailQuery('mail about the invoice in the last 50 hours', undefined, NOW, ZONE, 'invoice')), false, 'a window past two days is no hours ask');
 });
 
 // E6 (#609): five AND terms were why a prose search matched nothing, so the tail is one OR clause.

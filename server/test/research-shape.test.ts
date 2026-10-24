@@ -58,8 +58,8 @@ test('fallbackSelection never passes the spoken sentence as a query, on five syn
 test('the fallback mail query carries operators and keywords, chat carries after: only for a named day, knowledge only keywords', () => {
   const mail = fallbackSelection('Can you check my email for the release status please', CONFIGURED, Date.parse('2026-10-16T12:00:00Z'));
   const mailQuery = mail.actions.find(action => action.kind === 'mail_search')?.query ?? '';
-  assert.match(mailQuery, /^in:inbox newer_than:14d /);
-  assert.match(mailQuery, /release/);
+  // E6 (#609): the fallback is compiled like any other mail query, so the window rides after the terms.
+  assert.equal(mailQuery, 'in:inbox release status newer_than:14d');
   // ONE-1023 and DATES-R1 F3: no invented day when content terms remain, and with none left the base
   // recency window stays, because an empty chat query answers nothing.
   const termful = String(fallbackSelection('What did the team say about the release in Mattermost', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'chat_search')?.query);
@@ -71,10 +71,12 @@ test('the fallback mail query carries operators and keywords, chat carries after
   const knowledgeFallback = knowledge.actions.find(action => action.kind === 'knowledge_search')?.query ?? '';
   assert.equal(/[?:"]|in:|after:|newer_than/.test(knowledgeFallback), false);
   assert.equal(knowledgeFallback, 'lux didi decisions', 'source words like notes are not content keywords');
-  assert.equal(fallbackSelection('Anything important in my email today?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'in:inbox newer_than:1d is:important', 'today and important are operators');
+  // E5/E6 (#612/#609): the fallback is compiled like the routed read, so a triage ask runs the same
+  // fixed unread scan with the three categories excluded.
+  assert.equal(fallbackSelection('Anything important in my email today?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'in:inbox is:unread newer_than:2d -category:promotions -category:social -category:forums', 'a triage ask is the fixed scan');
   // INTEG-R2 / K6: a zero-term inbox ask is the 14-day recent-inbox scan on both paths.
-  assert.equal(fallbackSelection('Anything unread in my inbox?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'in:inbox newer_than:14d is:unread');
-  assert.equal(fallbackSelection('What is important in my email this week?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'in:inbox newer_than:7d is:important');
+  assert.equal(fallbackSelection('Show me the latest messages in my inbox', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'in:inbox newer_than:14d');
+  assert.equal(fallbackSelection('What is important in my email this week?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'in:inbox is:important newer_than:7d');
   assert.equal(candidateSubs('mail_search', { question: 'q', configured: CONFIGURED, evidence: new Map() })[0]?.args['q'], 'in:inbox newer_than:2d');
 });
 

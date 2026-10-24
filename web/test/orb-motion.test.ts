@@ -162,3 +162,114 @@ test('frame budget: 60 fps active, 30 idle focused, 12 idle unfocused, steady ca
   assert.deepEqual([...thirty.gaps], [33], 'every second vsync, never alternating 33 and 50 ms');
   assert.equal(cadence(1000 / 12).fps, 12);
 });
+
+// ANIM-R1: both surfaces use this same pure, fake-clock coordinator.
+import { MotionCoordinator } from '../src/orb-motion.ts';
+const voiceSample = (output: number, input = 0) => ({ v: 2, output: { level: output, low: output }, input: { level: input, low: input } });
+
+test('coordinator keeps output through a quiet tail and rejects speaker bleed', () => {
+  const motion = new MotionCoordinator();
+  motion.sample(voiceSample(0.1), 0);
+  assert.equal(motion.sample(voiceSample(0.002, 0.8), 100).source, 'output');
+  assert.equal(motion.sample(voiceSample(0.1, 0.8), 150).source, 'output');
+  motion.interrupt();
+  assert.equal(motion.sample(voiceSample(0.1, 0.8), 151).source, 'input');
+});
+
+test('coordinator requires 30 ms onset, holds exit, and never speaks from semantics alone', () => {
+  const m = new MotionCoordinator();
+  const step = (at: number, rms: number, state = 'PROCESSING') => {
+    m.sample(voiceSample(rms), at);
+    return m.advance(state, at);
+  };
+  assert.notEqual(step(0, 0.012).posture, 'speaking');
+  assert.notEqual(step(20, 0.012).posture, 'speaking');
+  assert.notEqual(step(21, 0).posture, 'speaking');
+  step(40, 0.012);
+  assert.equal(step(70, 0.012).posture, 'speaking');
+  assert.equal(step(80, 0).posture, 'speaking');
+  assert.equal(step(230, 0).posture, 'speaking');
+  assert.notEqual(step(260, 0).posture, 'speaking');
+  assert.notEqual(step(300, 0, 'SPEAKING').posture, 'speaking');
+  assert.notEqual(step(340, 0.2, 'DISCONNECTED').posture, 'speaking');
+});
+
+test('coordinator is identical for window and mini and retargets continuous weights', () => {
+  const windowMotion = new MotionCoordinator(), miniMotion = new MotionCoordinator();
+  let previous = windowMotion.advance('PROCESSING', 0).weights;
+  for (let at = 0; at <= 700; at += 10) {
+    const state = at < 100 ? 'PROCESSING' : at < 220 ? 'SPEAKING' : 'PROCESSING';
+    const sample = voiceSample(at >= 100 && at < 220 ? 0.1 : 0);
+    windowMotion.sample(sample, at); miniMotion.sample(sample, at);
+    const a = windowMotion.advance(state, at), b = miniMotion.advance(state, at);
+    assert.deepEqual(a, b);
+    for (const key of Object.keys(a.weights) as OrbPosture[]) assert.ok(Math.abs(a.weights[key] - previous[key]) <= 0.07);
+    previous = a.weights;
+  }
+  assert.equal(previous.thinking, 1);
+});
+
+test('breath keeps phase across twenty state changes and modulation is bounded for ten minutes', () => {
+  const m = new MotionCoordinator();
+  let phase = 0, maxPeriod = 0, minPeriod = 2, maxDepth = 0, minDepth = 2;
+  for (let at = 0; at <= 600000; at += 20) {
+    m.sample(voiceSample(0), at);
+    const state = Math.floor(at / 30000) % 2 ? 'LISTENING' : 'PROCESSING';
+    const result = m.advance(state, at);
+    if (at) {
+      const delta = (result.breathPhase - phase + 2 * Math.PI) % (2 * Math.PI);
+      assert.ok(delta > 0 && delta < 0.05, `continuous phase at ${at}: ${delta}`);
+    }
+    phase = result.breathPhase;
+    minPeriod = Math.min(minPeriod, result.periodModulation); maxPeriod = Math.max(maxPeriod, result.periodModulation);
+    minDepth = Math.min(minDepth, result.depthModulation); maxDepth = Math.max(maxDepth, result.depthModulation);
+    assert.notEqual(result.posture, 'speaking');
+  }
+  assert.ok(minPeriod >= 0.94 && maxPeriod <= 1.06 && minPeriod < 0.941 && maxPeriod > 1.059);
+  assert.ok(minDepth >= 0.92 && maxDepth <= 1.08 && minDepth < 0.921 && maxDepth > 1.079);
+});
+
+test('source bands blend for 80 ms and playback survives semantic tool thinking', () => {
+  const m = new MotionCoordinator();
+  assert.equal(m.sample(voiceSample(0.1), 0).low, 0);
+  const half = m.sample(voiceSample(0.1), 40).low;
+  const full = m.sample(voiceSample(0.1), 80).low;
+  assert.ok(Math.abs(half - full / 2) < 1e-9);
+  m.advance('PROCESSING', 80);
+  assert.equal(m.advance('PROCESSING', 110).posture, 'speaking');
+  assert.notEqual(m.advance('PROCESSING', 111, false, true).posture, 'speaking');
+  assert.notEqual(m.advance('DISCONNECTED', 112).posture, 'speaking');
+});
+
+import { outputInterrupted } from '../src/orb-motion.ts';
+test('only new authoritative host interruption or owner transcription clears ownership', () => {
+  const before = { since: 'session', entries: [{ seq: 1, kind: 'interrupted' }] };
+  assert.equal(outputInterrupted(undefined, before), false);
+  assert.equal(outputInterrupted(before, before), false);
+  assert.equal(outputInterrupted(before, { ...before, entries: [...before.entries, { seq: 2, kind: 'interrupted' }] }), true);
+  assert.equal(outputInterrupted(before, { ...before, entries: [{ seq: 2, kind: 'inputTranscription', text: 'fixture owner speech' }] }), true);
+  assert.equal(outputInterrupted(before, { ...before, entries: [{ seq: 2, kind: 'outputTranscription', text: 'fixture model speech' }] }), false);
+  assert.equal(outputInterrupted(before, { ...before, entries: [{ seq: 2, kind: 'inputTranscription', text: ' ' }] }), false);
+});
+
+test('audible onset bypasses a stale debounced status without changing its swirl', () => {
+  const m = new MotionCoordinator();
+  m.sample(voiceSample(0.1), 0);
+  m.advance('CONNECTING', 0, false, false, 'PROCESSING');
+  m.sample(voiceSample(0.1), 30);
+  const output = m.advance('CONNECTING', 30, false, false, 'PROCESSING');
+  assert.equal(output.posture, 'speaking');
+  assert.ok(Math.abs(output.swirl - 0.03 * POSTURE_TARGETS.thinking.swirl) < 1e-9);
+  assert.notEqual(m.advance('DISCONNECTED', 31, false, false, 'SPEAKING').posture, 'speaking');
+});
+
+test('native band ownership is not overwritten by the slower legacy scalar bridge', () => {
+  const m = new MotionCoordinator();
+  m.sample(voiceSample(0.1), 0);
+  const rich = m.sample(voiceSample(0.1), 80);
+  const ignored = m.sample({ level: 0.8, playback: 0 }, 100);
+  assert.equal(ignored.timestamp, rich.timestamp);
+  assert.equal(ignored.playback, rich.playback);
+  assert.equal(ignored.low, rich.low);
+  assert.equal(m.sample({ level: 0.1, playback: 0 }, 400).rich, false);
+});

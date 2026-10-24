@@ -1,16 +1,4 @@
-/** M3: the mini orb's visual state machine.
- *
- * The pill says everything with motion and colour, so each state is one visual:
- * off, listening, thinking, tool, speaking, muted. The numbers here are the
- * renderer's own units (HSL hue, a 0..1 glow and a 0..1 amplitude multiplier)
- * and the hues come from the mini palette tokens in style.css, so the orb and
- * the pill agree on one colour story.
- *
- * Two rules make the changes readable: a state that does not last DEBOUNCE_MS
- * never shows at all (a flicker is not a state), and every committed change
- * eases from the visual on screen to the new one over TRANSITION_MS with an
- * ease-in-out curve, so colour, glow and amplitude never jump.
- */
+/** Shared semantic status debounce, palette and status-only colour blending. */
 import type { OrbPosture } from './orb-level.ts';
 
 export type MiniVisualState = 'cold' | 'connecting' | 'listening' | 'thinking' | 'tool' | 'speaking' | 'hot-muted';
@@ -161,8 +149,7 @@ export function easeInOut(t: number): number {
 
 /** Between two visuals: the scalars interpolate, and the colour is handed over as the
  *  two layers plus the crossfade, so no hue number is ever walked through the wheel.
- *  Posture and the level source switch at the commit, because the renderer already eases
- *  its own motion character. */
+ *  Body posture and audio source are not consumed from this status blend. */
 export function mixVisual(from: OrbVisual, to: OrbVisual, t: number): OrbVisual {
   const k = easeInOut(t);
   const at = (a: number, b: number) => a + (b - a) * k;
@@ -177,55 +164,31 @@ export function mixVisual(from: OrbVisual, to: OrbVisual, t: number): OrbVisual 
   };
 }
 
-export interface OrbStateMachine {
-  /** The last state that survived the debounce. */
-  state(at: number): MiniVisualState;
-  /** Ask for a state. Asking twice for different states inside DEBOUNCE_MS is a flicker. */
+export interface OrbVisualBlend {
   request(state: MiniVisualState, at: number): void;
-  /** The visual on screen at this instant, eased. */
   visual(at: number): OrbVisual;
 }
 
-interface Pending { state: MiniVisualState; since: number }
-interface Running { from: OrbVisual; to: OrbVisual; start: number }
-
-/** The state machine, driven by an injected clock so the timing is testable
- *  without waiting. `reducedMotion` keeps the colour changes and drops the
- *  easing, so nothing moves on screen. */
-export function createOrbStateMachine(
+/** Blend already-settled status colours only; body motion belongs to MotionCoordinator. */
+export function createOrbVisualBlend(
   initial: MiniVisualState = 'cold',
   options: { reducedMotion?: boolean } = {},
-): OrbStateMachine {
-  let current: MiniVisualState = initial;
-  let pending: Pending | undefined;
-  let running: Running | undefined;
-
-  const commit = (at: number, state: MiniVisualState) => {
-    const from = eased(at);
-    current = state;
-    pending = undefined;
-    running = options.reducedMotion ? undefined : { from, to: ORB_VISUALS[state], start: at };
+): OrbVisualBlend {
+  let target = ORB_VISUALS[initial];
+  let from = target;
+  let start = -Infinity;
+  const visual = (at: number): OrbVisual => {
+    const t = (at - start) / TRANSITION_MS;
+    if (options.reducedMotion || t >= 1) return target;
+    return t <= 0 ? from : mixVisual(from, target, t);
   };
-
-  const eased = (at: number): OrbVisual => {
-    if (options.reducedMotion || !running) return ORB_VISUALS[current];
-    const t = (at - running.start) / TRANSITION_MS;
-    if (t >= 1) return ORB_VISUALS[current];
-    if (t <= 0) return running.from;
-    return mixVisual(running.from, running.to, t);
-  };
-
   return {
-    state: () => current,
     request(state, at) {
-      if (state === current) { pending = undefined; return; }
-      if (pending?.state === state) return;
-      pending = { state, since: at };
+      if (target.state === state) return;
+      from = visual(at);
+      target = ORB_VISUALS[state];
+      start = at;
     },
-    visual(at) {
-      if (pending && at - pending.since >= DEBOUNCE_MS) commit(pending.since + DEBOUNCE_MS, pending.state);
-      else if (running && at - running.start >= TRANSITION_MS) running = undefined;
-      return eased(at);
-    },
+    visual,
   };
 }

@@ -84,3 +84,10 @@ test('typed text goes through the connected composer, Enter to send, not the rem
   assert.match(connected, /addEventListener\('keydown', event => \{ if \(composerIntent\(event\) === 'send'\)/);
   assert.doesNotMatch(main, /live-text-form|id="live-text"|\/live\/text/, 'the removed optional Live text surface never returns');
 });
+
+test('the shared renderer sends audio-owned body posture to the classic painter', () => {
+  const adapter = readFileSync(new URL('../src/orb.ts', import.meta.url), 'utf8');
+  assert.match(adapter, /classic\?\.draw\([^\n]*this\.phase,m\.posture,m\.level/);
+  assert.match(adapter, /coordinator\.sample\(sample,performance\.now\(\)\)/);
+  assert.doesNotMatch(adapter, /m\.activity\s*\*\s*\(visual\?\.amplitude/);
+});

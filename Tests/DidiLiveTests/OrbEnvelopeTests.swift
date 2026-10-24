@@ -58,24 +58,31 @@ import Foundation
         timeline.append(pcm(rate: 24000, ms: 100, tones: [(150, 0.3)]))
         timeline.append(pcm(rate: 24000, ms: 100, tones: [(4000, 0.3)]))
         try require(timeline.queuedWindows == 20, "200 ms must queue 20 windows, got \(timeline.queuedWindows)")
-        try require(timeline.sample(atMs: 1000) == .silent, "nothing is audible before the player starts")
-        timeline.started(atMs: 1000)
-        timeline.started(atMs: 1500)
-        let early = timeline.sample(atMs: 1050)
-        let late = timeline.sample(atMs: 1150)
+        try require(timeline.sample(renderedSample: nil) == .silent, "nothing is audible before the player starts")
+        var playerClock: Int64? = nil
+        try require(timeline.sample(renderedSample: playerClock) == .silent, "a delayed render start stays silent")
+        playerClock = 1200
+        let early = timeline.sample(renderedSample: 1200)
+        try require(timeline.sample(renderedSample: playerClock) == early, "a stalled player clock must not advance bands")
+        try require(timeline.sample(renderedSample: 7200, sampleRate: 48000).high > early.high, "player clock uses its own sample rate")
+        try require(timeline.sample(renderedSample: 1200, presentationOffsetMs: 100).high > early.high, "presentation offset shifts the rendered position")
+        let late = timeline.sample(renderedSample: 3600)
         try require(early.low > early.high, "at 50 ms the vowel chunk is playing, got \(early)")
-        try require(late.high > late.low, "at 150 ms the sibilant chunk is playing (a second start must not move zero), got \(late)")
-        try require(timeline.sample(atMs: 1250) == .silent, "past the scheduled audio the output is silent")
+        try require(late.high > late.low, "at 150 ms the sibilant chunk is playing (render time, not elapsed wall time), got \(late)")
+        try require(timeline.sample(renderedSample: 6000) == .silent, "past the scheduled audio the output is silent")
         timeline.reset()
-        try require(timeline.sample(atMs: 1050) == .silent && timeline.queuedWindows == 0, "reset clears the burst")
+        try require(timeline.sample(renderedSample: 1200) == .silent && timeline.queuedWindows == 0, "reset clears the burst")
+
+        timeline.append(pcm(rate: 24000, ms: 20, tones: [(150, 0.3)]))
+        try require(timeline.sample(renderedSample: nil) == .silent, "drain waits for a new render clock")
+        try require(timeline.sample(renderedSample: 0).level > 0, "a new burst begins at rendered sample zero")
 
         // Long bursts: played windows are dropped in blocks and positions stay exact.
         var long = NativeOrbTimeline()
         for chunk in 0..<50 { long.append(pcm(rate: 24000, ms: 100, tones: chunk % 2 == 0 ? [(150, 0.3)] : [(4000, 0.3)])) }
-        long.started(atMs: 0)
-        let atThree = long.sample(atMs: 3050)
+        let atThree = long.sample(renderedSample: 73200)
         try require(long.queuedWindows < 500, "played windows must be dropped, \(long.queuedWindows) still queued")
-        let atThreeOne = long.sample(atMs: 3150)
+        let atThreeOne = long.sample(renderedSample: 75600)
         try require(atThree.low > atThree.high && atThreeOne.high > atThreeOne.low,
             "after compaction the 3.0 s chunk is the vowel and 3.1 s the sibilant, got \(atThree) then \(atThreeOne)")
     }

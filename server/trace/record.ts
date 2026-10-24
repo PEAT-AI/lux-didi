@@ -7,8 +7,8 @@ import {
   CALL_OUTCOMES, COMMAND_KINDS, CONTINUATION_OUTCOMES, EVENT_KINDS, EVENT_SOURCES, PLAYBACK_TERMINATION_REASONS, PROGRESS_REASONS,
   RESPONSE_STATUSES,
   RESPONSE_TERMINAL_REASONS, SKIP_REASONS, STALL_REASONS, TRACE_DAY_MS, TRACE_RETENTION_DAYS, TRACE_SCHEMA_VERSION,
-  TURN_CLOSE_REASONS, TURN_ORIGINS, TURN_OUTCOMES, UTTERANCE_ROLES, isOneOf,
-  type CallOutcome, type CommandKind, type ContinuationOutcome, type EventSource, type PlaybackTerminationReason, type ProgressReason, type ResponseStatus,
+  TURN_CLOSE_REASONS, TURN_ORIGINS, TURN_OUTCOMES, UTTERANCE_ROLES, DEBT_PHASES, DEBT_REASONS, isOneOf,
+  type CallOutcome, type CommandKind, type ContinuationOutcome, type DebtPhase, type DebtReason, type EventSource, type PlaybackTerminationReason, type ProgressReason, type ResponseStatus,
   type ResponseTerminalReason, type SkipReason, type StallReason, type TraceEventKind, type TurnCloseReason,
   type TurnOrigin, type TurnOutcome, type UtteranceRole,
 } from './kinds.js';
@@ -67,6 +67,8 @@ export interface TraceDetailMap {
   'command.rejected': { rejectedAt: number; code: string; param: string; kind: CommandKind };
   /** O1b-A (D12-3): the turn never became audible, with the age it reached and what the watchdog saw. */
   'live.dead_air_stalled': { stalledAt: number; turnAgeMs: number; anyAudio: boolean; inaudibleMs: number };
+  /** #538: one audible debt clock phase change, both fields from their closed sets. */
+  'live.debt': { phase: DebtPhase; reason: DebtReason; at: number };
 }
 
 export interface TraceWritePort { transaction<T>(body: (tx: Transaction) => T): T }
@@ -100,6 +102,7 @@ const REQUIRED_IDS: Readonly<Record<TraceEventKind, readonly string[]>> = {
   'playback.terminated': ['playbackKey'],
   'progress.commentary': ['turnId'], 'progress.thinking': ['turnId'], 'call.ceiling': ['callKey'], 'command.rejected': ['turnId'],
   'continuation.decided': ['responseKey'], 'live.dead_air_stalled': ['turnId'],
+  'live.debt': [],
 };
 
 const DETAIL_SPECS: Readonly<Record<TraceEventKind, Readonly<Record<string, FieldSpec>>>> = {
@@ -150,6 +153,7 @@ const DETAIL_SPECS: Readonly<Record<TraceEventKind, Readonly<Record<string, Fiel
   'live.dead_air_stalled': {
     stalledAt: { check: isCount }, turnAgeMs: { check: isCount }, anyAudio: { check: isFlag }, inaudibleMs: { check: isCount },
   },
+  'live.debt': { phase: { check: oneOf(DEBT_PHASES) }, reason: { check: oneOf(DEBT_REASONS) }, at: { check: isCount } },
 };
 
 function validateEvent(kind: TraceEventKind, ids: TraceEventIds, detail: unknown): void {
@@ -370,6 +374,7 @@ function applySummary(tx: Transaction, kind: TraceEventKind, ids: TraceEventIds,
       assertEpoch(tx, 'trace_response', 'response_key', ids.responseKey!, epoch);
       return;
     }
+    case 'live.debt': return;
     case 'live.dead_air_stalled': {
       tx.run("UPDATE trace_turn SET stall_reason=COALESCE(stall_reason, 'no_audible_output') WHERE turn_id=? AND closed_at IS NULL", [ids.turnId!]);
       return;

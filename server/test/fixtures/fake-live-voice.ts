@@ -1,6 +1,6 @@
 import type {
   LiveVoiceCapabilities, LiveVoiceControl, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort,
-  LiveVoiceRequest, LiveVoiceSession, LiveToolResponse,
+  LiveVoiceRequest, LiveVoiceSession, LiveToolResponse, LiveToolSendOutcome,
 } from '../../adapters/live-voice/index.js';
 
 /** A test-only port whose capabilities differ from the Gemini adapter, so the host cannot key on a model name. */
@@ -16,6 +16,10 @@ export interface FakeLiveVoice {
   readonly port: LiveVoicePort;
   readonly requests: LiveVoiceRequest[];
   readonly toolResponses: LiveToolResponse[][];
+  /** Every text input the host pushed, so a test can see the dead-air nudge itself (#538). */
+  readonly texts: string[];
+  /** How many provider sessions the host closed, so a test can tell a nudge from a recreate (#538). */
+  readonly closes: number;
   /** Push one event into the open session (a no-op before the first open). */
   emit(event: FakeLiveVoiceEvent): void;
   readonly sessionsOpened: number;
@@ -38,6 +42,8 @@ export function fakeLiveVoicePort(overrides: Partial<LiveVoiceCapabilities> = {}
   });
   const requests: LiveVoiceRequest[] = [];
   const toolResponses: LiveToolResponse[][] = [];
+  const texts: string[] = [];
+  let closes = 0;
   let sessionsOpened = 0;
   let emit: (event: FakeLiveVoiceEvent) => void = () => {};
 
@@ -72,11 +78,12 @@ export function fakeLiveVoicePort(overrides: Partial<LiveVoiceCapabilities> = {}
         ready: Promise.resolve(),
         events,
         done,
-        sendToolResponse(input: { responses: LiveToolResponse[] }): void { toolResponses.push(input.responses); },
-        sendAudio(): void {}, sendText(): void {}, endAudioStream(): void {},
-        close(): void { if (closed) return; closed = true; wake(); resolveDone({ status: 'closed', code: 'closed' }); },
+        sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome { toolResponses.push(input.responses); return 'sent'; },
+        sendAudio(): void {}, sendText(input: { text: string }): void { texts.push(input.text); }, endAudioStream(): void {},
+        close(): void { if (closed) return; closed = true; closes += 1; wake(); resolveDone({ status: 'closed', code: 'closed' }); },
       };
     },
   };
-  return { port, requests, toolResponses, emit: event => emit(event), get sessionsOpened() { return sessionsOpened; } };
+  return { port, requests, toolResponses, texts, emit: event => emit(event),
+    get sessionsOpened() { return sessionsOpened; }, get closes() { return closes; } };
 }

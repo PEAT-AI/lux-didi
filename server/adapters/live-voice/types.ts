@@ -67,6 +67,10 @@ export interface LiveToolResponse { id: string; name: string; response: JsonObje
  *  `sent` is a `response.create` on the wire, `deferred` an answer recorded while its response was still
  *  active (the gate sends the continuation on the next terminal event), `failed` nothing written at all. */
 export type LiveToolSendOutcome = 'sent' | 'deferred' | 'failed';
+/** #538: the closed reason set a failed answer carries. The voice speaks one line for any of them, and the reason
+ *  itself is metadata: the provider's own word never reaches the host log. */
+export const TURN_FAILED_REASONS = ['provider_error', 'delegation_stalled', 'send_failed', 'recreate_failed'] as const;
+export type TurnFailedReason = (typeof TURN_FAILED_REASONS)[number];
 export const liveVoiceTimerDefaults = Object.freeze({ handshakeMs: 15_000, idleMs: 300_000, sessionMs: 3_600_000, closeMs: 1000 });
 export interface LiveVoiceRequest {
   resumptionHandle?: string;
@@ -150,7 +154,7 @@ export interface LiveVoiceSession {
   // Includes informational empty serverContent frames after readiness.
   readonly unknownTopLevelKeys?: number;
   readonly diagnostics?: () => Readonly<LiveVoiceDiagnostics>;
-  sendToolResponse(input: { responses: LiveToolResponse[] }): void;
+  sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome;
   sendAudio(input: { pcm: Uint8Array; dataClass: DataClass }): void;
   sendText(input: { text: string }): void;
   /** Speakable progress under Responses delegation, paraphrased by the voice model (GPT-Live only). An adapter

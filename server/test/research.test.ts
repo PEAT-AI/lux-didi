@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, offerableCandidates, shapeBlock, windowRange,
+  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
@@ -29,7 +29,7 @@ function deferred<T>(): Deferred<T> {
 
 interface Harness { deps: ResearchDeps; progress: ResearchProgress[]; logs: ResearchRunLog[]; subcalls: ResearchSubcallLog[]; executed: { name: string; args: unknown }[]; joined: string[] }
 
-function harness(opts: { execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number; configured?: readonly SourceKind[]; memory?: (query: string) => { lines: string[]; text: string; total: number } } = {}): Harness {
+function harness(opts: { execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number; configured?: readonly SourceKind[]; memory?: (query: string) => { lines: string[]; text: string; total: number; hits?: { snippet: string; role?: string; date?: string }[] } } = {}): Harness {
   const progress: ResearchProgress[] = [];
   const logs: ResearchRunLog[] = [];
   const subcalls: ResearchSubcallLog[] = [];
@@ -58,7 +58,7 @@ function harness(opts: { execute?: ResearchDeps['execute']; now?: () => number; 
     return calls.map(call => {
       const found = opts.memory?.(String(call.args['query'] ?? ''));
       return { key: call.key, name: call.name, ok: !!found, text: '', originalCharacters: 0, omittedCharacters: 0,
-        ...(found ? { binding: { executionId: call.key } as NonNullable<IntentSubResult['binding']>, historyPage: { status: 'ok', hits: found.lines.map(snippet => ({ snippet })), totalMatches: found.total, nextCursor: null } } : {}) };
+        ...(found ? { binding: { executionId: call.key } as NonNullable<IntentSubResult['binding']>, historyPage: { status: 'ok', hits: found.hits ?? found.lines.map(snippet => ({ snippet })), totalMatches: found.total, nextCursor: null } } : {}) };
     });
   };
   return { deps, progress, logs, subcalls, executed, joined };
@@ -176,6 +176,172 @@ test('the whole serialized reply stays within the character cap', async () => {
   const h = harness({ executeText: 'x'.repeat(9_000) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'anything' }, new AbortController().signal);
   assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(reply).length} chars`);
+});
+
+// N4 (#567): memory and knowledge findings of 10 KB each reached Live at 6,125 and 8,543 chars, so the
+// budget is measured on the whole serialized reply, after every section is attached.
+test('N4: memory and knowledge findings of 10 KB each still fit the capped reply', async () => {
+  const h = harness({
+    configured: ['memory', 'knowledge'],
+    executeText: 'k'.repeat(10_000),
+    memory: () => ({ lines: [`he said ${'m'.repeat(10_000)}`], text: 'ignored', total: 1 }),
+  });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what is the release scope',
+    lookups: [{ source: 'memory', history: { query: 'release scope' } }, { source: 'knowledge', query: 'release scope' }],
+  }, new AbortController().signal);
+  const size = JSON.stringify(reply).length;
+  assert.ok(size <= RESEARCH.replyLimitChars, `reply was ${size} chars`);
+});
+
+// N5 (#568): a completed run promised more was available, and the model's continue got
+// continuation_unavailable. The note offers a continuation only when this reply can serve one.
+test('N5: a reply that cannot serve a continuation never says more is available', async () => {
+  const h = harness({});
+  const first = await runResearch(h.deps, { action: 'start', question: 'x' }, new AbortController().signal);
+  const stopped = await runResearch(h.deps, { action: 'stop', researchId: String(first['researchId']) }, new AbortController().signal);
+  assert.equal(stopped['canContinue'], false);
+  const note = String(stopped['note'] ?? '');
+  assert.doesNotMatch(note, /more available/, 'the note never offers a continuation this run cannot serve');
+  assert.match(note, /did not search/, 'and it names the sources this run never searched');
+});
+
+test('N5: a trimmed reply that can continue still says more is available', async () => {
+  const wide = Array.from({ length: 14 }, (_, index) => `**#${index + 1}** [PATTERN] Decision ${index} | ${'decision text '.repeat(60)}`).join('\n');
+  const h = harness({ executeText: wide });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
+  assert.equal(reply['canContinue'], true);
+  assert.match(String(reply['note'] ?? ''), /more available/);
+});
+
+// #575: a memory hit that is her own earlier voice confirms a past answer instead of finding new
+// evidence, so it is dropped unless the owner asks what she said.
+test('#575: memory drops her own earlier turns and keeps the owner turns', async () => {
+  const hits = [
+    { snippet: 'he said the release ships on Friday', role: 'user', date: '2026-10-23T09:00:00.000Z' },
+    { snippet: 'I said the release ships on Friday', role: 'assistant', date: '2026-10-23T09:00:05.000Z' },
+  ];
+  const h = harness({ configured: ['memory'], memory: () => ({ lines: hits.map(hit => hit.snippet), hits, text: '', total: 2 }) });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what did we say about the release', lookups: [{ source: 'memory', history: { query: 'release ships' } }],
+  }, new AbortController().signal);
+  const text = JSON.stringify(reply);
+  assert.match(text, /he said the release ships on Friday/, 'the owner turn stays evidence');
+  assert.doesNotMatch(text, /I said the release ships on Friday/, 'her own earlier reply is not evidence');
+});
+
+test('#575: a question about what she said keeps her own turn', async () => {
+  const hits = [{ snippet: 'I said the release ships on Friday', role: 'assistant', date: '2026-10-23T09:00:05.000Z' }];
+  const h = harness({ configured: ['memory'], memory: () => ({ lines: hits.map(hit => hit.snippet), hits, text: '', total: 1 }) });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what did you say about the release', lookups: [{ source: 'memory', history: { query: 'release ships' } }],
+  }, new AbortController().signal);
+  assert.match(JSON.stringify(reply), /I said the release ships on Friday/, 'the owner asked what she said, so her turn answers it');
+});
+
+test('#575: a finding already given in the session becomes a one-line note', async () => {
+  const ledger = new ResearchLedger();
+  const h = harness({ ledger, executeText: '### Release scope (DECISION | 2026-10-17) [id 12] the release ships on Friday' });
+  const call = { action: 'start' as const, question: 'what is the release scope', lookups: [{ source: 'knowledge' as const, query: 'release scope' }] };
+  const first = await runResearch(h.deps, call, new AbortController().signal);
+  const second = await runResearch(h.deps, call, new AbortController().signal);
+  const firstText = (first['findings'] as { text: string }[]).map(finding => finding.text).join('\n');
+  const secondText = (second['findings'] as { text: string }[]).map(finding => finding.text).join('\n');
+  assert.match(firstText, /release ships on Friday/, 'the first reply carries the evidence');
+  assert.doesNotMatch(secondText, /release ships on Friday/, 'the same evidence is never repeated in the session');
+  assert.match(secondText, /already given/, 'it is replaced by a one-line note');
+  assert.ok(JSON.stringify(second).length < JSON.stringify(first).length, 'the repeat is shorter than the original');
+});
+
+// Review F1: capReply trimmed after the note was built, so a capped reply could say nothing was left while
+// it offered a continuation.
+test('#567: a reply capped after its note was built advertises the continuation it needs', async () => {
+  const ledger = new ResearchLedger();
+  const hits = Array.from({ length: 20 }, (_, index) => ({ snippet: `memory line ${index} ${'m'.repeat(150)}`, role: 'user', date: '2026-09-01T09:00:00.000Z' }));
+  const h = harness({
+    ledger, configured: ['memory', 'knowledge'],
+    executeText: '### Release scope [id 12] the release ships on Friday',
+    memory: () => ({ lines: hits.map(hit => hit.snippet), hits, text: '', total: hits.length }),
+  });
+  const call = {
+    action: 'start' as const, question: 'what is the release scope',
+    lookups: [{ source: 'memory' as const, history: { query: 'release' } }, { source: 'knowledge' as const, query: 'release scope' }],
+  };
+  await runResearch(h.deps, call, new AbortController().signal);
+  const second = await runResearch(h.deps, call, new AbortController().signal);
+  const pages = (second['historyPages'] ?? []) as { hits?: unknown[] }[];
+  const kept = pages.reduce((total, page) => total + (page.hits?.length ?? 0), 0);
+  assert.ok(kept < hits.length, `the cap trimmed the page hits: ${kept} of ${hits.length} kept`);
+  assert.ok(JSON.stringify(second).length <= RESEARCH.replyLimitChars, 'the trimmed reply stays inside the budget');
+  assert.equal(second['status'], 'partial', 'a reply the cap trimmed is partial');
+  assert.equal(second['canContinue'], true, 'and it offers the continuation that would fetch the rest');
+  assert.doesNotMatch(String(second['note'] ?? ''), /Nothing more to fetch/u, 'the note never says nothing is left');
+});
+
+// Review F2: the serialized reply is hard-bounded, and a finding header never survives with no evidence line.
+test('#567: capReply hard-bounds a reply and keeps every finding whole', () => {
+  const reply = {
+    researchId: 'r-1', status: 'complete', canContinue: false, note: RESEARCH.completeNote,
+    findings: [{ source: 'knowledge', text: `knowledge: 1 of 1 shown\n${'x'.repeat(9_000)}`, chars: 9_000 }],
+  };
+  const capped = capReply(reply, RESEARCH.replyLimitChars);
+  assert.ok(JSON.stringify(capped).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(capped).length}`);
+  assert.equal(capped['status'], 'partial', 'a capped reply is never complete');
+  assert.equal(capped['canContinue'], true, 'and it offers the continuation');
+  assert.doesNotMatch(String(capped['note'] ?? ''), /Nothing more to fetch/u, 'the note agrees with the continuation');
+  for (const finding of (capped['findings'] ?? []) as { text: string }[]) assert.ok(finding.text.split('\n').length > 1, 'a header never stands without an evidence line');
+});
+
+test('#567: a one line finding that cannot fit is dropped whole, never left as a bare header', () => {
+  const reply = {
+    researchId: 'r-2', status: 'partial', canContinue: true,
+    findings: [{ source: 'knowledge', text: 'knowledge: 5 of 9 shown\nonly one evidence line here', chars: 26 }],
+  };
+  const capped = capReply(reply, 150);
+  assert.deepEqual(capped['findings'], [], 'the finding goes whole, never as a header over nothing');
+  assert.ok(JSON.stringify(capped).length <= 150);
+});
+
+test('#567: a reply already inside the budget is returned untouched', () => {
+  const reply = {
+    researchId: 'r-3', status: 'complete', canContinue: false, note: RESEARCH.completeNote,
+    findings: [{ source: 'knowledge', text: 'knowledge: 1 of 1 shown\none line', chars: 8 }],
+  };
+  const before = JSON.stringify(reply);
+  assert.equal(JSON.stringify(capReply(reply, RESEARCH.replyLimitChars)), before, 'nothing is flipped when nothing is trimmed');
+});
+
+// RESCAP-R5: a long best knowledge hit emptied the answer, because the trim loop dropped the only line.
+test('#567/R5: a long best knowledge hit is clipped to fit, never dropped', async () => {
+  const long = `## Release scope\nthe release ships on Friday ${'x'.repeat(4_000)}`;
+  const h = harness({ executeText: long });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }],
+  }, new AbortController().signal);
+  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(reply).length} chars`);
+  const shown = (reply['findings'] as { text: string }[]).map(finding => finding.text).join('\n');
+  assert.match(shown, /the release ships on Friday/, 'the head of the best hit survives the cap');
+  assert.match(shown, /\u2026/u, 'and the reply marks where it was cut');
+});
+
+test('#567/R5: capReply clips the only evidence line instead of dropping the finding', () => {
+  const reply = {
+    researchId: 'r-5', status: 'partial', canContinue: true,
+    findings: [{ source: 'knowledge', text: `knowledge: 1 of 1 shown\n${'y'.repeat(4_000)}`, chars: 4_000 }],
+  };
+  const capped = capReply(reply, RESEARCH.replyLimitChars);
+  assert.ok(JSON.stringify(capped).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(capped).length}`);
+  const findings = capped['findings'] as { text: string }[];
+  assert.equal(findings.length, 1, 'the finding survives the cap');
+  const lines = findings[0]!.text.split('\n');
+  assert.equal(lines.length, 2, 'it keeps its header and one evidence line');
+  assert.ok((lines[1] ?? '').length >= RESEARCH.clipFloorChars, 'the evidence line is clipped, never removed');
+  assert.match(lines[1] ?? '', /\u2026/u, 'the clip is marked');
+});
+
+test('#567/R5: the knowledge body request is sized to fit the reply budget', () => {
+  assert.ok(RESEARCH.knowledgeBodyChars < RESEARCH.replyLimitChars, `body ${RESEARCH.knowledgeBodyChars} fits the ${RESEARCH.replyLimitChars} char reply`);
+  assert.ok(RESEARCH.knowledgeBodyChars <= RESEARCH.replyLimitChars - 400, 'with room for the envelope and one more source');
 });
 
 test('mongoose is never offered while unconfigured', () => {
@@ -916,11 +1082,11 @@ test('3r: a voice knowledge lookup asks for six bounded bodies within a deadline
   assert.deepEqual(Object.keys(args).sort(), ['deadline_ms', 'detail', 'limit', 'max_chars', 'query', 'snippet_chars'], 'exactly those fields, and no others');
   assert.equal(args['limit'], 6);
   assert.equal(args['detail'], 'voice', 'MED-1022: the top hit is answered in full, the rest named');
-  assert.equal(args['max_chars'], 3_000);
+  assert.equal(args['max_chars'], 2_000, 'R5: the body is requested at a size the reply can carry');
   assert.equal(args['snippet_chars'], 300);
   assert.equal(args['deadline_ms'], 8_000);
   assert.equal(typeof args['query'], 'string');
-  assert.equal(RESEARCH.knowledgeBodyChars, 3_000);
+  assert.equal(RESEARCH.knowledgeBodyChars, 2_000, 'R5: the request fits the 2,500 char reply');
   assert.equal(RESEARCH.knowledgeSnippetChars, 300);
   assert.equal(RESEARCH.knowledgeDeadlineMs, 8_000);
 });
@@ -935,7 +1101,7 @@ test('3r: a body the server cut at the asked-for window is marked in the reply',
   const hits = finding.text.split(/(?=#41[23] )/u);
   const cutHit = hits.find(hit => hit.startsWith('#412 '))!;
   const wholeHit = hits.find(hit => hit.startsWith('#413 '))!;
-  assert.match(cutHit, /#412 Release 3p scope[^|]*\| The part of the body that fits\. \| cut at 3000 chars/u);
+  assert.match(cutHit, /#412 Release 3p scope[^|]*\| The part of the body that fits\. \| cut at 2000 chars/u);
   assert.equal(finding.text.includes('truncated:'), false, 'the server flag is replaced by the named window it was cut at');
   assert.equal(wholeHit.includes('cut at'), false, 'an uncut body carries no cut mark');
 });
@@ -948,7 +1114,7 @@ test('3r: the research receipt records the bounded-body request, metadata only',
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
   // ROUTE-1022 K5: a brief on a question that names no source reads his knowledge only, so this run
   // compiles no chat date operator; the old brief chat window is gone and the receipt says so.
-  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: false, queryTerms: 2, dayFilter: 'none', chatDateOperator: 'none', deduped: 0 }, 'an uncut read names no chat operator it never compiled and no day filter it never sent');
+  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 2_000, deadlineMs: 8_000, truncated: false, queryTerms: 2, dayFilter: 'none', chatDateOperator: 'none', deduped: 0 }, 'an uncut read names no chat operator it never compiled and no day filter it never sent');
 
   assert.equal(JSON.stringify(receipt).includes('scope'), false, 'a receipt never carries a query');
   // T-R2: the receipt the host log keeps is the same one research built.
@@ -964,10 +1130,10 @@ test('3r: a routed voice start logs the bounded-body request and its cut flag in
   await runResearch(deps, { action: 'start', question: 'release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
   const args = h.executed.find(entry => entry.name === 'search_knowledge')!.args as Record<string, unknown>;
   assert.equal(args['detail'], 'voice', 'the routed path asks through the same bounded-body args');
-  assert.equal(args['max_chars'], 3_000);
+  assert.equal(args['max_chars'], 2_000, 'R5: the body is requested at a size the reply can carry');
   const receipt = receipts.find(entry => entry.source === 'knowledge')!;
   assert.equal(receipt.outcome, 'ok');
-  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 3_000, deadlineMs: 8_000, truncated: true, queryTerms: 2, dayFilter: 'none', chatDateOperator: 'none', deduped: 0 });
+  assert.deepEqual(receipt.knowledge, { detail: 'voice', maxChars: 2_000, deadlineMs: 8_000, truncated: true, queryTerms: 2, dayFilter: 'none', chatDateOperator: 'none', deduped: 0 });
 });
 
 // MED-1022: the chat date operator token must still be seen as 'compiled' on a run that really compiles

@@ -87,14 +87,14 @@ test('K5 and K7: the confidence line reaches the finding, and the two score scal
   const block = shapeBlock('knowledge_search', [sub('search_knowledge', CUT_SEARCH)]);
   assert.equal(block.lines[0], 'knowledge: confidence=medium top=0.37 candidates=yes');
   assert.ok(!block.text.includes('Score:'), 'the incomparable per-hit score line is dropped');
-  assert.ok(block.lines.some(line => line.endsWith('cut at 3000 chars')), 'the search reply carries the full body window');
+  assert.ok(block.lines.some(line => line.endsWith(`cut at ${RESEARCH.knowledgeBodyChars} chars`)), 'the search reply carries the body window it asked for');
   const bare = shapeBlock('knowledge_search', [sub('search_knowledge', '**#9** [PATTERN] A plain hit')]);
   assert.ok(!bare.lines.some(line => line.startsWith('knowledge: confidence')));
 });
 
-test('ROUTE-1022: a body read is never clipped by the host, and the search window it asks for is 3000', () => {
+test('ROUTE-1022: a body read is never clipped by the host, and the search window it asks for fits the reply', () => {
   const opened = shapeBlock('knowledge_search', [sub('get_insight', LONG_BODY)]);
-  assert.equal(RESEARCH.knowledgeBodyChars, 3_000);
+  assert.equal(RESEARCH.knowledgeBodyChars, 2_000, 'R5 (RESCAP-R5): the window is sized to fit the reply budget');
   assert.equal(opened.lines[0]!.includes('cut at'), false, 'a body read reaches the reply whole');
   assert.equal(opened.source, 'knowledge');
   // F3: the wider window belongs to a body read. A named-id read stays whole.

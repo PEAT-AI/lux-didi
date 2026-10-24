@@ -10,6 +10,16 @@ export const WEB_SEARCH_ACTION = 'web_search';
 export const WEB_MODEL = 'gemini-2.5-flash';
 /** The council's hard deadline: the transport is cancelled at this point, never left running. */
 export const WEB_DEADLINE_MS = 4_000;
+/**
+ * N6 (#569): a weather or news read settles in 3.3 to 4.4 s, so those asks get a budget that holds them.
+ * The routed lookup kind is `web_search` for every ask, so the ask itself is what names the longer budget.
+ */
+export const WEB_SLOW_DEADLINE_MS = 8_000;
+const SLOW_ASK = /\b(?:weather|forecast|temperature|rain|rains|raining|rainfall|snow|snowing|wind|windy|storm|humidity|sunrise|sunset|air quality|pollen|news|headlines?|breaking)\b/i;
+
+export function webDeadlineMs(query: string): number {
+  return SLOW_ASK.test(query) ? WEB_SLOW_DEADLINE_MS : WEB_DEADLINE_MS;
+}
 export const WEB_SOURCE_CAP = 3;
 export const WEB_WORDS_CAP = 150;
 export const WEB_QUERY_CHARS = 200;
@@ -37,7 +47,8 @@ export interface WebEvidence {
 export type WebOutcome = { ok: true; evidence: WebEvidence } | { ok: false; code: WebFailureCode };
 
 export interface WebSearchPort {
-  search(request: { query: string; signal: AbortSignal }): Promise<WebOutcome>;
+  /** N6: an ask may carry its own deadline, so a slow weather or news read is not held to the short one. */
+  search(request: { query: string; signal: AbortSignal; deadlineMs?: number }): Promise<WebOutcome>;
 }
 
 export interface WebSearchOptions {
@@ -151,16 +162,16 @@ export function createWebSearch(options: WebSearchOptions): WebSearchPort {
   const now = options.now ?? Date.now;
   const transport = options.transport ?? fetch;
   const model = options.model ?? WEB_MODEL;
-  const deadlineMs = options.deadlineMs ?? WEB_DEADLINE_MS;
+  const defaultDeadlineMs = options.deadlineMs ?? WEB_DEADLINE_MS;
   const keyReference = options.keyReference ?? 'gemini-primary';
   return {
-    async search({ query, signal }): Promise<WebOutcome> {
+    async search({ query, signal, deadlineMs }): Promise<WebOutcome> {
       const publicQuery = publicQueryOf(query);
       if (publicQuery === undefined) return { ok: false, code: 'web_private_question' };
       const key = await options.credentials.resolve(keyReference).catch(() => '');
       if (!key || /[\r\n]/.test(key)) return { ok: false, code: 'web_unavailable' };
       const cut = new AbortController();
-      const timer = setTimeout(() => cut.abort(new Error('web_timeout')), deadlineMs);
+      const timer = setTimeout(() => cut.abort(new Error('web_timeout')), deadlineMs ?? defaultDeadlineMs);
       timer.unref?.();
       const body = {
         systemInstruction: { parts: [{ text: attribution }] },

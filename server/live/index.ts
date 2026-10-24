@@ -3393,10 +3393,9 @@ export class LiveSessionOwner {
     const aliasId = window.map(stopNameId).find(id => id >= 0);
     if (aliasId === undefined) return;
     const matched = stopPhrase(window.join(' ')) !== null;
+    if (matched) this.#settle(handle, { state: 'closed', code: 'voice_stop' }, true, 'ended', null);
     hostLogEvent({ event: 'voice_stop_candidate', aliasId, windowWords: window.length, matched, finished: event.finished === true });
-    if (!matched) return;
-    this.#settle(handle, { state: 'closed', code: 'voice_stop' }, true, 'ended', null);
-    hostLogEvent({ event: 'voice_stop' });
+    if (matched) hostLogEvent({ event: 'voice_stop' });
   }
 
   /** The transaction/lifecycle guard makes attach and every expiry observation share one winner. */

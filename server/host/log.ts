@@ -99,6 +99,8 @@ const isSafeMembers = (value: unknown, allowed: readonly string[]): value is str
 /** A closed shape: exactly these keys, so no field a later caller adds can slip through the whitelist. */
 const closedKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
   Object.keys(value).sort().join(',') === [...keys].sort().join(',');
+/** #613: the launch paths the app can report, mirrored from LaunchKind, so no free text crosses. */
+const LAUNCH_KINDS = ['interactive', 'login_item', 'install_relaunch', 'installed_proof', 'self_check', 'ui_proof', 'verification'];
 
 // Only the existing diagnostic schemas cross this boundary, never arbitrary console text.
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
@@ -135,6 +137,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!ms(value.fenceMs) || !ms(value.acquireMs) || !ms(value.answerMs)) return;
     return { event: 'chat_timing', runId: value.runId, outcome: value.outcome, rounds: [...value.rounds],
       tools, fenceMs: value.fenceMs, acquireMs: value.acquireMs, answerMs: value.answerMs };
+  }
+  if (value.event === 'launch_kind') {
+    // #613: which launch opened the app and the two flags it decides. Closed set, metadata only.
+    const allowed = ['autoConnects', 'event', 'kind', 'windowShown'];
+    if (!closedKeys(value, allowed)) return;
+    if (typeof value.kind !== 'string') return;
+    if (!LAUNCH_KINDS.includes(value.kind)) return;
+    if (typeof value.autoConnects !== 'boolean' || typeof value.windowShown !== 'boolean') return;
+    return { event: 'launch_kind', kind: value.kind, autoConnects: value.autoConnects, windowShown: value.windowShown };
   }
   if (value.event === 'native_action') {
     // Closed receipt: the action, its ack code and a scheme or extension, never the target.

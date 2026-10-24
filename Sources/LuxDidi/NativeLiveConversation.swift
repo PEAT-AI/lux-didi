@@ -273,14 +273,31 @@ enum State: String, CaseIterable {
     /// Z2: one automatic restart per 60 s. A second failure inside the window stays `.failed`.
     /// #613: a stop never waits on the host, so the mic is released here whatever the host does.
     static let stopConfirmNanos: UInt64 = 500_000_000
+    /// #613: whichever of the two outcomes lands first wins. The loser is never awaited, because a task
+    /// group awaits its cancelled children and a close that ignores cancellation would hold the stop open.
+    private final class FirstOutcome: @unchecked Sendable {
+        private var taken = false
+        private let lock = NSLock()
+        func take() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if taken { return false }
+            taken = true
+            return true
+        }
+    }
+
     private func closeOrDeadline(trigger: LiveStopTrigger) async -> LiveStopReceipt? {
         let coordinator = self.coordinator
-        return await withTaskGroup(of: LiveStopReceipt?.self) { group in
-            group.addTask { await coordinator.close(trigger: trigger) }
-            group.addTask { try? await Task.sleep(nanoseconds: Self.stopConfirmNanos); return nil }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
+        let first = FirstOutcome()
+        return await withCheckedContinuation { continuation in
+            Task {
+                let receipt = await coordinator.close(trigger: trigger)
+                if first.take() { continuation.resume(returning: receipt) }
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: Self.stopConfirmNanos)
+                if first.take() { continuation.resume(returning: nil) }
+            }
         }
     }
 

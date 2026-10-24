@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 /// #613: a stop is the owner's, and a session nobody can vouch for is cold. The latch, the epoch and
@@ -5,9 +6,10 @@ import Foundation
 @main struct NativeStopLatchTests {
     static func main() async {
         do {
-            try await MainActor.run { try run() }
+            try await MainActor.run { try await run() }
             print("PASS native stop latch: an uncertain session goes cold with no reconnect, a voice stop "
-                + "keeps the generation fence, the latch clears only on an explicit Start")
+                + "keeps the generation fence, the latch clears only on an explicit Start, the calendar wait is "
+                + "bounded, a refused goodbye is recorded")
         } catch {
             FileHandle.standardError.write(Data("FAIL \(error.localizedDescription)\n".utf8))
             exit(1)
@@ -22,10 +24,12 @@ import Foundation
         var clock: Double = 0
     }
 
-    @MainActor static func run() throws {
+    @MainActor static func run() async throws {
         try uncertainGoesCold()
         try voiceStopKeepsTheGenerationFence()
         try theLatchIsTheOwnerStart()
+        try await theCalendarWaitIsBounded()
+        try aRefusedGoodbyeIsRecorded()
     }
 
     /// Acceptance 1: a socket that closed without a terminal frame ends cold, with the capture fence
@@ -107,6 +111,44 @@ import Foundation
         try require(shared.epoch == 1, "a voice stop moves the shared epoch")
         presence.start(.app)
         try require(!shared.latched, "the next explicit Start clears the latch")
+    }
+
+
+    /// Acceptance 6: the auto-connected launch waits for the calendar connector, bounded at four seconds.
+    @MainActor static func theCalendarWaitIsBounded() async throws {
+        var elapsed = 0
+        let early = await OrbFirstAutoConnect.waitForCalendar(
+            published: { elapsed >= 2000 }, sleep: { ms in elapsed += ms })
+        try require(early, "a connector that publishes after 2 s is waited for")
+        try require(elapsed == 2000, "the wait costs exactly the publish time")
+
+        var late = 0
+        let expired = await OrbFirstAutoConnect.waitForCalendar(
+            published: { late >= 6000 }, sleep: { ms in late += ms })
+        try require(!expired, "a connector that publishes after 6 s is not waited for forever")
+        try require(late == OrbFirstAutoConnect.calendarBoundMs,
+            "the wait stops at the four second bound")
+        try require(OrbFirstAutoConnect.calendarBoundMs == 4000, "the bound is four seconds")
+    }
+
+    /// Acceptance 4: a goodbye the device refuses is recorded, and the mic release is not delayed.
+    @MainActor static func aRefusedGoodbyeIsRecorded() throws {
+        final class RefusingOutput: ConnectingRingOutput {
+            func playLoop(_ buffer: AVAudioPCMBuffer) -> Bool { false }
+            func playChime(_ buffer: AVAudioPCMBuffer) -> Bool { false }
+            func stopOutput() {}
+            func rampDown(overMs: Int, after: (@MainActor () -> Void)?) { after?() }
+        }
+        var records: [[String: Any]] = []
+        let ring = ConnectingRing(output: RefusingOutput(), after: { _, _ in })
+        ring.receipt = { records.append($0) }
+
+        ring.goodbye()
+
+        try require(records.count == 1, "a refusal records exactly one line")
+        try require(records[0]["event"] as? String == "goodbye_tone", "the record is the goodbye")
+        try require(records[0]["played"] as? Bool == false, "a refused goodbye did not play")
+        try require(records[0]["reason"] as? String == "output_refused", "the reason names the player")
     }
 
     @MainActor static func effects(_ record: Recorder) -> PresenceEffects {

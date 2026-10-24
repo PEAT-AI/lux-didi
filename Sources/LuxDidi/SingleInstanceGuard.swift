@@ -122,4 +122,23 @@ enum OrbFirstAutoConnect {
         guard kind.autoConnects, !attempted else { return .never }
         return serviceReady && pageHostable ? .connect : .wait
     }
+
+    /// #613: an auto-connected launch waits for the calendar connector to publish, so the opener composes
+    /// with a digest instead of racing it. Four seconds, then the call starts and the digest reads absent.
+    static let calendarBoundMs = 4000
+    static let calendarStepMs = 200
+
+    /// The probe and the clock are injected, so the bound is provable with no host and no waiting.
+    static func waitForCalendar(published: () async -> Bool,
+                                sleep: (Int) async -> Void,
+                                boundMs: Int = calendarBoundMs,
+                                stepMs: Int = calendarStepMs) async -> Bool {
+        var waited = 0
+        while true {
+            if await published() { return true }
+            if waited >= boundMs { return false }
+            await sleep(stepMs)
+            waited += stepMs
+        }
+    }
 }

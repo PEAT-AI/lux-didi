@@ -931,9 +931,27 @@ struct RootView: View {
                                           pageHostable: pageHostable, attempted: autoConnectAttempted) {
         case .connect:
             autoConnectAttempted = true
-            startPresence()
+            Task { [weak self] in
+                guard let self else { return }
+                // #613: the calendar connector publishes a moment after the host is up, so this launch
+                // waits a bounded four seconds for it and starts the call either way.
+                _ = await OrbFirstAutoConnect.waitForCalendar(
+                    published: { await self.calendarPublished() },
+                    sleep: { ms in try? await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000) })
+                self.startPresence()
+            }
         case .wait, .never:
             break
+        }
+    }
+
+    /// #613: the calendar connector is published when the host's tools status names it ready.
+    private func calendarPublished() async -> Bool {
+        guard let client = model.client,
+              let value = try? await client.connectedRead("api/v1/tools/status"),
+              let endpoints = value["endpoints"] as? [[String: Any]] else { return false }
+        return endpoints.contains {
+            $0["connector"] as? String == "calendar" && $0["state"] as? String == "ready"
         }
     }
 

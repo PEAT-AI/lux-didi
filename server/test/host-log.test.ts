@@ -403,3 +403,16 @@ test('LAT-1023: a run receipt carries the round cap and the compaction counts as
   assert.equal(safeEvent({ ...run, answerCompacted: { items: 4, chars: 400, text: 'the mail said' } }), undefined, 'and never carries content');
   assert.equal(safeEvent({ ...run, answerCompacted: { items: 1.5, chars: 400 } }), undefined, 'a count is a whole number');
 });
+
+test('launch_kind carries the kind and its two flags, and nothing else', () => {
+  const launch = { event: 'launch_kind', kind: 'interactive', autoConnects: true, windowShown: false };
+  assert.deepEqual(safeEvent(launch), launch);
+  // Every kind the app can report is accepted, so a new launch path is never a silent gap.
+  for (const kind of ['interactive', 'login_item', 'install_relaunch', 'installed_proof', 'self_check', 'ui_proof', 'verification']) {
+    assert.deepEqual(safeEvent({ ...launch, kind }), { ...launch, kind }, `${kind} is a known launch kind`);
+  }
+  assert.equal(safeEvent({ ...launch, kind: 'the owner opened it' }), undefined, 'a free text kind is refused');
+  assert.equal(safeEvent({ ...launch, autoConnects: 'yes' }), undefined, 'a flag is never text');
+  assert.equal(safeEvent({ ...launch, windowShown: 1 }), undefined, 'a flag is never a count');
+  assert.equal(safeEvent({ ...launch, windowTitle: 'Naya' }), undefined, 'no window text crosses this boundary');
+});

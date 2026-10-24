@@ -6,6 +6,10 @@ import {
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { LIVE_RESULT_CHARS, shapeLuxKnowledge } from '../tools/live-shape.js';
+import { projectLuxResult } from '../tools/lux-knowledge.js';
+import { createHash } from 'node:crypto';
+import type { McpPort } from '../adapters/mcp/port.js';
+import type { ConnectionPolicy } from '../tools/types.js';
 
 // Two sources, so the run plans across them instead of taking the single-source path.
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'chat'];
@@ -56,6 +60,35 @@ const NO_CANDIDATE = [
   '**#900** [PATTERN] Unrelated engineering note',
   'the vault keeps an unrelated engineering note about socket timeouts',
 ].join('\n');
+
+/** #580: a synthetic MCP entity with the ranker's own line, and the policy that admits it. */
+function projectedKnowledge(text: string): Record<string, unknown> {
+  const entity = Buffer.from(JSON.stringify({ content: [{ type: 'text', text }] }), 'utf8');
+  const sha = createHash('sha256').update(entity).digest('hex');
+  const expiresAt = Date.now() + 60_000;
+  const policy: ConnectionPolicy = {
+    schemaVersion: 1, ownerId: 'owner', connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
+    endpoint: { id: 'endpoint', url: 'https://synthetic.invalid/mcp', account: 'account', resource: 'resource', credentialRef: 'private:synthetic-reference' },
+    toolNames: ['search_knowledge'], schemaDigest: 'schema',
+    sourcePolicy: { id: 'synthetic-policy', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
+    route: { identity: 'synthetic-route', allowedClasses: ['private'] },
+    bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 },
+  };
+  const port = { readSlice: () => ({ state: 'available', bytes: entity.slice(), byteLength: entity.length, sha256: sha, expiresAt: expiresAt }) } as unknown as McpPort;
+  return projectLuxResult({
+    state: 'completed', tool: 'search_knowledge', observedAt: 1, decodedResult: { content: [{ type: 'text', text }] },
+    source: { endpointId: 'endpoint', url: 'https://synthetic.invalid/mcp', schemaDigest: 'schema', toolName: 'search_knowledge', generation: 1, account: 'account', resource: 'resource' },
+    coverage: { completeCorpus: false, basis: 'single-tool-result', remoteSideEffects: 'unverified' },
+    projection: { text: text, omitted: false, originalCharacters: text.length, omittedCharacters: 0 },
+    response: { state: 'available', handle: 'handle', sha256: sha, byteLength: entity.length, expiresAt: expiresAt, encoding: 'http-response-entity' },
+  }, policy, port).response;
+}
+
+test('#580: the projection carries the ranker confidence on the response, not only inside its text', () => {
+  const response = projectedKnowledge(NO_CANDIDATE);
+  assert.deepEqual(response['knowledgeConfidence'], { confidence: 'low', top: '0.11', candidates: 'no' }, 'the named carrier survives the projection');
+  assert.equal(typeof response['text'], 'string', 'and the model-visible text is unchanged in kind');
+});
 
 test('#580: a no-candidate low-confidence knowledge read carries the confidence and is voiced as no match', () => {
   const shaped = shapeLuxKnowledge('search_knowledge', NO_CANDIDATE);

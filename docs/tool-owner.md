@@ -105,7 +105,7 @@ Fallback public-fact routing includes prices, versions, public names, dates, pop
 
 ## Chat routing and its own read budget (#635)
 
-A chat read runs only when the ask needs it. The chat surface words (`chat`, `channel`, `mattermost`, `slack`, `dm`, and a message from a named person) route it on their own; a writing verb (write, draft, summarise, compose, reply) or a pure recall phrase (what did I say, remind me) leaves a chat word as the ask's subject, so the ask reads her memory and no chat leg runs. The chat read has its own 5 second row in the per-source deadline table, inside the research turn and below the 12 second row every other connector read keeps: a chat read that runs past it returns what arrived, marked `partial_timeout`, or `timed_out` when nothing arrived, and the voice says the read took too long, never that the chat could not be reached.
+A chat read runs only when the ask needs it. The chat surface words (`chat`, `channel`, `mattermost`, `slack`, `dm`, and a message from a named person) route it on their own; a writing verb (write, draft, summarise, compose, reply) or a pure recall phrase (what did I say, remind me) leaves a chat word as the ask's subject, so the ask reads her memory and no chat leg runs. The chat read has its own 6 second row in the per-source deadline table, inside the research turn and half the 12 second row every other connector read keeps: a chat read that runs past it returns what arrived, marked `partial_timeout`, or `timed_out` when nothing arrived, and the voice says the read took too long, never that the chat could not be reached.
 
 ## Research coverage header and one-turn escalation (#621)
 

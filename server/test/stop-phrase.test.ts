@@ -106,7 +106,7 @@ test('R1 zero of twenty quoted, negated or unrelated phrases are stops', () => {
 
 
 test('R3 bare end phrases need no name, but standalone stop still does', () => {
-  const accepted = [
+  const accepted: [string, string][] = [
     ['stop listening', 'stop listening'], ['stop listening to me', 'stop listening'],
     ['stop listening to me please', 'stop listening'], ['shut down', 'shut down'],
     ['stop now', 'stop now'], ['Okay, like stop listening. You need to shut down now.', 'shut down'],
@@ -114,7 +114,7 @@ test('R3 bare end phrases need no name, but standalone stop still does', () => {
     ['aufhören zuzuhören bitte', 'aufhoren zuzuhoren'], ['schalt dich aus', 'schalt dich aus'],
     ['tschüss', 'tschuss'], ['Naya stop listening to me', 'stop listening'],
   ];
-  for (const [text, expected] of accepted) assert.equal(stopPhrase(text!), expected, text);
+  for (const [text, expected] of accepted) assert.equal(stopPhrase(text), expected, text);
   for (const text of ['stop', 'please stop', 'stop please', 'what happens if I say stop listening',
     'do not stop listening', "don't shut down", 'tell Maya to stop listening to podcasts',
     'Naya said stop listening', 'why stop listening']) assert.equal(stopPhrase(text), null, text);

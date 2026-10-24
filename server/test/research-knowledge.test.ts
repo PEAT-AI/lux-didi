@@ -320,7 +320,7 @@ test('#631: an authored Gmail query keeps its operators and loses the source wor
 
 test('#631: the fallback mail recipe keeps a name whose source is off the route', () => {
   const FALLBACK: readonly SourceKind[] = ['knowledge', 'mail'];
-  const mail = fallbackSelection('what did Helm say about the Mongoose release', FALLBACK).actions.find(action => action.kind === 'mail_search');
+  const mail = fallbackSelection('what did Helm mail about the Mongoose release', FALLBACK).actions.find(action => action.kind === 'mail_search');
   assert.match(String(mail?.query), /mongoose/u, 'mongoose is no layer this run may read, so the fallback keeps the word');
 });
 

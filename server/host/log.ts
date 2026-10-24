@@ -34,6 +34,9 @@ const LIVE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'rebuilding', 
 /** GL2-R1: why a projected state changed, a closed set, so host.log can say what moved the orb. */
 export const LIVE_STATE_CAUSES = ['created', 'input', 'model_turn_start', 'audio', 'silence', 'turn_complete', 'interrupted',
   'tool', 'settle', 'rebuild', 'poll', 'ready'] as const;
+/** #591: why a provider session was rebuilt, a closed set. The two watchdog tokens split a silent model from a
+ *  model that owes the owner an answer; the other two name the transport causes that rebuild on their own. */
+export const LIVE_REBUILD_TRIGGERS = ['no_output_after_ambient', 'no_output_after_owner', 'line_dropped', 'session_window'] as const;
 /** The provider handshake steps, in the order the adapter walks them. */
 const LIVE_HANDSHAKE_STEPS = ['credential_resolved', 'socket_open', 'session_start_sent', 'session_started'] as const;
 const SESSION_ID = /^[0-9a-f-]{36}$/i;
@@ -612,9 +615,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'live_watchdog') {
     // 3j: the response watchdog, one record per phase change. Phase, turn age and connection generation only.
     if (Object.keys(value).sort().join(',') !== ['event', 'generation', 'phase', 'turnAgeMs'].sort().join(',')) return;
-    if (!isSafeMember(value.phase, ['armed', 'nudged', 'recovered', 'settled'])) return;
+    if (!isSafeMember(value.phase, ['armed', 'nudged', 'closed', 'recovered', 'settled'])) return;
     if (!isSafeCount(value.turnAgeMs) || !isSafeCount(value.generation)) return;
     return { event: 'live_watchdog', phase: value.phase, turnAgeMs: value.turnAgeMs, generation: value.generation };
+  }
+  if (value.event === 'live_rebuild') {
+    // #591: every rebuild names its trigger from the closed set, so a silent model and a quiet room are told apart.
+    if (!closedKeys(value, ['event', 'trigger', 'liveSessionId', 'generation'])) return;
+    if (!isSafeMember(value.trigger, LIVE_REBUILD_TRIGGERS)) return;
+    if (!isSafeId(value.liveSessionId) || !isSafeCount(value.generation)) return;
+    return { event: 'live_rebuild', trigger: value.trigger, liveSessionId: value.liveSessionId, generation: value.generation };
   }
   if (value.event === 'live_turn_script') {
     // E1: which script the model spoke this turn, in closed buckets and code-point counts. Never text.

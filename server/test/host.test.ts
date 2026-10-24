@@ -510,7 +510,7 @@ for (const missingMongoose of [true, false]) {
     const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; tools: number }>;
     assert.deepEqual(reports.map(report => [report.id, report.state, report.tools]).sort(), [
       ['lux-knowledge', 'connected', 2], ['gmail', 'connected', 3], ['calendar', 'connected', 2],
-      ['mattermost', 'connected', 6], ['mongoose', missingMongoose ? 'error' : 'connected', missingMongoose ? 0 : 7],
+      ['mattermost', 'connected', 5], ['mongoose', missingMongoose ? 'error' : 'connected', missingMongoose ? 0 : 7],
     ].sort());
     const response = await fetch(host.descriptor.origin + '/api/v1/live-sessions', { method: 'POST', headers, body: JSON.stringify({ inputClass: 'ordinary' }) });
     const body = await response.json();

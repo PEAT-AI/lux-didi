@@ -870,7 +870,7 @@ export function mailSearchPhrase(q: string): string {
 }
 
 /** The deterministic fallback query per source: never the raw sentence. */
-export function fallbackQuery(kind: CandidateKind, question: string, nowMs = Date.now()): { query?: string; window?: string } {
+export function fallbackQuery(kind: CandidateKind, question: string, nowMs = Date.now(), sources: readonly SourceKind[] = RESEARCH_SOURCES): { query?: string; window?: string } {
   const text = question.toLowerCase();
   const keywords = contentKeywords(question);
   const terms = keywords.join(' ');
@@ -883,7 +883,7 @@ export function fallbackQuery(kind: CandidateKind, question: string, nowMs = Dat
       : /\b(this week|week)\b/.test(text) ? 'newer_than:7d'
       : /\byesterday\b/.test(text) ? 'newer_than:2d'
       : 'newer_than:14d';
-    return { query: compileMailQuery(question, undefined, nowMs, undefined, question, question, window) };
+    return { query: compileMailQuery(question, undefined, nowMs, undefined, question, question, window, sources) };
   }
   // ONE-1023: the day operator is the owner's own day. DATES-R1 F3: the no-operator rule applies to
   // content terms, and with none left the base recency window stays, never an empty query.
@@ -1039,7 +1039,7 @@ export function routedSelection(question: string, configured: readonly SourceKin
   if (!KNOWLEDGE_WORDS.test(text)) return undefined;
   return {
     questionClass: 'cross_source',
-    actions: [{ kind: 'knowledge_search', ...fallbackQuery('knowledge_search', question, nowMs) }],
+    actions: [{ kind: 'knowledge_search', ...fallbackQuery('knowledge_search', question, nowMs, configured) }],
     pUseful: { knowledge_search: 0.6 },
   };
 }
@@ -1051,7 +1051,7 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   const pUseful: Partial<Record<CandidateKind, number>> = {};
   const offer = (kind: CandidateKind, p: number, source: SourceKind | null): void => {
     if (source !== null && !configured.includes(source)) return;
-    actions.push({ kind, ...fallbackQuery(kind, question, nowMs) });
+    actions.push({ kind, ...fallbackQuery(kind, question, nowMs, configured) });
     pUseful[kind] = p;
   };
   const webWords = !/\b(?:mail|calendar|chat|our|my|we)\b/u.test(text)
@@ -3246,7 +3246,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
         source: 'mail' as const, kind: 'id' in lookup.mail ? 'mail_open' as const : 'mail_search' as const,
         subs: [{
           key: 'mail0', name: 'id' in lookup.mail ? INTERNAL.mailRead : INTERNAL.mailList,
-          args: 'id' in lookup.mail ? { ...lookup.mail } : { ...mailPageArgs(lookup.mail as JsonObject), q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone, context.topic, context.ownerWords) },
+          args: 'id' in lookup.mail ? { ...lookup.mail } : { ...mailPageArgs(lookup.mail as JsonObject), q: compileMailQuery(context.question, lookup.mail.q, context.now(), context.timeZone, context.topic, context.ownerWords, undefined, context.configured) },
         }],
       }
       : { source: 'mail' as const, kind: 'mail_search' as const, subs: candidateSubs('mail_search', subsConfig) };
@@ -4556,7 +4556,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
         const text = plannedText;
         for (const kind of narrowed) {
           if (selection.actions.some(action => action.kind === kind)) continue;
-          selection.actions.push({ kind, ...fallbackQuery(kind, text, now()) });
+          selection.actions.push({ kind, ...fallbackQuery(kind, text, now(), configured) });
           selection.pUseful[kind] = 0.6;
         }
       }
@@ -4565,7 +4565,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       // the selector path and the fallback path alike, whenever the calendar endpoint can serve it.
       if (ownerScheduleQuestion(plannedText) && selection.actions.length > 0 && candidatesForSelector.includes('calendar_window')
         && !unavailable.includes('calendar') && !selection.actions.some(action => action.kind === 'calendar_window')) {
-        selection.actions.push({ kind: 'calendar_window', ...fallbackQuery('calendar_window', plannedText, now()) });
+        selection.actions.push({ kind: 'calendar_window', ...fallbackQuery('calendar_window', plannedText, now(), configured) });
         selection.pUseful['calendar_window'] ??= 0.4;
       }
 

@@ -278,3 +278,23 @@ test('ONE-1023: a filtered search that matched nothing retries once without the 
   const receipt = h.sources.filter(entry => entry.source === 'knowledge').at(-1);
   assert.equal(receipt?.knowledge?.dayFilter, 'dropped_on_empty', 'the receipt says the filter was dropped');
 });
+
+// #631: the ask names the layer so the router can read it; the layer's name is never a search term. A
+// name whose layer this run cannot read is the ask's subject and stays a term.
+test('#631: the source name an ask speaks is the route, never a knowledge term', () => {
+  const ask = (topic: string, question = topic): string =>
+    String(candidateSubs('knowledge_search', { question, topic, configured: CONFIGURED, evidence: new Map() })[0]?.args['query']);
+  assert.equal(ask('lux knowledge about determinism', 'check lux knowledge about determinism'), 'determinism', 'the named layer is dropped, the subject kept');
+  assert.equal(ask('the vault determinism'), 'determinism', 'the vault is the same layer in another name');
+  assert.equal(ask('dark triad lux knowledge', 'what do we know about dark triad'), 'dark triad', 'a trailing source name is dropped too');
+  assert.equal(ask('mongoose release'), 'mongoose release', 'mongoose is no layer this run may read, so the word is content');
+});
+
+test('#631: a mail ask names the layer, and the layer name is no Gmail term', () => {
+  const MAIL_RUN: readonly SourceKind[] = ['knowledge', 'mail', 'mongoose'];
+  const q = (topic: string, question: string): string =>
+    String(candidateSubs('mail_search', { question, topic, configured: MAIL_RUN, evidence: new Map() })[0]?.args['q']);
+  assert.ok(!/\binbox\b/u.test(q('inbox about the invoice', 'what is in my inbox about the invoice').replace(/in:inbox/gu, '')), 'inbox is the layer, not a term');
+  assert.ok(!/\bmongoose\b/u.test(q('mongoose invoice', 'what did the mongoose invoice email say')), 'and a source word the mail run may read is dropped');
+  assert.match(q('mongoose invoice', 'what did the mongoose invoice email say'), /invoice/u, 'the subject still searches');
+});

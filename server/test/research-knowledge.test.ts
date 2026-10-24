@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, candidateSubs, knowledgeQuery, runResearch, shapeBlock,
+  RESEARCH, ResearchLedger, candidateSubs, capReply, knowledgeQuery, runResearch, shapeBlock,
   type ResearchDeps, type ResearchSourceLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
+import { GMAIL_BODY_CHARS, shapeLuxKnowledge } from '../tools/live-shape.js';
+import { projectLuxResult } from '../tools/lux-knowledge.js';
+import { createHash } from 'node:crypto';
+import type { McpPort } from '../adapters/mcp/port.js';
+import type { ConnectionPolicy } from '../tools/types.js';
 
 // Two sources, so the run plans across them instead of taking the single-source path.
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'chat'];
@@ -48,6 +53,81 @@ const LONG_BODY = [
   `the deadline is the fifteenth${' and the corpus keeps the rest'.repeat(120)}`,
 ].join('\n');
 
+/** #580: the server's own ranker line for a query nothing in the vault matches. */
+const NO_CANDIDATE = [
+  '# Knowledge Search',
+  '_confidence: low · top score: 0.11 · relevant candidate: no_',
+  '**#900** [PATTERN] Unrelated engineering note',
+  'the vault keeps an unrelated engineering note about socket timeouts',
+].join('\n');
+
+/** #580: a synthetic MCP entity with the ranker's own line, and the policy that admits it. */
+function projectedKnowledge(text: string): Record<string, unknown> {
+  const entity = Buffer.from(JSON.stringify({ content: [{ type: 'text', text }] }), 'utf8');
+  const sha = createHash('sha256').update(entity).digest('hex');
+  const expiresAt = Date.now() + 60_000;
+  const policy: ConnectionPolicy = {
+    schemaVersion: 1, ownerId: 'owner', connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
+    endpoint: { id: 'endpoint', url: 'https://synthetic.invalid/mcp', account: 'account', resource: 'resource', credentialRef: 'private:synthetic-reference' },
+    toolNames: ['search_knowledge'], schemaDigest: 'schema',
+    sourcePolicy: { id: 'synthetic-policy', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
+    route: { identity: 'synthetic-route', allowedClasses: ['private'] },
+    bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 },
+  };
+  const port = { readSlice: () => ({ state: 'available', bytes: entity.slice(), byteLength: entity.length, sha256: sha, expiresAt: expiresAt }) } as unknown as McpPort;
+  return projectLuxResult({
+    state: 'completed', tool: 'search_knowledge', observedAt: 1, decodedResult: { content: [{ type: 'text', text }] },
+    source: { endpointId: 'endpoint', url: 'https://synthetic.invalid/mcp', schemaDigest: 'schema', toolName: 'search_knowledge', generation: 1, account: 'account', resource: 'resource' },
+    coverage: { completeCorpus: false, basis: 'single-tool-result', remoteSideEffects: 'unverified' },
+    projection: { text: text, omitted: false, originalCharacters: text.length, omittedCharacters: 0 },
+    response: { state: 'available', handle: 'handle', sha256: sha, byteLength: entity.length, expiresAt: expiresAt, encoding: 'http-response-entity' },
+  }, policy, port).response;
+}
+
+test('#580: the projection carries the ranker confidence on the response, not only inside its text', () => {
+  const response = projectedKnowledge(NO_CANDIDATE);
+  assert.deepEqual(response['knowledgeConfidence'], { confidence: 'low', top: '0.11', candidates: 'no' }, 'the named carrier survives the projection');
+  assert.equal(typeof response['text'], 'string', 'and the model-visible text is unchanged in kind');
+});
+
+test('#580: a no-candidate low-confidence knowledge read carries the confidence and is voiced as no match', () => {
+  const shaped = shapeLuxKnowledge('search_knowledge', NO_CANDIDATE);
+  assert.deepEqual(shaped.knowledgeConfidence, { confidence: 'low', top: '0.11', candidates: 'no' }, 'the shape reads the ranker line before it strips it');
+  const block = shapeBlock('knowledge_search', [{ ...sub('search_knowledge', shaped.text), knowledgeConfidence: shaped.knowledgeConfidence }]);
+  assert.ok(block.lines.includes('knowledge: confidence=low top=0.11 candidates=no'), `the finding leads with the confidence, got ${JSON.stringify(block.lines)}`);
+  assert.ok(block.lines.includes('knowledge: nothing matched this ask'), 'a low-confidence no-candidate match is voiced as no match');
+  assert.equal(block.lines.some(line => line.includes('relevant candidate:')), false, 'the raw ranker line is never voiced as a hit');
+  const carried = shapeBlock('knowledge_search', [{ ...sub('search_knowledge', shaped.text), knowledgeConfidence: { confidence: 'low', top: '0.11', candidates: 'no' } }]);
+  assert.deepEqual(carried.lines, block.lines, 'the carried confidence and the read one voice the same finding');
+});
+
+test('#580: a run voices the weak knowledge match as nothing matching', async () => {
+  const shaped = shapeLuxKnowledge('search_knowledge', NO_CANDIDATE);
+  const h = harness({ execute: async subs => subs.map(call => ({ ...sub(call.name, shaped.text, true, call.key), ...(shaped.knowledgeConfidence === undefined ? {} : { knowledgeConfidence: shaped.knowledgeConfidence }) })) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what does the vault hold about dark triad' }, new AbortController().signal);
+  assert.match(JSON.stringify(reply['findings']), /knowledge: confidence=low top=0\.11 candidates=no/u, 'the voiced finding carries the confidence');
+  assert.match(JSON.stringify(reply['findings']), /nothing matched this ask/u, 'and is voiced as no match');
+});
+
+test('#5: a clipped knowledge hit counts as shown, never as left out', () => {
+  const line = `#1 a long hit ${'x'.repeat(400)}`;
+  const reply = { researchId: 'r', status: 'complete', findings: [{ source: 'knowledge', text: `knowledge: 1 of 1 shown\n${line}`, chars: line.length }] };
+  const capped = capReply(reply, JSON.stringify(reply).length - 100);
+  const text = (capped['findings'] as { text: string }[])[0]!.text;
+  assert.match(text, /knowledge: 1 of 1 shown/u, `the clipped hit is still shown: ${text.slice(0, 80)}`);
+  assert.ok(text.split('\n').length === 2, 'the one hit is still voiced');
+});
+
+test('#580: the confidence travels as a field and never spends the result budget', () => {
+  const body = 'the vault entry says the deadline is the fifteenth. '.repeat(120);
+  const plain = shapeLuxKnowledge('search_knowledge', body);
+  const marked = shapeLuxKnowledge('search_knowledge', `_confidence: low · top score: 0.11 · relevant candidate: no_\n${body}`);
+  assert.deepEqual(marked.knowledgeConfidence, { confidence: 'low', top: '0.11', candidates: 'no' }, 'the mark is carried as a field');
+  const evidence = (text: string): string => text.replace(/\[omitted:[^\]]*\]/gu, '');
+  assert.ok(evidence(plain.text).length <= GMAIL_BODY_CHARS, `the plain result holds the path budget, got ${evidence(plain.text).length}`);
+  assert.equal(marked.text, plain.text, 'and the carried confidence costs the model text nothing');
+});
+
 test('K3: the model-authored knowledge query is clipped to ten content terms, and filler never rides', () => {
   const sentence = 'what did we decide about the wriggler three layer schema migration deadline for the owner dashboard';
   const shaped = knowledgeQuery(sentence);
@@ -57,7 +137,7 @@ test('K3: the model-authored knowledge query is clipped to ten content terms, an
   assert.deepEqual(terms, ['decide', 'wriggler', 'three', 'layer', 'schema', 'migration', 'deadline', 'dashboard']);
   assert.ok(!terms.includes('about') && !terms.includes('owner'), 'filler is dropped before the budget is counted');
   assert.ok(!sentence.startsWith(shaped), 'the whole spoken sentence never reaches the search');
-  const [call] = candidateSubs('knowledge_search', { question: sentence, configured: CONFIGURED, evidence: new Map() });
+  const [call] = candidateSubs('knowledge_search', { question: sentence, topic: sentence, configured: CONFIGURED, evidence: new Map() });
   assert.equal(String(call!.args['query']), shaped);
   const longer = 'decide wriggler three layer schema migration deadline dashboard harvester pipeline ledger';
   assert.deepEqual(knowledgeQuery(longer).split(' ').slice(-1), ['pipeline'], 'the tenth term is the last one that fits');
@@ -67,19 +147,19 @@ test('K3: the model-authored knowledge query is clipped to ten content terms, an
 });
 
 test('K4: a known project name in the question supplies a hint, and never a hard filter', () => {
-  const hinted = candidateSubs('knowledge_search', { question: 'how is the Wriggler pipeline doing', configured: CONFIGURED, evidence: new Map() });
+  const hinted = candidateSubs('knowledge_search', { question: 'how is the Wriggler pipeline doing', topic: 'Wriggler pipeline', configured: CONFIGURED, evidence: new Map() });
   assert.equal(hinted[0]!.args['project_hint'], 'Wriggler');
   assert.equal('project' in hinted[0]!.args, false);
-  const plain = candidateSubs('knowledge_search', { question: 'what did we decide about the retrieval deadline', configured: CONFIGURED, evidence: new Map() });
+  const plain = candidateSubs('knowledge_search', { question: 'what did we decide about the retrieval deadline', topic: 'retrieval deadline', configured: CONFIGURED, evidence: new Map() });
   assert.equal('project_hint' in plain[0]!.args, false);
   assert.equal('project' in plain[0]!.args, false);
 });
 
 test('K6: a question with no content words asks rather than searching filler', () => {
-  assert.deepEqual(candidateSubs('knowledge_search', { question: 'what is that', configured: CONFIGURED, evidence: new Map() }), []);
-  assert.equal(candidateSubs('knowledge_search', { question: 'wriggler pipeline', configured: CONFIGURED, evidence: new Map() }).length, 1);
+  assert.deepEqual(candidateSubs('knowledge_search', { question: 'what is that', topic: 'that', configured: CONFIGURED, evidence: new Map() }), []);
+  assert.equal(candidateSubs('knowledge_search', { question: 'wriggler pipeline', topic: 'wriggler pipeline', configured: CONFIGURED, evidence: new Map() }).length, 1);
   // A model query of one domain word survives: it is a search string, never a spoken sentence.
-  const [one] = candidateSubs('knowledge_search', { question: 'who is on my team', query: 'team', configured: CONFIGURED, evidence: new Map() });
+  const [one] = candidateSubs('knowledge_search', { question: 'who is on my team', topic: 'team', query: 'team', configured: CONFIGURED, evidence: new Map() });
   assert.equal(one!.args['query'], 'team');
 });
 
@@ -117,7 +197,7 @@ test('K8: knowledge latency is stated at its measured p50, and the log carries t
     now: () => clock,
     execute: async subs => { clock += 1_200; return subs.map(call => sub(call.name, CUT_SEARCH, true, call.key)); },
   });
-  await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
+  await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline', topic: 'retrieval deadline' }, new AbortController().signal);
   const knowledge = h.sources.find(entry => entry.source === 'knowledge');
   assert.equal(knowledge?.ms, 1_200, 'the source line carries the read span, not the whole run');
 });
@@ -142,7 +222,7 @@ test('ROUTE-1022: a knowledge question is one search call, with the full body wi
       executed.push(call);
       return sub(call.name, CUT_SEARCH, true, call.key);
     }) });
-  await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
+  await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline', topic: 'retrieval deadline' }, new AbortController().signal);
   assert.equal(executed.filter(call => call.name === 'search_knowledge').length, 1, 'exactly one knowledge call');
   assert.equal(executed.filter(call => call.name === 'get_insight').length, 0, 'no get_insight hop');
   const search = executed.find(call => call.name === 'search_knowledge')!;
@@ -153,7 +233,7 @@ test('ROUTE-1022: a knowledge question is one search call, with the full body wi
 test('ROUTE-1022: a knowledge reply that would overrun the reply budget is trimmed to the hits that fit', async () => {
   const longBody = Array.from({ length: 6 }, (_, index) => `**#${index + 1}** [PATTERN] Hit ${index} | ${'x'.repeat(2_900)}`).join('\n');
   const h = harness({ execute: async subs => subs.map(call => sub(call.name, longBody, true, call.key)) });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline' }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline', topic: 'retrieval deadline' }, new AbortController().signal);
   const bytes = JSON.stringify(reply).length;
   assert.ok(bytes <= RESEARCH.replyLimitChars, `reply bytes ${bytes} over the ${RESEARCH.replyLimitChars} budget`);
 });
@@ -168,7 +248,7 @@ test('ONE-1023: a question about today reads the notes that exist, with no day f
     now: () => FRIDAY,
     execute: async subs => { executed.push(...subs); return subs.map(call => sub(call.name, '### 2026-10-16 budget review [id 41]\nwe agreed the budget review', true, call.key)); },
   });
-  const reply = await runResearch({ ...h.deps, timeZone: 'Asia/Kolkata' }, { action: 'start', question: 'what meetings do I have today' }, new AbortController().signal);
+  const reply = await runResearch({ ...h.deps, timeZone: 'Asia/Kolkata' }, { action: 'start', question: 'what meetings do I have today', topic: 'meetings' }, new AbortController().signal);
   const searched = executed.find(call => call.name === 'search_knowledge');
   assert.ok(searched !== undefined, 'the knowledge read still runs');
   assert.equal('meeting_date_from' in searched.args, false, 'a day that has not passed cannot be filtered on');
@@ -184,7 +264,7 @@ test('ONE-1023: a filtered search that matched nothing retries once without the 
       return subs.map(call => sub(call.name, 'meeting_date_from' in call.args ? '' : '### budget review [id 41]\nthe budget review is agreed', true, call.key));
     },
   });
-  const reply = await runResearch({ ...h.deps, timeZone: 'Asia/Kolkata' }, { action: 'start', question: "what did we decide in yesterday's meeting about the budget review" }, new AbortController().signal);
+  const reply = await runResearch({ ...h.deps, timeZone: 'Asia/Kolkata' }, { action: 'start', question: "what did we decide in yesterday's meeting about the budget review", topic: "what did we decide in yesterday's meeting about the budget review" }, new AbortController().signal);
   const searches = executed.filter(call => call.name === 'search_knowledge');
   assert.equal(searches.length, 2, 'one retry, never more');
   assert.equal('meeting_date_from' in searches[0]!.args, true, 'the first read carries the past day');

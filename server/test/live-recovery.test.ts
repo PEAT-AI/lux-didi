@@ -322,7 +322,7 @@ async function ownerSpoke(h: Harness, text = 'what do we know about the plan'): 
 
 /** One lookup question per call, so a repeat never hits the session's answer cache instead of the loop. */
 const research = (id: string, question = 'what do we know about the plan'): LiveVoiceEvent => ({
-  type: 'toolCall', calls: [{ id, name: 'research', args: { action: 'start', question } }], sequence: 0,
+  type: 'toolCall', calls: [{ id, name: 'research', args: { action: 'start', question, topic: question } }], sequence: 0,
 }) as LiveVoiceEvent;
 
 test('F1: a research call after a rebuild reaches the connector instead of being denied', async t => {

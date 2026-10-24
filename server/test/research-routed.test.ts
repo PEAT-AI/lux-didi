@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, candidateSubs, lookupBound, normalizeLookups, ownerScheduleQuestion, researchDeclaration, runResearch,
+  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, candidateSubs, lookupBound, normalizeLookups, ownerScheduleQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
   validateResearch,
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchRoutedLog, type ResearchSubcallLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
@@ -154,7 +154,7 @@ test('ROUTE-1022 K11: a model-written mail lookup reads one page, never the whol
     return subs.map(call => sub(call.name, '- Invoice | Landlord | Mon | due soon [id m1]', true, call.key));
   } });
   await runResearch(h.deps, {
-    action: 'start', question: 'agricon mail', lookups: [{ source: 'mail', mail: { q: 'agricon', maxResults: 100 } }],
+    action: 'start', question: 'agricon mail', topic: 'agricon', lookups: [{ source: 'mail', mail: { q: 'agricon', maxResults: 100 } }],
   }, new AbortController().signal);
   const pages = dispatched.filter(args => typeof args['q'] === 'string');
   assert.ok(pages.length > 0, 'the mail lookup dispatched a page');
@@ -164,14 +164,14 @@ test('ROUTE-1022 K11: a model-written mail lookup reads one page, never the whol
 });
 
 test('ROUTE-1022 K5: a brief on a question that names no layer reads knowledge only', async () => {
-  const subs = candidateSubs('brief', { question: 'what do you think about our business model', configured: CONFIGURED, evidence: new Map() });
+  const subs = candidateSubs('brief', { question: 'what do you think about our business model', topic: 'business model', configured: CONFIGURED, evidence: new Map() });
   assert.deepEqual(subs.map(call => call.name), ['search_knowledge'], 'no mail, calendar or chat read');
   assert.equal(JSON.stringify(subs).includes('open loop follow up'), false, 'the default query is gone');
   assert.match(String(subs[0]!.args['query']), /business model/);
 });
 
 test('ROUTE-1022 K5: a brief on a question that names a layer reads that layer too', async () => {
-  const subs = candidateSubs('brief', { question: "what's on my calendar tomorrow", configured: CONFIGURED, evidence: new Map() });
+  const subs = candidateSubs('brief', { question: "what's on my calendar tomorrow", topic: 'calendar', configured: CONFIGURED, evidence: new Map() });
   const names = subs.map(call => call.name);
   assert.ok(names.includes('calendar_list_events'), 'the layer the question names is read');
   assert.equal(names.includes('mattermost_search'), false, 'a layer it did not name is not');
@@ -254,15 +254,15 @@ test('calendar lookups carry a day or a named window', () => {
 });
 
 test('the declared lookups key is valid on start only and matches its validator', () => {
-  assert.equal(validateResearch({ action: 'start', question: 'q' }), true, 'unrouted start stays valid');
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: [{ source: 'memory', query: 'x' }] }), true);
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: [] }), true);
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: [{ source: 'mail' }] }), false);
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: [{ source: 'nonsense', query: 'x' }] }), false);
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: [{ source: 'mail', query: 'x', extra: 1 }] }), false);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't' }), true, 'unrouted start stays valid');
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [{ source: 'memory', query: 'x' }] }), true);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [] }), true);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [{ source: 'mail' }] }), false);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [{ source: 'nonsense', query: 'x' }] }), false);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: [{ source: 'mail', query: 'x', extra: 1 }] }), false);
   assert.equal(validateResearch({ action: 'continue', researchId: 'r', lookups: [{ source: 'mail', query: 'x' }] }), false,
     'lookups belong to a start');
-  assert.equal(validateResearch({ action: 'start', question: 'q', lookups: 'mail' }), false);
+  assert.equal(validateResearch({ action: 'start', question: 'q', topic: 't', lookups: 'mail' }), false);
 });
 
 test('both provider declarations carry lookups, and the Gemini dialect flattens it', () => {
@@ -734,4 +734,57 @@ test('LAT-1023: a run that answers in its first round never claims the cap', asy
   await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
   assert.equal(h.logs[0]!.rounds, 1);
   assert.equal(h.logs[0]!.roundCapHit, undefined, 'an answered first round hit no cap');
+});
+
+// #579/TRIAGE-R1 5: the plurals, gmail, inbox, messages, dm(s) and chats name their own source, a time
+// word alone never swaps the named source for the calendar, and a weekday or an exact date is the calendar.
+test('#579/TRIAGE-R1 5: every new word form routes to its source and a window word does not steal it', () => {
+  const table: [string, SourceKind[]][] = [
+    ['what did the emails say about the retainer', ['mail']],
+    ['any gmail from Priya', ['mail']],
+    ['is my inbox clear', ['mail']],
+    ['what did the chats say about the freeze', ['chat']],
+    ['anything from the dms yesterday', ['chat']],
+    ['what did the mattermost team decide', ['chat']],
+    ['any messages', ['mail', 'chat']],
+    ['any important emails today', ['mail']],
+    ['what happened in the chats this week', ['chat']],
+    ["what's on thursday", ['calendar']],
+    ['what have I got on 2026-10-30', ['calendar']],
+  ];
+  for (const [question, sources] of table) assert.deepEqual(requiredSources(question), sources, question);
+  const today = routedSelection('any important emails today', CONFIGURED, Date.parse('2026-10-21T05:30:00Z'));
+  assert.ok(today !== undefined, 'a mail ask with a time word is a deterministic selection');
+  assert.ok(today.actions.some(action => action.kind === 'mail_search'), 'it reads mail');
+  assert.ok(!today.actions.some(action => action.kind === 'calendar_window'), 'a time word never pulls the calendar in');
+  const thursday = routedSelection("what's on thursday", CONFIGURED, Date.parse('2026-10-21T05:30:00Z'));
+  assert.ok(thursday !== undefined && thursday.actions.some(action => action.kind === 'calendar_window'), 'a weekday reads the calendar');
+});
+
+// TRIAGE-R1 6: "anything urgent" names no source, so what came in is a mail, a chat and a calendar read,
+// and her own memory is offered beside them.
+test('TRIAGE-R1 6: a triage ask routes to mail, chat and calendar, with the memory route beside them', () => {
+  assert.deepEqual(requiredSources('anything urgent?'), ['mail', 'chat', 'calendar']);
+  const selection = routedSelection('anything urgent?', CONFIGURED, Date.parse('2026-10-21T05:30:00Z'));
+  assert.ok(selection !== undefined, 'a triage ask is a deterministic selection');
+  const kinds = selection.actions.map(action => action.kind).sort();
+  assert.deepEqual(kinds, ['calendar_window', 'chat_search', 'knowledge_search', 'mail_search'], 'the three sources and her memory');
+  for (const kind of ['mail_search', 'chat_search', 'calendar_window'] as const) {
+    assert.ok(selection.pUseful[kind] !== undefined, `${kind} is offered`);
+  }
+});
+
+// TRIAGE-R3: a recall ask is her own remembered history, so it reads memory and never the knowledge
+// store, and the deterministic router does not turn it into a chat search on the word "said".
+test('TRIAGE-R3: a recall ask routes to memory', () => {
+  const table = [
+    'what did we say about the pricing deck',
+    'last time we talked about the deadline',
+    'you told me the release was friday',
+    'do you remember the hawthorn decision',
+  ];
+  for (const question of table) {
+    assert.deepEqual(requiredSources(question), ['memory'], question);
+    assert.equal(routedSelection(question, CONFIGURED, Date.parse('2026-10-21T05:30:00Z')), undefined, `${question} is a memory read, not a router candidate`);
+  }
 });

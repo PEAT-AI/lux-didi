@@ -22,7 +22,7 @@ import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, Rese
 
 import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption, type OpeningOptionKind } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
-import { liveTracePort, record, recordCallResult, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
+import { liveTracePort, record, recordCallResult, recordQueryShape, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
 import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
@@ -37,6 +37,7 @@ import { currentLiveAccent } from '../config/live.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
 import { parseTerminal, persistedKinds, readFragmentPage, retainedBytes } from './journal.js';
+import { stopPhrase } from './stop-phrase.js';
 import {
   LiveError,
   type CreateLiveSession, type JournalKind, type LiveAttachment, type LiveConsumerState, type LiveContext,
@@ -256,8 +257,19 @@ export const RESPONSE_WATCHDOG_RECOVERY_MS = 7_000;
 export const RESPONSE_WATCHDOG_WINDOW_MS = 120_000;
 /** The write tools the Live model may decline or call, and the resource each one is pinned to. */
 const OWNER_WRITE_RESOURCES = new Map([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault']]);
-/** 3j: idle is conversational silence, so only an owner speech signal or model output resets it, never a mic frame. */
-const IDLE_ACTIVITY: ReadonlySet<string> = new Set(['inputTranscription', 'waitingForInput', 'modelTurnStarted', 'audio', 'modelText', 'outputTranscription', 'turnComplete', 'toolCall']);
+/** #592: the closed set of causes an idle arm may name, in the host log and in the arm itself. */
+export const IDLE_RESET_CAUSES = ['opened', 'unmuted', 'tool_result', 'turn_failed', 'typed', 'owner_speech', 'model_audio'] as const;
+/** #592: idle is conversational silence: a finalized owner transcript with content, or model audio. */
+type IdleResetCause = typeof IDLE_RESET_CAUSES[number];
+/** #592: an owner transcript only counts once it closed carrying the text that was spoken. */
+function idleResetCause(handle: ActiveSession, event: LiveVoiceEvent): 'owner_speech' | 'model_audio' | undefined {
+  if (event.type === 'audio') return 'model_audio';
+  if (event.type !== 'inputTranscription') return undefined;
+  if (event.text.trim() !== '') handle.ownerSpeechPending = true;
+  if (event.finished !== true || handle.ownerSpeechPending !== true) return undefined;
+  handle.ownerSpeechPending = false;
+  return 'owner_speech';
+}
 /** Every job row is written with a one day expiry (server/tools/jobs.ts); past it the row is stale data. */
 const JOB_EXPIRY_MS = 86_400_000;
 /** One intent sub-read deadline: a slow source never holds the whole turn past this. */
@@ -428,6 +440,10 @@ interface ActiveSession {
   // E1 interruption telemetry: provider-side facts for the last turn only, never audio or text.
   lastModelAudioAt?: number;
   turnCompleteSeen: boolean;
+  /** #592: the owner text joined since the last finalization, so an empty finalization is not speech. */
+  ownerSpeechPending?: boolean;
+  /** #595: the owner zone this call was composed in; the call's date math never re-resolves it. */
+  timeZone: string;
   /** The last live state this session projected, which is the `from` of its next transition receipt. */
   liveState?: LivePageProjection['state'];
   liveSessionId: string;
@@ -880,7 +896,7 @@ export class LiveSessionOwner {
   readonly #voice: LiveVoicePort;
   readonly #profile: LiveProfile;
   readonly #now: () => number;
-  readonly #timeZone: string;
+  readonly #timeZonePin: string | undefined;
   readonly #schedule: NonNullable<LiveOwnerConfig['schedule']>;
   readonly #researchWeb: WebSearchPort | undefined;
   /** The local, model-free block a silent Naya keeps ready (council-presence-1017, item 4). */
@@ -921,7 +937,7 @@ export class LiveSessionOwner {
     this.#voice = config.voice;
     this.#researchWeb = config.researchWeb;
     this.#profile = validateLiveProfile(config.profile);
-    this.#timeZone = config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+    this.#timeZonePin = config.timeZone;
     const now = config.now ?? Date.now;
     this.#now = () => {
       const value = now();
@@ -941,14 +957,19 @@ export class LiveSessionOwner {
 
   get revision(): number { return this.#revision; }
 
+  /** #595: the owner zone now, so a call composed after the owner moved carries his new zone. */
+  #ownerTimeZone(): string {
+    return this.#timeZonePin ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  }
+
   /** Host-generated runtime context: host clock and timezone, plus the groups this session can reach. */
-  #liveRuntimeContext(toolNames: readonly string[]): string {
+  #liveRuntimeContext(toolNames: readonly string[], timeZone: string): string {
     const connected = toolGroupNames(toolNames);
     const endpoints = this.#tools?.status?.().endpoints ?? [];
     const unavailable = endpoints.filter(endpoint => endpoint.state !== 'connected')
       .flatMap(endpoint => connectorGroupNames(endpoint.connector))
       .filter((group, index, all) => all.indexOf(group) === index && !connected.includes(group));
-    const context = buildRuntimeContext({ now: new Date(this.#now()), timeZone: this.#timeZone, connected, unavailable });
+    const context = buildRuntimeContext({ now: new Date(this.#now()), timeZone, connected, unavailable });
     const signIn = signInNote(endpoints);
     return signIn ? `${context}\n\n${signIn}` : context;
   }
@@ -1024,6 +1045,8 @@ export class LiveSessionOwner {
     this.#contextShape(context);
     const fingerprintFor = (prompt: string) => identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt, pickupJobId: input.pickupJobId ?? null });
     const now = this.#now();
+    // #595: the owner travels, so the zone is read when this call is composed, never at host start.
+    const timeZone = this.#ownerTimeZone();
     const assistantId = this.#store.assistantId;
     const snapshot = this.#store.transaction(tx => {
       // Same-key replay is decided on the normalized request meaning before any policy.
@@ -1070,7 +1093,7 @@ export class LiveSessionOwner {
       const storedSummaries = summarySelection.candidates;
       const summaryGap = Object.values(summarySelection.coverage).some(count => count > 0);
       const freshThread = freshOwnerThread(tx, assistantId, this.#profile.route.dataClasses, now);
-      const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone: this.#timeZone,
+      const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone,
         ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
         openLoops: storedOpenLoops(tx, this.#profile.route.dataClasses, now),
         ...(freshThread === undefined ? {} : { freshThread }),
@@ -1080,7 +1103,7 @@ export class LiveSessionOwner {
         // The delegated backend executes the tools on the OpenAI path; a direct-tool provider keeps the full conduct.
         delegatedBackend: this.#profile.provider === 'openai',
         accentSelection: currentLiveAccent(),
-        runtimeContext: this.#liveRuntimeContext(toolNames),
+        runtimeContext: this.#liveRuntimeContext(toolNames, timeZone),
         records: records.filter(record => record.dataClass === 'ordinary'), trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
         ...(calendar ? { calendar } : {}),
         ...((earlierSection || summaryGap) ? { earlierConversations: [earlierSection, summaryGap ? CONVERSATION_RECALL_COVERAGE_NOTE : undefined].filter(Boolean).join('\n') } : {}),
@@ -1093,7 +1116,7 @@ export class LiveSessionOwner {
       const compose = (): ReturnType<typeof composeLiveSessionInstruction> => {
         const basis = composeSession(undefined, this.#calendar);
         earlier = buildEarlierConversationsSection(storedSummaries,
-          { now, timeZone: this.#timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
+          { now, timeZone, maxChars: earlierConversationsBudget(basis.text.length) });
         this.#sections = { persona: configuredPrompt.system, memory: [],
           summary: earlier.section || undefined, summaryIds: [...earlier.selectedIds],
           summaryOmitted: [...earlier.omitted], calendar: this.#calendar };
@@ -1449,6 +1472,7 @@ export class LiveSessionOwner {
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, request: structuredClone(request),
       deadlineMs, deadlineAt, callDeadlineAt, idleAt: this.#now() + this.#profile.limits.idleMs, goAwayUntil: undefined,
+      timeZone: this.#ownerTimeZone(),
       recoveries: 0, awaitingAnswer: false, answerAt: undefined, muted: false, mutedAt: undefined, heldAnswer: false, dropResponse: false, mutedResponse: false, outputJournalled: false, spokenThisTurn: false, dropOpener: silentStart, mutedMs: 0, researchAllowed: false, mutedOfferAttempts: 0,
       sessionTimer: undefined, callTimer: undefined, idleTimer: undefined, pendingCalls: new Map(),
       connection,
@@ -1483,7 +1507,7 @@ export class LiveSessionOwner {
     handle.sessionTimer = this.#schedule(() => this.#sessionWindowEnded(handle), sessionMs);
     handle.callTimer = this.#schedule(() => {
       this.#settle(handle, { state: 'failed', code: 'session_timeout' }, false, 'ended', null); }, this.#profile.limits.callMaxMs);
-    this.#armIdle(handle, this.#profile.limits.idleMs);
+    this.#armIdle(handle, this.#profile.limits.idleMs, 'opened');
     void this.#consume(handle).catch(error => this.#consumeFailed(handle, error));
     const ready = session.ready.then(() => this.#readSnapshot(liveSessionId));
     void ready.catch(() => {});
@@ -1584,7 +1608,7 @@ export class LiveSessionOwner {
       handle.muteTimer.unref?.();
     } else {
       handle.muteTimer?.cancel(); handle.muteTimer = undefined;
-      this.#armIdle(handle, this.#profile.limits.idleMs);
+      this.#armIdle(handle, this.#profile.limits.idleMs, 'unmuted');
       // L7: the muted time is not dead air the owner heard, and a response that began under the mute is not
       // played at unmute: the owner speaks next, and the held-answer offer names it in one sentence.
       handle.mutedMs += Math.max(0, now - (handle.mutedAt ?? now));
@@ -1635,10 +1659,12 @@ export class LiveSessionOwner {
     if (handle.mutedOfferAttempts < MUTED_OFFER_ATTEMPTS) this.#scheduleMutedOffer(handle);
   }
 
-  #armIdle(handle: ActiveSession, remainingMs: number): void {
+  #armIdle(handle: ActiveSession, remainingMs: number, resetBy: IdleResetCause): void {
     if (this.#settled(handle)) return;
     handle.idleTimer?.cancel();
     handle.idleAt = this.#now() + remainingMs;
+    // #592: one record per arm, so the log testifies when the clock last restarted and by which cause.
+    hostLogEvent({ event: 'live_idle_arm', resetBy, idleMs: remainingMs });
     handle.idleTimer = this.#schedule(() => {
       // #303: an idle expiry after model audio had streamed, with no turnComplete ever seen, is the shape the
       // 3h-a witness stalled in: the greeting played, then the provider went silent without ending its turn.
@@ -1660,7 +1686,7 @@ export class LiveSessionOwner {
     if (this.#settled(handle)) return;
     // 3j: the tool result is conversational activity, so the idle clock restarts here rather than on mic frames.
     // A muted session suspends that clock as well, so research finishing while muted cannot time the call out.
-    if (!handle.muted) this.#armIdle(handle, this.#profile.limits.idleMs);
+    if (!handle.muted) this.#armIdle(handle, this.#profile.limits.idleMs, 'tool_result');
     handle.awaitingAnswer = true;
     handle.answerAt = this.#now();
     this.#armDelegationDeadline(handle);
@@ -1699,7 +1725,7 @@ export class LiveSessionOwner {
     if (typeof handle.session.sendCommentary === 'function') {
       try { handle.session.sendCommentary!({ text: TURN_FAILED_LINE }); } catch { /* an ended transport settles below */ }
     }
-    this.#armIdle(handle, this.#profile.limits.idleMs);
+    this.#armIdle(handle, this.#profile.limits.idleMs, 'turn_failed');
     this.#schedule(() => {
       if (this.#settled(handle) || generation !== handle.generation) return;
       // She spoke the line: the turn is answered, and the session carries on from it.
@@ -2231,7 +2257,7 @@ export class LiveSessionOwner {
     // O1b-A: typed text is an owner utterance at the same boundary as a spoken one, so it opens a turn.
     if (handle.connection.turnId === undefined) this.#openTurn(handle);
     // Same rule as provider activity: the owner's mute suspends the idle clock until the unmute.
-    if (!handle.muted) this.#armIdle(handle, this.#profile.limits.idleMs);
+    if (!handle.muted) this.#armIdle(handle, this.#profile.limits.idleMs, 'typed');
     const journalSequence = this.#persist(handle, event, 'inputTranscription');
     if (journalSequence === 'overflow') return;
     this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, 'inputTranscription', journalSequence, ++handle.markerSequence) });
@@ -2444,7 +2470,10 @@ export class LiveSessionOwner {
         }
         // Provider activity restarts the idle clock everywhere except under the owner's mute, which
         // suspends that clock until the unmute re-arms it.
-        if (!handle.muted && IDLE_ACTIVITY.has(event.type)) this.#armIdle(handle, this.#profile.limits.idleMs);
+        if (!handle.muted) {
+          const resetBy = idleResetCause(handle, event);
+          if (resetBy !== undefined) this.#armIdle(handle, this.#profile.limits.idleMs, resetBy);
+        }
         if (event.type === 'toolCall') {
           handle.toolCalls += event.calls.length;
           hostLogEvent({ event: 'research_call_arrived', liveSessionId: handle.liveSessionId, generation, calls: event.calls.length });
@@ -2577,6 +2606,7 @@ export class LiveSessionOwner {
           if (handle.inputFinal) for (const resolve of handle.inputFinalWaiters ?? []) resolve();
         }
         this.#pushChunk(handle, { kind: 'marker', marker: markerOf(event, kind, persisted, ++handle.markerSequence) });
+        this.#voiceStopGate(handle, event, generation);
       }
     } catch (error) {
       handle.persistFailure = error;
@@ -2751,13 +2781,13 @@ export class LiveSessionOwner {
           ...(ok && call.name === HISTORY_IDENTITY.name ? { historyPage: response } : {}), ...(ok && accepted ? { binding: accepted.binding } : {}),
           ...(ok && call.name === 'gmail_search_messages' && response['mailPage'] ? { mailPage: response['mailPage'] as unknown as MailPage } : {}),
           ...(ok && call.name === 'calendar_list_events' && response['calendarPage'] ? { calendarPage: response['calendarPage'] as CalendarPage } : {}),
-          ...(ok && call.name === 'calendar_list_calendars' && response['calendarScope'] ? { calendarScope: response['calendarScope'] as CalendarScope } : {}), originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
+          ...(ok && call.name === 'calendar_list_calendars' && response['calendarScope'] ? { calendarScope: response['calendarScope'] as CalendarScope } : {}), ...(ok && response['knowledgeConfidence'] ? { knowledgeConfidence: response['knowledgeConfidence'] as { confidence: string; top?: string; candidates?: string } } : {}), originalCharacters: typeof response.originalCharacters === 'number' ? response.originalCharacters : text.length, omittedCharacters: typeof response.omittedCharacters === 'number' ? response.omittedCharacters : 0, ...(code ? { code } : {}) };
       });
     };
     // #1022 F1: the scheduler's closures name one generation, so a rebuilt session builds its own.
     if (handle.researchSchedulerGeneration !== handle.generation) handle.researchScheduler = undefined;
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
-      now: () => this.#now(), timeZone: this.#timeZone,
+      now: () => this.#now(), timeZone: handle.timeZone,
       authorizeEvidence: (bindings, signal) => !signal.aborted && generation === handle.generation && !this.#settled(handle)
         && this.#tools!.owner.authorizeDelivery(host, bindings, [handle.inputClass], this.lookupAuthority(host.runId), signal).state === 'allowed',
       configured, configuredNow: () => this.#researchSources(handle),
@@ -2775,6 +2805,14 @@ export class LiveSessionOwner {
         }
       },
       log: entry => hostLogEvent(entry), logJoined: researchId => hostLogEvent({ event: 'research_joined', researchId }), ledger: handle.researchLedger,
+      // #565: one trace row per source call's query shape. A refused write is a diagnostic failure, never
+      // the answer: the owner's read has already succeeded by the time this lands.
+      queryShape: shape => {
+        try { recordQueryShape(this.#store, shape, shape.at, shape.researchId); } catch (error) {
+          hostLogEvent({ event: 'live_trace_rejected', kind: 'query.shape_written', code: error instanceof TraceRecordError ? error.code : 'unknown' });
+          this.#diagnosticFailure(handle, 'trace_write_failed');
+        }
+      },
       // R6: the loop's own clocks (the first answer point, the dead-air beat) run on the owner's scheduler,
       // so a test drives whole seconds instead of sleeping through them.
       schedule: this.#schedule,
@@ -3263,6 +3301,22 @@ export class LiveSessionOwner {
     handle.consumer?.close();
     handle.abort.abort();
     handle.resolveDone();
+  }
+
+  /**
+   * #589: the owner's own finalized sentence, with her name at an edge, ends the call. The gate is the
+   * host's, so no model turn, tool or generation stands in the stop path; settling closes the provider
+   * session (cancelling any answer in flight), drops every later mic frame and sends the one end frame
+   * native acts on, the session's own terminal.
+   */
+  #voiceStopGate(handle: ActiveSession, event: LiveVoiceEvent, generation: number): void {
+    if (event.type !== 'inputTranscription' || event.finished !== true) return;
+    if (handle.muted || handle.terminal || generation !== handle.generation) return;
+    if (event.finalOrigin === 'typed') return;
+    const spoken = this.#store.transaction(tx => finishedOwnerTurn(tx, handle.liveSessionId));
+    if (stopPhrase(spoken) === null) return;
+    this.#settle(handle, { state: 'closed', code: 'voice_stop' }, true, 'ended', null);
+    hostLogEvent({ event: 'voice_stop' });
   }
 
   /** The transaction/lifecycle guard makes attach and every expiry observation share one winner. */

@@ -521,6 +521,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.msAfterStop)) return;
     return { event: 'session_end', reason: value.reason, msAfterStop: value.msAfterStop };
   }
+  if (value.event === 'voice_stop') {
+    // #589: the owner's own sentence ended the call on the host's phrase gate. No words, no audio, no code.
+    if (!closedKeys(value, ['event'])) return;
+    return { event: 'voice_stop' };
+  }
   if (value.event === 'live_context_usage') {
     // Closed shape: provider-neutral token counts only; no behaviour reads them yet (release 3g-c).
     const keys = Object.keys(value).sort().join(',');
@@ -577,6 +582,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.keys(value).sort().join(',') !== ['event', 'msSinceLastModelAudio'].sort().join(',')) return;
     if (!isSafeCount(value.msSinceLastModelAudio)) return;
     return { event: 'live_turn_open', msSinceLastModelAudio: value.msSinceLastModelAudio };
+  }
+  if (value.event === 'live_idle_arm') {
+    // #592: which closed cause last restarted the idle clock, and how long the clock now runs.
+    const causes = ['opened', 'unmuted', 'tool_result', 'turn_failed', 'typed', 'owner_speech', 'model_audio'];
+    if (!closedKeys(value, ['event', 'idleMs', 'resetBy'])) return;
+    if (typeof value.resetBy !== 'string' || !causes.includes(value.resetBy)) return;
+    if (!isSafeCount(value.idleMs)) return;
+    return { event: 'live_idle_arm', resetBy: value.resetBy, idleMs: value.idleMs };
   }
   if (value.event === 'live_mute') {
     // The owner's mute, one record per change: which session and generation, whether the provider

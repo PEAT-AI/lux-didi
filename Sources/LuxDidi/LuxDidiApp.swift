@@ -362,6 +362,9 @@ import WebKit
     func ringRebuildStarted() { connectingRing.rebuildStarted() }
     /// SOUND-R1: the rebuilt call is live again, so a reconnect ring ends with the arrival chime.
     func ringRebuildSettled() { connectingRing.rebuildSettled() }
+    /// #589: the one descending goodbye the owner hears when her own words end the call, on the ring's
+    /// own player, so it never touches the live engine or the audio slot the conversation holds.
+    func playGoodbyeTone() { connectingRing.goodbye() }
     /// The gentle ring while a connection is built (#529): its `connecting_ring` record goes back
     /// through the presence receipt path above.
     private lazy var connectingRing: ConnectingRing = {
@@ -603,6 +606,7 @@ struct RootView: View {
         cancelPlayback: { [weak self] in self?.model.cancelPresencePlayback() },
         providerInputMute: { [weak self] muted in self?.model.setPresenceProviderInputMute(muted) },
         receipt: { [weak self] record in self?.model.appendPresenceReceipt(record) },
+        goodbyeTone: { [weak self] in self?.model.playGoodbyeTone() },
         surface: { [weak self] posture in self?.miniOrb.applyPresence(posture) },
         prewarm: { [weak self] in self?.model.prewarmWarmContext() }))
     private var presencePickupJobID: String?
@@ -1192,7 +1196,10 @@ struct RootView: View {
         case .speaking:
             presence.ready(generation)
         case .failed: presence.fail(generation)
-        case .ended: presence.sessionEnded(generation)
+        case .ended:
+            // #589: the owner's own sentence ended this call, so presence closes it as her voice stop and the
+            // goodbye sounds. Any other ending is a session that ended, which presence records as it always has.
+            presence.endAfterHostTerminal(voiceStop: model.live?.hostVoiceStop == true, generation: generation)
         case .idle, .connecting, .muted, .outcomeUnknown, .pausedForInput, .rebuilding: break
         }
     }

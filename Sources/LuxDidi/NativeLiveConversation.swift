@@ -57,6 +57,8 @@ enum State: String, CaseIterable {
     private var muted = false, speaking = false
     /// One native-live end record per stop cycle; a repeated Stop is a no-op, like the capture summary.
     private var endRecorded = false
+    /// #589: the host's terminal code was a voice stop, so presence closes the call as the owner's own.
+    private(set) var hostVoiceStop = false
     /// Z2: when the one automatic restart after an unrequested capture interruption last ran.
     private var lastAutomaticRestartAt: Date?
     private var muteTask: Task<Void, Never>?
@@ -161,6 +163,7 @@ enum State: String, CaseIterable {
         device.noteOutsideDeviceBusy()
         generation &+= 1; let token = generation
         failure = nil; state = .connecting; muted = false; speaking = false; endRecorded = false
+        hostVoiceStop = false
         observer?.cancel()
         observer = Task { [weak self, coordinator] in
             await self?.startTask?.value
@@ -182,6 +185,9 @@ enum State: String, CaseIterable {
                         self.state = Self.continuityPresentation(event, muted: self.muted)!
                     }
                 case .terminal(let outcome):
+                    // #589: the host's voice stop is the owner's own sentence, so this end is presented as
+                    // her stop. The app closes it through presence.stop(.voice), never as a session ending.
+                    if outcome.code == "voice_stop" { self.hostVoiceStop = true }
                     switch outcome.code {
                     case "session_timeout": if !self.endRecorded { self.endRecorded = true; self.journal.append(.sessionLimit) }
                     case "idle_timeout": if !self.endRecorded { self.endRecorded = true; self.journal.append(.idleLimit) }

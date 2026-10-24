@@ -348,7 +348,7 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
 test('the public character, voice surface and tool conduct are the authored verbatim constants', () => {
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '8ca5a9ef9bd2ba4a7debcaa25fb9f95f593af9e708f2aac7bb23fec3c1826287');
-  assert.equal(sha(NAYA_VOICE_SURFACE), 'b371a4e39ee8f4c218e19094da86862d44b65372c6dbbcb04f51af813d857856');
+  assert.equal(sha(NAYA_VOICE_SURFACE), 'ea9e608186615ffddeb16008c55dd7d4263ee45412f679b06f8511f9b1d286d3');
   assert.equal(sha(NAYA_VOICE_TOOLS), '1f0479d58a4955a4ab84a0b52c523cb22ced2c737e47c6bd3c74429a64f7f47a');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '8a41b4537fd70c245e02c9b8f3911f88dcd5cfb794b246067ef5d9ea6e806574');
   assert.equal(sha(NAYA_TOOLS), '8392a299309d4a77312320fa98e763a67ae9791a8bc56789ad388c178a2c1f0c');
@@ -664,7 +664,9 @@ const WRAPPER_3O_CHARS = 6603;
  * one open paragraph, which names what she can open and the handle she opens it with; W12 raises it for the
  * vault rule, which says what a save is and what a receipt is not. LAT-1023 raises it for the source name
  * the backchannel ack carries, so the first line before a lookup says what she is reading. */
-const WRAPPER_W5_CHARS = 12_502;
+// #589/#590: the voice surface grows by the ending-the-call line, which states the stop phrases and
+// the one thing she cannot do. The bound carries the measured wrapper at this sha.
+const WRAPPER_W5_CHARS = 12_808;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Silence while you look something up is fine. Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
@@ -686,7 +688,8 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // 4,339 once VOICE-R1 replaced the retired five-word cue with the contract's one silence rule, 5,743 once
   // the vault rule named the save phrase and the honest receipt).
   const growth = wrapper.length - WRAPPER_3O_CHARS;
-  const cap = 6_000;
+  // #589/#590: the honesty line that names the stop phrases is the growth this bound carries.
+  const cap = 6_300;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
@@ -1212,7 +1215,9 @@ const W5_REPLACED = [
 ];
 /** The authored voice instruction the contract bounds: character, voice surface and voice conduct, no joins. */
 // LAT-1023: the voice surface grows by the source name the first ack carries.
-const W5_VOICE_BEFORE = 8936;
+// #589/#590: the voice surface grows by the ending-the-call line, which states the stop phrases and the
+// one thing she cannot do.
+const W5_VOICE_BEFORE = 9242;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],
@@ -1280,4 +1285,18 @@ test('LAT-1023: the first ack before a lookup names the sources it is reading', 
   assert.match(NAYA_VOICE_SURFACE, /looking in your vault and calendar/u);
   assert.equal(NAYA_LIVE_BASE.split('name the sources you are reading in a few words').length - 1, 1, 'the rule reaches the live persona once');
   assert.doesNotMatch(NAYA_VOICE_SURFACE, /[\u2013\u2014]/u, 'no dash stands in the rule text');
+});
+
+test('#589/#590: the voice surface names the stop phrases and promises no silence it cannot keep', () => {
+  // She ends the call on the owner's own words, so the words are stated where she can read them.
+  assert.match(NAYA_VOICE_SURFACE, /Naya, stop listening/);
+  assert.match(NAYA_VOICE_SURFACE, /Naya, shut down/);
+  // The honesty line: what she cannot do, and the way out she names instead of promising.
+  assert.match(NAYA_VOICE_SURFACE, /You cannot mute or stop yourself/);
+  assert.match(NAYA_VOICE_SURFACE, /say the exact phrase/);
+  // #590: no first-person promise of a silence or a stopped mic stands in for the call ending.
+  for (const lie of [/\bI(?:'ll| will) (?:stay quiet|be quiet|go quiet|stop listening)\b/,
+    /\bI(?:'ve| have) (?:stopped|muted|turned off)\b/, /\bI(?:'m| am) (?:not recording|muting|stopping)\b/]) {
+    assert.equal(lie.test(NAYA_VOICE_SURFACE), false, `the voice surface never promises ${String(lie)}`);
+  }
 });

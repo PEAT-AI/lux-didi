@@ -2,10 +2,12 @@
 // Synthetic stdio MCP child for check-company-connectors.sh (Mattermost connector).
 // No real accounts, network access, credentials, sessions or application files are touched.
 // argv[2] = mode (ok | auth-needed | empty). The child never reads ~/.local/share/mattermost-mcp.
+import { appendFileSync } from 'node:fs';
 import { Server } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 
 const mode = process.argv[2] ?? 'ok';
+const logPath = process.env.DIDI_FAKE_MATTERMOST_LOG;
 const READS = ['mattermost_whoami', 'mattermost_get_channel_history', 'mattermost_get_thread', 'mattermost_search', 'mattermost_list_channels'];
 const WRITES = ['mattermost_post_message', 'mattermost_react', 'mattermost_edit_post'];
 
@@ -16,7 +18,7 @@ const READ_SCHEMAS = {
   mattermost_whoami: { type: 'object' },
   mattermost_get_channel_history: { type: 'object', additionalProperties: false, required: ['channel'], properties: { channel: { type: 'string' }, limit: { type: 'integer' }, format: { type: 'string', enum: ['concise', 'detailed'] } } },
   mattermost_get_thread: { type: 'object', additionalProperties: false, required: ['post_id'], properties: { post_id: { type: 'string' }, format: { type: 'string', enum: ['concise', 'detailed'] } } },
-  mattermost_search: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } } },
+  mattermost_search: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, from_date: { type: 'string' }, to_date: { type: 'string' }, sort: { type: 'string' } } },
   mattermost_list_channels: { type: 'object' },
 };
 
@@ -33,6 +35,7 @@ server.setRequestHandler('tools/list', () => ({
 }));
 server.setRequestHandler('tools/call', request => {
   const name = request.params.name;
+  if (logPath !== undefined) appendFileSync(logPath, `${JSON.stringify({ name, arguments: request.params.arguments ?? {} })}\n`);
   const schema = READ_SCHEMAS[name];
   if (schema?.additionalProperties === false) {
     const declared = Object.keys(schema.properties ?? {});

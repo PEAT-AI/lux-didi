@@ -14,7 +14,8 @@ import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 const NOW = Date.parse('2026-10-21T05:30:00Z'); // 11:00 in the owner's zone
 const ZONE = 'Asia/Kolkata';
 
-const FIXTURES: readonly { question: string; authored?: string; q: string }[] = [
+// #565: the topic is the only text whose words become terms, so each prose fixture names its own words.
+const FIXTURES: readonly { question: string; authored?: string; topic?: string; q: string }[] = [
   { question: 'What did Dana send me about the invoice?', q: 'from:dana OR to:dana invoice' },
   { question: 'Any emails from Priya about the contract this week?', q: 'from:priya OR to:priya contract newer_than:7d' },
   { question: 'Show me the latest messages in my inbox', q: 'in:inbox newer_than:14d' },
@@ -25,6 +26,7 @@ const FIXTURES: readonly { question: string; authored?: string; q: string }[] = 
   {
     question: 'what did Acme say about the renewal',
     authored: 'Can you look for the email where Acme confirmed the renewal terms?',
+    topic: 'acme confirmed renewal terms',
     q: 'acme confirmed renewal terms',
   },
   { question: 'anything from the bank', authored: 'from:alerts@bank.example subject:statement newer_than:30d', q: 'from:alerts@bank.example subject:statement newer_than:30d' },
@@ -51,27 +53,27 @@ const FIXTURES: readonly { question: string; authored?: string; q: string }[] = 
 ];
 
 test('E4: a prose question becomes at most four Gmail terms and the window it names', () => {
-  for (const { question, authored, q } of FIXTURES) {
-    assert.equal(compileMailQuery(question, authored, NOW, ZONE), q, question);
+  for (const { question, authored, topic, q } of FIXTURES) {
+    assert.equal(compileMailQuery(question, authored, NOW, ZONE, topic ?? question), q, question);
   }
 });
 
 // ROUTE-1022 K6: the owner's own name is never a person to filter mail by. "what did rob's team send
 // about hawk" reached Gmail as `from:rob's OR to:rob's` and matched nothing, twice, for 8.2 s.
 test('ROUTE-1022 K6: a possessive of the owner is dropped, never a from: or to: filter', () => {
-  const q = compileMailQuery("what did rob's team send about hawk", undefined, NOW, ZONE);
+  const q = compileMailQuery("what did rob's team send about hawk", undefined, NOW, ZONE, "rob's team hawk");
   assert.equal(/rob/u.test(q), false, `no owner name in the query (${q})`);
   assert.equal(/from:|to:/u.test(q), false, 'and no direction filter at all');
   assert.match(q, /hawk/, 'the content terms survive');
-  assert.equal(compileMailQuery("find Rob's mail about the invoice", undefined, NOW, ZONE).includes('from:rob'), false);
+  assert.equal(compileMailQuery("find Rob's mail about the invoice", undefined, NOW, ZONE, 'invoice').includes('from:rob'), false);
 });
 
 test('ROUTE-1022 K6: a question with its own terms adds no implicit two weeks', () => {
-  const july = compileMailQuery('find the agricon mail from july', undefined, NOW, ZONE);
+  const july = compileMailQuery('find the agricon mail from july', undefined, NOW, ZONE, 'agricon');
   assert.equal(july.includes('newer_than'), false, 'the July thread is not hidden behind a fortnight');
   assert.match(july, /agricon/u);
   assert.match(july, /after:2026\/06\/30 before:2026\/08\/01/u, 'the month the question named is still resolved');
-  assert.equal(compileMailQuery('Show me the latest messages in my inbox', undefined, NOW, ZONE), 'in:inbox newer_than:14d', 'a bare inbox scan keeps its rolling window');
+  assert.equal(compileMailQuery('Show me the latest messages in my inbox', undefined, NOW, ZONE, 'latest messages inbox'), 'in:inbox newer_than:14d', 'a bare inbox scan keeps its rolling window');
 });
 
 test('E4: an authored Gmail query is never rewritten, and compiling twice changes nothing', () => {
@@ -145,7 +147,7 @@ test('E4: a prose mail lookup is sent as Gmail syntax, never the spoken sentence
     return { key: call.key, name: call.name, ok: true, ...mailPage(['m1']) } as IntentSubResult;
   }));
   await runResearch(h.deps, {
-    action: 'start', question: 'What did Dana send me about the invoice?',
+    action: 'start', question: 'What did Dana send me about the invoice?', topic: 'Dana invoice',
     lookups: [{ source: 'mail', query: 'could you look for the email where Dana sent the invoice?' }],
   }, new AbortController().signal);
   assert.deepEqual(sent, ['from:dana OR to:dana invoice'], 'one compiled query on the wire, never the sentence');
@@ -159,7 +161,7 @@ test('E5: a search that matched nothing runs exactly one broader retry and logs 
     return { key: call.key, name: call.name, ok: true, ...mailPage(found ? ['m9'] : []) } as IntentSubResult;
   }));
   const reply = await runResearch(h.deps, {
-    action: 'start', question: 'What did Dana send me about the invoice?',
+    action: 'start', question: 'What did Dana send me about the invoice?', topic: 'Dana invoice',
     lookups: [{ source: 'mail', query: 'What did Dana send me about the invoice?' }],
   }, new AbortController().signal);
   assert.deepEqual(sent, ['from:dana OR to:dana invoice', 'from:dana OR to:dana'], 'the query, then exactly one broader retry that drops the one term');
@@ -182,7 +184,7 @@ test('E5: an empty retry says how it searched, naming the window it used', async
     return { key: call.key, name: call.name, ok: true, ...mailPage([]) } as IntentSubResult;
   }));
   const reply = await runResearch(h.deps, {
-    action: 'start', question: 'What did Dana send me about the invoice?',
+    action: 'start', question: 'What did Dana send me about the invoice?', topic: 'Dana invoice',
     lookups: [{ source: 'mail', query: 'What did Dana send me about the invoice?' }],
   }, new AbortController().signal);
   assert.equal(sent.length, 2, 'exactly one retry, never a loop');
@@ -215,7 +217,7 @@ test('E5: the host log accepts the mail shape only as counts and closed tokens, 
 // the owner is never handed a stale outage; a clean answer still coalesces, as E7 requires.
 test('W12-R1: an answered run that named a source unavailable is never coalesced', async () => {
   const start = {
-    action: 'start' as const, question: 'What did Dana send me about the invoice?',
+    action: 'start' as const, question: 'What did Dana send me about the invoice?', topic: 'Dana invoice',
     lookups: [{ source: 'mail' as const, query: 'invoice' }],
   };
   const down = mailHarness(async () => []);
@@ -240,7 +242,7 @@ test('ROUTE-R2: a gmail endpoint that failed its proof is logged as an endpoint 
   const logs: ResearchRunLog[] = [];
   h.deps.log = event => logs.push(event);
   h.deps.unavailableNow = () => [{ source: 'mail', reason: 'identity_unverified' }];
-  const reply = await runResearch(h.deps, { action: 'start', question: 'what did Dana email me about the invoice' }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what did Dana email me about the invoice', topic: 'Dana invoice' }, new AbortController().signal);
   assert.equal(dispatched, 0, 'a dead endpoint is never dispatched to');
   assert.deepEqual(h.sources.map(entry => entry.outcome), ['unavailable'], 'the source log states the dead endpoint once');
   const row = logs.at(-1)!.sources.find(entry => entry.kind === 'mail')!;
@@ -271,24 +273,24 @@ const pageOf = (page: number, count: number, more: boolean): Partial<IntentSubRe
   ...(more ? { nextPageToken: `p${page + 1}` } : {}),
 });
 
-test('F2: one mail query pages once to its cap with a stable page size, and the same query on a follow-up reads no page again', async () => {
+test('#581: a mail query whose first page fills the reply lines reads one page, and the follow-up continues that read', async () => {
   const sent: { page: string; maxResults: unknown }[] = [];
   const h = mailHarness(async subs => subs.map(call => {
     const token = call.args['pageToken'];
     const page = typeof token === 'string' ? Number(token.slice(1)) : 1;
     sent.push({ page: `${page}`, maxResults: call.args['maxResults'] });
-    return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, ...pageOf(page, page < 4 ? 25 : 4, page < 4) };
+    return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, ...pageOf(page, 25, page < 4) };
   }));
   h.deps.memo = { calendar: new Map() };
-  const start = { action: 'start' as const, question: 'which invoices did I get', lookups: [{ source: 'mail' as const, mail: { q: 'invoice newer_than:14d', maxResults: 25 } }] };
+  const start = { action: 'start' as const, question: 'which invoices did I get', topic: 'invoices', lookups: [{ source: 'mail' as const, mail: { q: 'invoice newer_than:14d', maxResults: 25 } }] };
   const first = await runResearch(h.deps, start, new AbortController().signal);
-  assert.deepEqual(sent.map(entry => entry.page), ['1', '2', '3', '4'], 'the 79 matches take four pages, one dispatch each');
+  assert.deepEqual(sent.map(entry => entry.page), ['1'], 'the eight lines the reply shows are one page, never four');
   assert.deepEqual([...new Set(sent.map(entry => entry.maxResults))], [25], 'one stable page size for the query');
-  assert.equal((first['mailCoverage'] as Record<string, unknown>)['received'], 79, 'all 79 matches came back');
+  assert.equal((first['mailCoverage'] as Record<string, unknown>)['received'], 25, 'the page it read came back whole');
   const afterFirst = sent.length;
   const second = await runResearch(h.deps, { ...start, lookups: [{ source: 'mail', mail: { q: 'invoice newer_than:14d', maxResults: 10 } }] }, new AbortController().signal);
   assert.equal(sent.length, afterFirst, 'the follow-up continues the session read instead of paging from page 1');
-  assert.equal((second['mailCoverage'] as Record<string, unknown>)['received'], 79, 'and it still holds every message the session already read');
+  assert.equal((second['mailCoverage'] as Record<string, unknown>)['received'], 25, 'and it still holds every message the session already read');
 });
 
 test('F2: a rate-limited page waits once and then closes the read, and page 1 is never read again', async () => {
@@ -299,7 +301,8 @@ test('F2: a rate-limited page waits once and then closes the read, and page 1 is
     const page = typeof token === 'string' ? token : 'first';
     sent.push(page);
     if (page === 'p2') return { key: call.key, name: call.name, ok: false, text: 'provider failure: http 429 rateLimitExceeded', originalCharacters: 0, omittedCharacters: 0, code: 'connector_error' };
-    return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, ...pageOf(1, 25, true) };
+    // #581: a short first page is what still needs the next one, so this read keeps paging.
+    return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, ...pageOf(1, 3, true) };
   }));
   h.deps.memo = { calendar: new Map() };
   // RUN-R8: only the rate-limit wait is driven here. A read's own deadline is a timer on this same seam, so
@@ -312,7 +315,7 @@ test('F2: a rate-limited page waits once and then closes the read, and page 1 is
   };
   let reading: Promise<void> | undefined;
   h.deps.background = done => { reading = done; };
-  const reply = await runResearch(h.deps, { action: 'start', question: 'which invoices did I get', lookups: [{ source: 'mail', mail: { q: 'invoice newer_than:14d', maxResults: 25 } }] }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'which invoices did I get', topic: 'invoices', lookups: [{ source: 'mail', mail: { q: 'invoice newer_than:14d', maxResults: 25 } }] }, new AbortController().signal);
   await reading;
   assert.deepEqual(sent, ['first', 'p2', 'p2'], 'the failed page is retried once after a wait, and page 1 is never refetched');
   assert.equal(waits, 1, 'exactly one delayed retry');
@@ -339,7 +342,7 @@ test('F2: a rate limit on the first page leaves a closed failure and a plain cov
     const timer = setTimeout(callback, 0);
     return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } };
   };
-  const reply = await runResearch(h.deps, { action: 'start', question: 'which invoices did I get', lookups: [{ source: 'mail', mail: { q: 'invoice newer_than:14d' } }] }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'which invoices did I get', topic: 'invoices', lookups: [{ source: 'mail', mail: { q: 'invoice newer_than:14d' } }] }, new AbortController().signal);
   assert.equal(sent.length, 2, 'the page is asked once, then once more after the wait');
   assert.equal(waits, 1, 'exactly one delayed retry');
   const receipt = h.sources.filter(entry => entry.source === 'mail').at(-1)!;
@@ -359,4 +362,52 @@ test('F9: each refusal code names the fix, and the generic line stays the fallba
   assert.match(String(mail['guidance']), /maxResults/u);
   assert.match(String(mail['guidance']), /no query beside|carries no query/u, 'and the shape it must not use');
   assert.match(String(researchRepair('root_type')['guidance']), /No lookup started/u, 'an unmapped reason keeps the generic line');
+});
+
+// #564: "any important mail" was answered from one seven-day-old thread while twenty unread threads sat
+// in the inbox. A triage ask is one fixed unread scan, and the reply counts what it read.
+test('#564: a triage ask runs the fixed unread scan once and counts what came in, newest first', async () => {
+  const sent: string[] = [];
+  const ids = ['u1', 'u2', 'u3', 'u4', 'u5', 'u6', 'u7', 'u8', 'u9', 'u10'];
+  const h = mailHarness(async subs => subs.map(call => {
+    sent.push(String(call.args['q']));
+    return { key: call.key, name: call.name, ok: true, ...shapeGmailList({ messages: ids.map((id, n) => ({
+      id, labelIds: ['UNREAD', 'IMPORTANT'],
+      headers: [{ name: 'Subject', value: `Unread thread ${n + 1}` }, { name: 'From', value: 'Dana <dana@example.com>' }, { name: 'Date', value: `Mon, 20 Oct 2026 0${n}:00:00 +0000` }],
+    })) }) } as IntentSubResult;
+  }));
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'did anything important come in?',
+    lookups: [{ source: 'mail', query: 'anything important' }],
+  }, new AbortController().signal);
+  assert.deepEqual(sent, ['in:inbox is:unread newer_than:2d'], 'one fixed scan, never the question prose');
+  const mail = (reply['findings'] as { text: string }[]).find(finding => finding.text.startsWith('mail:'))!;
+  assert.match(mail.text, /^mail: 8 of 10 shown/u, 'the reply counts every unread thread it read');
+  assert.match(mail.text, /from: Dana \| date: Mon, 20 Oct 2026 00:00:00 \+0000/u, 'sender and date ride each item');
+  assert.match(mail.text, /Unread thread 1/u, 'the newest first');
+  assert.ok(!mail.text.includes('Unread thread 10'), 'the oldest lines are the tail the reply cut');
+});
+
+// #581: four pages of one query took four and a half seconds to show four of thirty lines.
+test('#581: a triage that fills one page reads exactly one page', async () => {
+  let calls = 0;
+  const h = mailHarness(async subs => subs.map(call => {
+    calls += 1;
+    return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, ...pageOf(1, 25, true) } as IntentSubResult;
+  }));
+  await runResearch(h.deps, {
+    action: 'start', question: 'anything unread?',
+    lookups: [{ source: 'mail', query: 'anything unread' }],
+  }, new AbortController().signal);
+  assert.equal(calls, 1, 'one page holds the eight lines the reply shows');
+});
+
+// #564: an empty triage scan is a window, never a bare "nothing urgent".
+test('#564: an empty triage scan names the unread window it read', async () => {
+  const h = mailHarness(async subs => subs.map(call => ({ key: call.key, name: call.name, ok: true, ...mailPage([]) } as IntentSubResult)));
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'did anything important come in?',
+    lookups: [{ source: 'mail', query: 'anything important' }],
+  }, new AbortController().signal);
+  assert.match(String(reply['note']), /I searched your mail for anything unread in the last two days and found nothing matching\./u);
 });

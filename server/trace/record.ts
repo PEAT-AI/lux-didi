@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import { hostClockDomain } from './clock.js';
+import { MAIL_QUERY_OPERATORS } from '../contracts/mail-operators.js';
 import type { SQLValue, Transaction } from '../contracts/storage.js';
 import {
   CALL_OUTCOMES, COMMAND_KINDS, CONTINUATION_OUTCOMES, EVENT_KINDS, EVENT_SOURCES, PLAYBACK_TERMINATION_REASONS, PROGRESS_REASONS,
@@ -408,12 +409,14 @@ export function recordCallResult(port: TraceWritePort, result: { callKey: string
  * A live session is only content-pruned once it has ended before the cutoff, so the reattach window
  * of a session that is still live is never shortened.
  */
-export function pruneTraceContent(exec: TraceExec, now: number): { utterances: number; callResults: number; journalText: number; promptSnapshots: number } {
+export function pruneTraceContent(exec: TraceExec, now: number): { utterances: number; callResults: number; queryShapes: number; journalText: number; promptSnapshots: number } {
   const cutoff = now - TRACE_RETENTION_DAYS * TRACE_DAY_MS;
   const utterances = exec.run('DELETE FROM trace_utterance WHERE at < ?', [cutoff]);
   const callResults = exec.run('DELETE FROM trace_call_result WHERE call_key IN (SELECT call_key FROM trace_call WHERE intent_at < ?)', [cutoff]);
+  // A query shape is metadata like a call row, and a store migrated before v5 has no table to prune.
+  const queryShapes = tableExists(exec, 'trace_query_shape') ? exec.run('DELETE FROM trace_query_shape WHERE at < ?', [cutoff]) : 0;
   // The live and tools tables belong to other migration owners and are absent from a trace-only Store.
-  if (!tableExists(exec, 'live_journal')) return { utterances, callResults, journalText: 0, promptSnapshots: 0 };
+  if (!tableExists(exec, 'live_journal')) return { utterances, callResults, queryShapes, journalText: 0, promptSnapshots: 0 };
   // A journal is only surplus once its session ended before the cutoff AND the transcript has already
   // been distilled or never will be: a complete summary, a summary that gave up for a reason other
   // than `no_text_model`, or a source excluded from history. `summaries.reconcile()` re-distils any
@@ -440,7 +443,7 @@ export function pruneTraceContent(exec: TraceExec, now: number): { utterances: n
         ? exec.run(`UPDATE live_journal SET tool_json=NULL WHERE tool_json IS NOT NULL AND live_session_id ${prunable}`, [cutoff])
         : 0);
   const promptSnapshots = exec.run(`UPDATE live_sessions SET accepted_prompt_snapshot=NULL WHERE accepted_prompt_snapshot IS NOT NULL AND terminal_at IS NOT NULL AND terminal_at < ?`, [cutoff]);
-  return { utterances, callResults, journalText, promptSnapshots };
+  return { utterances, callResults, queryShapes, journalText, promptSnapshots };
 }
 
 /** Whether the table's own DDL declares the column. The Store authorizer admits sqlite_master and
@@ -498,4 +501,30 @@ export function liveTracePort(binding: LiveTraceBinding): LiveTracePort {
       }
     },
   };
+}
+
+/** #565: the sources a query shape may name, closed so no other string can reach the row. */
+export const QUERY_SHAPE_SOURCES = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'replies', 'company', 'mongoose', 'web'] as const;
+export type QueryShapeSource = (typeof QUERY_SHAPE_SOURCES)[number];
+export interface TraceQueryShape { source: QueryShapeSource; terms: number; operators: readonly string[]; topicWords: number }
+
+/** The closed operator vocabulary a shape may carry is the mail compiler's own list, never a second one. */
+const QUERY_SHAPE_OPERATORS = MAIL_QUERY_OPERATORS;
+
+/**
+ * #565: the only writer for a query shape. Counts, the closed operator names and the source are the whole
+ * row; a term count above zero says a search happened without ever saying what was searched for.
+ */
+export function recordQueryShape(port: TraceWritePort, shape: TraceQueryShape, at: number, researchId?: string): number {
+  if (!isOneOf(QUERY_SHAPE_SOURCES, shape.source)) throw new TraceRecordError('INVALID_VALUE', 'query shape: source is outside its allowlist');
+  if (!isCount(shape.terms) || !isCount(shape.topicWords) || !isCount(at)) throw new TraceRecordError('INVALID_VALUE', 'query shape: terms, topicWords or at is not a count');
+  if (!Array.isArray(shape.operators) || shape.operators.length > 16 || !shape.operators.every(operator => (QUERY_SHAPE_OPERATORS as readonly string[]).includes(operator))) {
+    throw new TraceRecordError('INVALID_VALUE', 'query shape: operator is outside its allowlist');
+  }
+  if (researchId !== undefined && !isId(researchId)) throw new TraceRecordError('INVALID_VALUE', 'query shape: researchId is not an id');
+  return port.transaction(tx => {
+    tx.run('INSERT INTO trace_query_shape(at, research_id, source, terms, operators, topic_words) VALUES (?,?,?,?,?,?)',
+      [at, researchId ?? null, shape.source, shape.terms, shape.operators.join(','), shape.topicWords]);
+    return Number(tx.get('SELECT last_insert_rowid() AS id')!['id']);
+  });
 }

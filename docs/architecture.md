@@ -52,7 +52,7 @@ Entry and flags: `host/index.ts`. `--data-dir`, `--web-root`, `--port`, `--descr
 | Voice providers | `adapters/live-voice/` | `openai.ts` (GPT-Live, the default) and `gemini.ts`. Both implement one `LiveVoicePort`; the checked union is `liveVoiceProviders`. |
 | Prompt | `prompt/` | The public persona, the runtime context (clock, timezone, connected sources), the opening line, and the composition of the instruction sections. See [prompt-composition.md](prompt-composition.md). |
 | Tools and research | `tools/` | What the model may call, and the research layer that answers one ask in one turn. See [tool-owner.md](tool-owner.md). |
-| Connectors | `connectors/` | Lux Knowledge, Google (Gmail and Calendar), Mattermost and Mongoose, each a descriptor over MCP. See [connectors.md](connectors.md). |
+| Connectors | `connectors/` | Lux Knowledge, Google (Gmail and Calendar), Mattermost and Mongoose, each a descriptor over MCP. Mongoose is three separate endpoints (knowledge, data, CRM) with three separate sign-ins, and the admin endpoint is never connected. See [connectors.md](connectors.md). |
 | Host wiring | `host/` | Flags, supervision, the local HTTP server, the WebSocket upgrade, the logs, the config mounts. |
 | Config | `config/` | The protected profile: `live.json`, the MCP profile, credentials, route classes. See [provider-configuration.md](provider-configuration.md) and [mcp-configuration.md](mcp-configuration.md). |
 

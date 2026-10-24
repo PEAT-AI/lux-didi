@@ -76,8 +76,9 @@ server.setRequestHandler('tools/list', () => ({
 server.setRequestHandler('tools/call', async (request) => {
   const { name, arguments: args = {} } = request.params;
   if (logPath !== undefined) appendFileSync(logPath, `${JSON.stringify({ name, arguments: args, at: Date.now() })}\n`);
-  // A child that answers a second late, so a serial scan cannot fit the same budget as a concurrent one.
-  if (mode === 'slow') await new Promise(resolve => setTimeout(resolve, 1000));
+  // A child that answers half a second late: a serial scan of its twelve children cannot fit the
+  // same budget as a concurrent one, and the test stays well under the five second line.
+  if (mode === 'slow') await new Promise(resolve => setTimeout(resolve, 500));
   const text = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
   const envelope = (list) => ({ total: list.length, returned: list.length, results: list });
   const within = (list) => (typeof args.from_date === 'string'

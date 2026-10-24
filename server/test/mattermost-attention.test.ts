@@ -268,8 +268,8 @@ test('#572: an empty chat triage names the window it read', async () => {
   assert.match(String(reply['note']), /I searched your team chat in the last 7 days and found nothing matching\./u);
 });
 
-// #610: the scan's independent reads run under one budget. A child that answers a second late
-// cannot fit a serial scan of its twelve children in 8 s.
+// #610: the scan's independent reads run under one budget. A child that answers half a second late
+// cannot fit a serial scan of its twelve children in 4 s.
 test('#610: the attention scan reads its independent children concurrently', async t => {
   const f = setup('slow');
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
@@ -278,8 +278,8 @@ test('#610: the attention scan reads its independent children concurrently', asy
   const view = digest(await r.attention({}));
   const elapsed = Date.now() - started;
   assert.equal(view.items.length, 4, 'the concurrent scan still finds every item');
-  // Twelve serial child reads at a second each is twelve seconds; three concurrent stages are four.
-  assert.ok(elapsed < 8_000, `a concurrent scan finishes inside 8 s, took ${elapsed} ms`);
+  // Twelve serial child reads at half a second each is six seconds; three concurrent stages are two.
+  assert.ok(elapsed < 4_000, `a concurrent scan finishes inside 4 s, took ${elapsed} ms`);
   const calls = f.calls();
   const searches = calls.filter(call => call.name === 'mattermost_search').map(call => call.at ?? 0);
   const firstHistory = calls.find(call => call.name === 'mattermost_get_channel_history')?.at ?? 0;

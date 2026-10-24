@@ -443,7 +443,8 @@ export function contentKeywords(question: string, max = 8, skip?: ReadonlySet<st
 const KNOWLEDGE_FILLER = new Set([
   'about', 'regarding', 're', 'results', 'result', 'info', 'information', 'details', 'detail', 'owner', 'rob',
   'stuff', 'things', 'related', 'update', 'updates', 'status',
-  // ROUTE-1022 K7: the instruction words that could be content in mail, so knowledge only.
+  // ROUTE-1022 K7: the instruction words that could be content in mail, so knowledge only. #631: the
+  // layer's own name is the phrase "the web", which every source drops; the bare word stays here.
   'records', 'official', 'content', 'web',
   // and the instruction words above, so the model's own keyword fallback drops them too.
   'wait', 'continue', 'verify', 'verified', 'findings', 'finding', 'exact', 'reliable', 'specific',
@@ -687,7 +688,7 @@ const ROUTE_WORDS: Partial<Record<SourceKind, RegExp>> = {
   mail: /\b(?:the )?(?:e-?mails?|gmail|inbox(?:es)?|mails?)\b/giu,
   chat: /\bteam chat\b|\bchats?\b|\bmattermost\b/giu,
   calendar: /\b(?:the )?calendar\b/giu,
-  web: /\bthe web\b|\bweb\b/giu,
+  web: /\bthe web\b/giu,
   mongoose: /\bmongoose\b/giu,
 };
 

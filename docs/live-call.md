@@ -13,11 +13,11 @@ never records PCM.
 
 ### What it is
 
-- `server/live/index.ts` — `LiveSessionOwner` and `createLiveSessionOwner(config)`.
-- `server/live/types.ts` — the published types and `LiveError`/`LiveConfigError`.
-- `server/live/config.ts` — trusted typed profile validation; no file loader, no environment convention.
-- `server/live/schema.ts` — additive `live_sessions` / `live_grants` / `live_journal` migrations (owner `live`, version 1).
-- `server/live/journal.ts` — journal byte accounting and bounded cursor reads.
+- `server/live/index.ts`: `LiveSessionOwner` and `createLiveSessionOwner(config)`.
+- `server/live/types.ts`: the published types and `LiveError`/`LiveConfigError`.
+- `server/live/config.ts`: trusted typed profile validation; no file loader, no environment convention.
+- `server/live/schema.ts`: additive `live_sessions` / `live_grants` / `live_journal` migrations (owner `live`, version 1).
+- `server/live/journal.ts`: journal byte accounting and bounded cursor reads.
 
 The full published contract is in the task report directory (`live-session-core/API.md`).
 
@@ -25,7 +25,7 @@ The full published contract is in the task report directory (`live-session-core/
 
 The owner implements decision Lux88951: a **separate** `liveSessionId` with zero Domain entries
 and no Domain session creation. Late, partial and interrupted transcription fragments are
-provider-arrival facts — never paired turns, never a completed user utterance and never a claim
+provider-arrival facts: never paired turns, never a completed user utterance and never a claim
 about what anybody heard. There is no automatic memory ingestion and no fictional alternating
 history.
 

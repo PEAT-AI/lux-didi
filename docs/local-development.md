@@ -52,16 +52,16 @@ at startup.
 Start the host in the foreground, against a private state directory of your choosing and the build you just produced:
 
 ```sh
-DIDI_STATE_DIR="$PWD/.local-state"
-DIDI_CONFIG_DIR="$PWD/.local-config"
-bash scripts/run-local.sh --data-dir "$DIDI_STATE_DIR" --web-root "$PWD/web/dist" --port 0 --config-dir "$DIDI_CONFIG_DIR"
+state_dir="$PWD/.local-state"
+config_dir="$PWD/.local-config"
+bash scripts/run-local.sh --data-dir "$state_dir" --web-root "$PWD/web/dist" --port 0 --config-dir "$config_dir"
 ```
 
 The wrapper builds and then runs, so it is safe on its own. For a two-stage launch that skips the rebuild:
 
 ```sh
 bash scripts/run-local.sh --build-only
-bash scripts/run-local.sh --run-built --data-dir "$DIDI_STATE_DIR" --web-root "$PWD/web/dist" --port 0 --config-dir "$DIDI_CONFIG_DIR"
+bash scripts/run-local.sh --run-built --data-dir "$state_dir" --web-root "$PWD/web/dist" --port 0 --config-dir "$config_dir"
 ```
 
 `--run-built` reuses the previous build and does not check whether sources changed. After any source edit, use the
@@ -99,7 +99,7 @@ The low-level service entry, `npm --prefix server start`, runs `node dist/index.
 The browser does not receive the admin credential. Pair it with a short-lived code instead, from a second terminal:
 
 ```sh
-node server/dist/host/index.js pair --data-dir "$DIDI_STATE_DIR"
+node server/dist/host/index.js pair --data-dir "$state_dir"
 ```
 
 That command reads the existing owner-only credential at run time, checks the current service identity, and prints only a single-use pairing code. The code expires after five minutes. Open the exact origin the foreground host printed and enter the code into the pairing screen. The browser then holds an `HttpOnly`, `SameSite=Strict`, `path=/` session cookie, and keeps its CSRF token in memory rather than in persistent storage.

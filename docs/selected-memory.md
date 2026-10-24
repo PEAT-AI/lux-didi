@@ -20,7 +20,7 @@ selectedMemoryEntryIds?: readonly string[]   // trusted in-process only
 - At most **32** values; each a canonical entry id matching `^[A-Za-z0-9_-]{1,128}$`.
   An invalid shape (`ChatError('invalid_input')`), an unknown id or an over-policy label fails
   **before any capture**, so neither the new user entry nor the run is saved.
-- Duplicates are **coalesced**, and the canonical value is the sorted set — so a reordered or
+- Duplicates are **coalesced**, and the canonical value is the sorted set: so a reordered or
   duplicated equal selection has one identical meaning.
 
 The accept allowlist is widened for this trusted field only. HTTP's exact-key body allowlist is
@@ -32,7 +32,7 @@ The fingerprint object stays `{ sessionId, text, retryOf }`, and the key
 `selectedMemoryEntryIds` is added **only when the canonical list is non-empty**. Old empty-selection
 hashes are therefore unchanged. Same key + reordered/duplicate-equal selection replays the same
 run; same key + a different canonical selection is `idempotency_conflict`. `retryOf` never inherits
-a selection — an explicit retry must resupply it.
+a selection: an explicit retry must resupply it.
 
 ### Domain resolution
 
@@ -47,7 +47,7 @@ and the exact `sourceRefs`; `sourceTimestamp` is always `null` because the Domai
 source timestamp (an earliest-ref aggregate would be invented). One record per requested id, in
 order; an unknown entry id or missing parent session is a typed `NOT_FOUND`. It is one `IN` read
 of `entries` (PK-indexed), one `IN` read of `sessions` and one `IN` read of `source_references`
-with a fixed `owner_kind='entry'` predicate — never a full table scan of `entries`, never a
+with a fixed `owner_kind='entry'` predicate: never a full table scan of `entries`, never a
 per-record transaction loop, and never cross-owner-kind mixing.
 
 ### Accept transaction
@@ -57,7 +57,7 @@ before the user entry and run writes. A resolved record is admissible only when 
 label and its parent-session label are known, owned by `store.assistantId`, permitted by the
 sending conversation's live consent and allowed by the route; an unknown entry or parent label
 blocks (`unavailable`). The outgoing class for the record is `max(entryClass, parentClass)`
-(ordinary < private < sensitive) — a label is never lowered.
+(ordinary < private < sensitive): a label is never lowered.
 
 ### Frozen context and snapshot
 
@@ -65,21 +65,21 @@ blocks (`unavailable`). The outgoing class for the record is `max(entryClass, pa
 (`run_id`, `schema_version`, `requested_ids`, `resolved_records`). It is inserted only for a
 non-empty selection, in the same transaction. The frozen JSON is bounded by serialized **UTF-8
 bytes** (`Buffer.byteLength(...) <= 100000`); a larger selection is refused
-(`selection_too_large`), never silently capped. A run with no row — including every pre-v3 run —
+(`selection_too_large`), never silently capped. A run with no row: including every pre-v3 run : 
 means empty selection.
 
 `RunSnapshot.memorySelection` exposes safe metadata only (requested/used/omitted ids, counts and
-compiler omit reasons, and whether the prompt has frozen) — never record text, and no whole-archive
+compiler omit reasons, and whether the prompt has frozen): never record text, and no whole-archive
 claim.
 
 ### Dispatch
 
 Dispatch reads the frozen records back and emits one `Evidence` per record
 (`id = "selected:<entryId>"`, `provenance = "memory.selection"`, priority 1, text = the frozen
-record). Classification uses stored `entry`/`session` labels only — never text and never the host's
+record). Classification uses stored `entry`/`session` labels only: never text and never the host's
 `recall -> null` rule; capability tool declarations stay `[]`. Both `#checkPolicy` gates remain:
 pre-dispatch (all requested) and pre-generate (only the records actually included after the prompt
-freezes). Correcting an included entry or parent — or revoking the sending grant — aborts before
+freezes). Correcting an included entry or parent: or revoking the sending grant: aborts before
 egress or aborts in-flight generation, with no final answer committed; an omitted-only correction
 continues. Already-sent bytes stay `mayHaveBeenSent`.
 
@@ -180,12 +180,12 @@ used. No note text is copied into a URL, localStorage, analytics or an error mes
 
 ### Tests
 
-- `server/test/selected-memory-ui.test.ts` — real Store + Domain + ChatService + HTTP: field
+- `server/test/selected-memory-ui.test.ts`: real Store + Domain + ChatService + HTTP: field
   passthrough, malformed/oversized/unknown/unclassified/over-grant refusals with no capture, body
   idempotency-key rejection, missing Origin/CSRF, one accepted cross-session note reaching the
   provider request with an unselected canary absent, normalized replay/conflict semantics, and
   source-backed metadata after a restart.
-- `server/test/selected-memory-browser-fixture.ts` + `web/test/selected-memory-browser.mjs` — the
+- `server/test/selected-memory-browser-fixture.ts` + `web/test/selected-memory-browser.mjs`: the
   synthetic note fixture and the real GPU browser proof (desktop 1440, mobile 390).
 
 Run both through `scripts/check-selected-memory-ui.sh`.

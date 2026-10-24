@@ -362,7 +362,8 @@ test('a read cut by the deadline reports timeout and the reply says so, never no
   }, controller.signal);
   assert.deepEqual(h.routed[0]!.outcomes, ['timeout'], 'a cut read is its own outcome, never empty');
   assert.deepEqual(h.sources.map(event => event.outcome), ['timeout'], 'and the per-lookup receipt says so');
-  assert.match(String(reply['note']), /cut short/i);
+  // #635: a cut read is voiced as a read that took too long, never as a source that failed.
+  assert.match(String(reply['note']), /took too long/i);
   assert.doesNotMatch(String(reply['note']), /found nothing matching/i, 'nothing matched is never said about a cut read');
 });
 
@@ -467,7 +468,7 @@ test('P5: a dead connector is reported unavailable with its reason, never empty 
   }, new AbortController().signal);
   assert.deepEqual(reply['sources'], { chat: 'unavailable' }, 'unavailable is its own outcome, never empty');
   assert.deepEqual(reply['unavailable'], { chat: 'connector_failure mattermost stage=credential' }, 'and the reply carries the reason the connector gave');
-  assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['chat', 'unavailable', 12_000]]);
+  assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['chat', 'unavailable', RESEARCH.sourceDeadline.chat]]);
   assert.deepEqual(h.executed, [], 'the dead connector is never asked');
 });
 
@@ -789,9 +790,11 @@ test('TRIAGE-R3: a recall ask routes to memory', () => {
     assert.deepEqual(requiredSources(question), ['memory'], question);
     assert.equal(routedSelection(question, CONFIGURED, Date.parse('2026-10-21T05:30:00Z')), undefined, `${question} is a memory read, not a router candidate`);
   }
-  // E2 (#605): a discussion form also reads the chat, because that is where the exchange was said.
+  // E2 (#605): a discussion form reads her own memory. #635: the chat beside it only when the ask names the
+  // chat surface, because a recall ask that names no chat is a memory read and no chat leg runs.
   const discussion = 'last time we talked about the deadline';
-  assert.deepEqual(requiredSources(discussion), ['memory', 'chat'], discussion);
+  assert.deepEqual(requiredSources(discussion), ['memory'], discussion);
+  assert.deepEqual(requiredSources('what did we discuss in the team chat about the boat'), ['memory', 'chat'], 'a recall ask that names the chat still reads it');
   assert.equal(routedSelection(discussion, CONFIGURED, Date.parse('2026-10-21T05:30:00Z')), undefined, `${discussion} is a memory read, not a router candidate`);
 });
 
@@ -808,7 +811,8 @@ test('E1: a message ask searches chat on the topic words and never reads mail', 
 
 // E2 (#605): the discussion forms never reached memory, and the attention form never named Rob.
 test('E2: a two-name discussion ask routes to memory and chat, and an attention ask to the three inboxes', () => {
-  assert.deepEqual(requiredSources('What did Rob and Naya discuss about the boat'), ['memory', 'chat']);
+  assert.deepEqual(requiredSources('What did Rob and Naya discuss about the boat'), ['memory'], 'a two-name discussion ask reads memory alone');
+  assert.deepEqual(requiredSources('What did Rob and Naya discuss in the boat channel'), ['memory', 'chat']);
   assert.deepEqual(requiredSources("What needs Rob's attention"), ['mail', 'chat', 'calendar']);
   const selection = routedSelection("what needs rob's attention", CONFIGURED, Date.parse('2026-10-21T05:30:00Z'));
   assert.ok(selection !== undefined, 'an attention ask is a deterministic selection');
@@ -840,7 +844,8 @@ function fakeClock(): FakeClock {
   };
 }
 
-const flushed = async (): Promise<void> => { for (let tick = 0; tick < 20; tick += 1) await Promise.resolve(); };
+// The run schedules its own cut before it dispatches, so the clock moves only once the read is in flight.
+const flushed = async (): Promise<void> => { for (let tick = 0; tick < 12; tick += 1) await new Promise(resolve => setImmediate(resolve)); };
 
 // #635: "write up what I discussed" and "remind me what we discussed" carry a chat word as their subject,
 // not as a source, so neither reads the chat. An ask that names the chat surface still does.
@@ -890,27 +895,23 @@ test('#635: the chat read is bounded near five seconds, and a timed out one says
   assert.doesNotMatch(note, /could not reach/u, 'and never that the chat was out of reach');
 });
 
-// #635: a read that arrived in part and then ran past its budget is a partial timeout, not a complete read.
+// #635: a read that arrived in part and then ran out of its budget is a partial timeout, not a complete read.
 test('#635: a chat read cut after it answered is a partial timeout', async () => {
-  const clock = fakeClock();
+  const controller = new AbortController();
   const h = harness({
-    now: clock.now,
-    schedule: clock.schedule,
-    execute: async (subs: readonly IntentSubCall[], signal?: AbortSignal) => {
-      if (subs.some(call => call.name === 'mattermost_get_thread')) {
-        await new Promise<void>((_resolve, reject) => {
-          if (signal?.aborted === true) { reject(new Error('aborted')); return; }
-          signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
-        });
-      }
-      return subs.map(call => sub(call.name, '- the release thread opened [post abc123]', true, call.key));
+    execute: async (subs: readonly IntentSubCall[]) => {
+      const out = subs.map(call => sub(call.name, '- the release thread opened [post abc123]', true, call.key));
+      controller.abort();
+      return out;
     },
   });
-  const call = runResearch(h.deps, { action: 'start', question: 'what did the team say in chat about the release' }, new AbortController().signal);
-  await flushed();
-  clock.advance(RESEARCH.sourceDeadline.chat);
-  const reply = await call;
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what did the team say in chat about the release',
+    lookups: [{ source: 'chat', query: 'release' }],
+  }, controller.signal);
   const header = String(reply['coverage']);
   assert.match(header, /chat partial_timeout/u, `a read that answered and then timed out is partial (${header})`);
-  assert.match(String(reply['note']), /team chat took too long/u, 'and the voice says it took too long');
+  const note = String(reply['note']);
+  assert.match(note, /team chat read took too long/u, `and the voice says it took too long (${note})`);
+  assert.doesNotMatch(note, /could not reach/u, 'a cut read is never a source out of reach');
 });

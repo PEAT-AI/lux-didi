@@ -1,4 +1,8 @@
-/tmp/intro-native.md
+# The native app
+
+Reader: anyone who changes the Swift app in `Sources/LuxDidi`.
+
+The app owns the microphone, the speaker and presence, and it owns nothing else. This page covers the native live client, the conversation protocol between app and host, pending request recovery, and the companion protocol and trust boundary that govern both.
 
 ## Native Live client
 

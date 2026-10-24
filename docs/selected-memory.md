@@ -1,4 +1,8 @@
-/tmp/intro-memory.md
+# Selected memory
+
+Reader: anyone who changes explicit selected memory, on the backend or in the connected conversation.
+
+Selected memory is the small set of notes the owner explicitly pins for a conversation. This page covers the backend records and the interface that shows and edits them. Semantic recall and the startup memory selection are in [architecture.md](architecture.md).
 
 ## Explicit selected local memory (backend)
 

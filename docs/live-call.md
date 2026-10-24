@@ -1,4 +1,8 @@
-/tmp/intro-live.md
+# The live call
+
+Reader: anyone who changes a live call: the session core, the gateway, or the voice transport.
+
+A live call is one provider session driven by the host and rendered by one client. This page covers the session core and its turn and stop rules, the gateway that carries it over the local WebSocket, and the voice transports it can use. The provider profiles that select a transport are in [provider-configuration.md](provider-configuration.md).
 
 ## Live session core
 

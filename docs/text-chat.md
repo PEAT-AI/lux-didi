@@ -1,4 +1,8 @@
-/tmp/intro-chat.md
+# Text chat
+
+Reader: anyone who changes the text conversation (the chat runtime, its steps, or its partial answers).
+
+The text path is a durable local runtime: a run is recorded, each step is a durable record, and an answer may be delivered in pieces. The live call is a different path; see [live-call.md](live-call.md).
 
 ## Durable local conversation runtime
 

@@ -1,4 +1,8 @@
-/tmp/intro-service.md
+# The local service
+
+Reader: anyone who runs, packages, or debugs the local Didi service, and anyone who changes its wire contract.
+
+The service is one loopback-only Node process that owns the database, the call and the tools. This page covers what it is, the exact wire contract the browser client speaks, the authentication it enforces, the state invariants it keeps, and how it is packaged and proved for a release. The host entry and its flags are in [architecture.md](architecture.md); the database tables are in [domain-contract.md](domain-contract.md).
 
 ## Client and service contract
 

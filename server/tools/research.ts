@@ -2514,6 +2514,18 @@ function briefPlanField(run: RunState): { plan?: 'knowledge_only' | 'named_sourc
 }
 
 /** The plain words a closed failure code gets in a reply, never a bare code. */
+/**
+ * F17/R3: the closed reason a refused chat triage read carries. The sub-call names the failure it
+ * really returned, so a composite the policy never granted and a connector that refused the session
+ * stay apart: only `unknown_tool` and `grant_not_permitted` mean the read was not granted.
+ */
+const CHAT_NOT_GRANTED_CODES: readonly string[] = ['unknown_tool', 'grant_not_permitted'];
+export function chatAttentionReason(results: readonly IntentSubResult[]): string {
+  const failed = results.find(result => !result.ok);
+  const code = failed?.code;
+  if (code === undefined) return 'unavailable';
+  return CHAT_NOT_GRANTED_CODES.includes(code) ? 'tool-not-granted' : code;
+}
 export function plainReason(code: string): string { return REASON_WORDS[code] ?? code.replace(/_/gu, ' '); }
 const TIMED_OUT = new Set(['timeout', 'deadline', 'deadline_exhausted', 'timed_out']);
 const secondsOfSource = (source: SourceKind): number => Math.round((RESEARCH.sourceDeadline[source] ?? RESEARCH.defaultSourceDeadlineMs) / 1000);
@@ -4379,9 +4391,12 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
                 : mailInfo === undefined ? queryShapeOf(served) : mailEmptyPhrase(mailInfo, queryShapeOf(served)));
             } else if (!run.sourcesDone.has(part.source)) {
               run.sourcesFailed.add(part.source);
-              // F17: a chat triage ask rides the connector's own composite, which a policy may not grant.
-              // The refusal is closed and named, so the reply never reports an unknown tool or a success.
-              if (part.source === 'chat' && served.some(sub => sub.name === INTERNAL.chatAttention)) run.unavailableReasons.set('chat', 'tool-not-granted');
+              // F17/R3: a chat triage ask rides the connector's own composite. Its reason is the failure
+              // the sub-call really returned: only the two availability codes read as not granted, and a
+              // credential, timeout or transport failure keeps its own closed reason.
+              if (part.source === 'chat' && served.some(sub => sub.name === INTERNAL.chatAttention)) {
+                run.unavailableReasons.set('chat', chatAttentionReason(part.results));
+              }
             }
             // P5 outcome 4: one receipt per source read, with the deadline it was actually given.
             logSource({

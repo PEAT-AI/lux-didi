@@ -312,6 +312,8 @@ import WebKit
             }
         }
     }
+    /// #613: the one latch and session epoch presence and the conversation share.
+    let ownerStopLatch = OwnerStopLatch()
     @discardableResult
     func startLive(pickupJobID: String? = nil) -> Bool {
         guard let client else { error = "Connect the local service before starting Live voice."; return false }
@@ -321,7 +323,7 @@ import WebKit
         let conversation = liveAuthorityOwner.ownerStart {
             NativeLiveConversation(authority: client.authenticatedRequestBuilder(), dictationIsCapturing: { [weak self] in
                 self?.voice.state.phase == .recording
-            }, pickupJobID: pickupJobID, logsDirectory: liveLogsDirectory)
+            }, pickupJobID: pickupJobID, logsDirectory: liveLogsDirectory, latch: ownerStopLatch)
         }
         conversation.start()
         orbLevels = NativeOrbLevelPublisher(device: conversation.device, bridge: bridge)
@@ -608,7 +610,8 @@ struct RootView: View {
         receipt: { [weak self] record in self?.model.appendPresenceReceipt(record) },
         goodbyeTone: { [weak self] in self?.model.playGoodbyeTone() },
         surface: { [weak self] posture in self?.miniOrb.applyPresence(posture) },
-        prewarm: { [weak self] in self?.model.prewarmWarmContext() }))
+        prewarm: { [weak self] in self?.model.prewarmWarmContext() }),
+        latch: model.ownerStopLatch)
     private var presencePickupJobID: String?
     /// The presence generation the conversation now on the wire was opened under, so a
     /// callback from any other conversation is stale by construction.
@@ -710,6 +713,7 @@ struct RootView: View {
         loginLaunch = launchedAtLogin
         launchKind = LaunchKind.resolve(arguments: CommandLine.arguments,
             environment: ProcessInfo.processInfo.environment, loginLaunch: loginLaunch)
+        model.appendPresenceReceipt(launchKind.launchRecord)
         OwnedWindowReadiness.trace("app:didFinishLaunching-entry",
             ["activationPolicy": NSApp.activationPolicy().rawValue, "isActive": NSApp.isActive])
         // UI3A-R1: a regular app for the interactive, login-item and install
@@ -1200,7 +1204,11 @@ struct RootView: View {
             // #589: the owner's own sentence ended this call, so presence closes it as her voice stop and the
             // goodbye sounds. Any other ending is a session that ended, which presence records as it always has.
             presence.endAfterHostTerminal(voiceStop: model.live?.hostVoiceStop == true, generation: generation)
-        case .idle, .connecting, .muted, .outcomeUnknown, .pausedForInput, .rebuilding: break
+        case .outcomeUnknown:
+            // #613: a socket that closed without a terminal frame leaves no live microphone, so presence
+            // goes cold now. It never reconnects to find out what the host thinks.
+            presence.sessionUncertain(generation)
+        case .idle, .connecting, .muted, .pausedForInput, .rebuilding: break
         }
     }
     /// The FULL window's "Show the mini orb" button (#311): the page asks through the bridge and

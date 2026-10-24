@@ -60,12 +60,33 @@ struct PresenceEffects {
     var prewarm: @MainActor () -> Void = {}
 }
 
+/// #613: the owner's stop outranks every automatic recovery. One latch and one monotonic epoch are
+/// shared by the presence machine and the conversation, so a restart that queued itself up before the
+/// stop can never fire after it. Only an explicit Start clears the latch.
+final class OwnerStopLatch {
+    private(set) var latched = false
+    private(set) var epoch: UInt64 = 0
+
+    /// A voice stop, a user stop or an unknown outcome: the owner asked, so recovery stands down.
+    func ownerStopped() {
+        latched = true
+        epoch &+= 1
+    }
+
+    /// The one thing that makes an automatic restart legal again: the owner starting a session.
+    func startRequested() { latched = false }
+
+    /// A recovery captured this epoch before its await; a stop since then voids its restart.
+    func allowsRestart(seenEpoch: UInt64) -> Bool { !latched && epoch == seenEpoch }
+}
+
 /// The presence machine, in the one place a state can change. `generation` fences the
 /// session lifecycle: it moves whenever the machine opens or leaves a session, and a
 /// callback carrying any other generation changes nothing.
 @MainActor
 final class NativePresence {
     private let effects: PresenceEffects
+    private let latch: OwnerStopLatch
     private(set) var state: PresenceState = .cold
     private(set) var generation: UInt64 = 0
     /// "Always show Naya": on by default, and the only switch over the presence orb.
@@ -89,8 +110,10 @@ final class NativePresence {
     static let warmWindow: Double = 180
 
     init(effects: PresenceEffects = PresenceEffects(),
+         latch: OwnerStopLatch = OwnerStopLatch(),
          now: @escaping @MainActor () -> Double = { Date().timeIntervalSince1970 }) {
         self.effects = effects
+        self.latch = latch
         self.now = now
     }
 
@@ -107,6 +130,8 @@ final class NativePresence {
 
     func stop(_ trigger: PresenceTrigger) {
         guard state != .cold else { return }
+        // #613: a stop is the owner's, so nothing may restart the call behind his back.
+        latch.ownerStopped()
         if state == .connecting { cancelConnecting(trigger); return }
         // #589: a voice stop is the owner's own sentence, so the goodbye sounds on the way out. The
         // teardown stays the Stop button's own path, so the audio slot is released exactly once.
@@ -118,8 +143,17 @@ final class NativePresence {
     /// sentence, so the goodbye sounds and the receipt names his words; any other end is the session
     /// ending as it always has.
     func endAfterHostTerminal(voiceStop: Bool, generation: UInt64) {
+        guard generation == self.generation else { return }
         if voiceStop { stop(.voice); return }
         sessionEnded(generation)
+    }
+
+    /// #613: the socket closed without a decoded terminal frame, so nothing is known about the call
+    /// and no microphone may stay open for it. Presence goes cold now and never reconnects to find out.
+    func sessionUncertain(_ generation: UInt64) {
+        guard generation == self.generation, state != .cold else { return }
+        latch.ownerStopped()
+        teardown(.error)
     }
 
     /// The session that carried this generation ended. A stale generation is the session
@@ -233,6 +267,7 @@ final class NativePresence {
     func setSurfaces() { effects.surface(posture) }
 
     private func connect(_ trigger: PresenceTrigger) {
+        latch.startRequested()
         generation &+= 1
         connectingTrigger = trigger
         failed = false

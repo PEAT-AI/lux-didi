@@ -473,7 +473,16 @@ final class ConnectingRing {
     /// then the output stops. Nothing here touches the live engine, whose microphone is already closed.
     func goodbye() {
         let output = ringOutput()
-        guard let buffer = ConnectingGoodbyeTone.buffer(), output.playChime(buffer) else { return }
+        // #613: the goodbye records played or refused in native-live.log, and the mic is already released.
+        guard let buffer = ConnectingGoodbyeTone.buffer() else {
+            receipt?(["event": "goodbye_tone", "played": false, "reason": "no_buffer"])
+            return
+        }
+        guard output.playChime(buffer) else {
+            receipt?(["event": "goodbye_tone", "played": false, "reason": "output_refused"])
+            return
+        }
+        receipt?(["event": "goodbye_tone", "played": true])
         playToken &+= 1
         let token = playToken
         outputRunning = true

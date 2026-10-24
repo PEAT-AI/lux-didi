@@ -40,13 +40,13 @@ enum SingleInstanceGuard {
 /// The launch paths that decide whether Didi may appear and take focus. A pure
 /// value: `resolve` reads only the arguments, the environment and the login Apple
 /// Event, so the presentation decision is provable without a window.
-enum LaunchKind: Equatable {
+enum LaunchKind: String {
     case interactive
-    case loginItem
-    case installRelaunch
-    case installedProof
-    case selfCheck
-    case uiProof
+    case loginItem = "login_item"
+    case installRelaunch = "install_relaunch"
+    case installedProof = "installed_proof"
+    case selfCheck = "self_check"
+    case uiProof = "ui_proof"
     case verification
 
     /// A check that cannot open its own window exits with this code so a yielded
@@ -101,6 +101,14 @@ enum LaunchKind: Equatable {
         case .interactive, .loginItem: return 0
         case .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification: return LaunchKind.duplicateInstanceExitCode
         }
+    }
+}
+
+/// #613: the one content-free launch record, so a launch kind is never inferred from LaunchServices.
+extension LaunchKind {
+    var launchRecord: [String: Any] {
+        ["event": "launch_kind", "kind": rawValue,
+         "autoConnects": autoConnects, "windowShown": presentsWindowAtLaunch]
     }
 }
 

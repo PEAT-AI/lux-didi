@@ -231,6 +231,8 @@ export interface ResearchSourceLog {
   coalesced: number;
   /** 3r K1: the knowledge lookup's bounded-body request, metadata only and never a query. */
   knowledge?: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean; queryTerms: number; dayFilter: DayFilter; chatDateOperator: ChatDateOperator; deduped: number };
+  /** #610: the chat read's shape, or R3: the closed reason a refused chat read records. Never a word. */
+  chat?: ChatReceipt;
   /** E5: the mail search's shape, and the one broader retry's shape when it ran. Counts, never words. */
   mail?: MailQueryShape & { retried?: MailQueryShape };
   /** Release 4: a read that delivered its pages but lost a later one, and how many pages it lost. */
@@ -715,6 +717,44 @@ const OPERATOR_TOKEN = /^-?([a-z_]+):(.+)$/iu;
 const WINDOW_OPERATORS = new Set(['newer_than', 'older_than', 'after', 'before']);
 const isOperatorToken = (token: string): boolean => OPERATOR_TOKEN.test(token) || token.toUpperCase() === 'OR';
 
+/**
+ * #610: the shape of one chat query for a receipt: how many words, which closed operator names, the
+ * page size and the sort. The words themselves never leave the plan.
+ */
+export interface ChatQueryShape { terms: number; operators: string[]; limit: number; sort: string }
+/**
+ * #610/F7: the closed operator names a chat query may name. Exported so the host log admits exactly
+ * the tokens the planner can produce, and nothing else.
+ */
+export const CHAT_QUERY_OPERATORS: readonly string[] = ['in', 'from', 'after', 'before'];
+const CHAT_OPERATORS = new Set(CHAT_QUERY_OPERATORS);
+export function chatQueryShape(call: IntentSubCall | undefined): ChatQueryShape | undefined {
+  if (call === undefined) return undefined;
+  const query = typeof call.args['query'] === 'string' ? call.args['query'] : '';
+  const operators: string[] = [];
+  let terms = 0;
+  for (const token of query.split(/\s+/).filter(Boolean)) {
+    const match = /^([a-z_]+):(.+)$/iu.exec(token);
+    if (match === null) { terms += 1; continue; }
+    const operator = match[1]!.toLowerCase();
+    if (CHAT_OPERATORS.has(operator) && !operators.includes(operator)) operators.push(operator);
+  }
+  const limit = typeof call.args['limit'] === 'number' ? call.args['limit'] : RESEARCH.chatLines;
+  // The connector asks for the newest sort on every windowed read, so a receipt names what it asked.
+  return { terms, operators, limit, sort: 'newest' };
+}
+/**
+ * R3: the chat read's receipt. A search records its shape; a refused triage read records the closed
+ * reason it really failed with. The two never ride together, so a shape is never mistaken for a cause.
+ */
+export interface ChatReceipt { terms?: number; operators?: string[]; limit?: number; sort?: string; reason?: string }
+export function chatReceiptField(served: readonly IntentSubCall[], results: readonly IntentSubResult[]): { chat?: ChatReceipt } {
+  const failed = results.find(result => !result.ok);
+  if (failed !== undefined) return { chat: { reason: chatAttentionReason(results) } };
+  const shape = chatQueryShape(served.find(call => call.name === INTERNAL.chatSearch));
+  return shape === undefined ? {} : { chat: shape };
+}
+
 export function mailQueryShape(q: string): MailQueryShape {
   const operators: string[] = [];
   let terms = 0, window: string | undefined;
@@ -881,6 +921,17 @@ const NAMED_DISCUSSION = /\b(?:what did|did)\s+[A-Z][\w'’-]*\s+and\s+[A-Z][\w'
 /** E2 (#605): the discussion forms read her own memory and the chat beside it. */
 const DISCUSSION_ASK = /\b(?:what did we (?:discuss|talk about)|we (?:talked|spoke) about)\b/u;
 const CHAT_WORDS = /\b(chats?|team|channels?|slack|mattermost|messages?|dms?|said|posted|discussed)\b/u;
+
+/**
+ * #610: the channel a chat question names, in the three shapes the owner uses: "in the X channel",
+ * "channel X" and "#x". A display name keeps its words, so the connector can fold case and punctuation.
+ */
+const NAMED_CHANNEL = /(?:\bin the |\bin |\bthe )([\w][\w .'-]{0,60}?) channel\b|\bchannel ([\w][\w .'-]{0,60}?)(?=$|[,.?!]|\s(?:about|on|for|with|from)\b)|#([\w.-]{1,60})/iu;
+export function namedChannel(question: string): string | undefined {
+  const match = NAMED_CHANNEL.exec(question);
+  const name = (match?.[1] ?? match?.[2] ?? match?.[3] ?? '').trim().replace(/[.!?]+$/u, '');
+  return name === '' ? undefined : name;
+}
 /**
  * #564/#572: a triage ask is "what came in", never a keyword search. The host runs the fixed read below
  * instead of the question's prose, so a relevance ranker can never answer it from an old thread.
@@ -1288,7 +1339,10 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     const day = dated ? chatWindowDay(config.question, config.nowMs ?? Date.now(), config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone) : undefined;
     const terms = compiled.replace(CHAT_DATE_OPERATOR, '').replace(/\s+/gu, ' ').trim();
     const query = terms !== '' ? terms : chatQuery('after:yesterday', config.nowMs, config.timeZone);
-    return [search(INTERNAL.chatSearch, { query, limit: RESEARCH.chatLines, ...(day === undefined ? {} : { after: day }) }, 'c0')];
+    // #610: a channel the question names is the connector's own filter, resolved through its channel
+    // list, so the ask reads that channel instead of the whole archive.
+    const channel = namedChannel(config.question);
+    return [search(INTERNAL.chatSearch, { query, limit: RESEARCH.chatLines, ...(day === undefined ? {} : { after: day }), ...(channel === undefined ? {} : { channel }) }, 'c0')];
   }
   if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { post_id: id }, 'ct0')] : []; }
   if (kind === 'web_search') return config.configured.includes('web')
@@ -2528,6 +2582,8 @@ const REASON_WORDS: Record<string, string> = {
   'credential-refresh-failed': 'sign in again',
   // #500: a source the identity server will not publish a read grant for.
   source_not_granted: 'read grant not published',
+  // F17: the chat triage read is the connector's own composite, which the approved policy may not grant.
+  'tool-not-granted': 'tool not granted',
   window_unparsed: 'could not resolve that date or window, ask for a day or a week',
   history_unavailable: 'unavailable',
   history_reference_unavailable: 'unavailable',
@@ -2544,6 +2600,30 @@ function briefPlanField(run: RunState): { plan?: 'knowledge_only' | 'named_sourc
 }
 
 /** The plain words a closed failure code gets in a reply, never a bare code. */
+/**
+ * F17/R3: the closed reason a refused chat triage read carries. The sub-call names the failure it
+ * really returned, so a composite the policy never granted and a connector that refused the session
+ * stay apart: only `unknown_tool` and `grant_not_permitted` mean the read was not granted.
+ */
+const CHAT_NOT_GRANTED_CODES: readonly string[] = ['unknown_tool', 'grant_not_permitted'];
+/**
+ * R3: the closed reasons a refused chat read may record on its receipt. One token each, never a
+ * sentence: a not-granted read, a refused session, a cut read, drift, a protocol refusal, or no answer.
+ */
+export const CHAT_RECEIPT_REASONS: readonly string[] = [
+  'tool-not-granted', 'credential-refresh-failed', 'source_not_granted', 'not_signed_in', 'timeout',
+  'deadline', 'timed_out', 'schema-drift', 'grant-stale', 'source-unavailable', 'sdk_protocol_rejected',
+  'connector_error', 'invalid_result', 'unavailable', 'refused',
+];
+export function chatAttentionReason(results: readonly IntentSubResult[]): string {
+  const failed = results.find(result => !result.ok);
+  const code = failed?.code;
+  if (code === undefined) return 'unavailable';
+  if (CHAT_NOT_GRANTED_CODES.includes(code)) return 'tool-not-granted';
+  // R4: the emitted reason is clamped to the closed vocabulary the host log admits, so a code this
+  // build does not know still produces a receipt instead of being refused there.
+  return CHAT_RECEIPT_REASONS.includes(code) ? code : 'refused';
+}
 export function plainReason(code: string): string { return REASON_WORDS[code] ?? code.replace(/_/gu, ' '); }
 const TIMED_OUT = new Set(['timeout', 'deadline', 'deadline_exhausted', 'timed_out']);
 const secondsOfSource = (source: SourceKind): number => Math.round((RESEARCH.sourceDeadline[source] ?? RESEARCH.defaultSourceDeadlineMs) / 1000);
@@ -4467,7 +4547,15 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               run.emptySearches.set(part.source, served.some(sub => sub.name === INTERNAL.chatAttention)
                 ? ` in the last ${TRIAGE_DAYS} days`
                 : mailInfo === undefined ? queryShapeOf(served) : mailEmptyPhrase(mailInfo, queryShapeOf(served)));
-            } else if (!run.sourcesDone.has(part.source)) run.sourcesFailed.add(part.source);
+            } else if (!run.sourcesDone.has(part.source)) {
+              run.sourcesFailed.add(part.source);
+              // F17/R3: a chat triage ask rides the connector's own composite. Its reason is the failure
+              // the sub-call really returned: only the two availability codes read as not granted, and a
+              // credential, timeout or transport failure keeps its own closed reason.
+              if (part.source === 'chat' && served.some(sub => sub.name === INTERNAL.chatAttention)) {
+                run.unavailableReasons.set('chat', chatAttentionReason(part.results));
+              }
+            }
             // P5 outcome 4: one receipt per source read, with the deadline it was actually given.
             logSource({
               event: 'research_source', researchId: run.researchId, source: lookupSourceOf(part.source),
@@ -4477,6 +4565,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               ms: (consumeKnowledge || prefetchedKnowledge) && knowledgeEndedAt > 0 ? Math.max(0, knowledgeEndedAt - knowledgeStartedAt) : Math.max(0, now() - at),
               deadlineMs: askedWebDeadline ?? sourceDeadlineMsOfRead, coalesced: 1,
               ...(part.source === 'knowledge' ? { knowledge: knowledgeReceipt(block.lines, run.chatDate ?? 'none', served.find(call => call.name === INTERNAL.knowledgeSearch), { droppedFilters: run.droppedDayFilters, deduped: dedupedKnowledge }) } : {}),
+              ...(part.source === 'chat' ? chatReceiptField(served, part.results) : {}),
               ...mailReceiptField(mailInfo),
             });
             // R6: this source settled after the call had already answered, so what it found is handed over

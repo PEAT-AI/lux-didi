@@ -9,6 +9,8 @@ import { Store } from '../runtime/store.js';
 import { hostMigrations } from '../host/runtime.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import type { RunAcceptance } from '../tools/types.js';
+import { CONNECTOR_COMPOSED_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS, composedDeclarationDigest, composedGrantedNames, connectorDescriptor } from '../connectors/index.js';
+import { validatePolicy } from '../tools/index.js';
 
 // Every identity below is synthetic; no real account, address or token appears in this file.
 const OWNER = 'owner@example.test';
@@ -371,4 +373,42 @@ test('fluency: recovery refuses changed catalog, binding, revocation and late cl
     assert.deepEqual(store.transaction(tx => tx.get('SELECT policy_json,policy_sha256,generation FROM tool_connections WHERE connection_id=?', ['gmail'])), before, change);
     assert.deepEqual(fake.calls.filter(name => name !== 'gmail_get_profile'), ['gmail_search_messages']);
   }
+});
+
+// #604: the attention view is the connector's own composite, so it is granted only when every child
+// read it needs is granted, and never because a server published a name that looks like it.
+test('#604: the composed attention view is granted only when every child read is granted', () => {
+  const composed = CONNECTOR_COMPOSED_TOOLS['mattermost'] ?? [];
+  assert.deepEqual(composed.map(entry => entry.name), [MATTERMOST_ATTENTION_TOOL]);
+  assert.deepEqual(composedGrantedNames('mattermost', MATTERMOST_TOOLS), [MATTERMOST_ATTENTION_TOOL]);
+  const withoutThread = MATTERMOST_TOOLS.filter(name => name !== 'mattermost_get_thread');
+  assert.deepEqual(composedGrantedNames('mattermost', withoutThread), [], 'a missing child read leaves the composite ungranted');
+  assert.deepEqual(composedGrantedNames('google', MATTERMOST_TOOLS), [], 'no other connector carries a composite');
+});
+
+test('#604: a composed grant is its own declaration, with a host-computed digest', () => {
+  const [attention] = CONNECTOR_COMPOSED_TOOLS['mattermost'] ?? [];
+  assert.ok(attention);
+  assert.equal(composedDeclarationDigest(attention), composedDeclarationDigest(attention), 'the digest is stable');
+  const changed = { ...attention, description: `${attention.description} Extra.` };
+  assert.notEqual(composedDeclarationDigest(changed), composedDeclarationDigest(attention), 'a changed declaration is a changed digest');
+  const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 50, maxGetIds: 10, maxEntityBytes: 1024, maxResultBytes: 1024 } };
+  const declaration = connectorDescriptor('mattermost')!.declarations(policy as never).find(entry => entry.name === MATTERMOST_ATTENTION_TOOL);
+  assert.ok(declaration, 'the composite is a declared read tool');
+  assert.equal(declaration.validate({ days: 3 }), true);
+  assert.equal(declaration.validate({ days: 400 }), false);
+});
+
+test('#604: a policy may name the composite only beside the children it reads', () => {
+  const base = {
+    schemaVersion: 1, bindingMode: 'connection', ownerId: OWNER, connectionId: 'mattermost', generation: 1, enabled: true,
+    connector: 'mattermost',
+    endpoint: { id: 'mattermost', url: 'https://synthetic.invalid/mcp', account: 'local', resource: 'mattermost', credentialRef: null },
+    schemaDigest: 'a'.repeat(64),
+    sourcePolicy: { id: 'mattermost', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+    route: { identity: 'mattermost', allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 200, maxSearchLimit: 50, maxGetIds: 10, maxEntityBytes: 1024, maxResultBytes: 1024 },
+  };
+  assert.doesNotThrow(() => validatePolicy({ ...base, toolNames: [...MATTERMOST_TOOLS, MATTERMOST_ATTENTION_TOOL] } as never));
+  assert.throws(() => validatePolicy({ ...base, toolNames: [...MATTERMOST_TOOLS.filter(name => name !== 'mattermost_get_thread'), MATTERMOST_ATTENTION_TOOL] } as never), /invalid_read_tools/u);
 });

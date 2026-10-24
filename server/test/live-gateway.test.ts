@@ -264,7 +264,7 @@ for (const mode of ['failed', 'healthy', 'fixture-only'] as const) test(`Swift s
   await Promise.race([ready, setup.then(() => ready)]);
   // The owner opens model-first, so frame 1 is the greeting text, not capture.
   await h.f.frame(2);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: FRESH_OPENING } });
+  assert.deepEqual(h.f.frames[1], { clientContent: { turns: [{ role: 'user', parts: [{ text: FRESH_OPENING }] }], turnComplete: true } });
   // The coordinator sends capture only after ready; FoundationLiveSocket sends PCM as binary,
   // and endAudioStream as one text JSON control, not a terminal close.
   ws.send(Buffer.from(pcm));
@@ -1063,6 +1063,10 @@ test('OC1: an open action is a native_action control frame and its ack is the to
   h.f.send({ setupComplete: {} });
   await waitFor(() => frames.some(frame => frame.text && JSON.parse(frame.text).type === 'ready'));
 
+  // #573: an open call answers the owner's own open intent, so his finalized words reach the host first.
+  h.f.send({ serverContent: { inputTranscription: { text: 'open my gmail', finished: true } } });
+  await waitFor(async () => (await json(h.origin, `/api/v1/live-sessions/${id}/journal`, { headers: bearer(h) })).body.data.fragments
+    .some((fragment: { kind: string }) => fragment.kind === 'inputTranscription'), 1_500);
   h.f.send({ toolCall: { functionCalls: [{ id: 'open-call-1', name: 'open_home', args: { app: 'gmail' } }] } });
   await waitFor(() => frames.some(frame => frame.text && (JSON.parse(frame.text) as { type?: string }).type === 'native_action'));
   const parsed = frames.map(frame => (frame.text ? JSON.parse(frame.text) as Record<string, unknown> : null));

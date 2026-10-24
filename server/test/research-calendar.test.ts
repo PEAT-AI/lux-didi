@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, configuredSourcesForEndpoints, ownerScheduleQuestion, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type SourceKind } from '../tools/research.js';
+import { RESEARCH, ResearchLedger, ResearchScheduler, calendarWindowOf, candidateSubs, configuredSourcesForEndpoints, ownerScheduleQuestion, runResearch, windowRange, type ResearchDeps, type ResearchMemo, type ResearchRunLog, type SourceKind } from '../tools/research.js';
 import { shapeGcalList } from '../tools/live-shape.js';
 import type { IntentSubResult } from '../tools/intent.js';
 
@@ -526,4 +526,55 @@ test('release 4: a window the grammar cannot resolve names its own reason instea
   assert.equal(unavailable?.['calendar'], 'window_unparsed', 'the reason is the closed window token, never an endpoint outage');
   assert.match(String(reply['note']), /could not resolve that calendar date or window/u, 'and the reply carries the guidance the model voices');
   assert.equal(/endpoint_unavailable/u.test(JSON.stringify(reply)), false, 'no outage is claimed for a window the grammar cannot parse');
+});
+
+test('#574: a day read prints the attendee names it was given', async () => {
+  const party = Array.from({ length: 12 }, (_, n) => ({ displayName: `Person ${n}` }));
+  const h = fixture([{ id: 'a1', start: '2026-10-19T09:00:00Z', summary: 'Design review', attendees: party }]);
+  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
+  const text = JSON.stringify(reply['findings']);
+  assert.match(text, /Person 0/);
+  assert.match(text, /Person 7/);
+  assert.doesNotMatch(text, /Person 8/, 'the ninth name is never spoken');
+  assert.match(text, /and others/);
+});
+
+test('#5: the window grammar reads every declared form out of the sentence and refuses the rest', async () => {
+  const table: [string, string][] = [
+    ['what is on my calendar tomorrow', 'tomorrow'],
+    ['what do I have on Wednesday', 'wednesday'],
+    ['what does next week look like', 'next week'],
+    ['what is on my calendar this week', 'this week'],
+    ['meetings on 2026-10-17', '2026-10-17'],
+  ];
+  for (const [question, window] of table) assert.equal(calendarWindowOf(question), window, question);
+  assert.equal(calendarWindowOf('anything about the release'), '', 'a sentence with no window word names none');
+  assert.equal(calendarWindowOf('what is on my calendar', 'today'), 'today', 'a caller may name today for a question that carries no window');
+  assert.equal(calendarWindowOf('Wednesday tomorrow'), '', 'two window words name no single window');
+  assert.equal(calendarWindowOf('the week after next', 'today'), '', 'a window word the grammar cannot read is never today');
+});
+
+test('#5: a day read follows the sentence, and an unparseable window reads nothing', async () => {
+  const events = [event(19)];
+  const tomorrow = fixture(events);
+  await runResearch(tomorrow.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'tomorrow' }] }, signal());
+  const read = tomorrow.calls.find(call => call['name'] === 'calendar_list_events')!;
+  assert.equal(read['timeMin'], '2026-10-20T00:00:00.000Z', 'tomorrow is the day after the fixture clock');
+  const none = fixture(events);
+  const reply = await runResearch(none.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'the week after next' }] }, signal());
+  assert.equal(none.calls.filter(call => call['name'] === 'calendar_list_events').length, 0, 'an unparseable window reads nothing');
+  assert.equal((reply['unavailable'] as Record<string, string> | undefined)?.['calendar'], 'window_unparsed');
+});
+
+test('#7: a single-day read drops the previous day all-day entry and keeps the day own all-day entry', async () => {
+  const h = fixture([
+    { id: 'allday-prev', start: '2026-10-18', summary: 'Company offsite' },
+    { id: 'allday-today', start: '2026-10-19', summary: 'Release day' },
+    { id: 'timed', start: '2026-10-19T09:00:00Z', summary: 'Standup' },
+  ]);
+  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
+  const text = JSON.stringify(reply['findings']);
+  assert.doesNotMatch(text, /Company offsite/, 'the prior day all-day entry is not part of this answer');
+  assert.match(text, /Release day/, 'the day own all-day entry stays, with no invented time');
+  assert.match(text, /Standup/);
 });

@@ -28,6 +28,13 @@ const outputOf = (played: Played, callId: string): string => {
   return String((command?.frame['item'] as Record<string, unknown> | undefined)?.['output'] ?? '');
 };
 const countOf = (played: Played, type: string): number => types(played).filter(entry => entry === type).length;
+/** Continuation creates only: the opener create a fresh call now sends at session.started answers no batch, so it
+ *  is never the continuation these scenarios are about (contract 1023 N3). */
+const continuations = (played: Played): number => {
+  const log = played.replay.commands;
+  const first = log.findIndex(entry => entry.type === 'response.item.create');
+  return log.slice(first === -1 ? log.length : first).filter(entry => entry.type === 'response.create').length;
+};
 
 test('scenario 1: silent fill frames through a call keep the obligation and the continuation', async t => {
   const played = await play(t, 'scenario-01-silent-fill', { tools: true, scripts: [{ latencyMs: 3_000 }] });
@@ -37,7 +44,7 @@ test('scenario 1: silent fill frames through a call keep the obligation and the 
   // The wire order the docs require: submit the result, then continue. Fill frames change nothing.
   expectCommands(replay.commands, ['session.start', 'response.item.create', 'response.create']);
   assert.equal(countOf(played, 'response.item.create'), 1, 'one function_call_output for the call');
-  assert.equal(countOf(played, 'response.create'), 1, 'the continuation is not withheld by fill frames');
+  assert.equal(continuations(played), 1, 'the continuation is not withheld by fill frames');
   assert.equal(replay.receipts.length > 0, true, 'the answer became audible');
   assert.notEqual(replay.calls[0]!.deliveryAt, undefined, 'the turn disposition is delivery, not silence');
   await replay.release();
@@ -49,7 +56,7 @@ test('scenario 2: a barge-in before tool completion still answers and continues'
   // The orb must not read listening while the call is unanswered: that is the phantom barge-in of the 77 s
   // stall, where a flush mid-tool dropped THINKING to LISTENING and the continuation was withheld. Invariant 5
   // is that assertion; the barge-in must not add a second failure of its own.
-  assert.equal(countOf(played, 'response.create') >= 1, true, `the continuation was withheld after a barge-in: ${describe(replay)}`);
+  assert.equal(continuations(played) >= 1, true, `the continuation was withheld after a barge-in: ${describe(replay)}`);
   invariants(played);
   await replay.release();
 });
@@ -100,7 +107,7 @@ test('scenario 5: a new call after the continuation is answered and continued on
   const { replay } = played;
   assert.equal(replay.calls.length, 2, `two calls were observed: ${describe(replay)}`);
   assert.equal(countOf(played, 'response.item.create'), 2, 'one output per call');
-  assert.equal(countOf(played, 'response.create'), 2, 'one continuation per ready batch');
+  assert.equal(continuations(played), 2, 'one continuation per ready batch');
   invariants(played);
   await replay.release();
 });
@@ -109,7 +116,7 @@ test('scenario 6: duplicate lifecycle and call events produce one tool turn', { 
   const played = await play(t, 'scenario-06-duplicate-events', { tools: true, scripts: [{ latencyMs: 1_500 }] });
   const { replay } = played;
   assert.equal(countOf(played, 'response.item.create'), 1, `duplicate calls produced one output: ${describe(replay)}`);
-  assert.equal(countOf(played, 'response.create'), 1, 'one continuation for the duplicated batch');
+  assert.equal(continuations(played), 1, 'one continuation for the duplicated batch');
   invariants(played);
   await replay.release();
 });
@@ -117,7 +124,7 @@ test('scenario 6: duplicate lifecycle and call events produce one tool turn', { 
 test('scenario 7: a missing terminal event never withholds the continuation', async t => {
   const played = await play(t, 'scenario-07-missing-terminal-event', { tools: true, scripts: [{ latencyMs: 1_500 }] });
   const { replay } = played;
-  assert.equal(countOf(played, 'response.create'), 1, `no response.done arrived, so the continuation was withheld: ${describe(replay)}`);
+  assert.equal(continuations(played), 1, `no response.done arrived, so the continuation was withheld: ${describe(replay)}`);
   invariants(played);
   await replay.release();
 });
@@ -125,7 +132,7 @@ test('scenario 7: a missing terminal event never withholds the continuation', as
 test('scenario 8: a rejected command retries at most once and an async settings failure is typed', async t => {
   const played = await play(t, 'scenario-08-rejected-command', { tools: true, scripts: [{ latencyMs: 1_500 }] });
   const { replay } = played;
-  assert.equal(countOf(played, 'response.create') <= 2, true, `the rejected continuation was retried more than once: ${describe(replay)}`);
+  assert.equal(continuations(played) <= 2, true, `the rejected continuation was retried more than once: ${describe(replay)}`);
   invariants(played);
   await replay.release();
 });

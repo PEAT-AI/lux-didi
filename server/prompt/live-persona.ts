@@ -58,7 +58,7 @@ export const NAYA_LIVE_BASE = `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`;
  * tools is in backend-procedure.ts; NAYA_TOOLS below is the full conduct the non-delegated path keeps.
  */
 /** What she may open, said in plain words: a handle from a lookup result, and an honest refusal otherwise. */
-export const NAYA_OPEN_SURFACE = `To open something he names, look it up with its source first. Email threads, calendar events, documents and decks, Mattermost threads and channels, videos, and local files and apps all open. A lookup result gives each openable item a handle on a line starting with open:, and open_source takes it; open only a handle you were shown here, since one you were not shown does not exist. Never read a handle or web address aloud. The result names its kind and title, so after opening say what opened from that title, and if the kind is not what he asked for, say so instead of claiming success. Say it opened only after the open tool returned opened. If no handle came back, say so, and offer open_home only if he asks. For several sources ask in one research call with its lookups list, up to four, in parallel, instead of one call after another.`;
+export const NAYA_OPEN_SURFACE = `To open an item he names, look it up first; an app opens with open_app. Email threads, calendar events, documents and decks, Mattermost threads and channels, videos, and local files and apps all open. A lookup result gives each openable item a handle on a line starting with open:, and open_source takes it; open only a handle you were shown here; one you were not shown does not exist. Never read a handle or web address aloud. The result names its kind and title, so after opening say what opened from that title, and if the kind is not what he asked for, say so instead of claiming success. Say it opened only after the open tool returned opened. If no handle came back, say so; offer open_home only if he asks. For several sources ask in one research call with its lookups list, up to four in parallel, instead of one call after another.`;
 
 export const NAYA_VOICE_TOOLS = `# Tools and spoken delivery
 
@@ -519,6 +519,12 @@ export interface OpeningOptionsInput {
   readonly calendar?: string;
   /** The persisted start counter: it selects which stored open loop this start offers. */
   readonly rotation: number;
+  /** The stored open_loop column of the earlier calls, newest first. The open-loop option comes from here alone. */
+  readonly openLoops?: readonly string[];
+  /** The last owner words of the call that just ended, offered while its summary is still pending. */
+  readonly freshThread?: string;
+  /** The kinds the previous call's plan offered, so the calendar never leads two calls in a row. */
+  readonly previousKinds?: readonly OpeningOptionKind[];
   readonly windowMs?: number;
 }
 export interface OpeningOptionsResult {
@@ -534,8 +540,6 @@ const OPENING_OPTION_LABELS: Readonly<Record<OpeningOptionKind, string>> = Objec
  * summary or a digest says (S4B-R2 holds the same line for the voice's own opener sentence).
  */
 const CLOSED_OPENER_TOPIC = /\b(family|mother|father|parent|parents|wife|husband|son|daughter|child|children|health|doctor|hospital|ill|sick|fitness|gym|workout|weight|diet|sleep|sleeping|insomnia|habit|habits|drinking|smoking|vaping)\b/iu;
-/** One still-to-do fragment, in the words the distillation prompt writes it with. */
-const OPEN_LOOP_CUE = /\b(still|yet|needs? to|needed to|hasn't|has not|haven't|have not|plans? to|to do|next step)\b/iu;
 const ATTRIBUTION = /^(?:the owner|he|she|they|naya)\s+(?:said|says|mentioned|reported|found|noted)\s+(?:that\s+)?/iu;
 
 function clipText(text: string, limit: number): string {
@@ -549,10 +553,25 @@ function sentencesOf(text: string): string[] {
   return text.replace(/\s+/gu, ' ').trim().split(/(?<=[.?!])\s+/u).filter(Boolean);
 }
 
-/** The option-ready form of one stored sentence: the attribution dropped, the stop removed, clipped. */
-function topicOfSentence(sentence: string): string {
-  return clipText(sentence.replace(ATTRIBUTION, '').replace(/[.?!]+$/u, '').trim(), OPENING_TOPIC_CHARS);
+/** The option-ready form of one stored sentence: the attribution dropped, the stop removed. A sentence longer
+ *  than one option line is dropped rather than clipped, because a clip is the half clause the owner heard. */
+function topicOfSentence(sentence: string): string | undefined {
+  const text = sentence.replace(ATTRIBUTION, '').replace(/[.?!]+$/u, '').trim();
+  return text.length === 0 || text.length > OPENING_TOPIC_CHARS ? undefined : text;
 }
+
+/** A stop at the end is the whole difference between an option and the fragment cut mid-clause. */
+const SENTENCE_STOP = /[.?!]$/u;
+/** A sentence about the call itself names no subject of the owner's, so it is never an opener. */
+const CALL_NARRATION = /\b(?:during|in|after|before|across|between)\s+(?:a|an|the|that|this|our|two|these)\s+(?:calls?|sessions?|conversations?)\b|\b(?:this|that|the)\s+(?:call|session|conversation)\s+(?:was|is|ended|started|began|covered)\b|\b(?:naya|she)\s+(?:summari[sz]ed|recapped|wrapped|confirmed|noted|said)\b/iu;
+/** A backchannel or a bare yes carries no subject; four words is the floor for a topic. */
+const TOPIC_WORDS = 4;
+/** The calendar leads only when the next event is this close, so an ordinary call opens on a conversation. */
+export const CALENDAR_LEAD_MS = 6 * 60 * 60 * 1000;
+
+const hasSubject = (sentence: string): boolean => sentence.split(/\s+/u).filter(Boolean).length >= TOPIC_WORDS;
+const isOpenerSentence = (sentence: string): boolean => SENTENCE_STOP.test(sentence) && !CLOSED_OPENER_TOPIC.test(sentence)
+  && !CALL_NARRATION.test(sentence) && hasSubject(sentence);
 
 function minutesOfDay(now: number, timeZone: string): number {
   const parts = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone }).formatToParts(new Date(now));
@@ -565,42 +584,53 @@ function stampMinutes(item: string): number | undefined {
   return match === null ? undefined : (Number(match[1]) * 60 + Number(match[2])) % (24 * 60);
 }
 
-/** Today's next item from the warm digest: the first at or after now, else the day's first. */
+/** Today's next item from the warm digest, and only inside the lead window: the plan never borrows a subject
+ *  from an evening event to justify speaking first. */
 function calendarTopic(digest: string | undefined, now: number, timeZone: string): string | undefined {
   const items = (digest ?? '').split(',').map(item => item.trim().replace(/[.]+$/u, '')).filter(item => item.length > 0);
   const usable = items.filter(item => !CLOSED_OPENER_TOPIC.test(item));
   const nowMinutes = minutesOfDay(now, timeZone);
-  const next = usable.find(item => (stampMinutes(item) ?? -1) >= nowMinutes) ?? usable[0];
+  const next = usable.find(item => {
+    const at = stampMinutes(item);
+    return at !== undefined && at >= nowMinutes && at - nowMinutes <= CALENDAR_LEAD_MS / 60_000;
+  });
   return next === undefined ? undefined : clipText(next, OPENING_TOPIC_CHARS);
 }
 
-/** Every still-to-do fragment the stored summaries name, newest first and deduplicated as written. */
-function openLoopTopics(candidates: readonly EarlierConversationCandidate[]): { topic: string; sourceId: string }[] {
+/** The stored open loops of the earlier calls, newest first and deduplicated as written. The summary text is
+ *  never mined for a cue word: a loop is offered only when the distillation stored one. */
+function openLoopTopics(openLoops: readonly string[] | undefined): string[] {
   const seen = new Set<string>();
-  const loops: { topic: string; sourceId: string }[] = [];
-  for (const candidate of candidates) {
-    for (const sentence of sentencesOf(candidate.summary)) {
-      if (!OPEN_LOOP_CUE.test(sentence) || CLOSED_OPENER_TOPIC.test(sentence)) continue;
-      const topic = topicOfSentence(sentence);
-      const key = topic.toLowerCase();
-      if (topic.length === 0 || seen.has(key)) continue;
-      seen.add(key);
-      loops.push({ topic, sourceId: candidate.id });
-    }
+  const loops: string[] = [];
+  for (const stored of openLoops ?? []) {
+    const sentence = sentencesOf(stored)[0];
+    if (sentence === undefined || !isOpenerSentence(sentence)) continue;
+    const topic = topicOfSentence(sentence);
+    if (topic === undefined) continue;
+    const key = topic.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    loops.push(topic);
   }
   return loops;
 }
 
-/** The newest stored conversation's work thread, when it names one that is not a closed topic. */
-function recentThreadTopic(candidates: readonly EarlierConversationCandidate[]): string | undefined {
+/** The newest call's own thread: the first stored sentence about his work that ends in a stop, or, while that
+ *  call's summary is still pending, the last topic he named himself. */
+function recentThreadTopic(candidates: readonly EarlierConversationCandidate[], freshThread: string | undefined):
+{ topic: string; sourceId?: string } | undefined {
   const newest = candidates[0];
-  if (newest === undefined) return undefined;
-  for (const sentence of sentencesOf(newest.summary)) {
-    if (CLOSED_OPENER_TOPIC.test(sentence)) continue;
-    const topic = topicOfSentence(sentence);
-    if (topic.length > 0) return topic;
+  if (newest !== undefined) {
+    for (const sentence of sentencesOf(newest.summary)) {
+      if (!isOpenerSentence(sentence)) continue;
+      const topic = topicOfSentence(sentence);
+      if (topic !== undefined) return { topic, sourceId: newest.id };
+    }
   }
-  return undefined;
+  const spoken = sentencesOf(freshThread ?? '').filter(isOpenerSentence);
+  const last = spoken[spoken.length - 1];
+  const topic = last === undefined ? undefined : topicOfSentence(last);
+  return topic === undefined ? undefined : { topic };
 }
 
 /**
@@ -614,12 +644,16 @@ export function buildOpeningOptions(input: OpeningOptionsInput): OpeningOptionsR
   const stored = [...input.candidates].filter(candidate => candidate.endedAt >= cutoff && candidate.endedAt <= input.now)
     .sort((a, b) => b.endedAt - a.endedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const options: OpeningOption[] = [];
+  const conversation: OpeningOption[] = [];
+  const thread = recentThreadTopic(stored, input.freshThread);
+  if (thread !== undefined) conversation.push({ kind: 'recent-thread', ...thread });
+  const loops = openLoopTopics(input.openLoops);
+  if (loops.length > 0) conversation.push({ kind: 'open-loop', topic: loops[rotation % loops.length]! });
   const calendar = calendarTopic(input.calendar, input.now, input.timeZone);
-  if (calendar !== undefined) options.push({ kind: 'calendar', topic: calendar });
-  const loops = openLoopTopics(stored);
-  if (loops.length > 0) options.push({ kind: 'open-loop', ...loops[rotation % loops.length]! });
-  const thread = recentThreadTopic(stored);
-  if (thread !== undefined) options.push({ kind: 'recent-thread', topic: thread, sourceId: stored[0]!.id });
+  // The calendar leads only inside the lead window and never two calls in a row; the newest call leads otherwise.
+  if (calendar !== undefined && input.previousKinds?.[0] !== 'calendar') options.push({ kind: 'calendar', topic: calendar });
+  options.push(...conversation);
+  if (calendar !== undefined && input.previousKinds?.[0] === 'calendar') options.push({ kind: 'calendar', topic: calendar });
   const kept = [...options];
   const render = (list: readonly OpeningOption[]): string => list.length === 0 ? ''
     : [OPENING_OPTIONS_TITLE, OPENING_OPTIONS_LEAD, ...list.map(option => `- ${OPENING_OPTION_LABELS[option.kind]}: ${option.topic}`), OPENING_OPTIONS_RULE].join('\n');

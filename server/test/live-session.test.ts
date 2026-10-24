@@ -418,7 +418,8 @@ async function attached(h: Harness, key = 'k1', opening = FRESH_OPENING) {
   h.f.send({ setupComplete: {} });
   await attachment.ready;
   await h.f.frame(2);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: opening } });
+  // 1023-N3: the opening directive is a completed user turn, so the provider answers it instead of waiting for VAD.
+  assert.deepEqual(h.f.frames[1], { clientContent: { turns: [{ role: 'user', parts: [{ text: opening }] }], turnComplete: true } });
   h.f.frames.splice(1, 1);
   return { session, attachment };
 }
@@ -512,11 +513,45 @@ test('fresh owner Start selects model-first with no fabricated history', async t
   assert.deepEqual(h.requests[0]!.history, []);
   h.f.send({ setupComplete: {} });
   await Promise.all([attachment.ready, h.f.frame(2)]);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: FRESH_OPENING } });
+  assert.deepEqual(h.f.frames[1], { clientContent: { turns: [{ role: 'user', parts: [{ text: FRESH_OPENING }] }], turnComplete: true } });
   const persisted = JSON.stringify(h.store.transaction(tx => tx.all('SELECT kind,text FROM live_journal WHERE live_session_id=?', [session.liveSessionId])));
   assert.equal(persisted.includes(FRESH_OPENING), false, 'the server-owned directive is not user transcription or history');
   h.owner.revoke(session.liveSessionId);
   await attachment.done;
+});
+
+test('1023-R1: the opening directive is a completed user turn to the provider, never the owner speaking', async t => {
+  const h = await harness(t);
+  const rows = (liveSessionId: string) => h.store.transaction(tx => tx.all('SELECT kind, text FROM live_journal WHERE live_session_id=?', [liveSessionId])
+    .map(row => ({ kind: String(row['kind']), text: row['text'] === null ? null : String(row['text']) })));
+  const first = await attached(h, 'directive-not-owner');
+  assert.deepEqual(rows(first.session.liveSessionId).filter(row => row.kind === 'inputTranscription'), [],
+    'the host never journals its own directive as owner transcription');
+  assert.equal(JSON.stringify(rows(first.session.liveSessionId)).includes(FRESH_OPENING), false,
+    'and never as any other journal row, so no summary or memory read can find it');
+  assert.equal(h.owner.current().entries.some(entry => entry.kind === 'inputTranscription'), false,
+    'the owner transcript stays empty on a call that only received the directive');
+  // The same query #ownerSpoke runs: a call that only carried the directive still counts as the owner not speaking.
+  const ownerSpoke = (liveSessionId: string): boolean => h.store.transaction(tx => !!tx.get("SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' LIMIT 1",
+    [liveSessionId]));
+  assert.equal(ownerSpoke(first.session.liveSessionId), false, 'the owner-speaks-first probe stays false');
+  h.owner.revoke(first.session.liveSessionId);
+  await first.attachment.done;
+  h.f.frames.length = 0;
+  const second = await attached(h, 'directive-not-owner-2');
+  const seeded = h.requests.at(-1)!;
+  assert.deepEqual(seeded.history, [], 'the next call seeds no owner turn for a call that only carried the directive');
+  assert.equal(JSON.stringify(seeded).includes(FRESH_OPENING), false, 'the directive never reaches the next call as history');
+  assert.deepEqual(rows(second.session.liveSessionId).filter(row => row.kind === 'inputTranscription'), [], 'and the second call journals none either');
+  // Positive control, same harness and same queries: a real owner turn does reach the journal, so the emptiness
+  // above is the directive being kept out and not the journal path being blind.
+  h.f.send({ serverContent: { inputTranscription: { text: 'Synthetic owner words on this call.', finished: true } } });
+  await drain(h, second.session.liveSessionId, 2);
+  assert.deepEqual(rows(second.session.liveSessionId).filter(row => row.kind === 'inputTranscription').map(row => row.text),
+    ['Synthetic owner words on this call.'], 'the same journal records a real owner turn, verbatim');
+  assert.equal(ownerSpoke(second.session.liveSessionId), true, 'and the owner-speaks-first probe sees it');
+  assert.equal(rows(second.session.liveSessionId).some(row => row.text !== null && row.text.includes(FRESH_OPENING)), false,
+    'a real owner turn and the directive never appear together as owner speech');
 });
 
 function accepted(h: Harness, id: string): { system: string; memory: { status: string; selectedIds: string[]; omitted: { id: string; reason: string }[] }; pickup?: { jobId: string; identity: string } } {
@@ -850,7 +885,7 @@ test('audio is rejected before ready and PCM never reaches the store', async t =
   await h.f.frame(1);
   h.f.send({ setupComplete: {} });
   await Promise.all([attachment.ready, h.f.frame(2)]);
-  assert.deepEqual(h.f.frames[1], { realtimeInput: { text: FRESH_OPENING } });
+  assert.deepEqual(h.f.frames[1], { clientContent: { turns: [{ role: 'user', parts: [{ text: FRESH_OPENING }] }], turnComplete: true } });
   attachment.sendAudio({ pcm });
   await h.f.frame(3);
   assert.deepEqual(h.f.frames[2], { realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.from(pcm).toString('base64') } } });
@@ -3352,9 +3387,11 @@ test('a terminal Live session schedules distillation without awaiting it and rec
 });
 
 /** Session memory v1: a summary is injectable only from a recorded history session with matching provenance. */
-function seedSummary(tx: Parameters<typeof summaries.insertSummary>[0], liveSessionId: string, summary: string, endedAt: number, ownerId: string, now: number): void {
+function seedSummary(tx: Parameters<typeof summaries.insertSummary>[0], liveSessionId: string, summary: string, endedAt: number, ownerId: string, now: number,
+  openLoop?: string): void {
   recordHistorySession(tx, liveSessionId, ownerId, ['ordinary'], [], now);
-  summaries.insertSummary(tx, { liveSessionId, status: 'complete', summary, endedAt, now, dataClass: 'ordinary', sourceRevision: 1 });
+  summaries.insertSummary(tx, { liveSessionId, status: 'complete', summary, endedAt, now, dataClass: 'ordinary', sourceRevision: 1,
+    ...(openLoop === undefined ? {} : { openLoop }) });
 }
 
 test('the earlier-conversations section fills the space under the target in a real session', async t => {
@@ -3606,8 +3643,10 @@ test('3u: consecutive starts offer different stored open loops and record the pl
   const detachPlanSink = attachHostLogSink({ event: raw => { const record = raw as Record<string, unknown>; if (record['event'] === 'opener_plan') plans.push(record); } });
   t.after(() => detachPlanSink());
   h.store.transaction(tx => {
-    seedSummary(tx, 'synthetic-shared-loop', 'The owner said the tax form is still to be filed.', NOW - 3_600_000, h.store.assistantId, NOW);
-    seedSummary(tx, 'synthetic-accountant-loop', 'The owner said he still has to call the accountant.', NOW - 7_200_000, h.store.assistantId, NOW);
+    seedSummary(tx, 'synthetic-shared-loop', 'The owner said the tax form is still to be filed.', NOW - 3_600_000, h.store.assistantId, NOW,
+      'The owner said the tax form is still to be filed.');
+    seedSummary(tx, 'synthetic-accountant-loop', 'The owner said he still has to call the accountant.', NOW - 7_200_000, h.store.assistantId, NOW,
+      'The owner said he still has to call the accountant.');
   });
   const snapshot = (liveSessionId: string): string => {
     const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [liveSessionId]))!;
@@ -3616,13 +3655,33 @@ test('3u: consecutive starts offer different stored open loops and record the pl
   const first = h.owner.create({ idempotencyKey: 'opener-rotation-1', inputClass: 'ordinary' }, h.ctx);
   const second = h.owner.create({ idempotencyKey: 'opener-rotation-2', inputClass: 'ordinary' }, h.ctx);
   const loops = [first, second].map(session => /^- open loop: (.+)$/mu.exec(snapshot(session.liveSessionId))?.[1]);
-  assert.ok(loops[0] !== undefined && loops[1] !== undefined, 'both starts compose an open loop from the stored summaries');
+  assert.ok(loops[0] !== undefined && loops[1] !== undefined, 'both starts compose an open loop from the stored column');
   assert.notEqual(loops[0], loops[1], `consecutive starts offer different loops (${loops.join(' / ')})`);
   assert.ok(snapshot(first.liveSessionId).includes('# Opening options'), 'the plan is one section of the instruction');
   assert.equal(plans.length, 2, 'each start records its own plan');
   assert.deepEqual(plans.map(plan => Object.keys(plan).sort().join(',')), ['event,kinds,rotation', 'event,kinds,rotation'], 'the receipt carries kinds and rotation only');
-  assert.deepEqual(plans.map(plan => plan['kinds']), [['open-loop', 'recent-thread'], ['open-loop', 'recent-thread']], 'an empty calendar offers no calendar kind');
+  assert.deepEqual(plans.map(plan => plan['kinds']), [['recent-thread', 'open-loop'], ['recent-thread', 'open-loop']],
+    'the newest call leads, the empty calendar offers no calendar kind');
   assert.equal((plans[0]!['rotation'] as number) + 1, plans[1]!['rotation'], 'the persisted start counter advances by one');
+});
+
+test('1023-N8: a start right after a call that just ended names his last topic while the summary is pending', async t => {
+  const h = await harness(t);
+  const first = await attached(h, 'pending-summary-1');
+  h.f.send({ serverContent: { inputTranscription: { text: 'Fine. The Mongoose mint delivery window moves to Friday. Nothing else.', finished: true } } });
+  await drain(h, first.session.liveSessionId, 2);
+  assert.match(h.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='inputTranscription'", [first.session.liveSessionId])
+    .map(row => String(row['text'] ?? '')).join('')), /Mongoose/, 'the owner words reached the journal before the call ended');
+  h.owner.revoke(first.session.liveSessionId);
+  await first.attachment.done;
+  h.store.transaction(tx => {
+    tx.run('DELETE FROM conversation_summaries WHERE live_session_id=?', [first.session.liveSessionId]);
+  });
+  const second = h.owner.create({ idempotencyKey: 'pending-summary-2', inputClass: 'ordinary' }, h.ctx);
+  const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [second.liveSessionId]))!;
+  const system = (JSON.parse(String(row['accepted_prompt_snapshot'])) as { system: string }).system;
+  assert.match(system, /^- recent thread: The Mongoose mint delivery window moves to Friday$/mu,
+    'the call that just ended supplies the subject, so the next line does not fall back to the calendar');
 });
 
 test('S4b: an opener is assembled from its ordered fragments up to the first finished fragment or turn boundary', () => {

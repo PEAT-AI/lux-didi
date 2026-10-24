@@ -1,8 +1,9 @@
+import { MotionCoordinator } from './orb-motion.ts';
 /** Didi lifecycle/state adapter for the authorized first-party Canvas renderer.
  * See orb-provenance.md for bounded extraction and MIT noise dependency.
  */
 import { ClassicRenderer, clampFrameDelta, smoothingAlpha, ORB_SMOOTHING_TAU } from './orb-classic.ts';
-import { LatestFrame, frameInterval, initialMotion, levelFrame, posture, shouldPaint, stepMotion, type LevelSample, type MotionState } from './orb-level.ts';
+import { LatestFrame, frameInterval, posture, shouldPaint, type LevelSample } from './orb-level.ts';
 import { OrbInkSurface } from './orb-ink.ts';
 import { ORB_VISUALS, orbVisualOf, presenceMuted, registerOrbRenderer } from './orb-states.ts';
 export type VoiceState = 'IDLE' | 'CONNECTING' | 'CONNECTED' | 'LISTENING' | 'PROCESSING' | 'SPEAKING' | 'RECONNECTING' | 'ERROR' | 'DISCONNECTED' | 'INTERRUPTED';
@@ -23,7 +24,9 @@ export class Orb {
   private frameReady = false;
   private context: CanvasRenderingContext2D | null;
   private classic: ClassicRenderer | undefined;
-  private motionState: MotionState = initialMotion();
+  private coordinator = new MotionCoordinator();
+  private bodyState: VoiceState | undefined;
+  private bodyMuted = false;
   private paints = 0;
   private lastScale = 1;
   private mid = 0;
@@ -49,7 +52,7 @@ export class Orb {
     this.context=this.surface.getContext('2d');
     if(transparentInk)this.ink=new OrbInkSurface(canvas,this.surface);
     if(this.context)this.classic=new ClassicRenderer(this.context);
-    Object.defineProperty(canvas,'didiFrameStats',{value:()=>({frames:this.durations.length,maxDrawMs:Math.max(0,...this.durations),meanDrawMs:this.durations.reduce((a,b)=>a+b,0)/Math.max(1,this.durations.length),activity:this.lastActivity,target:this.lastTarget,transition:this.transition,paints:this.paints,body:this.motionState.low,scale:this.lastScale}),configurable:true});
+    Object.defineProperty(canvas,'didiFrameStats',{value:()=>({frames:this.durations.length,maxDrawMs:Math.max(0,...this.durations),meanDrawMs:this.durations.reduce((a,b)=>a+b,0)/Math.max(1,this.durations.length),activity:this.lastActivity,target:this.lastTarget,transition:this.transition,paints:this.paints,body:this.mid,motion:this.coordinator.counters,scale:this.lastScale}),configurable:true});
     this.observer=new ResizeObserver(()=>this.resize());this.observer.observe(canvas);
     this.motion.addEventListener('change',this.reset);
     document.addEventListener('visibilitychange',this.surfaceChanged);
@@ -57,8 +60,10 @@ export class Orb {
     this.resize();
     // Native player/capture taps post one small level frame here; the renderer owns only the
     // smoothing and geometry, never capture or transport authority.
-    (globalThis as unknown as { didiOrbLevel?: (sample: LevelSample) => void }).didiOrbLevel = sample => { if(orbSurfaceVisible())this.audio.push(levelFrame(sample)); };
+    (globalThis as unknown as { didiOrbLevel?: (sample: LevelSample) => void }).didiOrbLevel = sample => { if(orbSurfaceVisible())this.audio.push(this.coordinator.sample(sample,performance.now())); };
   }
+  interrupt() { this.coordinator.interrupt(); }
+  setBodyState(state: VoiceState, muted = false) { this.bodyState=state; this.bodyMuted=muted; }
   setState(state: VoiceState) { this.state=state; this.reset(); this.transition={activity:this.lastActivity,target:this.lastTarget}; }
   private resize() {
     this.size=Math.max(1,this.canvas.clientWidth);
@@ -111,15 +116,16 @@ export class Orb {
     // #1021: the owner's mute outlives the session, so the full orb is purple while she waits,
     // even with no live state at all. The pill publishes its own visual, so this only fills the gap.
     const muted=visual===undefined && presenceMuted();
-    const active=muted?ORB_VISUALS['hot-muted'].posture:visual?.posture??posture(this.state,frame);
-    const mid=Math.min(1,Math.max(0,frame.mid));
+    const active=muted?ORB_VISUALS['hot-muted'].posture:visual?.posture??posture(this.state,{level:0,playback:0});
+    const coordinated=this.coordinator.advance(this.bodyState??this.state,time,still,presenceMuted()||this.bodyMuted,this.state);
+    const mid=Math.min(1,Math.max(0,coordinated.frame.mid));
     this.mid+=(mid-this.mid)*smoothingAlpha(dt,mid>this.mid?ORB_SMOOTHING_TAU.midAttack:ORB_SMOOTHING_TAU.midDecay);
-    const high=Math.min(1,Math.max(0,frame.high));
+    const high=Math.min(1,Math.max(0,coordinated.frame.high));
     this.high+=(high-this.high)*smoothingAlpha(dt,high>this.high?ORB_SMOOTHING_TAU.highAttack:ORB_SMOOTHING_TAU.highDecay);
-    const m=stepMotion(this.motionState,active,frame,dt,still);
+    const m=coordinated;
     this.lastActivity=m.activity;this.lastTarget=m.activityTarget;this.lastScale=m.scale;this.paints++;
     if(!still)this.phase+=dt;
-    if(this.canvas.dataset.posture!==active)this.canvas.dataset.posture=active;
+    if(this.canvas.dataset.posture!==m.posture)this.canvas.dataset.posture=m.posture;
     const s=this.size,c=s/2;
     ctx.clearRect(0,0,s,s);
     const zoom=ORB_PRESENCE.heroScale*m.scale;
@@ -127,10 +133,10 @@ export class Orb {
     const hueTarget=muted?ORB_VISUALS['hot-muted'].hue:visual?.hue??(this.state==='ERROR'?0:active==='listening'?45:active==='speaking'?160:active==='thinking'?195:['IDLE','DISCONNECTED','RECONNECTING','INTERRUPTED'].includes(this.state)?210:174);
     this.hue=this.hue===undefined||still||visual?.hue!==undefined?hueTarget:this.hue+(hueTarget-this.hue)*smoothingAlpha(dt,0.14);
     // The pill's machine has already eased these, so they are drawn as given.
-    const activity=m.activity*(visual?.amplitude??1), glow=visual?.glow??m.glow;
+    const activity=m.activity, glow=m.glow;
     const drawLayer=(hue: number, alpha: number) => {
       ctx.globalAlpha=alpha;
-      this.classic?.draw(c,c,s*0.05,hue,still?0.8:this.phase,active,m.level,activity,glow,m.flare,this.mid,this.high,m.flux,m.low);
+      this.classic?.draw(c,c,s*0.05,hue,still?0.8:this.phase,m.posture,m.level,activity,glow,m.flare,this.mid,this.high,m.flux,m.low);
     };
     // M3-R6: a state change crossfades the two layers by opacity. Walking one hue number
     // from the listening teal to the amber would pass saturated lime on the way.

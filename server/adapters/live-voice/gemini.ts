@@ -188,11 +188,10 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
     const initial = request.resumptionHandle ? undefined
       : request.openingText !== undefined
         ? JSON.stringify({ clientContent: { turns: [...history, { role: 'user', parts: [{ text: request.openingText }] }], turnComplete: opening === 'model_first' } })
-      : history.length
+      : opening === 'model_first'
         ? JSON.stringify({ clientContent: {
-          turns: opening === 'model_first' ? [...history, { role: 'user', parts: [{ text: FRESH_OPENING }] }] : history,
-          turnComplete: opening === 'model_first' } })
-        : opening === 'model_first' ? JSON.stringify({ realtimeInput: { text: FRESH_OPENING } }) : undefined;
+          turns: [...history, { role: 'user', parts: [{ text: FRESH_OPENING }] }], turnComplete: true } })
+        : history.length ? JSON.stringify({ clientContent: { turns: history, turnComplete: false } }) : undefined;
     if (Buffer.byteLength(setup) > settings.limits.maxOutgoingBytes || (initial && Buffer.byteLength(initial) > settings.limits.maxOutgoingBytes)) fail('outgoing_limit');
     if (!object(control) || !(control.signal instanceof AbortSignal) || !Number.isSafeInteger(control.deadlineMs)
       || control.deadlineMs <= 0 || control.deadlineMs - Date.now() > 2_147_483_647) fail('invalid_request');

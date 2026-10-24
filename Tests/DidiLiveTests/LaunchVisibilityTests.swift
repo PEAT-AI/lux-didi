@@ -38,7 +38,34 @@ import Foundation
         for kind in allKinds {
             let expectedActivates = (kind == .interactive || kind == .loginItem)
             check(kind.activates == expectedActivates, "activates for \(kind)")
-            check(kind.presentsWindowAtLaunch == (kind != .loginItem), "presents window at launch for \(kind)")
+            let expectsWindow = (kind == .installRelaunch || kind == .installedProof
+                || kind == .selfCheck || kind == .uiProof || kind == .verification)
+            check(kind.presentsWindowAtLaunch == expectsWindow, "presents window at launch for \(kind)")
+        }
+        // ORBFIRST: the orb is the default start on every kind that shows UI, and the app
+        // window is only created when the owner opens it.
+        for kind in allKinds {
+            let showsUI = (kind == .interactive || kind == .loginItem || kind == .installRelaunch)
+            check(kind.presentsOrbAtLaunch == showsUI, "presents the orb at launch for \(kind)")
+            check(kind.autoConnects == (kind == .interactive), "auto-connect only on an interactive launch for \(kind)")
+            check(kind.createsWindowAtLaunch == kind.presentsWindowAtLaunch,
+                  "the window is created at launch only when a launch needs it for \(kind)")
+        }
+        check(!LaunchKind.interactive.createsWindowAtLaunch && !LaunchKind.loginItem.createsWindowAtLaunch,
+              "no window exists after an interactive or login launch until Open Naya app")
+        // ORBFIRST: auto-connect fires once, after the host is connected and the orb page is
+        // hostable, and a refused or failed start never retries.
+        check(OrbFirstAutoConnect.decide(kind: .interactive, serviceReady: true, pageHostable: true, attempted: false) == .connect,
+              "an interactive launch connects once the host and the orb page are ready")
+        check(OrbFirstAutoConnect.decide(kind: .interactive, serviceReady: false, pageHostable: true, attempted: false) == .wait,
+              "auto-connect waits for the service instead of failing the launch")
+        check(OrbFirstAutoConnect.decide(kind: .interactive, serviceReady: true, pageHostable: false, attempted: false) == .wait,
+              "auto-connect waits for the orb page the panel hosts")
+        check(OrbFirstAutoConnect.decide(kind: .interactive, serviceReady: true, pageHostable: true, attempted: true) == .never,
+              "a denied microphone or refused audio never retries auto-connect")
+        for kind in [LaunchKind.loginItem, .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification] {
+            check(OrbFirstAutoConnect.decide(kind: kind, serviceReady: true, pageHostable: true, attempted: false) == .never,
+                  "a \(kind) launch shows the orb cold and never connects")
         }
         check(!LaunchKind.installRelaunch.activates && LaunchKind.installRelaunch.presentsWindowAtLaunch,
               "an install relaunch presents the window front without activation")

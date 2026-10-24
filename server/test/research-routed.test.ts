@@ -250,7 +250,7 @@ test('calendar lookups carry a day or a named window', () => {
   assert.equal(calendarWindowOf('week'), 'week');
   assert.equal(calendarWindowOf('2026-10-17'), '2026-10-17');
   assert.equal(calendarWindowOf('meetings on 2026-10-17'), '2026-10-17');
-  assert.equal(calendarWindowOf('anything about the release'), 'today');
+  assert.equal(calendarWindowOf('anything about the release'), '', 'an unparseable window is never today (#5)');
 });
 
 test('the declared lookups key is valid on start only and matches its validator', () => {
@@ -641,7 +641,9 @@ test('F6: the same knowledge read twice inside the session window is dispatched 
   const second = await runResearch(h.deps, { action: 'start', question: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }] }, new AbortController().signal);
   assert.notEqual(first['researchId'], second['researchId'], 'two distinct runs, two distinct ids');
   assert.equal(h.executed.filter(name => name === 'search_knowledge').length, 1, 'the second run reuses the answer instead of paying for it again');
-  assert.match(JSON.stringify(second['findings']), /Release 3k scope/u, 'the reused read still reaches the reply');
+  // #575 supersedes the repeat here: the session already delivered this block, so the second reply
+  // names it in one line instead of handing the same evidence over again.
+  assert.match(JSON.stringify(second['findings']), /knowledge: already given/u, 'the reused read is named, never repeated');
 });
 
 // ONE-1023: four near-identical lookups in one call are one search, and two lookups of the same

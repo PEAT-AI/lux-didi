@@ -5,7 +5,7 @@ import { recordHistorySession, historySessionEvidence, recordHistoryDependency }
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
-import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteSpoken, openClaimCorrection } from '../tools/open.js';
+import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteOwnerWords, noteSpoken, openClaimCorrection } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { VaultWriter } from '../tools/vault-write.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
@@ -20,7 +20,7 @@ import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
-import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption } from '../prompt/index.js';
+import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption, type OpeningOptionKind } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, recordCallResult, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
@@ -140,7 +140,7 @@ function recordedOptions(snapshot: unknown): readonly OpeningOption[] {
  * Release 3u: each one carries the topic its own start plan offered, so the anti-repeat note names a
  * subject as well as words. Nothing here reaches host.log.
  */
-function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[]): { readonly text: string; readonly topic?: string; readonly sessionId: string; readonly dataClass: DataClass }[] {
+function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[]): { readonly text: string; readonly topic?: string; readonly sessionId: string; readonly dataClass: DataClass; readonly kinds: readonly OpeningOptionKind[] }[] {
   const sessions = tx.all("SELECT live_session_id, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? ORDER BY created_at DESC, rowid DESC", [assistantId]);
   const previous: ReturnType<typeof previousOpeners> = [];
   const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
@@ -153,12 +153,55 @@ function previousOpeners(tx: Transaction, assistantId: string, allowedClasses: r
       finished: entry['finished'] === null || entry['finished'] === undefined ? null : Number(entry['finished']),
     })));
     if (text === '') continue;
-    const topic = openerTopicOf(text, recordedOptions(row['accepted_prompt_snapshot']));
-    previous.push({ text, sessionId: String(row.live_session_id), dataClass: source.dataClass, ...(topic === undefined ? {} : { topic }) });
+    const recorded = recordedOptions(row['accepted_prompt_snapshot']);
+    const topic = openerTopicOf(text, recorded);
+    // Contract 1023 N8: the plan this call offered, so the next start never leads with the same subject twice.
+    previous.push({ text, sessionId: String(row.live_session_id), dataClass: source.dataClass, kinds: recorded.map(option => option.kind),
+      ...(topic === undefined ? {} : { topic }) });
     if (previous.length === 3) break;
   }
   return previous;
 }
+/** Contract 1023 N8: how recent the call that just ended must be for its own words to seed the opener. */
+const FRESH_THREAD_WINDOW_MS = 2 * 60 * 1000;
+/** The closed set of past calls the open-loop option may draw on, newest first. */
+const OPEN_LOOP_SOURCES = 3;
+
+/** Contract 1023 N8: the stored open_loop column of the eligible past calls, newest first. The summary text is
+ *  never mined for a cue word, so a call whose distillation stored no loop offers none. */
+function storedOpenLoops(tx: Transaction, allowedClasses: readonly DataClass[], now: number): string[] {
+  const rows = tx.all(`SELECT s.live_session_id AS id, s.open_loop AS loop FROM conversation_summaries s
+    WHERE s.status='complete' AND s.open_loop IS NOT NULL AND s.ended_at IS NOT NULL AND s.ended_at<=? AND s.ended_at>=?
+    ORDER BY s.ended_at DESC,s.rowid DESC LIMIT 12`, [now, now - EARLIER_CONVERSATIONS_WINDOW_MS]);
+  const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
+  const loops: string[] = [];
+  for (const row of rows) {
+    const source = historySessionEvidence(tx, String(row['id']), eligibility);
+    if (!source || !allowedClasses.includes(source.dataClass)) continue;
+    loops.push(String(row['loop']));
+    if (loops.length === OPEN_LOOP_SOURCES) break;
+  }
+  return loops;
+}
+
+/** Contract 1023 N8: the call that ended under two minutes ago has no summary yet, so its last owner words carry
+ *  the newest thread instead of the start waiting for the distillation. */
+function freshOwnerThread(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[], now: number): string | undefined {
+  const prior = tx.get(`SELECT live_session_id AS id, terminal_at AS endedAt FROM live_sessions
+    WHERE owner_assistant_id=? AND terminal_at IS NOT NULL ORDER BY created_at DESC,rowid DESC LIMIT 1`, [assistantId]);
+  if (prior === undefined) return undefined;
+  const endedAt = Number(prior['endedAt']);
+  if (!Number.isSafeInteger(endedAt) || now < endedAt || now - endedAt >= FRESH_THREAD_WINDOW_MS) return undefined;
+  const sessionId = String(prior['id']);
+  const summary = tx.get('SELECT status FROM conversation_summaries WHERE live_session_id=?', [sessionId]);
+  if (summary !== undefined && String(summary['status']) === 'complete') return undefined;
+  const source = historySessionEvidence(tx, sessionId, new Map<string, ReturnType<typeof historySessionEvidence>>());
+  if (!source || !allowedClasses.includes(source.dataClass)) return undefined;
+  const text = tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND text IS NOT NULL ORDER BY journal_id", [sessionId])
+    .map(row => String(row['text'])).join('').trim();
+  return text === '' ? undefined : text;
+}
+
 // Issue 1014: a session past this many tool calls starts a fresh setup instead of resuming into
 // drifted audio; a session under it still reuses the saved resumption handle.
 const RESUMPTION_TOOL_CALL_LIMIT = 5;
@@ -1026,8 +1069,12 @@ export class LiveSessionOwner {
       const summarySelection = summaries.summarySelection(tx, this.#profile.route.dataClasses);
       const storedSummaries = summarySelection.candidates;
       const summaryGap = Object.values(summarySelection.coverage).some(count => count > 0);
+      const freshThread = freshOwnerThread(tx, assistantId, this.#profile.route.dataClasses, now);
       const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone: this.#timeZone,
         ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
+        openLoops: storedOpenLoops(tx, this.#profile.route.dataClasses, now),
+        ...(freshThread === undefined ? {} : { freshThread }),
+        ...(earlierOpeners[0] === undefined ? {} : { previousKinds: earlierOpeners[0].kinds }),
         rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });
       const composeSession = (earlierSection: string | undefined, calendar: string | undefined) => composeLiveSessionInstruction({ text: configuredPrompt.system, tools: toolNames,
         // The delegated backend executes the tools on the OpenAI path; a direct-tool provider keeps the full conduct.
@@ -3156,9 +3203,11 @@ export class LiveSessionOwner {
           catch { markDiagnosticLoss(tx,handle.liveSessionId,'trace_write_failed'); hostLogEvent({ event: 'live_trace_rejected',kind: 'turn.opened',code: 'record_failed' }); }
         } else if (text?.length) tx.run('UPDATE live_sessions SET diagnostic_unattributed_transcripts=COALESCE(diagnostic_unattributed_transcripts,0)+1 WHERE live_session_id=?', [handle.liveSessionId]);
       }
-      if (kind === 'inputTranscription' && finished === 1 && transcription?.finalOrigin !== 'typed') {
+      if (kind === 'inputTranscription' && finished === 1) {
         const ownerTurn = finishedOwnerTurn(tx, handle.liveSessionId);
-        if (ownerTurn) this.#vault.observe(tx, handle.liveSessionId, String(journalId), ownerTurn);
+        // #573: the open tools are checked against the words of the turn they answer.
+        if (ownerTurn) noteOwnerWords(handle.liveSessionId, ownerTurn);
+        if (ownerTurn && transcription?.finalOrigin !== 'typed') this.#vault.observe(tx, handle.liveSessionId, String(journalId), ownerTurn);
       }
       return journalId;
     };

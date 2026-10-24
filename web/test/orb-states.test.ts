@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import {
-  breathe, createOrbStateMachine, createStateDebounce, DEBOUNCE_MS, easeInOut, mixVisual, ORB_VISUALS, presenceMuted,
+  breathe, createOrbVisualBlend, createStateDebounce, DEBOUNCE_MS, easeInOut, mixVisual, ORB_VISUALS, presenceMuted,
   TRANSITION_MS,
   type MiniVisualState,
 } from '../src/orb-states.ts';
@@ -82,13 +82,11 @@ test('the transition is 450 to 600 ms on an ease-in-out curve', () => {
 });
 
 test('a committed change eases colour, glow and amplitude, never jumps', () => {
-  const machine = createOrbStateMachine('cold');
+  const machine = createOrbVisualBlend('cold');
   assert.equal(machine.visual(0).hue, ORB_VISUALS.cold.hue);
   machine.request('listening', 0);
-  assert.equal(machine.visual(DEBOUNCE_MS - 1).hue, ORB_VISUALS.cold.hue, 'nothing moves before the debounce');
-  assert.equal(machine.state(DEBOUNCE_MS), 'cold');
-  // The debounce ends at 250 and the 500 ms ease starts there.
-  const start = DEBOUNCE_MS;
+  assert.equal(machine.visual(0).hue, ORB_VISUALS.cold.hue, 'the status blend begins at the instantaneous visual');
+  const start = 0;
   const at = (offset: number) => machine.visual(start + offset).hue;
   const mid = machine.visual(start + TRANSITION_MS / 2);
   assert.equal(at(0), ORB_VISUALS.cold.hue, 'the ease starts where the old state was');
@@ -107,31 +105,29 @@ test('a committed change eases colour, glow and amplitude, never jumps', () => {
   for (let i = 1; i < trail.length; i += 1) assert.ok(trail[i]! >= trail[i - 1]!, 'the fade only grows');
   assert.ok(trail.at(-1)! < 1 && trail.at(-1)! > 0.9, 'almost there just under the bound');
   assert.equal(at(TRANSITION_MS), ORB_VISUALS.listening.hue, 'the ease lands exactly on the new state');
-  assert.equal(machine.state(start + TRANSITION_MS), 'listening');
+  assert.equal(machine.visual(start + TRANSITION_MS).state, 'listening');
 });
 
-test('a state that lasts under 250 ms is a flicker and never shows', () => {
-  const machine = createOrbStateMachine('cold');
-  machine.request('thinking', 1000);
-  machine.request('cold', 1100);                       // back again inside the window
-  assert.equal(machine.state(5000), 'cold', 'a flicker leaves the state alone');
-  machine.request('thinking', 6000);
-  machine.request('tool', 6100);                      // replaced before it ever lasted
-  machine.visual(6100 + DEBOUNCE_MS - 1);
-  assert.equal(machine.state(6100 + DEBOUNCE_MS - 1), 'cold', 'the first candidate never commits');
-  machine.visual(6100 + DEBOUNCE_MS);
-  assert.equal(machine.state(6100 + DEBOUNCE_MS), 'tool', 'the state that lasts commits');
+test('the shared semantic debounce filters a short status flicker before the colour blend', () => {
+  const status = createStateDebounce('cold');
+  status.request('thinking', 1000);
+  status.request('cold', 1100);
+  assert.equal(status.settled(5000), 'cold');
+  status.request('thinking', 6000);
+  status.request('tool', 6100);
+  assert.equal(status.settled(6100 + DEBOUNCE_MS - 1), 'cold');
+  assert.equal(status.settled(6100 + DEBOUNCE_MS), 'tool');
 });
 
 test('a new request mid-transition crossfades in from the layer on screen', () => {
-  const machine = createOrbStateMachine('cold');
+  const machine = createOrbVisualBlend('cold');
   machine.request('listening', 0);
-  const changedAt = DEBOUNCE_MS + TRANSITION_MS * 0.3;
+  const changedAt = TRANSITION_MS * 0.3;
   const running = machine.visual(changedAt);
   assert.ok(running.mixing && running.mixing.t > 0 && running.mixing.t < 1, 'the first crossfade was in flight');
   machine.request('tool', changedAt);
-  const commit = changedAt + DEBOUNCE_MS;
-  const before = machine.visual(commit - 1);
+  const before = running;
+  const commit = changedAt;
   const after = machine.visual(commit + 1);
   // No jump: the new crossfade fades in the layer the old one was arriving at.
   assert.ok(after.mixing && after.mixing.t < 0.05, 'the new crossfade starts from nothing');
@@ -141,10 +137,10 @@ test('a new request mid-transition crossfades in from the layer on screen', () =
 });
 
 test('reduced motion keeps the colour change and drops the motion', () => {
-  const machine = createOrbStateMachine('cold', { reducedMotion: true });
+  const machine = createOrbVisualBlend('cold', { reducedMotion: true });
   machine.request('listening', 0);
   assert.equal(machine.visual(DEBOUNCE_MS).hue, ORB_VISUALS.listening.hue, 'the colour still changes');
-  assert.equal(machine.state(DEBOUNCE_MS), 'listening');
+  assert.equal(machine.visual(0).state, 'listening');
   assert.equal(machine.visual(DEBOUNCE_MS + TRANSITION_MS / 2).hue, ORB_VISUALS.listening.hue, 'and does not animate');
 });
 

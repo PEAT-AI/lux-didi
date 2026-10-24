@@ -517,3 +517,31 @@ test('MED-1022: a voice reply that found one entry arrives whole, with no get_in
   assert.equal(shaped.partial, false, 'nothing was left out, so the result is whole');
   assert.equal(shaped.text.includes('get_insight'), false, 'and no round trip is asked for');
 });
+
+test('#574: a twelve person event prints eight names and and others, and an empty one prints no line', () => {
+  const many = Array.from({ length: 12 }, (_, n) => ({ displayName: `Dana Whitfield ${n}` }));
+  const shaped = shapeGcalList({ events: [{ summary: 'Design review', location: 'Room 1', start: { dateTime: '2026-10-19T09:00:00Z' },
+    htmlLink: 'https://calendar.google.com/event?eid=e1', attendees: many }] });
+  assert.match(shaped.text, /attendees: Dana Whitfield 0, Dana Whitfield 1, Dana Whitfield 2, Dana Whitfield 3, Dana Whitfield 4, Dana Whitfield 5, Dana Whitfield 6, Dana Whitfield 7 and others/);
+  assert.doesNotMatch(shaped.text, /Dana Whitfield 8/, 'the ninth name is never spoken');
+  assert.equal(/\[\+\d+ chars\]/.test(shaped.text), false, 'the attendee line is never the part the per-event bound cuts');
+  const empty = shapeGcalList({ events: [{ summary: 'Focus block', start: { dateTime: '2026-10-19T11:00:00Z' }, attendees: [] }] });
+  assert.equal(/attendees/.test(empty.text), false, 'an event with nobody on it carries no attendees line');
+});
+
+test('#6: the confidence line never reaches the model text but is carried for research', () => {
+  const ok = shapeLuxKnowledge('search_knowledge', JSON.stringify({ results: [{ id: 1, insight_title: 'Release plan', insight_type: 'PATTERN', updated_at: '2026-10-14', content: 'Body.' }] }));
+  assert.equal(ok.knowledgeConfidence, undefined, 'a JSON reply carries no ranker preamble to read');
+  const marked = shapeLuxKnowledge('search_knowledge', '# Knowledge Search\n\n_confidence: low top score: 0.11 relevant candidate: no_\n\n- **#7** Release plan\nBody.');
+  assert.equal(/_confidence:/.test(marked.text), false, 'the preamble line stays out of the model text');
+  assert.deepEqual(marked.knowledgeConfidence, { confidence: 'low', top: '0.11', candidates: 'no' });
+});
+
+test('#7: a long event title survives whole and the body is what the bound trims', () => {
+  const title = 'Quarterly planning review with the whole European commercial organisation, our partners in the Nordics and the shared services leads from Berlin';
+  assert.equal(title.length, 144);
+  const shaped = shapeGcalList({ events: [{ summary: title, location: 'Room 1', start: { dateTime: '2026-10-19T09:00:00Z' },
+    htmlLink: 'https://calendar.google.com/event?eid=e1', description: 'Agenda. '.repeat(60) }] });
+  assert.ok(shaped.text.includes(title), 'the title is never the part a cut removes');
+  assert.equal(shaped.text.includes('Agenda. '.repeat(60)), false, 'the long body is what the per-event bound trims');
+});

@@ -1,15 +1,15 @@
 import AVFoundation
 import Foundation
 
-/// Issue #529: Vicuna's gentle connecting ring. The pair timing, the 1.8 s repeat, the stale
-/// start a stop outruns, and a warm unmute that plays nothing are all asserted with no engine,
-/// no microphone and no audio device.
+/// Issue #529: the connecting ring. The pad's seamless loop, the arrival chime, the stale start a
+/// stop outruns, a warm unmute that plays nothing and a host rebuild that rings again are all
+/// asserted with no engine, no microphone and no audio device.
 @main struct ConnectingRingTests {
     static func main() async {
         do {
             try run()
             try await MainActor.run { try runWiring() }
-            print("PASS connecting ring: E5/A5 pair, 1.8 s repeat, stale start dropped, no ring for muted to live, connected chime after the ramp, engine released when it ends")
+            print("PASS connecting ring: seamless pad, three note chime, stale start dropped, no ring for muted to live, chime after the ramp, rebuild rings, engine released when it ends")
         } catch {
             FileHandle.standardError.write(Data("FAIL \(error.localizedDescription)\n".utf8))
             exit(1)
@@ -60,69 +60,87 @@ import Foundation
         try require(warm.transition(to: .connecting, failed: false, atMs: 200) == .beginStart(1),
             "the first real connect still starts the ring")
 
-        // Example 5: the rendered loop. Two notes of 200 ms at 659.25 and 880 Hz, a 120 ms gap,
-        // sine plus a triangle at 10 percent, peak at most 0.12.
+        // Example 5: the rendered loop. An A open fifth in detuned pairs, a high partial that
+        // wobbles and one sonar ping, 2400 ms long, peak under 0.10, every voice a whole number of
+        // cycles so the looping player wraps without a click.
         let samples = ConnectingRingTone.samples()
-        try require(samples.count == ConnectingRingTone.loopFrames, "the loop is 1800 ms at 24 kHz, got \(samples.count)")
-        try require(ConnectingRingTone.loopMs == 1800, "the pair repeats every 1800 ms")
-        try require(ConnectingRingTone.noteFrames == 4800 && ConnectingRingTone.gapFrames == 2880,
-            "each note is 200 ms and the gap is 120 ms")
-        try require(ConnectingRingTone.secondOnset == 7680, "the second note starts 320 ms in")
-
-        let peak = samples.map { abs($0) }.max() ?? 0
-        try require(peak <= 0.12 + 0.0001, "the peak stays at or under 0.12, got \(peak)")
-        try require(abs(samples[0]) < 0.001, "the first note fades in from silence")
-        try require(abs(samples[ConnectingRingTone.noteFrames - 1]) < 0.001, "the first note fades out to silence")
-
-        let gap = samples[ConnectingRingTone.noteFrames..<ConnectingRingTone.secondOnset]
-        try require((gap.map { abs($0) }.max() ?? 0) < 0.0001, "the 120 ms gap is silent")
-
-        let tail = samples[(ConnectingRingTone.secondOnset + ConnectingRingTone.noteFrames)...]
-        try require((tail.map { abs($0) }.max() ?? 0) < 0.0001, "the rest of the loop is silent")
-
-        // The exact constants, so the numbers are pinned even if a buffer gained tolerance.
-        try require(ConnectingRingTone.firstTone == 659.25, "the first note is exactly E5 659.25 Hz")
-        try require(ConnectingRingTone.secondTone == 880, "the second note is exactly A5 880 Hz")
-        try require(ConnectingRingTone.triangleMix == 0.10, "the triangle mixes in at 10 percent")
+        try require(ConnectingRingTone.sampleRate == 24000, "the sound stays at 24 kHz")
+        try require(ConnectingRingTone.loopMs == 2400, "the loop is 2400 ms")
+        try require(ConnectingRingTone.loopFrames == 57600,
+            "the loop is 57600 frames, got \(ConnectingRingTone.loopFrames)")
+        try require(samples.count == ConnectingRingTone.loopFrames,
+            "the loop renders its own frame count, got \(samples.count)")
         try require(ConnectingRingTone.stopRampMs == 30, "the stop ramps down over 30 ms")
 
-        let first = pitch(samples, onset: 0)
-        try require(abs(first - 659.25) < 0.5, "the first note is E5 659.25 Hz, got \(first)")
-        let second = pitch(samples, onset: ConnectingRingTone.secondOnset)
-        try require(abs(second - 880) < 0.5, "the second note is A5 880 Hz, got \(second)")
+        // Example 2: the peak. At or under 0.10, with nothing near clipping.
+        let peak = samples.map { abs($0) }.max() ?? 0
+        try require(peak <= 0.10 + 0.0001, "the ring peak stays at or under 0.10, got \(peak)")
+        try require(peak > 0.09, "the pad is not silent, got \(peak)")
 
-        // The connected chime, copied from Vicuna's playConnected: 440 then 550 Hz, 100 ms each
-        // with a 50 ms gap, peak 0.15 and a 15 ms linear fade.
+        // Example 1: the seam. Every voice completes whole cycles in the loop and the breath holds
+        // both ends at silence, so the wrap has no step.
+        let loopSeconds = ConnectingRingTone.loopSeconds
+        for frequency in ConnectingRingTone.padFrequencies + [ConnectingRingTone.sparkleFrequency] {
+            let cycles = frequency * loopSeconds
+            try require(abs(cycles - cycles.rounded()) < 0.000001,
+                "every voice completes whole cycles per loop, \(frequency) Hz gives \(cycles)")
+        }
+        try require(abs(samples[0]) < 0.001 && abs(samples[samples.count - 1]) < 0.001,
+            "the loop starts and ends quietly")
+        try require(abs(samples[0] - samples[samples.count - 1]) < 0.01,
+            "the loop seam differs by under 0.01, got \(abs(samples[0] - samples[samples.count - 1]))")
+
+        // The pad itself: an A open fifth in pairs under 1 Hz apart, a high partial, an upward ping.
+        try require(ConnectingRingTone.padFrequencies.count == 6, "the pad has three paired voices")
+        for (base, first) in [(220.0, 0), (330.0, 2), (440.0, 4)] {
+            try require(abs(ConnectingRingTone.padFrequencies[first] - base) < 0.001,
+                "the pad holds \(base) Hz")
+            let detune = ConnectingRingTone.padFrequencies[first + 1] - base
+            try require(detune > 0 && detune < 1,
+                "the \(base) Hz pair is detuned by under 1 Hz, got \(detune)")
+        }
+        try require(ConnectingRingTone.sparkleFrequency >= 1300
+            && ConnectingRingTone.sparkleFrequency <= 1800, "the sparkle sits at 1.3 to 1.8 kHz")
+        try require(ConnectingRingTone.pingEndHz > ConnectingRingTone.pingStartHz,
+            "the sonar ping glides upward")
+        try require(ConnectingRingTone.pingStartMs + ConnectingRingTone.pingMs < ConnectingRingTone.loopMs,
+            "the ping is over before the loop wraps")
+
+        // Example 3: no mud. Energy below 150 Hz stays under one percent of the whole.
+        let ringLow = lowBandShare(samples)
+        try require(ringLow < 0.01, "the ring has no energy below 150 Hz, share \(ringLow)")
+
+        // Example 4: the arrival chime. Three ascending bells 80 ms apart, decaying to silence,
+        // peak under 0.14.
         let chime = ConnectingChimeTone.samples()
-        try require(chime.count == 6000, "the chime is 250 ms at 24 kHz, got \(chime.count)")
-        try require(ConnectingChimeTone.firstTone == 440 && ConnectingChimeTone.secondTone == 550,
-            "the chime notes are exactly 440 and 550 Hz")
-        try require(ConnectingChimeTone.noteMs == 100 && ConnectingChimeTone.gapMs == 50,
-            "each tone is 100 ms and the gap is 50 ms")
-        try require(ConnectingChimeTone.peak == 0.15 && ConnectingChimeTone.fadeMs == 15,
-            "the chime gain is 0.15 with a 15 ms fade")
-        try require(ConnectingChimeTone.noteFrames == 2400 && ConnectingChimeTone.gapFrames == 1200
-            && ConnectingChimeTone.secondOnset == 3600, "the chime timing in frames is pinned")
-        try require(ConnectingChimeTone.lengthMs == 250,
-            "the bounded chime stop uses the 250 ms length, got \(ConnectingChimeTone.lengthMs)")
+        try require(chime.count == ConnectingChimeTone.totalFrames,
+            "the chime renders its own frame count, got \(chime.count)")
+        let chimeMs = Double(chime.count) / ConnectingChimeTone.sampleRate * 1000
+        try require(chimeMs >= 600 && chimeMs <= 900, "the chime lasts 600 to 900 ms, got \(chimeMs)")
+        try require(ConnectingChimeTone.lengthMs == 760 && ConnectingChimeTone.fadeMs == 40,
+            "the chime's length and release are pinned")
         let chimePeak = chime.map { abs($0) }.max() ?? 0
-        try require(chimePeak <= 0.15 + 0.0001 && chimePeak > 0.14,
-            "the chime peak stays at 0.15, got \(chimePeak)")
-        let chimeGap = chime[ConnectingChimeTone.noteFrames..<ConnectingChimeTone.secondOnset]
-        try require((chimeGap.map { abs($0) }.max() ?? 0) < 0.0001, "the 50 ms gap is silent")
-        try require(abs(chime[0]) < 0.0001, "the chime starts at zero, so it cannot click")
-        let early = chime[0..<(ConnectingChimeTone.fadeFrames / 2)].map { abs($0) }.max() ?? 0
-        try require(early <= ConnectingChimeTone.peak * 0.5 + 0.0001,
-            "the 15 ms fade in holds the first half-fade under half the peak, got \(early)")
-        try require(abs(chime[ConnectingChimeTone.noteFrames - 1]) < 0.0001,
-            "each tone ends at zero, so it cannot click")
-        try require(abs(chime[ConnectingChimeTone.totalFrames - 1]) < 0.0001,
-            "the chime ends silent")
-        let chimeFirst = pitch(chime, onset: 0, frames: ConnectingChimeTone.noteFrames)
-        try require(abs(chimeFirst - 440) < 0.5, "the first chime tone is 440 Hz, got \(chimeFirst)")
-        let chimeSecond = pitch(chime, onset: ConnectingChimeTone.secondOnset,
-                                frames: ConnectingChimeTone.noteFrames)
-        try require(abs(chimeSecond - 550) < 0.5, "the second chime tone is 550 Hz, got \(chimeSecond)")
+        try require(chimePeak <= 0.14 + 0.0001, "the chime peak stays at or under 0.14, got \(chimePeak)")
+        try require(chimePeak > 0.13, "the chime is not silent, got \(chimePeak)")
+        let chimeTail = chime[(chime.count - 480)...].map { abs($0) }.max() ?? 0
+        try require(chimeTail < 0.005, "the chime's last 20 ms stay under 0.005, got \(chimeTail)")
+        try require(abs(chime[chime.count - 1]) < 0.001, "the chime ends at silence")
+        try require(lowBandShare(chime) < 0.01, "the chime has no energy below 150 Hz")
+
+        // Three onsets, ascending in pitch: each bell sounds from its own onset, and the notes ascend.
+        let onsets = ConnectingChimeTone.onsetFrames
+        let notes = ConnectingChimeTone.noteFrequencies
+        try require(onsets.count == 3 && notes.count == 3, "the chime strikes three bells")
+        try require(onsets[0] < onsets[1] && onsets[1] < onsets[2], "the bells are struck in order")
+        try require(notes[0] < notes[1] && notes[1] < notes[2], "the bells ascend in pitch")
+        for (index, note) in notes.enumerated() {
+            let before = index == 0
+                ? window(chime, from: chime.count - 960, frames: 960)
+                : window(chime, from: onsets[index] - 960, frames: 960)
+            let struck = magnitude(window(chime, from: onsets[index] + 240, frames: 960), at: note)
+            try require(struck > magnitude(before, at: note) * 3,
+                "bell \(index + 1) sounds only from its onset, at \(note) Hz")
+        }
 
         // The one native record per ring.
         let record = ConnectingRingRecord(startedAt: 1_700_000_000_000,
@@ -340,6 +358,64 @@ import Foundation
             && bounceRecords[0]["ms"] as? Int == 4000,
             "the record lands even when the ramp never completes, got \(bounceRecords.count)")
         bounceRing.presenceChanged(.connecting, failed: false)
+
+        // SOUND-R1: a dropped call the host rebuilds rings the reconnect, and the call going live
+        // again plays the arrival chime. A mute and an unmute never ring.
+        let rebuildClock = TestClock()
+        let rebuildOutput = RecordingRingOutput()
+        var rebuildRecords: [[String: Any]] = []
+        var rebuildPending: [@MainActor () -> Void] = []
+        let rebuildRing = ConnectingRing(output: rebuildOutput, now: { rebuildClock.ms },
+                                         deferStart: { body in body() },
+                                         after: { _, body in rebuildPending.append(body) })
+        rebuildRing.receipt = { rebuildRecords.append($0) }
+        rebuildRing.presenceChanged(.connecting, failed: false)
+        rebuildClock.ms = 5700
+        rebuildRing.presenceChanged(.live, failed: false)
+        rebuildPending.removeFirst()()
+        let playsBefore = rebuildOutput.plays
+        let chimesBefore = rebuildOutput.chimes
+        rebuildClock.ms = 60000
+        rebuildRing.presenceChanged(.hotMuted, failed: false)
+        rebuildRing.presenceChanged(.live, failed: false)
+        try require(rebuildOutput.plays == playsBefore && rebuildOutput.chimes == chimesBefore,
+            "a mute and an unmute never ring and never chime")
+
+        // The drop: the host announces a rebuild, so the loop plays again from that moment.
+        rebuildRing.rebuildStarted()
+        try require(rebuildOutput.plays == playsBefore + 1,
+            "a host rebuild rings again, got \(rebuildOutput.plays) plays")
+        // The rebuild settles live: a 30 ms ramp, then the arrival chime behind it.
+        let rampsBefore = rebuildOutput.ramps.count
+        rebuildClock.ms = 63000
+        rebuildRing.rebuildSettled()
+        try require(rebuildOutput.ramps.count == rampsBefore + 1
+            && rebuildOutput.ramps.last == ConnectingRingTone.stopRampMs,
+            "a rebuilt ring ramps out over 30 ms, got \(rebuildOutput.ramps)")
+        let settleRecord = rebuildRecords.last { $0["event"] as? String == "connecting_ring" }
+        try require(settleRecord?["reason"] as? String == "live"
+            && settleRecord?["ms"] as? Int == 3000,
+            "the rebuild's record names the live ending and its 3000 ms")
+        try require(rebuildOutput.chimes == chimesBefore + 1,
+            "a rebuilt call that is live again plays the chime, got \(rebuildOutput.chimes)")
+        try require(rebuildPending.count == 1, "the chime's own stop is queued behind it")
+        rebuildPending.removeFirst()()
+
+        // A rebuild that ends: the cold presence record ramps the ring out and owes no chime.
+        rebuildClock.ms = 70000
+        rebuildRing.rebuildStarted()
+        let chimesAtEnd = rebuildOutput.chimes
+        let rampsAtEnd = rebuildOutput.ramps.count
+        rebuildClock.ms = 71500
+        rebuildRing.presenceChanged(.cold, failed: false)
+        try require(rebuildOutput.ramps.count == rampsAtEnd + 1 && rebuildPending.isEmpty,
+            "an ended rebuild ramps out and schedules nothing after the ramp")
+        try require(rebuildOutput.chimes == chimesAtEnd,
+            "an ended rebuild plays no chime, got \(rebuildOutput.chimes)")
+        let endRecord = rebuildRecords.last { $0["event"] as? String == "connecting_ring" }
+        try require(endRecord?["reason"] as? String == "cold"
+            && endRecord?["chime"] as? Bool == false,
+            "the ended rebuild's record names the cold ending and no chime")
     }
 
     /// Stands in for the ring's own player, so no engine and no audio device is started. It models
@@ -391,27 +467,64 @@ import Foundation
 
     @MainActor final class TestClock { var ms = 0 }
 
-    /// The note's pitch from its first and last positive zero crossing, each time interpolated
-    /// between the two samples that bracket it, so the estimate is not quantized to 10 Hz.
-    static func pitch(_ samples: [Float], onset: Int,
-                      frames: Int = ConnectingRingTone.noteFrames) -> Double {
-        let end = onset + frames
-        var crossings = 0
-        var first = 0.0
-        var last = 0.0
-        var previous = samples[onset]
-        for index in (onset + 1)..<end {
-            let current = samples[index]
-            if previous <= 0, current > 0 {
-                let at = Double(index - 1) + Double(-previous) / Double(current - previous)
-                crossings += 1
-                if crossings == 1 { first = at }
-                last = at
-            }
-            previous = current
+    /// A window of samples, clamped to the buffer.
+    static func window(_ samples: [Float], from start: Int, frames: Int) -> ArraySlice<Float> {
+        let low = min(max(start, 0), samples.count)
+        return samples[low..<min(low + frames, samples.count)]
+    }
+
+    /// One frequency's Hann windowed magnitude over a window: enough to prove an onset without a
+    /// full transform.
+    static func magnitude(_ slice: ArraySlice<Float>, at frequency: Double) -> Double {
+        var real = 0.0
+        var imaginary = 0.0
+        for (offset, sample) in slice.enumerated() {
+            let envelope = 0.5 - 0.5 * cos(2 * Double.pi * Double(offset) / Double(slice.count))
+            let angle = 2 * Double.pi * frequency * Double(offset) / ConnectingRingTone.sampleRate
+            real += Double(sample) * envelope * cos(angle)
+            imaginary -= Double(sample) * envelope * sin(angle)
         }
-        guard crossings > 1, last > first else { return 0 }
-        return Double(crossings - 1) / ((last - first) / ConnectingRingTone.sampleRate)
+        return (real * real + imaginary * imaginary).squareRoot()
+    }
+
+    /// The share of the sound's energy below `cutoff` Hz, over its first second. The signal is
+    /// block averaged down to a 3 kHz rate first, which keeps the Goertzel sweep cheap and puts the
+    /// band on a 1 Hz grid. A 60 Hz tone at 0.05 already reads 0.63.
+    static func lowBandShare(_ samples: [Float], below cutoff: Double = 150) -> Double {
+        let analysed = min(samples.count, Int(ConnectingRingTone.sampleRate))
+        let block = 8
+        var averaged: [Double] = []
+        averaged.reserveCapacity(analysed / block)
+        var index = 0
+        while index + block <= analysed {
+            var sum = 0.0
+            for offset in 0..<block { sum += Double(samples[index + offset]) }
+            averaged.append(sum / Double(block))
+            index += block
+        }
+        let count = averaged.count
+        var energy = 0.0
+        for offset in 0..<count {
+            let envelope = 0.5 - 0.5 * cos(2 * Double.pi * Double(offset) / Double(count))
+            let value = averaged[offset] * envelope
+            averaged[offset] = value
+            energy += value * value
+        }
+        let total = Double(count) * energy
+        let bins = Int(cutoff * Double(count) / (ConnectingRingTone.sampleRate / Double(block)))
+        var low = 0.0
+        for bin in 1...bins {
+            let coefficient = 2 * cos(2 * Double.pi * Double(bin) / Double(count))
+            var previous = 0.0
+            var prior = 0.0
+            for value in averaged {
+                let current = value + coefficient * previous - prior
+                prior = previous
+                previous = current
+            }
+            low += previous * previous + prior * prior - coefficient * previous * prior
+        }
+        return 2 * low / total
     }
 
     static func require(_ value: Bool, _ message: String) throws {

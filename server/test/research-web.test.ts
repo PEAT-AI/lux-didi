@@ -440,7 +440,7 @@ test('WEB-1024: fallback query clipping keeps entity date and place tokens befor
   const offered = fallbackSelection('please tell me the price of ' + 'beautiful classic restored wooden sailing vessel '.repeat(5) + 'Herreshoff Caribbean 50 Pune 2026', ['web']);
   const action = offered.actions.find(action => action.kind === 'web_search');
   assert.ok(action);
-  const query = String(action.args['query']);
+  const query = String(action.query);
   assert.ok(query.length <= 120);
   for (const token of ['Herreshoff', 'Caribbean', '50', 'Pune', '2026']) assert.ok(query.includes(token), query);
   assert.doesNotMatch(query, /please|tell me/);

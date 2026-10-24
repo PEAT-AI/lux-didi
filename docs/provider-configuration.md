@@ -67,13 +67,14 @@ otherwise `en`. The setup is never left unset, so the voice always has an
 explicit language pin. The voice anchor still reduces to the bare primary
 language name. The literal key reference
 is still `gemini-primary`; the key file is separate and untouched. The `provider`
-field is a checked union (`LiveProvider` in `live/types.ts`, declared by the adapter
-port), currently only `gemini`: an unknown value fails the load with
-`invalid_provider`, and no model-name regex anywhere outside the Gemini adapter
-decides provider behaviour.
+field is a checked union (`liveVoiceProviders` in
+`server/adapters/live-voice/types.ts`), currently `openai` and `gemini`: an unknown
+value fails the load with `invalid_provider`, and no model-name regex outside an
+adapter decides provider behaviour. `openai` is the default when `live.json` names
+none (`defaultLiveProvider` in `server/config/index.ts`).
 
 ```json
-{"schemaVersion":1,"enabled":true,"provider":"gemini","modelId":"models/gemini-3.1-flash-live-preview","voice":"Aoede","keyReference":"gemini-primary","dataClasses":["ordinary"],"preferences":{"dataClass":"ordinary","language":"en","register":"plain","humor":"dry","verbosity":"brief"}}
+{"schemaVersion":1,"enabled":true,"provider":"gemini","modelId":"models/gemini-3.8-live","voice":"Aoede","keyReference":"gemini-primary","dataClasses":["ordinary"],"preferences":{"dataClass":"ordinary","language":"en","register":"plain","humor":"dry","verbosity":"brief"}}
 ```
 
 An optional `accent` field on the same file selects the spoken accent the host composes into

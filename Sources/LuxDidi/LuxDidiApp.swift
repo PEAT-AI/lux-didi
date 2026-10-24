@@ -312,6 +312,14 @@ import WebKit
             }
         }
     }
+    /// #613: the launch receipt the host records, best effort: a host that is down leaves the local line only.
+    func forwardLaunchReceipt(_ kind: LaunchKind) {
+        guard let client else { return }
+        Task { _ = try? await client.launchReceipt(kind: kind.rawValue,
+            autoConnects: kind.autoConnects, windowShown: kind.presentsWindowAtLaunch) }
+    }
+    /// #613: the one latch and session epoch presence and the conversation share.
+    let ownerStopLatch = OwnerStopLatch()
     @discardableResult
     func startLive(pickupJobID: String? = nil) -> Bool {
         guard let client else { error = "Connect the local service before starting Live voice."; return false }
@@ -321,7 +329,7 @@ import WebKit
         let conversation = liveAuthorityOwner.ownerStart {
             NativeLiveConversation(authority: client.authenticatedRequestBuilder(), dictationIsCapturing: { [weak self] in
                 self?.voice.state.phase == .recording
-            }, pickupJobID: pickupJobID, logsDirectory: liveLogsDirectory)
+            }, pickupJobID: pickupJobID, logsDirectory: liveLogsDirectory, latch: ownerStopLatch)
         }
         conversation.start()
         orbLevels = NativeOrbLevelPublisher(device: conversation.device, bridge: bridge)
@@ -608,7 +616,8 @@ struct RootView: View {
         receipt: { [weak self] record in self?.model.appendPresenceReceipt(record) },
         goodbyeTone: { [weak self] in self?.model.playGoodbyeTone() },
         surface: { [weak self] posture in self?.miniOrb.applyPresence(posture) },
-        prewarm: { [weak self] in self?.model.prewarmWarmContext() }))
+        prewarm: { [weak self] in self?.model.prewarmWarmContext() }),
+        latch: model.ownerStopLatch)
     private var presencePickupJobID: String?
     /// The presence generation the conversation now on the wire was opened under, so a
     /// callback from any other conversation is stale by construction.
@@ -710,6 +719,9 @@ struct RootView: View {
         loginLaunch = launchedAtLogin
         launchKind = LaunchKind.resolve(arguments: CommandLine.arguments,
             environment: ProcessInfo.processInfo.environment, loginLaunch: loginLaunch)
+        model.appendPresenceReceipt(launchKind.launchRecord)
+        // #613: the same fields reach the host, so host.log carries the launch kind too.
+        model.forwardLaunchReceipt(launchKind)
         OwnedWindowReadiness.trace("app:didFinishLaunching-entry",
             ["activationPolicy": NSApp.activationPolicy().rawValue, "isActive": NSApp.isActive])
         // UI3A-R1: a regular app for the interactive, login-item and install
@@ -927,9 +939,27 @@ struct RootView: View {
                                           pageHostable: pageHostable, attempted: autoConnectAttempted) {
         case .connect:
             autoConnectAttempted = true
-            startPresence()
+            Task { [weak self] in
+                guard let self else { return }
+                // #613: the calendar connector publishes a moment after the host is up, so this launch
+                // waits a bounded four seconds for it and starts the call either way.
+                _ = await OrbFirstAutoConnect.waitForCalendar(
+                    published: { await self.calendarPublished() },
+                    sleep: { ms in try? await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000) })
+                self.startPresence()
+            }
         case .wait, .never:
             break
+        }
+    }
+
+    /// #613: the calendar connector is published when the host's tools status names it ready.
+    private func calendarPublished() async -> Bool {
+        guard let client = model.client,
+              let value = try? await client.connectedRead("api/v1/tools/status"),
+              let endpoints = value["endpoints"] as? [[String: Any]] else { return false }
+        return endpoints.contains {
+            $0["connector"] as? String == "calendar" && $0["state"] as? String == "ready"
         }
     }
 
@@ -1191,16 +1221,18 @@ struct RootView: View {
         case .listening, .speaking, .muted: model.ringRebuildSettled()
         default: break
         }
-        switch state {
-        case .listening: presence.ready(generation)
-        case .speaking:
-            presence.ready(generation)
+        switch state.presenceMove {
+        case .ready: presence.ready(generation)
         case .failed: presence.fail(generation)
         case .ended:
             // #589: the owner's own sentence ended this call, so presence closes it as her voice stop and the
             // goodbye sounds. Any other ending is a session that ended, which presence records as it always has.
             presence.endAfterHostTerminal(voiceStop: model.live?.hostVoiceStop == true, generation: generation)
-        case .idle, .connecting, .muted, .outcomeUnknown, .pausedForInput, .rebuilding: break
+        case .uncertain:
+            // #613: a socket that closed without a terminal frame leaves no live microphone, so presence
+            // goes cold now. It never reconnects to find out what the host thinks.
+            presence.sessionUncertain(generation)
+        case .none: break
         }
     }
     /// The FULL window's "Show the mini orb" button (#311): the page asks through the bridge and

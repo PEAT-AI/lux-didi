@@ -40,13 +40,13 @@ enum SingleInstanceGuard {
 /// The launch paths that decide whether Didi may appear and take focus. A pure
 /// value: `resolve` reads only the arguments, the environment and the login Apple
 /// Event, so the presentation decision is provable without a window.
-enum LaunchKind: Equatable {
+enum LaunchKind: String {
     case interactive
-    case loginItem
-    case installRelaunch
-    case installedProof
-    case selfCheck
-    case uiProof
+    case loginItem = "login_item"
+    case installRelaunch = "install_relaunch"
+    case installedProof = "installed_proof"
+    case selfCheck = "self_check"
+    case uiProof = "ui_proof"
     case verification
 
     /// A check that cannot open its own window exits with this code so a yielded
@@ -104,6 +104,14 @@ enum LaunchKind: Equatable {
     }
 }
 
+/// #613: the one content-free launch record, so a launch kind is never inferred from LaunchServices.
+extension LaunchKind {
+    var launchRecord: [String: Any] {
+        ["event": "launch_kind", "kind": rawValue,
+         "autoConnects": autoConnects, "windowShown": presentsWindowAtLaunch]
+    }
+}
+
 /// ORBFIRST: whether a launch opens a session by itself. A launch connects once, only when the
 /// host is up and the orb page is hostable, and a refusal is final for that launch so a denied
 /// microphone or a refused audio owner never loops.
@@ -113,5 +121,24 @@ enum OrbFirstAutoConnect {
     static func decide(kind: LaunchKind, serviceReady: Bool, pageHostable: Bool, attempted: Bool) -> Action {
         guard kind.autoConnects, !attempted else { return .never }
         return serviceReady && pageHostable ? .connect : .wait
+    }
+
+    /// #613: an auto-connected launch waits for the calendar connector to publish, so the opener composes
+    /// with a digest instead of racing it. Four seconds, then the call starts and the digest reads absent.
+    static let calendarBoundMs = 4000
+    static let calendarStepMs = 200
+
+    /// The probe and the clock are injected, so the bound is provable with no host and no waiting.
+    @MainActor static func waitForCalendar(published: () async -> Bool,
+                                sleep: (Int) async -> Void,
+                                boundMs: Int = calendarBoundMs,
+                                stepMs: Int = calendarStepMs) async -> Bool {
+        var waited = 0
+        while true {
+            if await published() { return true }
+            if waited >= boundMs { return false }
+            await sleep(stepMs)
+            waited += stepMs
+        }
     }
 }

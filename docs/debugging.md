@@ -72,6 +72,8 @@ increasing per instance), `mono_ms` (the app's own monotonic clock) and a fracti
 at 5 MiB with two rotations (`<name>`, `<name>.1`, `<name>.2`), the shape `host.log` already uses,
 so neither grows without a bound.
 
+Four records answer what a launch and a stop did, all content-free: `launch_kind` (the kind, `autoConnects`, `windowShown`, in `native-live.log` and, through the client diagnostic route, in `host.log`), `goodbye_tone` (`played`, and a `reason` of `no_buffer` or `output_refused` when nothing sounded), `live_stop_outcome` (`confirmed` when the host closed the wire inside the deadline, `deadline` when it did not) and `live_restart` (`reason`). A `presence_state` move to `cold` with trigger `error` is the uncertain session: the socket closed without a terminal frame and presence went cold with no reconnect.
+
 The app forwards its playback receipts (received, enqueued, started, drained, interrupted,
 terminated) to the host over the live socket it already holds. Each is one bounded frame with
 `segment_seq`, `source_instance_id`, `source_seq`, `mono_ms` and `wall_ms`; the host validates it

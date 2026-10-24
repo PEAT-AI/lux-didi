@@ -51,6 +51,10 @@ enum State: String, CaseIterable {
     private var observer: Task<Void, Never>?
     private var startTask: Task<Void, Never>?
     private var generation: UInt64 = 0
+    /// #613: the shared owner-stop latch and session epoch, so recovery never outruns a stop.
+    private let latch: OwnerStopLatch
+    /// #613: the injected close, nil in production.
+    private let closeHook: CloseHook?
     private let logsDirectory: URL?
     private let journal: NativeLiveJournal
     private var limits: NativeLiveLimits?
@@ -70,8 +74,16 @@ enum State: String, CaseIterable {
     private var captureDiagnosticOwner: UInt64?
     var isMuted: Bool { muted }
     var isCapturing: Bool { state == .connecting || state == .pausedForInput || device.isCapturing }
-    init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil, audioDevice: NativeLiveAudioDevice? = nil) {
+    /// #613: the coordinator this conversation drives. Production is the live socket transport; a test
+    /// injects its own, so a stop race is provable without a host.
+    typealias CoordinatorFactory = @MainActor (NativeLiveOperatorHTTP, NativeLiveAudioDevice) -> LiveSessionCoordinator
+    /// The close a stop asks. Production is the coordinator's own; a test injects a host that never answers.
+    typealias CloseHook = @MainActor (LiveStopTrigger) async -> LiveStopReceipt?
+
+    init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil, audioDevice: NativeLiveAudioDevice? = nil, latch: OwnerStopLatch = OwnerStopLatch(), coordinatorFactory: @escaping CoordinatorFactory = { http, device in LiveSessionCoordinator(http: http, sockets: LiveSocketTransport(requests: http), sink: device) }, closeHook: CloseHook? = nil) {
+        self.closeHook = closeHook
         self.logsDirectory = logsDirectory
+        self.latch = latch
         self.journal = NativeLiveJournal(fileURL: logsDirectory?.appendingPathComponent("native-live.log"))
         self.http = NativeLiveOperatorHTTP(authority: authority, pickupJobID: pickupJobID)
         self.dictationIsCapturing = dictationIsCapturing
@@ -81,7 +93,7 @@ enum State: String, CaseIterable {
         let journal = logsDirectory.map { NativeAudioJournal(fileURL: $0.appendingPathComponent("audio.log")) }
             .map { AudioOwner.shared.adopt(journal: $0) }
         let device = audioDevice ?? NativeLiveAudioDevice(journal: journal); self.device = device
-        coordinator = LiveSessionCoordinator(http: http, sockets: LiveSocketTransport(requests: http), sink: device)
+        coordinator = coordinatorFactory(http, device)
         device.onOutput = { [weak self] speaking in
             guard let self else { return }
             self.speaking = speaking
@@ -117,9 +129,14 @@ enum State: String, CaseIterable {
             // A stop cycle already recorded means the owner asked for it: never an automatic restart.
             let live = !self.endRecorded
             let token = self.generation &+ 1
+            // #613: the epoch this recovery started under, re-read after the await below. A stop that
+            // landed meanwhile voided it, so the restart never fires behind the owner's back.
+            let seenEpoch = self.latch.epoch
             await self.stop(reason: .audioInterruption)
             guard self.generation == token else { return }
-            guard live, self.claimAutomaticRestart() else {
+            // #613: a stop that landed inside the await voids the restart, exactly as the 60 s window does,
+            // and either way the owner is told to start again himself.
+            guard live, self.latch.allowsRestart(seenEpoch: seenEpoch), self.claimAutomaticRestart() else {
                 self.failure = "Live audio could not recover. Capture released. Restart explicitly to try again."
                 self.state = .failed
                 return
@@ -161,6 +178,8 @@ enum State: String, CaseIterable {
         // #1022: the busy reading is taken here, in the synchronous prefix, before the connecting
         // ring (one main-actor hop after CONNECTING) or any live engine can start.
         device.noteOutsideDeviceBusy()
+        // #613: this is the explicit start, the one thing that clears the owner-stop latch.
+        latch.startRequested()
         generation &+= 1; let token = generation
         failure = nil; state = .connecting; muted = false; speaking = false; endRecorded = false
         hostVoiceStop = false
@@ -187,7 +206,7 @@ enum State: String, CaseIterable {
                 case .terminal(let outcome):
                     // #589: the host's voice stop is the owner's own sentence, so this end is presented as
                     // her stop. The app closes it through presence.stop(.voice), never as a session ending.
-                    if outcome.code == "voice_stop" { self.hostVoiceStop = true }
+                    if outcome.code == "voice_stop" { self.hostVoiceStop = true; self.latch.ownerStopped() }
                     switch outcome.code {
                     case "session_timeout": if !self.endRecorded { self.endRecorded = true; self.journal.append(.sessionLimit) }
                     case "idle_timeout": if !self.endRecorded { self.endRecorded = true; self.journal.append(.idleLimit) }
@@ -200,12 +219,15 @@ enum State: String, CaseIterable {
                     }
                     self.stopAudioAndSummarize()
                     self.state = outcome.state == .failed ? .failed : (outcome.state == .outcome_unknown ? .outcomeUnknown : .ended)
+                    // #613: an unknown outcome is the owner's call to restart, never a recovery's.
+                    if self.state == .outcomeUnknown { self.latch.ownerStopped() }
                 case .failed(let reason):
                     self.stopAudioAndSummarize(); self.state = .failed
                     self.failure = NativeLivePresentation.failure(reason)
                     self.logFailure(reason, beforeCreate: beforeCreate)
                 case .createUnknown:
                     self.stopAudioAndSummarize(); self.state = .outcomeUnknown
+                    self.latch.ownerStopped()
                     self.failure = "Live start outcome is unknown. Check the conversation before starting again."
                 case .outcomeUnknown(let reason):
                     // 3o: a refused frame is never a silent throw; the sequence, the one it had to exceed and the
@@ -258,6 +280,38 @@ enum State: String, CaseIterable {
         }
     }
     /// Z2: one automatic restart per 60 s. A second failure inside the window stays `.failed`.
+    /// #613: a stop never waits on the host, so the mic is released here whatever the host does.
+    static let stopConfirmNanos: UInt64 = 500_000_000
+    /// #613: whichever of the two outcomes lands first wins. The loser is never awaited, because a task
+    /// group awaits its cancelled children and a close that ignores cancellation would hold the stop open.
+    private final class FirstOutcome: @unchecked Sendable {
+        private var taken = false
+        private let lock = NSLock()
+        func take() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if taken { return false }
+            taken = true
+            return true
+        }
+    }
+
+    private func closeOrDeadline(trigger: LiveStopTrigger) async -> LiveStopReceipt? {
+        let coordinator = self.coordinator
+        let hook = closeHook
+        let first = FirstOutcome()
+        return await withCheckedContinuation { continuation in
+            Task {
+                let receipt: LiveStopReceipt?
+                if let hook { receipt = await hook(trigger) } else { receipt = await coordinator.close(trigger: trigger) }
+                if first.take() { continuation.resume(returning: receipt) }
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: Self.stopConfirmNanos)
+                if first.take() { continuation.resume(returning: nil) }
+            }
+        }
+    }
+
     private func claimAutomaticRestart(now: Date = Date()) -> Bool {
         if let last = lastAutomaticRestartAt, now.timeIntervalSince(last) < 60 { return false }
         lastAutomaticRestartAt = now
@@ -372,21 +426,49 @@ enum State: String, CaseIterable {
     }
     func stop(reason: NativeLiveEndReason = .userStop, trigger: LiveStopTrigger = .other) async {
         stopCapture()
+        // #613: the owner's own stop latches, so no recovery restarts this call behind him.
+        if reason == .userStop { latch.ownerStopped() }
+        let firstStop = !endRecorded
         if !endRecorded { endRecorded = true; journal.append(reason) }
         let token = generation
-        if let receipt = await coordinator.close(trigger: trigger) {
+        let confirmed = await closeOrDeadline(trigger: trigger)
+        if let receipt = confirmed {
             // 3p: the two native receipts that make a Stop readable: what pressed it, and when the wire closed behind it.
             journal.append(["event": "live_stop", "trigger": receipt.trigger.rawValue,
                             "stopRequestedAt": NativeLogClock.wallText(receipt.stopRequestedAt)])
             journal.append(["event": "socket_close_sent", "msAfterStop": receipt.socketCloseSentMs])
+        } else {
+            // #613: the host never confirmed, so the wire is cancelled here; the device was already stopped
+            // by stopCapture, so the mic is released with no second capture summary.
+            await coordinator.stop()
+            state = .ended
+        }
+        if firstStop {
+            journal.append(["event": "live_stop_outcome", "outcome": confirmed == nil ? "deadline" : "confirmed"])
         }
         await captureSummaryTask?.value
         guard generation == token else { return }
         let outcome = await coordinator.state
         guard generation == token else { return }
-        if case .outcomeUnknown = outcome { state = .outcomeUnknown }
+        if case .outcomeUnknown = outcome, confirmed != nil { state = .outcomeUnknown }
         else { state = .ended }
         muted = false; speaking = false
         adoptSession(nil)
+    }
+}
+
+/// #613: the one place a conversation state names the presence move, so the N1 mapping is provable
+/// without a window: an unknown outcome reaches `sessionUncertain`, never the ignored tail.
+extension NativeLiveConversation.State {
+    enum PresenceMove: Equatable { case ready, failed, ended, uncertain, none }
+
+    var presenceMove: PresenceMove {
+        switch self {
+        case .listening, .speaking: return .ready
+        case .failed: return .failed
+        case .ended: return .ended
+        case .outcomeUnknown: return .uncertain
+        case .idle, .connecting, .muted, .pausedForInput, .rebuilding: return .none
+        }
     }
 }

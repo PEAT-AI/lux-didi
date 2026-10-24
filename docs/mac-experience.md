@@ -11,6 +11,12 @@ What a start may do is decided once, by `LaunchKind` in `SingleInstanceGuard.swi
 - Install relaunch (`--install-relaunch`): the orb appears, nothing connects.
 - Proof and self-check launches: no orb, no connect, a window only where the proof drives one; a second instance exits with code 3 so a yielded proof can never read as a pass.
 
+Every launch writes one content-free `launch_kind` line carrying the kind, `autoConnects` and `windowShown`, into `native-live.log` and to the host so `host.log` carries it too. A launch kind is never inferred from LaunchServices.
+
+An interactive launch waits up to four seconds for the calendar connector to publish before it starts the call, so the opener composes with a digest; past the bound the call starts and the digest reads absent.
+
+A stop is the owner's, so the native side never waits for the host to go cold: a local stop cancels the transport after 500 ms and records `live_stop_outcome` as `confirmed` or `deadline`, and a socket that closed without a terminal frame takes presence cold at once with no reconnect.
+
 ## Surfaces
 
 The orb (MINI) and the window (FULL) are independent; a `PresentationCoordinator` owns which are visible and every entry point goes through it. It never touches Live, so no switch starts, ends or restarts a call.

@@ -145,6 +145,13 @@ enum CaptureStatus: Equatable { case idle, sending, saved, cancelled, unknown, f
     }
     /// 338: the owner's wake instruction. The host rebuilds the warm context and returns the
     /// `warm_prewarm` receipt; the caller only needs to know the instruction was served.
+    /// #613: one content-free launch receipt to `host.log`, so a launch kind is never inferred.
+    func launchReceipt(kind: String, autoConnects: Bool, windowShown: Bool) async throws -> [String: Any] {
+        let (value, _) = try await request("api/v1/diagnostics/client", method: "POST",
+            body: ["event": "launch_kind", "kind": kind,
+                   "autoConnects": autoConnects, "windowShown": windowShown])
+        return value
+    }
     func prewarm() async throws -> [String: Any] {
         let (value, _) = try await request("api/v1/live/prewarm", method: "POST", body: [:])
         return value

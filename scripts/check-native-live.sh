@@ -52,7 +52,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   "${owner_flags[@]}" \
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Sources/LuxDidi/NativeLiveJournal.swift \
-  Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/NativeLiveAudioRunner.swift \
+  Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/NativeLiveAudioRunner.swift \
   Tests/DidiLiveTests/VoiceProcessingSnapshotTests.swift "$work/audio-callback-bridge.o" -o "$work/native-audio"
 "$work/native-audio"
 # Deterministic playback-scheduling schedule replay: no engine, no tap, no permission request.
@@ -62,7 +62,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   "${owner_flags[@]}" \
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Sources/LuxDidi/NativeLiveJournal.swift \
-  Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/PlaybackSchedulingTests.swift "$work/audio-callback-bridge.o" -o "$work/playback-scheduling"
+  Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/PlaybackSchedulingTests.swift "$work/audio-callback-bridge.o" -o "$work/playback-scheduling"
 "$work/playback-scheduling"
 # Contract C1 wait-cue scheduler replay: pure events in, cue times out. No clock, engine or audio.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library -import-objc-header Tests/DidiLiveTests/AudioCallbackBridge.h \
@@ -94,6 +94,16 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   -target "$target" \
   Sources/LuxDidi/NativePresence.swift Tests/DidiLiveTests/NativePresenceTests.swift -o "$work/native-presence"
 "$work/native-presence"
+# #613: the owner-stop latch and the cold path of an uncertain session. Injected effects only.
+swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library -import-objc-header Tests/DidiLiveTests/AudioCallbackBridge.h \
+  -target "$target" \
+  Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+  "${owner_flags[@]}" \
+  Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
+  Sources/LuxDidi/NativeLiveJournal.swift Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/ConnectingRing.swift \
+  Sources/LuxDidi/NativeLiveConversation.swift Sources/LuxDidi/SingleInstanceGuard.swift \
+  Tests/DidiLiveTests/NativeStopLatchTests.swift "$work/audio-callback-bridge.o" -o "$work/native-stop-latch"
+"$work/native-stop-latch"
 # The held-mute race (D5): a fake host delivers every session callback late. No socket,
 # no engine, no panel and no wait.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
@@ -106,7 +116,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-
   "${owner_flags[@]}" \
   Sources/LuxDidi/NativeLiveOperatorHTTP.swift Sources/LuxDidi/AudioOwner.swift Sources/LuxDidi/NativeLiveAudioDevice.swift \
   Sources/LuxDidi/NativeLiveJournal.swift \
-  Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/Fixture.swift \
+  Sources/LuxDidi/NativePresence.swift Sources/LuxDidi/NativeLiveConversation.swift Tests/DidiLiveTests/Fixture.swift \
   Tests/DidiLiveTests/NativeLifetime.swift -o "$work/native-lifetime"
 # Physical-device proof uses the production graph with no tap, output or permission request.
 swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \

@@ -83,7 +83,7 @@ test('a question that cannot be separated from private content is reported inste
   assert.equal(publicQueryOf('bridge reopening date'), 'bridge reopening date');
 });
 
-test('a response without grounding metadata is web_ungrounded, never a success', async () => {
+test('a response without grounding metadata is typed insufficient, never a success', async () => {
   const bare = body() as { candidates: { groundingMetadata?: unknown }[] };
   delete bare.candidates[0]!.groundingMetadata;
   const port = createWebSearch({ credentials: KEY, transport: transportOf([], async () => json(bare)) });
@@ -420,4 +420,28 @@ test('WEB-1024: empty results retry once with a broader entity query', async () 
   const empty = createWebSearch({ credentials: KEY, transport: transportOf(emptySeen, async () => json({ candidates: [] })) });
   assert.deepEqual(await empty.search({ query: 'bridge reopening date', signal: new AbortController().signal }), { ok: false, code: 'web_insufficient', reason: 'empty' });
   assert.equal(emptySeen.length, 2);
+});
+
+
+test('WEB-1024: a multi-sentence supported claim is clipped as sentences rather than removed whole', () => {
+  assert.ok(grounded.ok); if (!grounded.ok) return;
+  const answer = 'The bridge reopened. ' + 'The council completed the works. '.repeat(28);
+  const text = webEvidenceText({ ...grounded.evidence, answer, claims: [{ text: answer.trim(), sourceIndexes: [0] }] });
+  const reply = capReply({ status: 'complete', sources: { web: 'ok' }, findings: [{ source: 'web', text: 'web: 1 of 1 shown\n' + text }] }, 750);
+  const findings = reply['findings'] as { text: string }[];
+  assert.equal(findings.length, 1);
+  assert.ok(findings[0]!.text.length < text.length);
+  assert.match(findings[0]!.text, /web answer: The bridge reopened\./);
+  assert.match(findings[0]!.text, /web sources: 1\. Bridge reopening/);
+  assert.equal(reply['webInsufficient'], undefined);
+});
+
+test('WEB-1024: fallback query clipping keeps entity date and place tokens before descriptions', () => {
+  const offered = fallbackSelection('please tell me the price of ' + 'beautiful classic restored wooden sailing vessel '.repeat(5) + 'Herreshoff Caribbean 50 Pune 2026', ['web']);
+  const action = offered.actions.find(action => action.kind === 'web_search');
+  assert.ok(action);
+  const query = String(action.args['query']);
+  assert.ok(query.length <= 120);
+  for (const token of ['Herreshoff', 'Caribbean', '50', 'Pune', '2026']) assert.ok(query.includes(token), query);
+  assert.doesNotMatch(query, /please|tell me/);
 });

@@ -2861,7 +2861,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     }
     if (trimmed.lines.length === 1) {
       const room = last.length - (rendered - limit) - 1;
-      if (room >= RESEARCH.clipFloorChars) { trimmed.lines[0] = clip(last, room); continue; }
+      if (room >= RESEARCH.clipFloorChars) { trimmed.lines[0] = sentencePrefix(last, room) || clip(last, room); continue; }
     }
     trimmed.lines.pop(); dropped += 1;
   }

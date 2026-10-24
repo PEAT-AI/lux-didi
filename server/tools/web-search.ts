@@ -29,7 +29,7 @@ const attribution =
   'Answer in at most 220 words of plain sentences, using only what the search results support. '
   + 'Never write a URL, never greet the reader, never add a list of links.';
 
-export type WebFailureCode = 'web_timeout' | 'web_unavailable' | 'web_rate_limited' | 'web_ungrounded' | 'web_private_question';
+export type WebFailureCode = 'web_timeout' | 'web_unavailable' | 'web_rate_limited' | 'web_private_question';
 
 export interface WebSource { title: string; url: string; publishedAt?: string }
 /** A claim and the sources that ground it, as indexes into `sources`. */
@@ -107,9 +107,13 @@ const QUERY_FILLERS = /^(?:a|an|the|what|is|are|was|were|please|could|would|can|
 /** Drop fillers before bounding a query; never split a name or date token. */
 export function broaderWebQuery(value: string, max = WEB_QUERY_CHARS): string {
   const tokens = value.replace(/[?!,]/gu, '').split(/\s+/u).filter(token => token && !QUERY_FILLERS.test(token));
-  const kept: string[] = [];
-  for (const token of tokens) if ([...kept, token].join(' ').length <= max) kept.push(token);
-  return kept.join(' ');
+  const priority = tokens.map((token, index) => ({ token, index, entity: /[A-Z0-9]/u.test(token) }));
+  const kept = new Set<number>();
+  let length = 0;
+  for (const { token, index } of priority.sort((a, b) => Number(b.entity) - Number(a.entity))) {
+    if (length + token.length + (kept.size ? 1 : 0) <= max) { kept.add(index); length += token.length + (kept.size > 1 ? 1 : 0); }
+  }
+  return tokens.filter((_token, index) => kept.has(index)).join(' ');
 }
 
 /** Shrink the web finding as evidence, never by popping its only multi-line result. */
@@ -121,14 +125,13 @@ export function clipWebEvidence(value: string, max: number): string | undefined 
   const claims = lines.filter(line => line.startsWith('web claim:'));
   if (!sourceLine || claims.length === 0) return undefined;
   const note = 'You may ask for the full result.';
-  const answer = lines.find(line => line.startsWith('web answer:'))?.slice('web answer: '.length) ?? '';
-  for (let count = claims.length; count > 0; count -= 1) {
-    const kept = claims.slice(0, count);
-    const tail = '\n' + kept.join('\n') + '\n' + sourceLine + '\n' + note;
-    const prefix = head + 'web answer: ';
-    const clipped = sentencePrefix(answer, max - prefix.length - tail.length);
-    if (clipped && kept.every(claim => clipped.includes(claim.slice('web claim: '.length).replace(/ \[[^\]]*\]$/u, '')))) return prefix + clipped + tail;
-  }
+  const first = claims[0]!.match(/^web claim: (.*) (\[[^\]]*\])$/u);
+  if (!first) return undefined;
+  const prefix = head + 'web answer: ';
+  const suffix = ` ${first[2]}\n${sourceLine}\n${note}`;
+  const room = Math.floor((max - prefix.length - '\nweb claim: '.length - suffix.length) / 2);
+  const supported = sentencePrefix(first[1]!, room);
+  if (supported) return `${prefix}${supported}\nweb claim: ${supported}${suffix}`;
   return undefined;
 }
 

@@ -3362,6 +3362,7 @@ export class LiveSessionOwner {
   #finalizeOwnerInput(handle: ActiveSession, generation: number, finalOrigin?: string): void {
     if (handle.stopFinalJournalId === handle.inputJournalId || handle.terminal || generation !== handle.generation) return;
     handle.stopFinalJournalId = handle.inputJournalId;
+    if (handle.stopInputAt === undefined || this.#now() - handle.stopInputAt >= 3_000) return;
     // A fallback can finalize the last text row rather than writing an empty final marker.
     const text = this.#store.transaction(tx => {
       const rows = tx.all("SELECT text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id DESC", [handle.liveSessionId]);

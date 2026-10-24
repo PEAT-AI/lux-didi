@@ -5937,3 +5937,49 @@ test('R1 terminal delivery survives a provider close failure and a store failure
     if (failure === 'store') assert.equal(snapshot.journal.complete, false, 'no durable success is fabricated');
   }
 });
+
+test('R1 no false stop from typed or assistant speech, negation, quotation or an expired name', async t => {
+  const cases: { text: string; origin?: 'typed'; output?: boolean; expired?: boolean }[] = [
+    { text: 'what happens if I say Naya stop listening' }, { text: 'Naya said stop listening' },
+    { text: 'Naya do not stop listening' }, { text: "Naya don't stop" },
+    { text: 'tell Maya to stop listening to podcasts' }, { text: 'stop listening' },
+    { text: 'Naya stop listening', origin: 'typed' }, { text: 'Naya stop listening', output: true },
+    { text: 'stop listening', expired: true }, { text: 'Naya why stop listening' },
+    { text: 'Naya what should I stop listening to' }, { text: 'Naya never stop listening' },
+    { text: 'Naya how do I stop listening' }, { text: 'Naya when should I stop listening' },
+    { text: 'Nadia stop listening' }, { text: 'nayas stop listening' },
+    { text: 'please stop listening' }, { text: 'Naya stop listening to podcasts' },
+    { text: 'Naya please do not shut down' }, { text: 'Naya if you stop listening' },
+  ];
+  assert.equal(cases.length, 20);
+  for (const [i, input] of cases.entries()) {
+    const fake = fakeLiveVoicePort(), scheduler = new DeadlineClock();
+    const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+    const session = h.owner.create({ idempotencyKey: `negative-${i}`, inputClass: 'ordinary' }, h.ctx);
+    const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+    await attachment.ready;
+    if (input.expired) {
+      fake.emit({ type: 'inputTranscription', text: 'Naya', finished: false }); await settlePort();
+      scheduler.now += 4_000; scheduler.runDue(); await settlePort();
+    }
+    fake.emit(input.output ? { type: 'outputTranscription', text: input.text, finished: true }
+      : { type: 'inputTranscription', text: input.text, finished: true, ...(input.origin ? { finalOrigin: input.origin } : {}) });
+    await settlePort();
+    assert.equal(h.owner.get(session.liveSessionId).terminal, null, `case ${i}: ${input.text}`);
+    attachment.close(); await attachment.done;
+  }
+});
+
+test('R1 admission precedes journal overflow and drops queued host audio', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, limits: { journalMaxEvents: 2, idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'stop-full-journal', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit({ type: 'audio', pcm: new Uint8Array([1, 0]), rate: 24000 }); await settlePort();
+  fake.emit({ type: 'inputTranscription', text: 'Naya stop listening', finished: false }); await settlePort();
+  assert.deepEqual((await attachment.done).terminal, { state: 'closed', code: 'voice_stop' });
+  const chunks = [];
+  for await (const chunk of attachment.output) chunks.push(chunk);
+  assert.equal(chunks.some(chunk => chunk.kind === 'audio'), false, 'previously queued speech is purged');
+});

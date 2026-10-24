@@ -3798,7 +3798,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   };
   // Outcome 5: the owner's knowledge base is the prime source. Its read starts immediately, in
   // parallel with source selection, unless the owner named one certain non-knowledge source.
-  const knowledgeSubs = candidateSubs('knowledge_search', { question, configured, evidence: run.evidence });
+  const knowledgeSubs = candidateSubs('knowledge_search', { question, configured, evidence: run.evidence, nowMs: now(), timeZone: deps.timeZone });
   widenFor(knowledgeSubs);
   const knowledgeWanted = configured.includes('knowledge') && knowledgeSubs.length > 0 && !run.readKinds.has('knowledge_search')
     && !(hint.length === 1 && hint[0] !== 'knowledge');

@@ -1,6 +1,6 @@
 # Parallel masters: ownership, start packets and the change protocol
 
-> Historical document. Written in October 2026 for the original build plan. It is a record of that working agreement, not a description of how the repository is worked on now (see [CLAUDE.md](../CLAUDE.md)).
+> Historical document. Written in October 2026 for the original build plan. It is a record of that working agreement, not a description of how the repository is worked on now (see [CLAUDE.md](../../CLAUDE.md)).
 
 Status: proposed working agreement for the build. Five implementation lanes are planned, matching the five masters in the backlog. This document describes how they start, what each one owns, and how changes cross lane boundaries. It describes intended process, not a running organization.
 
@@ -18,7 +18,7 @@ Directories are proposed ownership seams, not a claim that the tree exists.
 
 Each lane starts with the leaves that have no blocking dependency, then follows the graph. Every dependency edge is a completion or integration prerequisite, not a prohibition on starting: a lane may begin against another lane's fixtures, and the producer can be finished and tested against a consumer's fixtures in the meantime. A start packet is what a lane reads and does first; it is not permission to skip the contracts.
 
-- Master A starts with A01 (service stack, client roles and licence boundary record) and A02 (versioned contracts and fixtures) in parallel. Read [research.md](research.md) and [architecture.md](architecture.md) before starting. A03, A04 and A06 may proceed side by side once the host decision or the contracts land. A08 and C12 are the first-loop prerequisites named by the program, so A schedules them early in M1 rather than as late hardening. A17 owns the first daily-loop integration and the lean validation gate, and it is the one place the whole slice is exercised together; no second test platform is created.
+- Master A starts with A01 (service stack, client roles and licence boundary record) and A02 (versioned contracts and fixtures) in parallel. Read [research.md](research.md) and [architecture.md](../architecture.md) before starting. A03, A04 and A06 may proceed side by side once the host decision or the contracts land. A08 and C12 are the first-loop prerequisites named by the program, so A schedules them early in M1 rather than as late hardening. A17 owns the first daily-loop integration and the lean validation gate, and it is the one place the whole slice is exercised together; no second test platform is created.
 - Master B starts with B01 (evidence model), B12 (persona specification) and B17 (evidence classes), which are contracts and documents. B07 (preference authority) follows B01. Persistence work follows the store question: either explicit A04 edges or the recorded ruling described in [decisions.md](decisions.md).
 - Master C starts with C01 (identity map) and C02 (OAuth foundations) while C14 (capability registry contract) defines the shared manifest. C12 (broker) is a first-loop prerequisite and is scheduled with A08, not deferred.
 - Master D starts with D01 (lifecycle schema). Extraction (D02) follows the provider contract. Evaluation work (D17) uses fixtures and can run early.

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Connector identity and status, and the connected conversation in a real browser.
+# Needs the browser slot; prints CHECK BLOCKED and exits 2 when the slot or the fixtures are absent.
 set -euo pipefail
 . "$(cd "$(dirname "$0")" && pwd)/lib/node-test-files.sh"
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1

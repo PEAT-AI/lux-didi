@@ -2159,6 +2159,9 @@ export class LiveSessionOwner {
         ? { opening: 'user_first' as const }
         : { openingText: LIVE_RECOVERY_PICKUP }) }
       : { ...structuredClone(handle.request), resumptionHandle: savedHandle as string };
+    // #591: a quiet rebuild asks for nothing, so an opener line the call inherited (a silent start after a lost
+    // line) is cleared as well as the pickup that was never set.
+    if (handle.quietRebuild) delete request.openingText;
     try {
       handle.session = this.#voice.open(request, {
         signal: handle.abort.signal, deadlineMs: handle.deadlineMs, idleResetMs: this.#profile.limits.idleMs,

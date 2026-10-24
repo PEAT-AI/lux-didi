@@ -90,6 +90,9 @@ async function openLive(t: TestContext, overrides: { limits?: Record<string, num
   };
 }
 
+/** The provider's VAD edges predate the fixture's event union; the host reads this shape all the same. */
+const vadEdge = (value: boolean): FakeLiveVoiceEvent => ({ type: 'waitingForInput', value } as unknown as FakeLiveVoiceEvent);
+
 const phases = (live: Live): unknown[] => live.receipts.filter(record => record.event === 'live_watchdog').map(record => record.phase);
 const ownerTurnEnd = (live: Live): Promise<void> => live.emit({ type: 'inputTranscription', text: 'what is on my plate', finished: true });
 const terminalCode = (live: Live): string | undefined => {
@@ -212,8 +215,8 @@ test('an unattended call ends at the idle limit even while VAD only events, a nu
   // model turn that carries no audio at all.
   for (let spent = 0; spent < 120_000 && terminalCode(live) === undefined; spent += 20_000) {
     // The VAD edges the provider sends on ambient sound, both of them: a start is not speech.
-    await live.emit({ type: 'waitingForInput', value: true });
-    await live.emit({ type: 'waitingForInput', value: false });
+    await live.emit(vadEdge(true));
+    await live.emit(vadEdge(false));
     await live.emit({ type: 'modelTurnStarted' });
     await live.emit({ type: 'inputTranscription', text: '', finished: true });
     await live.advance(20_000);

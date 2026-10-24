@@ -47,7 +47,7 @@ test('the public Naya character is new, bounded, neutral and names no biography'
 });
 
 test('the release character holds the installed baseline while issue 455 remains open', () => {
-  assert.equal(sha(NAYA_CHARACTER), '8ca5a9ef9bd2ba4a7debcaa25fb9f95f593af9e708f2aac7bb23fec3c1826287');
+  assert.equal(sha(NAYA_CHARACTER), '1b188117660fe12204cd542001b585fcce69add4f1cc6d27689720e193cac977');
   assert.match(NAYA_CHARACTER, /thirty to ninety seconds/, 'the baseline duration conflict remains open');
   assert.match(NAYA_CHARACTER, /never invent a message, event, date, source or action/);
   assert.match(NAYA_CHARACTER, /Hold him to the commitments he has stated/);
@@ -347,7 +347,7 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
 
 test('the public character, voice surface and tool conduct are the authored verbatim constants', () => {
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
-  assert.equal(sha(NAYA_CHARACTER), '8ca5a9ef9bd2ba4a7debcaa25fb9f95f593af9e708f2aac7bb23fec3c1826287');
+  assert.equal(sha(NAYA_CHARACTER), '1b188117660fe12204cd542001b585fcce69add4f1cc6d27689720e193cac977');
   assert.equal(sha(NAYA_VOICE_SURFACE), 'ea9e608186615ffddeb16008c55dd7d4263ee45412f679b06f8511f9b1d286d3');
   assert.equal(sha(NAYA_VOICE_TOOLS), '1f0479d58a4955a4ab84a0b52c523cb22ced2c737e47c6bd3c74429a64f7f47a');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '8a41b4537fd70c245e02c9b8f3911f88dcd5cfb794b246067ef5d9ea6e806574');
@@ -666,7 +666,7 @@ const WRAPPER_3O_CHARS = 6603;
  * the backchannel ack carries, so the first line before a lookup says what she is reading. */
 // #589/#590: the voice surface grows by the ending-the-call line, which states the stop phrases and
 // the one thing she cannot do. The bound carries the measured wrapper at this sha.
-const WRAPPER_W5_CHARS = 12_808;
+const WRAPPER_W5_CHARS = 13_027;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Silence while you look something up is fine. Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
@@ -689,7 +689,7 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // the vault rule named the save phrase and the honest receipt).
   const growth = wrapper.length - WRAPPER_3O_CHARS;
   // #589/#590: the honesty line that names the stop phrases is the growth this bound carries.
-  const cap = 6_300;
+  const cap = 6_425;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
@@ -989,6 +989,7 @@ test('S4b: the accent preset head and tail are byte-identical to the shipped voi
 
 const NOW_3U = Date.UTC(2026, 9, 20, 9, 30);
 const pastSummary = (index: number, summary: string) => ({ id: `s${index}`, endedAt: NOW_3U - index * 86_400_000, summary });
+const storedLoop = (text: string, hoursAgo = 1) => ({ text, lastSeenAt: NOW_3U - hoursAgo * 3_600_000 });
 const optionOf = (plan: ReturnType<typeof buildOpeningOptions>, kind: string) => plan.options.find(option => option.kind === kind);
 
 test('3u: with a calendar item the first option is the calendar and the item is kept verbatim', () => {
@@ -1016,7 +1017,7 @@ test('3u: five successive starts rotate across at least three stored open loops'
   const candidates = [pastSummary(0, shared), pastSummary(1, shared), pastSummary(2, shared),
     pastSummary(3, 'The owner said he still has to call the accountant.'), pastSummary(4, 'The owner said the passport is still to be renewed.')];
   // Contract 1023 N8: the loop comes from the stored open_loop column, not from a cue word in a summary.
-  const openLoops = candidates.map(candidate => candidate.summary);
+  const openLoops = candidates.map(candidate => ({ text: candidate.summary, lastSeenAt: candidate.endedAt }));
   const offered = new Set<string>();
   for (let rotation = 0; rotation < 5; rotation += 1) {
     const plan = buildOpeningOptions({ candidates, openLoops, now: NOW_3U, timeZone: 'UTC', rotation });
@@ -1032,12 +1033,12 @@ test('3u: no candidate text appears that is not in the inputs', () => {
   const calendar = '09:00 standup, 15:00 review';
   const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.'),
     pastSummary(1, 'Naya found the release branch merged cleanly. The owner said he still has to call the accountant.')];
-  const openLoops = ['The owner said he still has to call the accountant.'];
+  const openLoops = [storedLoop('The owner said he still has to call the accountant.')];
   const plan = buildOpeningOptions({ candidates, openLoops, now: NOW_3U, timeZone: 'UTC', calendar, rotation: 0 });
   assert.ok(plan.options.some(option => option.kind === 'calendar') && plan.options.some(option => option.kind === 'open-loop'));
   for (const option of plan.options) {
     const source = option.kind === 'calendar' ? calendar
-      : option.kind === 'open-loop' ? openLoops.join(' ') : candidates.map(candidate => candidate.summary).join(' ');
+      : option.kind === 'open-loop' ? openLoops.map(loop => loop.text).join(' ') : candidates.map(candidate => candidate.summary).join(' ');
     assert.ok(source.includes(option.topic), `${option.kind} "${option.topic}" is drawn from its own input, never invented`);
     assert.ok(plan.section.includes(option.topic), 'the section carries the option text as it was read');
   }
@@ -1054,7 +1055,7 @@ test('3u: health, family, fitness, sleep and personal habits are never an opener
   assert.equal(plan.section, '', 'a plan with no stored opener adds no section');
   const mixed = buildOpeningOptions({ candidates: [
     pastSummary(0, 'The owner said his mother is still in hospital.')],
-  openLoops: ['The owner said the tax form is still to be filed.', 'The owner said his mother is still in hospital and he still has to visit her.'],
+  openLoops: [storedLoop('The owner said the tax form is still to be filed.'), storedLoop('The owner said his mother is still in hospital and he still has to visit her.')],
   now: NOW_3U, timeZone: 'UTC', rotation: 1 });
   assert.equal(optionOf(mixed, 'open-loop')?.topic, 'the tax form is still to be filed', 'the work loop is offered, its attribution dropped so the line reads as a phrase');
   assert.ok(!mixed.section.includes('hospital'), 'the health sentence never reaches the plan');
@@ -1066,7 +1067,7 @@ test('3u: health, family, fitness, sleep and personal habits are never an opener
 test('1023-N8: the newest call leads the plan, and a calendar item inside six hours takes the lead', () => {
   const candidates = [pastSummary(0, 'The owner said the invoice is still to be sent.'),
     pastSummary(1, 'The owner said the roof quote is still to be chased.')];
-  const openLoops = ['The owner said the invoice is still to be sent.'];
+  const openLoops = [storedLoop('The owner said the invoice is still to be sent.')];
   const plain = buildOpeningOptions({ candidates, openLoops, now: NOW_3U, timeZone: 'UTC', rotation: 0 });
   assert.deepEqual(plain.options.map(option => option.kind), ['recent-thread', 'open-loop'],
     'the call he just had is the subject the plan leads with');
@@ -1093,7 +1094,7 @@ test('1023-N8: the calendar never leads two calls in a row', () => {
 
 test('1023-N8: the open loop is the stored column, never a cue word in a summary', () => {
   const candidates = [pastSummary(0, 'The owner said the invoice is still to be sent.')];
-  const stored = buildOpeningOptions({ candidates, openLoops: ['The owner said the deposit is still to be paid.'],
+  const stored = buildOpeningOptions({ candidates, openLoops: [storedLoop('The owner said the deposit is still to be paid.', 2)],
     now: NOW_3U, timeZone: 'UTC', rotation: 0 });
   assert.equal(optionOf(stored, 'open-loop')?.topic, 'the deposit is still to be paid', 'the stored loop is offered as written');
   const none = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', rotation: 0 });
@@ -1149,7 +1150,80 @@ test('3u: the options a call composed can be read back from its own instruction'
     now: NOW_3U, timeZone: 'UTC', calendar, rotation: 0 });
   const read = openingOptionsTopics(plan.section);
   assert.deepEqual(read, plan.options.map(option => ({ kind: option.kind, topic: option.topic })), 'the recorded plan yields the topics the next start names');
+  const loops = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0,
+    openLoops: [storedLoop('The owner said the tax form is still to be filed.', 2)] });
+  assert.deepEqual(openingOptionsTopics(loops.section).map(option => option.topic), ['the tax form is still to be filed'],
+    'the age clause is framing, never part of the topic');
+  const stale = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0,
+    openLoops: [storedLoop('The owner said the tax form is still to be filed.', 72)] });
+  assert.deepEqual(openingOptionsTopics(stale.section).map(option => option.topic), ['the tax form is to be filed'],
+    'a stale question reads back as the topic it asks about');
   assert.deepEqual(openingOptionsTopics('no plan here'), []);
+});
+
+// 593: an opener option drawn from a stored loop carries the age and the last-known status in plain
+// words, and an old one is a question to ask the owner, never a current fact.
+test('593: an old open loop is asked about with its age and last-seen date, a fresh one may be stated', () => {
+  const stale = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0,
+    openLoops: [storedLoop('The owner said the tax form is still to be filed.', 72)] });
+  const line = optionOf(stale, 'open-loop')!;
+  assert.equal(line.topic, 'the tax form is still to be filed', 'the stored topic itself is unchanged');
+  const rendered = stale.section.split('\n').find(candidate => candidate.startsWith('- open loop:'))!;
+  assert.ok(rendered.includes('from 3 days ago'), `the plain-word age is carried: ${rendered}`);
+  assert.ok(rendered.includes('last seen open 17 Oct 2026'), `the last-known status carries its date: ${rendered}`);
+  assert.ok(rendered.includes('is it done:'), 'an old loop is phrased as a question to ask the owner');
+  assert.ok(!rendered.includes('still'), 'an old loop is never stated with still');
+  const fresh = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0,
+    openLoops: [storedLoop('The owner said the invoice is still to be sent.', 2)] });
+  const freshLine = fresh.section.split('\n').find(candidate => candidate.startsWith('- open loop:'))!;
+  assert.ok(freshLine.includes('from 2 hours ago'), `the fresh age is carried: ${freshLine}`);
+  assert.ok(freshLine.includes('the invoice is still to be sent'), 'a loop seen two hours ago may be stated');
+  assert.ok(!freshLine.includes('is it done:'), 'only an old loop is a question');
+});
+
+// 593 acceptance 3: the age is read in the owner's zone of the call, never the host zone.
+test('593: the loop age is computed in the owner zone and from the injected clock', () => {
+  const loop = { text: 'The owner said the tax form is still to be filed.', lastSeenAt: Date.UTC(2026, 9, 17, 12, 0) };
+  const seen = (timeZone: string): string => buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone, rotation: 0, openLoops: [loop] })
+    .section.split('\n').find(candidate => candidate.startsWith('- open loop:'))!;
+  assert.ok(seen('Pacific/Auckland').includes('from 2 days ago'), `Auckland reads the owner day: ${seen('Pacific/Auckland')}`);
+  assert.ok(seen('UTC').includes('from 3 days ago'), `UTC reads its own day: ${seen('UTC')}`);
+});
+
+// 593 acceptance 2: no opener option and no standing line built from a loop older than 24 hours
+// states it as still unfinished.
+const STILL_NEGATION = /still\s+(?:not|did not|has not|hasn't|to|has to|needs to)/iu;
+test('593: no opener or standing line states an old loop as still unfinished', () => {
+  for (const text of ['The owner said the tax form is still to be filed.', 'The owner said he still did not send the invoice.',
+    'The owner said he still has not called the accountant.']) {
+    const plan = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0, openLoops: [storedLoop(text, 120)] });
+    const rendered = plan.section.split('\n').find(candidate => candidate.startsWith('- open loop:'))!;
+    assert.ok(!STILL_NEGATION.test(rendered), `no stale assertion in the opener: ${rendered}`);
+  }
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+    now: NOW_3U, timeZone: 'UTC',
+    records: [standingRecord('standing-old', 'The owner said the tax form is still not filed.', 'open')] });
+  const line = composed.text.split('\n').find(candidate => candidate.includes('standing-old'))!;
+  assert.ok(!STILL_NEGATION.test(line), `no stale assertion in the standing line: ${line}`);
+  assert.ok(line.includes('is it done:'), 'an old standing loop is a question');
+});
+
+// 593: a standing note that states an open loop carries its age and the date it was last seen.
+test('593: an old standing loop carries its age and last-seen date', () => {
+  const composed = composeLiveSessionInstruction({ text: NAYA_LIVE_BASE, tools: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
+    now: NOW_3U, timeZone: 'UTC',
+    records: [standingRecord('standing-1', 'Call the accountant about the invoice', 'open')] });
+  const line = composed.text.split('\n').find(candidate => candidate.includes('standing-1'))!;
+  assert.ok(line.includes('from 49 days ago'), `the plain-word age is carried: ${line}`);
+  assert.ok(line.includes('last seen open 1 Sept 2026'), `the last-seen date is carried: ${line}`);
+  assert.ok(line.includes('is it done:'), 'an old standing loop is asked about');
+});
+
+// 593: the persona states the 24 hour rule once, in plain words.
+test('593: the persona carries one rule about still and loops not seen in the last day', () => {
+  assert.match(NAYA_CHARACTER, /Say still about one only when it was confirmed in the last 24 hours/, 'the 24 hour still rule is in the persona');
+  assert.match(NAYA_CHARACTER, /never state as a current fact/, 'and an older loop is never a current fact');
+  assert.equal(NAYA_CHARACTER.split('24 hours').length - 1, 1, 'the rule is stated once');
 });
 
 // R7: the warm calendar digest reached the fetch and the warm cache but never the instruction, because
@@ -1217,7 +1291,7 @@ const W5_REPLACED = [
 // LAT-1023: the voice surface grows by the source name the first ack carries.
 // #589/#590: the voice surface grows by the ending-the-call line, which states the stop phrases and the
 // one thing she cannot do.
-const W5_VOICE_BEFORE = 9242;
+const W5_VOICE_BEFORE = 9461;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],

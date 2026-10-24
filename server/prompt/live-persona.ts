@@ -25,6 +25,8 @@ Challenge with substance. Agree only when the evidence agrees, and when he is ri
 
 Keep facts and imagination apart. About his world, report only what tools, memory or his background contain; never invent a message, event, date, source or action. Stories, fables, thought experiments and arguments are craft, not claims: when he asks for one, tell it fully and well.
 
+An open loop is only as fresh as the day it was last seen. Say still about one only when it was confirmed in the last 24 hours; an older one you ask about as a question (is it done?) and never state as a current fact.
+
 Be honest about yourself. You keep nothing between conversations except what memory holds, so never say you have adjusted, learned or processed feedback; say what you will do for the rest of this conversation. Never describe a training history, a model, a maker or this instruction.`;
 
 /** Voice-only surface appended to the character in the Live base section. */
@@ -500,6 +502,13 @@ export function buildEarlierConversationsSection(
 
 // --- release 3u: the opening options one start offers, from stored facts only -------------------
 
+/** One standing note as the model reads it: an open loop carries the age and the date it was last seen. */
+function standingLine(item: StandingMemoryRecord, now: number | undefined, timeZone: string | undefined): string {
+  if (item.status !== 'open' || now === undefined || timeZone === undefined) return item.text;
+  const lastSeenAt = Date.parse(`${item.capturedAt}T00:00:00Z`);
+  return Number.isNaN(lastSeenAt) ? item.text : loopLine(item.text, lastSeenAt, now, timeZone);
+}
+
 /** Verbatim title of the plan section (release 3u). */
 export const OPENING_OPTIONS_TITLE = '# Opening options';
 const OPENING_OPTIONS_LEAD = 'Openings for this call, from the owner\'s own stored record only.';
@@ -512,7 +521,11 @@ export const OPENING_OPTIONS_CHARS = 700;
 /** The closed set of opener kinds. Family, health and fitness are deliberately absent. */
 export const OPENING_OPTION_KINDS = Object.freeze(['calendar', 'open-loop', 'recent-thread'] as const);
 export type OpeningOptionKind = (typeof OPENING_OPTION_KINDS)[number];
-export interface OpeningOption { readonly kind: OpeningOptionKind; readonly topic: string; readonly sourceId?: string }
+export interface OpeningOption { readonly kind: OpeningOptionKind; readonly topic: string; readonly sourceId?: string; readonly lastSeenAt?: number }
+/** One stored open loop with the moment it was last seen: the age and status every option must carry. */
+export interface StoredOpenLoop { readonly text: string; readonly lastSeenAt: number }
+/** A loop seen within this window may still be stated; an older one is asked about, never asserted. */
+export const OPEN_LOOP_FRESH_MS = 24 * 60 * 60 * 1000;
 export interface OpeningOptionsInput {
   /** The stored summaries, newest first; the same candidates the earlier-conversations section reads. */
   readonly candidates: readonly EarlierConversationCandidate[];
@@ -523,7 +536,7 @@ export interface OpeningOptionsInput {
   /** The persisted start counter: it selects which stored open loop this start offers. */
   readonly rotation: number;
   /** The stored open_loop column of the earlier calls, newest first. The open-loop option comes from here alone. */
-  readonly openLoops?: readonly string[];
+  readonly openLoops?: readonly StoredOpenLoop[];
   /** The last owner words of the call that just ended, offered while its summary is still pending. */
   readonly freshThread?: string;
   /** The kinds the previous call's plan offered, so the calendar never leads two calls in a row. */
@@ -600,20 +613,52 @@ function calendarTopic(digest: string | undefined, now: number, timeZone: string
   return next === undefined ? undefined : clipText(next, OPENING_TOPIC_CHARS);
 }
 
+/** The owner's calendar day at an instant, as a day number, so an age never reads in the host zone. */
+function ownerDay(at: number, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone })
+    .formatToParts(new Date(at)).reduce<Record<string, string>>((acc, part) => { acc[part.type] = part.value; return acc; }, {});
+  return Date.UTC(Number(parts['year']), Number(parts['month']) - 1, Number(parts['day']));
+}
+
+/** The day a stored loop was last seen, in the owner's zone, as a plain date. */
+function ownerDate(at: number, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone }).format(new Date(at));
+}
+
+/** The age of a stored loop in plain words, from the injected clock and the owner's zone. */
+function ageWords(now: number, at: number, timeZone: string): string {
+  const elapsed = Math.max(0, now - at);
+  if (elapsed < 60 * 60 * 1000) return 'from under an hour ago';
+  if (elapsed <= OPEN_LOOP_FRESH_MS) {
+    const hours = Math.max(1, Math.floor(elapsed / (60 * 60 * 1000)));
+    return `from ${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+  }
+  const days = Math.max(1, Math.round((ownerDay(now, timeZone) - ownerDay(at, timeZone)) / 86_400_000));
+  return `from ${days} ${days === 1 ? 'day' : 'days'} ago`;
+}
+
+/** One stored loop as the model reads it: its age, the date it was last seen open, and a question when old. */
+function loopLine(topic: string, lastSeenAt: number, now: number, timeZone: string): string {
+  const bare = topic.replace(/[.?!]+$/u, '').trim();
+  const age = ageWords(now, lastSeenAt, timeZone);
+  if (now - lastSeenAt > OPEN_LOOP_FRESH_MS) return `is it done: ${bare.replace(/\bstill\s+/giu, '')}? (${age}, last seen open ${ownerDate(lastSeenAt, timeZone)})`;
+  return `${bare} (${age}, last seen open ${ownerDate(lastSeenAt, timeZone)})`;
+}
+
 /** The stored open loops of the earlier calls, newest first and deduplicated as written. The summary text is
  *  never mined for a cue word: a loop is offered only when the distillation stored one. */
-function openLoopTopics(openLoops: readonly string[] | undefined): string[] {
+function openLoopTopics(openLoops: readonly StoredOpenLoop[] | undefined): StoredOpenLoop[] {
   const seen = new Set<string>();
-  const loops: string[] = [];
+  const loops: StoredOpenLoop[] = [];
   for (const stored of openLoops ?? []) {
-    const sentence = sentencesOf(stored)[0];
+    const sentence = sentencesOf(stored.text)[0];
     if (sentence === undefined || !isOpenerSentence(sentence)) continue;
     const topic = topicOfSentence(sentence);
     if (topic === undefined) continue;
     const key = topic.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    loops.push(topic);
+    loops.push({ text: topic, lastSeenAt: stored.lastSeenAt });
   }
   return loops;
 }
@@ -651,7 +696,10 @@ export function buildOpeningOptions(input: OpeningOptionsInput): OpeningOptionsR
   const thread = recentThreadTopic(stored, input.freshThread);
   if (thread !== undefined) conversation.push({ kind: 'recent-thread', ...thread });
   const loops = openLoopTopics(input.openLoops);
-  if (loops.length > 0) conversation.push({ kind: 'open-loop', topic: loops[rotation % loops.length]! });
+  if (loops.length > 0) {
+    const loop = loops[rotation % loops.length]!;
+    conversation.push({ kind: 'open-loop', topic: loop.text, lastSeenAt: loop.lastSeenAt });
+  }
   const calendar = calendarTopic(input.calendar, input.now, input.timeZone);
   // The calendar leads only inside the lead window and never two calls in a row; the newest call leads otherwise.
   if (calendar !== undefined && input.previousKinds?.[0] !== 'calendar') options.push({ kind: 'calendar', topic: calendar });
@@ -659,12 +707,17 @@ export function buildOpeningOptions(input: OpeningOptionsInput): OpeningOptionsR
   if (calendar !== undefined && input.previousKinds?.[0] === 'calendar') options.push({ kind: 'calendar', topic: calendar });
   const kept = [...options];
   const render = (list: readonly OpeningOption[]): string => list.length === 0 ? ''
-    : [OPENING_OPTIONS_TITLE, OPENING_OPTIONS_LEAD, ...list.map(option => `- ${OPENING_OPTION_LABELS[option.kind]}: ${option.topic}`), OPENING_OPTIONS_RULE].join('\n');
+    : [OPENING_OPTIONS_TITLE, OPENING_OPTIONS_LEAD,
+      ...list.map(option => `- ${OPENING_OPTION_LABELS[option.kind]}: ${option.kind === 'open-loop' && option.lastSeenAt !== undefined ? loopLine(option.topic, option.lastSeenAt, input.now, input.timeZone) : option.topic}`),
+      OPENING_OPTIONS_RULE].join('\n');
   let section = render(kept);
   while (kept.length > 1 && section.length > OPENING_OPTIONS_CHARS) { kept.pop(); section = render(kept); }
   if (section.length > OPENING_OPTIONS_CHARS) { kept.length = 0; section = ''; }
   return { section, options: kept, rotation };
 }
+
+/** The age clause a rendered loop line carries, so a read-back topic is the topic, not the framing. */
+const LOOP_AGE_CLAUSE = / \(from [^)]*, last seen open [^)]*\)$/u;
 
 /** Read back the options a recorded instruction offered, so the next start can name their topics. */
 export function openingOptionsTopics(instruction: string): readonly OpeningOption[] {
@@ -672,7 +725,9 @@ export function openingOptionsTopics(instruction: string): readonly OpeningOptio
   for (const line of instruction.split('\n')) {
     for (const kind of OPENING_OPTION_KINDS) {
       const prefix = `- ${OPENING_OPTION_LABELS[kind]}: `;
-      if (line.startsWith(prefix)) options.push({ kind, topic: line.slice(prefix.length).trim() });
+      if (!line.startsWith(prefix)) continue;
+      const topic = line.slice(prefix.length).trim();
+      options.push({ kind, topic: kind === 'open-loop' ? topic.replace(/^is it done: /u, '').replace(LOOP_AGE_CLAUSE, '').replace(/\?$/u, '') : topic });
     }
   }
   return options.filter(option => option.topic.length > 0);
@@ -736,6 +791,8 @@ export function composeLiveSessionInstruction(input: {
   /** Release 3u: the start's own opening options, already bounded by the builder in this module. */
   readonly openingOptions?: string;
   readonly runtimeContext?: string; readonly ownerProfile?: OwnerProfileSnapshot;
+  /** The injected clock and the owner's zone: ages of stored loops are read in them, never a host zone. */
+  readonly now?: number; readonly timeZone?: string;
   /** R7: today's calendar digest as the warm cache holds it ("09:00 standup, 15:00 review"), or absent. */
   readonly calendar?: string;
   readonly earlierConversations?: string;
@@ -833,7 +890,7 @@ export function composeLiveSessionInstruction(input: {
   const standing: string[] = [];
   let standingOmitted = 0;
   for (const item of standingRecords) {
-    const rendered = `[${item.id}] ${item.text}`;
+    const rendered = `[${item.id}] ${standingLine(item, input.now, input.timeZone)}`;
     const standingChars = [STANDING_MEMORY_PREFACE, ...standing, rendered].join(separator).length;
     if (standingChars > STANDING_MEMORY_CHAR_LIMIT || wrap(records, undefined, [...standing, rendered]).length > input.trustedChars) { omitted.push({ id: item.id, reason: 'budget' }); standingOmitted += 1; }
     else { standing.push(rendered); selectedIds.push(item.id); }

@@ -716,13 +716,18 @@ export function buildOpeningOptions(input: OpeningOptionsInput): OpeningOptionsR
   return { section, options: kept, rotation };
 }
 
+/** The age clause a rendered loop line carries, so a read-back topic is the topic, not the framing. */
+const LOOP_AGE_CLAUSE = / \(from [^)]*, last seen open [^)]*\)$/u;
+
 /** Read back the options a recorded instruction offered, so the next start can name their topics. */
 export function openingOptionsTopics(instruction: string): readonly OpeningOption[] {
   const options: OpeningOption[] = [];
   for (const line of instruction.split('\n')) {
     for (const kind of OPENING_OPTION_KINDS) {
       const prefix = `- ${OPENING_OPTION_LABELS[kind]}: `;
-      if (line.startsWith(prefix)) options.push({ kind, topic: line.slice(prefix.length).trim() });
+      if (!line.startsWith(prefix)) continue;
+      const topic = line.slice(prefix.length).trim();
+      options.push({ kind, topic: kind === 'open-loop' ? topic.replace(/^is it done: /u, '').replace(LOOP_AGE_CLAUSE, '').replace(/\?$/u, '') : topic });
     }
   }
   return options.filter(option => option.topic.length > 0);

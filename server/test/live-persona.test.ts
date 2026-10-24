@@ -1150,6 +1150,14 @@ test('3u: the options a call composed can be read back from its own instruction'
     now: NOW_3U, timeZone: 'UTC', calendar, rotation: 0 });
   const read = openingOptionsTopics(plan.section);
   assert.deepEqual(read, plan.options.map(option => ({ kind: option.kind, topic: option.topic })), 'the recorded plan yields the topics the next start names');
+  const loops = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0,
+    openLoops: [storedLoop('The owner said the tax form is still to be filed.', 2)] });
+  assert.deepEqual(openingOptionsTopics(loops.section).map(option => option.topic), ['the tax form is still to be filed'],
+    'the age clause is framing, never part of the topic');
+  const stale = buildOpeningOptions({ candidates: [], now: NOW_3U, timeZone: 'UTC', rotation: 0,
+    openLoops: [storedLoop('The owner said the tax form is still to be filed.', 72)] });
+  assert.deepEqual(openingOptionsTopics(stale.section).map(option => option.topic), ['the tax form is to be filed'],
+    'a stale question reads back as the topic it asks about');
   assert.deepEqual(openingOptionsTopics('no plan here'), []);
 });
 

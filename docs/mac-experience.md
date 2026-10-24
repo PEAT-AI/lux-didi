@@ -9,7 +9,8 @@ What a start may do is decided once, by `LaunchKind` in `SingleInstanceGuard.swi
 - Owner opens the app: the orb appears and one call connects by itself, only when the host is up and the orb page can be shown. A refusal (denied microphone, refused audio owner) is final for that launch, so it never loops.
 - Login item: the orb appears, nothing connects, no capture.
 - Install relaunch (`--install-relaunch`): the orb appears, nothing connects.
-- Dock reopen: the orb is ordered front and nothing else happens. It is its own launch kind, no full window is created, nothing becomes key and the app never activates, so the Dock cannot rearrange the owner's other windows.
+- Dock click on the running app (reopen): the orb is ordered front and nothing else happens. It is its own launch kind, no full window is created, nothing becomes key and the app never activates, so the Dock cannot rearrange the owner's other windows.
+- Dock click that starts the app (cold): this is an interactive launch, so the orb appears and one call connects by itself after the same bounded calendar wait, exactly like opening the app by hand.
 - Proof and self-check launches: no orb, no connect, a window only where the proof drives one; a second instance exits with code 3 so a yielded proof can never read as a pass.
 
 Every launch and every Dock reopen writes one content-free `launch_kind` line carrying the kind, `autoConnects` and `windowShown`, into `native-live.log` and to the host so `host.log` carries it too. A launch kind is never inferred from LaunchServices.

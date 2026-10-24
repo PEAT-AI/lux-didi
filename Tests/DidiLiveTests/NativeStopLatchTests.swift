@@ -6,7 +6,7 @@ import Foundation
 @main struct NativeStopLatchTests {
     static func main() async {
         do {
-            try await MainActor.run { try await run() }
+            try await run()
             print("PASS native stop latch: an uncertain session goes cold with no reconnect, a voice stop "
                 + "keeps the generation fence, the latch clears only on an explicit Start, the calendar wait is "
                 + "bounded, a refused goodbye is recorded")

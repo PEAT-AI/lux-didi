@@ -212,7 +212,8 @@ import Foundation
             dictationIsCapturing: { false }, logsDirectory: root, audioDevice: device, latch: latch,
             closeHook: { _ in await gate.wait(); return nil })
 
-        await device.interruptForTesting(LiveClientError.transport)
+        // The recovery runs in its own task, so the test can stop the call while it is suspended.
+        let recovery = Task { await device.interruptForTesting(LiveClientError.transport) }
         let deadline = ContinuousClock.now + .seconds(5)
         while !gate.entered {
             try require(ContinuousClock.now < deadline, "the recovery reaches its await")
@@ -221,6 +222,7 @@ import Foundation
         // The owner's own sentence lands while recovery is suspended: a voice stop latches.
         latch.ownerStopped()
         gate.open()
+        await recovery.value
         while conversation.state == .connecting {
             try require(ContinuousClock.now < deadline, "the suspended recovery settles")
             await Task.yield()

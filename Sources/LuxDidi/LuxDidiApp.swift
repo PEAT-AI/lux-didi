@@ -609,6 +609,10 @@ struct RootView: View {
     /// The presence generation the conversation now on the wire was opened under, so a
     /// callback from any other conversation is stale by construction.
     private var liveGeneration: UInt64 = 0
+    /// ORBFIRST: the launch makes one auto-connect attempt, and the menu's Settings item hands the
+    /// window a route to open once its page is ready.
+    private var autoConnectAttempted = false
+    private var pendingFullRoute: String?
     private var presenceMenuItem: NSMenuItem?
     /// MINI2, Q2: the Right Command key taps to start and stop and holds to talk. It stays
     /// off until the grant is present, and the settings view reads the state that
@@ -662,21 +666,14 @@ struct RootView: View {
         liveIsRunning: { [weak self] in self?.model.live?.isCapturing == true },
         log: { [weak self] record in self?.model.recordSurfaceReceipt(record) },
         prepare: { [weak self] target, generation in self?.preparePresentation(target, generation: generation) },
-        didCommit: { [weak self] _, _ in self?.syncPresentedSurface() },
+        didCommit: { [weak self] mode, _ in self?.presentationCommitted(mode) },
         requestChanged: { [weak self] in self?.cancelPresentationPreparation() })
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        loginLaunch = launchedAtLogin
-        launchKind = LaunchKind.resolve(arguments: CommandLine.arguments,
-            environment: ProcessInfo.processInfo.environment, loginLaunch: loginLaunch)
-        OwnedWindowReadiness.trace("app:didFinishLaunching-entry",
-            ["activationPolicy": NSApp.activationPolicy().rawValue, "isActive": NSApp.isActive])
-        // UI3A-R1: a regular app for the interactive, login-item and install
-        // relaunch kinds, accessory for the non-activating proof kinds. Set once,
-        // never switched at runtime, and the launch itself never activates.
-        NSApp.setActivationPolicy(launchKind.activationPolicy)
-        OwnedWindowReadiness.trace("app:setActivationPolicy",
-            ["activationPolicy": NSApp.activationPolicy().rawValue])
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+    /// ORBFIRST: the app window is built the first time the owner opens it, so a launch that shows
+    /// only the orb builds the web host and no window at all.
+    @discardableResult
+    private func ensureFullWindow() -> NSWindow {
+        if let window { return window }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         // One all-dark window: transparent hidden titlebar, traffic lights over the web rail.
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -691,13 +688,37 @@ struct RootView: View {
         if proofRequest == nil && !CommandLine.arguments.contains("--ui-proof") && !CommandLine.arguments.contains("--self-check") {
             let saved = UserDefaults.standard.string(forKey: "DidiWindowFrame").map(NSRectFromString)
             window.setFrame(WindowFrameRestore.resolve(saved, screens: NSScreen.screens.map(\.visibleFrame)), display: false)
-            if #available(macOS 13.0, *) { loginAvailability = LoginAvailability(registration: SystemLoginRegistration()) }
         }
         window.isReleasedWhenClosed = false
+        window.contentView = makeRootContent()
+        self.window = window
+        model.trafficLightsMaxX = { [weak self] in Double(self?.window?.standardWindowButton(.zoomButton)?.frame.maxX ?? 0) }
+        return window
+    }
+
+    private func establishLoginAvailability() {
+        if #available(macOS 13.0, *), loginAvailability == nil {
+            loginAvailability = LoginAvailability(registration: SystemLoginRegistration())
+        }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        loginLaunch = launchedAtLogin
+        launchKind = LaunchKind.resolve(arguments: CommandLine.arguments,
+            environment: ProcessInfo.processInfo.environment, loginLaunch: loginLaunch)
+        OwnedWindowReadiness.trace("app:didFinishLaunching-entry",
+            ["activationPolicy": NSApp.activationPolicy().rawValue, "isActive": NSApp.isActive])
+        // UI3A-R1: a regular app for the interactive, login-item and install
+        // relaunch kinds, accessory for the non-activating proof kinds. Set once,
+        // never switched at runtime, and the launch itself never activates.
+        NSApp.setActivationPolicy(launchKind.activationPolicy)
+        OwnedWindowReadiness.trace("app:setActivationPolicy",
+            ["activationPolicy": NSApp.activationPolicy().rawValue])
+        // ORBFIRST: the window exists only where a launch needs one. An interactive or login
+        // launch shows the orb and creates the window the first time the owner opens the app.
+        if launchKind.createsWindowAtLaunch { ensureFullWindow() } else { establishLoginAvailability() }
         // UI3A-R7: a real File menu, so Command-W reaches the close path.
         NSApp.mainMenu = WindowMenu.build(appName: "Naya", closeTarget: window)
-        window.contentView = makeRootContent()
-        model.trafficLightsMaxX = { [weak self] in Double(self?.window?.standardWindowButton(.zoomButton)?.frame.maxX ?? 0) }
         model.bridge.hydrateProvider = { [weak model] in model?.bridgeHydrate() ?? .empty }
         model.bridge.onCommand = { [weak model] in model?.handleBridgeCommand($0) }
         // #352: the Mic Mode observer is KVO over two class properties. It reads; it never sets a mode.
@@ -716,7 +737,8 @@ struct RootView: View {
         menu.addItem(NSMenuItem.separator())
         loginMenuItem = menu.addItem(withTitle: "Open at login", action: #selector(toggleLogin), keyEquivalent: "")
         menu.addItem(withTitle: "Getting started…", action: #selector(showGettingStarted), keyEquivalent: "")
-        menu.addItem(withTitle: "Show Naya", action: #selector(show), keyEquivalent: "")
+        menu.addItem(withTitle: "Open Naya app", action: #selector(show), keyEquivalent: "")
+        menu.addItem(withTitle: "Settings", action: #selector(openSettingsFromMenu), keyEquivalent: "")
         singleKeyMenuItem = menu.addItem(withTitle: "Right Command tap", action: #selector(toggleSingleKey), keyEquivalent: "")
         singleKeyMenuItem?.state = SingleKeyTrigger.isEnabled ? .on : .off
         // #3p: the one line that says why a silent key is silent, in the status menu the
@@ -736,7 +758,7 @@ struct RootView: View {
         statusItem.menu = menu
         hotkey.onToggle = { [weak self] in self?.toggleMiniOrb() }
         hotkeyCode = hotkey.register()
-        model.hotkeyStatus = hotkeyCode == noErr ? "⌃ ⌥ Space · mini orb" : "Unavailable (OSStatus \(hotkeyCode)); use the menu bar"
+        model.hotkeyStatus = hotkeyCode == noErr ? "⌃ ⌥ Space · Naya window" : "Unavailable (OSStatus \(hotkeyCode)); use the menu bar"
         liveShortcuts.onStart = { [weak self] in self?.startLiveFromMenu() }
         liveShortcuts.onMute = { [weak self] in self?.muteLiveFromMenu() }
         liveShortcuts.onWindow = { [weak self] in self?.toggle() }
@@ -818,6 +840,7 @@ struct RootView: View {
             }
         }
         Task {
+            if launchKind.presentsOrbAtLaunch { _ = coordinator.presentMini(trigger: .other) }
             if launchKind.presentsWindowAtLaunch { coordinator.presentFull(activating: launchKind.activates) }
             OwnedWindowReadiness.trace("app:refresh-start")
             await model.refresh()
@@ -828,7 +851,11 @@ struct RootView: View {
                 await uiProof(path: CommandLine.arguments[index + 1]); return
             }
             await model.reconnect()
-            if NativeGettingStartedOnce.consume(UserDefaults.standard) { showGettingStarted() }
+            // The orb page is hostable only once the host is connected, so the launch show is
+            // retried here and the auto-connect waits for the same two facts.
+            if launchKind.presentsOrbAtLaunch, !coordinator.miniShown { _ = coordinator.presentMini(trigger: .other) }
+            autoConnectIfReady()
+            if window != nil, NativeGettingStartedOnce.consume(UserDefaults.standard) { showGettingStarted() }
         }
     }
     @objc private func revealLogs() {
@@ -887,10 +914,25 @@ struct RootView: View {
     @objc func show() {
         coordinator.presentFull(activating: true)
     }
-    /// Presents the window for the current launch kind. Only an interactive launch
-    /// makes the window key and activates the app; every other launch orders the
-    /// window front without taking focus.
+    /// ORBFIRST: an interactive launch connects by itself, once, and only after the host is
+    /// connected and the orb page is hostable. A denied microphone or a refused audio owner is
+    /// final for the launch: the orb shows its error look and nothing retries.
+    private func autoConnectIfReady() {
+        let pageHostable = coordinator.miniShown || miniShell?.state == .ready
+        switch OrbFirstAutoConnect.decide(kind: launchKind, serviceReady: model.shell != nil,
+                                          pageHostable: pageHostable, attempted: autoConnectAttempted) {
+        case .connect:
+            autoConnectAttempted = true
+            startPresence()
+        case .wait, .never:
+            break
+        }
+    }
+
+    /// ORBFIRST: the app window is created on demand, so presenting it may be the first time it
+    /// exists. Only an interactive launch makes the window key and activates the app.
     private func presentWindow(activating: Bool) {
+        _ = ensureFullWindow()
         OwnedWindowReadiness.trace("app:show-entry", ["windowExists": window != nil, "activating": activating])
         if activating {
             OwnedWindowReadiness.trace("app:makeKeyAndOrderFront-before")
@@ -1056,12 +1098,13 @@ struct RootView: View {
     /// an explicit action (menu, Ctrl-Opt-Shift-L, or hiding the mini orb).
     func hide() { coordinator.hideAll() }
     func escape() {
-        if coordinator.mode == .mini { miniOrb.hide(caller: "escape"); coordinator.hideMiniSurface() } else { hide() }
+        if coordinator.fullShown { coordinator.closeFull() }
+        else { miniOrb.hide(caller: "escape"); coordinator.hideMiniSurface() }
     }
     /// Ctrl-Opt-Space: the mini orb and a second press brings the window back. The chord starts Live
     /// when nothing runs, exactly as before; the status menu's item is the presentation-only path.
     @objc func toggleMiniOrb() {
-        if coordinator.desired == .mini { _ = coordinator.presentFull(activating: true) } else { miniOrb.show() }
+        if coordinator.fullShown { coordinator.closeFull() } else { coordinator.presentFull(activating: true) }
     }
     /// MINI2: the single key on or off. Turning it on asks for the grant again,
     /// because the owner just said yes to the key.
@@ -1101,8 +1144,7 @@ struct RootView: View {
     /// not hide it, which is the hide/show cycle call e283ef09 recorded 10 times with no owner
     /// action. The page-ready edge re-asks for the surfaces once the mini page can be hosted.
     private func applyPresenceSurface(_ surface: PresenceSurfaceState) {
-        if !surface.visible, coordinator.mode != .full { coordinator.hideAll() }
-        else { coordinator.requestPresence() }
+        if !surface.visible { coordinator.hideMiniSurface() } else { coordinator.requestPresence() }
         miniPanel?.alphaValue = 1
         miniPanel?.pushPresence(presence.state, muted: presence.mutedHeld)
         pushPresenceState()
@@ -1158,10 +1200,7 @@ struct RootView: View {
     /// this only moves the surface. Live keeps running and is never opened here; only the chord,
     /// an orb press and Start open a session (Q4-R2: a presentation command that started a live
     /// microphone was a privacy surprise).
-    @objc func showMiniOrb() {
-        if coordinator.desired == .mini { _ = coordinator.presentFull(activating: true) }
-        else { miniOrb.showSurface(trigger: .button) }
-    }
+    @objc func showMiniOrb() { miniOrb.showSurface(trigger: .button) }
     // The surface seam the two lazy properties share. Each step goes through a
     // method so neither lazy initializer has to mention the other.
     private func orderOutFullWindow() {
@@ -1196,7 +1235,7 @@ struct RootView: View {
     private func preparePresentation(_ target: PresentationCoordinator.Mode, generation: UInt64) {
         presentationTask = Task { [weak self] in
             guard let self else { return }
-            if target == .full, coordinator.mode == .hidden, model.shell?.state != .ready {
+            if target == .full, !coordinator.fullShown, model.shell?.state != .ready {
                 coordinator.prepared(target, generation: generation)
                 return
             }
@@ -1210,7 +1249,8 @@ struct RootView: View {
                     shell = mini
                     if miniPanel == nil {
                         miniPanel = MiniOrbPanel(web: mini.webView, onStep: { [weak self] step in self?.applyPresenceStep(step) },
-                            onExpand: { [weak self] in self?.miniOrb.openFullInterface() })
+                            onExpand: { [weak self] in self?.miniOrb.openFullInterface() },
+                            onReceipt: { [weak self] record in self?.model.appendPresenceReceipt(record) })
                         miniPanel?.pushPresence(presence.state, muted: presence.mutedHeld)
                     }
                     miniPanel?.onVisibilityChanged = { [weak self] in self?.syncPresentedSurface() }
@@ -1241,10 +1281,37 @@ struct RootView: View {
     func windowDidMiniaturize(_ notification: Notification) { syncPresentedSurface() }
     func windowDidDeminiaturize(_ notification: Notification) { syncPresentedSurface() }
 
+    /// ORBFIRST: every commit of a surface runs here. The orb's first landing is also the launch's
+    /// auto-connect gate, and a route the menu asked for opens the moment its page is up.
+    private func presentationCommitted(_ mode: PresentationCoordinator.Mode) {
+        syncPresentedSurface()
+        if coordinator.miniShown { autoConnectIfReady() }
+        if coordinator.fullShown, let route = pendingFullRoute {
+            pendingFullRoute = nil
+            openFullRoute(route)
+        }
+    }
+
+    /// The one entry the page exposes for a native-opened route; a page that is not ready answers
+    /// nothing and the window still opens.
+    private func openFullRoute(_ route: String) {
+        guard let web = model.shell?.webView else { return }
+        web.evaluateJavaScript("window.didiOpenRoute ? window.didiOpenRoute('\(route)') : null",
+                               completionHandler: nil)
+    }
+
+    /// ORBFIRST: Settings opens the window on the page's Settings tab, creating the window the
+    /// first time this asks for it.
+    @objc private func openSettingsFromMenu() {
+        pendingFullRoute = "settings"
+        coordinator.presentFull(activating: true)
+        if coordinator.fullShown { presentationCommitted(.full) }
+    }
+
     private func syncPresentedSurface() {
-        let mode = coordinator.mode, generation = coordinator.generation
-        let fullVisible = mode == .full && window?.isVisible == true && window?.isMiniaturized == false
-        let miniVisible = mode == .mini && miniPanel?.isVisible == true
+        let generation = coordinator.generation
+        let fullVisible = coordinator.fullShown && window?.isVisible == true && window?.isMiniaturized == false
+        let miniVisible = coordinator.miniShown && miniPanel?.isVisible == true
         miniOrb.presentationCommitted(visible: miniVisible)
         model.shell?.setSurfaceVisible(fullVisible, generation: generation)
         miniShell?.setSurfaceVisible(miniVisible, generation: generation)

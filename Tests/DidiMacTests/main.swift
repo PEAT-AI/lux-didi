@@ -559,65 +559,43 @@ for kind in [LaunchKind.installedProof, .selfCheck, .uiProof, .verification] {
     expect(kind.activation == .accessory && kind.activationPolicy == .accessory, "a non-activating proof launch stays accessory: \(kind)")
 }
 expect(LaunchKind.installedProof.presentsWindowAtLaunch && LaunchKind.loginItem.presentsWindowAtLaunch == false, "the mini work keeps the launch window policy")
+expect(LaunchKind.loginItem.presentsOrbAtLaunch && LaunchKind.interactive.presentsOrbAtLaunch,
+       "an interactive or login launch shows the orb without opening the window")
 
-// UI3A: the presentation coordinator owns the one visible surface. A Dock reopen
-// always presents FULL, a close during an active Live session switches to MINI and
-// keeps the session, and no sequence of switches leaves two surfaces or touches Live.
+// ORBFIRST: the orb is the resting surface. The window opens beside it, closing it returns to
+// orb only, and no sequence presents the orb twice or leaves it hidden while the window is open.
 var visibleSurfaces: Set<String> = []
 var miniPageHostable = true
 var liveActive = false
 let liveSession = "live-session-42"
 let coordinator = PresentationCoordinator(
-    showFull: { _ in visibleSurfaces.remove("mini"); visibleSurfaces.insert("full") },
+    showFull: { _ in visibleSurfaces.insert("full") },
     hideFull: { visibleSurfaces.remove("full") },
     showMini: { _ in
         guard miniPageHostable else { return .failed("page_not_ready") }
-        visibleSurfaces.remove("full"); visibleSurfaces.insert("mini"); return .shown(miniFacts) },
+        visibleSurfaces.insert("mini"); return .shown(miniFacts) },
     hideMini: { _ in visibleSurfaces.remove("mini") },
     liveIsRunning: { liveActive })
 expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "the coordinator starts with no surface")
-coordinator.presentFull(activating: true)
-expect(coordinator.mode == .full && visibleSurfaces == ["full"], "a FULL presentation shows the window alone")
 coordinator.presentMini()
-expect(coordinator.mode == .mini && visibleSurfaces == ["mini"], "a MINI presentation shows the orb alone")
+expect(coordinator.mode == .mini && visibleSurfaces == ["mini"], "the orb presents first")
 coordinator.presentFull(activating: true)
-expect(coordinator.mode == .full && visibleSurfaces == ["full"], "a Dock reopen presents FULL from MINI")
+expect(coordinator.mode == .full && visibleSurfaces == ["mini", "full"], "the window opens beside the orb")
 liveActive = true
 coordinator.closeFull()
-expect(coordinator.mode == .mini && visibleSurfaces == ["mini"], "a close during an active Live session switches to MINI")
-expect(liveActive && liveSession == "live-session-42", "the Live session survives the switch to MINI with its id")
+expect(coordinator.mode == .mini && visibleSurfaces == ["mini"], "a close during an active Live session returns to the orb")
+expect(liveActive && liveSession == "live-session-42", "the Live session survives the close with its id")
 coordinator.presentFull(activating: true)
 liveActive = false
 coordinator.closeFull()
-expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "a close while idle hides every surface")
-coordinator.presentFull(activating: true)
+expect(coordinator.mode == .mini && visibleSurfaces == ["mini"], "the close command while idle leaves the orb")
 coordinator.toggleWindow(activating: true)
-expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "the window shortcut hides a visible window")
-coordinator.toggleWindow(activating: true)
-expect(coordinator.mode == .full && visibleSurfaces == ["full"], "the window shortcut brings the window back")
+expect(coordinator.mode == .full && visibleSurfaces == ["mini", "full"],
+       "the window shortcut brings the window back beside the orb")
 for _ in 0..<20 { coordinator.presentMini(); coordinator.presentFull(activating: false); coordinator.presentMini() }
-expect(visibleSurfaces.count == 1 && coordinator.mode == .mini, "rapid switching ends with exactly one surface")
-
-// UI3A-R2 / UI3A-R7: Command-W is a real binding in the app menu, and the close
-// command has two outcomes. Both are asserted on the same values the app runs, so
-// the key path cannot drift from the close button.
-let mainMenu = WindowMenu.build(appName: "Naya", closeTarget: nil)
-let fileMenu = mainMenu.item(withTitle: "File")?.submenu
-let closeItem = fileMenu?.items.first { $0.action == #selector(NSWindow.performClose(_:)) }
-expect(closeItem?.title == "Close Window", "the File menu carries a Close Window item")
-expect(closeItem?.keyEquivalent == "w", "Close Window carries the Command-W key equivalent")
-expect(closeItem?.keyEquivalentModifierMask == .command, "the Close Window equivalent is Command, not Control or Option")
-expect(mainMenu.items.first?.submenu?.items.contains { $0.keyEquivalent == "q" } == true, "the app menu keeps Quit")
-expect(PresentationCoordinator.closeOutcome(liveIsRunning: true) == .mini, "a close during an active Live session goes to MINI")
-expect(PresentationCoordinator.closeOutcome(liveIsRunning: false) == .hidden, "a close while idle hides the window")
-liveActive = true
-coordinator.presentFull(activating: true)
-coordinator.closeFull()
-expect(coordinator.mode == .mini && visibleSurfaces == ["mini"], "the close command with Live running shows only the orb")
-coordinator.presentFull(activating: true)
-liveActive = false
-coordinator.closeFull()
-expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "the close command while idle leaves no surface")
+expect(coordinator.miniShown && visibleSurfaces == ["mini", "full"], "rapid switching never takes the orb away")
+coordinator.hideAll()
+expect(coordinator.mode == .hidden && visibleSurfaces.isEmpty, "an explicit hide takes both surfaces away")
 miniPageHostable = false
 coordinator.presentFull(activating: false)
 coordinator.presentMini()
@@ -1102,3 +1080,60 @@ wakingPresence.mute(.app)
 expect(wakingPresence.state == .hotMuted, "the mute enters MUTED")
 wakingPresence.wake()
 expect(wakeCounter.calls == 2, "a wake inside MUTED prewarms once more")
+
+// ORBFIRST: the orb is the resting surface. The window opens beside it and closing the window
+// returns to orb only, so no sequence hides the orb and re-presents it.
+var ofFullShows = 0, ofFullHides = 0, ofMiniShows = 0, ofMiniHides = 0
+let ofOrbFacts = MiniSurfaceFacts(frame: "{{1196, 674}, {220, 220}}", screen: "main", alpha: 1,
+                                  occluded: false, pageState: "ready")
+let ofCoordinator = PresentationCoordinator(
+    showFull: { _ in ofFullShows += 1 }, hideFull: { ofFullHides += 1 },
+    showMini: { _ in ofMiniShows += 1; return .shown(ofOrbFacts) },
+    hideMini: { _ in ofMiniHides += 1 }, liveIsRunning: { false })
+expect(ofCoordinator.presentMini(trigger: .other) == .shown(ofOrbFacts), "the orb presents at launch")
+expect(ofCoordinator.presentMini(trigger: .hotkey) == .alreadyPresented,
+       "a hotkey tap on a presented orb answers already presented")
+expect(ofMiniShows == 1, "a presented orb is never shown a second time")
+ofCoordinator.presentFull(activating: true)
+expect(ofFullShows == 1 && ofCoordinator.fullShown, "the app window opens beside the orb")
+expect(ofMiniHides == 0 && ofCoordinator.miniShown, "opening the window never hides the orb")
+ofCoordinator.closeFull()
+expect(ofFullHides == 1 && !ofCoordinator.fullShown && ofCoordinator.miniShown,
+       "closing the window returns to orb only and never quits the surface")
+expect(ofMiniShows == 1 && ofMiniHides == 0, "closing the window neither hides nor re-presents the orb")
+ofCoordinator.hideAll()
+expect(ofMiniHides == 1 && !ofCoordinator.miniShown, "the explicit hide still takes the orb away")
+
+// ORBFIRST: the saved orb frame is the owner's drag, never a clamp, and the reset runs once.
+let orbStore = UserDefaults(suiteName: "orb-first-frame-\(UUID().uuidString)")!
+let draggedFrame = CGRect(x: 40, y: 40, width: 220, height: 220)
+orbStore.set(NSStringFromRect(draggedFrame), forKey: MiniOrbFrameStore.legacyKey)
+expect(!MiniOrbFrameStore.persistsFrame(userDragging: false), "a clamped or system-moved frame is never persisted")
+expect(MiniOrbFrameStore.persistsFrame(userDragging: true), "a user drag is persisted")
+expect(MiniOrbFrameStore.resetSavedFrameOnce(orbStore), "the one-time reset clears the old saved orb frame")
+expect(orbStore.string(forKey: MiniOrbFrameStore.legacyKey) == nil, "the old saved frame is gone after the reset")
+expect(!MiniOrbFrameStore.resetSavedFrameOnce(orbStore), "the reset happens exactly once")
+let laptopScreen = CGRect(x: 0, y: 0, width: 1440, height: 900)
+let externalScreen = CGRect(x: 1440, y: 0, width: 2560, height: 1440)
+let onExternal = CGRect(x: 3700, y: 1000, width: 220, height: 220)
+expect(MiniOrbFrameRestore.resolve(onExternal, screens: [laptopScreen]) != onExternal,
+       "a missing screen clamps the orb onto a live screen")
+expect(MiniOrbFrameRestore.resolve(onExternal, screens: [laptopScreen, externalScreen]) == onExternal,
+       "the saved frame restores when its screen returns")
+expect(MiniOrbFrameRestore.resolve(nil, screens: [laptopScreen, externalScreen])
+       == MiniOrbFrameRestore.defaultFrame(in: laptopScreen),
+       "the default orb frame is the top right of the menu-bar screen")
+
+// ORBFIRST: clicks outside the orb's drawn circle reach the app below, clicks on it do not.
+let orbSurface = CGRect(x: 1000, y: 600, width: 220, height: 220)
+expect(MiniOrbClickThrough.radius(in: orbSurface) == 110, "the orb's drawn circle fills the floating surface")
+expect(MiniOrbClickThrough.keepsClick(at: CGPoint(x: 1110, y: 710), in: orbSurface),
+       "a click on the orb stays on the orb")
+expect(MiniOrbClickThrough.keepsClick(at: CGPoint(x: 1110, y: 600), in: orbSurface),
+       "the rim of the drawn circle is still the orb")
+expect(!MiniOrbClickThrough.keepsClick(at: CGPoint(x: 1002, y: 602), in: orbSurface),
+       "a click in a transparent corner passes to the app below")
+expect(!MiniOrbClickThrough.keepsClick(at: CGPoint(x: 1218, y: 898), in: orbSurface),
+       "every transparent corner passes through")
+expect(!MiniOrbClickThrough.keepsClick(at: CGPoint(x: 2000, y: 2000), in: orbSurface),
+       "a point off the surface passes through")

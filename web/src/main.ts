@@ -739,6 +739,12 @@ Object.assign(window,{
     if(miniRoute){paintMiniStage();refreshMiniVisuals();}
     return{generation,painted:orb?.prepareSurface()===true};
   },
+  /** ORBFIRST: the app's Settings item opens this window on the Settings page. The rail button and
+   *  this entry take the same path, so a menu press and a click land on the same surface. */
+  didiOpenRoute(route:string){
+    if(route!=='settings')return;
+    layout=openSheet(layout,route);notice='';error='';render();
+  },
 });
 if('serviceWorker' in navigator && import.meta.env.PROD)void navigator.serviceWorker.register('/sw.js').catch(()=>{ /* Shell availability is optional; never imply offline saving. */ });
 theme=loadTheme(themeStorage());applyTheme(document.documentElement,theme);

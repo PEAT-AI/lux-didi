@@ -73,13 +73,45 @@ enum LaunchKind: Equatable {
         }
     }
 
-    /// A login launch starts with no window on screen; every other kind presents one.
-    var presentsWindowAtLaunch: Bool { self != .loginItem }
+    /// ORBFIRST: the orb is the resting surface, so every launch that shows any UI shows the orb,
+    /// and only the kinds that host a window for a reason of their own present one at launch.
+    var presentsOrbAtLaunch: Bool {
+        switch self {
+        case .interactive, .loginItem, .installRelaunch: return true
+        case .installedProof, .selfCheck, .uiProof, .verification: return false
+        }
+    }
+
+    /// An install relaunch and a proof launch host the window they must drive; an interactive or
+    /// login launch creates the window the first time the owner opens the app.
+    var presentsWindowAtLaunch: Bool {
+        switch self {
+        case .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification: return true
+        case .interactive, .loginItem: return false
+        }
+    }
+
+    var createsWindowAtLaunch: Bool { presentsWindowAtLaunch }
+
+    /// The owner started the app: the one launch kind that connects on its own.
+    var autoConnects: Bool { self == .interactive }
 
     var duplicateInstanceExitCodeForYield: Int32 {
         switch self {
         case .interactive, .loginItem: return 0
         case .installRelaunch, .installedProof, .selfCheck, .uiProof, .verification: return LaunchKind.duplicateInstanceExitCode
         }
+    }
+}
+
+/// ORBFIRST: whether a launch opens a session by itself. A launch connects once, only when the
+/// host is up and the orb page is hostable, and a refusal is final for that launch so a denied
+/// microphone or a refused audio owner never loops.
+enum OrbFirstAutoConnect {
+    enum Action: Equatable { case connect, wait, never }
+
+    static func decide(kind: LaunchKind, serviceReady: Bool, pageHostable: Bool, attempted: Bool) -> Action {
+        guard kind.autoConnects, !attempted else { return .never }
+        return serviceReady && pageHostable ? .connect : .wait
     }
 }

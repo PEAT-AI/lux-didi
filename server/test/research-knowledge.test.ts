@@ -5,6 +5,7 @@ import {
   type ResearchDeps, type ResearchSourceLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
+import { shapeLuxKnowledge } from '../tools/live-shape.js';
 
 // Two sources, so the run plans across them instead of taking the single-source path.
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'chat'];
@@ -47,6 +48,33 @@ const LONG_BODY = [
   '**#123** [TECHNICAL_DECISION] Retrieval deadline',
   `the deadline is the fifteenth${' and the corpus keeps the rest'.repeat(120)}`,
 ].join('\n');
+
+/** #580: the server's own ranker line for a query nothing in the vault matches. */
+const NO_CANDIDATE = [
+  '# Knowledge Search',
+  '_confidence: low · top score: 0.11 · relevant candidate: no_',
+  '**#900** [PATTERN] Unrelated engineering note',
+  'the vault keeps an unrelated engineering note about socket timeouts',
+].join('\n');
+
+test('#580: a no-candidate low-confidence knowledge read carries the confidence and is voiced as no match', () => {
+  const shaped = shapeLuxKnowledge('search_knowledge', NO_CANDIDATE);
+  assert.deepEqual(shaped.knowledgeConfidence, { confidence: 'low', top: '0.11', candidates: 'no' }, 'the shape reads the ranker line before it strips it');
+  const block = shapeBlock('knowledge_search', [sub('search_knowledge', shaped.text)]);
+  assert.ok(block.lines.includes('knowledge: confidence=low top=0.11 candidates=no'), `the finding leads with the confidence, got ${JSON.stringify(block.lines)}`);
+  assert.ok(block.lines.includes('knowledge: nothing matched this ask'), 'a low-confidence no-candidate match is voiced as no match');
+  assert.equal(block.lines.some(line => line.includes('relevant candidate:')), false, 'the raw ranker line is never voiced as a hit');
+  const carried = shapeBlock('knowledge_search', [{ ...sub('search_knowledge', shaped.text), knowledgeConfidence: { confidence: 'low', top: '0.11', candidates: 'no' } }]);
+  assert.deepEqual(carried.lines, block.lines, 'the carried confidence and the read one voice the same finding');
+});
+
+test('#580: a run voices the weak knowledge match as nothing matching', async () => {
+  const shaped = shapeLuxKnowledge('search_knowledge', NO_CANDIDATE);
+  const h = harness({ execute: async subs => subs.map(call => sub(call.name, shaped.text, true, call.key)) });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what does the vault hold about dark triad' }, new AbortController().signal);
+  assert.match(JSON.stringify(reply['findings']), /knowledge: confidence=low top=0\.11 candidates=no/u, 'the voiced finding carries the confidence');
+  assert.match(JSON.stringify(reply['findings']), /nothing matched this ask/u, 'and is voiced as no match');
+});
 
 test('K3: the model-authored knowledge query is clipped to ten content terms, and filler never rides', () => {
   const sentence = 'what did we decide about the wriggler three layer schema migration deadline for the owner dashboard';

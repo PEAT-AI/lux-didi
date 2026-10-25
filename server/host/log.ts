@@ -226,9 +226,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       ...(hasEndpoint ? { endpointId: value.endpointId } : {}) };
   }
   if (value.event === 'connector_connected' || value.event === 'connector_recovered'
-    || value.event === 'connector_recovery_exhausted' || value.event === 'connector_helper_stderr') {
-    // #533: a connect that landed used to be silent, so silent meant unknown. These four lines are closed
-    // counts and ids only: no url, no account, no helper text.
+    || value.event === 'connector_recovery_exhausted' || value.event === 'connector_unavailable'
+    || value.event === 'connector_helper_stderr') {
+    // #533: a connect that landed used to be silent, so silent meant unknown. #671: the mark that turns a
+    // read into an instant `unavailable` was silent too. These lines are closed counts, ids and codes only:
+    // no url, no account, no helper text.
     const ms = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 900_000;
     const count = (v: unknown, max: number): v is number => Number.isSafeInteger(v) && (v as number) >= 0 && (v as number) <= max;
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
@@ -244,6 +246,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (value.event === 'connector_recovery_exhausted') {
       if (!closedKeys(value, ['attempts', 'endpointId', 'event', 'reason']) || !count(value.attempts, 8) || !token(value.reason)) return;
       return { event: 'connector_recovery_exhausted', endpointId: value.endpointId, attempts: value.attempts, reason: value.reason };
+    }
+    if (value.event === 'connector_unavailable') {
+      if (!closedKeys(value, ['endpointId', 'event', 'reason']) || !token(value.reason)) return;
+      return { event: 'connector_unavailable', endpointId: value.endpointId, reason: value.reason };
     }
     if (!closedKeys(value, ['bytes', 'endpointId', 'event']) || !count(value.bytes, 16_777_216)) return;
     return { event: 'connector_helper_stderr', endpointId: value.endpointId, bytes: value.bytes };

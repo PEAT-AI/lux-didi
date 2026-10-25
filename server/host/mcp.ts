@@ -176,13 +176,15 @@ export function createRecoverySchedule(delays: readonly number[] = CONNECTOR_REC
 
 /**
  * The closed lifecycle lines a connector connect writes: a connect that lands, a recovery that lands, a
- * bounded recovery round that gives up, and a helper that told us why on stderr. The last one carries a
- * byte count only, so no helper text ever reaches host.log.
+ * bounded recovery round that gives up, a helper that told us why on stderr, and an endpoint the transport
+ * just marked unavailable. The helper line carries a byte count only and the unavailable line a closed
+ * code only, so no helper text, url or account ever reaches host.log.
  */
 export type ConnectorLifecycleEvent =
   | { event: 'connector_connected'; endpointId: string; connectMs: number }
   | { event: 'connector_recovered'; endpointId: string; attempts: number; connectMs: number }
   | { event: 'connector_recovery_exhausted'; endpointId: string; attempts: number; reason: string }
+  | { event: 'connector_unavailable'; endpointId: string; reason: string }
   | { event: 'connector_helper_stderr'; endpointId: string; bytes: number };
 
 /** Compose the inert MCP runtime once at startup: config, owner and registry only, no remote work. */
@@ -372,6 +374,9 @@ export async function composeMcpRuntime(options: {
       const previous = reports.get(id)!;
       reports.set(id, { ...previous, state: 'error', tools: 0, error: event.reason,
         exception: { class: 'Transport', code: event.reason } });
+      // #671: this is the mark that makes `unavailableNow` answer a read at 0 ms, so it says on host.log
+      // which endpoint went unavailable and which closed transport code did it. Codes only, never text.
+      options.lifecycleLog?.({ event: 'connector_unavailable', endpointId: id, reason: event.reason });
     } else if (event.recoverable && registry.revision(id) === event.revision
         && bursts.get(id)?.session === event.session && bursts.get(id)?.token === generations.get(id)) {
       eligible.set(id, { session: event.session, revision: event.revision });

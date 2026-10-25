@@ -132,27 +132,31 @@ export function currentOwnerTurn(rows: readonly OwnerTurnRow[], turnStartAt: num
 export type PlaybackSignalKind = 'received' | 'audible' | 'enqueued' | 'started' | 'drained' | 'interrupted' | 'terminated';
 /** One app playback receipt, reduced to what the note boundary needs. */
 export interface PlaybackSignal { readonly receipt: PlaybackSignalKind; readonly key: string; readonly wallMs: number }
-export interface SegmentRead { readonly readbackKey?: string; readonly note: NoteState }
+/** The one segment carrying a stage's read-back. It belongs to a stage, never to a session. */
+export interface ReadbackBinding { readonly stageId: string; readonly key: string }
+export interface SegmentRead { readonly binding?: ReadbackBinding; readonly note: NoteState }
 
 /**
- * W6-R2 B2: the read-back is one segment. The first segment that starts after the stage is the
- * read-back, only that segment's drain arms the stage, and only its interruption invalidates it.
- * A segment that began before the stage can neither arm nor kill it.
+ * W6-R2 B2 and C1: the read-back is one segment, and the binding names the stage it belongs to. The
+ * first segment that starts after the stage is adopted, only that segment's drain arms the stage,
+ * only its interruption invalidates it, and a binding from another stage is ignored, so a restaged
+ * note in the same call always finds its own read-back.
  */
-export function noteSegmentSignal(note: NoteState, readbackKey: string | undefined, signal: PlaybackSignal): SegmentRead {
-  if (note.state !== 'staged') return readbackKey === undefined ? { note } : { readbackKey, note };
+export function noteSegmentSignal(note: NoteState, binding: ReadbackBinding | undefined, signal: PlaybackSignal): SegmentRead {
+  const own = binding !== undefined && binding.stageId === note.stageId ? binding : undefined;
+  if (note.state !== 'staged') return own === undefined ? { note } : { binding: own, note };
   const beganAfterStage = signal.wallMs >= note.stagedAt;
   if (signal.receipt === 'started' || signal.receipt === 'received') {
-    return readbackKey === undefined && beganAfterStage ? { readbackKey: signal.key, note } : (readbackKey === undefined ? { note } : { readbackKey, note });
+    return own === undefined && beganAfterStage ? { binding: { stageId: note.stageId, key: signal.key }, note } : (own === undefined ? { note } : { binding: own, note });
   }
   if (signal.receipt === 'interrupted' || signal.receipt === 'terminated') {
-    if (readbackKey !== undefined && signal.key !== readbackKey) return { readbackKey, note };
-    if (readbackKey === undefined && !beganAfterStage) return { note };
-    return { ...(readbackKey === undefined ? {} : { readbackKey }), note: ended(note, 'invalidated', 'readback_interrupted', signal.wallMs) };
+    if (own !== undefined && signal.key !== own.key) return { binding: own, note };
+    if (own === undefined && !beganAfterStage) return { note };
+    return { ...(own === undefined ? {} : { binding: own }), note: ended(note, 'invalidated', 'readback_interrupted', signal.wallMs) };
   }
-  if (signal.receipt !== 'drained') return readbackKey === undefined ? { note } : { readbackKey, note };
-  if (readbackKey === undefined || signal.key !== readbackKey) return readbackKey === undefined ? { note } : { readbackKey, note };
-  return { readbackKey, note: noteReadback(note, signal.wallMs, 'drained') };
+  if (signal.receipt !== 'drained') return own === undefined ? { note } : { binding: own, note };
+  if (own === undefined || signal.key !== own.key) return own === undefined ? { note } : { binding: own, note };
+  return { binding: own, note: noteReadback(note, signal.wallMs, 'drained') };
 }
 
 export type NoteStageName = 'staged' | 'armed' | 'settling' | 'committed' | 'cancelled' | 'invalidated';

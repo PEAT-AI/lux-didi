@@ -1016,8 +1016,8 @@ export class LiveSessionOwner {
   readonly #luxWrite: ReturnType<typeof createLuxWriteTransport>;
   /** W6: sessions that have staged a composed note, so no other session pays a query per owner turn. */
   readonly #noteSessions = new Set<string>();
-  /** W6-R2 B2: the one segment carrying this stage's read-back, keyed by session. */
-  readonly #noteReadback = new Map<string, string>();
+  /** W6-R2 B2/C1: the one segment carrying each stage's read-back, keyed by session and bound to the stage. */
+  readonly #noteReadback = new Map<string, { readonly stageId: string; readonly key: string }>();
   readonly #voice: LiveVoicePort;
   readonly #profile: LiveProfile;
   readonly #now: () => number;
@@ -1714,7 +1714,8 @@ export class LiveSessionOwner {
     // that began before the stage does neither.
     const key = `${receipt.sourceInstanceId}:${receipt.segmentSeq}`;
     const read = noteSegmentSignal(note, this.#noteReadback.get(handle.liveSessionId), { receipt: receipt.receipt as PlaybackSignalKind, key, wallMs: receipt.wallMs });
-    if (read.readbackKey !== undefined) this.#noteReadback.set(handle.liveSessionId, read.readbackKey);
+    if (read.binding === undefined) this.#noteReadback.delete(handle.liveSessionId);
+    else this.#noteReadback.set(handle.liveSessionId, read.binding);
     if (read.note === note) return;
     this.#store.transaction(tx => saveNoteState(tx, read.note));
     hostLogEvent({ event: 'lux_note_readback', state: read.note.state, code: read.note.code ?? receipt.receipt });
@@ -1729,7 +1730,7 @@ export class LiveSessionOwner {
     if (next === open) return;
     this.#store.transaction(tx => saveNoteState(tx, next));
     hostLogEvent({ event: 'lux_note_confirm', state: next.state, code: next.code ?? '' });
-    if (next.state !== 'settling') return;
+    if (next.state !== 'settling') { this.#noteReadback.delete(handle.liveSessionId); return; }
     handle.noteSettleTimer?.cancel();
     handle.noteSettleTimer = this.#schedule(() => { void this.#noteSettle(handle); }, Math.max(0, (next.settleAt ?? 0) - this.#now()));
     handle.noteSettleTimer.unref();
@@ -1745,6 +1746,7 @@ export class LiveSessionOwner {
     handle.noteSettleTimer?.cancel(); handle.noteSettleTimer = undefined;
     this.#store.transaction(tx => saveNoteState(tx, next));
     hostLogEvent({ event: 'lux_note_confirm', state: next.state, code: next.code ?? '' });
+    this.#noteReadback.delete(handle.liveSessionId);
   }
 
   /** W6 item 7: the dispatcher claims the frozen payload and dispatches it once through the vault writer. */
@@ -1768,6 +1770,7 @@ export class LiveSessionOwner {
     try { receipt = claim.state === 'dispatch' ? await this.#vault.dispatch(claim) : claim.receipt; }
     catch { receipt = { saved: false, code: 'outcome_unknown' }; }
     this.#store.transaction(tx => markCommitted(tx, settled.stageId, receipt.insightId));
+    this.#noteReadback.delete(handle.liveSessionId);
     hostLogEvent({ event: 'lux_note_saved', saved: receipt.saved, code: receipt.code ?? 'inserted' });
     if (this.#settled(handle)) return;
     const line = receipt.saved

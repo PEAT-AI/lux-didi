@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import assert_ from 'node:assert/strict';
 import {
-  RESEARCH, researchLedgerOf, researchRebuildAllowed, researchRebuildDue, retainedAfterSend,
+  RESEARCH, ResearchLedger, researchLedgerOf, researchRebuildAllowed, researchRebuildDue, retainedAfterSend, runResearch,
 } from '../tools/research.js';
-import type { ResearchBoundary, ResearchRetention } from '../tools/research.js';
+import type { ResearchBoundary, ResearchRetention, ResearchDeps } from '../tools/research.js';
+import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 /** C-DEPTH item 5 (W10-R2 light C): the retained payload, the safe boundary and the ledger a rebuild seeds. */
 
@@ -65,3 +67,41 @@ test('HYGIENE 5: the ledger never exceeds its bound, and it is deterministic', (
   assert.ok(first.length <= RESEARCH.ledgerChars, `a huge call still fits its ledger: ${first.length}`);
   assert.equal(researchLedgerOf(input), first, 'no model call, so the same input is the same ledger');
 });
+
+function sub(name: string, text: string, key = name): IntentSubResult {
+  return { key, name, ok: true, text, originalCharacters: text.length, omittedCharacters: 0 };
+}
+
+test('HYGIENE 6 (J2): a fetch that misses its bound still delivers the summaries, and the header says excerpt', async () => {
+  // A fake clock, no real wait: the stage two bound is zero, so the bounded read aborts at once.
+  const summaries = Array.from({ length: 40 }, (_v, index) =>
+    `### Ana Clifton entry ${index} (person | 2026-09-14) [id ${300 + index}] ${'summary detail '.repeat(8)}`).join('\n');
+  const executed: string[] = [];
+  const deps: ResearchDeps = {
+    now: () => 0,
+    configured: ['knowledge'] as const,
+    knowledgeReadMs: 0,
+    execute: async (subs: readonly IntentSubCall[]) => {
+      for (const call of subs) executed.push(call.name);
+      if (subs.every(call => call.name === 'get_insight')) {
+        // The slow fetch: it never answers inside the bound.
+        await new Promise(resolve => setTimeout(resolve, 10));
+        return subs.map(call => sub(call.name, '', call.key));
+      }
+      return subs.map(call => sub(call.name, summaries, call.key));
+    },
+    emit: () => {},
+    log: () => {},
+    ledger: new ResearchLedger(),
+  };
+  const reply = await runResearch(deps, {
+    action: 'start', question: 'what do we know about Ana Clifton',
+    lookups: [{ source: 'knowledge', query: 'Clifton' }],
+  }, new AbortController().signal);
+  assert_ok(executed.includes('search_knowledge'), 'the search happened');
+  const evidence = ((reply['findings'] ?? []) as { text: string }[]).map(finding => finding.text).join('\n');
+  assert_ok(evidence.includes('Ana Clifton'), 'the summaries are delivered when the fetch cannot finish');
+  assert_ok(String(reply['coverage']).includes('excerpt'), `the header says the source is an excerpt: ${String(reply['coverage'])}`);
+});
+
+function assert_ok(value: unknown, message: string): void { assert_(value, message); }

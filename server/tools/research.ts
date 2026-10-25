@@ -2048,6 +2048,8 @@ export interface ResearchQueryShape { source: SourceKind | LookupSource; terms: 
 
 export interface ResearchDeps {
   timeZone?: string;
+  /** C-DEPTH item 3: the stage two bound for this run, so a test drives it without a real wait. */
+  knowledgeReadMs?: number | undefined;
   /** L11-03: the live call this research runs in. Its own rows are never memory, by identity. */
   liveSessionId?: string | undefined;
   /**
@@ -4895,6 +4897,7 @@ export function knowledgeReadIds(text: string, asked: readonly string[], limit: 
 async function withFullEntries(
   execute: (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]>,
   run: RunState, results: readonly IntentSubResult[], question: string, signal: AbortSignal,
+  boundMs: number = RESEARCH.knowledgeReadMs,
 ): Promise<IntentSubResult[]> {
   const searched = results.find(result => result.name === INTERNAL.knowledgeSearch && result.ok && result.text.trim());
   if (searched === undefined) return [...results];
@@ -4905,7 +4908,7 @@ async function withFullEntries(
   if (ids.length === 0) return [...results];
   run.ops += 1;
   try {
-    const bounded = AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.knowledgeReadMs)]);
+    const bounded = AbortSignal.any([signal, AbortSignal.timeout(boundMs)]);
     const read = await execute([{ key: 'knowledge_entries', name: INTERNAL.knowledgeRead, args: { ids } }], bounded);
     const bodies = new Map<string, string>();
     for (const entry of read) {
@@ -5067,7 +5070,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       results = await executeSource(subs, progressSignal);
       // C-DEPTH item 3 (W10-R7): this is the one place every read passes through, so the summaries are enriched
       // with the full bodies of the hits that matter here, batched once, inside the same round.
-      results = await withFullEntries(executeSource, run, results, run.question ?? '', progressSignal);
+      results = await withFullEntries(executeSource, run, results, run.question ?? '', progressSignal, deps.knowledgeReadMs ?? RESEARCH.knowledgeReadMs);
       // #647: the one place every read passes through, so a chat read that matched nothing on every word is
       // broadened here once, before the reply and the progress steps read it.
       if (!dispatchSignal.aborted) results = await broadenedChatRetry(executeSource, subs, results, progressSignal, run.broadenedChat);

@@ -348,8 +348,8 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
 test('the public character, voice surface and tool conduct are the authored verbatim constants', () => {
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '1b188117660fe12204cd542001b585fcce69add4f1cc6d27689720e193cac977');
-  assert.equal(sha(NAYA_VOICE_SURFACE), 'a4b4f1f26c023751657f6844c12a870d6d9658552911944487b0ad58a042fcaf');
-  assert.equal(sha(NAYA_VOICE_TOOLS), 'd8152215ce43da843179bd746bd7856f4b763aa4cf2f11166e5ba2d0eb0cb8d2');
+  assert.equal(sha(NAYA_VOICE_SURFACE), '1cf4e572cd49ae7d8d7e16ee3c11b53c6dc652dc1511b8b5625d4a8a3bcb0768');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '9a514f03300b3603a5844a2d11b6f47cdede998d4da39fc673781704d58ef445');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'f421a3148fc20caef9fbdcb21d816b283cc48ac723e59ea601f799df8a6e8b31');
   assert.equal(sha(NAYA_TOOLS), '44de1491b38a6f0cb8ccb91f716e77320208c258a0b58be23784a50adf69cb6f');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
@@ -903,7 +903,7 @@ test('PV1: a saved accent takes the next session start, replacing the frozen blo
 // cut snippets, and a timed-out research call was handed back to the owner and then re-fired. Three
 // unconditional rules, each stated once, replacing the sentences they supersede.
 const Q5_RULES = [
-  "Open a fresh call on one current specific, never a generic ready-to-help line; use work, the calendar or an open loop, and never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them; if one matters, raise it later, once, never first.",
+  "Open a fresh call on one current specific, never a generic ready-to-help line, and never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them; if one matters, raise it later, once, never first.",
   'Distinguish no match, unavailable access, missing sign-in, timeout, stale archive, partial content and unread pages.',
   'Let that request return before starting another for the same question.',
 ];
@@ -1382,13 +1382,33 @@ test('LAT-1023: the first ack before a lookup names the sources it is reading', 
   assert.doesNotMatch(NAYA_VOICE_SURFACE, /[\u2013\u2014]/u, 'no dash stands in the rule text');
 });
 
+test('L8-07: missing evidence is said as missing, never as a negative fact', () => {
+  const rule = 'Missing evidence is no negative fact and no yes to a leading question: say you found nothing that says so.';
+  assert.equal(NAYA_LIVE_BASE.split(rule).length - 1, 1, 'the rule reaches the live persona once');
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /[\u2013\u2014]/u);
+});
+
+test('L11-07/L11-08: agreement needs evidence, and a label or a yes never stands alone', () => {
+  assert.equal(NAYA_LIVE_BASE.split('Agree only when the evidence agrees').length - 1, 1, 'the agreement rule reaches the live persona once');
+  const rule = 'Never stop at a bare label or a bare yes; give the reason.';
+  assert.equal(NAYA_LIVE_BASE.split(rule).length - 1, 1, 'the reason rule reaches the live persona once');
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /[\u2013\u2014]/u);
+});
+
+test('L1-14/L11-05: she never says the stop phrase or a stop line on her own', () => {
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /When his words were not one of those, say the exact phrase/u, 'the old rule had her say the phrase unprompted');
+  assert.match(NAYA_VOICE_SURFACE, /If he asks to end it in other words, tell him the exact phrase once\./u);
+  assert.match(NAYA_VOICE_SURFACE, /You cannot mute or stop yourself; never say you did, that you will stay quiet, or any stop line of your own\./u);
+  assert.equal(NAYA_LIVE_BASE.split('any stop line of your own').length - 1, 1, 'the rule reaches the live persona once');
+});
+
 test('#589/#590: the voice surface names the stop phrases and promises no silence it cannot keep', () => {
   // She ends the call on the owner's own words, so the words are stated where she can read them.
   assert.match(NAYA_VOICE_SURFACE, /Naya, stop listening/);
   assert.match(NAYA_VOICE_SURFACE, /Naya, shut down/);
   // The honesty line: what she cannot do, and the way out she names instead of promising.
   assert.match(NAYA_VOICE_SURFACE, /You cannot mute or stop yourself/);
-  assert.match(NAYA_VOICE_SURFACE, /say the exact phrase/);
+  assert.match(NAYA_VOICE_SURFACE, /tell him the exact phrase/);
   // #590: no first-person promise of a silence or a stopped mic stands in for the call ending.
   for (const lie of [/\bI(?:'ll| will) (?:stay quiet|be quiet|go quiet|stop listening)\b/,
     /\bI(?:'ve| have) (?:stopped|muted|turned off)\b/, /\bI(?:'m| am) (?:not recording|muting|stopping)\b/]) {

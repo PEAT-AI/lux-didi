@@ -163,4 +163,47 @@ export const traceMigrations: readonly SchemaMigration[] = [{
      )`,
     `CREATE INDEX trace_query_shape_at ON trace_query_shape(at)`,
   ],
+}, {
+  owner: 'trace', version: 6, statements: [
+    // C-QUALITY Q06: a Drive read has a query shape too. SQLite cannot widen a CHECK in place, so the table
+    // is rebuilt under its own name with every row kept.
+    `CREATE TABLE trace_query_shape_next (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       at INTEGER NOT NULL,
+       research_id TEXT,
+       source TEXT NOT NULL CHECK (source IN ('memory','knowledge','calendar','mail','chat','replies','company','mongoose','web','drive')),
+       terms INTEGER NOT NULL CHECK (terms >= 0),
+       operators TEXT NOT NULL,
+       topic_words INTEGER NOT NULL CHECK (topic_words >= 0)
+     )`,
+    `INSERT INTO trace_query_shape_next(id, at, research_id, source, terms, operators, topic_words)
+       SELECT id, at, research_id, source, terms, operators, topic_words FROM trace_query_shape`,
+    `DROP TABLE trace_query_shape`,
+    `ALTER TABLE trace_query_shape_next RENAME TO trace_query_shape`,
+    `CREATE INDEX trace_query_shape_at ON trace_query_shape(at)`,
+    // L8-Q06: a read with no canonical dispatch row (the web) still leaves its outcome, time and result count.
+    `CREATE TABLE trace_source_read (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       at INTEGER NOT NULL,
+       research_id TEXT,
+       source TEXT NOT NULL CHECK (source IN ('memory','knowledge','calendar','mail','chat','replies','company','mongoose','web','drive')),
+       outcome TEXT NOT NULL CHECK (outcome IN ('ok','empty','failed','timeout')),
+       ms INTEGER NOT NULL CHECK (ms >= 0),
+       results INTEGER NOT NULL CHECK (results >= 0),
+       reason TEXT
+     )`,
+    `CREATE INDEX trace_source_read_at ON trace_source_read(at)`,
+    // L8-Q05: the research run a model call started or continued, so a continue names the run it pointed at.
+    `ALTER TABLE trace_call ADD COLUMN research_id TEXT`,
+    // L8-Q05/Q06: the question the model wrote and the web query it ran. Owner content: the third content
+    // table, pruned at the same 30 days as the other two, never copied to host.log.
+    `CREATE TABLE trace_research_text (
+       research_id TEXT NOT NULL,
+       call_key TEXT,
+       at INTEGER NOT NULL,
+       kind TEXT NOT NULL CHECK (kind IN ('question','web_query')),
+       text TEXT NOT NULL
+     )`,
+    `CREATE INDEX trace_research_text_at ON trace_research_text(at)`,
+  ],
 }];

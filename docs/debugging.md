@@ -3,7 +3,10 @@
 Every store a debugger can read sits in the host data directory, which is `--data-dir`, else
 `DIDI_STATE_DIR`, else the platform default the host itself uses: `~/Library/Application
 Support/Lux Didi` on macOS, `%LOCALAPPDATA%\Lux Didi` on Windows, and `$XDG_DATA_HOME/lux-didi`
-(or `~/.local/share/lux-didi`) elsewhere. Every reader resolves it the same way.
+(or `~/.local/share/lux-didi`) elsewhere. The installed app passes `~/Library/Application
+Support/ai.peat.lux-didi` as `--data-dir`, and on a Mac the two readers (`naya-logs.mjs` and
+`didi-timeline`) default to that installed directory, since it is the one the owner's calls write;
+for a host started from source, pass its directory with `--data-dir`.
 
 | path | holds | privacy |
 | --- | --- | --- |
@@ -44,7 +47,9 @@ ids and the terminal reason, `call.intent`, `call.executed`, `call.output_prepar
 `deferred`, `failed`) and, when it skipped, why (`awaiting_calls`, `draining`, `epoch_stale`). The
 host adds `turn.opened`, `turn.closed` with its close reason, and `live.dead_air_stalled` with the
 turn's age, whether any audio arrived and the inaudible milliseconds, which is the receipt D12-3 was
-missing. All of it lands under the session's `connection_epoch`; a rebuilt socket gets a new epoch
+missing, and `owner.overlap` once per owner turn when two of his words land while she is audible
+(`words`, `msSinceAudible`, and `cut`, which is always false: the provider owns barge-in and the host
+never cuts her, ruling W1-R1). All of it lands under the session's `connection_epoch`; a rebuilt socket gets a new epoch
 and a late receipt from the one it replaced is refused as `STALE_EPOCH`.
 
 ## The host.log event catalog
@@ -302,7 +307,7 @@ The timeline includes canonical transcription outside traced turns, including mo
 
 Call and response trace keys are scoped to session and connection epoch; raw provider ids are separate. Event clock domains identify host process or native producer. Historical null domains remain unknown. Execution duration is calculated only from measured start/completion observations in the same non-null domain. Prepared and written events remain distinct; a missing completion is unknown, never zero work. A new host holding the exclusive Store writer lock marks previously in-progress capture unknown/host_terminated. No audio-frame transaction was added.
 
-Always pass `--data-dir` for the installed app: `~/Library/Application Support/ai.peat.lux-didi`. The CLI's older default `Lux Didi` directory is a different runtime. Default timeline and metadata export exclude content. `--content` is protected owner-local inspection and uses current lifecycle/class gating; it is not an external sharing command. The existing trace preview limit and retention do not promise complete durable source results; those require a verified canonical dispatch record.
+On a Mac both readers (`didi-timeline` and `naya-logs.mjs`) default to the installed app's directory, `~/Library/Application Support/ai.peat.lux-didi`; pass `--data-dir` (or set `DIDI_STATE_DIR`) to read a dev host's `Lux Didi` directory or a copy. The timeline also prints `call_failures_at_least=N` with a count per kind (`command.rejected`, `live.dead_air_stalled`, failed responses and calls); the `failures_at_least` on the coverage line stays the count of lost diagnostic writes. `research_source` carries a closed `reason` (`no_query`, `never_ran`, `timed_out`, `provider_failed` and the unsearched reasons) when a read did not answer. Two lookups that shared one execution still write one receipt each with the same `coalesced` count, so two identical lines are one read, by design. `naya-logs.mjs errors` lists `command_rejected`, `live_dead_air_nudge`, a `live_dead_air` of 5 s or more, `live_rebuild` and every `native_action` that did not open, next to the provider and tool failures. Default timeline and metadata export exclude content. `--content` is protected owner-local inspection and uses current lifecycle/class gating; it is not an external sharing command. The existing trace preview limit and retention do not promise complete durable source results; those require a verified canonical dispatch record.
 
 Focused actual-runtime proof: after server compilation, run `node server/test/diagnostic-trace.integration.mjs`. It exercises actual adapter, Store and CLI, new reference resolution, model-first greeting, forced write failure, forgotten/class-denied content, restart unknown state, scoped call/response ids and unlike-clock observations. No provider or audio device is used.
 

@@ -410,6 +410,13 @@ test('release 4: the partial source receipt and the window reason reach host.log
   assert.ok(safeEvent({ ...run, sources: [row] }) !== undefined, 'the window reason reaches host.log');
   assert.equal(safeEvent({ ...run, sources: [{ ...row, reason: 'whatever' }] }), undefined, 'and the closed set still refuses anything else');
 });
+// L8-Q07: a failed read names its closed reason in host.log, and nothing outside the set passes.
+test('L8-Q07: a research_source receipt carries a closed failure reason', () => {
+  const source = { event: 'research_source', researchId: 'r1', source: 'mail', outcome: 'failed', ms: 0, deadlineMs: 12_000, coalesced: 1 };
+  assert.deepEqual(safeEvent({ ...source, reason: 'no_query' }), { ...source, reason: 'no_query' }, 'the reason reaches host.log');
+  assert.deepEqual(safeEvent({ ...source, reason: 'timed_out' }), { ...source, reason: 'timed_out' });
+  assert.equal(safeEvent({ ...source, reason: 'the mail server said no' }), undefined, 'a free text reason is refused');
+});
 test('vault_write keeps its closed shape: a state token, an insight id on a save, latency, never text', () => {
   const saved = { event: 'vault_write', state: 'confirmed', insightId: 'insight-7', latencyMs: 42 };
   assert.deepEqual(safeEvent(saved), saved, 'the confirmed receipt passes the allowlist');

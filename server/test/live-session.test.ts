@@ -159,6 +159,7 @@ async function harness(t: TestContext, overrides: {
   onSessionTerminal?: (liveSessionId: string) => void;
   memoryFailure?: boolean;
   failingWrite?: string;
+  researchWeb?: import('../tools/web-search.js').WebSearchPort;
 } = {}): Promise<Harness> {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-session-'));
@@ -402,7 +403,7 @@ async function harness(t: TestContext, overrides: {
       return { id: record.entryId, text: record.text, dataClass };
     });
   };
-  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), ...(overrides.researchWeb ? { researchWeb: overrides.researchWeb } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), ...(publishCalendar ? { publishCalendar } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
@@ -649,6 +650,22 @@ test('Live transcripts and completion, interruption and terminal events stay jou
   const kinds = h.store.transaction(tx => tx.all('SELECT kind FROM live_journal WHERE live_session_id=?', [session.liveSessionId]).map(row => row['kind']));
   for (const kind of ['inputTranscription', 'outputTranscription', 'turnComplete', 'interrupted', 'terminal']) assert.ok(kinds.includes(kind));
   assert.equal(h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n'])), before);
+});
+
+test('L8-10: the runtime context names web search when the session can search the web, and only then', async t => {
+  const web = { search: async () => { throw new Error('not called at start'); } };
+  const native = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
+  const withWeb = await harness(t, { tools: true, researchWeb: web, system: native });
+  const { attachment: withAttachment } = await attached(withWeb);
+  const connected = /^Connected now: (.*)\.$/mu.exec(withWeb.requests[0]!.system.text)?.[1] ?? '';
+  assert.ok(connected.split(', ').includes('web search'), `the declared web read is named: ${connected}`);
+  assert.ok(connected.split(', ').includes('knowledge base'), `the knowledge read stays named: ${connected}`);
+  withAttachment.close(); await withAttachment.done;
+  const without = await harness(t, { tools: true, system: native });
+  const { attachment } = await attached(without);
+  assert.match(without.requests[0]!.system.text, /^Connected now: /mu, 'the runtime context is composed');
+  assert.equal(/^Connected now: .*web search/mu.test(without.requests[0]!.system.text), false, 'no web read, no web claim');
+  attachment.close(); await attachment.done;
 });
 
 test('a session with a tool declaration carries the tools conduct; without one composes exactly as before', async t => {
@@ -3770,6 +3787,13 @@ test('Q5-R4: the opener context names at most three earlier openers, one or two 
   assert.ok(!long!.includes('B'), 'an opener that does not fit is dropped whole, never cut mid sentence');
 });
 
+test('L8-09/L11-05: the earlier-openers note names one sentence once, even when two calls opened with it', () => {
+  const note = openersNote(['Morning. The release branch merged cleanly.', 'Morning.  The release branch merged cleanly.', 'Evening. The deck is out.'],
+    ['the release branch merge', 'the release branch merge', 'the deck']);
+  assert.equal(note!.split('Morning. The release branch merged cleanly.').length - 1, 1, `a repeated opener is quoted once: ${note}`);
+  assert.ok(note!.includes('Evening. The deck is out.'), 'a different opener is still named');
+});
+
 test('3u: the anti-repeat note names the topic each earlier opener came from, still under the cap', () => {
   const note = openersNote(['Morning. The release branch merged cleanly.'], ['the release branch merge']);
   assert.ok(note!.includes('"Morning. The release branch merged cleanly."'), 'the sentence is still quoted');
@@ -3993,6 +4017,69 @@ test('#538: the Gemini path sends its one Continue at 8 s and never closes or re
   assert.equal(fake.sessionsOpened, 2, 'the 15 s rung is the one path that opens a fresh session');
   assert.equal(fake.closes, 1, 'and it closes the old one exactly once');
   attachment.close();
+});
+
+// L8-11/L11-06: the owner talked over her answer three times while she kept speaking, and the store held no
+// receipt of it. gpt-live-1 owns barge-in and the host never cuts her (lux 90488, ruling W1-R1), so the host
+// records the overlap as a content-free receipt: counts only, and whether output was cut (never, here).
+test('L8-11: owner words over her audible answer leave one content-free overlap receipt per owner turn', async t => {
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'overlap-receipt', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(audibleFrame);
+  await settlePort();
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'Synthetic', finished: false }));
+  await settlePort();
+  const rows = (): Record<string, unknown>[] => h.store.transaction(tx => tx.all(
+    "SELECT turn_id, detail FROM trace_event WHERE live_session_id=? AND kind='owner.overlap' ORDER BY seq", [session.liveSessionId]));
+  assert.equal(rows().length, 0, 'one word over her is not yet an overlap');
+  fake.emit(audibleFrame);
+  fake.emit(portEvent({ type: 'inputTranscription', text: ' overlap words here', finished: false }));
+  await settlePort();
+  fake.emit(portEvent({ type: 'inputTranscription', text: ' you', finished: false }));
+  await settlePort();
+  const seen = rows();
+  assert.equal(seen.length, 1, 'two owner words while she is audible write one receipt for the turn');
+  const detail = JSON.parse(String(seen[0]!['detail'])) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(detail).sort(), ['at', 'cut', 'msSinceAudible', 'words'], 'a time, counts and a flag, never text');
+  assert.ok(Number(detail['words']) >= 2, `the receipt counts the words: ${JSON.stringify(detail)}`);
+  assert.equal(detail['cut'], false, 'the host cut nothing (ruling W1-R1)');
+  assert.ok(typeof seen[0]!['turn_id'] === 'string', 'the receipt belongs to the owner turn');
+  assert.equal(JSON.stringify(seen).includes('overlap words'), false, 'no owner word reaches the metadata row');
+  attachment.close(); await attachment.done.catch(() => undefined);
+});
+
+// L8-Q01/Q05/Q06: a research call with a web read left trace_call unlinked, its question and run id
+// nowhere, and the web read with no row at all.
+test('L8-Q01/Q05/Q06: a research call is linked to its run and execution, and its web read leaves a row', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const web = { search: async () => ({ ok: true as const, evidence: { answer: 'The synthetic bridge reopens on Monday.', claims: [],
+    sources: [{ title: 'Synthetic source', url: 'https://source.example.invalid/bridge' }], retrievedAt: '2026-10-25T10:00:00Z' } }) };
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, researchWeb: web, scheduler, limits: openaiLimits });
+  const { session, attachment } = await openPort(h, 'research-link');
+  await ownerInput(fake, 'synthetic owner question about the bridge');
+  const epoch = String(h.store.transaction(tx => tx.get('SELECT connection_epoch FROM trace_event WHERE live_session_id=? AND connection_epoch IS NOT NULL LIMIT 1', [session.liveSessionId]))!['connection_epoch']);
+  const callKey = scopedTraceKey(session.liveSessionId, epoch, 'call', 'q1');
+  record(h.store, 'call.intent', { liveSessionId: session.liveSessionId, connectionEpoch: epoch, callKey }, { intentAt: NOW, name: 'research', argsChars: 60, providerCallId: 'q1' });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'q1', name: 'research', args: { action: 'start', question: 'When does the synthetic bridge reopen?', topic: 'synthetic bridge', lookups: [{ source: 'web', query: 'synthetic bridge reopening' }, { source: 'knowledge', query: 'synthetic bridge' }] } }] });
+  const linked = (): Record<string, unknown> | undefined => h.store.transaction(tx => tx.get('SELECT research_id, canonical_run_id, canonical_execution_id FROM trace_call WHERE call_key=?', [callKey]));
+  for (let i = 0; i < 400 && linked()?.['research_id'] == null; i++) { h.advance(50); scheduler.runDue(); await settlePort(); }
+  const row = linked()!;
+  assert.ok(typeof row['research_id'] === 'string' && String(row['research_id']).length > 0, `the call names its research run: ${JSON.stringify(row)}`);
+  assert.equal(row['canonical_run_id'], session.liveSessionId, 'the canonical run is the session run');
+  assert.match(String(row['canonical_execution_id']), new RegExp(`^${session.liveSessionId}:\\d+:0$`, 'u'), 'the first canonical execution of the call');
+  const executions = h.store.transaction(tx => tx.all('SELECT execution_id FROM tool_calls WHERE run_id=?', [session.liveSessionId])).map(entry => String(entry['execution_id']));
+  assert.ok(executions.includes(String(row['canonical_execution_id'])), `the link names a real canonical execution: ${executions.join(', ')}`);
+  const texts = h.store.transaction(tx => tx.all('SELECT kind, text FROM trace_research_text WHERE research_id=? ORDER BY rowid', [String(row['research_id'])])).map(entry => `${String(entry['kind'])}:${String(entry['text'])}`);
+  assert.ok(texts.includes('question:When does the synthetic bridge reopen?'), `the question the model wrote is kept in the store: ${texts.join(' | ')}`);
+  assert.ok(texts.includes('web_query:synthetic bridge reopening'), `and the web query: ${texts.join(' | ')}`);
+  const reads = h.store.transaction(tx => tx.all('SELECT source, outcome, results FROM trace_source_read WHERE research_id=?', [String(row['research_id'])])).map(entry => ({ ...entry }));
+  assert.deepEqual(reads, [{ source: 'web', outcome: 'ok', results: 1 }], 'the web read leaves its own row');
+  attachment.close(); await attachment.done.catch(() => undefined);
 });
 
 test('#538: the trace timeline records the debt clock as content-free enums', async t => {

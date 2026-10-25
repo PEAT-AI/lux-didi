@@ -10,7 +10,7 @@ import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from 
 import { chatAsk, chatIntent, chatSubs } from './chat-intent.js';
 import { MAIL_QUERY_OPERATORS } from '../contracts/mail-operators.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
-import { WEB_DEADLINE_MS, WEB_SEARCH_ACTION, broaderWebQuery, clipWebEvidence, sentencePrefix, webAttribution, webDeadlineMs, webEvidenceText, webFooter, webSourceCards, type WebSearchPort } from './web-search.js';
+import { WEB_DEADLINE_MS, WEB_SEARCH_ACTION, broaderWebQuery, clipWebEvidence, sentencePrefix, webAttribution, webDeadlineMs, webEvidenceText, webFooter, webSourceCards, type WebOutcome, type WebSearchPort } from './web-search.js';
 
 /**
  * The one declared Live read tool (#241). The model may answer with no tool at all; when it looks
@@ -255,6 +255,18 @@ export interface ResearchRoutedLog {
  * was given. Never a query. The deadline travels with the receipt so a cut read can be judged against the
  * time the source was actually allowed.
  */
+/** L8-Q07: the closed reasons a source receipt may give for a read that did not answer. */
+export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading'] as const;
+export type ResearchSourceReason = (typeof RESEARCH_SOURCE_REASONS)[number];
+
+function sourceReasonOf(run: RunState, outcome: { source: SourceKind | 'memory'; outcome: LookupOutcome; mail?: MailQueryInfo | undefined }): ResearchSourceReason {
+  if (outcome.mail !== undefined && mailQueryShape(outcome.mail.q).terms === 0) return 'no_query';
+  if (outcome.source !== 'memory' && run.neverRan?.has(outcome.source) === true) return 'never_ran';
+  if (outcome.outcome === 'timeout') return 'timed_out';
+  const code = outcome.source === 'memory' ? undefined : run.unavailableReasons.get(outcome.source);
+  return code === undefined ? 'provider_failed' : unsearchedReasonOf(code);
+}
+
 export interface ResearchSourceLog {
   event: 'research_source'; researchId: string; source: LookupSource; outcome: LookupOutcome; ms: number;
   /** ROUTE-1022 K5: the same plan token, so a per-source receipt shows a knowledge-only brief too. */
@@ -262,6 +274,8 @@ export interface ResearchSourceLog {
   deadlineMs: number;
   /** 3r R1: how many lookups of this call shared the one source execution this receipt describes. */
   coalesced: number;
+  /** L8-Q07: why a read did not answer, a closed token; absent on ok and empty. */
+  reason?: ResearchSourceReason;
   /** 3r K1: the knowledge lookup's bounded-body request, metadata only and never a query. */
   knowledge?: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean; queryTerms: number; dayFilter: DayFilter; chatDateOperator: ChatDateOperator; deduped: number };
   /** #610: the chat read's shape, or R3: the closed reason a refused chat read records. Never a word. */
@@ -1745,6 +1759,8 @@ export interface RunState {
   emptySearches: Map<SourceKind, string>;
   /** N3: sources whose read a deadline cut short, so the reply can say so instead of "nothing matched". */
   cutShort: Set<SourceKind>;
+  /** L8-13: a source whose latest read never dispatched a page, so its label is never a timeout. */
+  neverRan?: Set<SourceKind>;
   /** P5: why a source cannot serve a read right now, so the reply names the cause and never guesses. */
   unavailableReasons: Map<SourceKind, string>;
   /** #637: the channel the ask named, kept so an unknown one is said in the owner's own words. */
@@ -1997,6 +2013,8 @@ export interface ResearchDeps {
    * built from. The Live owner binds it to the trace store; absent means nothing is persisted.
    */
   queryShape?: ((shape: ResearchQueryShape & { researchId: string; at: number }) => void) | undefined;
+  /** L8-Q06: one row per web read, which leaves no canonical dispatch row; the query text stays in the store. */
+  sourceRead?: ((read: ResearchSourceRead) => void) | undefined;
   authorizeEvidence?: (bindings: readonly ToolResultBinding[], signal: AbortSignal) => boolean;
   now(): number;
   /** Defaults to a real timer; a test supplies a fake clock to prove the progress cadence. */
@@ -2418,7 +2436,7 @@ export function clip(text: string, max: number): string {
 
 /** #621: the E3 states a reply must keep apart, and the E4 reason a source was never searched. */
 export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry';
-export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'needs_clarification' | 'name_not_found';
+export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'needs_clarification' | 'name_not_found' | 'never_ran';
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
 
@@ -2437,6 +2455,8 @@ const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: Source
   // C-CHAT: the name fits several people, channels or groups, so she asks which one before reading.
   needs_clarification: () => 'ask which one he means',
   name_not_found: () => 'I do not know that name',
+  // L8-13: the latest ask ran no new read of this source, so nothing about it took too long.
+  never_ran: label => `I did not run a new ${label} read this time`,
 };
 
 /** A not-searched reason code from the host, narrowed to the closed set the header publishes. */
@@ -2495,6 +2515,8 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
     // #635: a read that was cut with nothing arrived is named by its reason below as timed_out, never as a
     // searched source with an empty count.
     if (!wasSearched) continue;
+    // L8-13: a read that never dispatched this time is named by that outcome below, never as a timeout.
+    if (run.neverRan?.has(source) === true && !run.cutShort.has(source)) continue;
     const finding = findings.find(entry => entry.source === source && typeof entry.text === 'string');
     // C-CHAT: a chat read that asked back read nothing yet, so the header says so instead of an empty count.
     if (source === 'chat' && run.chatUnresolved !== undefined && finding === undefined) continue;
@@ -2510,9 +2532,10 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
   const unsearched: CoverageUnsearched[] = [];
   for (const source of SOURCE_ORDER) {
     const unresolved = source === 'chat' && !searched.some(entry => entry.source === source) ? run.chatUnresolved : undefined;
-    if (!run.route.has(source) && unresolved === undefined) continue;
+    if (!run.route.has(source) && unresolved === undefined && run.neverRan?.has(source) !== true) continue;
     if (searched.some(entry => entry.source === source)) continue;
-    unsearched.push({ source, reason: unresolved ?? unsearchedReasonGiven(run, configured, source) });
+    const neverRan = run.neverRan?.has(source) === true && !run.cutShort.has(source);
+    unsearched.push({ source, reason: unresolved ?? (neverRan ? 'never_ran' : unsearchedReasonGiven(run, configured, source)) });
   }
   return coverageLine(searched, unsearched, limit);
 }
@@ -2916,6 +2939,18 @@ function queryShapeOfSubs(call: IntentSubCall, topic: string | undefined): Resea
     operators: shape.operators.filter(operator => (MAIL_QUERY_OPERATORS as readonly string[]).includes(operator)),
     topicWords: (topic ?? '').split(/\s+/u).filter(Boolean).length,
   };
+}
+
+/** L8-Q06: what one in-process read (the web) did: its outcome, time, result count, closed reason and query. */
+export interface ResearchSourceRead { source: 'web'; outcome: 'ok' | 'failed' | 'timeout'; ms: number; results: number; reason?: string; query: string; researchId: string; at: number }
+
+function recordWebRead(deps: ResearchDeps, run: RunState, query: string, outcome: WebOutcome, started: number, now: () => number): void {
+  const write = deps.sourceRead;
+  if (write === undefined) return;
+  try {
+    write({ source: 'web', outcome: outcome.ok ? 'ok' : outcome.code === 'web_timeout' ? 'timeout' : 'failed', ms: Math.max(0, now() - started),
+      results: outcome.ok ? webSourceCards(outcome.evidence).length : 0, ...(outcome.ok ? {} : { reason: outcome.code }), query, researchId: run.researchId, at: now() });
+  } catch { /* the receipt is never the answer */ }
 }
 
 /** #565: one trace row per source call this run dispatched, and a repeated signature is one row. */
@@ -3952,7 +3987,9 @@ async function collectMailWithRetry(deps: ResearchDeps, run: RunState, reads: re
 async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSignal, remainingMs: number, now: () => number): Promise<void> {
   run.mailDeadlineAt ??= now() + Math.min(RESEARCH.sourceDeadline.mail, remainingMs);
   const left = run.mailDeadlineAt - now();
-  if (left <= 0 || remainingMs <= 0) { run.cutShort.add('mail'); return; }
+  // L8-13: a deadline already spent means no page is dispatched at all, which is not a read that took too long.
+  if (left <= 0 || remainingMs <= 0) { (run.neverRan ??= new Set()).add('mail'); return; }
+  run.neverRan?.delete('mail');
   // RUN-R7: the mail deadline is cut on the run's clock, released when the collector ends.
   const cut = cutAfter(Math.min(left, remainingMs), deps.schedule);
   const signal = AbortSignal.any([parent, cut.signal]);
@@ -4203,7 +4240,9 @@ async function webGroup(deps: ResearchDeps, run: RunState, plans: readonly Route
   const results = await Promise.all(plans.map(async (plan): Promise<{ plan: RoutedPlan; line?: string }> => {
     const call = plan.read.subs[0];
     const query = String(call?.args['query'] ?? plan.lookup.query);
+    const readStarted = now();
     const outcome = await deps.web!.search({ query, signal, deadlineMs: webDeadlineMs(query) });
+    recordWebRead(deps, run, query, outcome, readStarted, now);
     if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return { plan }; }
     run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
     run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));
@@ -4468,6 +4507,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines, run.chatDate ?? 'none', outcome.sub, { droppedFilters: run.droppedDayFilters, deduped: outcome.deduped ?? 0 }) } : {}),
         ...mailReceiptField(outcome.mail),
         ...(outcome.partial === undefined ? {} : { partial: outcome.partial.reason, failedPages: outcome.partial.failedPages }),
+        ...(outcome.outcome === 'ok' || outcome.outcome === 'empty' ? {} : { reason: sourceReasonOf(run, outcome) }),
       });
       logSubcall({
         event: 'research_subcall', researchId: run.researchId, ...callKeyOf(run), kind: outcome.kind, tool: outcome.tool,
@@ -5291,7 +5331,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             run.ops -= webCalls.length;
             return Promise.all(webCalls.map(async (call): Promise<IntentSubResult> => {
               const empty = { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0 };
+              const readStarted = now();
               const outcome = await deps.web!.search({ query: String(call.args['query'] ?? ''), signal: readSignal, deadlineMs: webDeadlineMs(String(call.args['query'] ?? '')) });
+              recordWebRead(deps, run, String(call.args['query'] ?? ''), outcome, readStarted, now);
               if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return empty; }
               run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
               run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));

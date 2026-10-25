@@ -11,7 +11,7 @@ import { VaultWriter } from '../tools/vault-write.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import type { WebSearchPort } from '../tools/web-search.js';
+import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
 import { RESEARCH, RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
@@ -23,7 +23,7 @@ import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, Rese
 
 import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption, type OpeningOptionKind } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
-import { liveTracePort, record, recordCallResult, recordQueryShape, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
+import { liveTracePort, record, recordCallLink, recordCallResult, recordQueryShape, recordResearchText, recordSourceRead, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
 import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
@@ -76,8 +76,13 @@ export function openersNote(openers: readonly string[], topics: readonly (string
   };
   const note = (lines: readonly string[]): string => `Open on a different subject and different words than these earlier openers: ${lines.join(' ')}`;
   const taken: string[] = [];
+  const seen = new Set<string>();
   const spoken = openers.map(openingSentencesOf).filter(Boolean).slice(0, 3);
   for (const [index, opener] of spoken.entries()) {
+    // L8-09: two calls that opened alike are one sentence to avoid, never a quote repeated in the prompt.
+    const key = opener.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
     const next = line(opener, topics[index]);
     if (note([...taken, next]).length <= OPENER_CONTEXT_CHARS) taken.push(next);
   }
@@ -508,6 +513,9 @@ interface ActiveSession {
   /** Wall-clock start per model call id, for tool_cancelled ms-in-flight and per-turn latency. */
   callStartedAt: Map<string, number>;
   speaking: boolean;
+  /** L8-11: owner words heard while she was audible this owner turn, and whether the turn's overlap receipt is written. */
+  overlapWords?: number;
+  overlapReceipted?: boolean;
   /** Output audio that arrived below the audible threshold this turn, in playback milliseconds. */
   inaudibleMs: number;
   // E1 interruption telemetry: provider-side facts for the last turn only, never audio or text.
@@ -603,6 +611,8 @@ const NON_LEXICAL_TAG = /\[(?:breath|inhale|exhale|laugh|laughs|sigh|cough|noise
 export function stripNonLexicalTags(text: string): string { return text.replace(NON_LEXICAL_TAG, ''); }
 
 /** R7: the dropped-line opener is cancellable only until its own audio has started. */
+/** L8-11: how many owner words over her audible answer make an overlap worth a receipt. */
+export const OVERLAP_RECEIPT_WORDS = 2;
 export function openerCancelled(dropOpener: boolean, openerSpoken: boolean): boolean { return dropOpener && !openerSpoken; }
 
 function identity(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
@@ -1049,7 +1059,7 @@ export class LiveSessionOwner {
 
   /** Host-generated runtime context: host clock and timezone, plus the groups this session can reach. */
   #liveRuntimeContext(toolNames: readonly string[], timeZone: string): string {
-    const connected = toolGroupNames(toolNames);
+    const connected = toolGroupNames(this.#researchWeb === undefined ? toolNames : [...toolNames, WEB_SEARCH_ACTION]);
     const endpoints = this.#tools?.status?.().endpoints ?? [];
     const unavailable = endpoints.filter(endpoint => endpoint.state !== 'connected')
       .flatMap(endpoint => connectorGroupNames(endpoint.connector))
@@ -2275,6 +2285,34 @@ export class LiveSessionOwner {
     });
   }
 
+  /** L8-11: one content-free receipt per owner turn when two of his words land over her audible answer. The
+   *  provider owns barge-in and the host never cuts her (lux 90488, ruling W1-R1), so `cut` is false. */
+  #noteOverlap(handle: ActiveSession, text: string): void {
+    if (handle.overlapReceipted === true) return;
+    handle.overlapWords = (handle.overlapWords ?? 0) + text.split(/\s+/u).filter(word => /[\p{L}\p{N}]/u.test(word)).length;
+    if (handle.overlapWords < OVERLAP_RECEIPT_WORDS) return;
+    const turnId = handle.connection.turnId;
+    if (turnId === undefined) return;
+    handle.overlapReceipted = true;
+    const at = this.#now();
+    this.#receipt(handle, 'owner.overlap', { turnId }, { at, words: handle.overlapWords,
+      msSinceAudible: handle.lastModelAudioAt === undefined ? 0 : Math.max(0, at - handle.lastModelAudioAt), cut: false });
+  }
+
+  /** L8-Q01/Q05: the store-side link of one research call. Owner text goes to the content table only. */
+  #linkResearchCall(handle: ActiveSession, host: HostContext, callId: string, question: string | undefined, response: JsonObject, firstStep: number | undefined): void {
+    const researchId = typeof response['researchId'] === 'string' && response['researchId'].length > 0 ? response['researchId'] : undefined;
+    const callKey = scopedTraceKey(handle.liveSessionId, handle.connection.epoch, 'call', callId);
+    try {
+      recordCallLink(this.#store, { callKey, ...(researchId === undefined ? {} : { researchId }),
+        ...(firstStep === undefined ? {} : { canonicalRunId: host.runId, canonicalExecutionId: `${host.runId}:${firstStep}:0` }) });
+      if (researchId !== undefined && question !== undefined && question.trim().length > 0) recordResearchText(this.#store, { researchId, callKey, kind: 'question', text: question }, this.#now());
+    } catch (error) {
+      hostLogEvent({ event: 'live_trace_rejected', kind: 'call.linked', code: error instanceof TraceRecordError ? error.code : 'unknown' });
+      this.#diagnosticFailure(handle, 'trace_write_failed');
+    }
+  }
+
   #closeTurn(handle: ActiveSession, closeReason: TurnCloseReason, outcome?: TurnOutcome): void {
     const turnId = handle.connection.turnId;
     if (turnId === undefined) return;
@@ -2466,6 +2504,8 @@ export class LiveSessionOwner {
     if (this.#settled(handle)) return false;
     // O1b-A: a rebuilt socket is a new connection epoch. Receipts the socket it replaces still emits carry the old
     // epoch and are refused by the store, which is what "a reconnect rejects stale-epoch receipts" means here.
+    // L8-Q03: the turn the dead socket was answering is closed under its own epoch, never left open forever.
+    if (handle.connection.turnId !== undefined) this.#closeTurn(handle, 'recovered');
     handle.connection = { seq: handle.connection.seq + 1, epoch: `e${handle.connection.seq + 1}`, turnId: undefined, turnIndex: handle.connection.turnIndex };
     handle.deadlineAt = this.#now() + remaining; handle.deadlineMs = Date.now() + remaining;
     // #660: a result that returned unspoken is why this window exists, so the new session opens model-first and
@@ -3002,7 +3042,9 @@ export class LiveSessionOwner {
             ownerTurnOpen = true;
             handle.connectorRecovery = this.#tools?.recover?.();
             this.#openTurn(handle);
+            handle.overlapWords = 0; handle.overlapReceipted = false;
           }
+          if (handle.speaking) this.#noteOverlap(handle, event.text);
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;
@@ -3240,6 +3282,16 @@ export class LiveSessionOwner {
           this.#diagnosticFailure(handle, 'trace_write_failed');
         }
       },
+      // L8-Q06: a web read leaves its own row (the web has no canonical dispatch), its query in the content table.
+      sourceRead: read => {
+        try {
+          recordSourceRead(this.#store, { source: read.source, outcome: read.outcome, ms: read.ms, results: read.results, ...(read.reason === undefined ? {} : { reason: read.reason }) }, read.at, read.researchId);
+          if (read.query.trim().length > 0) recordResearchText(this.#store, { researchId: read.researchId, kind: 'web_query', text: read.query }, read.at);
+        } catch (error) {
+          hostLogEvent({ event: 'live_trace_rejected', kind: 'source.read_written', code: error instanceof TraceRecordError ? error.code : 'unknown' });
+          this.#diagnosticFailure(handle, 'trace_write_failed');
+        }
+      },
       // R6: the loop's own clocks (the first answer point, the dead-air beat) run on the owner's scheduler,
       // so a test drives whole seconds instead of sleeping through them.
       schedule: this.#schedule,
@@ -3267,9 +3319,13 @@ export class LiveSessionOwner {
         hostLogEvent(refusedResearchRunLog());
         response = researchRepair(parsed.reason);
       } else {
+        const firstStep = handle.toolStep;
         try {
           response = await scheduler.call({ ...parsed.call, callId: call.id }, handle.abort.signal);
         } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
+        // L8-Q01/Q05: the run this call started or continued, its question, and its first canonical execution
+        // (only when this call ran alone, so a batch step is never credited to the wrong call).
+        this.#linkResearchCall(handle, host, call.id, parsed.call.question, response, event.calls.length === 1 && handle.toolStep > firstStep ? firstStep : undefined);
       }
       // R6: a reply that names sources still reading is the call's first answer point, so the late-findings
       // window and the one late commentary of this call both count from here.
@@ -3467,6 +3523,17 @@ export class LiveSessionOwner {
       const raced = await this.#withCeiling(runBatch(subCalls, step), outcome => {
         for (const unit of pending) hostLogEvent({ event: 'tool_ceiling_late', tool: unit.call.name, outcome });
       });
+      // L8-Q01: each direct call's first canonical execution, `runId:step:offset`, the id its dispatch rows carry.
+      for (const unit of pending) {
+        if (unit.subs.length === 0) continue;
+        try {
+          recordCallLink(this.#store, { callKey: scopedTraceKey(handle.liveSessionId, handle.connection.epoch, 'call', unit.call.id),
+            canonicalRunId: host.runId, canonicalExecutionId: `${host.runId}:${step}:${offsets.get(unit.index) ?? 0}` });
+        } catch (error) {
+          hostLogEvent({ event: 'live_trace_rejected', kind: 'call.linked', code: error instanceof TraceRecordError ? error.code : 'unknown' });
+          this.#diagnosticFailure(handle, 'trace_write_failed');
+        }
+      }
       if ((this.#settled(handle) || generation !== handle.generation)) return;
       // S4a ceiling: a call still running at the host limit is answered as a timeout through the same
       // continuation owner, so the backend gets one output per call and one response.create for the batch.

@@ -57,6 +57,7 @@ const reasonSteps: Record<ReasonCode, NextStep> = {
   configuration_error: { text: "This connector's tool list changed and needs your approval. Approve the new tool list with the approve command the MCP configuration guide describes, then restart Lux Didi.", guideUrl: mcpGuideUrl },
   credential_missing: credentialSteps["lux-knowledge"]!,
   needs_sign_in: { text: "This connector needs a fresh sign-in with its own credentials. Sign in with its own command, then restart Lux Didi.", guideUrl: setupGuideUrl },
+  not_configured: { text: "This connector has no configuration yet. Add its settings, then restart Lux Didi.", guideUrl: setupGuideUrl },
   not_signed_in: { text: "This connector has no active session. Sign in again with its own credentials, then restart Lux Didi.", guideUrl: setupGuideUrl },
   unreachable: { text: "The connector service is not reachable right now. Start it, then restart Lux Didi.", guideUrl: setupGuideUrl },
   discovery_failed: { text: "Tool discovery failed for this connector. Check its service tool configuration, then restart Lux Didi." },

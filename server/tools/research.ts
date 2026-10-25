@@ -2556,11 +2556,15 @@ function depthClauseOf(question: string, findings: readonly FindingLike[]): stri
   const entities = requestedEntities(question);
   const covered = entities.filter(name => text.includes(name));
   const missing = entities.filter(name => !text.includes(name));
+  // W10-R15 P3: a body the connector windowed, or a full entry read the host cut, is an excerpt even when
+  // every hit came back, because what the reply carries is not the whole entry.
+  const windowed = findings.some(entry => KNOWLEDGE_CUT_AT.test(entry.text ?? ''));
   const shape = findings.filter(entry => typeof entry.text === 'string' && typeof entry.source === 'string').map(entry => {
     const head = FINDING_HEAD.exec(entry.text ?? '');
     const shown = head === null ? 0 : Number(head[1]);
     const total = head === null ? 0 : Number(head[2]);
-    return `${SOURCE_LABEL[entry.source as SourceKind] ?? entry.source} ${shown === total ? 'full' : 'excerpt'}`;
+    const whole = shown === total && !(entry.source === 'knowledge' && windowed);
+    return `${SOURCE_LABEL[entry.source as SourceKind] ?? entry.source} ${whole ? 'full' : 'excerpt'}`;
   });
   const parts: string[] = [];
   if (shape.length > 0) parts.push(shape.join(', '));
@@ -4876,6 +4880,9 @@ function continuesRun(run: RunState, call: ResearchCall, question: string): bool
   // Review G2: a question with no lookups and no direction is judged too, so a new topic always starts fresh.
   return question.trim() === '' || sameTopic(question);
 }
+
+/** The mark the connector and the host leave on a body cut to its window. */
+const KNOWLEDGE_CUT_AT = /cut at \d+ chars/u;
 
 /** The hit id one shaped line or one fetched entry names, if it names one. */
 function hitIdOf(line: string): string | undefined {

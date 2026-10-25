@@ -23,6 +23,12 @@ function knowledgeHits(count: number): string {
     `### Release plan ${index} (decision | 2026-10-17) [id ${100 + index}] ${BODY}`).join('\n');
 }
 
+/** Long hits, so a reply budget and not the read's own line cap is what binds. */
+function longKnowledgeHits(count: number): string {
+  return Array.from({ length: count }, (_v, index) =>
+    `### Release plan ${index} (decision | 2026-10-17) [id ${100 + index}] ${'detail from the record '.repeat(20)}`).join('\n');
+}
+
 function mailRows(count: number): string {
   return Array.from({ length: count }, (_v, index) =>
     `- Release note ${index} | from: Ana | date: 2026-10-16 [id m${index}] ${BODY}`).join('\n');
@@ -219,7 +225,7 @@ test('COVER 1: the header counts per source what was represented, and says full 
 test('COVER 2: an asked for entity that was covered is counted, and an excerpt is never called full', async () => {
   const h = harness({ text: { search_knowledge: THREE_PROFILES } });
   const reply = await research(h.deps, {
-    action: 'start', question: 'what do we know about Ana and Ben Clifton',
+    action: 'start', question: 'what do we know about Ana and Ben',
     lookups: [{ source: 'knowledge', query: 'Clifton' }],
   });
   const header = String(reply['coverage']);
@@ -228,7 +234,7 @@ test('COVER 2: an asked for entity that was covered is counted, and an excerpt i
 });
 
 test('DEPTH 1: the depth tier delivers more evidence, not more metadata', async () => {
-  const text = { search_knowledge: knowledgeHits(200) };
+  const text = { search_knowledge: longKnowledgeHits(60) };
   const shallow = harness({ text: { ...text }, replyLimit: RESEARCH.budgets.default });
   const deep = harness({ text: { ...text }, replyLimit: RESEARCH.budgets.depth });
   const ask = {

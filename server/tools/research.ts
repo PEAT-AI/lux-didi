@@ -190,6 +190,14 @@ export const RESEARCH = Object.freeze({
    * characters: a quarter of the corpus is longer than the old 1,200 window, and the read is cheap.
    */
   knowledgeBodyChars: 2_000,
+  /**
+   * C-DEPTH item 3: the second stage of a knowledge read. The search answers with summaries; the host then
+   * reads the full entries of this many hits, taking the ones that name the owner's people or documents first
+   * and then the top of the ranking, inside the round already paid for and inside the operation deadline.
+   */
+  knowledgeReadEntries: 3,
+  /** C-DEPTH item 3: the time one stage two read may take, so the operation deadline is never eaten by it. */
+  knowledgeReadMs: 1_500,
   /** R5 (RESCAP-R5): the fewest characters of an evidence line worth keeping when it is clipped to fit. */
   clipFloorChars: 60,
   /** ROUTE-1022 (#526): the search reply carries the body, so no id is opened in a second hop. */
@@ -4196,6 +4204,7 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     recordShapes(deps, run, calls, now);
     try { results = await deps.execute(calls, signal); }
     catch { for (const read of reads) { read.failed = true; read.inflight = false; } if (signal.aborted) run.cutShort.add('calendar'); break; }
+    results = await withFullEntries(deps, run, results, run.question ?? '', signal, now, sourceDeadlineAt);
     // E8: the window this batch paid for is kept for the session, so the run that superseded it never pays again.
     if (deps.authorizeEvidence?.(deps.ledger.evidenceBindings(run.researchId), new AbortController().signal) ?? true) rememberCalendarWindow(deps, reads, results, slots, now());
     if (parent.aborted || run.cancelled || run.stopped) { run.cancelled = true; invalidateEvidence(run); break; }
@@ -4860,6 +4869,39 @@ function continuesRun(run: RunState, call: ResearchCall, question: string): bool
   // A continue that names its own lookups is a new search, so its words must be the run's words.
   // Review G2: a question with no lookups and no direction is judged too, so a new topic always starts fresh.
   return question.trim() === '' || sameTopic(question);
+}
+
+/**
+ * C-DEPTH item 3: the ids a search summary names, the ones that mention an asked entity first. A hit whose
+ * line carries `[id N]`, `**#N**` or a `## #N` heading is one entry the host can read whole.
+ */
+export function knowledgeReadIds(text: string, asked: readonly string[], limit = RESEARCH.knowledgeReadEntries): string[] {
+  const ids: string[] = [];
+  const named: string[] = [];
+  for (const line of text.split('\n')) {
+    const id = line.match(/\[id (\d+)\]/u)?.[1] ?? line.match(/^\s*\*\*#(\d+)\*\*/u)?.[1] ?? line.match(/^#{2,3}\s*#(\d+)\b/u)?.[1];
+    if (id === undefined || ids.includes(id) || named.includes(id)) continue;
+    const mentions = asked.some(name => line.includes(name));
+    (mentions ? named : ids).push(id);
+  }
+  return [...named, ...ids].slice(0, limit);
+}
+
+/** C-DEPTH item 3: stage two, in the round already dispatched, so no third round is ever spent on entries. */
+async function withFullEntries(
+  deps: ResearchDeps, run: RunState, results: readonly IntentSubResult[], question: string,
+  signal: AbortSignal, now: () => number, sourceDeadlineAt: number,
+): Promise<IntentSubResult[]> {
+  const searched = results.find(result => result.name === INTERNAL.knowledgeSearch && result.ok && result.text.trim());
+  if (searched === undefined) return [...results];
+  const ids = knowledgeReadIds(searched.text, requestedEntities(question));
+  if (ids.length === 0) return [...results];
+  if (now() + RESEARCH.knowledgeReadMs > sourceDeadlineAt) return [...results];
+  run.ops += 1;
+  try {
+    const read = await deps.execute([{ key: 'knowledge_entries', name: INTERNAL.knowledgeRead, args: { ids } }], signal);
+    return [...results, ...read];
+  } catch { return [...results]; }
 }
 
 /** The loop behind a call: unchanged by the first answer point except for what it reports late. */

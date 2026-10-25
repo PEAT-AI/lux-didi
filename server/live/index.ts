@@ -1857,7 +1857,7 @@ export class LiveSessionOwner {
         hostLogEvent({ event: 'live_unspoken_delivered', liveSessionId: handle.liveSessionId,
           generation: handle.generation, results: handle.unspokenResults ?? 1, attempt: attempt + 1 });
         return true;
-      } catch { /* the session was not ready yet, so the single retry waits for ready once more */ }
+      } catch { /* a refused send is the one retry: the next pass awaits readiness again, then gives up */ }
     }
     // #660: a result the host cannot put in front of the model is not swallowed, it ends the turn with its reason.
     this.#turnFailed(handle, handle.generation, 'send_failed');
@@ -2169,8 +2169,14 @@ export class LiveSessionOwner {
       // #660: the owner is asking where it stands and a stalled delegation left nothing running, so the host's own
       // truth goes in front of the model through the one note channel the voice session already has.
       if (handle.hostStatusNote === true && handle.pendingCallIds.size === 0) {
-        handle.hostStatusNote = false;
-        try { handle.session.sendCommentary?.({ text: NO_LOOKUP_RUNNING_NOTE }); } catch { /* an ended transport settles itself */ }
+        // A refused note leaves the flag armed, so the owner's next question tries the host's truth again; a
+        // transport with no commentary channel cannot carry it at all, and the flag retires there.
+        let refused = false;
+        try {
+          const note = handle.session.sendCommentary;
+          refused = typeof note === 'function' && note.call(handle.session, { text: NO_LOOKUP_RUNNING_NOTE }) === false;
+        } catch { refused = true; }
+        handle.hostStatusNote = refused;
       }
     }
     if (type === 'turnComplete' || type === 'turnFailed') {
@@ -2885,6 +2891,8 @@ export class LiveSessionOwner {
         }
         if (event.type === 'toolCall') {
           handle.toolCalls += event.calls.length;
+          // L3: a call in flight is exactly the state the stalled status note denied, so it retires here.
+          handle.hostStatusNote = false;
           hostLogEvent({ event: 'research_call_arrived', liveSessionId: handle.liveSessionId, generation, calls: event.calls.length,
             ...researchCallFacts(event.calls) });
           handle.turnAfterTool = true;

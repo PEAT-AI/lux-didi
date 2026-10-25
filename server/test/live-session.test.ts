@@ -50,7 +50,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -60,8 +60,6 @@ import { RESEARCH, RESEARCH_TOOL_NAME } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 
 const MODEL = 'models/live-session-test';
-/** S4a: the host's delegation deadline, DELEGATION_DEADLINE_MS in the live session. */
-const stallDeadlineMs = 25_000;
 const NOW = 1_700_000_000_000;
 const context = (store: Store): LiveContext => ({ clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch });
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -4149,6 +4147,9 @@ function progressPort() {
         closed = true; wake(); resolveDone({ status: 'cancelled', code: 'cancelled' });
       }, { once: true });
       let readySeen = false;
+      // #660/B2: readiness follows the ready event, so a held gate holds `session.ready` exactly as the adapter does.
+      let readyResolve: () => void = () => {};
+      const ready = new Promise<void>(resolve => { readyResolve = resolve; });
       const events: AsyncIterable<LiveVoiceEvent> = {
         async *[Symbol.asyncIterator]() {
           while (!closed) {
@@ -4157,6 +4158,7 @@ function progressPort() {
               const gate = readyGate;
               if (gate !== undefined) await gate;
               yield { sequence: ++sequence, type: 'ready' };
+              readyResolve();
               continue;
             }
             if (!pending.length) { await new Promise<void>(resolve => { waiter = resolve; }); continue; }
@@ -4165,7 +4167,7 @@ function progressPort() {
         },
       };
       return {
-        ready: Promise.resolve(), events, done,
+        ready, events, done,
         sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome { toolResponses.push(input.responses); return sendOutcome; },
         sendAudio(input: { pcm: Uint8Array }): void { audioInput.push({ session: sessionsOpened, pcm: input.pcm }); },
         sendText(input: { text: string }): void {
@@ -4178,12 +4180,13 @@ function progressPort() {
           commentary.push(input.text);
           return true;
         },
-        close(): void { if (closed) return; closed = true; closes += 1; wake(); resolveDone({ status: 'closed', code: 'closed' }); },
+        close(): void { if (closed) return; closed = true; closes += 1; readyResolve(); wake(); resolveDone({ status: 'closed', code: 'closed' }); },
       };
     },
   };
   return { port, commentary, thinking, texts, textInputs, requests, toolResponses, audioInput, emit: (event: unknown) => emit(event),
-    /** #660: the next text input meets a session that is not ready, and one retry is all the host gets. */
+    /** #660: the next text inputs meet a session that is not ready; one retry is all the host gives. */
+    refuseText: (times = 1) => { refuseText = times; },
     refuseTextOnce: () => { refuseText = 1; },
     get textRefusals() { return textRefusals; },
     /** #656: hold the next rebuilt session short of ready; the returned release lets it open. */
@@ -6611,6 +6614,36 @@ test('#660: the delivery waits for the session to be ready and survives one not_
   // The result is marked delivered only by the send that succeeded, so the rest of the window delivers nothing.
   h.advance(RESPONSE_WATCHDOG_RECOVERY_MS - 1_000); scheduler.runDue(); await settlePort();
   assert.equal(fake.textInputs.length, 1, 'a session that already has the result is never handed it twice');
+  // A fresh session is told nothing before its own ready event, and is handed the result once it is ready.
+  const release = fake.holdNextReady();
+  h.advance(1_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.sessionsOpened, 2, 'the mute after the delivery rebuilds the session');
+  assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 0, 'nothing is delivered before ready');
+  release();
+  await settlePort();
+  assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 1, 'the delivery lands once ready arrives');
+});
+
+test('#660: two refused deliveries end the turn with the closed reason instead of silence', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'unspoken-failed-660');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'fl660', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  // Both the attempt and its one retry are refused: the host fails loud rather than leaving the result unsaid.
+  fake.refuseText(2);
+  h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
+  assert.equal(fake.textRefusals, 2, 'the attempt and the single retry were both refused');
+  assert.equal(fake.textInputs.length, 0, 'nothing reached the model');
+  const failed = receipts.filter(record => record['event'] === 'turn_failed');
+  assert.deepEqual(failed.map(record => record['reason']), ['send_failed'], 'the turn ends with its closed reason');
+  const composed = fake.commentary.filter(text => text === TURN_FAILED_LINE);
+  assert.equal(composed.length, 1, 'and she says the one honest line');
 });
 
 test('#660: a stalled delegation with nothing in flight delivers the unspoken result once', async t => {
@@ -6629,7 +6662,7 @@ test('#660: a stalled delegation with nothing in flight delivers the unspoken re
   await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'the result returned to the session that asked for it');
   assert.equal(fake.textInputs.length, 0, 'nothing has been delivered yet');
-  h.advance(stallDeadlineMs + 1_000); scheduler.runDue(); await settlePort();
+  h.advance(DELEGATION_DEADLINE_MS + 1_000); scheduler.runDue(); await settlePort();
   assert.equal(receipts.filter(entry => entry['event'] === 'gptlive_delegation_stalled').length, 1, 'the stall is receipted');
   assert.equal(fake.sessionsOpened, 1, 'and nothing is rebuilt for it');
   assert.equal(fake.textInputs.length, 1, 'the stall puts the unspoken result in front of the model once');
@@ -6651,7 +6684,7 @@ test('#660: a status question with nothing running is answered from host truth, 
   assert.equal(fake.sessionsOpened, 2);
   assert.equal(fake.commentary.length, 0, 'no host note is written before the deadline');
   // Nothing is in flight any more and the result has been offered: the stall makes the host own the next answer.
-  h.advance(stallDeadlineMs); scheduler.runDue(); await settlePort();
+  h.advance(DELEGATION_DEADLINE_MS); scheduler.runDue(); await settlePort();
   // The owner asks where it stands.
   await ownerInput(fake);
   assert.equal(fake.commentary.filter(text => /no lookup is running/i.test(text)).length, 1, 'the host note says nothing is running');

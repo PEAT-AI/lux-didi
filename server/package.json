@@ -19,28 +19,9 @@
     "@types/ws": "8.18.2"
   },
   "files": [
-    "dist/index.js",
-    "dist/index.d.ts",
-    "dist/index.js.map",
-    "dist/runtime",
-    "dist/http",
-    "dist/contracts",
-    "dist/domain",
-    "dist/memory",
-    "dist/host",
-    "dist/chat",
-    "dist/config",
-    "dist/adapters/model",
-    "dist/prompt",
-    "dist/adapters/mcp",
-    "dist/connectors",
-    "dist/tools",
-    "dist/services",
-    "adapters/mcp/SDK-LICENSE.txt",
-    "dist/adapters/live-voice",
-    "dist/adapters/lux-write",
-    "dist/live",
-    "dist/trace"
+    "dist",
+    "!dist/test",
+    "adapters/mcp/SDK-LICENSE.txt"
   ],
   "dependencies": {
     "@modelcontextprotocol/client": "2.3.1",

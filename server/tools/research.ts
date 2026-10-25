@@ -1731,6 +1731,8 @@ export interface RunState {
   emptySearches: Map<SourceKind, string>;
   /** N3: sources whose read a deadline cut short, so the reply can say so instead of "nothing matched". */
   cutShort: Set<SourceKind>;
+  /** L8-13: a source whose latest read never dispatched a page, so its label is never a timeout. */
+  neverRan?: Set<SourceKind>;
   /** P5: why a source cannot serve a read right now, so the reply names the cause and never guesses. */
   unavailableReasons: Map<SourceKind, string>;
   /** #637: the channel the ask named, kept so an unknown one is said in the owner's own words. */
@@ -2397,7 +2399,7 @@ export function clip(text: string, max: number): string {
 
 /** #621: the E3 states a reply must keep apart, and the E4 reason a source was never searched. */
 export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry';
-export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found';
+export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'never_ran';
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
 
@@ -2413,6 +2415,8 @@ const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: Source
   still_reading: label => `I am still reading ${label}`,
   // #637: the ask named a channel the chat connector does not know, so nothing was searched.
   channel_not_found: () => 'I do not know that channel',
+  // L8-13: the latest ask ran no new read of this source, so nothing about it took too long.
+  never_ran: label => `I did not run a new ${label} read this time`,
 };
 
 /** A not-searched reason code from the host, narrowed to the closed set the header publishes. */
@@ -2471,6 +2475,8 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
     // #635: a read that was cut with nothing arrived is named by its reason below as timed_out, never as a
     // searched source with an empty count.
     if (!wasSearched) continue;
+    // L8-13: a read that never dispatched this time is named by that outcome below, never as a timeout.
+    if (run.neverRan?.has(source) === true && !run.cutShort.has(source)) continue;
     const finding = findings.find(entry => entry.source === source && typeof entry.text === 'string');
     const text = finding?.text ?? '';
     const head = FINDING_HEAD.exec(text);
@@ -2483,9 +2489,9 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
   }
   const unsearched: CoverageUnsearched[] = [];
   for (const source of SOURCE_ORDER) {
-    if (!run.route.has(source)) continue;
+    if (!run.route.has(source) && run.neverRan?.has(source) !== true) continue;
     if (searched.some(entry => entry.source === source)) continue;
-    unsearched.push({ source, reason: unsearchedReasonGiven(run, configured, source) });
+    unsearched.push({ source, reason: run.neverRan?.has(source) === true && !run.cutShort.has(source) ? 'never_ran' : unsearchedReasonGiven(run, configured, source) });
   }
   return coverageLine(searched, unsearched, limit);
 }
@@ -3877,7 +3883,9 @@ async function collectMailWithRetry(deps: ResearchDeps, run: RunState, reads: re
 async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSignal, remainingMs: number, now: () => number): Promise<void> {
   run.mailDeadlineAt ??= now() + Math.min(RESEARCH.sourceDeadline.mail, remainingMs);
   const left = run.mailDeadlineAt - now();
-  if (left <= 0 || remainingMs <= 0) { run.cutShort.add('mail'); return; }
+  // L8-13: a deadline already spent means no page is dispatched at all, which is not a read that took too long.
+  if (left <= 0 || remainingMs <= 0) { (run.neverRan ??= new Set()).add('mail'); return; }
+  run.neverRan?.delete('mail');
   // RUN-R7: the mail deadline is cut on the run's clock, released when the collector ends.
   const cut = cutAfter(Math.min(left, remainingMs), deps.schedule);
   const signal = AbortSignal.any([parent, cut.signal]);

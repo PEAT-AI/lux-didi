@@ -544,3 +544,47 @@ test('#675: a token budget code is not read as a sign-out', async () => {
   assert.doesNotMatch(note, /signed out/u, `an exhausted token budget is not a sign-out (${note})`);
   assert.match(note, /company knowledge/u, `the source is still named (${note})`);
 });
+
+// L8-13: a continue whose mail deadline was already spent ran no mail read at all (0 ms, no dispatch), and
+// the header still said `mail partial_timeout` with "My mail read took too long". The label is the outcome.
+test('L8-13: a mail read that never ran is never called a read that took too long', async () => {
+  const { shapeGmailList } = await import('../tools/live-shape.js');
+  let at = 0;
+  const timers: { due: number; callback: () => void; done: boolean }[] = [];
+  const schedule: NonNullable<ResearchDeps['schedule']> = (callback, delayMs) => {
+    const entry = { due: at + delayMs, callback, done: false };
+    timers.push(entry);
+    return { unref: () => {}, cancel: () => { entry.done = true; } };
+  };
+  const advance = (to: number): void => {
+    at = to;
+    for (let guard = 0; guard < 20; guard++) {
+      const due = timers.filter(entry => !entry.done && entry.due <= at);
+      if (due.length === 0) return;
+      for (const entry of due) { entry.done = true; entry.callback(); }
+    }
+  };
+  const flushed = async (): Promise<void> => { for (let tick = 0; tick < 20; tick += 1) await new Promise(resolve => setImmediate(resolve)); };
+  const page = shapeGmailList({ nextPageToken: 'p2', messages: [1, 2, 3].map(n => ({ id: `m${n}`, threadId: `t${n}`, internalDate: '1792900000000', snippet: 'about the demo',
+    payload: { headers: [{ name: 'Subject', value: `Demo ${n}` }, { name: 'From', value: 'Ana <ana@example.invalid>' }] } })) });
+  let mailPages = 0;
+  const h = harness({ now: () => at, schedule, web: { search: () => new Promise(() => {}) },
+    execute: async calls => calls.map(call => {
+      if (call.name.includes('gmail')) { mailPages += 1; return { key: call.key, name: call.name, ok: true, ...page }; }
+      return sub(call.name, knowledgeHits(1), true, call.key);
+    }) });
+  const signal = new AbortController().signal;
+  const started = runResearch(h.deps, { action: 'start', question: 'who is on the demo meeting tomorrow and what do mails say about it',
+    lookups: [{ source: 'mail', query: 'demo meeting attendees' }, { source: 'knowledge', query: 'demo meeting attendees' }, { source: 'web', query: 'example company demo' }] }, signal);
+  await flushed(); advance(1000); await flushed(); advance(RESEARCH.firstAnswerMs + 100); await flushed();
+  const first = await started;
+  const pagesBefore = mailPages;
+  const continued = runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, signal);
+  await flushed(); advance(RESEARCH.answerCapMs * 2); await flushed();
+  const second = await continued;
+  assert.equal(mailPages, pagesBefore, 'the continue ran no mail page, the case this pins');
+  const header = String(second['coverage'] ?? '');
+  assert.doesNotMatch(header, /mail partial_timeout/u, `a read that never ran is not a timeout: ${header}`);
+  assert.doesNotMatch(String(second['note'] ?? ''), /mail read took too long/u, `and the note never says it took too long: ${String(second['note'])}`);
+  assert.match(header, /mail never_ran \(say: [^)]+\)/u, `the header names the real outcome with its clause: ${header}`);
+});

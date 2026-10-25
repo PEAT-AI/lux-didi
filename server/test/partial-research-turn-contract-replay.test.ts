@@ -433,6 +433,11 @@ test('replay 8: a page failure after a success keeps the delivered page and name
   assert.equal(mail!['state'], 'partial');
   assert.equal(mail!['stop'], 'page_failed');
   assert.equal(mail!['represented'], 3, 'every delivered message is in the reply');
+  // W5-R2/F3: the header is the field the model repeats aloud, so it never calls a failed page complete.
+  const header = String(reply['coverage'] ?? '');
+  assert.match(header, /mail partial_failed 3 of 3 shown/u, `the header never calls a failed page complete: ${header}`);
+  assert.doesNotMatch(header, /mail complete/u, `the header never calls a failed page complete: ${header}`);
+  assert.match(header, /\(say: mail stopped after a later page failed\)/u, `the header says the failure aloud: ${header}`);
 });
 
 test('replay 9: overlapping pages are deduplicated and a changing total is reported as changing, never summed', async () => {

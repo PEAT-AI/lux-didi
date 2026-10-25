@@ -122,12 +122,12 @@ type ConnectorHook = { calls: { name: string; args: Record<string, unknown> | un
 
 /** One fake knowledge connector, its tool call counted: a dispatch the test can see, never a real endpoint. */
 /** What the fake knowledge connector answers, in the ranker's own line shape, so the read parses it as hits. */
-const answer = { lines: 40, body: 120 };
+const answer = { lines: 6, body: 170 };
 function knowledgeFixture(): string {
   const hit = (i: number): string => [
-    `**#${1000 + i}** [PATTERN] Clifton StrengthsFinder profile ${1000 + i} of the audit team`,
-    `the audit team strengths are Achiever, Learner and Input, dated 2026-10-${String((i % 28) + 1).padStart(2, '0')}.`,
-    `Score: 0.4${i % 10} \u00b7 status: live`,
+    `#${1000 + i}: Clifton StrengthsFinder profile ${1000 + i} of the audit team`,
+    `[Evidence](https://example.com/${1000 + i})`,
+    `the audit team strengths are Achiever, Learner and Input, dated 2026-10-${String((i % 28) + 1).padStart(2, '0')}. ${'more evidence about the team and its plan. '.repeat(4)}`,
   ].join('\n');
   return ['# Knowledge Search', '_confidence: medium \u00b7 mode: reranked \u00b7 top score: 0.37 \u00b7 relevant candidate: yes_',
     ...Array.from({ length: answer.lines }, (_, i) => hit(i))].join('\n');
@@ -161,8 +161,8 @@ async function toolsFixture(t: TestContext, store: Store, profile: ReturnType<ty
     return transport.handleRequest(request);
   });
   const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10_000, maxSliceBytes: 512 }),
-    resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 200_000, projectionChars: 10, timeoutMs: 5_000 } });
-  const toolOwner = createToolsOwner({ grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port,
+    resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 200_000, projectionChars: 20_000, timeoutMs: 5_000 } });
+  const toolOwner = createToolsOwner({ store, ownerId: store.assistantId, registry, port,
     lookupAuthority: async runId => authorityUp ? ownerRef?.lookupAuthority(runId) ?? ownerRef?.lookupJobAuthority(runId) ?? null : null });
   toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
     endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(schemas),
@@ -171,7 +171,7 @@ async function toolsFixture(t: TestContext, store: Store, profile: ReturnType<ty
     bounds: { maxQueryChars: 80, maxSearchLimit: 8, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 200_000 } });
   assert.equal((await port.discover(endpoint.id)).state, 'discovered');
   toolOwner.projectConnection('lux');
-  t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });
+  t.after(async () => { await port.close(); });
   return { tools: { owner: toolOwner, connectionIds: () => ['lux'] },
     hook: { calls, hold: () => { held = new Promise<void>(resolve => { release = resolve; }); },
       release: () => { held = undefined; release?.(); release = undefined; }, authority: up => { authorityUp = up; } } };

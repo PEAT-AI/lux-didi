@@ -415,3 +415,44 @@ test('#657 review: the tool declaration states the lookup limit and the allowed 
   assert.match(text, /query, mail or history/u, 'and the three other keys a lookup may carry');
   assert.match(text, /memory, knowledge, company, calendar, mail, chat, replies or web/u, 'and the values the source key takes');
 });
+
+// --- REVIEWFIX G1: the second status alternative matched ordinary content questions -------------------
+
+test('#653 review 2: an ordinary question that only shares a source word and a state word is not a status ask', () => {
+  for (const ordinary of ['the mail thread we were working on yesterday', 'what did the calendar say about the working group']) {
+    assert.equal(statusAsk(ordinary), false, `"${ordinary}" is a real question, not a status ask`);
+  }
+  for (const about of ['are my tools working', 'is my calendar alive today', 'test all tools', 'check the tools', 'is chat connected']) {
+    assert.equal(statusAsk(about), true, `"${about}" asks about the tools`);
+  }
+});
+
+// --- REVIEWFIX G2: a lookups-free continuation is judged on its question too -------------------------
+
+test('#654 review 2: a lookups-free continuation on a new topic starts fresh', async () => {
+  const h = harness({ configured: ['knowledge', 'mail', 'chat'] });
+  const first = await runResearch(h.deps, {
+    action: 'start', question: 'the renewal mail from the customer', topic: 'renewal',
+    lookups: [{ source: 'mail', mail: { q: 'renewal' } }],
+  }, new AbortController().signal);
+  const oldId = String(first['researchId']);
+  const fresh = await runResearch(h.deps, {
+    action: 'continue', researchId: oldId, question: 'how did the Blackwell contract win go',
+  }, new AbortController().signal);
+  assert.notEqual(String(fresh['researchId']), oldId, 'a new topic with no lookups starts its own run');
+});
+
+test('#654 review 2: a lookups-free continuation that points back at the run still continues', async () => {
+  const h = harness({ configured: ['knowledge', 'mail', 'chat'] });
+  const first = await runResearch(h.deps, {
+    action: 'start', question: 'the renewal mail from the customer', topic: 'renewal',
+    lookups: [{ source: 'mail', mail: { q: 'renewal' } }],
+  }, new AbortController().signal);
+  const oldId = String(first['researchId']);
+  const same = await runResearch(h.deps, {
+    action: 'continue', researchId: oldId, question: 'explain the prior discussion and identify the relevant blocker',
+  }, new AbortController().signal);
+  assert.equal(String(same['researchId']), oldId, 'a question that points back at the run continues it');
+  const plain = await runResearch(h.deps, { action: 'continue', researchId: oldId }, new AbortController().signal);
+  assert.equal(String(plain['researchId']), oldId, 'a bare continue still continues');
+});

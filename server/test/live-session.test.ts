@@ -50,13 +50,13 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
-import { RESEARCH } from '../tools/research.js';
+import { RESEARCH, RESEARCH_TOOL_NAME } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 
 const MODEL = 'models/live-session-test';
@@ -6388,7 +6388,13 @@ test('#656: owner audio sent during a rebuild is held and delivered to the new s
   assert.equal(diagnostics.ownerRebuildingDropBytes, frames[0]!.byteLength, 'and it is the oldest frame the owner sent');
 });
 
-test('#656: a research run past the twelve second ceiling still holds the ladder to its own deadline', async t => {
+test('#656: the ladder waits out each call on that call\'s own ceiling, a research run on its deadline', async t => {
+  // A plain call is bounded by the non-research ceiling; a research run outlives it and is bounded by RESEARCH.
+  assert.equal(callCeilingMs('search_knowledge'), TOOL_CEILING_MS);
+  assert.equal(callCeilingMs(RESEARCH_TOOL_NAME), RESEARCH.continueDeadlineMs);
+  assert.equal(callCeilingMs(undefined), TOOL_CEILING_MS, 'a call whose name is unknown keeps the plain ceiling');
+  assert.ok(RESEARCH.continueDeadlineMs > TOOL_CEILING_MS, 'the research bound is the longer of the two');
+  // And the hold itself ends at the ceiling: a plain call older than TOOL_CEILING_MS no longer owns the silence.
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
@@ -6397,36 +6403,21 @@ test('#656: a research run past the twelve second ceiling still holds the ladder
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   let calls = 0;
-  let holdFrom = Number.POSITIVE_INFINITY;
-  // Every fixture read before the continue runs free; the continue's own read is the one held open.
-  const beforeTool = async () => { calls += 1; if (calls >= holdFrom) await held; };
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true,
-    scheduler, limits: openaiLimits, beforeTool });
-  await openPort(h, 'research-deadline-656');
+  const beforeTool = async () => { calls += 1; if (calls >= 2) await held; };
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler,
+    limits: openaiLimits, beforeTool });
+  await openPort(h, 'ceiling-656');
   await ownerInput(fake);
-  // One settled read arms the debt clock, so the ladder is running when the research run starts.
   fake.emit({ type: 'toolCall', calls: [{ id: 'warm656', name: 'search_knowledge', args: { query: 'warm', limit: 1 } }] });
   await settlePort();
-  // A start run settles on its own; its id is what a continue needs to stay open past the plain tool ceiling.
-  fake.emit({ type: 'toolCall', calls: [{ id: 'start656', name: 'research',
-    args: { action: 'start', question: 'what is on my calendar', topic: 'what is on my calendar' } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'slow656', name: 'search_knowledge', args: { query: 'slow', limit: 1 } }] });
   await settlePort();
-  const opened = fake.toolResponses.at(-1)?.[0]?.response as Record<string, unknown> | string | undefined;
-  const researchId = typeof opened === 'string' ? undefined : opened?.['researchId'];
-  assert.equal(typeof researchId, 'string', 'the start run names the run a continue resumes');
-  holdFrom = calls + 1;
-  fake.emit({ type: 'toolCall', calls: [{ id: 'run656', name: 'research',
-    args: { action: 'continue', researchId, lookups: [{ source: 'calendar', query: 'what is on my calendar' }] } }] });
-  await settlePort();
-  assert.ok(calls >= holdFrom, 'the continue read a source, so its call is still pending');
-  // The run is older than TOOL_CEILING_MS and still work: RESEARCH.continueDeadlineMs is what bounds the wait.
-  h.advance(16_000); scheduler.runDue(); await settlePort();
-  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'a sixteen second research run is still work');
-  h.advance(RESEARCH.continueDeadlineMs); scheduler.runDue(); await settlePort();
-  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'past its own deadline the run still recovers');
+  h.advance(TOOL_CEILING_MS - 1_000); scheduler.runDue(); await settlePort();
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'inside its ceiling the call holds the silence');
+  h.advance(TOOL_CEILING_MS); scheduler.runDue(); await settlePort();
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'past its ceiling the ladder recovers the silence');
   release();
-});
-test('#656: a call past its own ceiling no longer holds the ladder, so a wedged read still recovers', async t => {
+});test('#656: a call past its own ceiling no longer holds the ladder, so a wedged read still recovers', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());

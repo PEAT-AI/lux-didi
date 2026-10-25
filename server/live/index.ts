@@ -295,6 +295,15 @@ export function journalToolStatus(response: JsonObject): 'completed' | 'error' {
 
 /** S4a ceiling on one non-research tool call: past it the host answers the call itself with a timeout output. */
 export const TOOL_CEILING_MS = 12_000;
+
+/**
+ * #656: the hard ceiling the mute ladder waits out for one call the model issued. A research run has its own
+ * published deadlines in RESEARCH and outlives the plain tool ceiling, so it holds the silence for the longest of
+ * them; every other call keeps TOOL_CEILING_MS.
+ */
+export function callCeilingMs(toolName: string | undefined): number {
+  return toolName === RESEARCH_TOOL_NAME ? RESEARCH.continueDeadlineMs : TOOL_CEILING_MS;
+}
 /** R6: how recent the model's own audio must be to hold a late line back. */
 const ANSWER_AUDIO_HOLD_MS = 3_000;
 /** S4a: a delegation still open this long after its last call was answered, with no terminal nested event, is
@@ -1826,12 +1835,9 @@ export class LiveSessionOwner {
     return false;
   }
 
-  /**
-   * #656: the ceiling the ladder waits out for one call. A research run has its own published deadlines in
-   * RESEARCH, so it holds the silence for the longest of them; every other call keeps TOOL_CEILING_MS.
-   */
+  /** #656: the ceiling the ladder waits out for the call it holds, by the tool the model called. */
   #callCeiling(handle: ActiveSession, callId: string): number {
-    return handle.pendingCalls.get(callId) === RESEARCH_TOOL_NAME ? RESEARCH.continueDeadlineMs : TOOL_CEILING_MS;
+    return callCeilingMs(handle.pendingCalls.get(callId));
   }
 
   async #debtRung(handle: ActiveSession, generation: number, step: 'rung' | 'rebuild'): Promise<void> {

@@ -149,8 +149,8 @@ test('the panel renders exactly the controls this test drives, so a new control 
   assert.deepEqual(named.filter(id => !declared.has(id)), [], 'a control inside #settings-summary has no declared effect in this test');
   assert.deepEqual(passive.filter(id => !named.includes(id)), [], 'a passive control the test still expects');
   assert.deepEqual(named.filter(id => ['settings-summary', 'live-voices'].includes(id)), [], 'the panel section and the voice datalist are containers, not controls');
-  const unlabelled = controls.filter(control => !control.id);
-  assert.deepEqual(unlabelled.map(control => `${control.tag}:${control.type}`), ['button:submit', ...mongooseIDs.map(() => 'button:button')],
+  const unlabelled = controls.filter(control => !control.id).map(control => `${control.tag}:${control.type}`).sort();
+  assert.deepEqual(unlabelled, ['button:submit', ...mongooseIDs.map(() => 'button:button')].sort(),
     'the only unnamed controls are the Save provider button and one Sign in button per Mongoose connector');
   assert.equal(controls.filter(control => 'data-signin' in control.attributes).length, mongooseIDs.length);
 });

@@ -910,12 +910,24 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       let rows: MattermostChannel[];
       const filters = listFilters();
       if (filters.query && filters.types) {
-        // W2B-R6: the child's own exact-name ranking works on the words the owner said, so the fold of
-        // articles, punctuation and plurals stays local (the `strong` filter below).
-        const listed = await read('mattermost_list_channels', { query: spoken, types: ['O', 'P'], limit: MATTERMOST_CHAT.channelRows }, signal);
-        if (!listed.ok) return listed.result;
-        capture(listed.evidence);
-        rows = parseChannelList(listed.evidence.decodedResult) ?? [];
+        // W2B-R6, W2B-R8: the child ranks the words the owner said, folding case and "&" only, never plurals
+        // (mattermost-mcp src/mcp/people.ts `channelWords`), so the spoken words go first and an inflection
+        // only the fold resolves earns one retry with the folded key. One extra read, and only on a miss.
+        const exact = (list: readonly MattermostChannel[]): boolean => list.some(channel => nameKey(channel.displayName ?? '') === key || nameKey(channel.name ?? '') === key);
+        const ask = async (query: string): Promise<MattermostChannel[] | { refused: MattermostResult }> => {
+          const listed = await read('mattermost_list_channels', { query, types: ['O', 'P'], limit: MATTERMOST_CHAT.channelRows }, signal);
+          if (!listed.ok) return { refused: listed.result };
+          capture(listed.evidence);
+          return parseChannelList(listed.evidence.decodedResult) ?? [];
+        };
+        const first = await ask(spoken);
+        if (!Array.isArray(first)) return first.refused;
+        rows = first;
+        if (!exact(rows) && key !== spoken.trim().toLowerCase()) {
+          const folded = await ask(key);
+          if (!Array.isArray(folded)) return folded.refused;
+          rows = folded;
+        }
       } else {
         const channels = await loadChannels(signal);
         if (!Array.isArray(channels)) return { state: 'refused', reason: channels.error };

@@ -1,222 +1,36 @@
-# Optional HTTP MCP adapter
+# MCP adapter
 
-This slice is a portable, optional adapter, **not runtime or HTTP service wiring**.
-The core service has no adapter import or configured remote endpoint by default.
-No account provisioning, model call, automatic configuration discovery, personal-memory
-write, database, or schema-to-model publication occurs here.
+The MCP adapter implements protocol transport and accepted result handling. It is wired by the canonical host in `server/host/mcp.ts`; old descriptions of it as an unintegrated HTTP-only slice no longer describe the release.
 
-## Owned seam
+## Components and contracts
 
-ESM imports in a host that explicitly opts in:
+| Symbol | Source and responsibility |
+| --- | --- |
+| `createMcpAdapter` | `server/adapters/mcp/adapter.ts`, transport/session composition |
+| `McpPort` | `server/adapters/mcp/port.ts`, asynchronous discovery and call boundary |
+| `EndpointConfig` | `server/adapters/mcp/port.ts`, HTTP or stdio endpoint configuration |
+| `McpRegistry` | `server/adapters/mcp/registry.ts`, registered endpoints and approved tool context |
+| `ResultStorePort` | `server/adapters/mcp/port.ts`, accepted result storage contract |
+| `MemoryResultStore` | `server/adapters/mcp/store.ts`, in-memory implementation for that contract |
+| `canonicalToolDigest` | `server/adapters/mcp/registry.ts`, canonical tool-schema identity |
+| `composeMcpConnection` | `server/host/mcp.ts`, host-owned connection composition |
 
-```ts
-import { createMcpAdapter } from '../server/adapters/mcp/adapter.js';
-import { McpRegistry } from '../server/adapters/mcp/registry.js';
-import { MemoryResultStore } from '../server/adapters/mcp/store.js';
-import type { McpPort, ResultStorePort } from '../server/adapters/mcp/port.js';
+Read the interfaces for exact request/result shapes. The adapter does not select accounts, authorize arbitrary remote tools or turn a discovered schema into a model grant.
 
-const registry = new McpRegistry(); // initially empty
-registry.register({
-  id: 'public-source', url: 'https://source.example/mcp',
-  account: 'locally-selected-account', resource: 'locally-selected-resource',
-  // credentialRef: 'one-locally-resolved-reference', // optional
-});
-registry.enable('public-source');         // connector switch: not authority
-registry.allowEgress('public-source');   // separate, explicit local source egress
-const adapter: McpPort = createMcpAdapter({
-  registry, store: new MemoryResultStore(),
-  // resolveCredential: async reference => hostCredentialResolver(reference),
-});
-const discovered = await adapter.discover('public-source');
-// Display the discovered digest/definitions for LOCAL review. Do not send the
-// discovered schemas to a model automatically. Connector enablement is not approval.
-if (discovered.state === 'discovered') {
-  // After an explicit local review of this exact digest, effect and scope:
-  registry.approve({
-    endpointId: 'public-source', schemaDigest: discovered.schemaDigest,
-    toolNames: ['reviewed_read_tool'], effect: 'read',
-    account: 'locally-selected-account', resource: 'locally-selected-resource',
-    generation: 1,
-  });
-}
-// Always close the SDK session when the owning host shuts down:
-await adapter.close();
-```
+## HTTP and stdio are different boundaries
 
-The tool name in this generic example must exist in the locally reviewed discovery;
-unknown names are refused. `visibleTools(id)` only returns granted definitions.
-It does not publish model tools or give a model approval authority.
-`registry.disable(id)`, `denyEgress(id)` and `revoke(id)` invalidate existing authority.
-Grants bind endpoint, full schema digest, exact tool-name set, locally classified read
-effect, account, resource and monotonically increasing generation. Annotations, including
-`readOnlyHint`, are advisory and never consulted for authorization. Calling a remotely
-"read-only" tool does not prove absence of hidden side effects.
+HTTP endpoints use validated destinations and credential resolution; stdio endpoints use an explicitly approved executable, arguments and environment. `validateEndpointUrl` and `validateApprovedStdioEnv` in `registry.ts` own those validation rules. Stdio is not permission to run a model-supplied command or inherit arbitrary secrets from a developer shell.
 
-`McpPort` and `ResultStorePort` are SDK-free declarations in `port.ts`:
+`HTTP_CONNECT_TIMEOUT_MS`, `STDIO_CONNECT_TIMEOUT_MS` and `ConnectTimeoutMs` in `adapter.ts` own connection budgets. Keep handshake, source-call and whole-operation deadlines distinct. A failed handshake is not an empty successful read, and a slow child must not hold a call indefinitely.
 
-- `discover(endpointId)` returns `discovered` (all pages, tools, digest, observedAt) or
-  explicit `unavailable`. Discovery is never a grant. Duplicate names, repeated/empty
-  cursors, malformed definitions/schemas, exhausted budgets and unavailable servers
-  fail without partially ready tools. Empty tool lists are valid empty discovery.
-- Every discovery refresh invalidates grants. All JSON definition keys and tool-name
-  order are canonicalized in SHA-256; descriptions, schemas, annotations and extensions
-  are included. `notifications/tools/list_changed` immediately suspends local grants;
-  refresh/review requires a new generation even if the digest is unchanged.
-- `call({endpointId, toolName, arguments, generation, account, resource}, signal?)`
-  returns `refused` before dispatch, `completed`, `tool-error` (`isError`),
-  `protocol-error` (explicit SDK-parsed JSON-RPC error with numeric code), or `unknown`
-  after possible dispatch. HTTP errors, malformed results, lost sessions, oversized
-  responses, timeout and cancellation are not retried or fabricated as empty results.
-  A later explicit discovery can reconnect; it cannot replay a call.
-- Up to N calls per endpoint run concurrently (default 6, `maxConcurrentCallsByEndpoint` overrides one),
-  keyed apart by JSON-RPC id; calls beyond N queue in arrival order and honour their own `AbortSignal`
-  and deadline while queued, so a queued call that times out returns a clear `timeout` code and never
-  reaches the transport. Nothing is refused as `endpoint-busy`. Session creation is single-flight: one
-  session is created per endpoint at a time and concurrent callers await it. A dead session fails every
-  in-flight call with one shared code and is counted and retired once. Discovery is exclusive: it waits
-  for in-flight calls and new calls wait for discovery, so tools never change under a running call.
-  Revocation or schema notification during a dispatched call prevents publication of
-  its result/handle and returns `unknown`. Local abort returns promptly; the adapter
-  best-effort sends `notifications/cancelled` through the SDK with its SDK-generated
-  request id and a separate deadline of at most 200 ms. Remote cancellation is unproven.
-- `whenSuspended(endpointId)` is a bounded notification observer, not authorization.
+## Accepted evidence and revocation
 
-## HTTP and credential policy
+A discovered tool is not yet approved. Endpoint identity, schema digest, connection generation and current policy bind dispatch. Results must pass the accepted-result and connector projection boundaries before a model sees them. Unknown result envelopes or mismatched lineage remain unavailable rather than falling back to raw response text.
 
-The exact canonical configured URL is pinned, including origin, path and query.
-URL userinfo, fragments and noncanonical spelling are rejected. Plain HTTP is limited
-to literal dotted-decimal 127.x.x.x or `[::1]` loopback; `localhost`, integer/hex IPs,
-shortened IPv4 and nonloopback HTTP are refused. HTTPS remote endpoints remain explicit.
-Redirects (including same-origin redirects) are refused, never followed.
+`server/tools/` owns durable intent/result references and reauthorization; the adapter is not a second authority registry or a complete persistence layer. `MemoryResultStore` does not replace the host's canonical durable tool records. See [tool-owner.md](tool-owner.md) and [diagnostic-store.md](diagnostic-store.md).
 
-Supported SDK fetch injection owns every outgoing transport request. Only protocol
-headers `accept`, `content-type`, `mcp-session-id`, `mcp-protocol-version`,
-`last-event-id`, `mcp-method` and `mcp-name` are accepted from the SDK; caller config has
-no header, OAuth, Host or Origin option. Node sends no Origin and derives actual Host
-from the pinned URL. A credential resolver receives just the configured reference;
-its single bearer token is added only at the pinned destination. No OAuth provider
-is installed, so 401 causes no token refresh, automatic discovery or retry. Tokens,
-sessions, headers, response bodies and remote errors are never logged by the adapter.
-Source egress and read grants are checked again after asynchronous credential resolution.
+## Configure and diagnose through the host
 
-The supported SDK `client.request` API is used for explicit single-page discovery and
-calls. This avoids high-level v2 `listTools` cache/aggregation/filtering and `callTool`
-automatic header-mismatch refresh/retry. The SDK still owns initialization, message
-validation, protocol version, sessions, notifications and parsing. A supported
-transport `onmessage` observer forwards messages unchanged and uses the official
-`isJSONRPCErrorResponse` guard to distinguish actual remote rejections from SDK-local
-decode errors (both can otherwise be `ProtocolError`). The dispatch guard
-also rejects any second `tools/call` dispatch in one operation. Tool-schema header
-mirroring, OAuth, stdio and other transports are not supported in this slice.
+[MCP configuration](mcp-configuration.md) owns protected profiles, helper environments, sign-in and approval modes. [Connectors](connectors.md) owns source-specific envelopes and projections. Do not copy an old schema example here into a current private profile without checking the validator.
 
-## Results, resource limits and completeness
-
-Completed states carry source endpoint/URL/account/resource/tool/digest/generation,
-`coverage.completeCorpus=false`, `basis=single-tool-result`, remote-side-effects
-`unverified`, and freshness `receivedAt` plus `sourceVersion=unknown`. Success is not
-independent evidence of hidden effects or corpus completeness.
-
-`projection` is a compact JSON text projection of the SDK result, with explicit
-`omitted`, `originalCharacters` and `omittedCharacters` (UTF-16 code units). It is not
-necessarily parseable JSON when truncated. A protocol-error projection contains only
-its code. Authorized full payload retrieval is separate:
-
-- `payload.state=available` carries an opaque handle, original byte length, SHA-256,
-  explicit epoch-ms expiry and encoding `http-response-entity`.
-- Original bytes are the exact retained HTTP response entity, including the
-  original JSON-RPC envelope or SSE framing, not reserialized SDK output and not
-  compressed network packets. Server-side test capture independently checks equality.
-  `decodedResult` carries the parsed result or JSON-RPC error separately.
-- `readSlice({handle, endpointId, generation, account, resource, offset, length})`
-  returns bounded bytes, or `refused`, `expired`, `unavailable`. The original endpoint,
-  exact URL, grant/digest/tool, generation, account and resource are revalidated on
-  every read. Copies cannot mutate stored bytes. All slices reconstruct exact originals.
-- Payload-store capacity, oversize and store failures are explicit `unavailable`,
-  never silent truncated success. Expired entries may be reclaimed for capacity;
-  reclaimed handles explicitly return unavailable, not fake empty bytes.
-
-`createMcpAdapter` defaults: timeout 5000 ms, response entity cap 1 MiB, 64 discovery
-pages, 1000 tools, projection 2048 characters. All budgets are positive safe integers
-and can be overridden via `budgets`. The HTTP notification stream is passed through to the SDK, with a cumulative
-per-session byte budget equal to the response entity cap; exhaustion suspends grants
-and requires explicit rediscovery. GET connection establishment is deadline-bounded,
-without imposing that deadline on an idle connected stream. POST response entities
-are bounded before parsing/storage. A response stream that never
-finishes hits the deadline and has unknown outcome. This is **not complete corpus
-search**; source-native retrieval is an explicitly granted tool call and only that
-result is represented.
-
-`MemoryResultStore` defaults: total 4 MiB, 64 entries, TTL 60 seconds, slice cap 16 KiB;
-all configurable, with injected clock for expiry tests. It never evicts unexpired
-entries silently. Hosts may inject a Didi-owned `ResultStorePort` implementation with
-the same bounded/scope semantics. This implementation is volatile and introduces no
-second database or automatic persistence to personal memory.
-
-## Verification and provenance
-
-Focused local/managed producer:
-
-```sh
-bash scripts/check-mcp.sh
-```
-
-This builds the strict TypeScript service and runs only `server/test/mcp.test.ts` via
-Node's test runner. Managed workers execute it through their declared controller
-check. Fixtures are explicitly synthetic, real localhost HTTP listeners backed by
-the official server SDK, not fake success stubs. Retained independent review at the
-exact pushed SHA is required; this adapter alone does not close host integration.
-
-Dependencies: official `@modelcontextprotocol/client` **2.3.1** (runtime),
-`@modelcontextprotocol/server` **2.3.1** (test only), pinned with npm integrity hashes.
-Verified package root exports supply `Client`, `ProtocolError`,
-`StreamableHTTPClientTransport`, `Server`, `WebStandardStreamableHTTPServerTransport`;
-there is no `/streamableHttp` subpath. The supported `/validators/ajv` export supplies
-`AjvJsonSchemaValidator`. Official source metadata points to
-<https://github.com/modelcontextprotocol/typescript-sdk>.
-SDKs are Apache-2.0; upstream copyright/attribution and full terms are preserved in
-`server/adapters/mcp/SDK-LICENSE.txt` and the installed packages' LICENSE files. No
-upstream SDK source is modified or copied into the adapter. Distributions must retain
-these notices and dependency licenses. The licensed package metadata/types are truth,
-not a claim that any separately running source is on the same commit.
-
-A separately authorized live proof may initialize, list all tool-definition pages and
-close an existing local source, with no tool execution/content query. Its public health
-runtime commit and receipt commit, if present, must be recorded as observed freshness
-metadata: a mismatch is not an invented failure or assumed identity. The synthetic
-protocol checks do not claim that live integration was verified.
-
-## Streamable HTTP response entities
-
-POST responses may be `application/json` or `text/event-stream`. JSON entities
-retain their exact bytes and use the SDK JSON-RPC parser. For SSE, the adapter
-bounds the complete entity before decoding UTF-8 frames, ignores comments,
-keep-alives and non-data fields, joins multiple `data` lines with a newline,
-and selects the JSON-RPC result or error whose id matches the request. The
-selected response is serialized as JSON for the SDK, while the result store retains
-the exact original SSE entity. Result hashes and slices always describe the original
-entity. The adapter returns the SDK-decoded result or error in `decodedResult`;
-connectors inspect that field after verifying the bounded stored entity, never
-parse transport bytes themselves.
-Optional `structuredContent` and `_meta` are accepted but never forwarded as
-unclassified model content; only permitted text content is projected.
-
-An empty SSE entity, missing matching response, invalid UTF-8 or malformed data
-payload produces the bounded `sdk_protocol_rejected` stage, not an uncaught JSON
-parse exception. A decoded result the SDK rejects uses `invalid_result`; other
-classified connector exceptions use `connector_error`. `handler_outcome` is
-reserved for unclassified handler outcomes. A dispatched call failure records
-exactly one closed stage: `timeout`, `cancelled`, `child_exited`, `pipe_closed`,
-`sdk_protocol_rejected` or `invalid_result`. `child_exited` is selected by the
-child's exit code or signal; `pipe_closed` covers a closed stdio or HTTP
-transport with no process exit. These codes survive the tool journal
-and model-visible response. Unknown transport outcomes remain unknown; there is
-no automatic retry of a dispatched call. Diagnostics contain safe error class
-and bounded message-code metadata, never remote response text.
-
-The host supplies its existing `HostLog` through the optional tools-owner log sink.
-MCP composition only forwards this sink; admission and policy synthesis are
-unchanged. A `tool_failure` event retains bounded code, registered tool/connector
-names, a closed error class and a message head of at most 120 characters. The
-message head is the safe code token, never the arbitrary exception message,
-stack, transport payload or knowledge text. Extra fields are dropped at the host
-log boundary. Omitting the sink preserves standalone adapter/owner composition.
+For failures, use safe reason codes and transport state, never exception bodies, endpoint environments or credential objects. [Debugging](debugging.md) explains the metadata-first workflow. [Checks](checks.md) names the adapter and connector producers; fakes do not prove that a real account is signed in.

@@ -4520,7 +4520,7 @@ const NAVIGATION_WORDS = new Set(['page', 'pages', 'item', 'items', 'thread', 't
  * relevant blocker" continues the run it names while "how did the Blackwell contract win go" does not.
  */
 const REFERENTIAL_WORDS = new Set(['prior', 'previous', 'previously', 'earlier', 'above', 'former', 'last', 'discussion', 'conversation', 'thread', 'point', 'points', 'blocker', 'blockers', 'explain', 'identify', 'summarize', 'summarise', 'describe', 'clarify', 'relevant', 'related', 'context', 'topic', 'subject', 'thing', 'things', 'issue', 'issues', 'question', 'answer', 'finding', 'findings', 'said', 'mentioned']);
-const TOPIC_SKIP = new Set([...KNOWLEDGE_FILLER, ...REFERENTIAL_WORDS]);
+const TOPIC_SKIP = new Set([...KNOWLEDGE_FILLER, ...REFERENTIAL_WORDS, ...CONTINUATION_WORDS]);
 
 /**
  * #654: an id continues its run only for more of the same read. A direction that names a source the run

@@ -63,16 +63,20 @@ print_skips() {
 # explicit compile pass with the same flags the per-check scripts use, so no suite is
 # unreachable just because the build never emitted it.
 server_extra_compile() {
-  local -a extra=() file
+  local -a extra=() file sep=''
   for file in test/*.test.ts; do
     grep -qF "\"$file\"" tsconfig.json || extra+=("$file")
   done
   [ "${#extra[@]}" -eq 0 ] && return 0
   printf 'server: compiling %d test files that server/tsconfig.json does not name\n' "${#extra[@]}"
-  ./node_modules/.bin/tsc --ignoreConfig --target ES2023 --module NodeNext --moduleResolution NodeNext \
-    --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals \
-    --noUnusedParameters --skipLibCheck --declaration --sourceMap --types node \
-    --rootDir . --outDir dist "${extra[@]}"
+  # A generated config, because TypeScript 6 requires it for explicit files and because
+  # `server/tsconfig.json` names its test files one by one. Same compiler options, same
+  # outDir, only a different include: every module they import is still compiled.
+  local here="$PWD" cfg="$work/tsconfig.extra.json"
+  { printf '{\n  "extends": "%s/tsconfig.json",\n  "include": [' "$here"
+    for file in "${extra[@]}"; do printf '%s\n    "%s/%s"' "$sep" "$here" "$file"; sep=,; done
+    printf '\n  ]\n}\n'; } >"$cfg"
+  ./node_modules/.bin/tsc -p "$cfg"
 }
 
 run_phase() { # <label> <logfile> <command...>

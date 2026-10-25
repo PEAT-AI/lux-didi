@@ -3407,6 +3407,20 @@ test('#651: an unknown channel reaches research as its own closed code', async t
   assert.match(reply, /"unavailable":\{"chat":"channel_not_found"\}/, 'the reply header keeps the code the chat read gave');
 });
 
+// #651 FAILREASON-R1: a read the connector cut at its own budget is said as a timeout, never as a source
+// that failed for no stated reason, so the owner hears why nothing came back.
+test('#651: a timed-out chat read reaches research as a timeout', async t => {
+  const h = await harness(t, { tools: true, mattermost: true,
+    mattermostWork: () => new Promise<void>(resolve => { setTimeout(resolve, 1300); }) });
+  await attached(h, 'failreason-timeout');
+  await ownerSpoke(h);
+  h.f.send({ toolCall: { functionCalls: [{ id: 'r1', name: 'research', args: { action: 'start', question: 'what was said in chat about the deploy', topic: 'deploy in chat' } }] } });
+  // The connector's own 1 s budget has to expire for real, so this waits on it rather than on a tick.
+  for (let i = 0; i < 400 && toolResponseCount(h) === 0; i++) await new Promise<void>(resolve => { setTimeout(resolve, 10); });
+  const reply = lastToolResponse(h);
+  assert.match(reply, /team chat: not read \(timed out after \d+ s\)/, 'the reply names the timeout it hit');
+});
+
 test('U1: research progress reaches the live channel with metadata only', async t => {
   const h = await harness(t, { tools: true, calendar: true });
   await attached(h, 'lookup-progress');

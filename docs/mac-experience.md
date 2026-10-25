@@ -17,7 +17,7 @@ Every launch and every Dock reopen writes one content-free `launch_kind` line ca
 
 An interactive launch waits up to four seconds for the calendar connector to publish before it starts the call, so the opener composes with a digest; past the bound the call starts and the digest reads absent.
 
-A stop is the owner's, so the native side never waits for the host to go cold: a local stop cancels the transport after 500 ms and records `live_stop_outcome` as `confirmed` or `deadline`, and a socket that closed without a terminal frame takes presence cold at once with no reconnect.
+A stop is the owner's, so the native side never waits for the host to go cold: a local stop cancels the transport after 500 ms and records `live_stop_outcome` as `confirmed`, `host_ended` when the host announced its own voice stop so there is no close receipt to wait for, or `deadline`, and a socket that closed without a terminal frame takes presence cold at once with no reconnect.
 
 ## Surfaces
 

@@ -14,7 +14,13 @@ The owner supplies the model loop's journal and result gate. Intent precedes dis
 
 A coverage statement must distinguish unavailable sources from completed empty reads, and partial work from complete coverage. Found matches, examined records and represented findings are not interchangeable counts. A deadline cannot be disguised as "nothing matched". [Live call](live-call.md) owns dead-air behavior around those operations.
 
-Registry connectors and their projections are described in [connectors.md](connectors.md). Keep exact schemas, source budgets and query operators in the implementation, not a second prose table here. The separate research-depth wagon was not part of the stable-release train.
+Registry connectors and their projections are described in [connectors.md](connectors.md). Keep exact schemas, source budgets and query operators in the implementation, not a second prose table here.
+
+The reply budget is a tier, not one number: 12,000 chars for a plain ask, 16,000 for an analytical one (a named person or a document, a comparison, team implications, a synthesis across sources) and 20,000 when the owner asks to go deep. The tier is read off the owner's question before the run reads anything, a later question may raise it, and nothing lowers it. The allocator shares the budget as before, with two changes: a source is only trimmed while it still holds more than `sourceFloorChars` (about 1,000) of evidence, so one line never counts as shown, and memory the ask did not refer to gets no allocation at all when the ask names a person or a document, not merely the last word in a squeeze. A hit two reads both returned is shown once.
+
+Beside the per source counts the header closes with `<label> full` or `<label> excerpt` for each source it read, so an excerpt is never called full, and `entities N of M covered` with `missing: <names>` for the people and documents the owner named, read off the question itself rather than a model call.
+
+Knowledge reads in two stages. The search answers with summaries; when the ask names a person or a document, or asks for depth, the host then makes one batched `get_insight` read of at most three hits, the ones naming an asked entity first, inside the round already dispatched and under its own 1,500 ms bound. Each fetched body replaces the summary of the hit it came from, keyed by that hit's id, so the reply shows the entry and not its abstract. A plain search spends no second call.
 
 ## Opening things
 

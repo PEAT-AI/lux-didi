@@ -552,7 +552,7 @@ test('Q5-R1: a lookup that names an insight reads it by id and returns the whole
   const findings = reply['findings'] as { text: string }[];
   assert.ok(findings.length > 0, 'the read reaches the reply');
   assert.ok(findings[0]!.text.includes('End of the entry.'), 'the whole body is returned, up to the connector body cap');
-  assert.ok(findings[0]!.text.length > RESEARCH.replyLimitChars, `a read is not trimmed to the search reply budget (${findings[0]!.text.length} chars)`);
+  assert.ok(findings[0]!.text.length > RESEARCH.budgets.default, `a read is not trimmed to the search reply budget (${findings[0]!.text.length} chars)`);
 });
 
 // --- 3r R1: honest empty reads, model-facing progress, metadata-only lookup receipts -------------

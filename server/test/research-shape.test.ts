@@ -321,7 +321,7 @@ test('CALM-R11: an event with no location and a calendar still keeps its title',
 });
 
 test('E8/U2: a trimmed calendar block says how many events it left out', () => {
-  const lines = Array.from({ length: 40 }, (_, n) => `- 2026-10-25T10:${String(n % 60).padStart(2, '0')}:00Z, Synthetic long week event ${n} with a title that fills the block ${'x'.repeat(120)} [id t${n}]`);
+  const lines = Array.from({ length: 200 }, (_, n) => `- 2026-10-25T10:${String(n % 60).padStart(2, '0')}:00Z, Synthetic long week event ${n} with a title that fills the block ${'x'.repeat(120)} [id t${n}]`);
   const block = shapeBlock('calendar_window', [sub('calendar_list_events', lines.join('\n'))], 'UTC');
   assert.match(block.text, /I left out \d+ calendar events to keep this answer short\./u);
   assert.ok(block.total > block.lines.length || /left out/u.test(block.text));

@@ -12,6 +12,8 @@ The `luxKnowledgeDescriptor` entry in `server/connectors/index.ts` publishes the
 
 Use search to find relevant evidence, then retrieve the identified insight when the question needs its body. A weak or empty match is not a confident fact. Preserve source identity and coverage, including when a body is bounded or unavailable.
 
+Research reads knowledge in two stages. The `search_knowledge` call is the summary stage and keeps its bounded body window. When the ask names a person or a document, or asks for depth, `research` then makes exactly one batched `get_insight` call of at most three hit ids, the hits naming an asked entity first, under its own 1,500 ms bound and inside the operation's deadline. Each returned body is keyed by the hit id it came from and replaces that hit's summary line, so the reply shows the entry rather than its abstract. A plain search makes no second call, and an entry that names no hit in the summary is left out rather than appended.
+
 The reader owns accepted argument shapes and budgets. `KNOWLEDGE_BODY_MIN_CHARS`, `KNOWLEDGE_BODY_MAX_CHARS`, `KNOWLEDGE_DEADLINE_MIN_MS` and `KNOWLEDGE_DEADLINE_MAX_MS` are source constants, not a second set of documentation defaults. The source's result envelope and actual capture determine what was received; a local projection is not proof that the entire corpus was searched.
 
 ## Setup and authority

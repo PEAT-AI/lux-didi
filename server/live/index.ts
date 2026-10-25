@@ -15,7 +15,7 @@ import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, ADMISSION_BLOCKED, RESEARCH_OPERATION, ResearchAdmission, knownReply } from '../tools/research.js';
+import { ADMISSION_BLOCKED, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -493,6 +493,9 @@ interface ActiveSession {
   delegationTimer?: ReturnType<JobTimer> | undefined;
   /** R6: when this call's first answer went out with sources still reading, and which call spoke a late line. */
   researchAnsweredAt?: number | undefined; lateCommentaryFor?: string | undefined;
+  /** C-DEPTH item 5 (W10-R12): the research text this call holds in the provider conversation, and the payload
+   *  the rebuild will seed when it is due. */
+  researchRetention: ResearchRetention; researchRebuildSeed?: string | undefined;
   /** S4a-R2 (e): one execution receipt per call of this turn, the only source a late line may name. */
   exec: Map<string, { source: string; status: ExecStatus }>;
   progressCallIds: Set<string>;
@@ -1030,6 +1033,8 @@ export class LiveSessionOwner {
   readonly #onSessionTerminal: ((liveSessionId: string) => void) | undefined;
   readonly #summaryLog: ((event: { event: string } & Record<string, unknown>) => void) | undefined;
   readonly #memorySource: LiveOwnerConfig['memorySource'];
+  /** W10-R20: the rebuild threshold, the config value or the shipped constant. */
+  readonly #rebuildThresholdChars: number;
   readonly #store: LiveStorePort;
   readonly #vault: VaultWriter;
   /** W6: the same one lux endpoint the vault writer uses, kept for the exporter's near-duplicate probe. */
@@ -1074,6 +1079,7 @@ export class LiveSessionOwner {
     this.#onSessionTerminal = summaryHooks?.onSessionTerminal;
     this.#summaryLog = summaryHooks?.log;
     this.#memorySource = config.memorySource;
+    this.#rebuildThresholdChars = config.rebuildThresholdChars ?? RESEARCH.rebuildThresholdChars;
     // The digest hook rides the composition seam; a test may also pass it on the config directly.
     this.#calendarDigest = (config as unknown as WarmHooks).calendarDigest ?? (config.tools as unknown as WarmHooks | undefined)?.calendarDigest;
     this.#calendarState = this.#calendarDigest === undefined ? 'unconfigured' : 'empty';
@@ -1628,7 +1634,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
-      researchAdmission: new ResearchAdmission(),
+      researchAdmission: new ResearchAdmission(), researchRetention: { retainedChars: 0, rebuilds: 0 },
       registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
@@ -2380,6 +2386,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     }
     if (type === 'turnComplete' || type === 'turnFailed') {
       handle.responseInProgress = false;
+      // C-DEPTH item 5 (W10-R13): the response just ended, which is the first boundary a rebuild may use.
+      void this.#researchRebuildAtBoundary(handle);
       // The response ended: an answer that was heard ends the debt, and one that ended without audio fires the rung
       // the deferral held, which is the ruling's own order.
       if (handle.debtSince !== undefined) {
@@ -2643,6 +2651,42 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
   }
 
   /** Only an attended call takes another provider window; a caller who already left never holds one open. */
+  /** C-DEPTH item 5: the last research question of a call, so the rebuild ledger can name the entities asked. */
+  readonly #lastResearchQuestion = new Map<string, string>();
+
+  /**
+   * C-DEPTH item 5 (W10-R13): the rebuild is spent at the response boundary and never from the batch that filled
+   * the conversation. It is deferred, never dropped: while the assistant is streaming, a response is pending, a
+   * barge in is open or a recovery is in flight, the seed waits for the next boundary. The rebuild itself is the
+   * existing fresh_seeded recovery, with the extractive ledger as one turn instead of the raw tool items.
+   */
+  async #researchRebuildAtBoundary(handle: ActiveSession): Promise<void> {
+    const ledger = handle.researchRebuildSeed;
+    if (ledger === undefined) return;
+    if (handle.rebuilding || handle.responseInProgress || handle.debtBargeIn || handle.pendingCallIds.size > 0) return;
+    if (this.#settled(handle)) return;
+    const now = this.#now();
+    const boundary: ResearchBoundary = {
+      // W10-R27/Z4: the real speaking fact, never a literal, so a rebuild never cuts audio.
+      assistantAudioStreaming: handle.speaking, responsePending: Boolean(handle.responseInProgress),
+      bargeIn: Boolean(handle.debtBargeIn), toolInFlight: handle.pendingCallIds.size > 0,
+    };
+    // W10-R15 P2: the decision is one function, so a deferral keeps both the seed and the count for the next
+    // boundary and only the branch that really rebuilds resets them.
+    const step = researchRebuildStep(handle.researchRetention, ledger.length, boundary,
+      handle.deadlineAt - now, handle.idleAt - now);
+    if (step.action !== 'rebuild') return;
+    const prior = handle.researchRetention;
+    handle.researchRebuildSeed = undefined;
+    handle.researchRetention = step.retention;
+    hostLogEvent({ event: 'research_context_rebuild', retainedChars: prior.retainedChars, epochChars: ledger.length,
+      rebuilds: step.retention.rebuilds });
+    const remaining = handle.deadlineAt - now;
+    const idle = handle.idleAt - now;
+    const seed = { turns: [{ role: 'user' as const, text: ledger, dataClass: handle.inputClass }], chars: ledger.length };
+    await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, remaining, seed, 'research_context');
+  }
+
   #attended(handle: ActiveSession): boolean { return !this.#settled(handle) && handle.consumerState === 'attached'; }
 
   #isSessionDeadline(outcome: LiveVoiceOutcome | undefined): boolean {
@@ -3559,6 +3603,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       }
       // R6: a reply that names sources still reading is the call's first answer point, so the late-findings
       // window and the one late commentary of this call both count from here.
+      const asked = call.args?.['question'];
+      if (typeof asked === 'string' && asked.trim() !== '') this.#lastResearchQuestion.set(handle.liveSessionId, asked);
       const pending = response['pending'];
       if (Array.isArray(pending) && pending.length > 0) { handle.researchAnsweredAt = this.#now(); handle.lateCommentaryFor = undefined; }
       return { id: call.id, name: call.name, response };
@@ -3569,6 +3615,18 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       const completed = entry.response['error'] === undefined;
       const status: 'completed' | 'error' = completed ? 'completed' : 'error';
       projections.push({ name: entry.name, status, markdown: entry.name === RESEARCH_TOOL_NAME ? researchProjection(entry.response, status) : `research: ${status}`, sources: [] });
+    }
+    // C-DEPTH item 5 (W10-R12): count exactly the research text the provider now holds, so the rebuild is due
+    // when the call has really retained that much. The ledger is built here too, from this batch's findings.
+    const answerChars = responses.reduce((sum, entry) => sum + JSON.stringify(entry.response ?? {}).length, 0);
+    handle.researchRetention = retainedAfterSend(handle.researchRetention, answerChars);
+    if (researchRebuildDue(handle.researchRetention, this.#rebuildThresholdChars) && handle.researchRebuildSeed === undefined) {
+      const findings = responses.flatMap(entry => Array.isArray((entry.response as JsonObject)?.['findings'])
+        ? ((entry.response as JsonObject)['findings'] as { source?: string; text?: string }[]) : []);
+      handle.researchRebuildSeed = researchLedgerOf({
+        question: this.#lastResearchQuestion.get(handle.liveSessionId) ?? '', findings,
+        cursors: responses.map(entry => String((entry.response as JsonObject)?.['nextCursor'] ?? '')).filter(cursor => cursor !== ''),
+      });
     }
     return { responses, projections };
   }

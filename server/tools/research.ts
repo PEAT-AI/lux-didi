@@ -2464,6 +2464,8 @@ interface FindingLike { source?: string; text?: string }
 
 /** `Source: 3 of 9 shown`, the head every finding line group carries. */
 const FINDING_HEAD = /^\S[^:\n]*: (\d+) of (\d+) shown$/mu;
+/** L11-01: a label line under a finding head (the ranker's confidence, a nothing-matched verdict), never an item. */
+const FINDING_META_LINE = /^knowledge: (?:confidence=|nothing matched)/u;
 
 /**
  * #621: the header of a reply with findings, derived from the findings the voice will actually hear, so the
@@ -3316,6 +3318,10 @@ export function capReply(reply: JsonObject, limit: number, refresh?: () => void)
     const lines = widest?.text?.split('\n') ?? [];
     if (widest === undefined || lines.length <= 1) break;
     const head = lines.shift() ?? '';
+    // L11-01: a label line under the head is part of the head: it is never the last item left standing.
+    const meta: string[] = [];
+    while (lines.length > 0 && FINDING_META_LINE.test(lines[0]!)) meta.push(lines.shift()!);
+    if (lines.length === 0) { reply['findings'] = (reply['findings'] as JsonObject[]).filter(finding => finding !== widest); trimmed = true; continue; }
     if (widest.source === 'web') {
       const kept = clipWebEvidence(widest.text!, widest.text!.length - (size() - limit) - RESEARCH.moreAvailableNote.length - 80);
       if (kept !== undefined) { widest.text = kept; widest.chars = kept.length; }
@@ -3330,14 +3336,14 @@ export function capReply(reply: JsonObject, limit: number, refresh?: () => void)
       // #5: the clipped hit is still shown, so the header it keeps counts it.
       const room = lines[0]!.length - (size() - limit) - 1;
       const kept = sentencePrefix(lines[0]!, room) || clip(lines[0]!, room);
-      if (kept.length >= RESEARCH.clipFloorChars) { widest.text = [head, kept].join('\n'); widest.chars = kept.length; trimmed = true; continue; }
+      if (kept.length >= RESEARCH.clipFloorChars) { widest.text = [head, ...meta, kept].join('\n'); widest.chars = kept.length; trimmed = true; continue; }
     }
     // #5: only a line this pass really removes is counted out of the header, never one it clipped.
     const counted = head.replace(/: (\d+) of (\d+) shown$/u, (_match, shown: string, total: string) => `: ${Math.max(0, Number(shown) - 1)} of ${total} shown`);
     lines.pop();
     // F2 (review): a header that claims a count over no evidence line is a lie, so the finding goes whole.
     if (lines.length === 0) reply['findings'] = (reply['findings'] as JsonObject[]).filter(finding => finding !== widest);
-    else { widest.text = [counted, ...lines].join('\n'); widest.chars = lines.join('\n').length; }
+    else { widest.text = [counted, ...meta, ...lines].join('\n'); widest.chars = lines.join('\n').length; }
     trimmed = true;
   }
   // F2 (review): the hard bound. The page envelopes carry the same evidence as the findings, so they go last.
@@ -3363,13 +3369,18 @@ export function capReply(reply: JsonObject, limit: number, refresh?: () => void)
 function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number, sources?: JsonObject, skipBodies = false, bodyLimit = RESEARCH.bodyLimitChars): JsonObject {
   const bodyReply = skipBodies ? undefined : receivedBodyReply(run, configured, bodyLimit);
   if (bodyReply) { if (Array.isArray((bodyReply as JsonObject)['bodySlices'])) run.bodyReplies += 1; return bodyReply; }
-  const groups: { source: SourceKind; label: string; lines: string[]; total: number; days?: { day: string; entries: string[] }[] }[] = [];
+  const groups: { source: SourceKind; label: string; lines: string[]; total: number; days?: { day: string; entries: string[] }[]; meta?: string[] }[] = [];
   for (const entry of run.ledger.values()) {
     if (entry.bodyOnly || !entry.lines || entry.lines.length === 0 || entry.source === null || (entry.source === 'calendar' && run.calendar.size > 0) || (entry.source === 'mail' && run.mail.size > 0)) continue;
     const existing = groups.find(group => group.source === entry.source);
     const target = existing ?? { source: entry.source, label: SOURCE_LABEL[entry.source], lines: [], total: 0 };
-    target.lines.push(...entry.lines);
-    target.total += entry.total ?? entry.lines.length;
+    // L11-01: the ranker's confidence label rides with the finding but is no item, so no trim can leave it
+    // standing in for the hits and no count includes it.
+    const meta = entry.lines.filter(line => FINDING_META_LINE.test(line));
+    const items = entry.lines.filter(line => !FINDING_META_LINE.test(line));
+    if (meta.length > 0) target.meta = [...new Set([...(target.meta ?? []), ...meta])];
+    target.lines.push(...items);
+    target.total += entry.total === undefined ? items.length : entry.total === entry.lines.length ? items.length : entry.total;
     if (!existing) groups.push(target);
   }
   const calendarEvents = new Map<string, RetainedCalendarEvent>();
@@ -3493,7 +3504,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       .map(group => {
         // N3: the primary-calendar answer says what it did not read, from the list it carried.
         const note = run.calendarNotRead !== undefined && group.source === 'calendar' && !group.lines.includes(run.calendarNotRead) ? `\n${run.calendarNotRead}` : '';
-        const text = `${group.label}: ${shownOf(group)} of ${Math.max(group.total, group.lines.length)} shown\n${group.lines.join('\n')}${note}`;
+        const text = `${group.label}: ${shownOf(group)} of ${Math.max(group.total, group.lines.length)} shown\n${[...(group.meta ?? []), ...group.lines].join('\n')}${note}`;
         // #575: a block this session already gave is one line, never a second copy of the same evidence.
         if (run.deliveredFindings.has(findingKey(text))) return { source: group.source, text: `${group.label}: already given earlier in this session.`, chars: 0 };
         return { source: group.source, text, chars: group.lines.join('\n').length };
@@ -3553,7 +3564,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     const fillable = groups.filter(group => shownOf(group) > (group.days === undefined ? 1 : 2));
     if (fillable.length > 0) {
       const kept = (group: { lines: string[]; total: number }): number => shownOf(group) / Math.max(1, group.total);
-      const trimmed = fillable.reduce((worst, group) => (kept(group) > kept(worst) ? group : worst));
+      // L11-01: memory the ask did not name yields first, so it can never starve a source that answered beside it.
+      const memory = run.route.has('memory') ? undefined : fillable.find(group => group.source === 'memory');
+      const trimmed = memory !== undefined && groups.some(group => group.source !== 'memory' && shownOf(group) > 0) ? memory
+        : fillable.reduce((worst, group) => (kept(group) > kept(worst) ? group : worst));
       // #4: a calendar day line is a list of whole events, so it loses one event at a time, the count it
       // reports is the count of events it really dropped, and it is never clipped: a clip would swallow an
       // event while the header still claimed it. Its last event stays, so the answer keeps the day it read.

@@ -70,7 +70,9 @@ export type ToolCallRefusal = Omit<ToolCallIntent, 'accountId' | 'resourceId'> &
 /** Closed, privacy-safe stage for a dispatched MCP call that failed. */
 export const MCP_FAILURE_STAGES = ['timeout', 'cancelled', 'child_exited', 'pipe_closed', 'sdk_protocol_rejected', 'invalid_result'] as const;
 export type McpFailureStage = (typeof MCP_FAILURE_STAGES)[number];
-export const TOOL_FAILURE_CODES = [...MCP_FAILURE_STAGES, 'connector_error', 'handler_outcome'] as const;
+export const TOOL_FAILURE_CODES = [...MCP_FAILURE_STAGES, 'connector_error', 'handler_outcome',
+  // #637: the ask named a channel the chat connector does not know, so no read was made.
+  'channel_not_found'] as const;
 export type ToolFailureCode = (typeof TOOL_FAILURE_CODES)[number];
 export function isMcpFailureStage(value: string): value is McpFailureStage {
   return (MCP_FAILURE_STAGES as readonly string[]).includes(value);
@@ -78,9 +80,7 @@ export function isMcpFailureStage(value: string): value is McpFailureStage {
 export function isToolFailureCode(value: string): value is ToolFailureCode {
   return (TOOL_FAILURE_CODES as readonly string[]).includes(value);
 }
-export type ToolOutcome = { status: 'completed'; result: ToolResultRef } | { status: 'failed' | 'unknown'; code?: ToolFailureCode;
-  /** #637: the tool's own words for the failure, beside the unchanged closed code. Never a class or a code. */
-  reason?: string };
+export type ToolOutcome = { status: 'completed'; result: ToolResultRef } | { status: 'failed' | 'unknown'; code?: ToolFailureCode };
 export interface ToolCallJournal {
   intent(call: ToolCallIntent, validatedArguments?: unknown): 'fresh' | 'existing';
   refuse(call: ToolCallRefusal, reason: string): ToolResultRef;

@@ -2998,7 +2998,6 @@ export class LiveSessionOwner {
         // A sub-call that never dispatched reports its real reason (unknown_tool, grant_not_permitted,
         // invalid_arguments, round_deadline), never a bare refused.
         const code = ok ? undefined
-          : typeof response.detail === 'string' ? response.detail
           : typeof response.code === 'string' ? response.code
           : typeof response.reason === 'string' ? response.reason
           : record?.status === 'refused' ? refusalCode(record.reason)

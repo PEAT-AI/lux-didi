@@ -480,7 +480,7 @@ test('#637: an unknown channel is its own closed reason in the note and the cove
     configured: ['chat'],
     execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
       if (call.name === 'mattermost_search') sent.push(call.args);
-      return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'channel-not-found: AI; closest names: AI Team' };
+      return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'channel_not_found' };
     }),
   });
   const question = 'what is new in the AI channel';
@@ -492,7 +492,7 @@ test('#637: an unknown channel is its own closed reason in the note and the cove
   assert.equal(note.includes('could not reach'), false, 'and never as a chat that could not be reached');
   assert.match(String(reply['coverage']), /chat channel_not_found/u);
   // F3 (CHANNELS-R2): the chat receipt names the miss instead of clamping it to a bare refused.
-  const miss = { key: 'c0', name: 'mattermost_search', ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'channel-not-found: AI; closest names: AI Team' };
+  const miss = { key: 'c0', name: 'mattermost_search', ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'channel_not_found' };
   assert.equal(chatAttentionReason([miss]), 'channel_not_found');
   assert.ok(CHAT_RECEIPT_REASONS.includes('channel_not_found'), 'and the closed receipt vocabulary carries the token');
 });

@@ -136,3 +136,17 @@ test('an attempt whose outcome is unknown is never retried on the next flush', a
   assert.equal(calls.length, 1);
   assert.equal(store.transaction(tx => String(tx.get('SELECT state FROM note_exports', [])?.['state'])), 'unknown');
 });
+
+test('a vault outage is a failed row with its code, never a CHECK violation that loses the key', async t => {
+  const store = ledger(t);
+  const fake = transportOf([{ outcome: 'unavailable' }, { outcome: 'inserted', insightId: 'insight-9' }]);
+  const exporter = new NotesExporter({ store, sessionId: 'session-11', transport: fake.transport, nearDuplicate: async () => undefined, now: () => 7_000, log: () => {}, enabled: true });
+  const first = await exporter.flush([candidate('1', 'Rob lives in Lisbon')]);
+  assert.deepEqual(first, { exported: 0, skipped: 0, failed: 1, unknown: 0, remaining: 0 });
+  const state = store.transaction(tx => ({ state: String(tx.get('SELECT state FROM note_exports', [])?.['state']), code: tx.get('SELECT code FROM note_exports', [])?.['code'] }));
+  assert.equal(state.state, 'failed');
+  assert.equal(state.code, 'vault_unavailable');
+  const second = await exporter.flush([candidate('1', 'Rob lives in Lisbon')]);
+  assert.equal(second.skipped, 1, 'the attempted key stays spent');
+  assert.equal(fake.calls.length, 1);
+});

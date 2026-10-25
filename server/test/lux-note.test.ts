@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  beginStage, composedAsk, confirmAsk, CONFIRM_MAX_TOKENS, CONFIRM_WINDOW_MS, freezeNote, NOTE_MAX_CHARS,
-  noteOwnerFragment, noteOwnerUtterance, noteReadback, noteSettle, validateStageNote,
+  beginStage, composedAsk, confirmAsk, CONFIRM_MAX_TOKENS, CONFIRM_WINDOW_MS, currentOwnerTurn, freezeNote, NOTE_MAX_CHARS,
+  noteOwnerFragment, noteOwnerUtterance, noteReadback, noteSegmentSignal, noteSettle, validateStageNote,
+  type PlaybackSignal,
 } from '../tools/lux-note.js';
 
 const HELD = new Set(['journal:11', 'journal:12']);
@@ -135,4 +136,51 @@ test('a confirmation after the thirty second window cancels, and a mismatch canc
 test('a stage that never hears a read-back will not take a confirmation forever', () => {
   const expired = noteOwnerUtterance(staged(), { text: 'yes', now: 1_000 + CONFIRM_WINDOW_MS + 1 });
   assert.deepEqual({ state: expired.state, code: expired.code }, { state: 'cancelled', code: 'not_armed' });
+});
+
+// B1 (W6-R2): the dispatcher's authorization read. A stage that arrives before this turn's
+// transcript is finalized never grants, and never borrows an older owner turn.
+const turnRow = (journalId: number, text: string, finalizedAt: number, finalOrigin = 'provider') => ({ journalId, text, finalizedAt, finalOrigin });
+
+test('a stage before this turn\'s transcript is finalized refuses and borrows no older turn', () => {
+  assert.deepEqual(currentOwnerTurn([], 1_000, false), { state: 'refused', code: 'transcript_pending' });
+  // The previous turn is final, but this turn is still open: its words are not authorization.
+  const borrowed = currentOwnerTurn([turnRow(11, 'save that to lux', 900)], 1_000, false);
+  assert.deepEqual(borrowed, { state: 'refused', code: 'transcript_pending' });
+  // Even a final-flagged handle that finalized before this turn started is the older turn.
+  const stale = currentOwnerTurn([turnRow(11, 'save that to lux', 900)], 1_000, true);
+  assert.deepEqual(stale, { state: 'refused', code: 'transcript_pending' });
+});
+
+test('a typed turn never authorizes, and the current finalized mic turn does', () => {
+  assert.deepEqual(currentOwnerTurn([turnRow(12, 'save that to lux', 1_200, 'typed')], 1_000, true), { state: 'refused', code: 'transcript_typed' });
+  const read = currentOwnerTurn([turnRow(12, 'save that to lux', 1_200)], 1_000, true);
+  assert.equal(read.state, 'owner_turn');
+  if (read.state !== 'owner_turn') return;
+  assert.equal(read.text, 'save that to lux');
+  assert.deepEqual([...read.evidence].sort(), ['journal:12']);
+});
+
+// B2 (W6-R2): arming follows the read-back segment, never just any drained receipt.
+const signal = (receipt: PlaybackSignal['receipt'], key: string, wallMs: number) => ({ receipt, key, wallMs });
+
+test('a segment that began before the stage never arms it, and the read-back segment does', () => {
+  const note = staged();
+  const before = noteSegmentSignal(note, undefined, signal('drained', 'instance:1', 900));
+  assert.equal(before.note.state, 'staged', 'a drained segment from before the stage is not the read-back');
+  const opened = noteSegmentSignal(note, undefined, signal('started', 'instance:2', 1_400));
+  assert.equal(opened.readbackKey, 'instance:2');
+  assert.equal(opened.note.state, 'staged');
+  const stray = noteSegmentSignal(opened.note, opened.readbackKey, signal('drained', 'instance:3', 1_600));
+  assert.equal(stray.note.state, 'staged', 'another segment draining does not arm');
+  const armedNote = noteSegmentSignal(opened.note, opened.readbackKey, signal('drained', 'instance:2', 1_900));
+  assert.equal(armedNote.note.state, 'armed');
+});
+
+test('the read-back segment interrupted invalidates, and a later drained cannot revive it', () => {
+  const opened = noteSegmentSignal(staged(), undefined, signal('started', 'instance:2', 1_400));
+  const cut = noteSegmentSignal(opened.note, opened.readbackKey, signal('interrupted', 'instance:2', 1_700));
+  assert.deepEqual({ state: cut.note.state, code: cut.note.code }, { state: 'invalidated', code: 'readback_interrupted' });
+  const later = noteSegmentSignal(cut.note, cut.readbackKey, signal('drained', 'instance:2', 2_000));
+  assert.equal(later.note.state, 'invalidated');
 });

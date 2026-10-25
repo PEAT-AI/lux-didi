@@ -152,6 +152,13 @@ When a session is attached with at least one declared tool, the trusted middle g
 before owner style; a session with no declarations composes without it. Each section is
 one of the composer's `sections` entries, with its own chars and sha256.
 
+The opening line of a fresh call is asked for by `FRESH_OPENING` (`server/adapters/live-voice/openai.ts`): one
+short line on an opening option or a subject from the earlier conversation in new words, never that
+conversation's closing lines and never anything about stopping, ending or listening, and when the owner speaks
+first she answers his words instead. The `previous-openers` section quotes each earlier opener once, however many
+calls opened with it. The voice surface's "Ending the call" rule has her tell him the stop phrase only when he
+asks to end the call in other words; she never says the phrase, a stop line or a sign-off on her own.
+
 ## Verification and remaining gates
 
 Run `bash scripts/check-prompt.sh` through the declared managed check. It uses the

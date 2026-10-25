@@ -1367,13 +1367,20 @@ test('LAT-1023: the first ack before a lookup names the sources it is reading', 
   assert.doesNotMatch(NAYA_VOICE_SURFACE, /[\u2013\u2014]/u, 'no dash stands in the rule text');
 });
 
+test('L1-14/L11-05: she never says the stop phrase or a stop line on her own', () => {
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /When his words were not one of those, say the exact phrase/u, 'the old rule had her say the phrase unprompted');
+  assert.match(NAYA_VOICE_SURFACE, /When he asks to end the call in other words, tell him the exact phrase once in one line\./u);
+  assert.match(NAYA_VOICE_SURFACE, /Never say the phrase, a stop line or a sign-off on your own: not as an opener and not at the end of an answer\./u);
+  assert.equal(NAYA_LIVE_BASE.split('Never say the phrase, a stop line or a sign-off on your own').length - 1, 1, 'the rule reaches the live persona once');
+});
+
 test('#589/#590: the voice surface names the stop phrases and promises no silence it cannot keep', () => {
   // She ends the call on the owner's own words, so the words are stated where she can read them.
   assert.match(NAYA_VOICE_SURFACE, /Naya, stop listening/);
   assert.match(NAYA_VOICE_SURFACE, /Naya, shut down/);
   // The honesty line: what she cannot do, and the way out she names instead of promising.
   assert.match(NAYA_VOICE_SURFACE, /You cannot mute or stop yourself/);
-  assert.match(NAYA_VOICE_SURFACE, /say the exact phrase/);
+  assert.match(NAYA_VOICE_SURFACE, /tell him the exact phrase/);
   // #590: no first-person promise of a silence or a stopped mic stands in for the call ending.
   for (const lie of [/\bI(?:'ll| will) (?:stay quiet|be quiet|go quiet|stop listening)\b/,
     /\bI(?:'ve| have) (?:stopped|muted|turned off)\b/, /\bI(?:'m| am) (?:not recording|muting|stopping)\b/]) {

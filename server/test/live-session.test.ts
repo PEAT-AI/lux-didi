@@ -3770,6 +3770,13 @@ test('Q5-R4: the opener context names at most three earlier openers, one or two 
   assert.ok(!long!.includes('B'), 'an opener that does not fit is dropped whole, never cut mid sentence');
 });
 
+test('L8-09/L11-05: the earlier-openers note names one sentence once, even when two calls opened with it', () => {
+  const note = openersNote(['Morning. The release branch merged cleanly.', 'Morning.  The release branch merged cleanly.', 'Evening. The deck is out.'],
+    ['the release branch merge', 'the release branch merge', 'the deck']);
+  assert.equal(note!.split('Morning. The release branch merged cleanly.').length - 1, 1, `a repeated opener is quoted once: ${note}`);
+  assert.ok(note!.includes('Evening. The deck is out.'), 'a different opener is still named');
+});
+
 test('3u: the anti-repeat note names the topic each earlier opener came from, still under the cap', () => {
   const note = openersNote(['Morning. The release branch merged cleanly.'], ['the release branch merge']);
   assert.ok(note!.includes('"Morning. The release branch merged cleanly."'), 'the sentence is still quoted');

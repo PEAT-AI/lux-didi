@@ -76,8 +76,13 @@ export function openersNote(openers: readonly string[], topics: readonly (string
   };
   const note = (lines: readonly string[]): string => `Open on a different subject and different words than these earlier openers: ${lines.join(' ')}`;
   const taken: string[] = [];
+  const seen = new Set<string>();
   const spoken = openers.map(openingSentencesOf).filter(Boolean).slice(0, 3);
   for (const [index, opener] of spoken.entries()) {
+    // L8-09: two calls that opened alike are one sentence to avoid, never a quote repeated in the prompt.
+    const key = opener.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
     const next = line(opener, topics[index]);
     if (note([...taken, next]).length <= OPENER_CONTEXT_CHARS) taken.push(next);
   }

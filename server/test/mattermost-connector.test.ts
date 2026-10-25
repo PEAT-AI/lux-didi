@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
+import type { CompletedResult, EndpointConfig, McpPort } from '../adapters/mcp/port.js';
 import { createMattermostReader, MATTERMOST_AUTH_NEEDED, MATTERMOST_TOOLS, parseChannelList, resolveChannelReference } from '../connectors/index.js';
 import { mattermostToolStatus, projectMattermostResult } from '../tools/mattermost.js';
 import { mongooseFailureStage } from '../connectors/mongoose.js';
@@ -290,16 +290,40 @@ test('#581: a chat window ask sends from_date and sort newest and no inline Afte
 });
 
 // #647: the child defaults a search to hybrid, which embeds the query on CPU over the whole archive, so
-// one chat read took tens of seconds. Every search this connector sends asks for keyword mode instead.
-test('#647: every search this connector sends asks for keyword mode', async t => {
-  const f = setup('ok');
-  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
-  const r = reader(f.adapter, f.registry, await approve(f.adapter, f.registry));
-  assert.equal((await r.search({ query: 'release freeze' })).state, 'completed');
-  assert.equal((await r.search({ query: 'release freeze', channel: 'Dogcation' })).state, 'completed');
-  const modes = f.calls().filter(call => call.name === 'mattermost_search').map(call => call.arguments['mode']);
-  assert.ok(modes.length >= 2, 'both searches reached the child');
-  assert.deepEqual([...new Set(modes)], ['keyword'], 'no search left the child free to embed the query');
+// one chat read took tens of seconds. Every search this connector sends asks for keyword mode.
+test('#647: a search asks the child for keyword mode, never hybrid or semantic', async () => {
+  // The search schema the real mattermost-mcp child publishes, `mode` included (#647 re-read the child).
+  const tools: ReturnType<McpPort['visibleTools']> = [{
+    name: 'mattermost_search', description: 'Synthetic mattermost_search',
+    inputSchema: { type: 'object', properties: { query: { type: 'string' }, mode: { type: 'string', enum: ['keyword', 'semantic', 'hybrid'] }, limit: { type: 'integer', minimum: 1, maximum: 50 }, from_date: { type: 'string' }, to_date: { type: 'string' }, sort: { type: 'string', enum: ['relevance', 'newest'] } } },
+  }];
+  const sent: Record<string, unknown>[] = [];
+  // The registry hands back the canonical digest of exactly these tools, the way the adapter's discovery does.
+  const registry = new McpRegistry();
+  registry.register(config('mattermost', 'ok', tmpdir()));
+  registry.enable('mattermost'); registry.allowEgress('mattermost');
+  const digest = registry.observed('mattermost', tools, registry.revision('mattermost'));
+  const scope = { endpointId: 'mattermost', url: 'https://chat.example.invalid', schemaDigest: digest, generation: 1, account: ACCOUNT, resource: RESOURCE };
+  const port: McpPort = {
+    discover: async () => ({ state: 'discovered', endpointId: 'mattermost', schemaDigest: digest, tools, observedAt: 0 }),
+    visibleTools: () => tools,
+    call: async request => {
+      sent.push({ ...(request.arguments as Record<string, unknown>) });
+      return {
+        state: 'completed', decodedResult: { content: [{ type: 'text', text: JSON.stringify({ total: 0, returned: 0, results: [] }) }] },
+        source: { ...scope, toolName: request.toolName }, coverage: { completeCorpus: false, basis: 'single-tool-result', remoteSideEffects: 'unverified' },
+        freshness: { receivedAt: 0, sourceVersion: 'unknown' }, projection: { text: '', omitted: false, originalCharacters: 0, omittedCharacters: 0 },
+        payload: { state: 'unavailable', reason: 'capacity' },
+      } as CompletedResult;
+    },
+    readSlice: () => ({ state: 'unavailable', reason: 'capacity' }),
+    whenSuspended: async () => {},
+    close: async () => {},
+  };
+  registry.approve({ endpointId: 'mattermost', schemaDigest: digest, toolNames: ['mattermost_search'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+  assert.equal((await reader(port, registry, digest).search({ query: 'release freeze' })).state, 'completed');
+  assert.deepEqual(sent.map(args => args['mode']), ['keyword'], 'the read never leaves the child free to embed the query');
+  assert.equal(sent[0]!['query'], 'release freeze');
 });
 
 // #647: keyword is an every-term match, so a paraphrased ask can miss. One retry with the single most

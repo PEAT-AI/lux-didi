@@ -299,25 +299,25 @@ export function normalizeLookups(value: unknown): ResearchLookup[] {
   return lookups;
 }
 
+/** #675: the one inbox scan a status mail check reads, the same bare scan the mail route uses. */
+const STATUS_MAIL_SCAN = 'in:inbox newer_than:2d';
+
 /**
- * #657 item 1: the lookups a status or test-all ask reads, one batch of MAX_LOOKUPS sources at a time.
- * A lookup the model wrote for a source in this batch is kept as it is, the sources it left out are
- * filled in by the host, and the rest stay on the run so the next call reads them instead of the ask
- * being refused whole.
+ * #657 item 1, #675: the status probe set. A status or test-all ask is about the sources themselves, so
+ * the host reads every configured source once, in the one call shape that source's own ask uses: her own
+ * words for the text reads, and today's window for the calendar, because the routed calendar plan refuses
+ * an unnamed window (routedRead, `window_unparsed`) while the calendar's own read defaults to today
+ * (candidateSubs, calendar_window). The probe is the host's, never the model's lookups, so the counts one
+ * answer states do not depend on what the model happened to ask for, and nothing is left for a next call.
  */
-function toolBatch(run: RunState, configured: readonly SourceKind[], given: readonly ResearchLookup[]): ResearchLookup[] {
-  const rest = [...(run.deferredSources ?? configured.filter(source => source !== 'memory'))];
-  const batch: ResearchLookup[] = [];
-  for (const lookup of given) {
-    const source = (lookup.source === 'company' ? 'mongoose' : lookup.source) as SourceKind;
-    if (batch.length >= MAX_LOOKUPS || !rest.includes(source)) continue;
-    rest.splice(rest.indexOf(source), 1);
-    batch.push(lookup);
-  }
-  // A status ask asks about the tools, so the host's own read carries no search words.
-  while (batch.length < MAX_LOOKUPS && rest.length > 0) batch.push({ source: lookupSourceOf(rest.shift()!), query: '' });
-  run.deferredSources = rest;
-  return batch;
+function statusProbes(run: RunState, configured: readonly SourceKind[], question: string): ResearchLookup[] {
+  run.deferredSources = [];
+  return SOURCE_ORDER.filter(source => configured.includes(source)).map(source => {
+    if (source === 'calendar') return { source: 'calendar', query: 'today' };
+    // #657 item 2: a status mail check reads one inbox page, never a topic scan that pages again.
+    if (source === 'mail') return { source: 'mail', query: STATUS_MAIL_SCAN, mail: { q: STATUS_MAIL_SCAN } };
+    return { source: lookupSourceOf(source), query: question };
+  });
 }
 
 /** The declared calendar window grammar; the resolver accepts these forms and refuses every other one. */
@@ -2466,15 +2466,24 @@ function unsearchedReasonGiven(run: RunState, configured: readonly SourceKind[],
 }
 
 /**
+ * #675: the closed codes that mean she is signed out of a source, so a status line says that in words
+ * instead of calling a source that never ran a failure.
+ */
+const SIGNED_OUT_CODE = /sign|login|credential|token|not_connected/u;
+
+/**
  * #653: the status answer names what each source did, in plain words, and a source is called working
  * only when its read answered. It reads the same closed reason set the coverage header uses.
  */
 function statusReport(run: RunState, configured: readonly SourceKind[]): string {
-  const sources = [...new Set<SourceKind>([...run.route, ...configured])].filter(source => source !== 'memory');
+  const sources = [...new Set<SourceKind>([...run.route, ...configured])];
   return sources.map(source => {
     const label = spokenLabelOf(source);
     if (run.sourcesDone.has(source)) return `${label} answered`;
     if (run.emptySearches.has(source)) return `${label} answered, nothing this time`;
+    // #675: a source she is not signed in to is its own status, never a failure and never a timeout.
+    const code = run.unavailableReasons.get(source);
+    if (code !== undefined && SIGNED_OUT_CODE.test(code)) return `${label} is signed out`;
     return UNSEARCHED_CLAUSE[unsearchedReasonGiven(run, configured, source)](label, source);
   }).join('; ');
 }
@@ -4798,8 +4807,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   // #657 item 1: a status or test-all ask names every source, so the host reads the first batch within
   // the limit and leaves the rest for the next call, instead of refusing the whole ask.
   if (statusAsk(question)) {
-    const batch = toolBatch(run, configured, lookups);
-    if (batch.length > 0) return routedResearch(deps, run, question, batch, configured, unavailable, unavailableReason, signal, now, limit, first);
+    const probes = statusProbes(run, configured, question);
+    if (probes.length > 0) return routedResearch(deps, run, question, probes, configured, unavailable, unavailableReason, signal, now, limit, first);
   }
   if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, unavailable, unavailableReason, signal, now, limit, first);
   // TRIAGE-R3: a recall ask reads her own remembered history, so it takes the memory lookup the routed

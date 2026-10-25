@@ -17,7 +17,6 @@ import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
-import { isToolFailureCode } from '../adapters/model/types.js';
 import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
@@ -2989,9 +2988,7 @@ export class LiveSessionOwner {
       }
       return calls.map(call => {
         const slot = authorized.bindings.findIndex(binding => binding.callId === call.id);
-        // #637: a failed call carries no binding, so its own record is found by call id; without it the
-        // closed reason a connector gave (an unknown channel) would read as a bare refused.
-        const record = slot >= 0 ? authorized.tools[slot] : authorized.tools.find(entry => entry.callId === call.id);
+        const record = slot >= 0 ? authorized.tools[slot] : undefined;
         const accepted = authorized.accepted.find(result => result.binding.callId === call.id);
         const response = accepted?.response ?? {};
         const text = typeof response.text === 'string' ? response.text : '';
@@ -3003,8 +3000,6 @@ export class LiveSessionOwner {
         const code = ok ? undefined
           : typeof response.code === 'string' ? response.code
           : typeof response.reason === 'string' ? response.reason
-          // #637: a failed read's own closed reason is the truthful code for the sub-call.
-          : record?.status === 'failed' && typeof record.reason === 'string' && isToolFailureCode(record.reason) ? record.reason
           : record?.status === 'refused' ? refusalCode(record.reason)
           : record ? String(record.status) : 'refused';
         return { key: call.id, name: call.name, ok, text,

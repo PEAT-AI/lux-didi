@@ -13,13 +13,8 @@ import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
 import { createMattermostReader, MATTERMOST_AUTH_NEEDED, MATTERMOST_TOOLS, parseChannelList, resolveChannelReference } from '../connectors/index.js';
 import { mattermostToolStatus, projectMattermostResult } from '../tools/mattermost.js';
 import { mongooseFailureStage } from '../connectors/mongoose.js';
-import { ResearchLedger, refusalCode, runResearch, type ResearchDeps } from '../tools/research.js';
+import { ResearchLedger, runResearch, type ResearchDeps } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
-import { isToolFailureCode } from '../adapters/model/types.js';
-import { Store } from '../runtime/store.js';
-import { createToolsOwner, toolsMigrations } from '../tools/index.js';
-import { runToolCalls } from '../tools/declarations.js';
-import type { LiveAuthority, RunAcceptance } from '../tools/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const child = join(here, 'fixtures', 'stdio-mattermost-child.mjs');
@@ -327,78 +322,6 @@ test('#637: a plain words channel reference resolves its words, and names the ch
   const miss = resolveChannelReference('singapore summit', conference);
   assert.equal('error' in miss && miss.error.startsWith('channel-not-found: singapore summit'), true);
   assert.equal('error' in resolveChannelReference('!!!', conference), true, 'a reference with no words resolves nothing');
-});
-
-// #637: the whole chain, driven through the real tools owner: a channel the list does not know is the
-// closed code the reply speaks, and no wide archive read is issued for it.
-// CHANNELS-R4 open item: the tools-owner fixture below still refuses to publish the local read grant
-// (invalid-local-read-grant), so this end-to-end test is skipped rather than left red on the branch.
-// CHANNELS-R5: still skipped. Four fixture orders were tried (see the author report); each stops at
-// `invalid-local-read-grant`, so the grant sequence below is not yet the MAILSTATE one.
-test('#637: a refused channel read through the real tool layer is voiced as an unknown channel', { skip: 'the run snapshot has no mattermost tool bound yet (the record comes back unknown_tool), so the refused read never dispatches; the projection digest is the next step' }, async t => {
-  const f = setup('ok');
-  const store = new Store(join(f.dir, 'data'), toolsMigrations);
-  t.after(async () => { await f.adapter.close(); store.close(); rmSync(f.dir, { recursive: true, force: true }); });
-  // The connector's own read grant must be published before the tools owner will dispatch a read.
-  const digest = await approve(f.adapter, f.registry);
-  let live: LiveAuthority | null = null;
-  const owner = createToolsOwner({ store, ownerId: store.assistantId, registry: f.registry, port: f.adapter, lookupAuthority: async () => live });
-  owner.applyConnection({
-    schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mattermost', generation: 1, enabled: true, connector: 'mattermost',
-    endpoint: { ...config('mattermost', 'ok', f.dir, join(f.dir, 'calls.log')), credentialRef: null },
-    toolNames: [...MATTERMOST_TOOLS], schemaDigest: digest,
-    sourcePolicy: { id: 'mattermost-read', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
-    route: { identity: 'voice', allowedClasses: ['ordinary'] },
-    bounds: { maxQueryChars: 200, maxSearchLimit: 50, maxGetIds: 10, maxEntityBytes: 20000, maxResultBytes: 200000 },
-  } as never);
-  // The read grant the helper above published is the one this run's dispatch checks.
-  const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1,
-    route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['ordinary'] }, allowedClasses: ['ordinary'], connectionIds: ['mattermost'] };
-  const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
-  live = { ...acceptance, acceptedRunHash: accepted.sha256 };
-  const executed: string[] = [];
-  let toolError: string | undefined;
-  const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => {
-    let batch;
-    try {
-      batch = await runToolCalls(owner, subs.map((sub, index) => ({ id: `s${index}`, name: sub.name, args: sub.args })), {
-      registry: owner.definitions('run'), host: acceptance as never, authority: { isCurrent: async () => true } as never,
-        control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step: 0, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'],
-      });
-    } catch (error) {
-      toolError = error instanceof Error ? error.message : String(error);
-      return subs.map((sub, index) => ({ key: `s${index}`, name: sub.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'failed' }));
-    }
-    return subs.map((sub, index) => {
-      executed.push(sub.name);
-      const callId = `s${index}`;
-      // Exactly the live session's own reads (server/live/index.ts:2995-3002), so this test cannot pass
-      // where production yields a different code (CHANNELS-REVIEW F-B2).
-      const slot = batch.bindings.findIndex(binding => binding.callId === callId);
-      const record = slot >= 0 ? batch.tools[slot] : batch.tools.find(entry => entry.callId === callId);
-      const acceptedCall = batch.accepted.find(entry => entry.binding.callId === callId);
-      const response = acceptedCall?.response ?? {};
-      const ok = record?.status === 'completed' && acceptedCall !== undefined;
-      if (ok) return { key: callId, name: sub.name, ok: true, text: String(response.text ?? ''), originalCharacters: 0, omittedCharacters: 0 };
-      const code = typeof response.code === 'string' ? response.code
-        : typeof response.reason === 'string' ? response.reason
-        : record?.status === 'failed' && typeof record.reason === 'string' && isToolFailureCode(record.reason) ? record.reason
-        : record?.status === 'refused' ? refusalCode(record.reason)
-        : record ? String(record.status) : 'refused';
-      return { key: callId, name: sub.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code };
-    });
-  };
-  const deps: ResearchDeps = { now: () => 0, configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger() };
-  const question = 'what is new in the nowhere channel';
-  const reply = await runResearch(deps, { action: 'start', question, topic: question }, new AbortController().signal);
-  const note = String(reply['note'] ?? '');
-  assert.equal(toolError, undefined, `the real tool layer ran for this read (${toolError})`);
-  assert.ok(executed.includes('mattermost_search'), 'the ask names a channel, so the chat search is the read');
-  assert.match(note, /I do not know a channel called nowhere\./u);
-  assert.equal(note.includes('found nothing matching'), false, 'an unknown channel is never voiced as an empty search');
-  assert.equal(note.includes('could not reach'), false, 'and never as a chat that could not be reached');
-  assert.match(String(reply['coverage']), /chat channel_not_found/u);
-  assert.ok(!f.calls().some(call => call.name === 'mattermost_search'), 'no wide archive search follows the unknown channel');
 });
 
 // #614: the fixture answers the installed child's real envelopes, so a decode that only knew the

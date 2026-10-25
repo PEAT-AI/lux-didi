@@ -106,19 +106,26 @@ classification and explicit network approval.
 
 Mongoose is the one connector Lux Didi can sign in to for you, and it is three
 endpoints: knowledge, data and crm. Each one signs in on its own, because each is
-its own OAuth resource and a token for one is refused on another. Sign in to each
-endpoint you want, once, with the same configuration directory you selected above,
-then restart Lux Didi:
+its own OAuth resource and a token for one is refused on another. In Settings,
+every Mongoose endpoint that needs a sign-in has its own button on its own row:
+**Sign in to Mongoose knowledge**, **Sign in to Mongoose data** and
+**Sign in to Mongoose CRM**. One click signs in that one endpoint and no other, and
+the connector reconnects by itself when you finish. Restart Lux Didi afterwards.
+
+You can also run the sign-in from a terminal with the same configuration directory
+you selected above:
 
 ```sh
 "$HOME/Applications/Lux Didi.app/Contents/MacOS/node" \
   "$HOME/Applications/Lux Didi.app/Contents/Resources/server/node_modules/@lux-didi/service/dist/host/index.js" \
-  --mongoose-login --config-dir /absolute/path/to/your/config-directory
+  --mongoose-login knowledge --config-dir /absolute/path/to/your/config-directory
 ```
 
-Run it once per endpoint, in this order if you want all three: knowledge first,
-then data, then crm. Your default browser opens that endpoint's Mongoose consent
-page, where you sign in with Google. To keep the current window focused, add
+The argument after `--mongoose-login` is one endpoint: `knowledge`, `data` or `crm`.
+Leave it out and every Mongoose endpoint with no session signs in one after
+another, each with its own consent, stopping at the first failure with its one
+line. Your default browser opens that endpoint's Mongoose consent page, where you
+sign in with Google. To keep the current window focused, add
 `--no-browser`; the command prints a sign-in URL for you to open yourself. The
 complete attempt expires five minutes after it starts. After sign-in, the callback
 page confirms receipt and can be closed; no token is ever copied, pasted or
@@ -129,9 +136,10 @@ permissions, so connect a Lightdash personal access token once at
 `https://mongoose.dev.peat-cloud.com/settings/connections`; until you do, Naya
 says your Lightdash token is not connected in Mongoose settings instead of
 answering from data. CRM is open to the Mongoose CRM teams only; if your account
-is not in them, Naya says so in one line and knowledge and data keep working. If it ever
-goes stale, the connector next step says **Mongoose session expired, reconnect
-Mongoose** with the same command.
+is not in them, Naya says so in one line and knowledge and data keep working. If a
+session ever goes stale, that endpoint's row in Settings says sign-in needed and
+its own **Sign in** button signs it in again, or run `--mongoose-login` with that
+endpoint name.
 
 Use the connector server's own documented account sign-in procedure for every
 other connector. Lux Didi ships no universal Calendar sign-in command. Endpoint commands, account identities

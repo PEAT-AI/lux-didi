@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MAX_LOOKUPS, RESEARCH, ResearchLedger, broaderQueryOf, clip, coverageLine, parseResearch, researchDeclaration, runResearch, statusAsk, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
+import { shapeGcalList } from '../tools/live-shape.js';
 
 function sub(name: string, text: string, ok = true, key = name): IntentSubResult {
   return { key, name, ok, text, originalCharacters: text.length, omittedCharacters: 0 };
@@ -24,7 +25,7 @@ interface Harness {
   logs: ResearchRunLog[];
 }
 
-function harness(opts: { execute?: ResearchDeps['execute']; configured?: readonly SourceKind[]; replyLimit?: number; now?: () => number; schedule?: ResearchDeps['schedule']; unavailableNow?: ResearchDeps['unavailableNow'] } = {}): Harness {
+function harness(opts: { execute?: ResearchDeps['execute']; configured?: readonly SourceKind[]; replyLimit?: number; now?: () => number; schedule?: ResearchDeps['schedule']; unavailableNow?: ResearchDeps['unavailableNow']; web?: ResearchDeps['web'] } = {}): Harness {
   const executed: { name: string; args: Record<string, unknown> }[] = [];
   const progress: ResearchProgress[] = [];
   const logs: ResearchRunLog[] = [];
@@ -33,6 +34,7 @@ function harness(opts: { execute?: ResearchDeps['execute']; configured?: readonl
     ...(opts.schedule === undefined ? {} : { schedule: opts.schedule }),
     configured: opts.configured ?? ['knowledge', 'calendar', 'mail', 'chat'],
     ...(opts.unavailableNow === undefined ? {} : { unavailableNow: opts.unavailableNow }),
+    ...(opts.web === undefined ? {} : { web: opts.web }),
     execute: opts.execute ?? (async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name, 'evidence', true, call.key))),
     emit: event => progress.push(event),
     log: entry => logs.push(entry),
@@ -470,4 +472,75 @@ test('#654 ruling R2: a finish continuation on the same topic continues the run'
     action: 'continue', researchId: oldId, question: 'finish the results on the renewal mail from the customer',
   }, new AbortController().signal);
   assert.equal(String(same['researchId']), oldId, 'a finish continuation on the same topic continues the run');
+});
+
+// --- #675: a status ask names every configured source, in the shape that source's own ask uses -------
+
+/** Every configured source answers in its own real shape, except the company one, which is signed out. */
+function statusFixture(): { execute: ResearchDeps['execute']; web: NonNullable<ResearchDeps['web']> } {
+  return {
+    web: {
+      search: async () => ({ ok: true as const, evidence: {
+        answer: 'The bridge reopens on Monday.', claims: [{ text: 'The bridge reopens on Monday.', sourceIndexes: [0] }],
+        sources: [{ title: 'Bridge notice', url: 'https://example.com/bridge' }], retrievedAt: '2026-10-25T07:00:00.000Z',
+      } }),
+    },
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
+      if (call.name === 'calendar_list_calendars') return sub(call.name, '- Main [primary]', true, call.key);
+      if (call.name === 'calendar_list_events') {
+        return { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: [{ id: 'd1', start: '2026-10-19T10:00:00Z', summary: 'Release review' }] }) } as IntentSubResult;
+      }
+      if (call.name === 'gmail_search_messages') return sub(call.name, mailRows(2), true, call.key);
+      if (call.name === 'mattermost_search') return sub(call.name, '- the release thread, from Ana', true, call.key);
+      return sub(call.name, knowledgeHits(1), true, call.key);
+    }),
+  };
+}
+
+const STATUS_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'] as const;
+const STATUS_SIGNED_OUT = () => [{ source: 'mongoose' as const, reason: 'not_signed_in' }];
+
+test('#675: a status ask names every configured source across the batch it announces, and reads each one its own way', async () => {
+  const fixture = statusFixture();
+  const h = harness({ configured: STATUS_SOURCES, web: fixture.web, unavailableNow: STATUS_SIGNED_OUT, execute: fixture.execute });
+  const first = await runResearch(h.deps, { action: 'start', question: 'test all the tools' }, new AbortController().signal);
+  const firstNote = String(first['note']);
+  // The calendar is read with a real window, so it is never called failed on the status path.
+  for (const label of ['knowledge base', 'calendar', 'mail', 'team chat']) {
+    assert.match(firstNote, new RegExp(`${label} answered`), `the first answer names ${label} (${firstNote})`);
+  }
+  assert.doesNotMatch(firstNote, /failed|could not|not answer/u, `no read source is called failed (${firstNote})`);
+  assert.match(firstNote, /The rest come next: company knowledge, the web/u, `the answer announces the rest (${firstNote})`);
+  const second = await runResearch(h.deps, {
+    action: 'continue', researchId: String(first['researchId']), question: 'test all the tools', lookups: [],
+  }, new AbortController().signal);
+  const secondNote = String(second['note']);
+  assert.match(secondNote, /company knowledge is signed out/u, `a signed out source says so (${secondNote})`);
+  assert.match(secondNote, /the web answered/u, `the web is read and named (${secondNote})`);
+  for (const label of ['knowledge base answered', 'calendar answered', 'mail answered', 'team chat answered']) {
+    assert.match(secondNote, new RegExp(label), `the second answer keeps what the first read (${secondNote})`);
+  }
+  // The host's own status shape decides the read, so the model lookups never change the counts it states.
+  const looked = harness({ configured: STATUS_SOURCES, web: fixture.web, unavailableNow: STATUS_SIGNED_OUT, execute: fixture.execute });
+  const lookupsMode = await runResearch(looked.deps, {
+    action: 'start', question: 'test all the tools',
+    lookups: [{ source: 'mail', query: 'from:ana' }, { source: 'knowledge', query: 'release' }],
+  }, new AbortController().signal);
+  // Source order follows how the batch was assembled, so the lines are compared as a set, never by order.
+  const clauseOf = (text: string): string[] => text.split(/;\s*/u).map(line => line.trim()).filter(Boolean).sort();
+  assert.deepEqual(clauseOf(String(lookupsMode['note'])), clauseOf(firstNote), 'the model lookups never change what a status answer says');
+  assert.deepEqual(clauseOf(String(lookupsMode['coverage'] ?? '')), clauseOf(String(first['coverage'] ?? '')), 'and the counts it states come from the same read');
+});
+
+// --- #675: a closed code that is not a sign-out is never called signed out --------------------------
+
+test('#675: a token budget code is not read as a sign-out', async () => {
+  const h = harness({
+    configured: ['mongoose'],
+    unavailableNow: () => [{ source: 'mongoose', reason: 'token_budget_exhausted' }],
+  });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'are my tools working' }, new AbortController().signal);
+  const note = String(reply['note']);
+  assert.doesNotMatch(note, /signed out/u, `an exhausted token budget is not a sign-out (${note})`);
+  assert.match(note, /company knowledge/u, `the source is still named (${note})`);
 });

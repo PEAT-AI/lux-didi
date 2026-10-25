@@ -211,7 +211,8 @@ test('a mongoose record with no refresh material is parked for sign-in and the t
 });
 
 test('an expired access token with refresh material is not a local sign-in verdict', async t => {
-  const f = await fixture(); t.after(() => f.close());
+  // The record now refreshes at the fixture's own origin, so its token route answers instead of hanging.
+  const f = await fixture({ token: res => { res.writeHead(400, { 'content-type': 'application/json' }); res.end('{"error":"invalid_grant"}'); } }); t.after(() => f.close());
   const configDir = configDirFor(f.url, 'mongoose-knowledge');
   oauthRecord(configDir, 'mongoose-knowledge', { refreshToken: 'refresh-material', expiresAt: Date.now() - 60_000, consentStartedAt: Date.now() });
   const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-store-'));

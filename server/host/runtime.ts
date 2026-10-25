@@ -99,7 +99,8 @@ export function createMongooseSignIn(options: {
   const login = options.login ?? runMongooseLogin;
   const log = (event: Record<string, unknown>): void => { try { options.log?.(event); } catch { /* the log never changes a sign-in */ } };
   const attempts = new Map<string, MongooseSignInAttempt>();
-  let pending: { endpoint: (typeof MONGOOSE_ENDPOINTS)[number]; entryId: string; attemptId: string; issued?: string } | undefined;
+  interface Pending { endpoint: (typeof MONGOOSE_ENDPOINTS)[number]; attemptId: string; issued?: string }
+  let pending: Pending | undefined;
   const start = (requested?: string): MongooseSignInStart => {
     const wanted = MONGOOSE_ENDPOINTS.find(name => name === requested);
     const attemptId = randomBytes(8).toString('hex');
@@ -139,7 +140,7 @@ export function createMongooseSignIn(options: {
       return { status: 'failed', reason: 'not-configured' };
     }
     const { entry, endpoint } = named;
-    const current: NonNullable<typeof pending> = { endpoint, entryId: entry.id, attemptId };
+    const current: Pending = { endpoint, attemptId };
     pending = current;
     const move = (phase: MongooseSignInPhase, reason?: MongooseSignInFailure): void => {
       attempts.set(entry.id, { attemptId, phase, ...(reason ? { reason } : {}) });

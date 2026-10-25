@@ -230,7 +230,7 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
   const mcp = createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     if (request.method === 'GET' && url.pathname === '/.well-known/oauth-protected-resource/v1') {
-      json(response, 200, { resource, authorization_servers: [issuer], bearer_methods_supported: ['header'], scopes_supported: ['offline_access', 'read:board:trello', 'write:board:trello'], ...override.prm }); return;
+      json(response, 200, { resource, authorization_servers: [issuer], bearer_methods_supported: ['header'], scopes_supported: ['offline_access', 'read:board:trello', 'write:board:trello', 'read:member.inbox:trello', 'write:member.inbox:trello'], ...override.prm }); return;
     }
     if (url.pathname !== '/v1') { json(response, 503, { message: 'Temporarily Unavailable', status: 503 }); return; }
     if (request.headers.authorization !== `Bearer ${state.accessToken}`) {

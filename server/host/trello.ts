@@ -12,8 +12,14 @@ import { join } from 'node:path';
  */
 export const TRELLO_REFERENCE = 'trello';
 export const TRELLO_ISSUER = 'https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3';
-/** Read and write on boards, read of the member, the workspace and offline refresh; never Inbox, Planner or workspace writes. */
-export const TRELLO_SCOPE = 'offline_access read:me read:account read:member:trello read:board:trello write:board:trello read:organization:trello';
+/**
+ * Read and write on boards, read of the member, the workspace and offline refresh, and the member's Inbox:
+ * F10, the owner's quick-capture notes are read there (read:member.inbox) and one of them is moved onto a
+ * list of his board (write:member.inbox). Never Planner, never a workspace write. Whether the move also
+ * needs the board write scope is settled by the first real sign-in; the board write is asked for anyway
+ * because every other write the ruling grants goes through it.
+ */
+export const TRELLO_SCOPE = 'offline_access read:me read:account read:member:trello read:member.inbox:trello write:member.inbox:trello read:board:trello write:board:trello read:organization:trello';
 export const TRELLO_LOGIN_PORT = 8769;
 export const TRELLO_PROVIDER: OAuthProvider = { scope: TRELLO_SCOPE, clientName: 'lux-didi', label: 'Trello', defaultPort: TRELLO_LOGIN_PORT };
 /** The record names one resource; the row in Settings and the log lines name it `trello`. */

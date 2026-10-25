@@ -6315,6 +6315,7 @@ test('#656: a ten second read is work, so no rebuild fires over it and the answe
   assert.equal(fake.toolResponses.length, 2, 'the long read returns to the session that asked for it');
   // The model speaks the result, and the ladder stays out of the answer it asked for.
   fake.emit({ type: 'audio', pcm: new Uint8Array([1, 0]), rate: 24_000 });
+  await settlePort();
   h.advance(AUDIBLE_DEBT_RUNG_MS + RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0);
   assert.equal(fake.sessionsOpened, 1, 'the answer is spoken where the read ran');

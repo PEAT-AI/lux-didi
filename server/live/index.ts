@@ -2764,7 +2764,14 @@ export class LiveSessionOwner {
           hostLogEvent({ event: 'live_provider_ready', liveSessionId: handle.liveSessionId, generation,
             msSinceOpen: handle.openedAt === undefined ? 0 : Math.max(0, this.#now() - handle.openedAt), closeCode: null });
           this.#noteState(handle, 'ready');
-          if (handle.rebuilding) { handle.rebuilding = false; this.#noteState(handle, 'rebuild'); this.#flushRebuildAudio(handle); if (!handle.quietRebuild) this.#continuity(handle, 'resumed'); continue; }
+          if (handle.rebuilding) {
+            handle.rebuilding = false; this.#noteState(handle, 'rebuild');
+            // #656: the held owner audio is delivered once the adapter has finished its setup, so a frame is never
+            // handed to a session that is still opening.
+            void Promise.resolve().then(() => { if (!handle.terminal && !handle.invalidated) this.#flushRebuildAudio(handle); });
+            if (!handle.quietRebuild) this.#continuity(handle, 'resumed');
+            continue;
+          }
         }
         // Provider activity restarts the idle clock everywhere except under the owner's mute, which
         // suspends that clock until the unmute re-arms it.

@@ -23,8 +23,8 @@ import { composeChat, type ModelTesting } from './connected.js';
 import { composeLive, type LiveTesting } from './live.js';
 import { composeMcpRuntime, type ConnectorLifecycleEvent } from './mcp.js';
 import { spawn } from 'node:child_process';
-import { MongooseLoginError, runMongooseLogin } from './mongoose-login.js';
-import { mongooseEndpointName } from '../connectors/mongoose.js';
+import { MongooseLoginError, runMongooseLogin, type MongooseLoginOptions } from './mongoose-login.js';
+import { MONGOOSE_ENDPOINTS, mongooseEndpointName } from '../connectors/mongoose.js';
 import type { McpRuntimeComposition } from './mcp.js';
 import { createGoogleReader, readCalendarDigest, type CalendarDigestRead, type CalendarDigestReadResult } from '../connectors/google.js';
 import { CalendarDigestCache } from '../live/warm-context.js';
@@ -38,8 +38,9 @@ export const hostMigrations = [...domainMigrations, ...chatMigrations, ...liveMi
 /** Structural match for W-B's LiveToolsComposition; kept local and additive until its signature lands. */
 export type AuthoritySource = (runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>;
 
-/** One owner click runs the same sign-in the CLI flag runs, and the connector reconnects when it lands. */
-export type MongooseSignIn = () => Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }>;
+/** One owner click names the endpoint it signs in, runs the same sign-in the CLI flag runs, and the
+ * connector reconnects when it lands. An absent or unknown name is a closed failure, never a guess. */
+export type MongooseSignIn = (endpoint?: string) => Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }>;
 
 /** Opens the owner's default browser; the web view never opens one by itself. */
 export function openInDefaultBrowser(url: string): void {
@@ -57,27 +58,35 @@ export interface LiveToolsComposition {
 }
 
 /**
- * The one click path: resolve the configured mongoose endpoint, run the same login the CLI flag runs, and
- * reconnect the connector once the record lands. Every failure is a closed code, never free text.
+ * The one click path: resolve the configured endpoint the click named, run the same login the CLI flag
+ * runs, and reconnect the connector once the record lands. Every failure is a closed code, never free
+ * text. One pending sign-in at a time stays the rule, so a second click joins the one in flight.
  */
-export function createMongooseSignIn(options: { configDir: string; recover: () => Promise<void>; open?: (url: string) => void }): MongooseSignIn {
+export function createMongooseSignIn(options: { configDir: string; recover: () => Promise<void>; open?: (url: string) => void; login?: (options: MongooseLoginOptions) => Promise<void> }): MongooseSignIn {
   const open = options.open ?? openInDefaultBrowser;
+  const login = options.login ?? runMongooseLogin;
   let pending: Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }> | undefined;
-  return () => {
+  return (requested?: string) => {
     if (pending) return pending;
     const selection = loadMcpEndpoints({ configDir: options.configDir });
-    const entry = selection.state === 'configured'
-      ? selection.catalog.endpoints.find(candidate => candidate.connector === 'mongoose' && candidate.transport !== 'stdio' && candidate.credentialRef && candidate.url)
-      : undefined;
-    if (!entry || entry.transport === 'stdio' || !entry.credentialRef || !entry.url) return Promise.resolve({ status: 'failed' as const, reason: 'not-configured' });
+    const candidates = selection.state === 'configured'
+      ? selection.catalog.endpoints.flatMap(candidate => {
+        if (candidate.connector !== 'mongoose' || candidate.transport === 'stdio' || !candidate.credentialRef || !candidate.url) return [];
+        const endpoint = mongooseEndpointName(candidate.resource) ?? mongooseEndpointName(candidate.url);
+        return endpoint === undefined ? [] : [{ entry: candidate, endpoint }];
+      })
+      : [];
+    // The three endpoint names are the whole closed set; anything else never reaches the login.
+    const wanted = requested === undefined ? undefined : MONGOOSE_ENDPOINTS.find(name => name === requested);
+    if (requested !== undefined && wanted === undefined) return Promise.resolve({ status: 'failed' as const, reason: 'not-configured' });
+    const named = wanted === undefined ? candidates[0] : candidates.find(candidate => candidate.endpoint === wanted);
+    if (!named) return Promise.resolve({ status: 'failed' as const, reason: 'not-configured' });
+    const { entry, endpoint } = named;
     let release: (value: { status: 'started'; url: string } | { status: 'failed'; reason: string }) => void = () => {};
     let failure: string | undefined;
     const first = new Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }>(resolve => { release = resolve; });
     pending = first;
-    // One sign-in per endpoint: the catalog entry names its resource, and its audience follows from it.
-    const endpoint = mongooseEndpointName(entry.resource) ?? mongooseEndpointName(entry.url);
-    if (endpoint === undefined) return Promise.resolve({ status: 'failed' as const, reason: 'not-configured' });
-    void runMongooseLogin({ configDir: options.configDir, reference: entry.credentialRef, resourceUrl: entry.url, endpoint, account: entry.account,
+    void login({ configDir: options.configDir, reference: entry.credentialRef!, resourceUrl: entry.url!, endpoint, account: entry.account,
       showAuthorizationUrl: (url: string) => { open(url); release({ status: 'started', url }); } })
       .then(() => options.recover())
       .catch((error: unknown) => { failure = error instanceof MongooseLoginError ? error.code : 'sign-in-did-not-finish'; })

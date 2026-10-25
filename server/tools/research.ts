@@ -1539,7 +1539,7 @@ async function broadenedChatRetry(execute: (subs: readonly IntentSubCall[], sign
     if (term === undefined) continue;
     const args: JsonObject = { ...sub.args, query: term };
     try {
-      const [retried] = await deps.execute([{ key: sub.key, name: sub.name, args }], signal);
+      const [retried] = await execute([{ key: sub.key, name: sub.name, args }], signal);
       // The retry ran, so the answer says the match was broadened either way, never that chat held nothing.
       broadened.set(sub.key, term);
       if (retried?.ok === true && !chatSearchFoundNothing(retried.text)) merged = merged.map((entry, at) => (at === index ? retried : entry));

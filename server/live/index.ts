@@ -1014,6 +1014,8 @@ export class LiveSessionOwner {
   readonly #vault: VaultWriter;
   /** W6: the same one lux endpoint the vault writer uses, kept for the exporter's near-duplicate probe. */
   readonly #luxWrite: ReturnType<typeof createLuxWriteTransport>;
+  /** W6: sessions that have staged a composed note, so no other session pays a query per owner turn. */
+  readonly #noteSessions = new Set<string>();
   readonly #voice: LiveVoicePort;
   readonly #profile: LiveProfile;
   readonly #now: () => number;
@@ -1691,6 +1693,7 @@ export class LiveSessionOwner {
     }
     const note = outcome.note;
     saveNoteState(tx, note);
+    this.#noteSessions.add(liveSessionId);
     hostLogEvent({ event: 'lux_note_stage', staged: true, digest: note.payloadSha.slice(0, 12) });
     return { staged: true, stageId: note.stageId, title: note.title, body: note.body,
       readBack: `Read the note back exactly, then wait for the owner: ${note.title}. ${note.body}` };
@@ -1698,6 +1701,7 @@ export class LiveSessionOwner {
 
   /** W6 item 5: only the app's own drained receipt arms the confirmation; an interruption kills the stage. */
   #notePlayback(handle: ActiveSession, receipt: PlaybackReceipt): void {
+    if (!this.#noteSessions.has(handle.liveSessionId)) return;
     const note = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
     if (!note || note.state !== 'staged') return;
     if (receipt !== 'drained' && receipt !== 'interrupted' && receipt !== 'terminated') return;
@@ -1709,6 +1713,7 @@ export class LiveSessionOwner {
 
   /** W6 item 6: the next finalized owner turn decides, and the settle window runs on its own timer. */
   #noteOwnerTurn(handle: ActiveSession, text: string): void {
+    if (!this.#noteSessions.has(handle.liveSessionId)) return;
     const open = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
     if (!open) return;
     const next = noteOwnerUtterance(open, { text, now: this.#now() });
@@ -1723,6 +1728,7 @@ export class LiveSessionOwner {
 
   /** W6 item 6: any owner fragment inside the settle window cancels, so a VAD split never commits. */
   #noteFragment(handle: ActiveSession): void {
+    if (!this.#noteSessions.has(handle.liveSessionId)) return;
     const open = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
     if (!open || open.state !== 'settling') return;
     const next = noteOwnerFragment(open, this.#now());

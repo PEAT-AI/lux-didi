@@ -425,7 +425,7 @@ test('the configured name is the pin, and no board name is in the code', async (
 // W7-R4: the per-session idempotency ledger is cleared when the session ends.
 test('the idempotency ledger is cleared when the session ends', async () => {
   const run = session();
-  const args = { action: 'note', card: 'Renew the passport', text: 'the form is in the hall' };
+  const args = { action: 'note', card: 'Draft the quarterly plan', text: 'the form is in the hall' };
   const before = writes().length;
   const first = await board.write(run, args, 'note on the card');
   assert.equal(first.ok, true, JSON.stringify(first));

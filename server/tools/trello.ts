@@ -761,7 +761,7 @@ export class TrelloBoard {
       // the server returned; a create whose id cannot be read leaves the label unattached and says so.
       return { calls: [created], key: key({ ...payload, labelId: label.id }), describe: card => ({ ...view(card), change }),
         followUp: previous => {
-          const made = trelloCardOf(trelloPayload(previous));
+          const made = trelloCardOf(previous);
           return made ? planTrelloCall(index, 'trelloWriteCard', [{ action: 'add_label', cardId: made.id, labelId: label.id }, { action: 'attach_label', cardId: made.id, labelId: label.id }, { action: 'update', cardId: made.id, labelIds: [label.id] }]) : undefined;
         } };
     }

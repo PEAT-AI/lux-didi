@@ -266,6 +266,9 @@ export async function composeMcpRuntime(options: {
   const reports = new Map<string, McpEndpointReport>();
   const connectors = new Map<string, string>();
   const ready = new Set<string>();
+  // TR-R12: the endpoints whose connect has ever succeeded, so a recovery round retries only a first-connect
+  // failure and never re-settles an endpoint whose grant was revoked, refused or closed on purpose.
+  const everConnected = new Set<string>();
   const generations = new Map<string, number>();
   const recovery = createRecoverySchedule(options.recoveryDelaysMs);
   // The per-tool digest of each endpoint's readable names as of its last approved round.
@@ -375,7 +378,7 @@ export async function composeMcpRuntime(options: {
         }
         const grant = registry.currentGrant(id);
         if (!grant) { eligible.delete(id); reports.set(id, { ...previous, state: 'error', tools: 0, error: 'recovery-invalidated' }); return; }
-        eligible.delete(id); ready.add(id);
+        eligible.delete(id); ready.add(id); everConnected.add(id);
         const { error: _error, exception: _exception, ...report } = previous;
         reports.set(id, { ...report, state: 'connected', tools: grant.toolNames.length, lastHandshakeAt: new Date(now()).toISOString() });
       } else {
@@ -532,6 +535,7 @@ export async function composeMcpRuntime(options: {
       const granted = [...names, ...composed].sort();
       // Healthy discovery without an approved envelope is status-only, not an empty owner policy.
       if (!names.length) {
+        everConnected.add(entry.id);
         reports.set(entry.id, { id: entry.id, state: 'connected', tools: 0, lastHandshakeAt: new Date(discovery.observedAt).toISOString() });
         return { retryable: false };
       }
@@ -694,6 +698,7 @@ export async function composeMcpRuntime(options: {
       ready.add(entry.id);
       if (attempt === 'first-connect') options.lifecycleLog?.({ event: 'connector_connected', endpointId: entry.id, connectMs: Math.max(0, now() - roundStarted) });
       // R1: the count includes a granted composite, so the owner sees every callable read tool.
+      everConnected.add(entry.id);
       reports.set(entry.id, { id: entry.id, state: 'connected', tools: granted.length, lastHandshakeAt: new Date(now()).toISOString(), ...(identity ? { identity } : {}) });
       // C-OPEN 4: a Gmail link names the account the mailbox proved here, never one a model or a body named.
       if (entry.connector === 'google' && policy.toolNames.includes('gmail_get_profile') && !policy.toolNames.some(name => name.startsWith('calendar_')) && identity?.proven === true) noteGmailAccount(identity.value ?? undefined);
@@ -767,7 +772,25 @@ export async function composeMcpRuntime(options: {
           .then(result => { if (result.retryable) scheduleRecovery(entry); })
           .catch(() => { /* the per-connector report already carries the failure */ });
       }));
+      // TR-R12 / #671-R2: a endpoint whose first connect failed is retried here too, once per recover() call and
+      // with no loop of its own, so a Settings change (a sign-in, a fixed child) takes effect on the next
+      // recovery round. The round is the pass worth reading, so its attempt names itself as a refresh.
       await Promise.all([...eligible.keys()].map(recoverEndpoint));
+      // Only an endpoint whose first connect failed is retried: it never published a grant, so no read and no
+      // approved binding exists to disturb. An endpoint that connected once and then failed a read keeps the
+      // refusal rules above, so a changed catalog, binding, revocation or late close is still refused.
+      const parkedOnError = active.filter(entry => !closed && !eligible.has(entry.id) && !needsSignIn.has(entry.id)
+        && reports.get(entry.id)?.state === 'error' && !everConnected.has(entry.id)
+        && entry.configurationError === undefined && entry.unknownClass !== null);
+      await Promise.all(parkedOnError.map(async entry => {
+        const token = (generations.get(entry.id) ?? 0) + 1;
+        generations.set(entry.id, token);
+        recovery.stop(entry.id);
+        registry.suspend(entry.id);
+        await settle(entry, token, 'refresh', identityOnce)
+          .then(result => { if (result.retryable) scheduleRecovery(entry); })
+          .catch(() => { /* the per-connector report already carries the failure */ });
+      }));
     },
     close: () => { closed = true; recovery.stopAll(); for (const entry of active) { generations.set(entry.id, (generations.get(entry.id) ?? 0) + 1); registry.suspend(entry.id); } eligible.clear(); bursts.clear(); const closing = port.close(); return Promise.all([closing, ...flights.values()]).then(() => {}); },
   };

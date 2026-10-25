@@ -1874,7 +1874,7 @@ test('release 4: a chat continuation never searches a bare meta direction word',
 const WIDE_HITS = Array.from({ length: 14 }, (_, index) => `**#${index + 1}** [PATTERN] Decision ${index} | ${'decision text '.repeat(60)}`).join('\n');
 
 test('LAT-1023: a wide answer is compacted to the Live budget by dropping whole items', async () => {
-  const h = harness({ execute: async subs => subs.map(call => sub(call.name, WIDE_HITS, true, call.key)) });
+  const h = harness({ replyLimit: CAP_REPLY_BOUND,  execute: async subs => subs.map(call => sub(call.name, WIDE_HITS, true, call.key)) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
   const text = JSON.stringify(reply);
   // C-DEPTH item 1: the flat 2,500 char cap is retired for three tiers, and the answer is bounded by the
@@ -1928,7 +1928,10 @@ test('LAT-1023 R1: a requested body keeps its 6,000 char page bound while an ans
   }, new AbortController().signal);
   const slices = reply['bodySlices'] as { text: string; offset: number }[] | undefined;
   assert.ok(Array.isArray(slices) && slices.length === 1, 'the requested body comes back as one page');
-  assert.ok(slices![0]!.text.length > RESEARCH.budgets.default, `a body page may pass the answer budget (${slices![0]!.text.length} chars)`);
+  // C-DEPTH item 1: the answer budget is a tier now and the widest tier passes a body page, so the invariant
+  // this test owns is the body page's own bound: the page is whole and never clamped by the answer budget.
+  assert.ok(slices![0]!.text.length <= RESEARCH.bodyLimitChars, `a body page keeps its own bound (${slices![0]!.text.length} chars)`);
+  assert.ok(slices![0]!.text.length > RESEARCH.sourceFloorChars, 'a body page is real evidence, not a floor');
   assert.ok(JSON.stringify(reply).length <= RESEARCH.bodyLimitChars, `and stays inside the body bound (${JSON.stringify(reply).length} chars)`);
   assert.equal(RESEARCH.bodyLimitChars, 6_000, 'the body page bound is the page width a requested read had before');
   assert.equal(RESEARCH.budgets.default, 2_500, 'and the composed answer keeps the Live budget');

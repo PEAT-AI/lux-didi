@@ -1087,3 +1087,24 @@ test('L11-01: a knowledge read with hits keeps its top hit under a memory-heavy 
   assert.equal(shown, hitLines, `the head counts hits, never the confidence line (${knowledge!.text.split('\n')[0]})`);
   assert.match(knowledge!.text, /confidence=medium/u, 'the confidence label still rides with the finding');
 });
+
+// L11-02 (lane 11): a reply advertised canContinue:true and "more available", and the continue 2.7 s later got
+// continuation_unavailable in 1 ms. A reply offers a continuation only when this run can serve one, with the
+// coordinate it hands over, and the continuation it offers is served.
+test('L11-02: a reply that offers a continuation serves it, with or without the cursor it handed over', async () => {
+  const hits = Array.from({ length: 6 }, (_, n) => `### Synthetic profile ${n + 1} (PATTERN | 2026-10-2${n}) [id ${910 + n}]\n${'Synthetic strength profile text. '.repeat(9)}`).join('\n');
+  const h = harness({
+    execute: async subs => subs.map(call => call.name === 'search_knowledge'
+      ? ({ ...sub(call.name, hits, true, call.key), knowledgeConfidence: { confidence: 'medium', top: '0.60', candidates: 'yes' } }) as IntentSubResult
+      : sub(call.name, EVIDENCE[call.name] ?? 'evidence', true, call.key)),
+    memory: () => ({ lines: Array.from({ length: 7 }, (_, n) => `Synthetic remembered fragment ${n + 1}: ${'an earlier conversation about other things. '.repeat(5)}`), text: '', total: 70 }),
+  });
+  const first = await runResearch(h.deps, { action: 'start', question: 'which direction are we taking with the team strengths', topic: 'team strengths',
+    lookups: [{ source: 'memory', query: 'team strengths profiles' }, { source: 'knowledge', query: 'team strengths' }] }, new AbortController().signal);
+  assert.equal(first['canContinue'], true, 'the trimmed reply offers a continuation');
+  for (const cursor of [undefined, first['nextCursor'], first['cursor']]) {
+    const next = await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']), ...(typeof cursor === 'string' ? { cursor } : {}) }, new AbortController().signal);
+    assert.notEqual(next['error'], 'continuation_unavailable', `an offered continuation is served (cursor ${String(cursor)}): ${JSON.stringify(next).slice(0, 400)}`);
+    assert.notEqual(next['status'], 'unavailable', 'and never as an unavailable run');
+  }
+});

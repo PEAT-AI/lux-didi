@@ -374,11 +374,21 @@ test('1015: the background owner reads at host start and on every interval until
   assert.equal(read.calls.length, 3, 'a stopped host reads nothing');
 });
 
+// W9 item 9 (L11-04, L8-04): the sign-in line is never an opener obligation, and never the reason for
+// a vault or knowledge answer. Carried here with W6's item 14 change to signInNote; red at b52e96c2.
+test('L11-04/L8-04: the Mongoose sign-in line is tied to answers that need company knowledge, never said unprompted', () => {
+  const line = signInNote([{ id: 'mongoose', connector: 'mongoose', state: 'error', reasonCode: 'needs_sign_in' }]);
+  assert.ok(line, 'a parked sign-in still has its line');
+  assert.doesNotMatch(line!, /at the start of this call/iu, `the line is never an opener obligation: ${line}`);
+  assert.match(line!, /\bonly when\b[^.]*company knowledge/iu, `the line names the one case it belongs to: ${line}`);
+  assert.doesNotMatch(line!, /vault|lux knowledge|knowledge base/iu, 'and it is never the reason for a vault or knowledge base answer');
+});
+
 test('a parked sign-in is one short line at call start and nothing when Mongoose is fine', () => {
   const parked = [{ id: 'mongoose', connector: 'mongoose', state: 'error', reasonCode: 'needs_sign_in' }];
   const line = signInNote(parked);
   assert.ok(line, 'a parked sign-in is said once');
-  assert.match(line!, /say that once/i);
+  assert.match(line!, /only when an answer needs company knowledge/i);
   assert.match(line!, /Settings/);
   assert.doesNotMatch(line!, /token|bearer|http/i, 'the line carries no credential or URL');
   assert.equal(signInNote([{ id: 'mongoose', connector: 'mongoose', state: 'connected', reasonCode: null }]), undefined);

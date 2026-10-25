@@ -74,6 +74,19 @@ export function parseSaveCommand(text: string): { content: string } | undefined 
   return vaultContentKey(content).length >= 2 ? { content } : undefined;
 }
 
+/**
+ * A composed note authorizes its own ledger row only after the host confirmed the frozen payload: the
+ * row is keyed by the stage, so a second settlement of the same stage inserts nothing and dispatches
+ * nothing. Everything after this point is the one dictation path: claim, dispatch, settle.
+ */
+export function authorizeComposedWrite(tx: Transaction, options: { liveSessionId: string; stageId: string; content: string; title: string; now: number }): VaultClaim {
+  tx.run('INSERT OR IGNORE INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+    [randomUUID(), options.liveSessionId, options.stageId, VAULT_REMOTE_TOOL, options.content, vaultContentKey(options.content), options.title, 'authorized', options.now]);
+  const row = tx.get('SELECT * FROM vault_writes WHERE live_session_id=? AND utterance_id=?', [options.liveSessionId, options.stageId]);
+  if (!row) return { state: 'settled', receipt: refusal('outcome_unknown') };
+  return claimRow(tx, row);
+}
+
 /** The title is the host's, from the note's own first words. The model never writes it. */
 export function vaultTitle(content: string): string {
   return content.split(/\s+/).slice(0, 8).join(' ').slice(0, 120).trim();
@@ -105,6 +118,11 @@ function receiptFromRow(row: SQLRow): VaultReceipt {
 export function claimVaultWrite(tx: Transaction, options: { liveSessionId: string; content: string }): VaultClaim {
   const row = tx.get('SELECT * FROM vault_writes WHERE live_session_id=? AND content_key=? ORDER BY created_at DESC, rowid DESC LIMIT 1', [options.liveSessionId, vaultContentKey(options.content)]);
   if (!row) return { state: 'settled', receipt: refusal('not_owner_requested') };
+  return claimRow(tx, row);
+}
+
+/** One ledger row is claimed once, atomically, whichever consent minted it. */
+function claimRow(tx: Transaction, row: SQLRow): VaultClaim {
   if (String(row['state']) !== 'authorized') return { state: 'settled', receipt: receiptFromRow(row) };
   const opId = String(row['op_id']);
   const claimed = tx.run("UPDATE vault_writes SET state='dispatched' WHERE op_id=? AND state='authorized'", [opId]);

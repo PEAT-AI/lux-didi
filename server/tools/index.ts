@@ -18,6 +18,7 @@ import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history
 import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
+import { STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, validateStageNote } from './lux-note.js';
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, ownerWords, validateOpen, type NativeActionCode } from './open.js';
@@ -202,6 +203,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       return { connectionId: HISTORY_IDENTITY.accountId, policy: { sourcePolicy: { allowedClasses: snapshot.acceptance.allowedClasses }, route: { allowedClasses: snapshot.acceptance.route.allowedClasses }, bounds: { maxResultBytes: 65536 } } };
     }
     if (call.toolName === VAULT_WRITE_IDENTITY.name && call.accountId === VAULT_WRITE_IDENTITY.accountId && call.resourceId === VAULT_WRITE_IDENTITY.resourceId) {
+      if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
+      return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 1024 } } };
+    }
+    if (call.toolName === STAGE_NOTE_IDENTITY.name && call.accountId === STAGE_NOTE_IDENTITY.accountId && call.resourceId === STAGE_NOTE_IDENTITY.resourceId) {
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
       return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 1024 } } };
     }
@@ -504,7 +509,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         .filter(id => { try { return connection(tx, id).policy.enabled; } catch { return false; } });
     },
     liveRememberApproved() { return options.grantMode === 'owner-trusted-reads'; },
-    liveDefinitions(runId, rememberNote, vaultDispatch) {
+    liveDefinitions(runId, rememberNote, vaultDispatch, stageNote, composedNotes) {
       // The Live model is declared only the one research tool plus remember; the connector reads
       // stay in the registry so the research fan-out and the session cache keep working, but the Live
       // session never declares them to the provider. A research tool is answered by a host-side loop
@@ -532,6 +537,27 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
             const response = rememberNote(tx, runId, args);
             return complete(call as ToolCallIntent, response, ['ordinary'], tx);
+          });
+          return { status: 'completed', result };
+        },
+      });
+      // Item 1/10: the composed stage is declared to the live model only while the capability switch is
+      // on, and it can never write: the host commits after its own read-back boundary and confirmation.
+      if (composedNotes) definitions.push({ ...STAGE_NOTE_IDENTITY, description: 'Stage a note composed from this conversation for the Lux vault. The host reads it back and saves it only after the owner confirms. It never saves by itself.', effect: 'write', parameters: STAGE_NOTE_PARAMETERS, validate: validateStageNote,
+        async execute(args, context) {
+          if (context.runId !== runId || !validateStageNote(args) || context.signal.aborted) return { status: 'failed' };
+          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
+          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' };
+          const result = store.transaction(tx => {
+            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
+            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+            const call = storedCall(tx, row);
+            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, executionId: context.executionId };
+            if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
+            const snapshot = validateCallRun(tx, call);
+            assertLiveIdentity(tx, call); target(snapshot, call, tx);
+            if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
+            return complete(call as ToolCallIntent, stageNote === undefined ? { staged: false, code: 'not_enabled' } : stageNote(tx, runId, args), ['ordinary'], tx);
           });
           return { status: 'completed', result };
         },

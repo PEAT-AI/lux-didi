@@ -52,3 +52,13 @@ test('tool and connector names map to the human group names', () => {
   assert.deepEqual(connectorGroupNames('lux-knowledge'), ['knowledge base']);
   assert.deepEqual(connectorGroupNames('mongoose'), ['company knowledge']);
 });
+
+test('W6 item 14: the Connected block names the vault capability this session really has', () => {
+  const base = { now: new Date('2026-10-25T08:00:00Z'), timeZone: 'Asia/Kolkata', connected: ['knowledge base'], unavailable: [] };
+  const dictationOnly = buildRuntimeContext({ ...base, vault: { dictation: true, composed: false } });
+  assert.match(dictationOnly, /^Vault: Naya saves exactly the note the owner dictates; composed notes are switched off\.$/mu);
+  const composed = buildRuntimeContext({ ...base, vault: { dictation: true, composed: true } });
+  assert.match(composed, /^Vault: .*only when he asks and confirms the read-back\.$/mu);
+  const silent = buildRuntimeContext({ ...base, vault: { dictation: false, composed: false } });
+  assert.doesNotMatch(silent, /^Vault:/mu, 'no capability line when the owner has no vault write at all');
+});

@@ -6408,6 +6408,7 @@ test('#656: a research run holds the ladder to its own deadline, not the twelve 
   fake.emit({ type: 'toolCall', calls: [{ id: 'run656', name: 'research',
     args: { action: 'start', question: 'what is on my calendar', topic: 'what is on my calendar' } }] });
   await settlePort();
+  assert.ok(h.calls.length >= 2, 'the research run read a source, so its call is still pending');
   // A research run outlives the twelve second tool ceiling: it is still work and the ladder stands down.
   h.advance(16_000); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'a sixteen second research run is still work');

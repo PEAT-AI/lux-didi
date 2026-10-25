@@ -15,7 +15,7 @@ This is the first stable source release, merged in [PR #683](https://github.com/
 | Gmail, Calendar and Drive | Read the configured account/family; Drive needs its own setup and consent |
 | Mattermost | Read people, direct/group conversations, channels and threads when the installed archive exposes the required capabilities |
 | Mongoose | Consult knowledge, data and CRM with separate endpoint sign-ins; no admin endpoint |
-| Public web | Read public evidence through the host's research tools |
+| Public web | Read public evidence through the host's research tools, with deeper research answers when you name a person or a document, compare sources or ask to go deep |
 | Open a result | Open an accepted email, event or document destination, preferring Chrome with a default-browser fallback |
 | Trello | Read and make granted card changes on the privately configured board, not administer arbitrary boards |
 | Memory and Lux notes | Save local memories, explicitly dictated vault notes, and optionally composed notes after readback/confirmation |
@@ -76,7 +76,7 @@ The host owns records and authority; the native app owns audio; the renderer pre
 | Memory, character and disclosure | [Domain contract](docs/domain-contract.md), [Selected memory](docs/selected-memory.md), [Memory import](docs/memory-import.md), [Owner profile](docs/owner-profile.md), [Prompt composition](docs/prompt-composition.md), [Privacy](docs/privacy-and-authority.md) |
 | Explain a failure safely | [Debugging](docs/debugging.md), [Diagnostic store](docs/diagnostic-store.md) |
 
-Historical planning remains under [docs/history/](docs/history/README.md). It is not the current runtime contract. The research-depth wagon was not part of PR #683; do not infer it shipped from an unmerged plan.
+Historical planning remains under [docs/history/](docs/history/README.md). It is not the current runtime contract. Deeper research answers ship in the release after PR #683; the behavior is the merged research tool, not an unmerged plan.
 
 ## Contributing and provenance
 

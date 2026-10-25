@@ -27,4 +27,4 @@ This page describes the first stable release merged by [PR #683](https://github.
 
 [checks.md](checks.md) names the repository checks; [debugging.md](debugging.md) explains how to inspect a real failure without publishing private content. Synthetic checks do not prove microphone permission, a valid provider key, browser sign-in or a working installed bundle. Follow [user-guide.md](user-guide.md) for the owner steps.
 
-The research-depth wagon was not part of PR #683. Do not infer its behavior from a contract or an unmerged branch. Future work belongs in [roadmap.md](roadmap.md). Historical release-by-release notes are not a second capability contract for the current source.
+Deeper research answers ship in the release after PR #683: `server/tools/research.ts` sizes the reply by the tier the owner's question earns, reads knowledge in two stages and rebuilds an oversized call's research context from a host-built ledger. Its behavior is the merged source, not a contract or an unmerged branch. Future work belongs in [roadmap.md](roadmap.md). Historical release-by-release notes are not a second capability contract for the current source.

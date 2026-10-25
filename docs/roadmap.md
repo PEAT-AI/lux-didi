@@ -6,7 +6,6 @@ The first stable release is merged in [PR #683](https://github.com/PEAT-AI/lux-d
 
 | Area | Current boundary | What still needs its own evidence |
 | --- | --- | --- |
-| Research depth | The merged research implementation is `server/tools/research.ts` | The separate research-depth wagon was not part of #683; review and merge it before documenting its behavior as available |
 | Voice resilience | `LiveSessionOwner` in `server/live/index.ts` includes recovery | Remaining provider-error and real-network failure cases need targeted evidence, not a blanket claim that recovery cannot fail |
 | Installation and distribution | `scripts/build-macos-app.sh` and `scripts/install-macos-app.sh` build and install locally | Cross-Mac distribution, signing and notarization need a separately verified release path |
 | Account onboarding | Existing connector setup and browser consent flows | A universal sign-in experience must not be claimed for helpers that still use their own account authorization commands |

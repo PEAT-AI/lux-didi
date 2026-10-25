@@ -225,8 +225,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
       return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 1024 } } };
     }
-    const matches = snapshot.connections.filter(b => snapshot.acceptance.connectionIds.includes(b.connectionId) && b.policy.toolNames.includes(call.toolName) && b.policy.endpoint.account === call.accountId && b.policy.endpoint.resource === call.resourceId);
+    // TR-R15: a composed read is in the run's scope exactly when every base read it composes is granted by the
+    // connection's own policy, the same derivation the door and the host use. Nothing is stored: the composite is
+    // never added to the policy, so an unapproved name still finds no connection and still refuses.
+    const inScope = (b: { policy: { connector: string; toolNames: readonly string[] } }): boolean =>
+      b.policy.toolNames.includes(call.toolName) || composedGrantedNames(b.policy.connector, b.policy.toolNames).includes(call.toolName);
+    const matches = snapshot.connections.filter(b => snapshot.acceptance.connectionIds.includes(b.connectionId) && inScope(b) && b.policy.endpoint.account === call.accountId && b.policy.endpoint.resource === call.resourceId);
     if (matches.length !== 1) throw Error('intent_scope_mismatch'); return matches[0]!;
+    return matches[0]!;
   };
   const validateCallRun = (tx: Transaction, call: ToolCallRefusal): RunSnapshot => {
     const { snapshot } = readRun(tx, call.runId);

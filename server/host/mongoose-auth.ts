@@ -184,7 +184,8 @@ export function mongooseCredentialRefusal(status: number, resourceMetadata: stri
 }
 
 /** The startup presence check: a usable record exists, without refreshing and without any network. */
-export function mongooseCredentialPresent(configDir: string, reference: string): boolean {  const record = readMongooseOAuth(configDir, reference);
+export function mongooseCredentialPresent(configDir: string, reference: string): boolean {
+  const record = readMongooseOAuth(configDir, reference);
   return record !== undefined && secret(record.refreshToken);
 }
 

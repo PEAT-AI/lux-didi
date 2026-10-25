@@ -124,10 +124,12 @@ run_phase() { # <label> <logfile> <command...>
   printf '=== %s: FAIL in %ds\n' "$label" "$((SECONDS - phase_start))"
   # The failing file names first, then the runner's own block with the first errors.
   # Bounded, and never the whole log.
-  printf '%s\n' '--- failing files:'
+  printf '%s\n' '--- failing files and their first error:'
   if grep -qE '^test at [^:]+:' "$log"; then
-    grep -E '^test at [^:]+:' "$log" | sed -E 's/^test at ([^:]+):.*/  \1/' | sort -u
-    sed -n '/✖ failing tests/,$p' "$log" | head -60
+    awk '/^test at [^:]+:/ { file = $3; sub(/:.*/, "", file); next }
+         /^  / && file && !seen[file] && $0 !~ /test failed/ {
+           line = $0; sub(/^ +/, "", line); print "  " file ": " line; seen[file] = 1; file = "" }' "$log"
+    grep -E '^test at [^:]+:' "$log" | sed -E 's/^test at ([^:]+):.*/  (also) \1/' | sort -u | head -40
   else
     tail -40 "$log"
   fi

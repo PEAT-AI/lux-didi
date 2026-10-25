@@ -10,7 +10,7 @@ import { once } from 'node:events';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { Store } from '../runtime/store.js';
 import { toolsMigrations } from '../tools/index.js';
-import { composeMcpRuntime, CONNECTOR_RECOVERY_DELAYS_MS, createRecoverySchedule, identityFailureRetryable } from '../host/mcp.js';
+import { composeMcpRuntime, CONNECTOR_REARM_INTERVAL_MS, CONNECTOR_RECOVERY_DELAYS_MS, createRecoverySchedule, identityFailureRetryable } from '../host/mcp.js';
 import { connectionReasonCode } from '../http/server.js';
 import { bindCalendarFirstConnect, bindCalendarRecovery } from '../host/runtime.js';
 import { CalendarDigestCache } from '../live/warm-context.js';
@@ -391,6 +391,118 @@ test('671: a transport loss on a connected endpoint marks the source unavailable
   // The loss was transient: the same bounded round brings the source back.
   await until(() => runtime.status().endpoints[0]!.state === 'connected', 4000);
   assert.equal(runtime.status().endpoints[0]!.state, 'connected');
+});
+
+// --- 671-R2: every recovery attempt says its closed reason, and a read earns one fresh attempt after
+// a round spent on a retryable reason ---
+
+test('671-R2: a recovery attempt writes its own closed reason line, first connect and retry alike', async t => {
+  // The probe never answers inside the call deadline, so every attempt times out: the closed code is the
+  // one thing the owner's 10-22 log could not show.
+  const gmail = await fixture({ tools: GMAIL_TOOLS, call: () => ({ payload: {}, delayMs: 400 }) });
+  t.after(() => gmail.close());
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-attempt-reason-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT, ownerChatUsername: 'owner',
+    endpoints: [googleConfig(gmail.url, 'gmail', 'mail')],
+  }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const failures: Array<{ stage: string; attempt?: string; reason?: string; endpointId?: string }> = [];
+  const identity: Array<{ proven: boolean; code?: string }> = [];
+  const runtime = await composeMcpRuntime({
+    store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    callDeadlineMs: 120, recoveryDelaysMs: FAST,
+    connectorLog: (_connector, stage, detail) => { failures.push({ stage, ...(detail ?? {}) }); },
+    identityLog: (_connector, proven, _match, _endpointId, code) => { identity.push({ proven, ...(code === undefined ? {} : { code }) }); },
+  });
+  t.after(() => runtime.close());
+  await until(() => failures.length >= 1 + FAST.length, 4000);
+  assert.equal(failures.length, 1 + FAST.length, 'the first connect and every retry, not only the first');
+  assert.equal(failures[0]!.attempt, 'first-connect');
+  assert.deepEqual(failures.slice(1).map(row => row.attempt), ['refresh', 'refresh', 'refresh'], 'each retry names its own pass');
+  assert.deepEqual([...new Set(failures.map(row => row.reason))], ['identity_timeout'], 'a timed out probe says so, never a bare identity_unverified');
+  assert.deepEqual([...new Set(failures.map(row => row.stage))], ['handshake']);
+  assert.equal(identity.filter(row => !row.proven && row.code === 'identity_timeout').length, 1 + FAST.length, 'every receipt carries the closed code');
+  // The log admits the code on the receipt, and a non-token code is refused.
+  assert.deepEqual(safeEvent({ event: 'connector_identity', connector: 'google', proven: false, match: null, endpointId: 'gmail', code: 'identity_timeout' }),
+    { event: 'connector_identity', connector: 'google', proven: false, match: null, endpointId: 'gmail', code: 'identity_timeout' });
+  assert.equal(safeEvent({ event: 'connector_identity', connector: 'google', proven: false, match: null, endpointId: 'gmail', code: 'not a code' }), undefined,
+    'a closed token only');
+});
+
+test('671-R2: a read earns one fresh attempt per interval after a round spent on a retryable reason', async t => {
+  let probes = 0;
+  const gmail = await fixture({ tools: GMAIL_TOOLS, call: () => { probes += 1; return { payload: {} }; } });
+  t.after(() => gmail.close());
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-rearm-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT, ownerChatUsername: 'owner',
+    endpoints: [googleConfig(gmail.url, 'gmail', 'mail')],
+  }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  // The clock is injected, so the two minute window is measured, never waited out.
+  let clock = 5_000_000;
+  const runtime = await composeMcpRuntime({
+    store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    now: () => clock, recoveryDelaysMs: FAST,
+  });
+  t.after(() => runtime.close());
+  // Enough probes for the first connect plus the whole bounded round, every one of them unproven.
+  const spent = 1 + FAST.length;
+  await until(() => probes >= spent, 4000);
+  assert.equal(runtime.status().endpoints[0]!.retrying, false, 'the bounded round is spent');
+  assert.equal(CONNECTOR_REARM_INTERVAL_MS, 120_000, 'the interval is two minutes');
+  // A read one millisecond short of the interval earns nothing.
+  clock += CONNECTOR_REARM_INTERVAL_MS - 1;
+  runtime.connectionIds();
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(probes, spent, 'a read inside the interval never re-arms');
+  // A read at the interval earns exactly one fresh attempt, and a second read earns none.
+  clock += 1;
+  runtime.connectionIds();
+  await until(() => probes === spent + 1, 4000);
+  assert.equal(probes, spent + 1, 'one fresh attempt, no more');
+  runtime.connectionIds();
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(probes, spent + 1, 'a second read in the same window earns nothing');
+  // The fresh attempt failed retryably, so the next window is two minutes after that attempt.
+  clock += CONNECTOR_REARM_INTERVAL_MS;
+  runtime.connectionIds();
+  await until(() => probes === spent + 2, 4000);
+  assert.equal(probes, spent + 2, 'the endpoint is not left down for the rest of the session');
+});
+
+test('671-R2: a non-retryable reason never re-arms, however often a read asks', async t => {
+  let probes = 0;
+  const gmail = await fixture({ tools: GMAIL_TOOLS, call: () => { probes += 1; return { payload: { emailAddress: 'someone-else@example.test' } }; } });
+  t.after(() => gmail.close());
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-rearm-refused-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT, ownerChatUsername: 'owner',
+    endpoints: [googleConfig(gmail.url, 'gmail', 'mail')],
+  }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  let clock = 7_000_000;
+  const runtime = await composeMcpRuntime({
+    store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    now: () => clock, recoveryDelaysMs: FAST,
+  });
+  t.after(() => runtime.close());
+  const first = runtime.status().endpoints[0]!;
+  assert.equal(first.reasonCode, 'identity_mismatch', 'a mismatch is conclusive');
+  assert.equal(first.retrying, false, 'and it never schedules a round');
+  for (let window = 0; window < 3; window += 1) {
+    clock += CONNECTOR_REARM_INTERVAL_MS * 2;
+    runtime.connectionIds();
+    await new Promise(resolve => setTimeout(resolve, 40));
+  }
+  assert.equal(probes, 1, 'no read ever re-runs a refused proof');
 });
 
 // --- 1022: a sign-in is never asked for a network blip, a recovery says so, and a pinned helper is replaced ---

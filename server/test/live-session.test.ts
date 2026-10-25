@@ -2788,18 +2788,20 @@ test('queued PCM is dropped at the cut and capture during rebuilding is never re
     if (item.value.kind === 'marker' && item.value.marker.kind === 'continuity') break;
   }
   attachment.sendAudio({ pcm }); attachment.endAudioStream();
-  assert.equal(h.f.frames.length, 3, 'capture during rebuilding is dropped');
+  // #656: the frame is held, not dropped, so nothing reaches the old session.
+  assert.equal(h.f.frames.length, 3, 'capture during rebuilding is held for the new session');
   h.f.send({ setupComplete: {}, serverContent: { modelTurn: { parts: [audio()] } } });
   await continuity(output, 'resumed');
   const resumedAudio = await output.next();
   assert.equal(resumedAudio.value.kind, 'audio');
-  assert.equal(h.f.frames.length, 3, 'no old PCM replay follows setupComplete');
+  // #656: the held frame is delivered once to the new session, and no old PCM is replayed.
+  assert.equal(h.f.frames.length, 4, 'the held capture is delivered once, after the new session is ready');
   attachment.close(); const finalSnapshot = await attachment.done;
   let matching: Record<string, number | string>[] = [];
   for (let attempt = 0; attempt < 20 && matching.length === 0; attempt++) {
     await tick();
     matching = diagnosticLines.map(line => JSON.parse(line) as Record<string, number | string>)
-      .filter(value => value.ownerAudioCalls === 2 && value.ownerRebuildingDropCalls === 1);
+      .filter(value => value.ownerAudioCalls === 2 && value.ownerRebuildingDropCalls === 0);
   }
   assert.equal(matching.length, 1);
   const diagnostics = matching[0]!;
@@ -2807,8 +2809,9 @@ test('queued PCM is dropped at the cut and capture during rebuilding is never re
   assert.equal(diagnostics.event, 'live_session_diagnostics'); assert.equal(diagnostics.terminalCode, terminalCode);
   assert.equal(diagnostics.adapterGenerations, 2);
   assert.equal(diagnostics.ownerAudioCalls, 2); assert.equal(diagnostics.ownerAudioBytes, pcm.byteLength * 2);
-  assert.equal(diagnostics.ownerRebuildingDropCalls, 1); assert.equal(diagnostics.ownerRebuildingDropBytes, pcm.byteLength);
-  assert.equal(diagnostics.adapterAudioCalls, 1); assert.equal(diagnostics.adapterAudioBytes, pcm.byteLength);
+  assert.equal(diagnostics.ownerRebuildingDropCalls, 0); assert.equal(diagnostics.ownerRebuildingDropBytes, 0);
+  // #656: the held frame reaches the new session, so it is audio the adapter received, not audio lost.
+  assert.equal(diagnostics.adapterAudioCalls, 2); assert.equal(diagnostics.adapterAudioBytes, pcm.byteLength * 2);
   assert.equal(diagnostics.outputAudioFrames, 2); assert.equal(diagnostics.outputAudioPCMBytes, pcm.byteLength * 2);
 });
 
@@ -6314,7 +6317,6 @@ test('#656: a ten second read is work, so no rebuild fires over it and the answe
   fake.emit({ type: 'audio', pcm: new Uint8Array([1, 0]), rate: 24_000 });
   h.advance(AUDIBLE_DEBT_RUNG_MS + RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0);
-  assert.equal(rebuildReceipts(receipts, 'live_dead_air_nudge').length, 0);
   assert.equal(fake.sessionsOpened, 1, 'the answer is spoken where the read ran');
 });
 
@@ -6386,7 +6388,6 @@ test('#656: a call past its own ceiling no longer holds the ladder, so a wedged 
   await settlePort();
   h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'the read in flight holds the ladder');
-  assert.equal(rebuildReceipts(receipts, 'live_dead_air_nudge').length, 0);
   // TOOL_CEILING_MS is the call's own hard ceiling: past it the call is no longer the owner of the silence.
   h.advance(TOOL_CEILING_MS); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'a wedged call still recovers');

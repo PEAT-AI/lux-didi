@@ -47,8 +47,8 @@ export interface MongooseSignInAttempt { attemptId: string; phase: MongooseSignI
 /** One owner click names the endpoint it signs in and answers at once; the attempt runs on and reports by row. */
 export interface MongooseSignIn {
   (endpoint?: string): Promise<MongooseSignInStart>;
-  /** The latest attempt for one catalogue row id, or undefined when that row never started one. */
-  attempt(endpointId: string): MongooseSignInAttempt | undefined;
+  /** The latest attempt for one catalogue row id; a finished one is dropped once its row is connected. */
+  attempt(endpointId: string, connected?: boolean): MongooseSignInAttempt | undefined;
 }
 
 /** Opens the owner's default browser; the web view never opens one by itself. A launch that fails
@@ -169,7 +169,11 @@ export function createMongooseSignIn(options: {
     return { status: 'started', attemptId };
   };
   const signIn = ((endpoint?: string) => Promise.resolve(start(endpoint))) as MongooseSignIn;
-  signIn.attempt = (endpointId: string) => attempts.get(endpointId);
+  signIn.attempt = (endpointId: string, connected = false) => {
+    const latest = attempts.get(endpointId);
+    if (connected && latest && (latest.phase === 'signed_in' || latest.phase === 'failed')) { attempts.delete(endpointId); return undefined; }
+    return latest;
+  };
   return signIn;
 }
 
@@ -626,7 +630,7 @@ export async function startHost(config: HostConfig) {
     };
     startupStage = 'listen';
     const signIn = createMongooseSignIn({ configDir: effectiveConfigDir, recover: () => mcp.recover(), log: event => log.event(event) });
-    const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), mongooseSignIn: signIn, mongooseSignInAttempt: endpointId => signIn.attempt(endpointId), webRoot, port, ...(config.now ? { now: config.now } : {}) });
+    const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), mongooseSignIn: signIn, mongooseSignInAttempt: (endpointId, connected) => signIn.attempt(endpointId, connected), webRoot, port, ...(config.now ? { now: config.now } : {}) });
     try {
       const descriptor: RuntimeDescriptor = { schemaVersion: 1, origin: service.origin, authorityEpoch: store.authorityEpoch, assistantId: store.assistantId, pid: process.pid, startedAt: new Date().toISOString() };
       await publish(descriptorPath, descriptor); // Never use a stale descriptor as authority or carry bearer material.

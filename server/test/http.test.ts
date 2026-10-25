@@ -670,6 +670,33 @@ test('#659: a browser that cannot open reaches the Settings row as browser-unava
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('W1-R1: a finished attempt is dropped once its row connects, so a later failure shows its own reason', async () => {
+  const dir = mongooseConfigDir();
+  let state = 'error';
+  const signIn = createMongooseSignIn({
+    configDir: dir, recover: async () => {}, open: () => {},
+    login: async options => {
+      await options.openBrowser?.(AUTHORIZE);
+      for (const hop of ['discovery', 'registration', 'browser_handoff', 'callback', 'token', 'stored'] as const) options.onHop?.({ hop, outcome: 'ok' } as never);
+    },
+  });
+  const rows = () => ({ endpoints: [{ id: 'mongoose-knowledge', connector: 'mongoose', state, tools: state === 'connected' ? 3 : 0, lastHandshakeAt: null, ...(state === 'connected' ? {} : { error: 'not_signed_in' }) }] });
+  const f = await fixture(undefined, rows, signIn, undefined, { mongooseSignInAttempt: (id, connected) => signIn.attempt(id, connected) });
+  try {
+    const browser = await pair(f);
+    const cookie = browser.cookie.split(';')[0]!;
+    const poll = async () => ((await (await fetch(`${f.service.origin}/api/v1/live/connections`, { headers: { Cookie: cookie, 'sec-fetch-site': 'same-origin' } })).json()).data as Array<Record<string, unknown>>)[0]!;
+    const started = await signIn('knowledge');
+    for (let tick = 0; tick < 20 && signIn.attempt('mongoose-knowledge')?.phase !== 'signed_in'; tick += 1) await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual((await poll())['signIn'], { attemptId: (started as { attemptId: string }).attemptId, phase: 'signed_in' });
+    state = 'connected';
+    assert.equal((await poll())['signIn'], undefined, 'a connected row carries no finished attempt');
+    state = 'error';
+    assert.equal((await poll())['signIn'], undefined, 'and a later failure shows only its own reason');
+    assert.equal(signIn.attempt('mongoose-knowledge'), undefined);
+  } finally { await f.cleanup(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('W1: the click route answers started at once while discovery is still pending, and the row shows the outcome', async () => {
   const dir = mongooseConfigDir();
   const events: Record<string, unknown>[] = [];
@@ -684,7 +711,7 @@ test('W1: the click route answers started at once while discovery is still pendi
     login: options => runMongooseLogin({ ...options, fetch: hanging, timeoutMs: 400 }).then(() => undefined),
   });
   const rows = () => ({ endpoints: [{ id: 'mongoose-knowledge', connector: 'mongoose', state: 'error', tools: 0, lastHandshakeAt: null, error: 'not_signed_in' }] });
-  const f = await fixture(undefined, rows, signIn, undefined, { mongooseSignInAttempt: id => signIn.attempt(id) });
+  const f = await fixture(undefined, rows, signIn, undefined, { mongooseSignInAttempt: (id, connected) => signIn.attempt(id, connected) });
   try {
     const browser = await pair(f);
     const cookie = browser.cookie.split(';')[0]!;

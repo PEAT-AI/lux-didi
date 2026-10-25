@@ -96,7 +96,6 @@ test('W1: the Settings row says where the sign-in is, one plain sentence per ste
     ['running', /^Starting the sign-in to Mongoose data\./],
     ['waiting', /handed to your browser/],
     ['finishing', /accepted the sign-in/],
-    ['signed_in', /^Signed in to Mongoose data\./],
     ['failed:discovery_refused', /did not confirm this endpoint/],
     ['failed:registration_refused', /did not accept the sign-in request/],
     ['failed:port_in_use', /port 8768 is busy/],
@@ -122,4 +121,27 @@ test('W1: the Settings row says where the sign-in is, one plain sentence per ste
     assert.equal(row(invalid).next, plain, `${JSON.stringify(invalid)} is ignored, never rendered`);
   }
   assert.equal(connectorState({ id: 'mongoose-data', state: 'connected', signIn: { attemptId, phase: 'signed_in' } })!.next, 'no action needed', 'a connected row needs nothing');
+});
+
+test('W1-R1: a finished attempt never hides the row own step; only a live one, or a failed sign-in on a sign-in row, speaks', async () => {
+  const { connectorState } = await import('../src/settings-view.ts');
+  const attemptId = '0123456789abcdef';
+  const at = (reasonCode: string, signIn?: unknown, extra: Record<string, unknown> = {}) =>
+    connectorState({ id: 'mongoose-knowledge', state: 'error', reasonCode, ...extra, ...(signIn === undefined ? {} : { signIn }) })!.next;
+  const signedIn = { attemptId, phase: 'signed_in' };
+  const failed = { attemptId, phase: 'failed', reason: 'discovery_refused' };
+  // A sign-in that worked, then a VPN drop: the row says unreachable, never "Signed in".
+  for (const reason of ['unreachable', 'handshake_failed', 'discovery_failed', 'identity_mismatch', 'configuration_error', 'needs_sign_in', 'not_signed_in']) {
+    assert.equal(at(reason, signedIn, { retrying: true }), at(reason, undefined, { retrying: true }), `a signed_in attempt never replaces the ${reason} step`);
+  }
+  for (const reason of ['unreachable', 'handshake_failed', 'discovery_failed', 'identity_mismatch', 'configuration_error']) {
+    assert.equal(at(reason, failed, { retrying: true }), at(reason, undefined, { retrying: true }), `an old failed sign-in never replaces the ${reason} step`);
+  }
+  assert.match(at('unreachable', signedIn, { retrying: true }), /not reachable right now/);
+  for (const reason of ['needs_sign_in', 'not_signed_in', 'credential_missing']) {
+    assert.match(at(reason, failed), /did not confirm this endpoint/, `a failed sign-in shows on a ${reason} row`);
+  }
+  for (const phase of ['running', 'waiting', 'finishing']) {
+    assert.notEqual(at('unreachable', { attemptId, phase }, { retrying: true }), at('unreachable', undefined, { retrying: true }), `a ${phase} attempt shows on any row`);
+  }
 });

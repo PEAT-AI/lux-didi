@@ -37,6 +37,7 @@ skip_server=(
 )
 skip_web=(
   'selected-memory-browser.mjs|drives the shared GPU renderer through lux-browser-slot, which exists only on the managed host; scripts/check-selected-memory-ui.sh owns it'
+  'ui-proof.mjs|refuses to run without DIDI_WEB_ARTIFACTS, which its owning check passes in'
   'mini-shots.mjs|writes screenshot artifacts for a human; no pass/fail gate'
   'orb-motion-shots.mjs|writes screenshot artifacts for a human; no pass/fail gate'
   'orb-states-shots.mjs|writes screenshot artifacts for a human; no pass/fail gate'
@@ -124,8 +125,10 @@ if [ "$phase" = server ] || [ "$phase" = all ]; then
   printf 'server: %d test files, %d named skips\n' "${#server_files[@]}" "${#skip_server[@]}"
   print_skips "${skip_server[@]}"
   ran_server="${#server_files[@]}"
+  # --test-concurrency=1 matches the desk, which runs one check at a time: these suites share
+  # ports, temporary directories and the compiled tree, and they fail when run side by side.
   run_phase 'server tests' "$work/server-tests.log" node_test_files_bounded 600 \
-    --test-timeout=15000 --test-force-exit "${server_files[@]}"
+    --test-timeout=15000 --test-force-exit --test-concurrency=1 "${server_files[@]}"
   server_status=$?
   cd "$root"
   [ "$server_status" -eq 0 ] || status=1
@@ -143,7 +146,7 @@ if [ "$phase" = web ] || [ "$phase" = all ]; then
   print_skips "${skip_web[@]}"
   ran_web="${#web_files[@]}"
   run_phase 'web tests' "$work/web-tests.log" node_test_files_bounded 300 \
-    --test-timeout=15000 --test-force-exit "${web_files[@]}"
+    --test-timeout=15000 --test-force-exit --test-concurrency=1 "${web_files[@]}"
   web_status=$?
   cd "$root"
   [ "$web_status" -eq 0 ] || status=1
@@ -152,7 +155,7 @@ fi
 if [ "$phase" = browser ] || [ "$phase" = all ]; then
   # Headless Chromium against the built web bundle and the fake server in
   # web/test/fixture.mjs. One process per suite, serial: they share the fixture port.
-  browser_files=(web/test/browser.mjs web/test/presentation-browser.mjs web/test/ui-proof.mjs
+  browser_files=(web/test/browser.mjs web/test/presentation-browser.mjs
     web/test/transcript-pagination-replay.mjs web/test/transcription-replay.mjs)
   printf 'browser: %d suites\n' "${#browser_files[@]}"
   ran_browser="${#browser_files[@]}"

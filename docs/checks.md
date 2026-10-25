@@ -31,7 +31,7 @@ Before a release, run these twelve at the release head, one at a time, with no r
 | Script | Covers |
 | --- | --- |
 | `check-service.sh` | Type-check and build; runtime store and HTTP tests (`runtime.test`, `http.test`). |
-| `check-host.sh` | Build, then host, HTTP, stdout-protocol, connector publication, connector recovery and host-log tests, the `--mongoose-login` CLI sign-in (`mongoose-login.integration.mjs`), then the shipped UI against a real host in the browser. Fails on any `console.log` in server source. |
+| `check-host.sh` | Build, then host, HTTP, stdout-protocol, connector publication, connector recovery, host-log and Trello guidance tests, the `--mongoose-login` CLI sign-in (`mongoose-login.integration.mjs`), then the shipped UI against a real host in the browser. Fails on any `console.log` in server source. |
 | `check-host-entry.sh` | Host entry migration and reopen ring (`host-entry.test.mjs`). |
 | `check-domain.sh` | Domain and provenance tests against a temporary SQLite database. |
 | `check-chat.sh` | Text chat, chat tools, prompt, model, runtime, domain and HTTP regressions. |

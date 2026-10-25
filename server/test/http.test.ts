@@ -372,13 +372,13 @@ test('W7: the Trello row rides on the connection poll and its click starts the b
   let clicks = 0;
   const f = await fixture(undefined, () => ({ endpoints: [] }), undefined, undefined, {
     trelloSignIn: async () => { clicks += 1; return { status: 'started' as const, attemptId: 'fedcba9876543210' }; },
-    trelloRow: () => ({ id: 'trello', connector: 'trello', state: 'configured', tools: 0, error: 'not_signed_in', signIn: { attemptId: 'fedcba9876543210', phase: 'waiting' } }),
+    trelloRow: () => ({ id: 'trello', connector: 'trello', state: 'error', tools: 0, error: 'not_signed_in', signIn: { attemptId: 'fedcba9876543210', phase: 'waiting' } }),
   });
   try {
     const browser = await pair(f);
     const headers = { Cookie: browser.cookie.split(';')[0]!, Origin: f.service.origin, 'X-Didi-CSRF': browser.csrf, 'Content-Type': 'application/json' };
     const rows = await fetch(`${f.service.origin}/api/v1/live/connections`, { headers: { Cookie: headers.Cookie, 'Sec-Fetch-Site': 'same-origin' } });
-    assert.deepEqual((await rows.json()).data, [{ id: 'trello', state: 'configured', tools: 0, lastHandshakeAt: null, reasonCode: 'needs_sign_in', retrying: false, signIn: { attemptId: 'fedcba9876543210', phase: 'waiting' } }]);
+    assert.deepEqual((await rows.json()).data, [{ id: 'trello', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'needs_sign_in', retrying: false, signIn: { attemptId: 'fedcba9876543210', phase: 'waiting' } }]);
     assert.equal(clicks, 0, 'reading the rows never starts a sign-in');
     const refused = await fetch(`${f.service.origin}/api/v1/connectors/trello/sign-in`, { method: 'POST', headers: { ...headers, 'X-Didi-CSRF': 'stale', 'Idempotency-Key': 'trello-sign-in-1' }, body: '{}' });
     assert.equal(refused.status, 403);

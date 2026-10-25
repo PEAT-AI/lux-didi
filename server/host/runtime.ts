@@ -237,7 +237,7 @@ export function createTrelloSignIn(options: {
 
 /** The Trello row the Settings poll shows: signed in or not, from the record alone, never a network probe. */
 export function trelloConnectionRow(configDir: string, binding: OAuthBinding | undefined = trelloBinding()): { id: string; connector: string; state: string; tools: number; error?: string } {
-  return trelloSignedIn(configDir, binding) ? { id: 'trello', connector: 'trello', state: 'configured', tools: 2 } : { id: 'trello', connector: 'trello', state: 'configured', tools: 0, error: 'not_signed_in' };
+  return trelloSignedIn(configDir, binding) ? { id: 'trello', connector: 'trello', state: 'configured', tools: 2 } : { id: 'trello', connector: 'trello', state: 'error', tools: 0, error: 'not_signed_in' };
 }
 
 /**

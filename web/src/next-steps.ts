@@ -1,6 +1,6 @@
 // Fixed instructions only, never provider payloads or credential contents.
-/** The eight connector rows the host can emit (release 11 catalogue, server/test/fixtures/installed-mcp-config.json). */
-export const connectorIDs = ["lux-knowledge", "gmail", "calendar", "mattermost", "mongoose-knowledge", "mongoose-data", "mongoose-crm", "trello"] as const;
+/** The seven connector rows the host can emit (release 11 catalogue, server/test/fixtures/installed-mcp-config.json). */
+export const connectorIDs = ["lux-knowledge", "gmail", "calendar", "mattermost", "mongoose-knowledge", "mongoose-data", "mongoose-crm"] as const;
 /** The nine reason codes the host's connectionReasonCode can return (server/http/server.ts). */
 export const reasonCodes = ["configuration_error", "credential_missing", "needs_sign_in", "not_signed_in", "unreachable", "discovery_failed", "handshake_failed", "identity_mismatch", "unknown"] as const;
 export type ReasonCode = (typeof reasonCodes)[number];

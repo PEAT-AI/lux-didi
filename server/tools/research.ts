@@ -25,7 +25,7 @@ export type QuestionClass = 'quick_fact' | 'cross_source' | 'explicit_continue';
 export type SourceKind = 'memory' | 'knowledge' | 'calendar' | 'mail' | 'chat' | 'mongoose' | 'web';
 export type CandidateKind =
   | 'knowledge_search' | 'calendar_window' | 'mail_search' | 'mail_open'
-  | 'chat_search' | 'chat_thread' | 'web_search' | 'brief' | 'stop_answer' | 'stop_insufficient';
+  | 'chat_search' | 'chat_thread' | 'company_search' | 'web_search' | 'brief' | 'stop_answer' | 'stop_insufficient';
 
 /** The closed candidate set. A candidate reads exactly one internal action; nothing is invented. */
 export interface Candidate {
@@ -42,6 +42,8 @@ export const CANDIDATES: readonly Candidate[] = Object.freeze([
   { kind: 'mail_open', source: 'mail', requires: 'mail_search' },
   { kind: 'chat_search', source: 'chat' },
   { kind: 'chat_thread', source: 'chat', requires: 'chat_search' },
+  // #639: the company read is one candidate, so a company ask reads Mongoose in the same loop as the rest.
+  { kind: 'company_search', source: 'mongoose' },
   { kind: 'web_search', source: 'web' },
   { kind: 'brief', source: null },
   { kind: 'stop_answer', source: null },
@@ -878,6 +880,8 @@ export function fallbackQuery(kind: CandidateKind, question: string, nowMs = Dat
   const keywords = contentKeywords(question);
   const terms = keywords.join(' ');
   if (kind === 'knowledge_search') return terms ? { query: terms } : {};
+  // #639: the company search takes the same short terms the knowledge read takes, never the sentence.
+  if (kind === 'company_search') return terms ? { query: terms } : {};
   if (kind === 'web_search') { const query = broaderWebQuery(question, 120); return query ? { query } : {}; }
   if (kind === 'mail_search') {
     // E6 (#609): the fallback recipe hands the compiler its own window and its own words, so the query
@@ -955,6 +959,13 @@ const NAMED_DISCUSSION = /\b(?:what did|did)\s+[A-Z][\w'’-]*\s+and\s+[A-Z][\w'
 /** E2 (#605): the discussion forms read her own memory. #635: the chat beside it only when the ask names it. */
 const DISCUSSION_ASK = /\b(?:what did we (?:discuss|talk about)|we (?:talked|spoke) about)\b/u;
 const CHAT_WORDS = /\b(chats?|team|channels?|slack|mattermost|messages?|dms?|said|posted|discussed)\b/u;
+/**
+ * #639: the company words. The owner's own organisation lives in Mongoose, so an ask about a customer, a
+ * client, a prospect, a deal, a product or the CRM is a company ask, as is naming Mongoose itself and
+ * asking what the company sells. "do we know <name>" names the company too, never "what do we know", which
+ * is the generic knowledge ask.
+ */
+const COMPANY_WORDS = /\b(?:mongoose|company(?: knowledge)?|customers?|clients?|prospects?|crm|deals?|our (?:products?|offerings?)|what do we sell|(?<!\bwhat )do we know)\b/u;
 /** #635: the writing verbs. A summarise, draft or reply ask has a chat word as its subject, not as a source. */
 const WRITING_WORDS = /\b(?:write|writes|writing|written|wrote|draft|drafts|summari[sz]e|summari[sz]ed|summaries|summary|compose|composes|reply|replies|replying|respond)\b/u;
 /** #635: the pure recall forms. A recall ask reads her own history, and the chat only when the ask names it. */
@@ -1012,10 +1023,12 @@ const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?
  * The source a question is about, in the order the first answer waits for them. The word classes are the one
  * place a route is decided: `words` is the source's own vocabulary, and a route that also carries `needed` is
  * reached only when the ask needs it, which for the chat is the #635 writing and pure recall rule.
+ * #639: the company source sits last, so an ask that also names mail, calendar or chat keeps the two source
+ * cap it had before a company word existed, and only a company ask with room left reads Mongoose.
  */
 const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp; needed?: (text: string) => boolean }[] = [
   { source: 'calendar', words: SCHEDULE_WORDS }, { source: 'mail', words: MAIL_WORDS },
-  { source: 'chat', words: CHAT_WORDS, needed: chatQuestionWords },
+  { source: 'chat', words: CHAT_WORDS, needed: chatQuestionWords }, { source: 'mongoose', words: COMPANY_WORDS },
 ];
 
 /** Whether an ask's words route this source, its own word class and its own need rule together. */
@@ -1095,7 +1108,9 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   const calendarWords = CALENDAR_WORDS.test(text) || (!mailWords && !CHAT_WORDS.test(text) && (CALENDAR_DAY_WORDS.test(text) || CALENDAR_TIME_WORDS.test(text)));
   const chatWords = chatQuestionWords(text);
   const triage = triageAsk(text) && !mailWords && !chatWords;
-  const matched = mailWords || calendarWords || chatWords || triage;
+  // #639: a company ask names a source, so it takes the same branch the mail, calendar and chat words take.
+  const companyWords = COMPANY_WORDS.test(text);
+  const matched = mailWords || calendarWords || chatWords || companyWords || triage;
   if (!matched) {
     offer('brief', 0.5, null); offer('knowledge_search', 0.4, 'knowledge');
     if (webWords) offer('web_search', 0.45, 'web');
@@ -1105,6 +1120,9 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   if (mailWords || triage) offer('mail_search', 0.4, 'mail');
   if (calendarWords || triage) offer('calendar_window', 0.4, 'calendar');
   if (chatWords || triage) offer('chat_search', 0.4, 'chat');
+  // #639: the company layer answers a company ask beside the knowledge base, and is offered only when the
+  // ask names it, never as a default read of every question.
+  if (companyWords) offer('company_search', 0.4, 'mongoose');
   if (webWords) offer('web_search', 0.45, 'web');
   return { questionClass: 'cross_source', actions, pUseful };
 }
@@ -1377,6 +1395,14 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     try { range = windowRange(config.window ?? calendarWindowOf(config.question, 'today'), config.nowMs ?? Date.now(), config.timeZone); }
     catch { return []; }
     return [search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar }, 'cal0')];
+  }
+  if (kind === 'company_search') {
+    // #639: the company read is the typed lookup's own read, on the topic's words and its mode, so the
+    // question-only path answers with the same entity read the model's `company` lookup answers with.
+    const asked = config.query === undefined ? '' : withoutRouteWords(config.query, config.configured).trim();
+    const words = asked !== '' ? asked : (topicText ?? '').trim();
+    if (words === '' || !config.configured.includes('mongoose')) return [];
+    return companySubs(words);
   }
   if (kind === 'mail_search') {
     // #565: a bare inbox scan stays a scan; a topic or a model query is compiled from the topic.

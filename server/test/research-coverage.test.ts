@@ -24,7 +24,7 @@ interface Harness {
   logs: ResearchRunLog[];
 }
 
-function harness(opts: { execute?: ResearchDeps['execute']; configured?: readonly SourceKind[]; replyLimit?: number; now?: () => number; schedule?: ResearchDeps['schedule'] } = {}): Harness {
+function harness(opts: { execute?: ResearchDeps['execute']; configured?: readonly SourceKind[]; replyLimit?: number; now?: () => number; schedule?: ResearchDeps['schedule']; unavailableNow?: ResearchDeps['unavailableNow'] } = {}): Harness {
   const executed: { name: string; args: Record<string, unknown> }[] = [];
   const progress: ResearchProgress[] = [];
   const logs: ResearchRunLog[] = [];
@@ -32,6 +32,7 @@ function harness(opts: { execute?: ResearchDeps['execute']; configured?: readonl
     now: opts.now ?? (() => 0),
     ...(opts.schedule === undefined ? {} : { schedule: opts.schedule }),
     configured: opts.configured ?? ['knowledge', 'calendar', 'mail', 'chat'],
+    ...(opts.unavailableNow === undefined ? {} : { unavailableNow: opts.unavailableNow }),
     execute: opts.execute ?? (async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name, 'evidence', true, call.key))),
     emit: event => progress.push(event),
     log: entry => logs.push(entry),
@@ -232,4 +233,23 @@ test('#635: a chat read still in flight when the reply is composed says still_re
   assert.doesNotMatch(header, /chat skipped_by_route/u, 'a read nobody skipped is never called skipped');
   assert.match(String(reply['note']), /Still reading: chat/u, 'and the note says the same thing');
   release();
+});
+
+// #639: the header and the voice both name the company source a question only company ask wanted, so an
+// endpoint that is not signed in is never silence in the reply.
+test('#639: a question only company ask carries the company source in the header and says it is not signed in', async () => {
+  const h = harness({
+    configured: ['knowledge', 'calendar', 'mail', 'chat', 'mongoose'],
+    unavailableNow: () => [{ source: 'mongoose', reason: 'not_signed_in' }],
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name,
+      call.name === 'search_knowledge' ? knowledgeHits(2) : 'evidence', true, call.key)),
+  });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'which of our customers are on the renewal',
+  }, new AbortController().signal);
+  const header = String(reply['coverage']);
+  assert.match(header, /mongoose \w+/u, `the header names the company source the ask wanted (${header})`);
+  assert.match(header, /knowledge complete/u, `and the knowledge base beside it (${header})`);
+  const note = String(reply['note'] ?? '');
+  assert.match(note, /company knowledge: unavailable \(not signed in\)/u, `the voice says why the company layer is missing (${note})`);
 });

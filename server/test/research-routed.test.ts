@@ -50,6 +50,7 @@ function harness(opts: {
   execute?: ResearchDeps['execute'];
   memory?: (query: string) => { lines: string[]; text: string; total: number };
   schedule?: ResearchDeps['schedule'];
+  unavailableNow?: ResearchDeps['unavailableNow'];
 } = {}): Harness {
   const routed: ResearchRoutedLog[] = [];
   const executed: string[] = [];
@@ -61,6 +62,7 @@ function harness(opts: {
     now: opts.now ?? (() => 0),
     ...(opts.schedule !== undefined ? { schedule: opts.schedule } : {}),
     configured: opts.configured ?? CONFIGURED,
+    ...(opts.unavailableNow === undefined ? {} : { unavailableNow: opts.unavailableNow }),
     execute: opts.execute ?? (async (subs: readonly IntentSubCall[]) => {
       for (const call of subs) executed.push(call.name);
       return subs.map(call => sub(call.name, EVIDENCE[call.name] ?? 'evidence', true, call.key));
@@ -923,4 +925,53 @@ test('#635: a chat read cut by its own budget after it answered is a partial tim
   assert.match(header, /chat partial_timeout 1 of 1 shown/u, `a read that answered and then ran out of its budget keeps what it read and is partial (${header})`);
   assert.match(note, /team chat read took too long/u, `the voice says the read took too long (${note})`);
   assert.doesNotMatch(note, /could not reach/u, 'a cut read is never a source out of reach');
+});
+
+// #639: the eval's company asks went question only, and with the three Mongoose endpoints behind a sign-in
+// the reply never said so. A company ask is a source in its own right, read beside the knowledge base, and
+// an endpoint that cannot serve it is named with the closed reason the typed lookup already speaks.
+test('#639: a question only company ask reads the company layer beside the knowledge base', async () => {
+  const h = harness();
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'do we know Plantix, our customer',
+  }, new AbortController().signal);
+  assert.ok(h.executed.includes('search'), `the company read was dispatched (${h.executed.join(', ')})`);
+  assert.ok(h.executed.includes('search_knowledge'), 'and the knowledge base answered beside it');
+  const findings = reply['findings'] as { source: string; text: string }[];
+  assert.ok(findings.some(finding => finding.source === 'mongoose' && finding.text.includes('Plantix organisation chart')),
+    `the company layer carried its own finding (${JSON.stringify(findings.map(finding => finding.source))})`);
+  assert.equal(String(reply['note'] ?? '').includes('company knowledge'), false, 'a signed in company read is never spoken as unavailable');
+});
+
+test('#639: a question only company ask whose endpoints are not signed in says so, and still answers from knowledge', async () => {
+  const h = harness({ unavailableNow: () => [{ source: 'mongoose', reason: 'not_signed_in' }] });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'do we know Plantix, our customer',
+  }, new AbortController().signal);
+  const note = String(reply['note'] ?? '');
+  assert.match(note, /company knowledge: unavailable \(not signed in\)/u, `the voice says the company layer is not signed in (${note})`);
+  const header = String(reply['coverage'] ?? '');
+  assert.match(header, /mongoose /u, `the header names the company source the ask wanted (${header})`);
+  assert.equal(h.executed.includes('search'), false, 'a dead endpoint is never handed the question');
+  const findings = reply['findings'] as { source: string }[];
+  assert.ok(findings.some(finding => finding.source === 'knowledge'), 'the knowledge source still answers beside it');
+});
+
+test('#639: an ask with no company word never routes to the company layer', async () => {
+  const h = harness();
+  await runResearch(h.deps, { action: 'start', question: 'what is on my calendar this week' }, new AbortController().signal);
+  assert.equal(h.executed.includes('search'), false, `no company read for a calendar ask (${h.executed.join(', ')})`);
+});
+
+// #639: the route class is the one place a route is decided, so the company words are proven here and the
+// reading order is proven to keep the existing two source cap, company last.
+test('#639: the company route class names the ask and keeps the two source cap', () => {
+  assert.deepEqual(requiredSources('do we know Plantix'), ['mongoose'], 'a company ask names the company source');
+  assert.deepEqual(requiredSources('what did our customer say about the renewal'), ['mongoose'], 'and so does a customer ask');
+  assert.deepEqual(requiredSources('what do we know about the release plan'), [], 'the generic knowledge ask is not a company ask');
+  assert.deepEqual(requiredSources('what did our customer write in the mail'), ['mail', 'mongoose'], 'a company ask that also names mail keeps both');
+  assert.deepEqual(requiredSources('the mail about our customer and the calendar'), ['calendar', 'mail'], 'three named sources keep the first two of the route order, so the company source sits last');
+  const routed = routedSelection('do we know Plantix', CONFIGURED);
+  assert.ok(routed !== undefined, 'an unambiguous company ask is routed without spending the selector');
+  assert.ok(routed.actions.some(action => String(action.kind) === 'company_search'), `the routed selection reads the company layer (${JSON.stringify(routed.actions.map(action => action.kind))})`);
 });

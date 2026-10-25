@@ -312,9 +312,11 @@ export async function composeMcpRuntime(options: {
         connectors.set(entry.id, entry.connector);
         continue;
       }
+      // W2B-R2: an enabled entry is a connection the owner has; a disabled one is not, so it reports no
+      // state at all. A `connecting` row for an entry nobody connects would name its source unreachable.
+      reports.set(entry.id, { id: entry.id, state: 'connecting', tools: 0, lastHandshakeAt: null });
+      connectors.set(entry.id, entry.connector);
     }
-    reports.set(entry.id, { id: entry.id, state: 'connecting', tools: 0, lastHandshakeAt: null });
-    connectors.set(entry.id, entry.connector);
   }
   const active = endpoints.filter(entry => entry.enabled && entry.allowEgress && !rejected.has(entry.id));
 

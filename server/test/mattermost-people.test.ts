@@ -523,6 +523,14 @@ test('C-CHAT (W2B-R1, W2B-R2): the mcp.json edit alone moves the connection, and
   assert.deepEqual(states(moved), ['mattermost-people:connected'], 'a deleted entry is never a connection report');
   assert.deepEqual(probeUnreachable(moved.status().endpoints as never), [], 'research never calls the chat source unreachable');
 
+  // The other disabled shape the review measured: the old entry kept in the file with enabled false.
+  const kept = await start([{ id: 'mattermost', path: '/old', enabled: false }, { id: 'mattermost-people', path: '/people', enabled: true }], { '/people': MATTERMOST_READ_TOOLS });
+  const keptIds = acceptanceIds(kept);
+  assert.deepEqual(keptIds, ['mattermost-people'], 'a disabled entry is a retired connection, whatever the durable row says');
+  assert.ok(compose(kept, keptIds, 'disabled-run').includes('mattermost_chat'));
+  assert.deepEqual(states(kept), ['mattermost-people:connected'], 'a disabled entry is never reported connecting, so the chat source stays readable');
+  assert.deepEqual(probeUnreachable(kept.status().endpoints as never), []);
+
   // The reverse edit: the new entry is deleted and the old one restored, and the same run holds it again.
   const back = await start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
   const backIds = acceptanceIds(back);

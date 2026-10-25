@@ -304,3 +304,16 @@ test('TWO STAGE 3: the ids put the hits naming an asked person first, and the en
   ].join('\n');
   assert.deepEqual(knowledgeReadIds(text, ['Cara'], 2), ['14', '11'], 'the named hit first, then the ranking');
 });
+
+test('COVER 3 (W10-R15 P3): every hit shown but a windowed body still reads excerpt', async () => {
+  const h = harness({
+    text: { search_knowledge: '### Ana Clifton (person | 2026-09-14) [id 301] the entry body cut at 1200 chars' },
+  });
+  const reply = await research(h.deps, {
+    action: 'start', question: 'what do we know about the release plan',
+    lookups: [{ source: 'knowledge', query: 'release plan' }],
+  });
+  const header = String(reply['coverage']);
+  assert.match(header, /knowledge complete 1 of 1 shown/u, `the hit count is honest: ${header}`);
+  assert.match(header, /knowledge excerpt/u, `a windowed body is never called full: ${header}`);
+});

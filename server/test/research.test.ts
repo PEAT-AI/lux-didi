@@ -1952,7 +1952,8 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
     lookups: [{ source: 'knowledge', query: 'invoice release plan' }, { source: 'mail', query: 'from:ana' }],
   }, new AbortController().signal);
   const text = JSON.stringify(reply);
-  assert.ok(text.length <= RESEARCH.budgets.default, `the answer to Live is ${text.length} chars, the coverage header included`);
+  // W10-R15 P4: this case pins its own bound, so it is measured against the cap it drives.
+  assert.ok(text.length <= CAP_REPLY_BOUND, `the answer to Live is ${text.length} chars against its own ${CAP_REPLY_BOUND} cap`);
   const line = h.logs.at(-1)!;
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
   // C-DEPTH item 2: the per source floor protects a short source, so the widest one gives up whole items and the

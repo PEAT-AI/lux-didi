@@ -2523,12 +2523,15 @@ test('L19: the first spoken reply of a call is never unjournalled without a rece
   const sink = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
   t.after(() => sink());
   const { session } = await attached(h, 'reply-receipt');
-  // The provider speaks with no output transcript at all, which is exactly the missing-row case.
-  for (let i = 0; i < 40 && !events.some(entry => entry.event === 'live_first_audio'); i++) {
+  // The provider speaks with no output transcript at all, which is exactly the missing-row case. The
+  // opening turn can speak too, so this counts its own reply instead of the first one in the log.
+  const audible = (): number => events.filter(entry => entry.event === 'live_first_audio').length;
+  const before = audible();
+  for (let i = 0; i < 40 && audible() === before; i++) {
     h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
     await tick();
   }
-  assert.ok(events.some(entry => entry.event === 'live_first_audio'), 'the reply was audible');
+  assert.ok(audible() > before, 'the reply was audible');
   h.f.send({ serverContent: { turnComplete: true } });
   await tick(); await tick();
   // The reply is never unjournalled: its own row exists, so no reader has to infer what was said.

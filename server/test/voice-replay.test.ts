@@ -195,7 +195,7 @@ test('scenario 12: a commentary acknowledgement with no audio is not delivery', 
   await replay.release();
 });
 
-test('scenario 13: a provider error frame mid tool turn ends in a typed failure, not a silent rebuild', async t =>
+test('scenario 13: a provider error frame mid tool turn ends in a typed failure, not a silent rebuild', async t => {
   const played = await play(t, 'scenario-13-provider-error', { tools: true, scripts: [{ latencyMs: 1_500 }] });
   const { replay } = played;
   const call = replay.calls[0];

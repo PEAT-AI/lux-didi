@@ -30,6 +30,8 @@ export const MATTERMOST_ATTENTION_TOOL = 'mattermost_attention';
 export const MATTERMOST_ATTENTION = { days: 7, maxDays: 30, limit: 20, maxDmChannels: 4, maxThreads: 8, historyLimit: 20, snippet: 160 } as const;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** The channel index ceiling: a child that never reports exhaustion must not be paged forever. */
+const CHANNEL_INDEX_MAX = 2000;
 /** General search looks back 90 days unless the caller names an older period. */
 const SEARCH_WINDOW_MS = 90 * DAY_MS;
 
@@ -138,6 +140,7 @@ class ChannelIndexCache {
     return this.#channels;
   }
   set(channels: MattermostChannel[]): void { this.#channels = channels; this.#at = this.now(); }
+  clear(): void { this.#channels = undefined; }
 }
 
 /** Decode the channels array out of a completed mattermost_list_channels content envelope. */
@@ -189,10 +192,15 @@ export function resolveChannelReference(reference: string, channels: readonly Ma
   });
   if (named.length === 1) { const only = named[0]!; return { channel: only.id ?? only.name ?? wanted }; }
   if (named.length > 1) return { error: `channel-ambiguous: ${wanted} matches ${named.map(label).join(', ')}` };
-  // The first letter prefix below never resolved a channel: it only narrows the suggestion list this
-  // refusal carries, which the word match above does not produce, so it stays for the suggestion.
-  const prefix = channels.filter(channel => label(channel).toLowerCase().startsWith(lower[0] ?? ''));
-  const closest = (prefix.length ? prefix : channels).map(label).filter(Boolean).slice(0, 5);
+  // The refusal carries at most three closest names, so a caller can voice them: a channel sharing
+  // more of the reference's words ranks first, then a first letter prefix.
+  const closeness = (channel: MattermostChannel): number => {
+    const own = words(`${channel.name ?? ''} ${channel.displayName ?? ''}`);
+    const shared = referenceWords.filter(word => own.includes(word)).length;
+    const prefix = label(channel).toLowerCase().startsWith(lower[0] ?? '') ? 1 : 0;
+    return shared === 0 ? prefix : shared * 2 + prefix;
+  };
+  const closest = [...channels].sort((a, b) => closeness(b) - closeness(a)).map(label).filter(Boolean).slice(0, 3);
   return { error: `channel-not-found: ${wanted}; closest names: ${closest.join(', ') || 'none'}` };
 }
 
@@ -372,29 +380,68 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     return clamp ? { limit: settings.maxLimit } : undefined;
   }
 
-  /** One list_channels read per session serves every channel name this reader resolves. */
+  /** The channel index is built once per session, and rebuilt only by one refresh after a miss. */
   const channelIndex = new ChannelIndexCache();
+  /**
+   * The complete channel list, read at the child's own declared page size and followed through its
+   * own declared paging argument until it runs out (#661: one bounded 12 entry page used to decide
+   * every later name). Two thousand channels is the ceiling, so a child that never reports
+   * exhaustion cannot spin. Any failed page refuses the whole index, never a silently short one.
+   */
+  async function readChannels(signal?: AbortSignal): Promise<{ channels: MattermostChannel[]; origin: SourceDispatchRef | undefined } | { error: string }> {
+    const definition = port.visibleTools(settings.endpointId).find(entry => entry.name === 'mattermost_list_channels');
+    const declared = isRecord(definition?.inputSchema) && isRecord(definition.inputSchema['properties']) ? definition.inputSchema['properties'] : {};
+    const limit = isRecord(declared['limit']) && typeof declared['limit']['maximum'] === 'number' && declared['limit']['maximum'] >= 1 ? Math.floor(declared['limit']['maximum']) : undefined;
+    const paging = (['offset', 'page'] as const).find(key => isRecord(declared[key]));
+    const channels: MattermostChannel[] = [];
+    let origin: SourceDispatchRef | undefined;
+    let previous = '';
+    for (let step = 0; channels.length < CHANNEL_INDEX_MAX; step += 1) {
+      const args: Record<string, unknown> = {};
+      if (limit !== undefined) args['limit'] = limit;
+      if (paging === 'offset') args['offset'] = channels.length;
+      if (paging === 'page') args['page'] = step;
+      const evidence = await dispatch('mattermost_list_channels', args, signal);
+      if (evidence.state === 'refused' || evidence.state === 'unknown') return { error: evidence.reason };
+      if (evidence.state !== 'completed') return { error: `channel-list-${evidence.state}` };
+      const page = parseChannelList(evidence.decodedResult);
+      if (!page) return { error: 'channel-list-unreadable' };
+      origin = evidence[SOURCE_DISPATCH] ?? origin;
+      const marker = page.map(channel => channel.id ?? channel.name ?? '').join('|');
+      if (page.length === 0 || marker === previous) break;
+      previous = marker;
+      channels.push(...page);
+      if (paging === undefined) break;
+      if (limit !== undefined && page.length < limit) break;
+    }
+    return { channels, origin };
+  }
   async function loadChannels(signal?: AbortSignal): Promise<MattermostChannel[] | { error: string }> {
     const cached = channelIndex.get();
     if (cached) { port.recordReuse?.(channelIndex.origin); return cached; }
     const denied = preflight(registry, settings, 'mattermost_list_channels');
     if (denied) return { error: denied };
-    const evidence = await dispatch('mattermost_list_channels', limited(undefined)!, signal);
-    if (evidence.state === 'refused' || evidence.state === 'unknown') return { error: evidence.reason };
-    if (evidence.state !== 'completed') return { error: `channel-list-${evidence.state}` };
-    const channels = parseChannelList(evidence.decodedResult);
-    if (!channels) return { error: 'channel-list-unreadable' };
-    channelIndex.set(channels);
-    channelIndex.origin = evidence[SOURCE_DISPATCH];
-    return channels;
+    const loaded = await readChannels(signal);
+    if ('error' in loaded) return loaded;
+    channelIndex.set(loaded.channels);
+    channelIndex.origin = loaded.origin;
+    return loaded.channels;
   }
-  async function resolveChannel(reference: string, signal?: AbortSignal): Promise<string | { error: string }> {
-    // A 26 character Mattermost id is already dispatchable; anything else is a name or display name.
-    if (/^[a-z0-9]{26}$/.test(reference)) return reference;
+  async function resolveAgainstIndex(reference: string, signal?: AbortSignal): Promise<string | { error: string }> {
     const channels = await loadChannels(signal);
     if (!Array.isArray(channels)) return channels;
     const resolved = resolveChannelReference(reference, channels);
     return 'channel' in resolved ? resolved.channel : { error: resolved.error };
+  }
+  async function resolveChannel(reference: string, signal?: AbortSignal): Promise<string | { error: string }> {
+    // A 26 character Mattermost id is already dispatchable; anything else is a name or display name.
+    if (/^[a-z0-9]{26}$/.test(reference)) return reference;
+    const built = channelIndex.get() !== undefined;
+    const resolved = await resolveAgainstIndex(reference, signal);
+    // A channel created after the index was built is found by one refresh before the refusal.
+    if (!built || typeof resolved === 'string' || !resolved.error.startsWith('channel-not-found')) return resolved;
+    channelIndex.clear();
+    return resolveAgainstIndex(reference, signal);
   }
 
   /** The owner identity: one whoami per process, dropped as soon as a read reports the session changed. */

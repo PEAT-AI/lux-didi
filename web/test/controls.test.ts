@@ -51,7 +51,10 @@ test('every web to native message is one the native side decodes', () => {
 });
 
 test('the chat lane offers Allow only when a text model is configured', () => {
-  assert.match(lane, /!available\s*\?\s*`<p class="connected-disclosure" id="chat-unconfigured">Text chat is not configured\. Set the text chat model in Settings\.<\/p>`/, 'with no model the lane says so and offers no Allow');
-  assert.match(lane, /grant \|\| this\.#consent\s*\?\s*''\s*:\s*`<p class="connected-disclosure">Chat messages go to <strong>\$\{escape\(chatModelLabel\(provider, model\)\)\}<\/strong>/, 'with a model the lane names it the way Settings does');
-  assert.match(lane, /\$\{disclosure\}/, 'the lane renders exactly the line it computed');
+  const flat = lane.replace(/\s+/g, ' ');
+  const block = flat.slice(flat.indexOf('const blocked ='), flat.indexOf('panel.innerHTML ='));
+  assert.match(block, /Text chat is not configured\. Set the text chat model in Settings\./, 'with no model the lane says so and where to set it');
+  assert.doesNotMatch(block.slice(block.indexOf('chat-unavailable')), /connected-consent/, 'the line that names the problem offers no Allow');
+  assert.match(block, /grant \|\| this\.#consent \? '' : `<p class="connected-disclosure"> Chat messages go to <strong>\$\{escape\(chatModelLabel\(provider, model\)\)\}<\/strong> when you send them\. <button type="button" id="connected-consent"/, 'with a model the lane names it the way Settings does');
+  assert.match(flat, /\$\{disclosure\}/, 'the lane renders exactly the line it computed');
 });

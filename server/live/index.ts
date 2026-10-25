@@ -328,6 +328,15 @@ function ownerTurnFinalized(handle: ActiveSession, event: LiveVoiceEvent): boole
   handle.admissionSpeechPending = false;
   return true;
 }
+/**
+ * C-LIVE behaviour 4 (W5-R3): the run a host deadline reply may answer from. A continue keeps the run it named; a
+ * start may name only a run this call created, so the ledger's last run from an earlier call is never handed to
+ * the model as this call's findings. `''` is knownReply's answer for "no run of mine is known".
+ */
+export function deadlineResearchId(call: { researchId?: string | undefined }, priorRunId: string | undefined, currentRunId: string | undefined): string {
+  if (call.researchId !== undefined) return call.researchId;
+  return currentRunId !== undefined && currentRunId !== priorRunId ? currentRunId : '';
+}
 /** Every job row is written with a one day expiry (server/tools/jobs.ts); past it the row is stale data. */
 const JOB_EXPIRY_MS = 86_400_000;
 /** One intent sub-read deadline: a slow source never holds the whole turn past this. */
@@ -3338,7 +3347,8 @@ export class LiveSessionOwner {
         response = { ...ADMISSION_BLOCKED };
       } else {
         try {
-          response = await this.#boundedResearch(handle, scheduler.call({ ...parsed.call, callId: call.id }, handle.abort.signal), parsed.call, configured, generation);
+          const priorRunId = handle.researchLedger.last()?.researchId;
+          response = await this.#boundedResearch(handle, scheduler.call({ ...parsed.call, callId: call.id }, handle.abort.signal), parsed.call, configured, generation, priorRunId);
         } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
         if (response['error'] === undefined && parsed.call.action !== 'stop' && generation === handle.generation) handle.researchAdmission.delivered();
       }
@@ -3363,7 +3373,7 @@ export class LiveSessionOwner {
    * not, `hostGraceMs` later the host answers with what the ledger holds, so the in-flight state clears even when a
    * downstream cancellation is slow, and the model is asked to answer from that.
    */
-  async #boundedResearch(handle: ActiveSession, work: Promise<JsonObject>, call: { action: string; researchId?: string | undefined }, configured: readonly ResearchSourceKind[], generation: number): Promise<JsonObject> {
+  async #boundedResearch(handle: ActiveSession, work: Promise<JsonObject>, call: { action: string; researchId?: string | undefined }, configured: readonly ResearchSourceKind[], generation: number, priorRunId: string | undefined): Promise<JsonObject> {
     if (call.action === 'stop') return work;
     let timer: { cancel(): void } | undefined;
     const startedAt = this.#now();
@@ -3372,7 +3382,7 @@ export class LiveSessionOwner {
     timer?.cancel();
     if (outcome !== 'deadline') return outcome;
     hostLogEvent({ event: 'research_operation_deadline', liveSessionId: handle.liveSessionId, generation, ms: Math.max(0, this.#now() - startedAt) });
-    const researchId = call.researchId ?? handle.researchLedger.last()?.researchId ?? '';
+    const researchId = deadlineResearchId(call, priorRunId, handle.researchLedger.last()?.researchId);
     return { ...knownReply(handle.researchLedger, researchId, configured, 'partial'), operationStop: 'deadline' };
   }
 

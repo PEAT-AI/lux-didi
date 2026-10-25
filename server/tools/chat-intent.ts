@@ -36,8 +36,11 @@ const NAME = String.raw`(\p{L}[\p{L}'’.-]*(?:\s+\p{L}[\p{L}'’.-]*)?)`;
 const SAID_VERBS = 'write|wrote|written|say|said|send|sent|post|posted|tell|told|message|messaged|ask|asked|share|shared|reply|replied|answer|answered';
 /** "what did Ada write me", "what has Ada said": only their side. */
 const PERSON_SAID = new RegExp(String.raw`\bwhat (?:did|has|have|had) ${NAME} (?:${SAID_VERBS})\b`, 'iu');
-/** "messages from Ada", "the latest from Ada", "anything from Ada": only their side. */
-const PERSON_FROM = new RegExp(String.raw`\b(?:messages?|posts?|dms?|notes?|latest|anything|something|news) (?:from|by) ${NAME}`, 'iu');
+/**
+ * "messages from Ada", "posts by Ada": only their side. A news word ("news from Bayer", "the latest from
+ * Bayer") is never a person, because what follows it is usually a company (W2B-R5).
+ */
+const PERSON_FROM = new RegExp(String.raw`\b(?:messages?|posts?|dms?|notes?) (?:from|by) ${NAME}`, 'iu');
 /** "my DMs with Ada", "my chat with Ada": both sides of the direct conversation. */
 const PERSON_WITH = new RegExp(String.raw`\b(?:dms?|direct messages?|direct chats?|private chats?|chats?|conversations?|messages?|thread) with ${NAME}`, 'iu');
 /** "what did I discuss with Ada", "what have Ada and I talked about": everything the two exchanged. */

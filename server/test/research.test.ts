@@ -1934,7 +1934,9 @@ test('LAT-1023 R1: a requested body keeps its 6,000 char page bound while an ans
   assert.ok(slices![0]!.text.length > RESEARCH.sourceFloorChars, 'a body page is real evidence, not a floor');
   assert.ok(JSON.stringify(reply).length <= RESEARCH.bodyLimitChars, `and stays inside the body bound (${JSON.stringify(reply).length} chars)`);
   assert.equal(RESEARCH.bodyLimitChars, 6_000, 'the body page bound is the page width a requested read had before');
-  assert.equal(RESEARCH.budgets.default, 2_500, 'and the composed answer keeps the Live budget');
+  // C-DEPTH item 1: the flat cap this line pinned is retired for the three tiers, so the assertion names them.
+  assert.deepEqual(RESEARCH.budgets, { default: 12_000, analytical: 16_000, depth: 20_000 },
+    'and the composed answer is bounded by a tier, not a flat cap');
 });
 
 test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget is still trimmed to it', async () => {

@@ -22,7 +22,7 @@ cp server/adapters/model/*.ts "$out/source/adapters/model/"
 cp server/adapters/live-voice/types.ts "$out/source/adapters/live-voice/"
 # #562: the prompt content test reads the accepted Live instruction through the adapter, so the adapter
 # and the two modules it imports are staged; nothing else of the adapter tree is compiled.
-cp server/adapters/live-voice/openai.ts server/adapters/live-voice/resample.ts "$out/source/adapters/live-voice/"
+cp server/adapters/live-voice/openai.ts server/adapters/live-voice/resample.ts server/adapters/live-voice/audio-level.ts "$out/source/adapters/live-voice/"
 # The adapter types name the host's trace port (O1b-A), so stage the trace kinds and the record door.
 cp server/trace/kinds.ts server/trace/record.ts server/trace/clock.ts "$out/source/trace/"
 cp server/domain/history-reader.ts server/domain/history-lifecycle.ts server/domain/util.ts server/domain/contract.ts "$out/source/domain/"

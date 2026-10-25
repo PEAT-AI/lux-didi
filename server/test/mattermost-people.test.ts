@@ -332,6 +332,17 @@ test('C-CHAT: the ask shapes pick person, overview, channel, group or topic', ()
   assert.equal(chatAsk('what did we say yesterday'), false, 'a pronoun is never a person');
 });
 
+test('C-CHAT (W2B-R5): a name nobody is called in a "news from" ask is a topic search, never name not found', async t => {
+  const at = { terms: 'Bayer', nowMs: Date.parse('2026-10-25T09:00:00Z'), timeZone: 'UTC' };
+  assert.deepEqual(chatIntent('news from Bayer', at), { kind: 'topic-search', terms: 'Bayer', window: {} });
+  assert.equal(chatAsk('news from Bayer'), false, 'no person read for words that name a company');
+  const f = await setup(t, 'people');
+  const planned: IntentSubCall[] = [];
+  const reply = await runResearch(researchDeps(f, planned), { action: 'start', question: 'news from Bayer', topic: 'Bayer' }, new AbortController().signal);
+  assert.equal(planned.some(call => call.name === INTERNAL.chatRead), false, 'the ask stays a topic search');
+  assert.doesNotMatch(JSON.stringify(reply), /I found nobody called/u);
+});
+
 test('C-CHAT (N-1): chat looks backwards; a future window names no chat window, "last week" names both ends', () => {
   const now = Date.parse('2026-10-25T09:00:00Z');
   assert.deepEqual(chatWindow('tell me about the conference next week', now, 'UTC'), { future: true });

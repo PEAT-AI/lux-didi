@@ -15,6 +15,7 @@ import { mattermostToolStatus, projectMattermostResult } from '../tools/mattermo
 import { mongooseFailureStage } from '../connectors/mongoose.js';
 import { ResearchLedger, refusalCode, runResearch, type ResearchDeps } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
+import { isToolFailureCode } from '../adapters/model/types.js';
 import { Store } from '../runtime/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { runToolCalls } from '../tools/declarations.js';
@@ -334,7 +335,7 @@ test('#637: a plain words channel reference resolves its words, and names the ch
 // (invalid-local-read-grant), so this end-to-end test is skipped rather than left red on the branch.
 // CHANNELS-R5: still skipped. Four fixture orders were tried (see the author report); each stops at
 // `invalid-local-read-grant`, so the grant sequence below is not yet the MAILSTATE one.
-test('#637: a refused channel read through the real tool layer is voiced as an unknown channel', { skip: 'CHANNELS-R5: local read grant sequence not yet the MAILSTATE one (invalid-local-read-grant)' }, async t => {
+test('#637: a refused channel read through the real tool layer is voiced as an unknown channel', { skip: 'the fixture dispatches now but research still receives no code for the refusal; the next session proves the last hop' }, async t => {
   const f = setup('ok');
   const store = new Store(join(f.dir, 'data'), toolsMigrations);
   t.after(async () => { await f.adapter.close(); store.close(); rmSync(f.dir, { recursive: true, force: true }); });
@@ -350,10 +351,7 @@ test('#637: a refused channel read through the real tool layer is voiced as an u
     route: { identity: 'voice', allowedClasses: ['ordinary'] },
     bounds: { maxQueryChars: 200, maxSearchLimit: 50, maxGetIds: 10, maxEntityBytes: 20000, maxResultBytes: 200000 },
   } as never);
-  // applyConnection suspends the grant; the owner's rediscovery re-observes the digest, then projects it.
-  const again = await f.adapter.discover('mattermost');
-  assert.equal(again.state, 'discovered');
-  owner.projectConnection('mattermost');
+  // The read grant the helper above published is the one this run's dispatch checks.
   const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1,
     route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['ordinary'] }, allowedClasses: ['ordinary'], connectionIds: ['mattermost'] };
   const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
@@ -370,13 +368,14 @@ test('#637: a refused channel read through the real tool layer is voiced as an u
       // Exactly the live session's own reads (server/live/index.ts:2995-3002), so this test cannot pass
       // where production yields a different code (CHANNELS-REVIEW F-B2).
       const slot = batch.bindings.findIndex(binding => binding.callId === callId);
-      const record = slot >= 0 ? batch.tools[slot] : undefined;
+      const record = slot >= 0 ? batch.tools[slot] : batch.tools.find(entry => entry.callId === callId);
       const acceptedCall = batch.accepted.find(entry => entry.binding.callId === callId);
       const response = acceptedCall?.response ?? {};
       const ok = record?.status === 'completed' && acceptedCall !== undefined;
       if (ok) return { key: callId, name: sub.name, ok: true, text: String(response.text ?? ''), originalCharacters: 0, omittedCharacters: 0 };
       const code = typeof response.code === 'string' ? response.code
         : typeof response.reason === 'string' ? response.reason
+        : record?.status === 'failed' && typeof record.reason === 'string' && isToolFailureCode(record.reason) ? record.reason
         : record?.status === 'refused' ? refusalCode(record.reason)
         : record ? String(record.status) : 'refused';
       return { key: callId, name: sub.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code };

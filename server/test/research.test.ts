@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, chatQuery, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, newestDatedFirst, offerableCandidates, shapeBlock, windowRange,
+  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, chatQuery, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedChannel, namedInsightIds, newestDatedFirst, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing, parseResearch, researchRepair, topicTerms,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
@@ -27,7 +27,7 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve };
 }
 
-interface Harness { deps: ResearchDeps; progress: ResearchProgress[]; logs: ResearchRunLog[]; subcalls: ResearchSubcallLog[]; executed: { name: string; args: unknown }[]; joined: string[] }
+interface Harness { deps: ResearchDeps; progress: ResearchProgress[]; logs: ResearchRunLog[]; subcalls: ResearchSubcallLog[]; executed: { name: string; args: unknown }[]; joined: string[]; branches: string[] }
 
 function harness(opts: { execute?: ResearchDeps['execute']; now?: () => number; schedule?: ResearchDeps['schedule']; ledger?: ResearchLedger; executeText?: string; replyLimit?: number; configured?: readonly SourceKind[]; memory?: (query: string) => { lines: string[]; text: string; total: number; hits?: { snippet: string; role?: string; date?: string }[] } } = {}): Harness {
   const progress: ResearchProgress[] = [];
@@ -35,6 +35,8 @@ function harness(opts: { execute?: ResearchDeps['execute']; now?: () => number; 
   const subcalls: ResearchSubcallLog[] = [];
   const executed: { name: string; args: unknown }[] = [];
   const joined: string[] = [];
+  // #663: the scheduler branch that answered each call, so a repeat is told apart from a fresh read.
+  const branches: string[] = [];
   const deps: ResearchDeps = {
     now: opts.now ?? (() => 0),
     configured: opts.configured ?? CONFIGURED,
@@ -47,7 +49,7 @@ function harness(opts: { execute?: ResearchDeps['execute']; now?: () => number; 
     emit: event => progress.push(event),
     log: entry => logs.push(entry),
     logSubcall: entry => subcalls.push(entry),
-    logJoined: id => joined.push(id),
+    logJoined: (id, branch) => { joined.push(id); branches.push(branch); },
     ledger: opts.ledger ?? new ResearchLedger(),
     ...(opts.replyLimit !== undefined ? { replyLimit: opts.replyLimit } : {}),
     ...(opts.schedule !== undefined ? { schedule: opts.schedule } : {}),
@@ -61,7 +63,7 @@ function harness(opts: { execute?: ResearchDeps['execute']; now?: () => number; 
         ...(found ? { binding: { executionId: call.key } as NonNullable<IntentSubResult['binding']>, historyPage: { status: 'ok', hits: found.hits ?? found.lines.map(snippet => ({ snippet })), totalMatches: found.total, nextCursor: null } } : {}) };
     });
   };
-  return { deps, progress, logs, subcalls, executed, joined };
+  return { deps, progress, logs, subcalls, executed, joined, branches };
 }
 
 
@@ -477,6 +479,57 @@ test('E7: three identical research calls in the live turn window read each sourc
   clock += RESEARCH.coalesceWindowMs + 1;
   await scheduler.call({ action: 'start', question: 'Where does the release stand?', sources: 'knowledge' }, new AbortController().signal);
   assert.equal(h.executed.filter(call => call.name === 'search_knowledge').length, 3, 'outside the window the same question is researched again');
+});
+
+// #663: the owner asked for important mail, the backend re-asked the same lookup eight times in 14 s and
+// nothing was spoken. The second identical start inside the window is a receipt that sends the model to the
+// owner with the answer it already has, never the same findings again, and the log names the branch.
+test('#663: a repeated start answers a receipt that sends the model to the owner, never the answer again', async () => {
+  let clock = 1_000;
+  const h = harness({ now: () => clock });
+  const scheduler = new ResearchScheduler(h.deps);
+  const first = await scheduler.call({ action: 'start', question: 'what mail came in', sources: 'mail' }, new AbortController().signal);
+  const reads = h.executed.length;
+  assert.ok(reads > 0, 'the first start reads');
+  clock += 5_000;
+  const second = await scheduler.call({ action: 'start', question: 'what mail came in', sources: 'mail' }, new AbortController().signal);
+  assert.equal(second['repeat'], true, 'the repeat says it is a repeat');
+  assert.deepEqual(second['findings'], [], 'the answer is not handed over a second time');
+  assert.equal(second['note'], RESEARCH.repeatNote, 'the note sends the model to the owner with the answer it has');
+  assert.equal(String(second['researchId']), String(first['researchId']), 'the repeat names the run that answered');
+  assert.equal(h.executed.length, reads, 'the repeat runs no read');
+  assert.deepEqual(h.branches, ['start', 'recent'], 'the log says which scheduler branch answered');
+  // #663: the host log keeps the branch and refuses a branch outside the closed set.
+  const id = String(first['researchId']);
+  assert.deepEqual(safeEvent({ event: 'research_joined', researchId: id, research_branch: 'recent' }),
+    { event: 'research_joined', researchId: id, research_branch: 'recent' }, 'the host log keeps the branch that answered');
+  assert.equal(safeEvent({ event: 'research_joined', researchId: id, research_branch: 'invented' }), undefined, 'an invented branch never reaches the host log');
+});
+
+// #664: a delegation that keeps asking reads three times at most. The fourth call is told to answer the owner
+// with what it has, and it starts no read of its own.
+test('#664: the fourth research call of one delegation says answer the owner and reads nothing', async () => {
+  let clock = 1_000;
+  const h = harness({ now: () => clock });
+  const scheduler = new ResearchScheduler(h.deps);
+  const replies: Record<string, unknown>[] = [];
+  for (let n = 0; n < 4; n += 1) {
+    replies.push(await scheduler.call({ action: 'start', question: 'what mail came in', sources: 'mail' }, new AbortController().signal));
+    clock += 3_000;
+  }
+  assert.equal(h.executed.length, 1, 'the delegation read its mail once');
+  assert.equal(replies[3]!['note'], RESEARCH.ceilingNote, 'the fourth call says answer the owner with what it has');
+  assert.deepEqual(replies[3]!['findings'], [], 'the fourth call hands over no findings');
+  assert.deepEqual(h.branches, ['start', 'recent', 'recent', 'ceiling'], 'every call names the branch that answered it');
+});
+
+// #664: an owner ask named the channel "an engineering" and "name", because the article and the model's own
+// placeholder were read as the channel.
+test('#664: a spoken channel name loses its article, and a placeholder is never a channel', () => {
+  assert.equal(namedChannel('in an engineering channel'), 'engineering', 'the article is never part of the name');
+  assert.equal(namedChannel('the exact channel name'), undefined, 'a placeholder where a name belongs is no channel');
+  assert.equal(namedChannel('#ops'), 'ops', 'a hash name is the channel');
+  assert.equal(namedChannel('in the AI channel'), 'AI', 'a display name keeps its words, the connector folds the case');
 });
 
 test('Z1: a start ignores a model researchId that fails the host log id rule and mints its own', async () => {

@@ -3395,6 +3395,18 @@ test('W10: a source whose grant publishes after the call started joins the next 
   assert.ok(h.calls.slice(before).some(call => String(call.name).startsWith('calendar_')), `the late source serves the read: calls=${JSON.stringify(h.calls.map(call => call.name))} reply=${reply}`);
 });
 
+// #651: a chat read the connector refused for a channel it does not know keeps its own closed code
+// through the live research hop, so the reply names the channel instead of an unreachable source.
+test('#651: an unknown channel reaches research as its own closed code', async t => {
+  const h = await harness(t, { tools: true, mattermost: true });
+  await attached(h, 'failreason-channel');
+  const question = 'what did they say in the nowhere channel about the deploy';
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question, topic: 'deploy in the nowhere channel' });
+  const reply = lastToolResponse(h);
+  assert.match(reply, /I do not know a channel called nowhere/, 'the reply names the unknown channel');
+  assert.match(reply, /"unavailable":\{"chat":"channel_not_found"\}/, 'the reply header keeps the code the chat read gave');
+});
+
 test('U1: research progress reaches the live channel with metadata only', async t => {
   const h = await harness(t, { tools: true, calendar: true });
   await attached(h, 'lookup-progress');

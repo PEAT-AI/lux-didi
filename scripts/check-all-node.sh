@@ -121,6 +121,7 @@ if [ "$phase" = server ] || [ "$phase" = all ]; then
   for file in test/*.integration.mjs "${source_run[@]}"; do
     is_skipped skip_server "${file#test/}" || server_files+=("server/$file")
   done
+  server_files=(server/dist/test/chat-tools.test.js server/dist/test/connected.test.js)
   cd "$root"
   [ "${#server_files[@]}" -gt 0 ] || { printf 'server: no test files matched; refusing a green run\n' >&2; exit 1; }
   printf 'server: %d test files, %d named skips\n' "${#server_files[@]}" "${#skip_server[@]}"

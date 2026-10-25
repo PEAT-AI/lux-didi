@@ -95,24 +95,13 @@ run_phase() { # <label> <logfile> <command...>
     return 0
   fi
   printf '=== %s: FAIL in %ds\n' "$label" "$((SECONDS - phase_start))"
-  node - "$log" <<'PARSE'
-// Name every failing test file and its first error line, and nothing else.
-const lines = require('node:fs').readFileSync(process.argv[2], 'utf8').split('\n');
-let file = null, first = null;
-const flush = () => { if (file) { console.log(`FAIL ${file}`); if (first) console.log(`  ${first}`); } };
-for (const line of lines) {
-  const top = /^not ok \d+ - (.+)$/.exec(line);
-  const sub = /^# Subtest: (\S+)$/.exec(line);
-  const inner = /^ +not ok \d+ - (.+)$/.exec(line);
-  const error = /^ +(?:error|message): '?([^']{1,200})/.exec(line);
-  if (sub) { if (file && first) { flush(); } file = sub[1]; first = null; }
-  else if (inner && file && !first) first = `first failing test: ${inner[1]}`;
-  else if (error && file && !first) first = error[1].trim();
-  else if (top && file) { flush(); file = null; first = null; }
-}
-flush();
-PARSE
-  tail -25 "$log" | sed 's/^/  | /'
+  # The runner's own failing-tests block is the report: one entry per failing test with
+  # the error above it. Bounded, and never the whole log.
+  if grep -q '✖ failing tests' "$log"; then
+    sed -n '/✖ failing tests/,$p' "$log" | head -120
+  else
+    tail -40 "$log"
+  fi
   status=1
   return 1
 }

@@ -19,10 +19,19 @@ test('connections renders all states using only allowlisted fields and fixed rea
 });
 
 test('a mongoose sign-in need names the Settings button, never a restart', () => {
-  const html = connectionsMarkup([{ id: 'mongoose', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'needs_sign_in' }]);
+  const html = connectionsMarkup([{ id: 'mongoose-data', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'needs_sign_in' }]);
   assert.match(html, /Sign-in needed\./);
   assert.match(html, /Settings/);
   assert.doesNotMatch(html, /restart/i);
+});
+
+test('the two reason codes the panel used to call unknown now say what to do', () => {
+  const approval = connectionsMarkup([{ id: 'gmail', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'configuration_error' }]);
+  assert.match(approval, /Approval needed/);
+  assert.doesNotMatch(approval, /Connection issue unknown/);
+  const signedOut = connectionsMarkup([{ id: 'mattermost', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'not_signed_in' }]);
+  assert.match(signedOut, /Signed out/);
+  assert.doesNotMatch(signedOut, /Connection issue unknown/);
 });
 
 test('unknown reason and invalid scalar payloads never render free text', () => {

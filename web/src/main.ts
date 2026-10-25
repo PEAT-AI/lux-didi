@@ -11,7 +11,8 @@ import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, type Bridge, type NativeLiveState } from './native-bridge';
 import { connectionsMarkup } from './connector-status';
-import { micModePicker, micModePromptMarkup, micModeState, providerDefaultVoice, providerVoices, settingsMarkup } from './settings-view';
+import { bindSignInButtons, micModePicker, micModePromptMarkup, micModeState, providerDefaultVoice, providerVoices, settingsMarkup } from './settings-view';
+import { mongooseEndpointLabel } from './next-steps';
 import { answerMarkup } from './markdown';
 import { applyTheme, loadTheme, saveTheme, type Theme } from './theme';
 import { isMiniRoute, miniMarkup, miniModeButtonMarkup, miniState, pillMuted, refreshMiniVisuals, type MiniState } from './mini';
@@ -448,9 +449,10 @@ function bind() {
   document.getElementById('connected-standing-revoke')?.addEventListener('click',()=>void connectedView.revokeStanding());
   document.getElementById('connected-revoke')?.addEventListener('click',()=>void connectedView.revokeConversation());
   document.getElementById('connected-recover')?.addEventListener('click',()=>void connectedView.recoverHistory());
-  button('mongoose-signin',()=>void mutate(async (signal,version)=>{
-    const started=await startMongooseSignIn(signal);assertAuthority(version);
-    notice=started.status==='started'?'Sign in to Mongoose in the browser window. The connector reconnects by itself when you finish.':'Sign-in did not finish. Use the Sign in button to try again.';
+  bindSignInButtons(root,(endpoint)=>void mutate(async (signal,version)=>{
+    const started=await startMongooseSignIn(endpoint,signal);assertAuthority(version);
+    const label=mongooseEndpointLabel(endpoint);
+    notice=started.status==='started'?`Sign in to ${label} in the browser window. The connector reconnects by itself when you finish.`:'Sign-in did not finish. Use the Sign in button to try again.';
   }));
 }
 async function mutate(action: (signal: AbortSignal, version: AbortSignal) => Promise<void>) {

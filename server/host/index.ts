@@ -5,7 +5,8 @@ import { supervise } from './supervision.js';
 import { ServiceError } from '../contracts/errors.js';
 import { MongooseLoginError, runMongooseLogin, type MongooseLoginCode } from './mongoose-login.js';
 import { loadMcpEndpoints } from '../config/mcp.js';
-import { mongooseEndpointName } from '../connectors/mongoose.js';
+import { MONGOOSE_ENDPOINTS, mongooseEndpointName, type MongooseEndpoint } from '../connectors/mongoose.js';
+import { mongooseCredentialPresent } from './mongoose-auth.js';
 
 /** One owner line per login failure: a closed code and a plain sentence, never a URL or a token. */
 const LOGIN_LINES: Record<MongooseLoginCode, string> = {
@@ -31,12 +32,24 @@ function writeProtocolFrame(frame: Record<string, unknown>): void {
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv.length === 1 && argv[0] === '--help') {
-    process.stdout.write('Usage: node server/dist/host/index.js [pair] [--mongoose-login [--no-browser]] [--supervised] [--data-dir PATH] [--web-root BUILD] [--port 0..65535] [--descriptor PATH.json] [--config-dir PATH] [--owner-profile PATH]\nForeground, loopback-only; no bearer argument. Defaults: platform application data, repository web/dist, port 8765.\npair verifies current local service identity and prints a single-use browser pairing code, never a bearer.\n--mongoose-login runs the owner sign-in in the default browser once, then writes the private Mongoose session record. Add --no-browser to print the sign-in URL without opening a browser; the complete attempt expires after five minutes.\n--supervised requires one bounded nonce JSON line on stdin, emits ready JSON, and closes on stdin EOF.\n');
+    process.stdout.write('Usage: node server/dist/host/index.js [pair] [--mongoose-login [knowledge|data|crm]] [--no-browser] [--supervised] [--data-dir PATH] [--web-root BUILD] [--port 0..65535] [--descriptor PATH.json] [--config-dir PATH] [--owner-profile PATH]\nForeground, loopback-only; no bearer argument. Defaults: platform application data, repository web/dist, port 8765.\npair verifies current local service identity and prints a single-use browser pairing code, never a bearer.\n--mongoose-login runs the owner sign-in in the default browser once, then writes the private Mongoose session record for that endpoint: knowledge, data or crm. Without a name it signs in every Mongoose endpoint that has no session, one after another, stopping at the first failure. Add --no-browser to print the sign-in URL without opening a browser; each complete attempt expires after five minutes.\n--supervised requires one bounded nonce JSON line on stdin, emits ready JSON, and closes on stdin EOF.\n');
     return;
   }
   const pairing = argv[0] === 'pair';
   if (pairing) argv = argv.slice(1);
-  const login = argv.includes('--mongoose-login');
+  let loginEndpoint: MongooseEndpoint | undefined;
+  const loginIndex = argv.indexOf('--mongoose-login');
+  const login = loginIndex >= 0;
+  if (login) {
+    const named = argv[loginIndex + 1];
+    // An endpoint name is optional, and only these three names are accepted; anything else is refused.
+    if (named !== undefined && !named.startsWith('--')) {
+      const match = MONGOOSE_ENDPOINTS.find(endpoint => endpoint === named);
+      if (match === undefined) throw new Error('Invalid sign-in configuration');
+      loginEndpoint = match;
+      argv = [...argv.slice(0, loginIndex + 1), ...argv.slice(loginIndex + 2)];
+    }
+  }
   const noBrowser = argv.includes('--no-browser');
   if ((login && pairing) || (noBrowser && !login) || argv.filter(arg => arg === '--mongoose-login').length > 1 || argv.filter(arg => arg === '--no-browser').length > 1) throw new Error('Invalid sign-in configuration');
   argv = argv.filter(arg => arg !== '--mongoose-login' && arg !== '--no-browser');
@@ -61,7 +74,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const descriptor = values.get('--descriptor') ?? process.env.DIDI_DESCRIPTOR;
   if (descriptor) config.descriptor = resolve(descriptor);
   if (pairing) { process.stdout.write(`${await pairLocal(config.dataDir, config.descriptor)}\n`); return; }
-  if (login) { await runOwnerLogin(config, noBrowser); return; }
+  if (login) { await runOwnerLogin(config, noBrowser, loginEndpoint); return; }
   // The supervised protocol writes its ready frame before any connector handshake; the connector
   // round starts from `host.start()` after the frame. Non-supervised starts keep the awaited shape.
   config.deferConnectors = supervised;
@@ -93,33 +106,46 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     supervision?.dispose();
     throw error;
   }
+}
 
 /**
- * The owner sign-in: one browser round, one atomic record write, one owner line. It never starts the
- * host, never opens a browser before the loopback listener is bound and never prints a token.
+ * The owner sign-in: one browser round per endpoint, one atomic record write, one owner line. It never
+ * starts the host, never opens a browser before the loopback listener is bound and never prints a token.
+ * A named endpoint signs in alone. Without a name, every Mongoose endpoint with no session signs in one
+ * after another, each with its own consent, stopping on the first failure with its closed line.
  */
-async function runOwnerLogin(config: HostConfig, noBrowser: boolean): Promise<void> {
+async function runOwnerLogin(config: HostConfig, noBrowser: boolean, requested?: MongooseEndpoint): Promise<void> {
   const configDir = resolve(config.configDir ?? join(config.dataDir, 'provider-config'));
   const selection = loadMcpEndpoints({ configDir });
-  const entry = selection.state === 'configured'
-    ? selection.catalog.endpoints.find(candidate => candidate.connector === 'mongoose' && candidate.transport !== 'stdio' && candidate.credentialRef && candidate.url)
-    : undefined;
-  if (!entry || entry.transport === 'stdio' || !entry.credentialRef || !entry.url) throw new Error('Mongoose sign-in needs a configured mongoose endpoint with a credential reference');
-  // One sign-in per endpoint: the crm endpoint answers endpoint_not_allowed for an account outside its teams.
-  const endpoint = mongooseEndpointName(entry.resource) ?? mongooseEndpointName(entry.url);
-  if (endpoint === undefined) throw new Error('Mongoose sign-in needs one of the three mongoose endpoints');
-  try {
-    await runMongooseLogin({ configDir, reference: entry.credentialRef, resourceUrl: entry.url, endpoint, account: entry.account, ...(noBrowser
-      ? { showAuthorizationUrl: (url: string) => process.stdout.write(`Open this Mongoose sign-in URL. This attempt expires five minutes after it started:\n${url}\n`) }
-      : { openBrowser: openInDefaultBrowser }) });
-  } catch (error) {
-    const code = error instanceof MongooseLoginError ? error.code : undefined;
-    console.error(code ? `Mongoose sign-in failed: ${LOGIN_LINES[code]}.` : 'Mongoose sign-in failed.');
-    process.exitCode = 1;
+  const configured = selection.state === 'configured'
+    ? selection.catalog.endpoints.flatMap(candidate => {
+      if (candidate.connector !== 'mongoose' || candidate.transport === 'stdio' || !candidate.credentialRef || !candidate.url) return [];
+      // One sign-in per endpoint: the crm endpoint answers endpoint_not_allowed for an account outside its teams.
+      const endpoint = mongooseEndpointName(candidate.resource) ?? mongooseEndpointName(candidate.url);
+      return endpoint === undefined ? [] : [{ entry: candidate, endpoint }];
+    })
+    : [];
+  const targets = requested !== undefined
+    ? configured.filter(candidate => candidate.endpoint === requested)
+    : configured.filter(candidate => !mongooseCredentialPresent(configDir, candidate.entry.credentialRef!));
+  if (targets.length === 0) {
+    if (requested !== undefined) throw new Error(`Mongoose sign-in needs the configured ${requested} endpoint with a credential reference`);
+    process.stdout.write('Mongoose sign-in: every endpoint already has a session, so nothing was signed in.\n');
     return;
   }
-  process.stdout.write('Mongoose sign-in complete. Restart Lux Didi to use it.\n');
-}
+  for (const { entry, endpoint } of targets) {
+    try {
+      await runMongooseLogin({ configDir, reference: entry.credentialRef!, resourceUrl: entry.url!, endpoint, account: entry.account, ...(noBrowser
+        ? { showAuthorizationUrl: (url: string) => process.stdout.write(`Open this Mongoose ${endpoint} sign-in URL. This attempt expires five minutes after it started:\n${url}\n`) }
+        : { openBrowser: openInDefaultBrowser }) });
+    } catch (error) {
+      const code = error instanceof MongooseLoginError ? error.code : undefined;
+      console.error(code ? `Mongoose ${endpoint} sign-in failed: ${LOGIN_LINES[code]}.` : `Mongoose ${endpoint} sign-in failed.`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  process.stdout.write(`Mongoose sign-in complete for ${targets.map(target => target.endpoint).join(', ')}. Restart Lux Didi to use the new session.\n`);
 }
 
 // Node 26 main-module identity handles symlink spellings and stays false on import.

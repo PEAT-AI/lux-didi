@@ -59,7 +59,7 @@ async function readBody(req: IncomingMessage, limit = 65536): Promise<Record<str
   try { return object(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError('BAD_REQUEST', 'Malformed JSON'); }
 }
 interface Principal { clientId: string; mode: 'bearer' | 'browser'; tokenHash?: string; csrfToken?: string }
-export interface ServiceOptions { ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; live?: LiveService; toolsStatus?: () => { endpoints: unknown[] }; mongooseSignIn?: () => Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }> }
+export interface ServiceOptions { ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; live?: LiveService; toolsStatus?: () => { endpoints: unknown[] }; mongooseSignIn?: (endpoint?: string) => Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }> }
 export interface EntryDeletionResponse extends EntryTombstone { liveSessionRetainsUntilRebuild: boolean }
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
@@ -244,7 +244,10 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       if (route.kind === 'mongooseSignIn') {
         // One explicit owner click starts the login. Nothing opens a browser at app start, and the
         // reply carries a closed outcome, never a token, a record or a provider message.
-        const started = options.mongooseSignIn ? await options.mongooseSignIn() : { status: 'failed' as const, reason: 'not-configured' };
+        // The click names the one endpoint it signs in; the host validates the name against its catalogue.
+        const body = await readBody(req);
+        const endpoint = typeof body.endpoint === 'string' ? body.endpoint : undefined;
+        const started = options.mongooseSignIn ? await options.mongooseSignIn(endpoint) : { status: 'failed' as const, reason: 'not-configured' };
         send(res, 200, success(started)); return;
       }
       if (route.kind === 'session') { send(res, 200, success({ clientId: actor.clientId, csrfToken: actor.csrfToken ?? null })); return; }

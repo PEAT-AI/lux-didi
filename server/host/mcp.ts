@@ -383,11 +383,15 @@ export async function composeMcpRuntime(options: {
       const previous = reports.get(id)!;
       reports.set(id, { ...previous, state: 'error', tools: 0, error: event.reason,
         exception: { class: 'Transport', code: event.reason } });
-    } else if (event.recoverable && registry.revision(id) === event.revision
+    } else if (registry.revision(id) === event.revision
         && bursts.get(id)?.session === event.session && bursts.get(id)?.token === generations.get(id)) {
+      // A retired session leaves the published grant suspended, so the source is uncallable until a new
+      // grant lands, whether or not this session earned a recovery. The mark says so either way.
       markUnavailable();
-      eligible.set(id, { session: event.session, revision: event.revision });
-      void recoverEndpoint(id);
+      if (event.recoverable) {
+        eligible.set(id, { session: event.session, revision: event.revision });
+        void recoverEndpoint(id);
+      }
     }
   };
 

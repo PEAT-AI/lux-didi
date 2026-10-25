@@ -8,7 +8,7 @@ A release in this repository is one squash-merged pull request to `main`. There 
 
 1. A milestone of issues is closed by one pull request against `main`. The pull request body lists the checks run at its head commit and the issues it closes.
 2. The branch carries the code and the doc that describes the behaviour in the same commits ([CLAUDE.md](../CLAUDE.md): a change updates the doc that describes it).
-3. The head commit passes the twelve-check gate in [checks.md](checks.md). The gate is run at the head, one check at a time, with no rerun on a flake. Nine of the twelve also run on the pull request itself: [.github/workflows/ci.yml](../.github/workflows/ci.yml) runs them on ubuntu through `bash scripts/ci-gauntlet.sh --ci`, and the three that need macOS (see [checks.md](checks.md#what-ci-runs-and-what-stays-local)) are run by hand at the head.
+3. The head commit passes the twelve-check gate in [checks.md](checks.md). The gate is run at the head, one check at a time, with no rerun on a flake. Nine of the twelve also run on the pull request itself, plus `check-package`: [.github/workflows/ci.yml](../.github/workflows/ci.yml) runs them on ubuntu through `bash scripts/ci-gauntlet.sh --ci`, and the three that need macOS (see [checks.md](checks.md#what-ci-runs-and-what-stays-local)) are run by hand at the head. The pull request's CI is then the packaging gate too: `check-package` packs, installs and tests the tarball, so a pack list that drops a module the host imports fails the pull request instead of the owner's install.
 4. The pull request is squash-merged. The merge commit's subject becomes the release row.
 
 ## Cutting a release

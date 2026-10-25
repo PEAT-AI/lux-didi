@@ -26,13 +26,15 @@ binaries run outside the lock: only the compiler is inside it.
 
 ## The release gate
 
-Before a release, run these twelve at the release head, one at a time, with no rerun on a flake: `check-live-voice`, `check-live-session`, `check-prompt`, `check-live-gateway`, `check-tool-owner`, `check-google-connector`, `check-company-connectors`, `check-native-live`, `check-web-unit`, `Tests/DidiMacTests/check-mac.sh`, `check-host`, `check-install-smoke`. `bash scripts/ci-gauntlet.sh` runs exactly that list, in that order, one at a time; CI runs the same script with `--ci`.
+Before a release, run these twelve at the release head, one at a time, with no rerun on a flake: `check-live-voice`, `check-live-session`, `check-prompt`, `check-live-gateway`, `check-tool-owner`, `check-google-connector`, `check-company-connectors`, `check-native-live`, `check-web-unit`, `Tests/DidiMacTests/check-mac.sh`, `check-host`, `check-install-smoke`. `bash scripts/ci-gauntlet.sh` runs exactly that list, in that order, one at a time, then `check-package`; CI runs the same script with `--ci`.
 
 ## What CI runs and what stays local
 
 Nine of the twelve need nothing macOS: they install from the npm cache, compile TypeScript, and run node test files. Those nine are the gate CI reproduces, in this order:
 
 `check-live-voice`, `check-live-session`, `check-prompt`, `check-live-gateway`, `check-tool-owner`, `check-google-connector`, `check-company-connectors`, `check-web-unit`, `check-install-smoke`.
+
+`check-package` is the tenth check CI runs. It packs the service from a clean `git archive`, installs the tarball offline into an empty cache and runs the package tests, so it needs `git`, `npm`, `tar` and `node` and no macOS tool. It is not one of the twelve above, and the gauntlet runs it last because it builds and reinstalls the whole service.
 
 The three that stay local, and the reason from the script itself:
 
@@ -42,7 +44,11 @@ The three that stay local, and the reason from the script itself:
 | `Tests/DidiMacTests/check-mac.sh` | compiles `Sources/LuxDidi/*.swift` and `Tests/DidiMacTests/main.swift` with `xcrun swiftc`, then runs the binary |
 | `check-host` | takes the `lux-browser-slot` lease on the shared GPU renderer and drives `server/test/host-browser.mjs`; without that lease the check is blocked, not skipped |
 
-A gate check that runs past twenty minutes is a defect; the CI job is under fifteen in practice and fails on the job timeout at twenty. `check-mcp` is not a gate check and CI does not run it: it covers the MCP connector surface and belongs to a change that touches it. After installing the app, run `scripts/smoke.sh` once (it makes at most two real model turns, so never in a loop).
+A gate check that runs past twenty minutes is a defect; the CI job is under fifteen in practice and fails on the job timeout at twenty.
+
+`check-mcp` needs no macOS tool either, so it could run on ubuntu, but it is not a gate check and CI does not run it: it covers the MCP connector surface and belongs to a change that touches that connector.
+
+After installing the app, run `scripts/smoke.sh` once (it makes at most two real model turns, so never in a loop).
 
 ## Server and host
 
@@ -57,7 +63,7 @@ A gate check that runs past twenty minutes is a defect; the CI job is under fift
 | `check-model.sh` | The portable model adapter (`model.test`). |
 | `check-provider-config.sh` | Provider profile validation (`provider-config.test`). |
 | `check-credential-binding.sh` | Credential binding across provider config, model, live voice, prompt, remember, declarations and Mongoose auth. |
-| `check-package.sh` | Builds the service package from a clean `git archive` and runs `package.test`. Needs committed `server/` source. |
+| `check-package.sh` | Builds the service package from a clean `git archive` and runs `package.test`, including the assertion that every module the host imports is in the tarball. Needs committed `server/` source. In the [release gate](#the-release-gate) and in CI. |
 | `check-api-response.sh` | The request boundary in a real browser against a real service (`api-response-browser.mjs`). |
 | `check-archive-scale.sh` | Synthetic owner-cost assessment of a large archive. Not a performance gate. |
 

@@ -4,10 +4,10 @@
 #
 # Usage: bash scripts/ci-gauntlet.sh [--ci]
 #
-# No flag runs all twelve gate checks in the order docs/checks.md lists them, one at a time.
-# --ci runs the ten that need no macOS, which is exactly what .github/workflows/ci.yml runs on
-# ubuntu; the other three need the Swift toolchain or the managed-host browser lease and stay
-# local (the reason per check is in docs/checks.md).
+# No flag runs all thirteen: the twelve gate checks of docs/checks.md in the order it lists
+# them, then check-package, one at a time. --ci runs the ten that need no macOS, which is
+# exactly what .github/workflows/ci.yml runs on ubuntu; the other three need the Swift toolchain
+# or the managed-host browser lease and stay local (the reason per check is in docs/checks.md).
 #
 # The scripts keep their own boundaries: each one installs and compiles what it asserts, so
 # there is no shared compile to hoist (PEAT-AI/lux-didi#678). What is shared here is the
@@ -25,7 +25,8 @@ esac
 
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 
-# docs/checks.md order. The three that need macOS are marked, and --ci skips them.
+# docs/checks.md order, then check-package: it packs and reinstalls the built service, so it
+# runs last. The three that need macOS are marked, and --ci skips them.
 gate=(
   check-live-voice
   check-live-session
@@ -39,6 +40,7 @@ gate=(
   Tests/DidiMacTests/check-mac.sh:local
   check-host:local
   check-install-smoke
+  check-package
 )
 
 script_path() {

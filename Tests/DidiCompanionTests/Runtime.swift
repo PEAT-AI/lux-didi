@@ -149,6 +149,7 @@ import Darwin
             var confirmAnswer = true
             let confirming = CompanionWeb(descriptor: descriptor, confirm: { _, _, answer in answer(confirmAnswer) })
             let confirmWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+            confirmWindow.isReleasedWhenClosed = false
             confirmWindow.contentView = confirming.webView
             await confirming.load(cookie: try await client.bootstrap())
             await waitFor("confirm proof page rendered") { confirming.state == .ready }

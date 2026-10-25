@@ -660,6 +660,7 @@ expect(miniScreen.contains(goneDisplay), "a frame left on a removed display is c
 // page or window the policy does not trust answers false without showing anything.
 MainActor.assumeIsolated {
     let confirmWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+    confirmWindow.isReleasedWhenClosed = false
     var shown: [String] = []
     var answers: [Bool] = []
     let okThenCancel: ConfirmPanel.Present = { message, window, answer in

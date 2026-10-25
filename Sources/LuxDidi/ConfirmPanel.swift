@@ -20,7 +20,7 @@ import AppKit
     }
 
     /// The real panel: an alert sheet with OK first, so Return confirms and Escape cancels.
-    static let sheet: Present = { message, window, answer in
+    nonisolated static let sheet: Present = { message, window, answer in
         let alert = NSAlert()
         alert.messageText = message
         alert.addButton(withTitle: "OK")

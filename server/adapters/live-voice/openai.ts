@@ -1240,6 +1240,9 @@ class Session implements LiveVoiceSession {
     if (disposition === 'command_rejected' && !retry) {
       // The command never became a response, so there is nothing to cut, and a rejection is not a reason to resend.
       hostLogEvent({ event: 'command_rejected', code: errorCode, param, kind: command?.kind ?? 'other' });
+      // #677: a continuation refused because a call still owes its output is still owed: the next output write or
+      // terminal event sends it, so the turn is answered instead of falling to the dead-air rebuild.
+      if (errorCode === 'function_call_outputs_required' && command?.kind === 'cont') this.continuationOwed = true;
       this.touch();
       return;
     }
@@ -1735,6 +1738,13 @@ class Session implements LiveVoiceSession {
     if (!this.isReady) fail('not_ready');
     if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > 4000) fail('invalid_request');
     if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: this.commandId('cont'), item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: input.text }] } }))) fail(this.terminal!.code);
+    // #677: a response the wire would refuse (a call still owes its output) is never written: the line rides the one
+    // continuation that follows the owed output.
+    if (this.pendingCalls.length > 0 || this.delegatedOutstanding) {
+      this.continuationOwed = true;
+      this.continuationReceipt('deferred', 'awaiting_calls');
+      return;
+    }
     this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }));
   }
 

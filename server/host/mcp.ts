@@ -145,6 +145,13 @@ export function identityFailureRetryable(proof: IdentityProof): boolean {
 export const CONNECTOR_RECOVERY_DELAYS_MS = [5_000, 20_000, 60_000] as const;
 
 /**
+ * #671-R2: how often, per endpoint, a read that needs an endpoint whose bounded round was spent on a
+ * retryable reason may earn one fresh connect attempt. The round itself is over by then; without this the
+ * endpoint stays down until an explicit reconnect, which is the owner-visible 5 to 14 minute window.
+ */
+export const CONNECTOR_REARM_INTERVAL_MS = 120_000;
+
+/**
  * One bounded recovery round per endpoint: at most one timer per endpoint, the delays in order, then it
  * stops and stays stopped until the next explicit reconnect or host start. `next` returns whether an
  * attempt is pending now, so the status projection can say "retrying" only while one really is.
@@ -176,20 +183,23 @@ export function createRecoverySchedule(delays: readonly number[] = CONNECTOR_REC
 
 /**
  * The closed lifecycle lines a connector connect writes: a connect that lands, a recovery that lands, a
- * bounded recovery round that gives up, and a helper that told us why on stderr. The last one carries a
- * byte count only, so no helper text ever reaches host.log.
+ * bounded recovery round that gives up, a helper that told us why on stderr, and an endpoint the transport
+ * just marked unavailable. The helper line carries a byte count only and the unavailable line a closed
+ * code only, so no helper text, url or account ever reaches host.log.
  */
 export type ConnectorLifecycleEvent =
   | { event: 'connector_connected'; endpointId: string; connectMs: number }
   | { event: 'connector_recovered'; endpointId: string; attempts: number; connectMs: number }
   | { event: 'connector_recovery_exhausted'; endpointId: string; attempts: number; reason: string }
+  | { event: 'connector_unavailable'; endpointId: string; reason: string }
   | { event: 'connector_helper_stderr'; endpointId: string; bytes: number };
 
 /** Compose the inert MCP runtime once at startup: config, owner and registry only, no remote work. */
 export async function composeMcpRuntime(options: {
   log?: ToolsOwnerOptions['log'];
   connectorLog?: (connector: string, stage: string, detail?: ConnectorFailureDetail) => void;
-  identityLog?: (connector: string, proven: boolean, match: boolean | null, endpointId?: string) => void;
+  /** One receipt per proof: a connector name, the two booleans, the endpoint and the proof's closed code. */
+  identityLog?: (connector: string, proven: boolean, match: boolean | null, endpointId?: string, code?: IdentityErrorCode) => void;
   lifecycleLog?: (event: ConnectorLifecycleEvent) => void;
   store: Store; ownerId: string; configDir: string;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
@@ -247,17 +257,14 @@ export async function composeMcpRuntime(options: {
   // The per-tool digest of each endpoint's readable names as of its last approved round.
   const approvedSchemas = new Map<string, Map<string, string>>();
   let closed = false;
-  // W9: exactly one closed connector_failure line per endpoint that did not connect at host start,
-  // whatever the reason. Stage and reason are closed tokens, so no message, url or credential value
-  // can ride out, and a retried or repeated pass never doubles the line.
-  const failuresReported = new Set<string>();
-  // The last closed reason per endpoint, so the one exhaustion line can name what it gave up on.
+  // W9: a connector_failure line per connect attempt that did not connect, whatever the reason, so a
+  // bounded recovery round never runs dark. Stage and reason are closed tokens, so no message, url or
+  // credential value can ride out. #671-R2: the recovery attempts are exactly the ones worth reading, so
+  // this line is written for each of them, not only for the first connect.
   const failureReasons = new Map<string, string>();
   const reportFailure = (entry: McpEndpointEntry, stage: ConnectStage, attempt: 'first-connect' | 'refresh',
     reason: string, exceptionCode?: string): void => {
     failureReasons.set(entry.id, reason);
-    if (attempt !== 'first-connect' || failuresReported.has(entry.id)) return;
-    failuresReported.add(entry.id);
     options.connectorLog?.(entry.connector, stage, { reason, endpointId: entry.id, attempt, ...(exceptionCode ? { exceptionCode } : {}) });
   };
   const reportToolStatus = (connectionId: string, status: { state: 'configured' | 'error'; reason: string } | null): void => {
@@ -366,16 +373,30 @@ export async function composeMcpRuntime(options: {
   const transportState = (event: McpTransportState): void => {
     if (closed || !reports.has(event.endpointId)) return;
     const id = event.endpointId;
+    // #671: the mark below is what makes `unavailableNow` answer a read at 0 ms, and until now nothing on
+    // host.log said which endpoint went unavailable or which closed code did it. One line per mark: only a
+    // mark that changes the report writes one. Codes only, never text.
+    const markUnavailable = (): void => {
+      const previous = reports.get(id)!;
+      if (previous.state === 'error' && previous.error === event.reason) return;
+      options.lifecycleLog?.({ event: 'connector_unavailable', endpointId: id, reason: event.reason });
+    };
     if (event.state === 'unavailable') {
       eligible.delete(id); ready.delete(id);
       bursts.set(id, { session: event.session, token: generations.get(id) });
+      markUnavailable();
       const previous = reports.get(id)!;
       reports.set(id, { ...previous, state: 'error', tools: 0, error: event.reason,
         exception: { class: 'Transport', code: event.reason } });
-    } else if (event.recoverable && registry.revision(id) === event.revision
+    } else if (registry.revision(id) === event.revision
         && bursts.get(id)?.session === event.session && bursts.get(id)?.token === generations.get(id)) {
-      eligible.set(id, { session: event.session, revision: event.revision });
-      void recoverEndpoint(id);
+      // A retired session leaves the published grant suspended, so the source is uncallable until a new
+      // grant lands, whether or not this session earned a recovery. The mark says so either way.
+      markUnavailable();
+      if (event.recoverable) {
+        eligible.set(id, { session: event.session, revision: event.revision });
+        void recoverEndpoint(id);
+      }
     }
   };
 
@@ -386,6 +407,11 @@ export async function composeMcpRuntime(options: {
   // A helper process that refused the first identity probe keeps that judgment for its whole life, so a
   // retry that re-probes through it can never recover. Retire the session before the recovery round does.
   const replaceSession = new Set<string>();
+  // #671-R2: when each endpoint's last connect attempt started, so a read that needs it can earn exactly
+  // one fresh attempt per interval and no more.
+  const lastAttemptAt = new Map<string, number>();
+  // The endpoints whose bounded round was spent on a retryable reason and may be re-armed by a read.
+  const rearm = new Set<string>();
   const retryEndpoint = async (entry: McpEndpointEntry): Promise<{ retryable: boolean }> => {
     if (closed) return { retryable: false };
     const token = (generations.get(entry.id) ?? 0) + 1;
@@ -395,6 +421,7 @@ export async function composeMcpRuntime(options: {
     if (replaceSession.delete(entry.id)) await port.retire(entry.id);
     const started = now();
     const result = await settle(entry, token, 'refresh', identityProofMemo()).catch(() => ({ retryable: false }));
+    if (!result.retryable) rearm.delete(entry.id);
     if (!result.retryable && reports.get(entry.id)?.state === 'connected') {
       options.lifecycleLog?.({ event: 'connector_recovered', endpointId: entry.id, attempts: recovery.attempts(entry.id), connectMs: Math.max(0, now() - started) });
     }
@@ -402,15 +429,35 @@ export async function composeMcpRuntime(options: {
   };
   const scheduleRecovery = (entry: McpEndpointEntry): void => {
     const scheduled = recovery.next(entry.id, () => {
-      void retryEndpoint(entry).then(result => { if (result.retryable) scheduleRecovery(entry); else recovery.stop(entry.id); });
+      void retryEndpoint(entry).then(result => { if (result.retryable) scheduleRecovery(entry); else { recovery.stop(entry.id); rearm.delete(entry.id); } });
     });
     if (!scheduled) {
+      // #671-R2: the round is spent on a retryable reason, so the endpoint may earn one fresh attempt
+      // from a read that needs it, never more than once per {@link CONNECTOR_REARM_INTERVAL_MS}.
+      rearm.add(entry.id);
       options.lifecycleLog?.({ event: 'connector_recovery_exhausted', endpointId: entry.id, attempts: recovery.attempts(entry.id),
         reason: failureReasons.get(entry.id) ?? 'connector-unavailable' });
     }
   };
+  /**
+   * #671-R2: a read that needs an endpoint whose bounded round was spent on a retryable reason earns one
+   * fresh connect attempt, at most once per interval per endpoint. A non-retryable reason never arms
+   * this, so a mismatch or a missing credential still waits for an explicit reconnect.
+   */
+  const noteReadDemand = (): void => {
+    for (const id of [...rearm]) {
+      const entry = active.find(candidate => candidate.id === id);
+      if (closed || entry === undefined || ready.has(id)) { rearm.delete(id); continue; }
+      if (now() - (lastAttemptAt.get(id) ?? 0) < CONNECTOR_REARM_INTERVAL_MS) continue;
+      rearm.delete(id);
+      void retryEndpoint(entry)
+        .then(result => { if (result.retryable) rearm.add(id); })
+        .catch(() => { /* the per-connector report already carries the failure */ });
+    }
+  };
   const settle = async (entry: McpEndpointEntry, token: number, attempt: 'first-connect' | 'refresh', identityOnce: ReturnType<typeof identityProofMemo>): Promise<{ retryable: boolean }> => {
     const roundStarted = now();
+    lastAttemptAt.set(entry.id, roundStarted);
     const previous = reports.get(entry.id);
     ready.delete(entry.id);
     const stale = (): boolean => closed || generations.get(entry.id) !== token;
@@ -574,7 +621,7 @@ export async function composeMcpRuntime(options: {
           identity = await identityOnce(proofKey, async () => {
             const proof = await proveIdentity({ source: identitySource, expected: expectedIdentities, timeoutMs: callTimeoutMsByEndpoint.get(entry.id) ?? IDENTITY_TIMEOUT_MS, call: (tool, args) => reader.call(tool, args) });
             // The receipt belongs to the read that happened, so a reused proof writes no second line.
-            options.identityLog?.(entry.connector, proof.proven, proof.match, entry.id);
+            options.identityLog?.(entry.connector, proof.proven, proof.match, entry.id, proof.code);
             return proof;
           });
         } finally { registry.clearProbe(entry.id); }
@@ -592,7 +639,7 @@ export async function composeMcpRuntime(options: {
           return { retryable };
         }
         if (!identity.proven) {
-          reportFailure(entry, 'handshake', attempt, 'identity_unverified');
+          reportFailure(entry, 'handshake', attempt, refusalCode(identity));
           if (attempt === 'first-connect' && entry.transport === 'stdio') replaceSession.add(entry.id);
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'identity-unproven', ...(identity.code ? { reasonCode: identity.code } : {}), identity });
           return { retryable: identityFailureRetryable(identity) };
@@ -659,7 +706,7 @@ export async function composeMcpRuntime(options: {
       // The startup path makes one connect pass only and never doubles the five-second startup bound:
       // a retryable failure is reported here and its bounded recovery runs afterwards, in the background.
       await settle(entry, token, 'first-connect', identityOnce)
-        .then(result => { if (result.retryable) scheduleRecovery(entry); else recovery.stop(entry.id); })
+        .then(result => { if (result.retryable) scheduleRecovery(entry); else { recovery.stop(entry.id); rearm.delete(entry.id); } })
         .catch(() => { /* the per-connector report already carries the failure */ });
     }));
   };
@@ -667,7 +714,11 @@ export async function composeMcpRuntime(options: {
     registry, port: sourcePort, owner,
     // Live calls this inside its acceptance transaction: do not open a nested store transaction.
     // Only a connector whose current generation is published and ready is callable.
-    connectionIds: () => active.filter(entry => ready.has(entry.id) && reports.get(entry.id)?.state === 'connected' && !!registry.currentGrant(entry.id)).map(entry => entry.id),
+    connectionIds: () => {
+      // #671-R2: a read that needs an endpoint is the demand signal for one fresh connect attempt.
+      noteReadDemand();
+      return active.filter(entry => ready.has(entry.id) && reports.get(entry.id)?.state === 'connected' && !!registry.currentGrant(entry.id)).map(entry => entry.id);
+    },
     status: () => ({ endpoints: [...reports.values()].map(report => ({ ...report,
       ...(report.state === 'connected' && report.tools > 0 && !registry.currentGrant(report.id) ? { state: 'error' as const, tools: 0, error: 'connector-unavailable' } : {}),
       retrying: recovery.pending(report.id),

@@ -213,22 +213,27 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'connector_failure', connector: value.connector, stage: value.stage, ...(hasReason ? { reason: value.reason } : {}), ...(hasException ? { exceptionCode: value.exceptionCode } : {}), ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasAttempt ? { attempt: value.attempt } : {}) };
   }
   if (value.event === 'connector_identity') {
-    // Closed identity proof only: a connector name and two booleans, never the identity itself. The
-    // endpoint id is optional so one proof names which endpoint of the account it was (#533).
+    // Closed identity proof only: a connector name, two booleans and the proof's own closed code, never
+    // the identity itself. The endpoint id is optional so one proof names which endpoint of the account
+    // it was (#533). #671-R2: the code is what says why an unproven proof was unproven.
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
     const hasEndpoint = Object.prototype.hasOwnProperty.call(value, 'endpointId');
-    const allowed = ['connector', 'event', 'match', 'proven', ...(hasEndpoint ? ['endpointId'] : [])];
+    const hasCode = Object.prototype.hasOwnProperty.call(value, 'code');
+    const allowed = ['connector', 'event', 'match', 'proven', ...(hasEndpoint ? ['endpointId'] : []), ...(hasCode ? ['code'] : [])];
     if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) return;
     if (!token(value.connector) || typeof value.proven !== 'boolean') return;
     if (value.match !== null && typeof value.match !== 'boolean') return;
     if (hasEndpoint && !isSafeId(value.endpointId)) return;
+    if (hasCode && !token(value.code)) return;
     return { event: 'connector_identity', connector: value.connector, proven: value.proven, match: value.match,
-      ...(hasEndpoint ? { endpointId: value.endpointId } : {}) };
+      ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasCode ? { code: value.code } : {}) };
   }
   if (value.event === 'connector_connected' || value.event === 'connector_recovered'
-    || value.event === 'connector_recovery_exhausted' || value.event === 'connector_helper_stderr') {
-    // #533: a connect that landed used to be silent, so silent meant unknown. These four lines are closed
-    // counts and ids only: no url, no account, no helper text.
+    || value.event === 'connector_recovery_exhausted' || value.event === 'connector_unavailable'
+    || value.event === 'connector_helper_stderr') {
+    // #533: a connect that landed used to be silent, so silent meant unknown. #671: the mark that turns a
+    // read into an instant `unavailable` was silent too. These lines are closed counts, ids and codes only:
+    // no url, no account, no helper text.
     const ms = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 900_000;
     const count = (v: unknown, max: number): v is number => Number.isSafeInteger(v) && (v as number) >= 0 && (v as number) <= max;
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
@@ -244,6 +249,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (value.event === 'connector_recovery_exhausted') {
       if (!closedKeys(value, ['attempts', 'endpointId', 'event', 'reason']) || !count(value.attempts, 8) || !token(value.reason)) return;
       return { event: 'connector_recovery_exhausted', endpointId: value.endpointId, attempts: value.attempts, reason: value.reason };
+    }
+    if (value.event === 'connector_unavailable') {
+      if (!closedKeys(value, ['endpointId', 'event', 'reason']) || !token(value.reason)) return;
+      return { event: 'connector_unavailable', endpointId: value.endpointId, reason: value.reason };
     }
     if (!closedKeys(value, ['bytes', 'endpointId', 'event']) || !count(value.bytes, 16_777_216)) return;
     return { event: 'connector_helper_stderr', endpointId: value.endpointId, bytes: value.bytes };

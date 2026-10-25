@@ -1008,7 +1008,7 @@ test('a registration-class rejection is reported and says why, and never takes t
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('a transport failure carrying an exception code logs once, and a refresh never doubles the start line', { skip: process.platform === 'win32' }, async () => {
+test('a transport failure carrying an exception code logs once, and a refresh names its own attempt', { skip: process.platform === 'win32' }, async () => {
   const host = await import('../host/mcp.js');
   const dir = mkdtempSync(join(tmpdir(), 'didi-exception-line-'));
   const configDir = join(dir, 'config'); mkdirSync(configDir, { mode: 0o700 });
@@ -1030,7 +1030,11 @@ test('a transport failure carrying an exception code logs once, and a refresh ne
       assert.equal(failures.length, 1, `one closed line for the start failure, saw ${JSON.stringify(failures.map(f => f.detail))}`);
       assert.ok(failures[0]?.detail?.exceptionCode || failures[0]?.detail?.reason, 'a closed code travels');
       await runtime.recover();
-      assert.equal(failures.length, 1, 'a later refresh never doubles the start line');
+      // #671-R2: a recovery attempt is the pass worth reading, so a refresh writes its own line and
+      // names itself, instead of leaving the round dark.
+      assert.equal(failures.length, 2, `a refresh writes its own closed line, saw ${JSON.stringify(failures.map(f => f.detail))}`);
+      assert.equal(failures[1]?.detail?.endpointId, 'mail');
+      assert.match(String(failures[1]?.detail?.reason ?? failures[1]?.detail?.exceptionCode), /^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
     } finally { await runtime.close(); }
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

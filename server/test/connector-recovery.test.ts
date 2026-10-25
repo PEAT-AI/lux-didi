@@ -10,7 +10,7 @@ import { once } from 'node:events';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { Store } from '../runtime/store.js';
 import { toolsMigrations } from '../tools/index.js';
-import { composeMcpRuntime, CONNECTOR_RECOVERY_DELAYS_MS, createRecoverySchedule, identityFailureRetryable } from '../host/mcp.js';
+import { composeMcpRuntime, CONNECTOR_REARM_INTERVAL_MS, CONNECTOR_RECOVERY_DELAYS_MS, createRecoverySchedule, identityFailureRetryable } from '../host/mcp.js';
 import { connectionReasonCode } from '../http/server.js';
 import { bindCalendarFirstConnect, bindCalendarRecovery } from '../host/runtime.js';
 import { CalendarDigestCache } from '../live/warm-context.js';
@@ -38,10 +38,13 @@ interface FixtureOptions {
   call?: (tool: string) => { delayMs?: number; payload: unknown };
   /** The endpoint's own token route, so a refresh can be made to fail the way the owner's Mac saw it. */
   token?: (res: ServerResponse) => void;
+  /** #671: which tool call answers 503, the transient unavailability the owner's Mac reported. */
+  unavailableCall?: (index: number) => boolean;
 }
 
 async function fixture(options: FixtureOptions = {}) {
   let requests = 0;
+  let calls = 0;
   const listener = createServer(async (req, res) => {
     try {
       const bytes = await body(req);
@@ -53,6 +56,8 @@ async function fixture(options: FixtureOptions = {}) {
         return { tools: options.tools ?? [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: { query: { type: 'string' } } }, annotations: { readOnlyHint: true } }] } as never;
       });
       sdk.setRequestHandler('tools/call', async request => {
+        calls += 1;
+        if (options.unavailableCall?.(calls) === true) { res.writeHead(503); res.end(); return {} as never; }
         const tool = (request.params as { name: string }).name;
         const answer = options.call?.(tool) ?? { payload: {} };
         await new Promise(resolve => setTimeout(resolve, answer.delayMs ?? 0));
@@ -307,6 +312,197 @@ test('a gmail proof that runs out of time is retried until it proves the account
   assert.equal(identity.length, 3, 'calendar once, gmail twice');
   assert.equal(identity.filter(entry => !entry.proven).length, 1, 'only gmail was unproven, and only once');
   assert.equal(identity.filter(entry => entry.proven).length, 2);
+});
+
+// --- 671: an inconclusive proof at host start recovers in the same bounded round, and every unavailable
+// source says which state marked it ---
+
+test('671: a start-time identity proof that runs out of time is retried and proves the account', async t => {
+  let gmailProbes = 0;
+  const gmail = await fixture({ tools: GMAIL_TOOLS, call: () => {
+    gmailProbes += 1;
+    // The first proof never answers inside the call deadline, which is what the host saw at start;
+    // the retry answers with the owner's own address.
+    return gmailProbes === 1 ? { payload: {}, delayMs: 400 } : { payload: { emailAddress: ACCOUNT } };
+  } });
+  t.after(() => gmail.close());
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-probe-timeout-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT, ownerChatUsername: 'owner',
+    endpoints: [googleConfig(gmail.url, 'gmail', 'mail')],
+  }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const identity: Array<{ proven: boolean; endpointId: string }> = [];
+  const runtime = await composeMcpRuntime({
+    store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    callDeadlineMs: 120, recoveryDelaysMs: FAST,
+    identityLog: (_connector, proven, _match, endpointId) => { identity.push({ proven, endpointId: endpointId ?? '' }); },
+  });
+  t.after(() => runtime.close());
+  const first = runtime.status().endpoints[0]!;
+  assert.equal(first.state, 'error', 'the timed out proof left gmail unproven');
+  assert.equal(first.retrying, true, 'an inconclusive proof enters the bounded round instead of staying down');
+  await until(() => runtime.status().endpoints[0]!.state === 'connected', 4000);
+  const after = runtime.status().endpoints[0]!;
+  assert.equal(after.state, 'connected', 'the retry reached connected');
+  assert.equal(after.retrying, false);
+  assert.ok(runtime.registry.currentGrant('gmail'), 'the retried proof published a grant');
+  assert.ok(gmailProbes >= 2, 'the retry reached the wire again');
+  assert.deepEqual(identity.filter(row => !row.proven).map(row => row.endpointId), ['gmail'], 'one unproven receipt at start');
+  assert.equal(identity[identity.length - 1]!.proven, true, 'and the retried proof is the one that stuck');
+});
+
+test('671: a transport loss on a connected endpoint marks the source unavailable on one closed log line', async t => {
+  // The second wire call (the first read after the proof) answers 503: the transient unavailability the
+  // owner saw as a read that came back unavailable at 0 ms.
+  const gmail = await fixture({ tools: GMAIL_TOOLS, unavailableCall: index => index === 2, call: () => ({ payload: { emailAddress: ACCOUNT } }) });
+  t.after(() => gmail.close());
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-transport-loss-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT, ownerChatUsername: 'owner',
+    endpoints: [googleConfig(gmail.url, 'gmail', 'mail')],
+  }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  // Typed loosely on purpose: the line is new, so this test is the one that admits it.
+  const lifecycle: Array<{ event: string; endpointId?: string; reason?: string }> = [];
+  const runtime = await composeMcpRuntime({
+    store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    callDeadlineMs: 2000, recoveryDelaysMs: FAST,
+    lifecycleLog: event => { lifecycle.push(event as unknown as { event: string; endpointId?: string; reason?: string }); },
+  });
+  t.after(() => runtime.close());
+  const connected = runtime.status().endpoints[0]!;
+  assert.equal(connected.state, 'connected', 'the proof landed and published a read grant');
+  const grant = runtime.registry.currentGrant('gmail')!;
+  const read = await runtime.port.call({ endpointId: 'gmail', toolName: 'gmail_get_profile', arguments: {}, generation: grant.generation, account: grant.account, resource: grant.resource });
+  assert.equal(read.state, 'unknown', 'the 503 is a transport failure, not a protocol answer');
+  const unavailable = lifecycle.filter(entry => entry.event === 'connector_unavailable');
+  assert.equal(unavailable.length, 1, `one line per mark, not one per read: saw ${JSON.stringify(lifecycle)}`);
+  assert.deepEqual(unavailable[0], { event: 'connector_unavailable', endpointId: 'gmail', reason: 'transport_unavailable' });
+  // The log admits the new line only with its closed keys, and never free text or a url.
+  assert.deepEqual(safeEvent({ event: 'connector_unavailable', endpointId: 'gmail', reason: 'transport_unavailable' }),
+    { event: 'connector_unavailable', endpointId: 'gmail', reason: 'transport_unavailable' });
+  assert.equal(safeEvent({ event: 'connector_unavailable', endpointId: 'gmail', reason: 'transport_unavailable', url: 'http://x' }), undefined,
+    'closed keys only');
+  // The loss was transient: the same bounded round brings the source back.
+  await until(() => runtime.status().endpoints[0]!.state === 'connected', 4000);
+  assert.equal(runtime.status().endpoints[0]!.state, 'connected');
+});
+
+// --- 671-R2: every recovery attempt says its closed reason, and a read earns one fresh attempt after
+// a round spent on a retryable reason ---
+
+test('671-R2: a recovery attempt writes its own closed reason line, first connect and retry alike', async t => {
+  // The probe never answers inside the call deadline, so every attempt times out: the closed code is the
+  // one thing the owner's 10-22 log could not show.
+  const gmail = await fixture({ tools: GMAIL_TOOLS, call: () => ({ payload: {}, delayMs: 400 }) });
+  t.after(() => gmail.close());
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-attempt-reason-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT, ownerChatUsername: 'owner',
+    endpoints: [googleConfig(gmail.url, 'gmail', 'mail')],
+  }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const failures: Array<{ stage: string; attempt?: string; reason?: string; endpointId?: string }> = [];
+  const identity: Array<{ proven: boolean; code?: string }> = [];
+  const runtime = await composeMcpRuntime({
+    store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    callDeadlineMs: 120, recoveryDelaysMs: FAST,
+    connectorLog: (_connector, stage, detail) => { failures.push({ stage, ...(detail ?? {}) }); },
+    identityLog: (_connector, proven, _match, _endpointId, code) => { identity.push({ proven, ...(code === undefined ? {} : { code }) }); },
+  });
+  t.after(() => runtime.close());
+  await until(() => failures.length >= 1 + FAST.length, 4000);
+  assert.equal(failures.length, 1 + FAST.length, 'the first connect and every retry, not only the first');
+  assert.equal(failures[0]!.attempt, 'first-connect');
+  assert.deepEqual(failures.slice(1).map(row => row.attempt), ['refresh', 'refresh', 'refresh'], 'each retry names its own pass');
+  assert.deepEqual([...new Set(failures.map(row => row.reason))], ['identity_timeout'], 'a timed out probe says so, never a bare identity_unverified');
+  assert.deepEqual([...new Set(failures.map(row => row.stage))], ['handshake']);
+  assert.equal(identity.filter(row => !row.proven && row.code === 'identity_timeout').length, 1 + FAST.length, 'every receipt carries the closed code');
+  // The log admits the code on the receipt, and a non-token code is refused.
+  assert.deepEqual(safeEvent({ event: 'connector_identity', connector: 'google', proven: false, match: null, endpointId: 'gmail', code: 'identity_timeout' }),
+    { event: 'connector_identity', connector: 'google', proven: false, match: null, endpointId: 'gmail', code: 'identity_timeout' });
+  assert.equal(safeEvent({ event: 'connector_identity', connector: 'google', proven: false, match: null, endpointId: 'gmail', code: 'not a code' }), undefined,
+    'a closed token only');
+});
+
+test('671-R2: a read earns one fresh attempt per interval after a round spent on a retryable reason', async t => {
+  let probes = 0;
+  const gmail = await fixture({ tools: GMAIL_TOOLS, call: () => { probes += 1; return { payload: {} }; } });
+  t.after(() => gmail.close());
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-rearm-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT, ownerChatUsername: 'owner',
+    endpoints: [googleConfig(gmail.url, 'gmail', 'mail')],
+  }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  // The clock is injected, so the two minute window is measured, never waited out.
+  let clock = 5_000_000;
+  const runtime = await composeMcpRuntime({
+    store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    now: () => clock, recoveryDelaysMs: FAST,
+  });
+  t.after(() => runtime.close());
+  // Enough probes for the first connect plus the whole bounded round, every one of them unproven.
+  const spent = 1 + FAST.length;
+  await until(() => probes >= spent, 4000);
+  assert.equal(runtime.status().endpoints[0]!.retrying, false, 'the bounded round is spent');
+  assert.equal(CONNECTOR_REARM_INTERVAL_MS, 120_000, 'the interval is two minutes');
+  // A read one millisecond short of the interval earns nothing.
+  clock += CONNECTOR_REARM_INTERVAL_MS - 1;
+  runtime.connectionIds();
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(probes, spent, 'a read inside the interval never re-arms');
+  // A read at the interval earns exactly one fresh attempt, and a second read earns none.
+  clock += 1;
+  runtime.connectionIds();
+  await until(() => probes === spent + 1, 4000);
+  assert.equal(probes, spent + 1, 'one fresh attempt, no more');
+  runtime.connectionIds();
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(probes, spent + 1, 'a second read in the same window earns nothing');
+  // The fresh attempt failed retryably, so the next window is two minutes after that attempt.
+  clock += CONNECTOR_REARM_INTERVAL_MS;
+  runtime.connectionIds();
+  await until(() => probes === spent + 2, 4000);
+  assert.equal(probes, spent + 2, 'the endpoint is not left down for the rest of the session');
+});
+
+test('671-R2: a non-retryable reason never re-arms, however often a read asks', async t => {
+  let probes = 0;
+  const gmail = await fixture({ tools: GMAIL_TOOLS, call: () => { probes += 1; return { payload: { emailAddress: 'someone-else@example.test' } }; } });
+  t.after(() => gmail.close());
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-rearm-refused-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT, ownerChatUsername: 'owner',
+    endpoints: [googleConfig(gmail.url, 'gmail', 'mail')],
+  }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  let clock = 7_000_000;
+  const runtime = await composeMcpRuntime({
+    store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    now: () => clock, recoveryDelaysMs: FAST,
+  });
+  t.after(() => runtime.close());
+  const first = runtime.status().endpoints[0]!;
+  assert.equal(first.reasonCode, 'identity_mismatch', 'a mismatch is conclusive');
+  assert.equal(first.retrying, false, 'and it never schedules a round');
+  for (let window = 0; window < 3; window += 1) {
+    clock += CONNECTOR_REARM_INTERVAL_MS * 2;
+    runtime.connectionIds();
+    await new Promise(resolve => setTimeout(resolve, 40));
+  }
+  assert.equal(probes, 1, 'no read ever re-runs a refused proof');
 });
 
 // --- 1022: a sign-in is never asked for a network blip, a recovery says so, and a pinned helper is replaced ---

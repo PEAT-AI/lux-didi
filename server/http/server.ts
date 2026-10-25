@@ -229,6 +229,8 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
               ...(identity ? { identity } : {}),
               ...(configurationError ? { configurationError } : {}),
               ...(signIn ? { signIn } : {}),
+              // C-OPEN 6: the one closed wiring notice a row may carry; nothing else of the report passes.
+              ...(row.warning === 'google_mcp_path_unsafe' ? { warning: 'google_mcp_path_unsafe' } : {}),
             };
           });
           send(res, 200, success(endpoints)); return;

@@ -140,6 +140,9 @@ export const INTERNAL = {
   chatAttention: 'mattermost_attention',
   /** K6: the company knowledge base, read by the routed research path when the model names `company`. */
   mongooseSearch: 'search',
+  /** C-OPEN 2: the owner's Drive files by name, and one file again by the id a listing carried. */
+  driveSearch: 'drive_search_files',
+  driveGet: 'drive_get_file',
 } as const;
 
 function callsFor(name: IntentToolName, args: Record<string, unknown>): IntentSubCall[] {

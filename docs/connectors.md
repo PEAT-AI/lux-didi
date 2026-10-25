@@ -59,6 +59,8 @@ A connector does nothing until the owner approves one connection for it. That en
 
 Mongoose is three entries, not one: knowledge, data and CRM are separate OAuth resources with separate token records, and the admin endpoint is never approved. See [mcp-configuration.md](mcp-configuration.md) for the profile and its CLI.
 
+Google is one entry per family, each its own stdio endpoint of the lux-cli Google helper (`--family gmail`, `calendar`, `drive`) with the endpoint id `gmail`, `calendar` or `drive`: the id is what maps an endpoint to its research source (`ENDPOINT_SOURCES` in `server/tools/research.ts`). The Drive family is read-only metadata (`drive_search_files`, `drive_get_file`, schemas in the lux-cli helper) and has no own-account probe, so its helper's pinned token is the account it reads. A profile without a `drive` entry is normal: a drive lookup then settles as `drive_not_available` ("Drive is not set up for me yet"), never as an empty listing. At host start a Google entry whose command, or the interpreter its first line names, sits under `~/.lux/reports` logs `google_mcp_path_unsafe` and its Settings row says how to fix it; the connector keeps running, and the install step is what repoints the command.
+
 ## 6. Fake the server
 
 Connectors are tested against a fake, never a real account. The fake is a small stdio or loopback child under `server/test/fixtures/` (for example `google-mcp-child.mjs` and `stdio-mattermost-attention-child.mjs`) plus the contract JSON it publishes its failures from. The fixture carries the protocol evidence: the tools it advertises, the shapes it accepts, and the error codes it can return. No fixture holds a credential, owner text or a private endpoint, and the check stages its own copy of the profile so no probe writes beside the installed configuration.
@@ -68,7 +70,7 @@ Connectors are tested against a fake, never a real account. The fake is a small 
 A connector ships with a script under `scripts/` and a row in [checks.md](checks.md):
 
 - `scripts/check-knowledge-connector.sh` for the local knowledge reader (`server/test/knowledge-connector.test.ts`).
-- `scripts/check-google-connector.sh` for Gmail and Calendar against the stdio fixture.
+- `scripts/check-google-connector.sh` for Gmail, Calendar and Drive against the stdio fixture, plus the Google helper wiring guard.
 - `scripts/check-company-connectors.sh` for Mongoose and Mattermost, including Mongoose auth and the Mattermost attention scan.
 
 The test file lives in `server/test/`, runs under the shared node test runner and uses the fake from step 6. A check joins the release gate in `checks.md` only by an owner decision; adding a connector to the gate is a release decision, not part of adding the connector.

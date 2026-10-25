@@ -79,6 +79,34 @@ import Foundation
         check(OpenDestination.of("https://drive.google.com/file/d/ABC/view", mattermostHost: nil)?.kind == "drive", "a drive file is a drive file")
         check(OpenDestination.of("https://docs.google.com/document/d/ABC/export", mattermostHost: nil) == nil, "a docs export route is refused")
 
+        // C-OPEN 1: the native list answers the same table the host test reads, row for row.
+        if let data = FileManager.default.contents(atPath: "server/test/fixtures/open-destinations.json"),
+           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let cases = root["cases"] as? [[String: Any]], cases.count >= 40 {
+            for row in cases {
+                let url = row["url"] as? String ?? ""
+                check(OpenDestination.of(url, mattermostHost: nil)?.kind == row["kind"] as? String, "shared table: \(url)")
+            }
+        } else {
+            check(false, "the shared destination table is readable from the repository root")
+        }
+
+        // C-OPEN 5: a web destination opens in Chrome when Chrome is installed, else in the default browser.
+        check(NativeActions.chromeBundleIdentifier == "com.google.Chrome", "Chrome is named by its bundle id")
+        let withChrome = FakeWorkspace(chrome: URL(fileURLWithPath: "/Applications/Google Chrome.app"))
+        let chromeActions = NativeActions(home: home, opener: NativeActions.browserOpener(withChrome))
+        check(await chromeActions.perform(.openURL, target: "https://docs.google.com/presentation/d/SyntheticDeck01/edit").code == .opened, "a deck opens through the workspace port")
+        check(withChrome.calls == ["lookup com.google.Chrome", "app Google Chrome.app https://docs.google.com/presentation/d/SyntheticDeck01/edit"], "Chrome opens the deck when it is installed: \(withChrome.calls)")
+        let noChrome = FakeWorkspace(chrome: nil)
+        let defaultActions = NativeActions(home: home, opener: NativeActions.browserOpener(noChrome))
+        check(await defaultActions.perform(.openURL, target: "https://www.google.com/calendar/event?eid=c3ludGhldGljLWV2ZW50").code == .opened, "a real-shaped event link opens")
+        check(noChrome.calls == ["lookup com.google.Chrome", "default https://www.google.com/calendar/event?eid=c3ludGhldGljLWV2ZW50"], "the default browser opens it when Chrome is absent: \(noChrome.calls)")
+        let fileChrome = FakeWorkspace(chrome: URL(fileURLWithPath: "/Applications/Google Chrome.app"))
+        let fileActions = NativeActions(home: home, opener: NativeActions.browserOpener(fileChrome))
+        check(await fileActions.perform(.openFile, target: "~/Documents/plan.md").code == .opened, "a home file still opens")
+        check(fileChrome.calls.count == 1 && fileChrome.calls[0].hasPrefix("default file://"), "a file opens in its own app, never in Chrome: \(fileChrome.calls)")
+        check(await withChrome.openApplicationProbe(), "the application path stays the workspace launch")
+
         // 3. Files: inside the home folder only, canonicalized, existing.
         check(await opened.perform(.openFile, target: "~/Documents/plan.md").code == .opened, "a home file opens")
         check(await opened.perform(.openFile, target: home.appendingPathComponent("Documents").path).code == .opened, "a home folder opens")
@@ -106,6 +134,25 @@ import Foundation
         check(openedCount >= 3, "the injected opener saw the allowed opens only")
         print(failures == 0 ? "NATIVE-ACTIONS TESTS PASS" : "NATIVE-ACTIONS TESTS FAILED \(failures)")
         exit(failures == 0 ? 0 : 1)
+    }
+}
+
+/// A recording workspace: it opens nothing and names every call it was asked to make.
+final class FakeWorkspace: BrowserWorkspace, @unchecked Sendable {
+    private let lock = NSLock()
+    private let chrome: URL?
+    private var recorded: [String] = []
+    init(chrome: URL?) { self.chrome = chrome }
+    var calls: [String] { lock.withLock { recorded } }
+    private func record(_ line: String) { lock.withLock { recorded.append(line) } }
+    func applicationURL(bundleIdentifier: String) -> URL? { record("lookup \(bundleIdentifier)"); return chrome }
+    func open(_ url: URL, withApplicationAt application: URL) async -> Bool { record("app \(application.lastPathComponent) \(url.absoluteString)"); return true }
+    func open(_ url: URL) -> Bool { record("default \(url.absoluteString)"); return true }
+    func openApplication(at url: URL) async -> Bool { record("launch \(url.lastPathComponent)"); return true }
+    func openApplicationProbe() async -> Bool {
+        let before = calls.count
+        let opened = await NativeActions.browserOpener(self)(URL(fileURLWithPath: "/Applications/Synthetic.app"), true)
+        return opened && calls.dropFirst(before) == ["launch Synthetic.app"]
     }
 }
 

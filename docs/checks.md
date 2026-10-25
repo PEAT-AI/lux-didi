@@ -51,14 +51,14 @@ Before a release, run these twelve at the release head, one at a time, with no r
 | `check-live-session.sh` | The call core: session, mute, continuity, resumption, recovery, watchdog, summary, selection, memory note, warm context, vault write, stop-phrase gate, trace store, voice fault replay, `naya-logs`, and the research suites for continuation, knowledge, steps and web. |
 | `check-live-gateway.sh` | The loopback Live gateway with chat, host, HTTP, open-actions and prompt regressions. |
 | `check-prompt.sh` | Prompt composition, the Live persona, runtime context and the research suites (`research`, calendar, mail query, routed, shape, web). It also runs `server/test/prompt-content.integration.mjs`, which compares the shipped instruction byte for byte against `server/test/fixtures/prompt-final.json` and pins the accepted character hash. This is where triage, topic, routing and the 2,500 character reply cap are pinned. |
-| `check-tool-owner.sh` | The tool owner, Live tool shape and redaction (`tool-owner`, `live-shape`, `redact` tests). |
+| `check-tool-owner.sh` | The tool owner, Live tool shape and redaction (`tool-owner`, `live-shape`, `redact` tests), and the open destinations: the shared table both allowlists answer, their host parity, Gmail, Calendar and Drive handles, and the open evals E1 to E9 replayed host side (`open-destinations` test). |
 
 ## Connectors and MCP
 
 | Script | Covers |
 | --- | --- |
 | `check-knowledge-connector.sh` | Lux Knowledge reader (`knowledge-connector.test`). |
-| `check-google-connector.sh` | Gmail and Calendar reader against a stdio MCP fixture. |
+| `check-google-connector.sh` | Gmail, Calendar and Drive readers against a stdio MCP fixture, and the Google helper wiring guard. |
 | `check-company-connectors.sh` | Mongoose and Mattermost readers, Mongoose auth and the Mattermost attention scan, against fixtures, and the Mongoose sign-in contract: the real host login against a synthetic Mongoose (`server/test/mongoose-contract-fake.ts`) that enforces the server's own OAuth rules, with the discovery shape captured from the live server (`server/test/fixtures/mongoose-discovery.json`). |
 | `check-mcp.sh` | The HTTP MCP adapter (`mcp.test`). |
 | `check-mcp-stdio.sh` | The stdio MCP transport against a child fixture. |
@@ -69,7 +69,7 @@ Before a release, run these twelve at the release head, one at a time, with no r
 
 | Script | Covers |
 | --- | --- |
-| `check-web-unit.sh` | Builds the web bundle, then the headless suites: autoscroll, chat turn, connected, connector status, layout, live view, markdown, mini page, next steps, orb motion, orb parity, orb states, settings, tool phrases, UI hierarchy, vault card. |
+| `check-web-unit.sh` | Builds the web bundle, then the headless suites: autoscroll, chat turn, connected, connector status, layout, live view, markdown, mini page, next steps, orb motion, orb parity, orb states, settings, tool phrases, UI hierarchy, vault card, memory list. |
 | `check-native-conversation.sh` | Mini orb route unit test, then page selection and run discovery in a real browser. |
 | `check-selected-memory-ui.sh` | Selecting stored notes for the next message, in a real browser. |
 
@@ -77,10 +77,10 @@ Before a release, run these twelve at the release head, one at a time, with no r
 
 | Script | Covers |
 | --- | --- |
-| `check-native-live.sh` | Strict Swift 6 compile and the Live tests: audio owner, callback bridge, playback scheduling, mute race, mic mode, presence, orb envelope, connecting ring, launch visibility, wait cue, native actions, bridge, journal, voice processing. |
+| `check-native-live.sh` | Strict Swift 6 compile and the Live tests: audio owner, callback bridge, playback scheduling, mute race, mic mode, presence, orb envelope, connecting ring, launch visibility, wait cue, native actions (the shared destination table and the Chrome or default browser choice), bridge, journal, voice processing. |
 | `check-pending-request.sh` | The pending request store that survives a native restart. |
-| `Tests/DidiMacTests/check-mac.sh` | Compiles the app shell into a disposable bundle, signs it ad hoc, verifies it, then runs the native proofs in `main.swift` (surfaces, presentation coordinator, launch kinds, shortcuts, Getting started) and a real-host proof. Takes the browser slot for its launch phase. |
-| `Tests/DidiCompanionTests/check-companion.sh` | Companion and real-host proofs, including keychain, lifecycle and credential proofs. Takes the slot. |
+| `Tests/DidiMacTests/check-mac.sh` | Compiles the app shell into a disposable bundle, signs it ad hoc, verifies it, then runs the native proofs in `main.swift` (surfaces, presentation coordinator, launch kinds, shortcuts, Getting started, the confirm panel) and a real-host proof. Takes the browser slot for its launch phase. |
+| `Tests/DidiCompanionTests/check-companion.sh` | Companion and real-host proofs, including keychain, lifecycle and credential proofs, and `window.confirm` reaching the native panel through WebKit. Takes the slot. |
 | `Tests/DidiCompanionTests/check-launch-services-probe.sh` | Launch through LaunchServices with bundled Node and no external descriptor. |
 | `Tests/DidiCompanionTests/check-real-host.sh` | The built app against a real host: takes the app bundle, a proof directory and a node path as three required arguments. Takes the slot. |
 

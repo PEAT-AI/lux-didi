@@ -83,18 +83,22 @@ public struct OpenDestination: Sendable, Equatable {
     public static func of(_ target: String, mattermostHost: String?) -> OpenDestination? {
         guard let parts = URLComponents(string: target), parts.scheme?.lowercased() == "https",
               parts.user == nil, parts.password == nil, parts.port == nil,
-              let host = parts.host?.lowercased(), !host.isEmpty, !matches(parts.path, rejected),
-              !(parts.queryItems ?? []).contains(where: { $0.name == "q" || $0.name == "redirect" })
+              let host = parts.host?.lowercased(), !host.isEmpty, !matches(parts.percentEncodedPath, rejected),
+              !(parts.queryItems ?? []).contains(where: { $0.name == "q" || $0.name == "redirect" || $0.name == "export" })
         else { return nil }
-        let path = parts.path
+        // The raw path, as the host reads it: a %2F never becomes a separator here.
+        let path = parts.percentEncodedPath
         let eid = (parts.queryItems ?? []).contains { $0.name == "eid" }
         let video = (parts.queryItems ?? []).first { $0.name == "v" }?.value?.isEmpty == false
         switch host {
         case "mail.google.com":
-            return matches(path, "^/mail/u/[0-9]+/?$") ? OpenDestination(kind: "gmail") : nil
+            return matches(path, "^/mail/u/([0-9]{1,2}|[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\\.[A-Za-z0-9-]{1,63})+)/?$") ? OpenDestination(kind: "gmail") : nil
         case "calendar.google.com":
             if path == "/" { return OpenDestination(kind: "calendar") }
             return matches(path, "^/(calendar/)?event/?$") && eid ? OpenDestination(kind: "calendar") : nil
+        case "www.google.com":
+            // The link the Calendar API returns for an event; nothing else on this host opens.
+            return path == "/calendar/event" && eid ? OpenDestination(kind: "calendar") : nil
         case "docs.google.com":
             return matches(path, "^/(document|presentation|spreadsheets)/d/[A-Za-z0-9_-]{1,256}(/(edit|view))?/?$") ? OpenDestination(kind: "docs") : nil
         case "drive.google.com":
@@ -112,6 +116,39 @@ public struct OpenDestination: Sendable, Equatable {
 
     private static func matches(_ text: String, _ pattern: String) -> Bool {
         text.range(of: pattern, options: .regularExpression) != nil
+    }
+}
+
+/// The workspace calls the opener makes, so a test can prove which browser a destination goes to.
+public protocol BrowserWorkspace: Sendable {
+    func applicationURL(bundleIdentifier: String) -> URL?
+    func open(_ url: URL, withApplicationAt application: URL) async -> Bool
+    func open(_ url: URL) -> Bool
+    func openApplication(at url: URL) async -> Bool
+}
+
+/// The real workspace: `NSWorkspace` only.
+public struct SystemWorkspace: BrowserWorkspace {
+    public init() {}
+    public func applicationURL(bundleIdentifier: String) -> URL? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+    }
+    public func open(_ url: URL, withApplicationAt application: URL) async -> Bool {
+        let configuration = NSWorkspace.OpenConfiguration()
+        return await withCheckedContinuation { continuation in
+            NSWorkspace.shared.open([url], withApplicationAt: application, configuration: configuration) { _, error in
+                continuation.resume(returning: error == nil)
+            }
+        }
+    }
+    public func open(_ url: URL) -> Bool { NSWorkspace.shared.open(url) }
+    public func openApplication(at url: URL) async -> Bool {
+        let configuration = NSWorkspace.OpenConfiguration()
+        return await withCheckedContinuation { continuation in
+            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
+                continuation.resume(returning: error == nil)
+            }
+        }
     }
 }
 
@@ -140,16 +177,22 @@ public actor NativeActions: NativeActionExecuting {
         self.log = Logger(subsystem: "ai.lux.didi", category: "native-actions")
     }
 
-    /// `NSWorkspace` opening. Only the opened item comes forward; Naya's own window is never activated.
-    public static let workspaceOpen: Opener = { url, isApplication in
-        guard isApplication else { return NSWorkspace.shared.open(url) }
-        let configuration = NSWorkspace.OpenConfiguration()
-        return await withCheckedContinuation { continuation in
-            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
-                continuation.resume(returning: error == nil)
-            }
+    /// C-OPEN 5: the browser a web destination opens in, named by bundle id and resolved by the workspace.
+    public static let chromeBundleIdentifier = "com.google.Chrome"
+
+    /// A web destination opens in Chrome when Chrome is installed and in the default browser otherwise; a
+    /// file opens in its own app. No script, no profile flag, no keystroke: only the workspace open call.
+    public static func browserOpener(_ workspace: BrowserWorkspace) -> Opener {
+        { url, isApplication in
+            if isApplication { return await workspace.openApplication(at: url) }
+            guard url.scheme?.lowercased() == "https", let chrome = workspace.applicationURL(bundleIdentifier: chromeBundleIdentifier)
+            else { return workspace.open(url) }
+            return await workspace.open(url, withApplicationAt: chrome)
         }
     }
+
+    /// `NSWorkspace` opening. Only the opened item comes forward; Naya's own window is never activated.
+    public static let workspaceOpen: Opener = browserOpener(SystemWorkspace())
 
     /// OPEN2-R1: https, the host alone, no userinfo, no port and no path beyond the root. The first
     /// origin the host names is pinned for the life of this process; any other one is refused.

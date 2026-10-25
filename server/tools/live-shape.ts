@@ -17,7 +17,7 @@
  * open handle line and the eight attendee names a schedule answer needs. LIVE_RESULT_CHARS is the
  * hard ceiling on any single model-visible result, and LIVE_COMBINED_CHARS the larger ceiling for
  * a result that combines several sources. */
-import { bodySourceLinks, withOpenHandles, mintOpenLine } from './open-handles.js';
+import { bodySourceLinks, gmailThreadUrl, mintOpenLine, openDestination, withOpenHandles } from './open-handles.js';
 export const GMAIL_BODY_CHARS = 1500;
 export const GMAIL_LIST_MESSAGES = 10;
 export const GMAIL_LIST_EXCERPT_CHARS = 300;
@@ -269,8 +269,10 @@ function senderName(source: Record<string, unknown>): string {
   const from = header(source, 'From');
   return (AUTHORS.exec(from)?.[1] ?? from).trim();
 }
-function inboxUrl(id: unknown): string | undefined {
-  return typeof id === 'string' && id.length > 0 ? `https://mail.google.com/mail/u/0/#inbox/${encodeURIComponent(id)}` : undefined;
+/** C-OPEN 4: the thread in all mail under the proven account; a message with no thread id opens by its own id. */
+function threadUrl(entry: Record<string, unknown>): string | undefined {
+  const thread = str(entry['threadId']) || str(entry['id']);
+  return thread.length > 0 ? gmailThreadUrl(thread) : undefined;
 }
 function labels(source: Record<string, unknown>): string[] {
   return Array.isArray(source['labelIds']) ? source['labelIds'].filter((value): value is string => typeof value === 'string') : [];
@@ -309,7 +311,11 @@ export function shapeGmailRead(data: Record<string, unknown>): ShapedResult {
   const sourceNote = metadata ? '[Metadata-only view requested; body was not acquired.]' : unavailable ? '[Body unavailable in source response; no body bytes acquired.]' : coverage['complete'] === false ? '[Source reports incomplete inline body coverage.]' : coverage['complete'] !== true ? '[Source inline body completeness is unverified.]' : '';
   const omitted = Math.max(0, received.length - body.length) + cut.omitted;
   const note = omitted > 0 ? `\n\n[omitted: ${omitted} received characters of body omitted from this display]` : '';
-  return capped({ text: `${head.join('\n')}\n\n${cut.text}${note}${sourceNote ? `\n${sourceNote}` : ''}`, partial: omitted > 0 || unavailable || coverage['complete'] === false, originalCharacters: received.length + head.join('\n').length, omittedCharacters: omitted, sources: bodySourceLinks(cut.text, 'mail_body') });
+  // C-OPEN 2: the message itself opens; a link inside its body is someone else's text and never does.
+  const url = threadUrl(data);
+  const subject = header(data, 'Subject');
+  const sources = url ? [{ title: subject ? `Gmail: ${subject}` : 'Open in Gmail', url, sourceType: 'gmail' }] : [];
+  return capped({ text: `${head.join('\n')}\n\n${cut.text}${note}${sourceNote ? `\n${sourceNote}` : ''}`, partial: omitted > 0 || unavailable || coverage['complete'] === false, originalCharacters: received.length + head.join('\n').length, omittedCharacters: omitted, sources });
 }
 
 export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
@@ -323,7 +329,7 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
     const threadValue = entry['threadSize'] ?? entry['messageCount'];
     const size = typeof threadValue === 'number' && threadValue > 0 ? ` (thread ${threadValue})` : '';
     const named = header(entry, 'Subject');
-    const url = inboxUrl(entry['id']);
+    const url = threadUrl(entry);
     if (url) sources.push({ title: named ? `Gmail: ${named}` : 'Open in Gmail', url, sourceType: 'gmail' });
     // Open2: the handle line rides its own item, so a reply rebuilt from `- ` lines keeps it there.
     const openLine = url ? mintOpenLine({ title: named ? `Gmail: ${named}` : 'Open in Gmail', url, sourceType: 'gmail' }) : undefined;
@@ -349,6 +355,75 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
   const invalid = messages.length - normalized.length;
   return { ...capped({ text: `${body.text}${note}`, partial: body.omitted > 0 || upstream || invalid > 0 || normalized.some(message => message.bodyTruncated), originalCharacters: lines.join('\n').length, omittedCharacters: lines.slice(GMAIL_LIST_MESSAGES).join('\n').length, sources }),
     mailPage: { messages: normalized, received: messages.length, invalid, localOmitted: Math.max(0, normalized.length - GMAIL_LIST_MESSAGES), ...(nextPageToken ? { nextPageToken } : {}), ...(data['sourceIncomplete'] === true && !nextPageToken ? { upstreamIncomplete: true } : {}) } };
+}
+
+// --- Drive ---------------------------------------------------------------------------------
+
+/** C-OPEN 3: what a listing of several plausible files says instead of opening one of them. */
+export const DRIVE_CHOOSE_GUIDANCE = 'Several Drive files match and none is open. Read him two or three names with their modified dates and ask which one he means; then look up his pick with a drive lookup of id: and its id. Never read an id aloud.';
+/** How many Drive files one listing shows; the helper returns at most ten, newest first. */
+export const DRIVE_FILES_SHOWN = 5;
+const DRIVE_KINDS: Readonly<Record<string, string>> = {
+  'application/vnd.google-apps.presentation': 'Slides deck',
+  'application/vnd.google-apps.document': 'Google Doc',
+  'application/vnd.google-apps.spreadsheet': 'Google Sheet',
+  'application/vnd.google-apps.folder': 'folder',
+  'application/pdf': 'PDF',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'PowerPoint deck',
+  'application/vnd.ms-powerpoint': 'PowerPoint deck',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'Word document',
+  'application/msword': 'Word document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'Excel sheet',
+  'application/vnd.ms-excel': 'Excel sheet',
+};
+
+/** One file as a line the model may speak from, and the viewer link the host may mint from. Only webViewLink is read. */
+function driveItem(file: Record<string, unknown>): { name: string; line: string; viewer?: string } {
+  const name = str(file['name']).replace(/https?:\/\/\S+/giu, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || '(untitled)';
+  const kind = DRIVE_KINDS[str(file['mimeType'])] ?? 'file';
+  const modified = /^\d{4}-\d{2}-\d{2}/.exec(str(file['modifiedTime']))?.[0];
+  const owners = Array.isArray(file['owners']) ? file['owners'].filter(isRecord) : [];
+  const owner = owners.length > 0 ? str(owners[0]!['displayName']).slice(0, 80) : '';
+  const id = /^[A-Za-z0-9_-]{1,256}$/.test(str(file['id'])) ? str(file['id']) : '';
+  const destination = typeof file['webViewLink'] === 'string' ? openDestination(file['webViewLink']) : undefined;
+  const viewer = destination !== undefined && (destination.kind === 'docs' || destination.kind === 'drive') ? destination.url : undefined;
+  const segments = [name, kind, ...(modified ? [`modified ${modified}`] : []), ...(owner ? [`owner ${owner}`] : []), ...(viewer ? [] : ['no viewer link'])];
+  return { name, line: `- ${segments.join(' | ')}${id ? ` [id ${id}]` : ''}`, ...(viewer ? { viewer } : {}) };
+}
+
+/** One clear file: its line and, when its viewer link passes the policy, its handle line. */
+function driveOpenable(item: { name: string; line: string; viewer?: string }): { text: string; sources: ShapedSource[] } {
+  if (item.viewer === undefined) return { text: item.line, sources: [] };
+  const source = { title: `Drive: ${item.name}`, url: item.viewer, sourceType: 'drive' };
+  const open = mintOpenLine(source);
+  return { text: open === undefined ? item.line : `${item.line}\n${open}`, sources: [source] };
+}
+
+/**
+ * C-OPEN 2 and 3: a name search. One match mints its handle from webViewLink; several plausible matches mint
+ * nothing and ask, so a fresh drive_get_file of his pick is what opens; none says so.
+ */
+export function shapeDriveSearch(data: Record<string, unknown>): ShapedResult {
+  const files = Array.isArray(data['files']) ? data['files'].filter(isRecord) : [];
+  if (files.length === 0) return capped({ text: 'No Drive file matched that name. Nothing is open.', partial: data['sourceIncomplete'] === true, originalCharacters: 0, omittedCharacters: 0 });
+  const items = files.slice(0, DRIVE_FILES_SHOWN).map(driveItem);
+  const more = data['sourceIncomplete'] === true || files.length > items.length;
+  const tail = more ? `\nThese are the newest ${items.length} of more; a narrower name finds the rest.` : '';
+  if (items.length === 1) {
+    const one = driveOpenable(items[0]!);
+    return capped({ text: `${one.text}${tail}`, partial: more, originalCharacters: one.text.length, omittedCharacters: 0, sources: one.sources });
+  }
+  const text = `${DRIVE_CHOOSE_GUIDANCE}\n${items.map(item => item.line).join('\n')}${tail}`;
+  return capped({ text, partial: more, originalCharacters: text.length, omittedCharacters: 0 });
+}
+
+/** C-OPEN 3: the fresh read of the file he picked; only this result mints the handle that opens it. */
+export function shapeDriveFile(data: Record<string, unknown>): ShapedResult {
+  if (str(data['id']) === '' && str(data['name']) === '') return capped({ text: 'That Drive file was not found. Nothing is open.', partial: false, originalCharacters: 0, omittedCharacters: 0 });
+  const item = driveItem(data);
+  if (data['trashed'] === true) return capped({ text: `${item.line} | in the trash, not opened`, partial: false, originalCharacters: item.line.length, omittedCharacters: 0 });
+  const one = driveOpenable(item);
+  return capped({ text: one.text, partial: false, originalCharacters: one.text.length, omittedCharacters: 0, sources: one.sources });
 }
 
 // --- Calendar ------------------------------------------------------------------------------

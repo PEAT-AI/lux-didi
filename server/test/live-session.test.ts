@@ -3172,20 +3172,20 @@ test('P1: session start logs the effective regional languageCode', async t => {
 
 test('U1: calendar and Gmail model text carries no raw url and names each source', () => {
   const calendar = shapeGcalList({ events: [
-    { summary: 'Standup', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e1' },
-    { start: { dateTime: '2024-01-02T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e2' },
+    { summary: 'Standup', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://www.google.com/calendar/event?eid=e1' },
+    { start: { dateTime: '2024-01-02T09:00:00Z' }, htmlLink: 'https://www.google.com/calendar/event?eid=e2' },
   ] });
   assert.equal(/https?:\/\//.test(calendar.text), false, 'calendar model text carries no raw url');
   assert.equal(calendar.text.includes('source:'), false);
   assert.deepEqual(calendar.sources, [
-    { title: 'Calendar: Standup', url: 'https://calendar.google.com/event?eid=e1', sourceType: 'calendar' },
-    { title: 'Open in Google Calendar', url: 'https://calendar.google.com/event?eid=e2', sourceType: 'calendar' },
+    { title: 'Calendar: Standup', url: 'https://www.google.com/calendar/event?eid=e1', sourceType: 'calendar' },
+    { title: 'Open in Google Calendar', url: 'https://www.google.com/calendar/event?eid=e2', sourceType: 'calendar' },
   ]);
   const mail = shapeGmailList({ messages: [
     { id: 'm1', snippet: 'hello', labelIds: [], headers: { Subject: 'Budget' } },
   ] });
   assert.equal(/https?:\/\//.test(mail.text), false, 'gmail model text carries no raw url');
-  assert.deepEqual(mail.sources, [{ title: 'Gmail: Budget', url: 'https://mail.google.com/mail/u/0/#inbox/m1', sourceType: 'gmail' }]);
+  assert.deepEqual(mail.sources, [{ title: 'Gmail: Budget', url: 'https://mail.google.com/mail/u/0/#all/m1', sourceType: 'gmail' }]);
   assert.deepEqual(shapeGcalCalendars({ calendars: [{ summary: 'Work' }] }).sources, undefined);
 });
 

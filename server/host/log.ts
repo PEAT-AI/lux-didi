@@ -14,7 +14,7 @@ import { join } from 'node:path';
 const SAFE_TOKEN = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/;
 const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/;
 const SAFE_CALL_ID = /^[A-Za-z0-9_.:~-]{1,128}$/;
-const RESEARCH_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'memory', 'web'];
+const RESEARCH_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'memory', 'web', 'drive'];
 const RESEARCH_CANDIDATES = ['knowledge_search', 'calendar_window', 'mail_search', 'mail_open', 'chat_search', 'chat_thread', 'company_search', 'web_search', 'brief', 'stop_answer', 'stop_insufficient', 'memory_search'];
 const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exhausted', 'no_candidates', 'voi_stop', 'ops_exhausted', 'deadline', 'cancelled', 'fallback', 'stop', 'failed', 'refused'];
 const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
@@ -47,7 +47,7 @@ const LIVE_TOOL_SEND_OUTCOMES = ['sent', 'deferred', 'failed'] as const;
 const SESSION_ID = /^[0-9a-f-]{36}$/i;
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 /** K6: the layers a routed research call may name, in the model's own words. */
-const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'web'];
+const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'drive', 'web'];
 /** R6: how a late finding reached the voice model, and why it did or did not reach the owner. */
 const LATE_DELIVERIES = ['commentary', 'thinking', 'response', 'ledger', 'dropped'];
 const LATE_REASONS = ['quiet', 'no_new_findings', 'source_failed', 'run_cut', 'session_closed', 'no_thinking_channel',
@@ -239,6 +239,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (hasCode && !token(value.code)) return;
     return { event: 'connector_identity', connector: value.connector, proven: value.proven, match: value.match,
       ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasCode ? { code: value.code } : {}) };
+  }
+  if (value.event === 'gmail_account_unknown') {
+    // C-OPEN 4: a Gmail link fell back to account index 0 because the connector proved no account.
+    return closedKeys(value, ['event']) ? { event: 'gmail_account_unknown' } : undefined;
+  }
+  if (value.event === 'google_mcp_path_unsafe') {
+    // C-OPEN 6: the Google helper runs from the reports folder; the endpoint id only, never the path.
+    if (!closedKeys(value, ['endpointId', 'event']) || !isSafeId(value.endpointId)) return;
+    return { event: 'google_mcp_path_unsafe', endpointId: value.endpointId };
   }
   if (value.event === 'connector_connected' || value.event === 'connector_recovered'
     || value.event === 'connector_recovery_exhausted' || value.event === 'connector_unavailable'

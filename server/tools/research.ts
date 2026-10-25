@@ -22,10 +22,10 @@ export const RESEARCH_TOOL_NAME = 'research';
 
 export type ResearchAction = 'start' | 'continue' | 'stop';
 export type QuestionClass = 'quick_fact' | 'cross_source' | 'explicit_continue';
-export type SourceKind = 'memory' | 'knowledge' | 'calendar' | 'mail' | 'chat' | 'mongoose' | 'web';
+export type SourceKind = 'memory' | 'knowledge' | 'calendar' | 'mail' | 'chat' | 'mongoose' | 'web' | 'drive';
 export type CandidateKind =
   | 'knowledge_search' | 'calendar_window' | 'mail_search' | 'mail_open'
-  | 'chat_search' | 'chat_thread' | 'company_search' | 'web_search' | 'brief' | 'stop_answer' | 'stop_insufficient';
+  | 'chat_search' | 'chat_thread' | 'company_search' | 'web_search' | 'drive_search' | 'brief' | 'stop_answer' | 'stop_insufficient';
 
 /** The closed candidate set. A candidate reads exactly one internal action; nothing is invented. */
 export interface Candidate {
@@ -45,6 +45,8 @@ export const CANDIDATES: readonly Candidate[] = Object.freeze([
   // #639: the company read is one candidate, so a company ask reads Mongoose in the same loop as the rest.
   { kind: 'company_search', source: 'mongoose' },
   { kind: 'web_search', source: 'web' },
+  // C-OPEN 2: the owner's Drive files by name, offered only when a Drive endpoint is configured.
+  { kind: 'drive_search', source: 'drive' },
   { kind: 'brief', source: null },
   { kind: 'stop_answer', source: null },
   { kind: 'stop_insufficient', source: null },
@@ -104,7 +106,7 @@ export const RESEARCH = Object.freeze({
    * the exception and a late chat finding still lands the way mail's 12 s does.
    */
   sourceDeadline: Object.freeze({
-    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 10_000, mongoose: 12_000, web: WEB_DEADLINE_MS,
+    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 10_000, mongoose: 12_000, web: WEB_DEADLINE_MS, drive: 12_000,
   } as Record<SourceKind, number>),
   /** P5: a candidate that names no single source (`brief`) never gets less than the local reads. */
   defaultSourceDeadlineMs: 8_000,
@@ -222,8 +224,8 @@ export const RESEARCH_SOURCES: readonly SourceKind[] = ['knowledge', 'calendar',
  * K6: the layers a routed start may name. `company` is the Mongoose organisation read and `replies`
  * is the Mattermost attention digest; `memory` is her own remembered conversations, read locally.
  */
-export type LookupSource = 'memory' | 'knowledge' | 'company' | 'calendar' | 'mail' | 'chat' | 'replies' | 'web';
-export const LOOKUP_SOURCES: readonly LookupSource[] = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'web'];
+export type LookupSource = 'memory' | 'knowledge' | 'company' | 'calendar' | 'mail' | 'chat' | 'replies' | 'drive' | 'web';
+export const LOOKUP_SOURCES: readonly LookupSource[] = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'drive', 'web'];
 /** At most four lookups per call; duplicates collapse, so one call is one short, wide read. */
 export const MAX_LOOKUPS = 4;
 
@@ -953,6 +955,7 @@ export function fallbackQuery(kind: CandidateKind, question: string, nowMs = Dat
   if (kind === 'knowledge_search') return terms ? { query: terms } : {};
   // #639: the company search takes the same short terms the knowledge read takes, never the sentence.
   if (kind === 'company_search') return terms ? { query: terms } : {};
+  if (kind === 'drive_search') return terms ? { query: terms } : {};
   if (kind === 'web_search') { const query = broaderWebQuery(question, 120); return query ? { query } : {}; }
   if (kind === 'mail_search') {
     // E6 (#609): the fallback recipe hands the compiler its own window and its own words, so the query
@@ -1109,6 +1112,9 @@ const CALENDAR_DAY_WORDS = /\b(?:(?:next )?(?:sunday|monday|tuesday|wednesday|th
 const WEB_WORDS = /\b(news|headlines|weather|forecast|opening hours|search the web|on the internet|google it)\b/u;
 const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?|specs?|reminders?|recorded)\b/u;
 
+/** C-OPEN 2: an ask to open or find a deck, doc or sheet, or one that names his Drive; a question about a deck is not one. */
+const DRIVE_ASK = /\b(?:open|show|find|pull up|bring up)\b[^.?!]*\b(?:decks?|slides?|presentations?|spreadsheets?|sheets?|docs?|documents?|pptx?|xlsx?)\b|\b(?:google drive|my drive|in drive|from drive)\b/u;
+
 /**
  * The source a question is about, in the order the first answer waits for them. The word classes are the one
  * place a route is decided: `words` is the source's own vocabulary, and a route that also carries `needed` is
@@ -1117,7 +1123,7 @@ const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?
  * cap it had before a company word existed, and only a company ask with room left reads Mongoose.
  */
 const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp; needed?: (text: string) => boolean }[] = [
-  { source: 'calendar', words: SCHEDULE_WORDS }, { source: 'mail', words: MAIL_WORDS },
+  { source: 'calendar', words: SCHEDULE_WORDS }, { source: 'mail', words: MAIL_WORDS }, { source: 'drive', words: DRIVE_ASK },
   { source: 'chat', words: CHAT_WORDS, needed: chatQuestionWords }, { source: 'mongoose', words: COMPANY_WORDS },
 ];
 
@@ -1200,7 +1206,8 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   const triage = triageAsk(text) && !mailWords && !chatWords;
   // #639: a company ask names a source, so it takes the same branch the mail, calendar and chat words take.
   const companyWords = COMPANY_WORDS.test(text);
-  const matched = mailWords || calendarWords || chatWords || companyWords || triage;
+  const driveWords = DRIVE_ASK.test(text);
+  const matched = mailWords || calendarWords || chatWords || companyWords || driveWords || triage;
   if (!matched) {
     offer('brief', 0.5, null); offer('knowledge_search', 0.4, 'knowledge');
     if (webWords) offer('web_search', 0.45, 'web');
@@ -1213,6 +1220,7 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   // #639: the company layer answers a company ask beside the knowledge base, and is offered only when the
   // ask names it, never as a default read of every question.
   if (companyWords) offer('company_search', 0.4, 'mongoose');
+  if (driveWords) offer('drive_search', 0.5, 'drive');
   if (webWords) offer('web_search', 0.45, 'web');
   return { questionClass: 'cross_source', actions, pUseful };
 }
@@ -1563,6 +1571,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     return [search(INTERNAL.chatSearch, { query, limit: RESEARCH.chatLines, ...(day === undefined ? {} : { after: day }), ...(channel === undefined ? {} : { channel }) }, 'c0')];
   }
   if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { post_id: id }, 'ct0')] : []; }
+  if (kind === 'drive_search') return config.configured.includes('drive') ? driveSubs(config.query ?? topicText ?? '', ownerWords) : [];
   if (kind === 'web_search') return config.configured.includes('web')
     ? [search(WEB_SEARCH_ACTION, { query: config.query === undefined ? (topicText ?? '') : ownerDigits(config.query, ownerWords) }, 'w0')] : [];
   if (kind === 'brief') {
@@ -1968,7 +1977,7 @@ function cutAfter(ms: number, schedule: ResearchTimer = scheduleTimer): { signal
 }
 
 /** #565: the shape one source call searched with: counts and closed operator tokens, never a word. */
-export interface ResearchQueryShape { source: SourceKind | LookupSource; terms: number; operators: readonly string[]; topicWords: number }
+export interface ResearchQueryShape { source: Exclude<SourceKind | LookupSource, 'drive'>; terms: number; operators: readonly string[]; topicWords: number }
 
 export interface ResearchDeps {
   timeZone?: string;
@@ -2161,12 +2170,13 @@ const SOURCE_LABELS: readonly (readonly [SourceKind, string])[] = [
   ['chat', 'team chat'],
   ['knowledge', 'knowledge base'],
   ['mongoose', 'company knowledge'],
+  ['drive', 'Drive files'],
   ['memory', 'memory'],
 ];
 
 /** The connector tool whose presence means a source is configured. Same four names the research loop fans out over. */
 const SOURCE_TOOLS: Readonly<Record<string, SourceKind>> = {
-  conversation_history: 'memory', search_knowledge: 'knowledge', search: 'mongoose', read: 'mongoose', calendar_list_events: 'calendar', gmail_search_messages: 'mail', mattermost_search: 'chat',
+  conversation_history: 'memory', search_knowledge: 'knowledge', search: 'mongoose', read: 'mongoose', calendar_list_events: 'calendar', gmail_search_messages: 'mail', mattermost_search: 'chat', drive_search_files: 'drive',
 };
 
 /** Map the tool names a session actually configured to the research sources they expose, in display order. */
@@ -2214,7 +2224,7 @@ export function researchSourcesFromToolNames(names: Iterable<string>): SourceKin
 }
 
 /** ROUTE-1022: the two Google endpoints the host registry keys, each serving its own source. */
-const ENDPOINT_SOURCES: Readonly<Record<string, readonly SourceKind[]>> = { gmail: ['mail'], calendar: ['calendar'] };
+const ENDPOINT_SOURCES: Readonly<Record<string, readonly SourceKind[]>> = { gmail: ['mail'], calendar: ['calendar'], drive: ['drive'] };
 
 /**
  * ROUTE-1022: availability is per endpoint. gmail and the calendar are two endpoints on one connector,
@@ -2276,7 +2286,7 @@ function sourceListText(sources: readonly SourceKind[]): string {
 
 /** The declaration description names the sources this session actually configured, never a source it lacks. */
 export function researchDescription(sources: readonly SourceKind[]): string {
-  return `One lookup of the owner's ${sourceListText(sources)}: at most ${MAX_LOOKUPS} lookups per call, each with a source (memory, knowledge, company, calendar, mail, chat, replies or web) plus an optional query, mail or history field. Use it when answering needs evidence beyond the conversation. Call start with the question and a topic of names and nouns, at most eight words: only the topic is searched. Its result carries the researchId; continue and stop copy it.`;
+  return `One lookup of the owner's ${sourceListText(sources)}: at most ${MAX_LOOKUPS} lookups per call, each with a source (memory, knowledge, company, calendar, mail, chat, replies, drive or web) plus an optional query, mail or history. Use it when answering needs evidence beyond the conversation. Call start with the question and a topic of names and nouns, at most eight words: only the topic is searched. Its result carries the researchId; continue and stop copy it.`;
 }
 
 export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH_SOURCES): { name: string; description: string; guidance: string; parameters: JsonObject; validate(args: unknown): boolean } {
@@ -2301,7 +2311,7 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
         direction: { type: 'string', description: 'Optional steer for a continue, e.g. "look in mail".' },
         lookups: {
           type: 'array', maxItems: MAX_LOOKUPS,
-          description: 'Optional: ' + LOOKUP_LIMIT_TEXT + '. When present the host skips its own source choice and reads every lookup in parallel; when absent the host selects the sources. memory: retained conversations, remembered notes and imported notes, within the accepted permissions. knowledge: his knowledge base of decisions, project status, technical notes, meeting transcripts and work sessions. company: permissioned company, product and commercial records; this does not guarantee directory coverage. calendar: primary calendar only; query must be today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD. Unknown or contradictory windows are unresolved, never widened. Calendar coverage separates received events, shown events, retained remainder, unread pages and truncated descriptions; continue returns retained remainder before reading more pages. mail: his mail; lookup.mail supports an exact Gmail q/maxResults search or exact id/format read. Search coverage counts received metadata messages, not full bodies or complete threads. Source order is preserved. continue returns retained metadata before requesting another page. An exact full-message read returns bodySlices with immutable UTF16 offsets, received total and separate upstream completeness. Continue nextCursor to consume received body remainder without another source read; quoted history remains included. Metadata format deliberately omits bodies. alreadyDelivered is a model-context receipt, not a claim that the owner heard it. chat: his team chat. replies: what is waiting on him in the team chat.',
+          description: 'Optional: ' + LOOKUP_LIMIT_TEXT + '. When present the host skips its own source choice and reads every lookup in parallel; when absent the host selects the sources. memory: retained conversations, remembered notes and imported notes, within the accepted permissions. knowledge: his knowledge base of decisions, project status, technical notes, meeting transcripts and work sessions. company: permissioned company, product and commercial records; this does not guarantee directory coverage. calendar: primary calendar only; query must be today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD. Unknown or contradictory windows are unresolved, never widened. Calendar coverage separates received events, shown events, retained remainder, unread pages and truncated descriptions; continue returns retained remainder before reading more pages. mail: his mail; lookup.mail supports an exact Gmail q/maxResults search or exact id/format read. Search coverage counts received metadata messages, not full bodies or complete threads. Source order is preserved. continue returns retained metadata before requesting another page. An exact full-message read returns bodySlices with immutable UTF16 offsets, received total and separate upstream completeness. Continue nextCursor to consume received body remainder without another source read; quoted history remains included. Metadata format deliberately omits bodies. alreadyDelivered is a model-context receipt, not a claim that the owner heard it. chat: his team chat. replies: what is waiting on him in the team chat. drive: his own Drive files by name, for a document, deck or sheet he wants opened; query id: and a returned file id reads that one file again.',
           items: {
             type: 'object', additionalProperties: false, required: ['source'],
             anyOf: [
@@ -2371,11 +2381,11 @@ function queryShapeOf(subs: readonly IntentSubCall[]): string {
 }
 
 const OMITTED_NOTE = /^\[omitted:/u;
-const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'company knowledge', web: 'the web' };
+const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'company knowledge', web: 'the web', drive: 'Drive' };
 /** #635: the name a source is spoken by, so a clause says "team chat" and never the bare id. */
 const spokenLabelOf = (source: SourceKind): string => SOURCE_LABELS.find(([name]) => name === source)?.[1] ?? SOURCE_LABEL[source];
 /** Findings order: her own memory and the owner's knowledge base lead, company sources follow. */
-const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'];
+const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'drive', 'web'];
 /** #621: the smallest room a floor clip may leave, so one source's last line always fits the bound. */
 const FLOOR_CLIP_CHARS = 8;
 const LINE_CAP: Partial<Record<CandidateKind, number>> = {
@@ -2766,6 +2776,13 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
     const lines = ok.flatMap(result => result.text.split('\n').filter(Boolean));
     return { text: ok.map(result => result.text).join('\n'), source: 'web', lines, total: lines.length };
   }
+  if (kind === 'drive_search') {
+    // C-OPEN 3: a file line keeps its own handle line, and a listing of several keeps the question it asks.
+    const raw = results.filter(result => result.ok && result.text.trim()).flatMap(result => withItemOpenLines(itemLines(result.text)));
+    const files = raw.filter(line => line.startsWith('- ')).length;
+    if (files === 0) return { text: '', source: 'drive', lines: [], total: 0 };
+    return { text: `${SOURCE_LABEL.drive}: ${files} ${files === 1 ? 'file' : 'files'}\n${raw.join('\n')}`, source: 'drive', lines: raw, total: files };
+  }
   if (kind === 'calendar_window') {
     const block = shapeCalendarBlock(results, zone);
     const cutLine = cutLineOf(results);
@@ -2868,7 +2885,8 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
  */
 function queryShapeOfSubs(call: IntentSubCall, topic: string | undefined): ResearchQueryShape | undefined {
   const source = sourceKindOfKindName(call.name);
-  if (source === null) return undefined;
+  // A Drive read writes no query shape row: the trace table's source set is closed and a name search has no operators.
+  if (source === null || source === 'drive') return undefined;
   const raw = call.args['q'] ?? call.args['query'];
   const text = typeof raw === 'string' ? raw : '';
   const shape = mailQueryShape(text);
@@ -2904,6 +2922,8 @@ function sourceKindOfKindName(name: string): SourceKind | null {
     case INTERNAL.mailRead: return 'mail';
     case HISTORY_IDENTITY.name: return 'memory';
     case INTERNAL.mongooseSearch: return 'mongoose';
+    case INTERNAL.driveSearch:
+    case INTERNAL.driveGet: return 'drive';
     case INTERNAL.chatSearch:
     case INTERNAL.chatAttention:
     case 'mattermost_get_thread': return 'chat';
@@ -2978,6 +2998,8 @@ const REASON_WORDS: Record<string, string> = {
   not_configured: 'not configured',
   // ROUTE-1022 K1: the web source the model asked for is not offered in this session.
   web_not_available: 'not available',
+  // C-OPEN 2: no Drive endpoint is configured yet; never a fake empty listing.
+  drive_not_available: 'Drive is not set up for me yet',
   not_signed_in: 'not signed in',
   // #502: a refresh the identity server refused means one thing to the owner: sign in again.
   'credential-refresh-failed': 'sign in again',
@@ -3614,6 +3636,33 @@ function companySubs(query: string): IntentSubCall[] {
   return [{ key: 'co0', name: INTERNAL.mongooseSearch, args: { query, mode: companyLookupMode(query) } }];
 }
 
+/** C-OPEN 2: the file types each spoken kind noun means, so an ask for the deck never lists a sheet. */
+export const DRIVE_MIME_TYPES: Readonly<Record<'deck' | 'doc' | 'sheet', readonly string[]>> = {
+  deck: ['application/vnd.google-apps.presentation', 'application/vnd.openxmlformats-officedocument.presentationml.presentation', 'application/vnd.ms-powerpoint'],
+  doc: ['application/vnd.google-apps.document', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword'],
+  sheet: ['application/vnd.google-apps.spreadsheet', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel'],
+};
+const DRIVE_KIND_WORDS: readonly { kind: keyof typeof DRIVE_MIME_TYPES; words: RegExp }[] = [
+  { kind: 'deck', words: /\b(?:decks?|slides?|presentations?|pptx?|powerpoints?)\b/u },
+  { kind: 'sheet', words: /\b(?:sheets?|spreadsheets?|xlsx?|excel)\b/u },
+  { kind: 'doc', words: /\b(?:docs?|documents?|docx)\b/u },
+];
+/** The words that name the kind, the app or the act, never the file; what is left is the name searched. */
+const DRIVE_FILLER = /\b(?:the|a|an|my|our|his|open|opening|show|find|pull|bring|up|please|in|on|chrome|browser|google|drive|file|files|decks?|slides?|presentations?|pptx?|powerpoints?|sheets?|spreadsheets?|xlsx?|excel|docs?|documents?|docx|word|link|from|of|for|that|this|it|me|can|you|could|would)\b/gu;
+/** The reread of one file he picked: `id:` and the id a listing carried. */
+const DRIVE_FILE_ID = /^id:\s*([A-Za-z0-9_-]{10,256})$/u;
+
+/** C-OPEN 2 and 3: a name search typed by the kind he named, or the fresh read of one file by its id. */
+function driveSubs(query: string, ownerWords: string): IntentSubCall[] {
+  const id = DRIVE_FILE_ID.exec(query.trim())?.[1];
+  if (id !== undefined) return [{ key: 'dr0', name: INTERNAL.driveGet, args: { file_id: id } }];
+  const text = query.toLowerCase();
+  const kind = (DRIVE_KIND_WORDS.find(entry => entry.words.test(text)) ?? DRIVE_KIND_WORDS.find(entry => entry.words.test(ownerWords.toLowerCase())))?.kind;
+  const name = text.replace(DRIVE_FILLER, ' ').replace(/[^\p{L}\p{N}\s._-]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 120);
+  if (name === '') return [];
+  return [{ key: 'dr0', name: INTERNAL.driveSearch, args: { query: name, ...(kind === undefined ? {} : { mime_types: [...DRIVE_MIME_TYPES[kind]] }), limit: 5 } as JsonObject }];
+}
+
 /**
  * K6: one routed lookup. `memory` is read in process; every other layer becomes the internal read that
  * source already owns, under its own per-source deadline. Nothing here consults the selector.
@@ -3661,6 +3710,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
     }
     return plan;
   }
+  if (lookup.source === 'drive') return { source: 'drive', kind: 'drive_search', subs: driveSubs(query, context.ownerWords ?? context.question) };
   // K1: the web is a layer of its own, and a question that asked for it is never answered by chat.
   if (lookup.source === 'web') return { source: 'web', kind: 'web_search', subs: candidateSubs('web_search', subsConfig) };
   if (lookup.source === 'chat') {
@@ -4196,7 +4246,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     run.unavailableReasons.set(source, reason);
     return [...done, ...all(outcome)];
   };
-  if (!context.configured.includes(source)) return unserved('unavailable', source === 'web' ? 'web_not_available' : 'not_configured');
+  if (!context.configured.includes(source)) return unserved('unavailable', source === 'web' ? 'web_not_available' : source === 'drive' ? 'drive_not_available' : 'not_configured');
   // #351: a connector that cannot serve a read right now settles at once, never spending the batch deadline.
   if (context.unavailable.includes(source)) return unserved('unavailable', context.unavailableReason?.(source) ?? 'connector_unavailable');
   const remainingMs = run.deadlineMs - (context.now() - run.startedAt);

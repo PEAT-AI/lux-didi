@@ -145,6 +145,19 @@ import Darwin
             window.orderOut(nil); window.orderFront(nil)
             expect(try await js(shell.webView, "document.body.dataset.instance") as? String == initial, "hide/show preserves exact page session")
             expect(try await js(shell.webView, "window.open('/','evil') === null") as? Bool == true, "programmatic popup refused")
+            // C-OPEN 7: WebKit hands window.confirm to the native panel, and the page sees the owner's answer.
+            var confirmAnswer = true
+            let confirming = CompanionWeb(descriptor: descriptor, confirm: { _, _, answer in answer(confirmAnswer) })
+            let confirmWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+            confirmWindow.isReleasedWhenClosed = false
+            confirmWindow.contentView = confirming.webView
+            await confirming.load(cookie: try await client.bootstrap())
+            await waitFor("confirm proof page rendered") { confirming.state == .ready }
+            expect(try await js(confirming.webView, "window.confirm('Delete this memory permanently?')") as? Bool == true, "window.confirm reaches the native panel and OK answers true")
+            confirmAnswer = false
+            expect(try await js(confirming.webView, "window.confirm('Delete this memory permanently?')") as? Bool == false, "Cancel answers the page false")
+            confirming.clear()
+            confirmWindow.close()
             _ = try await js(shell.webView, "let f=document.createElement('iframe'); f.src='/frame'; document.body.appendChild(f); 'attempted'")
             await waitFor("subframe denied") { shell.deniedNavigations > 0 }
             for url in ["http://127.0.0.1:1/", "http://localhost:\(config["port"] as! Int)/", origin + "/download"] {

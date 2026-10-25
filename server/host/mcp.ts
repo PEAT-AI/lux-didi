@@ -13,6 +13,9 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { identityAction, identityProofMemo, proveIdentity, refusalCode, IDENTITY_TIMEOUT_MS, type IdentityErrorCode, type IdentityProof } from '../connectors/identity.js';
+import { googleMcpPathUnsafe } from '../connectors/google.js';
+import { noteGmailAccount } from '../tools/open-handles.js';
+import { homedir } from 'node:os';
 
 export interface McpConnectionBundle {
   state: 'applied' | 'unchanged' | 'refused' | 'pending';
@@ -66,7 +69,7 @@ export function composeMcpConnection(options: { store: Store; owner: ToolsOwner;
 }
 
 export type McpEndpointState = 'missing' | 'configured' | 'connecting' | 'connected' | 'error';
-export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; reasonCode?: 'identity_mismatch' | 'not_signed_in' | IdentityErrorCode; identity?: IdentityProof; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'owner-approval-required' | 'ambiguous-legacy-policy'; exception?: { class: string; code: string } }
+export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; reasonCode?: 'identity_mismatch' | 'not_signed_in' | IdentityErrorCode; identity?: IdentityProof; /** C-OPEN 6: a closed wiring notice the Settings row names; it never stops the connector. */ warning?: 'google_mcp_path_unsafe'; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'owner-approval-required' | 'ambiguous-legacy-policy'; exception?: { class: string; code: string } }
 export interface McpRuntimeComposition {
   registry: McpRegistry;
   port: McpPort;
@@ -192,7 +195,8 @@ export type ConnectorLifecycleEvent =
   | { event: 'connector_recovered'; endpointId: string; attempts: number; connectMs: number }
   | { event: 'connector_recovery_exhausted'; endpointId: string; attempts: number; reason: string }
   | { event: 'connector_unavailable'; endpointId: string; reason: string }
-  | { event: 'connector_helper_stderr'; endpointId: string; bytes: number };
+  | { event: 'connector_helper_stderr'; endpointId: string; bytes: number }
+  | { event: 'google_mcp_path_unsafe'; endpointId: string };
 
 /** Compose the inert MCP runtime once at startup: config, owner and registry only, no remote work. */
 export async function composeMcpRuntime(options: {
@@ -210,6 +214,8 @@ export async function composeMcpRuntime(options: {
   recoveryDelaysMs?: readonly number[];
   /** Hold connector initialization until `start()`; the supervised host writes the ready frame first. */
   deferConnectors?: boolean;
+  /** Test seam: the home folder the Google wiring guard checks against; production uses the user's home. */
+  home?: string;
 }): Promise<McpRuntimeComposition> {
   const { store, ownerId, configDir } = options; const now = options.now ?? Date.now;
   const registry = new ProbeRegistry();
@@ -313,6 +319,10 @@ export async function composeMcpRuntime(options: {
     connectors.set(entry.id, entry.connector);
   }
   const active = endpoints.filter(entry => entry.enabled && entry.allowEgress && !rejected.has(entry.id));
+  // C-OPEN 6: a Google helper run from the reports folder works until that folder is archived; say so at
+  // start, once per endpoint, and keep the connector running. The install step repoints the config.
+  const unsafeWiring = new Set(endpoints.filter(entry => entry.connector === 'google' && entry.transport === 'stdio' && googleMcpPathUnsafe(entry.command, options.home ?? homedir())).map(entry => entry.id));
+  for (const id of unsafeWiring) options.lifecycleLog?.({ event: 'google_mcp_path_unsafe', endpointId: id });
 
   const eligible = new Map<string, { session: number; revision: number }>();
   // Endpoints parked on a sign-in reason: a login rewrites the credential, and the next recover()
@@ -676,6 +686,8 @@ export async function composeMcpRuntime(options: {
       if (attempt === 'first-connect') options.lifecycleLog?.({ event: 'connector_connected', endpointId: entry.id, connectMs: Math.max(0, now() - roundStarted) });
       // R1: the count includes a granted composite, so the owner sees every callable read tool.
       reports.set(entry.id, { id: entry.id, state: 'connected', tools: granted.length, lastHandshakeAt: new Date(now()).toISOString(), ...(identity ? { identity } : {}) });
+      // C-OPEN 4: a Gmail link names the account the mailbox proved here, never one a model or a body named.
+      if (entry.connector === 'google' && policy.toolNames.includes('gmail_get_profile') && !policy.toolNames.some(name => name.startsWith('calendar_')) && identity?.proven === true) noteGmailAccount(identity.value ?? undefined);
       return { retryable: false };
     } catch (error) {
       if (stale()) return { retryable: false };
@@ -721,6 +733,7 @@ export async function composeMcpRuntime(options: {
       return active.filter(entry => ready.has(entry.id) && reports.get(entry.id)?.state === 'connected' && !!registry.currentGrant(entry.id)).map(entry => entry.id);
     },
     status: () => ({ endpoints: [...reports.values()].map(report => ({ ...report,
+      ...(unsafeWiring.has(report.id) ? { warning: 'google_mcp_path_unsafe' as const } : {}),
       ...(report.state === 'connected' && report.tools > 0 && !registry.currentGrant(report.id) ? { state: 'error' as const, tools: 0, error: 'connector-unavailable' } : {}),
       retrying: recovery.pending(report.id),
       connector: connectors.get(report.id) ?? report.id })) }),

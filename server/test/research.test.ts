@@ -1957,8 +1957,13 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
   // C-DEPTH item 2: the per source floor protects a short source, so the widest one gives up whole items and the
   // short one keeps its evidence. The budget is met either way, which is what this case owns.
-  assert.ok((line.answerCompacted?.items ?? 0) >= 1, 'the widest source gave up a whole item');
-  const keptSources = (reply['findings'] as { source: string }[]).map(finding => finding.source);
+  // C-DEPTH item 2: the widest line is shortened to the room the floor leaves, and the short source keeps its
+  // evidence, so what was over the budget is what gave way. This case owns the trim, not the drop count.
+  const kept = reply['findings'] as { source: string; text: string }[];
+  const knowledge = kept.find(finding => finding.source === 'knowledge');
+  assert.ok(knowledge !== undefined && knowledge.text.length < 2_900,
+    `the widest line was trimmed to the budget: ${knowledge?.text.length ?? 0} of 2,900`);
+  const keptSources = kept.map(finding => finding.source);
   assert.ok(keptSources.includes('mail'), `a short source keeps its evidence: ${keptSources.join(', ')}`);
   assert.ok(String(reply['note']).includes(RESEARCH.moreAvailableNote), 'and the reply names what it left out');
 });

@@ -60,6 +60,8 @@ import { RESEARCH, RESEARCH_TOOL_NAME } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 
 const MODEL = 'models/live-session-test';
+/** S4a: the host's delegation deadline, DELEGATION_DEADLINE_MS in the live session. */
+const stallDeadlineMs = 25_000;
 const NOW = 1_700_000_000_000;
 const context = (store: Store): LiveContext => ({ clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch });
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -4112,6 +4114,12 @@ function progressPort() {
   let commentaryDelivered = true;
   /** Every text input the host pushed: the OpenAI path must never send the `Continue.` user turn (review F2). */
   const texts: string[] = [];
+  /** #660: every text input tagged with the provider session that received it, and how often one was refused. */
+  const textInputs: { session: number; text: string }[] = [];
+  let textRefusals = 0;
+  let refuseText = 0;
+  /** #660: every request the host asked for, so a test can read the opening the fresh session was given. */
+  const requests: LiveVoiceRequest[] = [];
   const toolResponses: LiveToolResponse[][] = [];
   /** #656: every owner frame the host handed a provider session, tagged with which session received it. */
   const audioInput: { session: number; pcm: Uint8Array }[] = [];
@@ -4125,8 +4133,9 @@ function progressPort() {
   let closes = 0;
   const port: LiveVoicePort = {
     capabilities: { ...fakeLiveVoicePort().port.capabilities, provider: 'openai', supportsResumption: true },
-    open(_request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession {
+    open(request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession {
       sessionsOpened += 1;
+      requests.push(request);
       let closed = false;
       let resolveDone: (value: LiveVoiceOutcome) => void = () => {};
       const done = new Promise<LiveVoiceOutcome>(resolve => { resolveDone = resolve; });
@@ -4159,7 +4168,11 @@ function progressPort() {
         ready: Promise.resolve(), events, done,
         sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome { toolResponses.push(input.responses); return sendOutcome; },
         sendAudio(input: { pcm: Uint8Array }): void { audioInput.push({ session: sessionsOpened, pcm: input.pcm }); },
-        sendText(input: { text: string }): void { texts.push(input.text); }, endAudioStream(): void {},
+        sendText(input: { text: string }): void {
+          // #660: a fresh session answers not_ready before its ready event, exactly as the adapter does.
+          if (refuseText > 0) { refuseText -= 1; textRefusals += 1; throw new Error('not_ready'); }
+          texts.push(input.text); textInputs.push({ session: sessionsOpened, text: input.text });
+        }, endAudioStream(): void {},
         sendCommentary(input: { text: string }): boolean {
           if (!commentaryDelivered) return false;
           commentary.push(input.text);
@@ -4169,7 +4182,10 @@ function progressPort() {
       };
     },
   };
-  return { port, commentary, thinking, texts, toolResponses, audioInput, emit: (event: unknown) => emit(event),
+  return { port, commentary, thinking, texts, textInputs, requests, toolResponses, audioInput, emit: (event: unknown) => emit(event),
+    /** #660: the next text input meets a session that is not ready, and one retry is all the host gets. */
+    refuseTextOnce: () => { refuseText = 1; },
+    get textRefusals() { return textRefusals; },
     /** #656: hold the next rebuilt session short of ready; the returned release lets it open. */
     holdNextReady: () => {
       const gate = new Promise<void>(resolve => { releaseReady = resolve; });
@@ -6506,4 +6522,95 @@ test('#656: the 03:42 sequence, four serial research calls with two refused, nev
   h.advance(AUDIBLE_DEBT_RUNG_MS + 1_000); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'one rebuild, after the read and not under it');
   assert.equal(fake.sessionsOpened, 2);
+});
+
+test('#660: a result that returned unspoken reaches the session that replaced it, once, after ready', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'unspoken-rebuild-660');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'u660', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the result went to the session that asked for it');
+  // The rung puts the unspoken result in front of the mute model instead of rebuilding over it.
+  h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
+  assert.equal(fake.closes, 0, 'the ladder delivers the result before it rebuilds');
+  assert.equal(fake.textInputs.length, 1, 'the result reached the model as one text item');
+  assert.match(fake.textInputs[0]!.text, /already returned/, 'the item names the result as already returned');
+  // The model stays mute, so the rebuild follows and the fresh session is handed the result after its own ready.
+  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS + 1_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.sessionsOpened, 2, 'the rebuild still happens once the delivery did not get her to speak');
+  const second = fake.textInputs.filter(entry => entry.session === 2);
+  assert.equal(second.length, 1, 'the fresh session receives the unspoken result exactly once');
+  assert.equal(fake.requests[1]!.opening, 'model_first', 'the rebuilt session speaks without waiting for the owner');
+  assert.equal(fake.requests[1]!.openingText, undefined, 'and carries no pickup line to answer instead');
+  const refused = receipts.filter(record => record['event'] === 'live_debt' && record['reason'] === 'send_failed');
+  assert.equal(refused.length, 0, 'a fresh session is never sent the retired call ids');
+  fake.emit(audibleFrame);
+  await settlePort();
+  assert.equal(h.owner.current().state, 'speaking', 'her answer to the delivered result is what the owner hears');
+});
+
+test('#660: the delivery waits for the session to be ready and survives one not_ready', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'unspoken-not-ready-660');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'nr660', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  // The first delivery meets a session that answers not_ready, and the one retry is the delivery that lands.
+  fake.refuseTextOnce();
+  h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
+  assert.equal(fake.textRefusals, 1, 'the first attempt was refused as not ready');
+  assert.equal(fake.textInputs.length, 1, 'the retry is the one delivery, and it carries the result');
+  assert.equal(fake.textInputs[0]!.session, 1);
+  // And a fresh session is told nothing before its own ready event.
+  const release = fake.holdNextReady();
+  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS + 1_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.sessionsOpened, 2);
+  assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 0, 'nothing is delivered before ready');
+  release();
+  await settlePort();
+  assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 1, 'the delivery lands once ready arrives');
+});
+
+test('#660: a stalled delegation with nothing in flight delivers the unspoken result once', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'unspoken-stall-660');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'st660', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  // The owner speaks before the ladder's rung: the debt is his again, and the result is still unsaid.
+  await ownerInput(fake);
+  assert.equal(fake.textInputs.length, 0, 'nothing has been delivered yet');
+  h.advance(stallDeadlineMs + 1_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.textInputs.length, 1, 'the stall puts the unspoken result in front of the model once');
+  assert.equal(fake.sessionsOpened, 1, 'and nothing is rebuilt for it');
+});
+
+test('#660: a status question with nothing running is answered from host truth, not the model belief', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'unspoken-status-660');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'sq660', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  // The rung delivers the result and the rebuild hands it to a fresh session, and the model still never speaks.
+  h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
+  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS + 1_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.sessionsOpened, 2);
+  assert.equal(fake.commentary.length, 0, 'no host note is written before the deadline');
+  // Nothing is in flight any more and the result has been offered: the stall makes the host own the next answer.
+  h.advance(stallDeadlineMs); scheduler.runDue(); await settlePort();
+  // The owner asks where it stands.
+  await ownerInput(fake);
+  assert.equal(fake.commentary.filter(text => /no lookup is running/i.test(text)).length, 1, 'the host note says nothing is running');
 });

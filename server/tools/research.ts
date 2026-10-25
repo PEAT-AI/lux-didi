@@ -1112,6 +1112,9 @@ const CALENDAR_DAY_WORDS = /\b(?:(?:next )?(?:sunday|monday|tuesday|wednesday|th
 const WEB_WORDS = /\b(news|headlines|weather|forecast|opening hours|search the web|on the internet|google it)\b/u;
 const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?|specs?|reminders?|recorded)\b/u;
 
+/** C-OPEN 2: an ask to open or find a deck, doc or sheet, or one that names his Drive; a question about a deck is not one. */
+const DRIVE_ASK = /\b(?:open|show|find|pull up|bring up)\b[^.?!]*\b(?:decks?|slides?|presentations?|spreadsheets?|sheets?|docs?|documents?|pptx?|xlsx?)\b|\b(?:google drive|my drive|in drive|from drive)\b/u;
+
 /**
  * The source a question is about, in the order the first answer waits for them. The word classes are the one
  * place a route is decided: `words` is the source's own vocabulary, and a route that also carries `needed` is
@@ -1119,8 +1122,6 @@ const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?
  * #639: the company source sits last, so an ask that also names mail, calendar or chat keeps the two source
  * cap it had before a company word existed, and only a company ask with room left reads Mongoose.
  */
-/** C-OPEN 2: an ask to open or find a deck, doc or sheet, or one that names his Drive; a question about a deck is not one. */
-const DRIVE_ASK = /\b(?:open|show|find|pull up|bring up)\b[^.?!]*\b(?:decks?|slides?|presentations?|spreadsheets?|sheets?|docs?|documents?|pptx?|xlsx?)\b|\b(?:google drive|my drive|in drive|from drive)\b/u;
 const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp; needed?: (text: string) => boolean }[] = [
   { source: 'calendar', words: SCHEDULE_WORDS }, { source: 'mail', words: MAIL_WORDS }, { source: 'drive', words: DRIVE_ASK },
   { source: 'chat', words: CHAT_WORDS, needed: chatQuestionWords }, { source: 'mongoose', words: COMPANY_WORDS },

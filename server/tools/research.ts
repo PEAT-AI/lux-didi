@@ -2956,22 +2956,21 @@ function liveSessionIds(hits: readonly JsonObject[], question: string, history: 
   return ids;
 }
 
+/** #638: memory evidence is ordered by its kind of line as well as its match, never narrowed to one role. */
+const memoryKind = (hit: JsonObject): number => (hit['sourceKind'] === 'summary' ? 0 : hit['sourceKind'] === 'live' ? 2 : 1);
+
 /**
- * #615: an owner line leads her own line at the same match, and her line is evidence only when no owner line
- * matches (#575 keeps it when the owner asks what she said, which is the one ask that wants her own words).
+ * #638: every matching line is evidence, ranked by how many of the question's words it matches, then a summary
+ * before an entry before a live transcript line, then newest, so a single owner line never removes the summaries.
  */
-function rankMemoryEvidence(hits: readonly JsonObject[], tokens: readonly string[], asked: boolean): JsonObject[] {
+function rankMemoryEvidence(hits: readonly JsonObject[], tokens: readonly string[]): JsonObject[] {
   const scored = hits.map(hit => {
     const words = fold(String(hit['snippet'] ?? ''));
     const at = Date.parse(String(hit['date'] ?? ''));
-    return { hit, owner: hit['role'] === 'user', score: tokens.filter(token => words.includes(token)).length, at: Number.isFinite(at) ? at : 0 };
+    return { hit, kind: memoryKind(hit), score: tokens.filter(token => words.includes(token)).length, at: Number.isFinite(at) ? at : 0 };
   });
-  const ownerLeads = !asked && scored.some(entry => entry.owner && entry.score > 0);
-  const evidence = ownerLeads ? scored.filter(entry => entry.owner) : scored;
-  evidence.sort((left, right) => right.score - left.score
-    || (left.owner === right.owner ? 0 : left.owner ? -1 : 1)
-    || right.at - left.at);
-  return evidence.map(entry => entry.hit);
+  scored.sort((left, right) => right.score - left.score || left.kind - right.kind || right.at - left.at);
+  return scored.map(entry => entry.hit);
 }
 
 /**
@@ -2994,7 +2993,7 @@ function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunS
     const at = Date.parse(String(hit['date'] ?? ''));
     return !Number.isFinite(at) || at < history;
   });
-  return rankMemoryEvidence(kept, tokenize(question), asked);
+  return rankMemoryEvidence(kept, tokenize(question));
 }
 
 /** Citation metadata has its own 12,000 character envelope, outside the spoken reply budget. */

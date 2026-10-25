@@ -54,7 +54,7 @@ A successful result is only `{remembered: true, entryId}`; refusals return `{rem
 
 ### What a memory recall reads
 
-A memory lookup reads earlier conversations only: remembered notes, summaries and retained conversation rows from before the call in progress. It never reads the live session's own transcript, her own summary of it, or the owner's current question, so an answer can never be proved by the question that asked it. Within what it reads, an owner line leads a line of hers at the same match, and her line is evidence only when no owner line matches; the one exception is a question about what she said, where her own words are the answer. When nothing from an earlier conversation matches, the source reports itself empty instead of falling back to this turn.
+A memory lookup reads earlier conversations only: remembered notes, summaries and retained conversation rows from before the call in progress. It never reads the live session's own transcript, her own summary of it, or the owner's current question, so an answer can never be proved by the question that asked it. Within what it reads, every matching line is evidence: the line with more matching words leads, and at the same match a summary leads an entry leads a live transcript line, newest first among equals, so a match on an owner line never narrows the recall to her own earlier questions; the one exception is a question about what she said, where her own words are the answer. When nothing from an earlier conversation matches, the source reports itself empty instead of falling back to this turn.
 
 
 ## Text chat consumption

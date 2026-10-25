@@ -121,14 +121,19 @@ type ConnectorHook = { calls: { name: string; args: Record<string, unknown> | un
   authority(up: boolean): void };
 
 /** One fake knowledge connector, its tool call counted: a dispatch the test can see, never a real endpoint. */
-/** What the fake knowledge connector answers: one case answers small, another huge, so both sides of the 24,000 char threshold are reachable without a second fixture. */
+/** What the fake knowledge connector answers, in the ranker's own line shape, so the read parses it as hits. */
 const answer = { lines: 40, body: 120 };
 function knowledgeFixture(): string {
-  return Array.from({ length: answer.lines }, (_, i) =>
-    `[id ${1000 + i}] Clifton profile ${i}: Achiever, Learner and Input, 2026-10-${String((i % 28) + 1).padStart(2, '0')}, a full sentence of evidence about the audit group and its team implications.`).join('\n');
+  const hit = (i: number): string => [
+    `**#${1000 + i}** [PATTERN] Clifton StrengthsFinder profile ${1000 + i} of the audit team`,
+    `the audit team strengths are Achiever, Learner and Input, dated 2026-10-${String((i % 28) + 1).padStart(2, '0')}.`,
+    `Score: 0.4${i % 10} \u00b7 status: live`,
+  ].join('\n');
+  return ['# Knowledge Search', '_confidence: medium \u00b7 mode: reranked \u00b7 top score: 0.37 \u00b7 relevant candidate: yes_',
+    ...Array.from({ length: answer.lines }, (_, i) => hit(i))].join('\n');
 }
 function bodyFixture(id: string): string {
-  return `[id ${id}] Clifton profile body ${id}: ${'detail of the full entry. '.repeat(answer.body)}`;
+  return `### Clifton profile ${id} (PATTERN | 2026-10-19) [id ${id}] ${'detail of the full entry. '.repeat(answer.body)}`;
 }
 
 async function toolsFixture(t: TestContext, store: Store, profile: ReturnType<typeof validateLiveProfile>): Promise<{ tools: LiveToolsComposition; hook: ConnectorHook }> {
@@ -156,14 +161,14 @@ async function toolsFixture(t: TestContext, store: Store, profile: ReturnType<ty
     return transport.handleRequest(request);
   });
   const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10_000, maxSliceBytes: 512 }),
-    resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12_000, projectionChars: 10, timeoutMs: 5_000 } });
+    resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 200_000, projectionChars: 10, timeoutMs: 5_000 } });
   const toolOwner = createToolsOwner({ grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port,
     lookupAuthority: async runId => authorityUp ? ownerRef?.lookupAuthority(runId) ?? ownerRef?.lookupJobAuthority(runId) ?? null : null });
   toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
     endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(schemas),
     sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
     route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
-    bounds: { maxQueryChars: 80, maxSearchLimit: 8, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+    bounds: { maxQueryChars: 80, maxSearchLimit: 8, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 200_000 } });
   assert.equal((await port.discover(endpoint.id)).state, 'discovered');
   toolOwner.projectConnection('lux');
   t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });

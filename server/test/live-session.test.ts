@@ -6586,7 +6586,8 @@ test('#660: a result that returned unspoken reaches the session that replaced it
   assert.equal(refused.length, 0, 'a fresh session is never sent the retired call ids');
   // #667: the recreate names how many unspoken results the new session was handed.
   const delivery = receipts.filter(record => record['event'] === 'live_unspoken_delivered');
-  assert.deepEqual(delivery.map(record => [record['results'], record['attempt']]), [[1, 1]], 'one result, first attempt');
+  assert.deepEqual(delivery.map(record => [record['results'], record['attempt']]), [[1, 1], [1, 1]], 'one result each, first attempt');
+  assert.equal(new Set(delivery.map(record => record['generation'])).size, 2, 'the rung and the recreate each name their own');
   fake.emit(audibleFrame);
   await settlePort();
   assert.equal(h.owner.current().state, 'speaking', 'her answer to the delivered result is what the owner hears');

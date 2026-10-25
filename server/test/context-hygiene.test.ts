@@ -272,9 +272,15 @@ async function live(t: TestContext, rebuildThresholdChars: number): Promise<Harn
 
 /** One research answer, on a question that names the entity the fake knowledge read answers for. */
 async function oneRead(h: Harness, id = 'r0', question = 'Clifton strengths profile of the audit team'): Promise<void> {
+  // live-session.test.ts:3053 speaks before each research call, which is the owner turn the run admits on.
+  await ownerSpoke(h, question);
   const before = h.port.toolResponses.length;
   h.port.emit(research(id, question));
   await answered(h, before + 1);
+  // A failure note is not evidence: without this guard a 687 char refusal can cross an injected
+  // threshold and make a rebuild case green for the wrong reason.
+  assert.doesNotMatch(sent(h, before), /provider_failed|unavailable \(|not_configured/u,
+    `the read answered with evidence rather than a failure note, got ${sent(h, before).slice(0, 240)}`);
 }
 
 test('HYGIENE 10: nothing is rebuilt while the retained research stays under the threshold', async t => {
@@ -306,6 +312,7 @@ test('HYGIENE 12: a boundary during a tool call defers the rebuild to the next b
   const h = await live(t, CROSSED);
   await oneRead(h);
   h.holdTool();
+  await ownerSpoke(h, 'who owns the audit plan');
   h.port.emit(research('r1', 'who owns the audit plan'));
   await flush();
   h.port.emit(turnComplete);
@@ -333,7 +340,7 @@ test('HYGIENE 13: the seed is one turn carrying the asked entities and the held 
   const seed = history[0]!.text;
   // W10-R20: the entity clause holds once a read's findings carry the asked name; the id clause is
   // what this read can prove, and HYGIENE 4 proves the entity line on a run that supplies the names.
-  assert.match(seed, /1000/u, 'the held hit id is in the seed');
+  assert.match(seed, /1000/u, `the held hit id is in the seed, seed ${JSON.stringify(seed).slice(0, 200)}, reply ${sent(h, 0).slice(0, 500)}`);
   assert.ok(seed.length <= 6_000, `the ledger is capped at 6,000 chars, was ${seed.length}`);
 });
 

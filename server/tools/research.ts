@@ -5753,6 +5753,8 @@ export function researchLedgerOf(input: LedgerInput): string {
   const asked = requestedEntities(input.question);
   const covered = asked.filter(name => evidence.includes(name));
   const missing = asked.filter(name => !evidence.includes(name));
+  const heldIds = [...new Set(input.findings
+    .flatMap(finding => (finding.text ?? '').split('\n').map(hitIdOf).filter((id): id is string => id !== undefined)))];
   const perSource = input.findings
     .filter(finding => typeof finding.source === 'string')
     .map(finding => {
@@ -5768,6 +5770,9 @@ export function researchLedgerOf(input: LedgerInput): string {
   const parts = [
     `evidence ledger (extractive, ${covered.length} of ${asked.length} asked entities covered)`,
     asked.length === 0 ? 'entities: none named' : `entities: ${asked.join(', ')}`,
+    // W10-R21: every hit id the run read is in the ledger whatever the finding declares, so a follow-up
+    // can recover that detail through get_insight instead of re-reading from the top.
+    ...(heldIds.length === 0 ? [] : [`ids: ${heldIds.join(', ')}`]),
     ...perSource,
     ...excerpts,
     missing.length === 0 ? '' : `gaps: no evidence for ${missing.join(', ')}`,

@@ -7,7 +7,7 @@ import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
 import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteOwnerWords, noteSpoken, openClaimCorrection } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
-import { beginStage, freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteReadback, noteSettle, openNote, saveNoteState } from '../tools/lux-note.js';
+import { beginStage, currentOwnerTurn, freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, type PlaybackSignalKind } from '../tools/lux-note.js';
 import { NotesExporter } from '../tools/notes-export.js';
 import { authorizeComposedWrite, VaultWriter, type VaultReceipt } from '../tools/vault-write.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
@@ -24,7 +24,7 @@ import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from 
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
 import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption, type OpeningOptionKind } from '../prompt/index.js';
-import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt, type PlaybackReceipt } from '../trace/ingest.js';
+import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, recordCallResult, recordQueryShape, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
 import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
@@ -1016,6 +1016,8 @@ export class LiveSessionOwner {
   readonly #luxWrite: ReturnType<typeof createLuxWriteTransport>;
   /** W6: sessions that have staged a composed note, so no other session pays a query per owner turn. */
   readonly #noteSessions = new Set<string>();
+  /** W6-R2 B2: the one segment carrying this stage's read-back, keyed by session. */
+  readonly #noteReadback = new Map<string, string>();
   readonly #voice: LiveVoicePort;
   readonly #profile: LiveProfile;
   readonly #now: () => number;
@@ -1552,10 +1554,12 @@ export class LiveSessionOwner {
     const abort = new AbortController();
     const dataClasses = classes.filter(c => c === inputClass || acceptedPrompt.dataClasses.includes(c));
     let registry: readonly ToolDefinition[] = [], host: HostContext | undefined;
+    // W6-R2 B1: the stage needs this session's turn facts, so the closure resolves the handle lazily.
+    let stageHandle: ActiveSession | undefined;
     if (this.#tools) {
       const saved = this.#store.transaction(tx => tx.get('SELECT acceptance_json FROM live_tool_acceptances WHERE live_session_id=?', [liveSessionId]));
       if (!saved) throw new LiveError('invalidated');
-      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => rememberOwnerNote(tx, id, args, this.#now()), claim => this.#vault.dispatch(claim), (tx, id, args) => this.#stageComposedNote(tx, id, args), this.#composedNotes()).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
+      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => rememberOwnerNote(tx, id, args, this.#now()), claim => this.#vault.dispatch(claim), (tx, id, args) => this.#stageComposedNote(tx, id, args, stageHandle), this.#composedNotes()).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
         grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && OWNER_WRITE_RESOURCES.get(tool.name) === tool.resourceId && tool.accountId === 'gateway:live-voice').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
@@ -1614,6 +1618,7 @@ export class LiveSessionOwner {
       diagnosticTerminalCode: 'outcome_unknown', diagnosticsEmitted: false,
       loopDone: deferred<void>(), done: deferred<LiveSessionSnapshot>(), resolveDone: () => {}, persistFailure: undefined,
     };
+    stageHandle = handle;
     const initialSnapshot = this.#readSnapshot(liveSessionId);
     handle.resolveDone = () => {
       try { handle.done.resolve(this.#readSnapshot(liveSessionId)); }
@@ -1664,11 +1669,6 @@ export class LiveSessionOwner {
     };
   }
 
-  /**
-   * O1b-N: one native playback receipt, validated against the O1a ingestion types and recorded as a
-   * native trace event plus its playback summary row. A refusal is a typed code in the debug journal
-   * and never changes session state: a malformed frame cannot end or wedge a call.
-   */
   /** W6 item 10: the composed-note capability is off unless live.json turns it on. */
   #composedNotes(): boolean { return this.#profile.features?.composedNotes === true; }
 
@@ -1680,13 +1680,19 @@ export class LiveSessionOwner {
    * microphone turn is the only authorization, the evidence refs must name journal rows this session
    * holds, and the whole payload is frozen here, before any read-back.
    */
-  #stageComposedNote(tx: Transaction, liveSessionId: string, args: { title: string; body: string; evidenceRefs: string[] }): JsonObject {
-    const turns = tx.all("SELECT journal_id,text,final_origin FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND finished=1 ORDER BY journal_id DESC LIMIT 50", [liveSessionId])
-      .filter(row => String(row['final_origin'] ?? '') !== 'typed');
-    const held = new Set(turns.map(row => `journal:${String(row['journal_id'])}`));
+  #stageComposedNote(tx: Transaction, liveSessionId: string, args: { title: string; body: string; evidenceRefs: string[] }, handle: ActiveSession | undefined): JsonObject {
+    const rows = tx.all("SELECT journal_id,text,final_origin,finalized_at FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND finished=1 ORDER BY journal_id DESC LIMIT 50", [liveSessionId])
+      .map(row => ({ journalId: Number(row['journal_id']), text: String(row['text'] ?? ''),
+        finalOrigin: String(row['final_origin'] ?? 'unknown'), finalizedAt: Number(row['finalized_at'] ?? 0) }));
+    // W6-R2 B1: only this turn's finalized mic transcript can authorize, never the previous turn.
+    const read = currentOwnerTurn(rows, handle?.inputAt, handle?.inputFinal === true, this.#now());
+    if (read.state === 'refused') {
+      hostLogEvent({ event: 'lux_note_stage', staged: false, code: read.code });
+      return { staged: false, code: read.code };
+    }
     const now = this.#now();
-    const outcome = beginStage({ stageId: randomUUID(), sessionId: liveSessionId, ownerText: String(turns[0]?.['text'] ?? ''),
-      title: args.title, body: args.body, evidence: args.evidenceRefs, heldEvidence: held, enabled: this.#composedNotes(), now });
+    const outcome = beginStage({ stageId: randomUUID(), sessionId: liveSessionId, ownerText: read.text,
+      title: args.title, body: args.body, evidence: args.evidenceRefs, heldEvidence: read.evidence, enabled: this.#composedNotes(), now });
     if (outcome.state === 'refused') {
       hostLogEvent({ event: 'lux_note_stage', staged: false, code: outcome.code });
       return { staged: false, code: outcome.code };
@@ -1700,15 +1706,18 @@ export class LiveSessionOwner {
   }
 
   /** W6 item 5: only the app's own drained receipt arms the confirmation; an interruption kills the stage. */
-  #notePlayback(handle: ActiveSession, receipt: PlaybackReceipt): void {
+  #notePlayback(handle: ActiveSession, receipt: NativePlaybackReceipt): void {
     if (!this.#noteSessions.has(handle.liveSessionId)) return;
     const note = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
-    if (!note || note.state !== 'staged') return;
-    if (receipt !== 'drained' && receipt !== 'interrupted' && receipt !== 'terminated') return;
-    const next = noteReadback(note, this.#now(), receipt === 'drained' ? 'drained' : 'interrupted');
-    if (next === note) return;
-    this.#store.transaction(tx => saveNoteState(tx, next));
-    hostLogEvent({ event: 'lux_note_readback', state: next.state, code: next.code ?? 'drained' });
+    if (!note) return;
+    // W6-R2 B2: the read-back is one segment; its own drain arms, its own cut kills, and a segment
+    // that began before the stage does neither.
+    const key = `${receipt.sourceInstanceId}:${receipt.segmentSeq}`;
+    const read = noteSegmentSignal(note, this.#noteReadback.get(handle.liveSessionId), { receipt: receipt.receipt as PlaybackSignalKind, key, wallMs: receipt.wallMs });
+    if (read.readbackKey !== undefined) this.#noteReadback.set(handle.liveSessionId, read.readbackKey);
+    if (read.note === note) return;
+    this.#store.transaction(tx => saveNoteState(tx, read.note));
+    hostLogEvent({ event: 'lux_note_readback', state: read.note.state, code: read.note.code ?? receipt.receipt });
   }
 
   /** W6 item 6: the next finalized owner turn decides, and the settle window runs on its own timer. */
@@ -1789,11 +1798,16 @@ export class LiveSessionOwner {
     await exporter.flush(candidates);
   }
 
+  /**
+   * O1b-N: one native playback receipt, validated against the O1a ingestion types and recorded as a
+   * native trace event plus its playback summary row. A refusal is a typed code in the debug journal
+   * and never changes session state: a malformed frame cannot end or wedge a call.
+   */
   #playbackReceipt(handle: ActiveSession, frame: string): void {
     try {
       const receipt = parsePlaybackReceipt(frame);
       recordPlaybackReceipt(this.#store, handle.liveSessionId, receipt, this.#playbackAttribution(handle, receipt));
-      this.#notePlayback(handle, receipt.receipt);
+      this.#notePlayback(handle, receipt);
     } catch (error) {
       const code = error instanceof IngestReject || error instanceof TraceRecordError ? error.code : 'record_failed';
       hostLogEvent({ event: 'live_trace_rejected', kind: 'playback.received', code });
@@ -3615,7 +3629,7 @@ export class LiveSessionOwner {
       const host = structuredClone(handle.host), step = ++handle.toolStep;
       const jobAbort = new AbortController();
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
-      if (event.calls.some(call => call.name === 'remember_note' || call.name === 'save_to_vault')) await this.#waitForOwnerTranscript(handle, event.sequence);
+      if (event.calls.some(call => call.name === 'remember_note' || call.name === 'save_to_vault' || call.name === 'stage_lux_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
       if (this.#settled(handle) || generation !== handle.generation) return;
       if (event.calls.every(call => call.name === RESEARCH_TOOL_NAME)) {
         const outcome = await this.#researchBatch(handle, event, generation, host, dispatchGate.state === 'allowed');

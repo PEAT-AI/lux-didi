@@ -79,7 +79,8 @@ export const notesExportMigrations: readonly SchemaMigration[] = [{
        state TEXT NOT NULL CHECK (state IN ('dispatching','inserted','duplicate','failed','unknown')),
        attempted_at INTEGER NOT NULL,
        settled_at INTEGER,
-       insight_id TEXT
+       insight_id TEXT,
+       code TEXT
      )`,
     `CREATE INDEX note_exports_attempted ON note_exports(attempted_at)`,
   ],
@@ -141,10 +142,13 @@ export class NotesExporter {
       try { result = await this.options.transport.save({ content: body, title: candidate.text.replace(/\s+/g, ' ').trim().slice(0, 120), insightType: exportType(candidate.kind), project: VAULT_PROJECT }); }
       catch { result = { outcome: 'unknown' }; }
       const settled = this.options.now();
-      this.options.store.transaction(tx => tx.run('UPDATE note_exports SET state=?, settled_at=?, insight_id=? WHERE export_key=?',
-        [result.outcome, settled, result.outcome === 'inserted' ? result.insightId : null, key]));
+      // A vault outage is a failed attempt with its own code, exactly as the dictation ledger records it.
+      const state = result.outcome === 'unavailable' ? 'failed' : result.outcome;
+      const code = result.outcome === 'unavailable' ? 'vault_unavailable' : null;
+      this.options.store.transaction(tx => tx.run('UPDATE note_exports SET state=?, settled_at=?, insight_id=?, code=? WHERE export_key=?',
+        [state, settled, result.outcome === 'inserted' ? result.insightId : null, code, key]));
       if (result.outcome === 'inserted') exported += 1;
-      else if (result.outcome === 'unknown' || result.outcome === 'unavailable') unknown += 1;
+      else if (result.outcome === 'unknown') unknown += 1;
       else failed += 1;
     }
     this.options.log({ event: 'notes_export', exported, skipped: plan.skipped, failed, unknown, remaining: plan.remaining, id: randomUUID().slice(0, 8) });

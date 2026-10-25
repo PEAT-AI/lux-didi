@@ -109,6 +109,52 @@ export function freezeNote(note: { readonly title: string; readonly body: string
   return { state: 'frozen', payload, payloadSha: sha256(payload) };
 }
 
+/** One finalized owner row, as the host reads it out of the journal. */
+export interface OwnerTurnRow { readonly journalId: number; readonly text: string; readonly finalOrigin: string; readonly finalizedAt: number }
+export type OwnerTurnRead = { readonly state: 'owner_turn'; readonly text: string; readonly evidence: ReadonlySet<string> }
+  | { readonly state: 'refused'; readonly code: 'transcript_pending' | 'transcript_typed' };
+
+/**
+ * W6-R2 B1: authorization is the owner's own finalized mic turn of THIS turn. Before its transcript
+ * is finalized the stage refuses, and a newer-looking read never borrows the previous owner turn.
+ */
+export function currentOwnerTurn(rows: readonly OwnerTurnRow[], turnStartAt: number | undefined, inputFinal: boolean, now?: number): OwnerTurnRead {
+  const mic = rows.filter(row => row.finalOrigin !== 'typed').slice().sort((a, b) => b.journalId - a.journalId);
+  const newest = mic[0];
+  if (!newest) return { state: 'refused', code: rows.length > 0 ? 'transcript_typed' : 'transcript_pending' };
+  if (!inputFinal) return { state: 'refused', code: 'transcript_pending' };
+  if (turnStartAt !== undefined && newest.finalizedAt < turnStartAt) return { state: 'refused', code: 'transcript_pending' };
+  // A turn flag that outlived its turn is not this turn: an old transcript is never authorization.
+  if (now !== undefined && now - newest.finalizedAt > CONFIRM_WINDOW_MS) return { state: 'refused', code: 'transcript_pending' };
+  return { state: 'owner_turn', text: newest.text, evidence: new Set(mic.map(row => `journal:${row.journalId}`)) };
+}
+
+export type PlaybackSignalKind = 'received' | 'audible' | 'enqueued' | 'started' | 'drained' | 'interrupted' | 'terminated';
+/** One app playback receipt, reduced to what the note boundary needs. */
+export interface PlaybackSignal { readonly receipt: PlaybackSignalKind; readonly key: string; readonly wallMs: number }
+export interface SegmentRead { readonly readbackKey?: string; readonly note: NoteState }
+
+/**
+ * W6-R2 B2: the read-back is one segment. The first segment that starts after the stage is the
+ * read-back, only that segment's drain arms the stage, and only its interruption invalidates it.
+ * A segment that began before the stage can neither arm nor kill it.
+ */
+export function noteSegmentSignal(note: NoteState, readbackKey: string | undefined, signal: PlaybackSignal): SegmentRead {
+  if (note.state !== 'staged') return readbackKey === undefined ? { note } : { readbackKey, note };
+  const beganAfterStage = signal.wallMs >= note.stagedAt;
+  if (signal.receipt === 'started' || signal.receipt === 'received') {
+    return readbackKey === undefined && beganAfterStage ? { readbackKey: signal.key, note } : (readbackKey === undefined ? { note } : { readbackKey, note });
+  }
+  if (signal.receipt === 'interrupted' || signal.receipt === 'terminated') {
+    if (readbackKey !== undefined && signal.key !== readbackKey) return { readbackKey, note };
+    if (readbackKey === undefined && !beganAfterStage) return { note };
+    return { ...(readbackKey === undefined ? {} : { readbackKey }), note: ended(note, 'invalidated', 'readback_interrupted', signal.wallMs) };
+  }
+  if (signal.receipt !== 'drained') return readbackKey === undefined ? { note } : { readbackKey, note };
+  if (readbackKey === undefined || signal.key !== readbackKey) return readbackKey === undefined ? { note } : { readbackKey, note };
+  return { readbackKey, note: noteReadback(note, signal.wallMs, 'drained') };
+}
+
 export type NoteStageName = 'staged' | 'armed' | 'settling' | 'committed' | 'cancelled' | 'invalidated';
 export interface NoteState {
   readonly stageId: string;

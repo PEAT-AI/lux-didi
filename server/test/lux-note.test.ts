@@ -152,6 +152,13 @@ test('a stage before this turn\'s transcript is finalized refuses and borrows no
   assert.deepEqual(stale, { state: 'refused', code: 'transcript_pending' });
 });
 
+test('a turn flag that outlived its turn never authorizes from an old transcript', () => {
+  // A rebuild can leave inputFinal true; the transcript behind it is minutes old, so it is not this turn.
+  assert.deepEqual(currentOwnerTurn([turnRow(11, 'save that to lux', 900)], undefined, true, 900 + CONFIRM_WINDOW_MS + 1),
+    { state: 'refused', code: 'transcript_pending' });
+  assert.equal(currentOwnerTurn([turnRow(12, 'save that to lux', 1_200)], undefined, true, 1_300).state, 'owner_turn');
+});
+
 test('a typed turn never authorizes, and the current finalized mic turn does', () => {
   assert.deepEqual(currentOwnerTurn([turnRow(12, 'save that to lux', 1_200, 'typed')], 1_000, true), { state: 'refused', code: 'transcript_typed' });
   const read = currentOwnerTurn([turnRow(12, 'save that to lux', 1_200)], 1_000, true);

@@ -667,7 +667,9 @@ export async function startHost(config: HostConfig) {
       registerAuthoritySource: source => { authoritySources.push(source); },
       lookupAuthority,
       calendarDigest: { forStart: () => calendarDigest.forStart(), refresh: () => { void calendarDigest.refresh(); } },
-      onSessionTerminal: liveSessionId => summarizer.schedule(liveSessionId),
+      // W7-R4: the board's per-session cache and idempotency ledger end with the session, before the
+      // summary is scheduled so a summarizer failure cannot keep a finished run's receipts alive.
+      onSessionTerminal: liveSessionId => { trello.end(liveSessionId); summarizer.schedule(liveSessionId); },
       log: event => log.event(event),
     };
     const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot, liveTools);

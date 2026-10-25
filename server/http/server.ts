@@ -28,6 +28,15 @@ function signInConnector(row: Record<string, unknown>): boolean {
   return row.connector === 'mongoose';
 }
 
+const SIGN_IN_PHASES = ['running', 'waiting', 'finishing', 'signed_in', 'failed'];
+const SIGN_IN_FAILURES = ['discovery_refused', 'registration_refused', 'port_in_use', 'browser_unavailable', 'callback_failed', 'callback_timeout', 'token_refused', 'store_failed', 'did_not_finish'];
+/** One Mongoose row's sign-in attempt as closed tokens and an opaque id, or nothing. */
+function signInAttempt(value: { attemptId: string; phase: string; reason?: string } | undefined): Record<string, string> | undefined {
+  if (!value || !/^[0-9a-f]{16}$/.test(value.attemptId) || !SIGN_IN_PHASES.includes(value.phase)) return undefined;
+  if (value.phase === 'failed') return SIGN_IN_FAILURES.includes(String(value.reason)) ? { attemptId: value.attemptId, phase: value.phase, reason: String(value.reason) } : undefined;
+  return { attemptId: value.attemptId, phase: value.phase };
+}
+
 /**
  * The one closed reason code a connection row carries to the browser. A transport that never answered is
  * unreachable whatever layer timed it out, including an identity probe that ran out of time; a
@@ -59,7 +68,7 @@ async function readBody(req: IncomingMessage, limit = 65536): Promise<Record<str
   try { return object(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError('BAD_REQUEST', 'Malformed JSON'); }
 }
 interface Principal { clientId: string; mode: 'bearer' | 'browser'; tokenHash?: string; csrfToken?: string }
-export interface ServiceOptions { ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; live?: LiveService; toolsStatus?: () => { endpoints: unknown[] }; mongooseSignIn?: (endpoint?: string) => Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }> }
+export interface ServiceOptions { ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; live?: LiveService; toolsStatus?: () => { endpoints: unknown[] }; mongooseSignIn?: (endpoint?: string) => Promise<{ status: 'started'; attemptId: string } | { status: 'failed'; reason: string }>; mongooseSignInAttempt?: (endpointId: string) => { attemptId: string; phase: string; reason?: string } | undefined }
 export interface EntryDeletionResponse extends EntryTombstone { liveSessionRetainsUntilRebuild: boolean }
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
@@ -207,6 +216,8 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
             // Only Mongoose has an owner sign-in, so only its rows can carry the sign-in reason.
             const reasonCode = connectionReasonCode({ state, error, reasonCode: typeof row.reasonCode === 'string' ? row.reasonCode : undefined, configurationError, signIn: signInConnector(row) });
             const identity = projectIdentity(row.identity);
+            // The latest sign-in attempt of a Mongoose row: the click answered at once, the row tells the rest.
+            const signIn = signInConnector(row) && typeof row.id === 'string' ? signInAttempt(options.mongooseSignInAttempt?.(row.id)) : undefined;
             return {
               id: typeof row.id === 'string' && /^[\w.-]{1,128}$/.test(row.id) ? row.id : 'unknown', state,
               tools: typeof row.tools === 'number' && Number.isSafeInteger(row.tools) && row.tools >= 0 ? row.tools : 0,
@@ -216,6 +227,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
               retrying: row.retrying === true,
               ...(identity ? { identity } : {}),
               ...(configurationError ? { configurationError } : {}),
+              ...(signIn ? { signIn } : {}),
             };
           });
           send(res, 200, success(endpoints)); return;
@@ -233,8 +245,8 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         send(res, 200, success(options.toolsStatus?.() ?? { endpoints: [] })); return;
       }
       if (route.kind === 'mongooseSignIn') {
-        // One explicit owner click starts the login. Nothing opens a browser at app start, and the
-        // reply carries a closed outcome, never a token, a record or a provider message.
+        // One explicit owner click starts the login and is answered at once with its attempt id or a closed
+        // refusal, never a URL, a token, a record or a provider message. Nothing opens a browser at app start.
         // The click names the one endpoint it signs in; the host validates the name against its catalogue.
         const body = await readBody(req);
         const endpoint = typeof body.endpoint === 'string' ? body.endpoint : undefined;

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   beginStage, composedAsk, confirmAsk, CONFIRM_MAX_TOKENS, CONFIRM_WINDOW_MS, currentOwnerTurn, freezeNote, NOTE_MAX_CHARS,
   noteOwnerFragment, noteOwnerUtterance, noteReadback, noteSegmentSignal, noteSettle, validateStageNote,
-  type PlaybackSignal,
+  type PlaybackSignal, type ReadbackBinding,
 } from '../tools/lux-note.js';
 
 const HELD = new Set(['journal:11', 'journal:12']);
@@ -170,24 +170,49 @@ test('a typed turn never authorizes, and the current finalized mic turn does', (
 
 // B2 (W6-R2): arming follows the read-back segment, never just any drained receipt.
 const signal = (receipt: PlaybackSignal['receipt'], key: string, wallMs: number) => ({ receipt, key, wallMs });
+const bound = (stageId: string, key: string): ReadbackBinding => ({ stageId, key });
 
 test('a segment that began before the stage never arms it, and the read-back segment does', () => {
   const note = staged();
   const before = noteSegmentSignal(note, undefined, signal('drained', 'instance:1', 900));
   assert.equal(before.note.state, 'staged', 'a drained segment from before the stage is not the read-back');
   const opened = noteSegmentSignal(note, undefined, signal('started', 'instance:2', 1_400));
-  assert.equal(opened.readbackKey, 'instance:2');
+  assert.deepEqual(opened.binding, bound(note.stageId, 'instance:2'));
   assert.equal(opened.note.state, 'staged');
-  const stray = noteSegmentSignal(opened.note, opened.readbackKey, signal('drained', 'instance:3', 1_600));
+  const stray = noteSegmentSignal(opened.note, opened.binding, signal('drained', 'instance:3', 1_600));
   assert.equal(stray.note.state, 'staged', 'another segment draining does not arm');
-  const armedNote = noteSegmentSignal(opened.note, opened.readbackKey, signal('drained', 'instance:2', 1_900));
+  const armedNote = noteSegmentSignal(opened.note, opened.binding, signal('drained', 'instance:2', 1_900));
   assert.equal(armedNote.note.state, 'armed');
 });
 
 test('the read-back segment interrupted invalidates, and a later drained cannot revive it', () => {
   const opened = noteSegmentSignal(staged(), undefined, signal('started', 'instance:2', 1_400));
-  const cut = noteSegmentSignal(opened.note, opened.readbackKey, signal('interrupted', 'instance:2', 1_700));
+  const cut = noteSegmentSignal(opened.note, opened.binding, signal('interrupted', 'instance:2', 1_700));
   assert.deepEqual({ state: cut.note.state, code: cut.note.code }, { state: 'invalidated', code: 'readback_interrupted' });
-  const later = noteSegmentSignal(cut.note, cut.readbackKey, signal('drained', 'instance:2', 2_000));
+  const later = noteSegmentSignal(cut.note, cut.binding, signal('drained', 'instance:2', 2_000));
   assert.equal(later.note.state, 'invalidated');
+});
+
+// C1 (W6-R2 review): a second note in the same call is the contract's own case (a correction
+// restages). The read-back binding belongs to one stage, so a stale key never blocks the next note.
+test('a restaged note in the same call arms on its own read-back segment, not the previous stage\'s', () => {
+  const first = staged();
+  const firstOpened = noteSegmentSignal(first, undefined, signal('started', 'instance:2', 1_400));
+  assert.deepEqual(firstOpened.binding, bound(first.stageId, 'instance:2'));
+  const firstArmed = noteSegmentSignal(firstOpened.note, firstOpened.binding, signal('drained', 'instance:2', 1_900));
+  assert.equal(firstArmed.note.state, 'armed');
+
+  // The owner corrects the note, so the host restages it with a new stage id in the same session.
+  const second = beginStage({ stageId: 'stage-2', sessionId: 'session-1', now: 2_500,
+    ownerText: 'save that to lux', title: 'Trip plan', body: 'Fly to Lisbon on the fourth.',
+    evidence: EVIDENCE, heldEvidence: HELD, enabled: true });
+  assert.equal(second.state, 'staged');
+  if (second.state !== 'staged') return;
+  const stale = noteSegmentSignal(second.note, firstArmed.binding, signal('drained', 'instance:2', 2_600));
+  assert.equal(stale.note.state, 'staged', 'the previous stage\'s key never arms the new stage');
+
+  const secondOpened = noteSegmentSignal(second.note, stale.binding, signal('started', 'instance:4', 2_700));
+  assert.deepEqual(secondOpened.binding, bound('stage-2', 'instance:4'), 'the new stage adopts its own segment');
+  const secondArmed = noteSegmentSignal(secondOpened.note, secondOpened.binding, signal('drained', 'instance:4', 3_100));
+  assert.equal(secondArmed.note.state, 'armed');
 });

@@ -65,7 +65,7 @@ final class TwoPartyBarrier: @unchecked Sendable {
             try? FileManager.default.removeItem(at: directory)
         }
 
-        // 2. Closed numeric detail only: byte count for invalid_output, status/signal for child_exit, close code for provider_closed.
+        // 2. Closed numeric detail only: byte count for invalid_output, status/signal for child_exit.
         do {
             expect(NSDictionary(dictionary: NativeLiveEndDetail.invalidOutput(bytes: 42)) == ["bytes": 42], "invalid_output carries bytes")
             let noSignal = NativeLiveEndDetail.childExit(status: 9, signal: nil)

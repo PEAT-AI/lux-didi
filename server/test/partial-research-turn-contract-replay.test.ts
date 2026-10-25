@@ -445,9 +445,9 @@ test('replay 9: overlapping pages are deduplicated and a changing total is repor
   assert.equal(mail!['matches'], 6);
   assert.equal(mail!['total'], 'changing', 'two pages that disagree on the total report a changing total');
   const exhausted = mailHarness(fakeClock(), page => page === 1 ? mailPage([1, 2, 3], 'page-2') : mailPage([2, 3, 4]));
-  const whole = coverageOf(await runResearch(exhausted.deps, mailAsk, new AbortController().signal), 'mail');
-  assert.equal(whole?.['total'], 4, 'a mailbox read to its end has the deduplicated count as its total');
-  assert.equal(whole?.['stop'], 'exhausted');
+  const read = await runResearch(exhausted.deps, mailAsk, new AbortController().signal);
+  assert.equal(coverageOf(read, 'mail'), undefined, 'a mailbox read to its end needs no gap row');
+  assert.match(String(read['coverage']), /mail complete 4 of 4 shown/u, 'the header carries the deduplicated count as its total');
 });
 
 test('replay 10: no page starts that cannot finish before the deadline', async () => {

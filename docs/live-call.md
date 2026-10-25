@@ -180,6 +180,39 @@ deadline while the owner is still in the call continues through the same fresh
 seeded path in a new window; the total call ceiling `callMaxMs` (default four
 hours) and the idle timeout are the only timeouts that end a call.
 
+A recovery open the provider refuses synchronously (it throws before a socket exists) is never swallowed
+(C-LIVE R2): `live_recovery_failed` logs its class, a closed message key, the mode, the cause and the
+session id. The owner then makes one fresh seeded open after a 1 s backoff, never a repeat of the failed
+resume; the generation moved on each attempt, so callbacks of the old provider sessions are fenced out. If
+that open fails too, no audio is attempted and the call settles `failed` with `provider_recovery_exhausted`:
+the client receives the terminal frame, then the host closes the socket with 1011 (never the 1008 policy
+close), and the app says "Connection lost. Tap to reconnect." The next attach is a new session.
+
+### Research admission and the bounded operation
+
+A live research call is admitted by the owner, not by the model (C-LIVE, council
+decision-how-a-voice-assistant-lux-didi-dfc8). Each finalized owner turn (a transcript that closed carrying
+words, or typed text) grants one research operation; `start` or an admitted `continue` spends it, and
+`continue` also needs an owner turn after the last result was delivered. `stop` is always allowed. Interim
+transcripts, her audio, host text, rebuilds and tool results grant nothing, and the admission lives on the
+session across provider generations, so a rebuild never grants a lookup. A refused call answers at once with
+`{status: "blocked", reason: "owner_turn_required", directive: "answer_existing_result",
+retry_without_new_owner_turn: false}`, reaches no source, and leaves one `research_blocked` receipt.
+
+An admitted operation pages inside the host and answers by 6 s (`RESEARCH_OPERATION`, measured from the
+installed host.log: per-source p50 0.1 to 3.9 s, p90 5.3 to 7.7 s). The first answer point at 4.5 s answers
+as soon as one source has findings; with nothing yet the call waits to the deadline and answers with what it
+has, and readers still running detach to the late-findings path. No page starts unless its estimate (that
+read's last page, else the source p50) finishes 500 ms before the deadline; the unread rest keeps its cursor
+for the owner's follow-up. If the loop has not answered 1 s after the deadline, the host answers from the
+ledger itself (`research_operation_deadline`). The silence ladder treats an admitted research call as owning
+the silence for exactly that bound, so a stuck call can never hold off recovery, and there is no synthetic
+"Continue." owner text on any provider. A reply carries `sourceCoverage` rows for every source with a gap
+the coverage header cannot state: `examined` (distinct records read, deduplicated across pages), `total`
+(known, `unknown` or `changing`; per-page totals are never summed), `matches`, `represented`, `state`,
+`stop` (`deadline`, `page_failed`, `page_limit`, `page_cap`, `failed`, `not_read`, ...) and `more`
+(`upstream` or `local`).
+
 A barge-in during a pending tool batch is signalled by `serverContent.interrupted`, never
 by `toolCallCancellation` (wire-38, `wire-38-report.md`). The batch keeps running and its
 result is still sent once when it completes, because the server accepts a late

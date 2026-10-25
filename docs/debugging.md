@@ -55,7 +55,7 @@ The `event` value of every line in `host.log` is one name from a closed set. The
 | --- | --- | --- |
 | `host` | `host_exit`, `host_resources`, `host_started` | start, exit and a resource sample for the host process itself |
 | `launch` | `launch_kind` | what a start was allowed to do (kind, autoConnects, windowShown) |
-| `live` | `live_answer_audio`, `live_attach_rejected`, `live_context_usage`, `live_dead_air`, `live_dead_air_nudge`, `live_debt`, `live_first_audio`, `live_frame_rejected`, `live_go_away`, `live_handshake`, `live_idle_arm`, `live_instruction_sizes`, `live_interrupted`, `live_mute`, `live_no_pong`, `live_provider_error`, `live_provider_open`, `live_provider_ready`, `live_read_cache`, `live_rebuild`, `live_recovery`, `live_reply_unjournalled`, `live_resumption_fresh`, `live_session_diagnostics`, `live_session_superseded`, `live_stall`, `live_started`, `live_state`, `live_tool_turn`, `live_trace_rejected`, `live_turn_open`, `live_turn_script`, `live_upstream_drop`, `live_upstream_queue`, `live_watchdog` | the call: start, frames, provider open and ready, watchdog, idle arm, state causes, dead air, debt, mute, rebuild, resume, session diagnostics |
+| `live` | `live_answer_audio`, `live_attach_rejected`, `live_context_usage`, `live_dead_air`, `live_dead_air_nudge`, `live_debt`, `live_first_audio`, `live_frame_rejected`, `live_go_away`, `live_handshake`, `live_idle_arm`, `live_instruction_sizes`, `live_interrupted`, `live_mute`, `live_no_pong`, `live_provider_error`, `live_provider_open`, `live_provider_ready`, `live_read_cache`, `live_rebuild`, `live_recovery`, `live_recovery_failed`, `live_reply_unjournalled`, `live_resumption_fresh`, `live_session_diagnostics`, `live_session_superseded`, `live_stall`, `live_started`, `live_state`, `live_tool_turn`, `live_trace_rejected`, `live_turn_open`, `live_turn_script`, `live_upstream_drop`, `live_upstream_queue`, `live_watchdog` | the call: start, frames, provider open and ready, watchdog, idle arm, state causes, dead air, debt, mute, rebuild, resume, session diagnostics |
 | `voice` | `voice_stop`, `voice_stop_candidate` | the stop gate: a matched stop or a rejected near miss |
 | `turn` | `turn_failed` | a turn that failed, with its closed reason |
 | `playback` | `playback_rearm` | the app asked for playback to be re-armed |
@@ -100,6 +100,16 @@ for a write the adapter refused. `research_call_arrived` carries the call's shap
 words: `action`, `researchIdPresent`, `questionChars` and `lookups`. A result that came back and was never
 said is handed to the session that is open as one text item, and `live_unspoken_delivered` names how many
 results it carried and which attempt landed.
+
+C-LIVE (one research operation per owner turn): `research_blocked` names a research call no finalized owner
+turn admitted (`action`, and `reason` of `no_owner_turn`, `turn_spent` or `no_turn_since_result`); the call
+reached no source and the model was told `owner_turn_required`. `research_operation_deadline` is the host
+answering an operation its loop had not answered by the 6 s deadline plus the 1 s grace. `live_recovery_failed`
+is a recovery open the provider refused: `errorClass` (a bare identifier), `messageKey` (the message only when
+it is itself a snake case key, else `unrecognized`), `mode`, `cause` and `attempt`; a second refusal ends the
+call as `provider_recovery_exhausted`. `live_attach_rejected` keeps the exception `class`. `live_idle_arm` is
+written when the cause changes, never per audio frame, and provider audio below the audible level (digital
+silence) never restarts the idle clock.
 No duration, no text and no provider word is in any of them, which is why model text, a model turn start
 and output transcription can re-arm the response watchdog and still never clear this clock. `turn_failed`
 names its reason from the closed set `provider_error`, `delegation_stalled`, `send_failed`, `recreate_failed`,
@@ -132,7 +142,9 @@ so neither grows without a bound.
 
 Five records answer what a launch and a stop did, all content-free: `launch_kind` (the kind, `autoConnects`, `windowShown`, in `native-live.log` and, through the client diagnostic route, in `host.log`; a Dock reopen is its own kind, `reopen`, with `windowShown` false), `startup_prompt` (`prompt` of `grant_alert` or `getting_started`, and `decision` of `deferred`, `shown` or `skipped`, so a prompt that waits for the owner's first window is visible), `goodbye_tone` (`played`, and a `reason` of `no_buffer` or `output_refused` when nothing sounded), `live_stop_outcome` (`confirmed` when the host closed the wire inside the deadline, `host_ended` when the host announced its own voice stop so there is no close receipt to wait for, `deadline` when it did not) and `live_restart` (`reason`). A `presence_state` move to `cold` with trigger `error` is the uncertain session: the socket closed without a terminal frame and presence went cold with no reconnect.
 
-A display change writes `orb_screen_parameters` (`screens`, the count, and `orbScreen`, `main`, `other` or `none`), so an orb that moved after an unplugged screen is explained without a rectangle.
+A display change writes `orb_screen_parameters` (`screens`, the count, and `orbScreen`, `main`, `other` or `none`) once per change of that pair, never once per notification, so an orb that moved after an unplugged screen is explained without a rectangle.
+
+`live_end` names who ended the call. `user_stop` is the owner's own stop; a terminal the host sent with a failure is `host_failed` (with the host's closed `code`, for example `resume_failed` or `provider_recovery_exhausted`); a socket the host closed without a terminal is `host_closed` (with `closeCode` and the closed reason token when there is one). The app never talks to the provider directly, so no native line says `provider_closed`.
 
 The app forwards its playback receipts (received, enqueued, started, drained, interrupted,
 terminated) to the host over the live socket it already holds. Each is one bounded frame with
@@ -223,10 +235,15 @@ The files hold transcripts, and deleting them is the point.
 
 ## The reader
 
-`scripts/naya-logs.mjs` reads `host.log` and prints aligned plain text, capped at 200 lines per
-command. Every command accepts `--data-dir <path>`, `--json` and `--lines <n>`. `host.log` is
-content-free by contract, so nothing it prints is owner text; for the per-turn record, including
-what was said, read the trace store with `scripts/didi-timeline` (see the SQL timeline above).
+`scripts/naya-logs.mjs` reads `host.log` and the store's metadata and prints aligned plain text, capped at
+200 lines per command. Every command accepts `--data-dir <path>`, `--json` and `--lines <n>`; the installed
+app's data directory is `~/Library/Application Support/ai.peat.lux-didi`, which the default does not name.
+`host.log` drops the session id from `live_tool_turn`, `session_end` and `live_started`, so a live session, its
+owner turns (`trace_turn` origin `owner`) and its tool calls (`trace_call`) are read from `state.sqlite`, and a
+`host.log` record without an id belongs to the live session whose window it falls in. `slow` lists tool calls,
+`research_source` reads, dead air (`live_dead_air`) and chat timings over the threshold. Nothing it prints is
+owner text; for the per-turn record, including what was said, read the trace store with
+`scripts/didi-timeline` (see the SQL timeline above).
 
 ```sh
 node scripts/naya-logs.mjs sessions                      # id, kind, start, duration, provider, turns, tools, terminal

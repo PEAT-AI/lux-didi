@@ -1,9 +1,12 @@
 #!/usr/bin/env node
-// naya-logs: read host.log, fast. Read-only, no dependencies.
-// host.log is content-free by contract, so nothing this tool prints is owner text. The per-turn record,
-// including what was said, lives in the trace store: read it with scripts/didi-timeline.
+// naya-logs: read host.log and the trace store's metadata, fast. Read-only, no dependencies.
+// host.log is content-free by contract, so nothing this tool prints is owner text. A live session, its turns and
+// its tool calls are read from the store (state.sqlite metadata columns only), because host.log drops the session
+// id from live_tool_turn, session_end and live_started. The per-turn record, including what was said, is
+// scripts/didi-timeline.
 // See docs/debugging.md for the privacy rule and the coverage table the debug journal left behind.
 import { execFileSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -95,19 +98,50 @@ function readHostLog(cutoff) {
 }
 
 /**
- * host.log records grouped into one entry per session. A live session is named by liveSessionId, a chat run
- * by runId; a record that names neither is a host-wide receipt and belongs to no session row.
+ * The live sessions in the store, metadata only: identity, the open and end times, the closed terminal code, the
+ * owner turns (trace_turn origin owner) and the tool calls (trace_call). Missing store means no live rows, said once.
+ */
+function readStore(cutoff) {
+  const path = join(root, 'state.sqlite');
+  if (!existsSync(path)) { process.stderr.write(`no store at ${path}; live sessions are read from it\n`); return []; }
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    const has = name => db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name) !== undefined;
+    const rows = db.prepare('SELECT live_session_id AS id, created_at AS createdAt, terminal_at AS terminalAt, terminal_outcome AS terminal, updated_at AS updatedAt FROM live_sessions WHERE created_at >= ? ORDER BY created_at').all(cutoff);
+    const turns = has('trace_turn') ? db.prepare("SELECT COUNT(*) AS n FROM trace_turn WHERE live_session_id=? AND origin='owner'") : undefined;
+    const calls = has('trace_call') ? db.prepare('SELECT name, outcome, ms, intent_at AS at FROM trace_call WHERE live_session_id=? ORDER BY intent_at') : undefined;
+    return rows.map(row => {
+      let code = 'open';
+      try { const outcome = row.terminal ? JSON.parse(row.terminal) : undefined; if (outcome) code = typeof outcome.code === 'string' ? outcome.code : String(outcome.state ?? 'ended'); } catch { code = 'unreadable'; }
+      return { id: row.id, kind: 'live', start: Number(row.createdAt), end: Number(row.terminalAt ?? row.updatedAt), terminal: code,
+        turns: turns ? Number(turns.get(row.id).n) : 0, calls: calls ? calls.all(row.id).map(call => ({ name: call.name, outcome: call.outcome, ms: call.ms, at: Number(call.at) })) : [] };
+    });
+  } finally { db.close(); }
+}
+
+/**
+ * One entry per session: live sessions from the store, chat runs from host.log by runId. A host.log record with no
+ * id that falls inside a live session's window (open to end, plus two seconds) belongs to that session.
  */
 function readSessions(cutoff) {
   const sessions = new Map();
-  for (const record of readHostLog(cutoff)) {
+  const records = readHostLog(cutoff);
+  for (const live of readStore(cutoff)) sessions.set(live.id, { ...live, records: [] });
+  const windows = [...sessions.values()];
+  for (const record of records) {
     const id = typeof record.liveSessionId === 'string' ? record.liveSessionId : typeof record.runId === 'string' ? record.runId : undefined;
-    if (id === undefined) continue;
-    const entry = sessions.get(id) ?? { id, kind: record.liveSessionId === undefined ? 'chat' : 'live', records: [] };
-    entry.records.push({ ...record, t: record.timestamp });
-    sessions.set(id, entry);
+    const target = id !== undefined ? sessions.get(id) : windows.find(live => record.at >= live.start && record.at <= live.end + 2_000);
+    if (target === undefined && typeof record.runId === 'string') {
+      const entry = { id: record.runId, kind: 'chat', start: record.at, end: record.at, records: [] };
+      sessions.set(entry.id, entry);
+      entry.records.push({ ...record, t: record.timestamp });
+      continue;
+    }
+    if (target === undefined) continue;
+    target.records.push({ ...record, t: record.timestamp });
+    if (target.kind === 'chat') target.end = Math.max(target.end, record.at);
   }
-  for (const entry of sessions.values()) entry.records.sort((a, b) => Date.parse(a.t) - Date.parse(b.t));
+  for (const entry of sessions.values()) entry.records.sort((a, b) => a.at - b.at);
   return sessions;
 }
 
@@ -116,20 +150,27 @@ function readSessions(cutoff) {
 const first = (entry, event) => entry.records.find(record => record.event === event);
 const all = (entry, event) => entry.records.filter(record => record.event === event);
 
-function summarise(entry) {
-  const start = entry.records[0];
-  const end = first(entry, 'session_end') ?? entry.records[entry.records.length - 1];
-  const toolTurns = all(entry, 'live_tool_turn');
-  const failed = all(entry, 'tool_failure').length + all(entry, 'tool_cancelled').length;
+/** The provider a live session ran on: the newest live_started at or before its start, from any host process. */
+function providerOf(entry, records) {
+  const started = records.filter(record => record.event === 'live_started' && record.at <= entry.start + 2_000).at(-1);
+  return started ? { provider: started.provider ?? '', model: started.modelId ?? '' } : { provider: '', model: '' };
+}
+
+function summarise(entry, records = []) {
+  if (entry.kind === 'live') {
+    const { provider, model } = providerOf(entry, records);
+    return { id: entry.id, kind: 'live', start: new Date(entry.start).toISOString(), durationMs: Math.max(0, entry.end - entry.start),
+      provider, model, turns: entry.turns, tools: entry.calls.length, rounds: 0, terminal: entry.terminal };
+  }
   return {
     id: entry.id,
     kind: entry.kind,
-    start: start.t,
-    durationMs: Math.max(0, Date.parse(end.t) - Date.parse(start.t)),
-    provider: start.provider ?? '',
-    model: start.modelId ?? '',
-    turns: toolTurns.length,
-    tools: toolTurns.reduce((sum, record) => sum + (Number(record.toolCallsThisTurn) || 0), 0) + failed,
+    start: new Date(entry.start).toISOString(),
+    durationMs: Math.max(0, entry.end - entry.start),
+    provider: '',
+    model: '',
+    turns: 0,
+    tools: 0,
     rounds: all(entry, 'chat_timing').reduce((sum, record) => sum + (Array.isArray(record.rounds) ? record.rounds.length : 0), 0),
     terminal: (first(entry, 'session_end') ?? {}).reason ?? 'open',
   };
@@ -140,7 +181,7 @@ function pickSession(idOrLatest) {
   const sessions = readSessions(cutoff);
   if (sessions.size === 0) { process.stderr.write(`no sessions in ${join(root, 'logs')}\n`); process.exit(1); }
   if (idOrLatest === undefined || idOrLatest === 'latest') {
-    const list = [...sessions.values()].sort((a, b) => Date.parse(b.records[b.records.length - 1].t) - Date.parse(a.records[a.records.length - 1].t));
+    const list = [...sessions.values()].sort((a, b) => b.end - a.end);
     return list[0];
   }
   const entry = sessions.get(idOrLatest) ?? [...sessions.values()].find(candidate => candidate.id.startsWith(idOrLatest));
@@ -169,13 +210,14 @@ function emit(lines, payload) {
 
 function cmdSessions() {
   const cutoff = sinceMs();
+  const records = readHostLog(0);
   const sessions = [...readSessions(cutoff).values()].filter(entry => options.kind === undefined || entry.kind === options.kind);
   const rows = sessions.map(entry => {
-    const summary = summarise(entry);
+    const summary = summarise(entry, records);
     return [summary.id.slice(0, 26), summary.kind, `${day(summary.start)} ${clock(summary.start)}`, duration(summary.durationMs),
       summary.provider, summary.turns, summary.tools, summary.terminal];
   }).sort((a, b) => a[2] < b[2] ? 1 : -1);
-  if (options.json) return emit([], sessions.map(summarise));
+  if (options.json) return emit([], sessions.map(entry => summarise(entry, records)));
   emit(rows.length === 0 ? [`no sessions in ${join(root, 'logs')}${options.since ? ` since ${options.since}` : ''}`]
     : ['', ...table(['SESSION', 'KIND', 'STARTED', 'DURATION', 'PROVIDER', 'TURNS', 'TOOLS', 'TERMINAL'], rows)]);
 }
@@ -183,8 +225,9 @@ function cmdSessions() {
 function cmdTools() {
   const entry = pickSession(positional[0]);
   const rows = [];
+  for (const call of entry.calls ?? []) rows.push({ at: new Date(call.at).toISOString(), event: call.name, call: call.outcome, ms: call.ms ?? null });
   for (const record of entry.records) {
-    if (record.event === 'live_tool_turn') {
+    if (record.event === 'live_tool_turn' && entry.kind !== 'live') {
       const latencies = Array.isArray(record.toolLatencyMs) ? record.toolLatencyMs : [];
       if (latencies.length === 0) rows.push({ at: record.t, event: record.event, call: '-', ms: null });
       for (const ms of latencies) rows.push({ at: record.t, event: record.event, call: '-', ms });
@@ -193,6 +236,7 @@ function cmdTools() {
       rows.push({ at: record.t, event: record.event, call: String(record.tool ?? record.callId ?? '-'), ms: record.ms ?? record.inFlightMs ?? null });
     }
   }
+  rows.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   if (options.json) return emit([], rows);
   const rendered = rows.map(row => [`${day(row.at)} ${clock(row.at)}`, row.event, row.call, row.ms ?? '-']);
   emit(rendered.length === 0 ? [`no tool receipts in ${entry.id}`]
@@ -226,9 +270,16 @@ function cmdErrors() {
 function cmdSlow() {
   const rows = [];
   for (const entry of readSessions(sinceMs()).values()) {
+    for (const call of entry.calls ?? []) {
+      if (typeof call.ms === 'number' && call.ms >= options.over) rows.push({ at: new Date(call.at).toISOString(), session: entry.id, what: `tool:${call.name}`, ms: call.ms });
+    }
     for (const record of entry.records) {
-      if (record.event === 'live_tool_turn' && Array.isArray(record.toolLatencyMs)) {
-        for (const ms of record.toolLatencyMs) if (ms >= options.over) rows.push({ at: record.t, session: entry.id, what: 'tool', ms });
+      if (record.event === 'research_source' && typeof record.ms === 'number' && record.ms >= options.over) {
+        rows.push({ at: record.t, session: entry.id, what: `source:${record.source}`, ms: record.ms });
+      }
+      if (record.event === 'live_dead_air') {
+        const ms = typeof record.msSinceTool === 'number' ? record.msSinceTool : record.deadAirMs;
+        if (typeof ms === 'number' && ms >= options.over) rows.push({ at: record.t, session: entry.id, what: 'silence', ms });
       }
       if (record.event === 'chat_timing') {
         for (const [what, ms] of [['answer', record.answerMs], ['fence', record.fenceMs]]) {
@@ -248,8 +299,8 @@ function cmdSlow() {
 
 function cmdNative() {
   const entry = pickSession(positional[0]);
-  const from = new Date(Date.parse(entry.records[0].t) - 2_000).toISOString();
-  const to = new Date(Date.parse(entry.records[entry.records.length - 1].t) + 2_000).toISOString();
+  const from = new Date(entry.start - 2_000).toISOString();
+  const to = new Date(entry.end + 2_000).toISOString();
   const predicate = `subsystem == "${process.env.NAYA_LOG_SUBSYSTEM ?? APP_SUBSYSTEM}"`;
   let output;
   try {

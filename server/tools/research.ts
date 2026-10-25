@@ -5812,7 +5812,7 @@ export function operationCoverage(run: RunState, findings: readonly FindingLike[
     const complete = stop === 'exhausted';
     // A source read whole is said by the header alone ("truncated_to_budget 9 of 38 shown" when the reply cut it);
     // a row is the measured cost of a gap the header cannot state: a deadline, a failed page, an unknown total.
-    if (complete || stop === 'reply_budget') continue;
+    if ((complete || stop === 'reply_budget') && typeof total === 'number') continue;
     rows.push({ source, examined, total, matches, represented, state: complete ? 'complete' : 'partial', stop,
       more: upstream || stop === 'deadline' ? 'upstream' : represented < examined ? 'local' : 'none' });
   }

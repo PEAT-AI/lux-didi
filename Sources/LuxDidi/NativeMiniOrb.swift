@@ -378,9 +378,13 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         let saved = UserDefaults.standard.string(forKey: frameKey).map(NSRectFromString)
         setFrame(MiniOrbFrameRestore.afterScreenChange(current: frame, saved: saved, screens: screens),
                  display: false)
-        onReceipt?(["event": "orb_screen_parameters", "screens": NSScreen.screens.count,
-                    "orbScreen": orbScreenToken])
+        // C-LIVE L2-09: one receipt per change of the screen state, never one per notification.
+        let state = "\(NSScreen.screens.count);\(orbScreenToken)"
+        if screenReceipt.changed(state) {
+            onReceipt?(["event": "orb_screen_parameters", "screens": NSScreen.screens.count, "orbScreen": orbScreenToken])
+        }
     }
+    private var screenReceipt = ChangeOnlyGate()
     @objc private func activeSpaceChanged() { onReceipt?(["event": "orb_space_changed", "visible": isVisible]) }
     @objc private func didWake() { onReceipt?(["event": "orb_wake", "visible": isVisible, "orbScreen": orbScreenToken]) }
     func windowDidChangeOcclusionState(_ notification: Notification) {

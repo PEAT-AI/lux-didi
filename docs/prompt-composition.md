@@ -198,6 +198,15 @@ connector deadline fails it, and the result or the typed failure is sent back to
 model in the same turn. There is no background job path and no callback promise in the
 Live system instruction.
 
+### Partial results (C-LIVE)
+
+The voice conduct and the backend procedure state the owner-turn contract the host enforces: one research
+operation per owner turn, answer at once from a partial result with its coverage in a few words, never call a
+partial result complete, offer the rest in one short plain statement (not a question, not a stock line), and on
+a `blocked` reply answer from the result already held. The removed sentences (automatic continuation within
+bounds, "silence while you look something up is fine", following a next source once) are asserted absent, and
+each new rule is asserted present, by the `partial_result_rules` block in `scripts/check-prompt.sh`.
+
 ### Voice memory writes and frozen prompts
 
 The built-in Live `remember_note` writes only an explicitly requested, finalized owner utterance as ordinary memory. It does not change the running session's accepted prompt snapshot or prompt identity. A later CREATE selects and recalls the note using the ordinary memory section. Live-voice entries have no deletion control yet; removing a note from the selected-memory picker only removes that local selection, not the durable entry. Private or sensitive voice classification is refused, not downgraded. See [tool-owner.md](tool-owner.md) for the built-in authorization and provenance rule.

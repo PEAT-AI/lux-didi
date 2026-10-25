@@ -388,6 +388,17 @@ test('CHAT-P4: "my group chat with Ada and Kim" reads that group', async t => {
   assert.match(String(reply['coverage']), /chat complete 4 of 4 shown/u);
 });
 
+test('C-CHAT (W2B-R4): "what is new in Builders" reads that channel with no channel word spoken', async t => {
+  const f = await setup(t, 'people');
+  const planned: IntentSubCall[] = [];
+  const reply = await runResearch(researchDeps(f, planned), { action: 'start', question: "what's new in Builders", topic: 'Builders' }, new AbortController().signal);
+  const chat = planned.find(call => call.name === INTERNAL.chatRead)?.args;
+  assert.equal(chat?.['intent'], 'channel', 'the ask is a channel read');
+  assert.equal(chat?.['channel'], 'Builders', 'the spoken name, not a guess');
+  assert.equal(f.calls().some(call => call.name === 'mattermost_get_channel_history'), true, 'and then the channel read');
+  assert.match(JSON.stringify(reply['findings'] ?? []), /pilot moves to Friday/u);
+});
+
 test('CHAT-T (control): a topic ask stays one keyword search over every channel', async t => {
   const f = await setup(t, 'people');
   const planned: IntentSubCall[] = [];

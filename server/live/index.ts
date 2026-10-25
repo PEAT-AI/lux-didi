@@ -12,7 +12,7 @@ import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import type { WebSearchPort } from '../tools/web-search.js';
-import { ADMISSION_BLOCKED, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames } from '../tools/research.js';
+import { ADMISSION_BLOCKED, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildAllowed, researchRebuildDue, retainedAfterSend, type ResearchRetention, type ResearchBoundary } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -474,6 +474,9 @@ interface ActiveSession {
   delegationTimer?: ReturnType<JobTimer> | undefined;
   /** R6: when this call's first answer went out with sources still reading, and which call spoke a late line. */
   researchAnsweredAt?: number | undefined; lateCommentaryFor?: string | undefined;
+  /** C-DEPTH item 5 (W10-R12): the research text this call holds in the provider conversation, and the payload
+   *  the rebuild will seed when it is due. */
+  researchRetention: ResearchRetention; researchRebuildSeed?: string | undefined;
   /** S4a-R2 (e): one execution receipt per call of this turn, the only source a late line may name. */
   exec: Map<string, { source: string; status: ExecStatus }>;
   progressCallIds: Set<string>;
@@ -1594,7 +1597,7 @@ export class LiveSessionOwner {
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
-      researchAdmission: new ResearchAdmission(),
+      researchAdmission: new ResearchAdmission(), researchRetention: { retainedChars: 0, rebuilds: 0 },
       registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
@@ -2447,6 +2450,9 @@ export class LiveSessionOwner {
   }
 
   /** Only an attended call takes another provider window; a caller who already left never holds one open. */
+  /** C-DEPTH item 5: the last research question of a call, so the rebuild ledger can name the entities asked. */
+  readonly #lastResearchQuestion = new Map<string, string>();
+
   #attended(handle: ActiveSession): boolean { return !this.#settled(handle) && handle.consumerState === 'attached'; }
 
   #isSessionDeadline(outcome: LiveVoiceOutcome | undefined): boolean {
@@ -3344,6 +3350,9 @@ export class LiveSessionOwner {
       }
       // R6: a reply that names sources still reading is the call's first answer point, so the late-findings
       // window and the one late commentary of this call both count from here.
+      if (parsed.call.action === 'start' && typeof parsed.call.question === 'string') {
+        this.#lastResearchQuestion.set(handle.liveSessionId, parsed.call.question);
+      }
       const pending = response['pending'];
       if (Array.isArray(pending) && pending.length > 0) { handle.researchAnsweredAt = this.#now(); handle.lateCommentaryFor = undefined; }
       return { id: call.id, name: call.name, response };
@@ -3354,6 +3363,18 @@ export class LiveSessionOwner {
       const completed = entry.response['error'] === undefined;
       const status: 'completed' | 'error' = completed ? 'completed' : 'error';
       projections.push({ name: entry.name, status, markdown: entry.name === RESEARCH_TOOL_NAME ? researchProjection(entry.response, status) : `research: ${status}`, sources: [] });
+    }
+    // C-DEPTH item 5 (W10-R12): count exactly the research text the provider now holds, so the rebuild is due
+    // when the call has really retained that much. The ledger is built here too, from this batch's findings.
+    const answerChars = responses.reduce((sum, entry) => sum + JSON.stringify(entry.response ?? {}).length, 0);
+    handle.researchRetention = retainedAfterSend(handle.researchRetention, answerChars);
+    if (researchRebuildDue(handle.researchRetention) && handle.researchRebuildSeed === undefined) {
+      const findings = responses.flatMap(entry => Array.isArray((entry.response as JsonObject)?.['findings'])
+        ? ((entry.response as JsonObject)['findings'] as { source?: string; text?: string }[]) : []);
+      handle.researchRebuildSeed = researchLedgerOf({
+        question: this.#lastResearchQuestion.get(handle.liveSessionId) ?? '', findings,
+        cursors: responses.map(entry => String((entry.response as JsonObject)?.['nextCursor'] ?? '')).filter(cursor => cursor !== ''),
+      });
     }
     return { responses, projections };
   }

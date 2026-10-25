@@ -329,17 +329,23 @@ test('#637: a plain words channel reference resolves its words, and names the ch
 test('#637: the research reply says the channel is unknown and no archive search is issued', async t => {
   const f = setup('ok');
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
-  await approve(f.adapter, f.registry);
+  const r = reader(f.adapter, f.registry, await approve(f.adapter, f.registry));
+  const planned: string[] = [];
   const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => Promise.all(subs.map(async call => {
-    const result = await f.adapter.call({ endpointId: 'mattermost', toolName: call.name, arguments: call.args as Record<string, unknown>, generation: 1, account: ACCOUNT, resource: RESOURCE } as never);
-    if ('reason' in result) return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: result.reason };
-    const text = '**team** [post abcdef1234567890abcdefghij]\nnothing new';
-    return { key: call.key, name: call.name, ok: true, text, originalCharacters: text.length, omittedCharacters: 0 };
+    planned.push(call.name);
+    const args = call.args as Record<string, unknown>;
+    if (call.name !== 'mattermost_search') return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0 };
+    const result = await r.search({ query: String(args['query'] ?? ''), ...(typeof args['channel'] === 'string' ? { channel: args['channel'] } : {}) });
+    if (result.state !== 'completed') return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, ...('reason' in result ? { code: result.reason } : {}) };
+    const projected = projectMattermostResult(f.adapter, result);
+    const text = projected.ok ? projected.projection.text : '';
+    return { key: call.key, name: call.name, ok: projected.ok, text, originalCharacters: text.length, omittedCharacters: 0 };
   }));
   const deps: ResearchDeps = { now: () => 0, configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger() };
   const question = 'what is new in the nowhere channel';
   const reply = await runResearch(deps, { action: 'start', question, topic: question }, new AbortController().signal);
   const note = String(reply['note'] ?? '');
+  assert.ok(planned.includes('mattermost_search'), 'the ask names a channel, so the chat search is the read');
   assert.match(note, /I do not know a channel called nowhere\./u);
   assert.equal(note.includes('found nothing matching'), false, 'an unknown channel is never voiced as an empty search');
   assert.equal(note.includes('could not reach'), false, 'and never as a chat that could not be reached');

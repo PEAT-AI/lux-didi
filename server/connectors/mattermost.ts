@@ -177,6 +177,20 @@ export function resolveChannelReference(reference: string, channels: readonly Ma
   const label = (channel: MattermostChannel) => channel.displayName ?? channel.name ?? channel.id ?? '';
   if (matches.length === 1) { const only = matches[0]!; return { channel: only.id ?? only.name ?? wanted }; }
   if (matches.length > 1) return { error: `channel-ambiguous: ${wanted} matches ${matches.map(label).join(', ')}` };
+  // #637: an owner names a channel by the words he sees, so "ai" finds "AI Team" and "ai-ml", and
+  // "singapore conference" finds "Singapore Conference 2026". Hyphens and underscores break words, and
+  // a channel matches when its own words carry every word of the reference, or all of its words appear
+  // in it, so a plain word reference never lands on a single letter the way a prefix would.
+  const words = (text: string): string[] => text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(word => word !== '');
+  const referenceWords = words(wanted);
+  const named = referenceWords.length === 0 ? [] : channels.filter(channel => {
+    const own = words(`${channel.name ?? ''} ${channel.displayName ?? ''}`);
+    return referenceWords.every(word => own.includes(word)) || own.includes(lower);
+  });
+  if (named.length === 1) { const only = named[0]!; return { channel: only.id ?? only.name ?? wanted }; }
+  if (named.length > 1) return { error: `channel-ambiguous: ${wanted} matches ${named.map(label).join(', ')}` };
+  // The first letter prefix below never resolved a channel: it only narrows the suggestion list this
+  // refusal carries, which the word match above does not produce, so it stays for the suggestion.
   const prefix = channels.filter(channel => label(channel).toLowerCase().startsWith(lower[0] ?? ''));
   const closest = (prefix.length ? prefix : channels).map(label).filter(Boolean).slice(0, 5);
   return { error: `channel-not-found: ${wanted}; closest names: ${closest.join(', ') || 'none'}` };
@@ -583,9 +597,13 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       // child without one searches its whole archive rather than refusing the read.
       const named = input.channel === undefined ? undefined : boundedText(input.channel);
       const declaredChannel = declaredSearchArguments().includes('channel');
-      const resolved = named === undefined || !declaredChannel ? undefined : await searchChannel(named, signal);
-      if (resolved !== undefined && 'error' in resolved) return { state: 'refused', reason: resolved.error };
-      const filter = resolved === undefined ? {} : { channel: (resolved as { channel: string }).channel };
+      // #637: the name is resolved whether or not the child declares the filter, so a channel the list
+      // does not know is one closed reason the reply speaks, never a wide archive read voiced as an empty.
+      const resolved = named === undefined ? undefined : await searchChannel(named, signal);
+      if (resolved !== undefined && 'error' in resolved) {
+        return { state: 'refused', reason: resolved.error.startsWith('channel-not-found: ') ? `channel_not_found: ${named ?? ''}` : resolved.error };
+      }
+      const filter = resolved === undefined || !declaredChannel ? {} : { channel: (resolved as { channel: string }).channel };
       return dispatch('mattermost_search', { query, ...bounded, ...window, ...filter }, signal);
     },
     async listChannels(input: BoundedInput, signal?: AbortSignal): Promise<MattermostResult> {

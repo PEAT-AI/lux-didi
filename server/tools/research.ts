@@ -2223,7 +2223,7 @@ export function clip(text: string, max: number): string {
 
 /** #621: the E3 states a reply must keep apart, and the E4 reason a source was never searched. */
 export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry';
-export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading';
+export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found';
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
 
@@ -2237,6 +2237,8 @@ const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string) => string> = {
   // #635: a read that ran out of its budget is a timeout, never a failure to reach the source.
   timed_out: label => `${label} took too long`,
   still_reading: label => `I am still reading ${label}`,
+  // #637: the ask named a channel the chat connector does not know, so nothing was searched.
+  channel_not_found: () => 'I do not know that channel',
 };
 
 /** A not-searched reason code from the host, narrowed to the closed set the header publishes. */
@@ -2322,6 +2324,9 @@ function unsearchedReasonGiven(run: RunState, configured: readonly SourceKind[],
   const code = run.unavailableReasons.get(source);
   // #635: a source whose own reason was a timeout is a timeout, never a provider failure.
   if (code !== undefined && TIMED_OUT.has(code)) return 'timed_out';
+  // #637: a channel the ask named and the chat connector does not know is its own closed reason, so the
+  // header says the channel is unknown instead of reporting the chat as a provider failure.
+  if (code !== undefined && code.startsWith('channel_not_found')) return 'channel_not_found';
   if (run.sourcesFailed.has(source)) return 'provider_failed';
   if (code !== undefined) return unsearchedReasonOf(code);
   return 'skipped_by_route';
@@ -2781,6 +2786,8 @@ const REASON_WORDS: Record<string, string> = {
   endpoint_not_allowed: 'this account is not in the Mongoose CRM teams',
   cursor_stale: 'that page of results expired, search again',
   cursor_invalid: 'that page of results was not readable, search again',
+  // #637: the ask named a channel the chat connector does not know, so no read was made at all.
+  channel_not_found: 'no channel by that name',
 };
 /**
  * ROUTE-1022 K5: the plan a brief actually ran, as one closed token. A brief that read nothing but
@@ -2817,7 +2824,16 @@ export function chatAttentionReason(results: readonly IntentSubResult[]): string
   // build does not know still produces a receipt instead of being refused there.
   return CHAT_RECEIPT_REASONS.includes(code) ? code : 'refused';
 }
-export function plainReason(code: string): string { return REASON_WORDS[code] ?? code.replace(/_/gu, ' '); }
+/** #637: the code a chat read carries when the ask named a channel the connector does not know. */
+export function channelMissCode(results: readonly IntentSubResult[]): string | undefined {
+  return results.find(result => !result.ok && result.code !== undefined && result.code.startsWith('channel_not_found'))?.code;
+}
+// #637: a code that carries its own detail after a colon (channel_not_found: ai) resolves through the
+// code itself, so the row above still gives the plain words.
+export function plainReason(code: string): string {
+  const head = code.split(':')[0] ?? code;
+  return REASON_WORDS[code] ?? REASON_WORDS[head] ?? code.replace(/_/gu, ' ');
+}
 const TIMED_OUT = new Set(['timeout', 'deadline', 'deadline_exhausted', 'timed_out']);
 const secondsOfSource = (source: SourceKind): number => Math.round((RESEARCH.sourceDeadline[source] ?? RESEARCH.defaultSourceDeadlineMs) / 1000);
 
@@ -3156,7 +3172,9 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // #635: a chat read that failed by timing out is said as a timeout with its budget, never as a chat out of
   // reach. The web keeps #569's two clauses: its timeout rides its own endpoint reason and names the web part.
   const chatTimedOut = run.sourcesFailed.has('chat') && TIMED_OUT.has(run.unavailableReasons.get('chat') ?? '');
-  const unreachable = SOURCE_LABELS.filter(([source]) => run.sourcesFailed.has(source) && !(chatTimedOut && source === 'chat')).map(([, label]) => label);
+  const unreachable = SOURCE_LABELS.filter(([source]) => run.sourcesFailed.has(source) && !(chatTimedOut && source === 'chat')
+    // #637: a channel it does not know is said in its own clause below, never as a chat out of reach.
+    && !(source === 'chat' && (run.unavailableReasons.get('chat') ?? '').startsWith('channel_not_found'))).map(([, label]) => label);
   const searchedNothing = SOURCE_LABELS.filter(([source]) => run.emptySearches.has(source) && !run.sourcesFailed.has(source))
     .map(([source, label]) => `I searched your ${label}${run.emptySearches.get(source) ?? ''} and found nothing matching.`);
   // N3: a read cut short is not a read that found nothing, and the reply must not blur the two.
@@ -3181,6 +3199,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     ...(mailCoverageNote !== undefined ? [mailCoverageNote] : []),
   ];
   if (run.unavailableReasons.get('calendar') === 'window_unparsed') clauses.push('I could not resolve that calendar date or window. Give a supported weekday, today, tomorrow, week, this week, next week, or an exact valid date.');
+  // #637: a channel the ask names and the chat connector does not know is said in the owner's words,
+  // never as a search that found nothing and never as a chat that could not be reached.
+  const channelMiss = /^channel_not_found: (.+)$/u.exec(run.unavailableReasons.get('chat') ?? '');
+  if (channelMiss !== null) clauses.push(`I do not know a channel called ${channelMiss[1]!}.`);
   let note = clauses.length === 0 ? undefined : clauses.join(' ');
   // P5: a source that could not be read names its own reason, so an outage is never read as "nothing
   // found" and never as a timeout.
@@ -3981,6 +4003,10 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     // complete, so a returned failure is a failed read, never a search that matched nothing.
     const missed = own.some(result => !result.ok);
     const outcome: LookupOutcome = block.lines.length > 0 ? 'ok' : cutShort ? 'timeout' : missed ? 'failed' : 'empty';
+    // #637: a channel the chat connector does not know keeps its own code, so the reply says the
+    // channel is unknown in words instead of collapsing it into a failed read.
+    const channelMiss = channelMissCode(own);
+    if (channelMiss !== undefined) run.unavailableReasons.set(plan.read.source, channelMiss);
     // #565: a routed read counts as read, so a continuation of this run never dispatches it again.
     if ((outcome === 'ok' || outcome === 'empty') && plan.read.kind !== 'memory_search') run.readKinds.add(plan.read.kind);
     // #635: a read that answered in part and then ran out of its budget is a partial timeout, so the header
@@ -4929,6 +4955,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             } else if (!run.sourcesDone.has(part.source)) {
               // #635: a read this turn cut at its own budget is a timeout, never a source that failed.
               if (cutKinds.has(kind)) run.cutShort.add(part.source); else run.sourcesFailed.add(part.source);
+              // #637: a channel the chat connector does not know keeps its own code, so the reply names
+              // the unknown channel instead of a chat that could not be reached.
+              const missCode = part.source === 'chat' ? channelMissCode(part.results) : undefined;
+              if (missCode !== undefined) run.unavailableReasons.set('chat', missCode);
               // F17/R3: a chat triage ask rides the connector's own composite. Its reason is the failure
               // the sub-call really returned: only the two availability codes read as not granted, and a
               // credential, timeout or transport failure keeps its own closed reason.

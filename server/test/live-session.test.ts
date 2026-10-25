@@ -70,7 +70,10 @@ async function advanceUntil(advance: (ms: number) => void, scheduler: DeadlineCl
   for (let i = 0; i < 200 && !condition(); i++) { advance(1000); scheduler.runDue(); await new Promise<void>(resolve => setImmediate(resolve)); }
   assert.ok(condition(), 'the expected connection did not open');
 }
-const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } });
+// Model output the host hears: -12 dBFS samples, so the adapter's own level rule counts the frame as audible.
+// A zeroed payload is digital silence under that rule (C-LIVE N-2), which is not what these tests mean.
+const speechPcm = () => Uint8Array.from({ length: 8 }, (_unused, index) => index % 2 === 0 ? 0x40 : 0x1f);
+const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(speechPcm()).toString('base64') } });
 
 /** Wrap a store so one exact SQL write fails, proving the failure path without breaking reads. */
 function writeFailingStore(store: Store, marker: string): Store {

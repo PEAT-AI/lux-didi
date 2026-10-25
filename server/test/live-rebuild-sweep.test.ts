@@ -127,6 +127,19 @@ async function sweep(t: TestContext, boundary: number): Promise<Replay> {
   return r;
 }
 
+/** What the host did at this boundary, so the sweep's own output carries the evidence for each one. */
+function summary(r: Replay): string {
+  const epoch = liveEpoch(r);
+  const calls = r.calls.map(call => `${call.callId}[${call.outputs.map(output => `g${output.epoch}@${output.at}`).join(',') || 'none'}]`);
+  const handed = r.providerFrames.filter(frame => frame.type === 'response.item.create'
+    && (frame.frame['item'] as Record<string, unknown> | undefined)?.['type'] === 'message').length;
+  const audio = r.providerFrames.filter(frame => frame.type === 'session.input_audio.append').length;
+  const states = [...new Set(r.projections.map(entry => entry.state))].join('/');
+  return `generations=${starts(r).length} live=g${epoch} calls=${calls.join(',') || 'none'} handedOver=${handed}`
+    + ` receipts=${r.receipts.length} ownerFrames=${audio}/${OWNER_FRAMES} terminal=${r.owner.get(r.liveSessionId).lifecycle}`
+    + ` states=${states}`;
+}
+
 /** The four assertions every boundary owes, named so a failure says which boundary and which clause. */
 function judge(r: Replay, label: string): void {
   const states = r.projections.map(entry => `${entry.state}/${entry.lifecycle}`).join(' > ');
@@ -200,6 +213,7 @@ test('rebuild sweep: a provider rebuild at every boundary of a call loses nothin
       sub.diagnostic(`rebuild boundary ${boundary.index} of ${BOUNDARIES.length - 1}: ${boundary.name}`);
       const r = await sweep(sub, boundary.index);
       try {
+        sub.diagnostic(`boundary ${boundary.index} (${boundary.name}): ${summary(r)}`);
         assert.equal(starts(r).length >= 2, true,
           `boundary ${boundary.index} (${boundary.name}): the provider was never rebuilt, the call ran on one session`);
         judge(r, `boundary ${boundary.index} (${boundary.name})`);

@@ -104,7 +104,7 @@ test('the lifecycle is stage, drained, affirmative, settle, commit, and nothing 
   const armedNote = armed();
   const settling = noteOwnerUtterance(armedNote, { text: 'yes', now: 3_000 });
   assert.equal(settling.state, 'settling');
-  const committed = noteSettle(settling, 3_000);
+  const committed = noteSettle(settling, 4_500);
   assert.equal(committed.state, 'committed');
   assert.equal(noteSettle(committed, 4_000).state, 'committed');
 });
@@ -133,6 +133,6 @@ test('a confirmation after the thirty second window cancels, and a mismatch canc
 });
 
 test('a stage that never hears a read-back will not take a confirmation forever', () => {
-  const expired = noteOwnerUtterance(staged(), { text: 'yes', now: 10_000 });
+  const expired = noteOwnerUtterance(staged(), { text: 'yes', now: 1_000 + CONFIRM_WINDOW_MS + 1 });
   assert.deepEqual({ state: expired.state, code: expired.code }, { state: 'cancelled', code: 'not_armed' });
 });

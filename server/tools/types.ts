@@ -1,3 +1,4 @@
+import type { TrelloBoard } from './trello.js';
 import type { RemoteResultLineage } from './received-body.js';
 import type { RememberNotePort } from './remember.js';
 import type { VaultDispatchPort } from './vault-write.js';
@@ -57,6 +58,8 @@ export interface ToolsOwnerOptions {
    * catalog to judge by. A stored row outside that set is retired from new runs.
    */
   configuredConnectionIds?(): readonly string[] | undefined;
+  /** W7: the owner's Trello board service; absent means no Trello tools are ever offered. */
+  trello?: TrelloBoard;
 }
 export interface ConnectionIntent { expectedPolicySha256: string | null; policy: ConnectionPolicy }
 export interface ConnectionApplyResult { state: 'applied' | 'unchanged'; sha256: string }

@@ -1,5 +1,6 @@
 import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
+import { TRELLO_CALL_TOOLS } from '../tools/trello.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { TURN_FAILED_REASONS } from '../adapters/live-voice/types.js';
@@ -75,7 +76,7 @@ const LATE_OUTCOMES = ['completed', 'failed'];
 const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
 /** W1: the Mongoose sign-in hops and the closed outcomes each may name (MongooseSignInHop in host/mongoose-login.ts). */
-const SIGNIN_ENDPOINTS = ['knowledge', 'data', 'crm'];
+const SIGNIN_ENDPOINTS = ['knowledge', 'data', 'crm', 'trello'];
 const SIGNIN_OUTCOMES: Record<string, readonly string[]> = {
   signin_requested: ['started', 'reopened', 'in_progress', 'not_configured'],
   signin_discovery: ['ok', 'config_invalid', 'unreachable', 'redirected', 'http_status', 'not_json', 'resource_mismatch', 'server_untrusted', 'metadata_unreachable', 'metadata_invalid', 'issuer_mismatch', 'endpoint_off_origin', 'timeout'],
@@ -86,6 +87,14 @@ const SIGNIN_OUTCOMES: Record<string, readonly string[]> = {
   signin_stored: ['ok', 'failed'],
 };
 const SIGNIN_OAUTH_ERRORS = ['invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client', 'unsupported_grant_type', 'invalid_scope', 'invalid_target', 'access_denied'];
+/**
+ * W7: the Trello board tool actions and the closed reasons a call may name (TRELLO_GUIDANCE in tools/trello.ts).
+ * F12: the tool names are built from the tool module's own closed lists, so a new read view or write action
+ * is logged instead of being dropped here without a trace.
+ */
+const TRELLO_CALL_TOOL = new RegExp(`^(?:${TRELLO_CALL_TOOLS.map(tool => tool.replace('.', '\\.')).join('|')})$`);
+const TRELLO_CALL_REASONS = ['not_configured', 'not_signed_in', 'auth_failed', 'rate_limited', 'unavailable', 'board_not_found', 'board_ambiguous', 'unsupported', 'result_unrecognized', 'outside_scope',
+  'list_unknown', 'list_ambiguous', 'card_unknown', 'card_ambiguous', 'label_unknown', 'item_unknown', 'invalid_due', 'description_full', 'not_owner_requested', 'no_change', 'write_failed', 'outcome_unknown', 'replayed'];
 /** W11-R3: the Gmail operators a compiled mail query may name, as a closed set, never the words. */
 const MAIL_QUERY_OPERATORS = ['from', 'to', 'cc', 'bcc', 'subject', 'after', 'before', 'newer_than', 'older_than', 'is', 'has', 'label', 'in'];
 /** W11-R3: a window bound is one operator from the closed set and a day count or a calendar date. */
@@ -400,6 +409,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       if (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0) return;
     }
     return { event: 'conversation_summary_injection', injected: value.injected, omitted: value.omitted, chars: value.chars };
+  }
+  if (value.event === 'connector_call' && value.connector === 'trello') {
+    // W7: one line per Trello board call phase: Didi's own tool and action, the phase and a closed outcome. Never card text.
+    const hasReason = value.reason !== undefined;
+    if (!closedKeys(value, ['event', 'connector', 'tool', 'phase', 'outcome', ...(hasReason ? ['reason'] : [])])) return;
+    if (typeof value.tool !== 'string' || !TRELLO_CALL_TOOL.test(value.tool)) return;
+    if (!isSafeMember(value.phase, ['admit', 'dispatch', 'settle']) || !isSafeMember(value.outcome, ['ok', 'refused', 'failed', 'unknown'])) return;
+    if (hasReason && !isSafeMember(value.reason, TRELLO_CALL_REASONS)) return;
+    return { event: 'connector_call', connector: 'trello', tool: value.tool, phase: value.phase, outcome: value.outcome, ...(hasReason ? { reason: value.reason } : {}) };
   }
   if (value.event === 'vault_write') {
     // Closed shape: the operation state token, the vault's own insight id on a confirmed save, and the wire latency. Never text.

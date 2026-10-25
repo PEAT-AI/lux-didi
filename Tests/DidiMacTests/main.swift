@@ -1026,10 +1026,13 @@ let onboardingRows = NativeGettingStartedItems.rows(microphone: "denied", notifi
 expect(onboardingRows.count == 7, "fixture includes permissions, login, shortcuts and every connection")
 expect(onboardingRows.contains { $0.title == "calendar" && $0.detail == "missing: \(calendarStep.text)" && $0.command == nil }, "fixture projects exact connector next step")
 // #649: the native closed sets match the web lists, and a signed-out endpoint names its own sign-in.
-expect(NativeNextSteps.connectorIDs == ["lux-knowledge", "gmail", "calendar", "mattermost", "mongoose-knowledge", "mongoose-data", "mongoose-crm"], "the native connector ids are the seven production endpoint ids")
-expect(NativeNextSteps.reasonCodes == ["configuration_error", "credential_missing", "needs_sign_in", "not_signed_in", "unreachable", "discovery_failed", "handshake_failed", "identity_mismatch", "unknown"], "the native reason codes are the nine the host emits")
+expect(NativeNextSteps.connectorIDs == ["lux-knowledge", "gmail", "calendar", "mattermost", "mongoose-knowledge", "mongoose-data", "mongoose-crm", "trello"], "the native connector ids are the production endpoint ids and the Trello board (W7-R3)")
+expect(NativeNextSteps.reasonCodes == ["configuration_error", "credential_missing", "needs_sign_in", "not_signed_in", "not_configured", "unreachable", "discovery_failed", "handshake_failed", "identity_mismatch", "unknown"], "the native reason codes are the ten the host emits")
 let dataSignIn = NativeNextSteps.lookup(id: "mongoose-data", state: "error", reason: "needs_sign_in")
 expect(dataSignIn.text.contains("Sign in to Mongoose data in Settings") && dataSignIn.command == nil, "a signed-out data endpoint carries its own sign-in step")
+// W7-R3: the Trello board row signs in from Settings, in the same words as the web row.
+let trelloSignIn = NativeNextSteps.lookup(id: "trello", state: "error", reason: "not_signed_in")
+expect(trelloSignIn.text == "Sign in to Trello in Settings: the Sign in button is on the Trello row, and the connector reconnects by itself when you finish." && trelloSignIn.command == nil, "a signed-out Trello row carries its own sign-in step")
 expect(NativeNextSteps.endpointName("mongoose-data") == "data" && NativeNextSteps.endpointName("mongoose") == nil, "only the three endpoint rows can be signed in")
 
 // R-SEC-3: ordinary owner/device labels are not safe support exports.

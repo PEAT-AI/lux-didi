@@ -5,14 +5,14 @@ import { deleteMemoryEntry, deleteMemorySummary, fetchLiveSummary, listMemorySum
 import { ConnectedView } from './connected';
 import { Orb, orbSurfaceVisible, type VoiceState } from './orb';
 import { createStateDebounce } from './orb-states';
-import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive, startMongooseSignIn } from './api';
+import { ApiError, request, pair, demoMode, onAuthorityChanged, authorityVersion, assertAuthority, restoreSession, logout, fetchLive, startMongooseSignIn, startTrelloSignIn } from './api';
 import { activityMarkup, orbVoiceState, presencePhase, liveActivity, liveMarkup, liveSegments, liveLabel, liveDelay, pollLiveView, liveTranscript, LiveMachine, LIVE_CONSENT, pillVisible, liveErrorText, startAvailable, stopAvailable, liveControl, machineOwnsOrb, earlierSession, liveNoticesMarkup, liveJobsMarkup, pastSessionsMarkup, pastSessionListMarkup, openSegments, restoreOpen, growingText, startingReset, FEED_EMPTY, type LivePollState, type EarlierSession } from './live-view';
 import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, nativeTransport, type Bridge, type NativeLiveState } from './native-bridge';
 import { connectionsMarkup } from './connector-status';
 import { bindSettingsPanel, bindSignInButtons, laneNoticesMarkup, micModePicker, micModePromptMarkup, micModeState, noticesMarkup, providerDefaultVoice, providerVoices, settingsMarkup, settingsSaveError, sheetBodyMarkup, signInFailureNotice } from './settings-view';
-import { mongooseEndpointLabel } from './next-steps';
+import { signInLabel } from './next-steps';
 import { answerMarkup } from './markdown';
 import { applyTheme, loadTheme, saveTheme, type Theme } from './theme';
 import { isMiniRoute, miniMarkup, miniModeButtonMarkup, miniState, pillMuted, refreshMiniVisuals, type MiniState } from './mini';
@@ -407,8 +407,8 @@ function findCommitment(id: string) { return [...(plan?.items.map(i=>i.commitmen
 // underneath it, and a click on the new node still reaches the same sign-in.
 let signInClickBound=false;
 function bindSignIn(){if(signInClickBound)return;signInClickBound=true;bindSignInButtons(root,(endpoint)=>void mutate(async (signal,version)=>{
-  const started=await startMongooseSignIn(endpoint,signal);assertAuthority(version);
-  const label=mongooseEndpointLabel(endpoint);
+  const started=endpoint==='trello'?await startTrelloSignIn(signal):await startMongooseSignIn(endpoint,signal);assertAuthority(version);
+  const label=signInLabel(endpoint);
   notice=started.status==='started'?`Starting the sign-in to ${label}. Its row in Settings shows each step.`:signInFailureNotice(started.reason);
   // The row reads the attempt from the connection poll, so ask for it now instead of at the next tick.
   if(started.status==='started')setTimeout(()=>void pollConnections(),0);

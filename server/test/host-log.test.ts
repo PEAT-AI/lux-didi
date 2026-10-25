@@ -417,6 +417,19 @@ test('L8-Q07: a research_source receipt carries a closed failure reason', () => 
   assert.deepEqual(safeEvent({ ...source, reason: 'timed_out' }), { ...source, reason: 'timed_out' });
   assert.equal(safeEvent({ ...source, reason: 'the mail server said no' }), undefined, 'a free text reason is refused');
 });
+test('W7: a Trello connector_call line keeps its closed shape and a Trello sign-in names its own row', () => {
+  const settled = { event: 'connector_call', connector: 'trello', tool: 'write.move', phase: 'settle', outcome: 'unknown', reason: 'outcome_unknown' };
+  assert.deepEqual(safeEvent(settled), settled);
+  const read = { event: 'connector_call', connector: 'trello', tool: 'read.due', phase: 'settle', outcome: 'ok' };
+  assert.deepEqual(safeEvent(read), read);
+  assert.equal(safeEvent({ ...read, tool: 'write.delete' }), undefined, 'no tool outside the closed set');
+  assert.equal(safeEvent({ ...read, card: 'Call the plumber' }), undefined, 'never card text');
+  assert.equal(safeEvent({ ...settled, reason: 'Call the plumber' }), undefined, 'a reason is a closed code');
+  assert.equal(safeEvent({ ...read, connector: 'mongoose' }), undefined);
+  const hop = { event: 'signin_callback', endpoint: 'trello', attemptId: '0123456789abcdef', outcome: 'ok' };
+  assert.deepEqual(safeEvent(hop), hop);
+});
+
 test('vault_write keeps its closed shape: a state token, an insight id on a save, latency, never text', () => {
   const saved = { event: 'vault_write', state: 'confirmed', insightId: 'insight-7', latencyMs: 42 };
   assert.deepEqual(safeEvent(saved), saved, 'the confirmed receipt passes the allowlist');

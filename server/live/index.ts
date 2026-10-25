@@ -8,6 +8,7 @@ import { definitionsInTransaction } from '../tools/index.js';
 import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteOwnerWords, noteSpoken, openClaimCorrection } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { VaultWriter } from '../tools/vault-write.js';
+import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
@@ -310,7 +311,7 @@ export const REBUILD_AUDIO_HOLD_MS = 3_000;
 export const REBUILD_AUDIO_HOLD_BYTES = REBUILD_AUDIO_HOLD_MS * 32;
 
 /** The write tools the Live model may decline or call, and the resource each one is pinned to. */
-const OWNER_WRITE_RESOURCES = new Map([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault']]);
+const OWNER_WRITE_RESOURCES = new Map([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault'], ['trello_write', 'owner-trello']]);
 /** #592: the closed set of causes an idle arm may name, in the host log and in the arm itself. */
 export const IDLE_RESET_CAUSES = ['opened', 'unmuted', 'tool_result', 'turn_failed', 'typed', 'owner_speech', 'model_audio'] as const;
 /** #592: idle is conversational silence: a finalized owner transcript with content, or model audio. */
@@ -1573,7 +1574,7 @@ export class LiveSessionOwner {
     const history = [...seed.turns, ...(this.#jobHistory(liveSessionId, inputClass) ?? [])];
     // Only the coarse intent tools (and remember) are declared to the model; the connector reads stay
     // dispatchable through the registry so the intent fan-out and the session cache keep working.
-    const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'remember_note' || tool.name === 'save_to_vault' || OPEN_TOOL_NAMES.has(tool.name));
+    const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'remember_note' || tool.name === 'save_to_vault' || OPEN_TOOL_NAMES.has(tool.name) || TRELLO_TOOL_NAMES.has(tool.name));
     // The port carries the original JSON schemas; each adapter builds its own provider dialect.
     const declarations = modelFacing.map(tool => ({ name: tool.name, description: tool.description, parameters: structuredClone(tool.parameters) }));
     const system = acceptedPrompt.system;
@@ -3550,7 +3551,7 @@ export class LiveSessionOwner {
       const host = structuredClone(handle.host), step = ++handle.toolStep;
       const jobAbort = new AbortController();
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
-      if (event.calls.some(call => call.name === 'remember_note' || call.name === 'save_to_vault')) await this.#waitForOwnerTranscript(handle, event.sequence);
+      if (event.calls.some(call => call.name === 'remember_note' || call.name === 'save_to_vault' || call.name === 'trello_write')) await this.#waitForOwnerTranscript(handle, event.sequence);
       if (this.#settled(handle) || generation !== handle.generation) return;
       if (event.calls.every(call => call.name === RESEARCH_TOOL_NAME)) {
         const outcome = await this.#researchBatch(handle, event, generation, host, dispatchGate.state === 'allowed');

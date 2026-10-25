@@ -104,7 +104,7 @@ for connected chat, [Live configuration](provider-configuration.md#live-profile-
 for Live, and [MCP configuration](mcp-configuration.md) for connector endpoints,
 classification and explicit network approval.
 
-Mongoose is the one connector Lux Didi can sign in to for you, and it is three
+Mongoose and Trello are the services Lux Didi can sign in to for you. Mongoose is three
 endpoints: knowledge, data and crm. Each one signs in on its own, because each is
 its own OAuth resource and a token for one is refused on another. In Settings,
 every Mongoose endpoint that needs a sign-in has its own button on its own row:
@@ -133,6 +133,14 @@ sign in with Google. To keep the current window focused, add
 complete attempt expires five minutes after it starts. After sign-in, the callback
 page confirms receipt and can be closed; no token is ever copied, pasted or
 printed. Each session refreshes itself while you use it.
+
+Trello has one row in Settings with a **Sign in to Trello** button. On Trello's
+consent page, pick the workspace that holds your board and allow Read and Write.
+After that Naya can read your board and change cards on it when you ask: add a
+card to a list, move it, mark it done, set or clear a due date, add a note or a
+checklist item, label or archive it. She works on your one board only and never
+deletes anything. She cannot call you back; ask for a due date instead, and the
+Trello app on your phone reminds you.
 
 Two of the three need one more step from you. Data reads use your own Lightdash
 permissions, so connect a Lightdash personal access token once at

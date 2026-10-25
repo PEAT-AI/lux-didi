@@ -57,6 +57,8 @@ async function harness(t: TestContext, overrides: {
   tools?: boolean;
   remoteRemember?: boolean;
   grantMode?: 'explicit' | 'owner-trusted-reads';
+  /** W7: a board service for the Trello gateway tools. */
+  trello?: import('../tools/trello.js').TrelloBoard;
   beforeTool?: () => Promise<void>;
   toolError?: boolean;
   system?: string;
@@ -109,7 +111,7 @@ async function harness(t: TestContext, overrides: {
       return transport.handleRequest(request);
     });
     const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
-    const toolOwner = createToolsOwner({ ...{ grantMode: overrides.grantMode ?? 'owner-trusted-reads' }, store, ownerId: store.assistantId, registry, port, lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? owner?.lookupJobAuthority(runId) ?? null });
+    const toolOwner = createToolsOwner({ ...{ grantMode: overrides.grantMode ?? 'owner-trusted-reads' }, ...(overrides.trello ? { trello: overrides.trello } : {}), store, ownerId: store.assistantId, registry, port, lookupAuthority: async runId => owner?.lookupAuthority(runId) ?? owner?.lookupJobAuthority(runId) ?? null });
     toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
       endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(schemas),
       sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
@@ -444,4 +446,44 @@ test('a note with no owner speech at all is still refused', async t => {
   scheduler.advance(1500);
   assert.deepEqual(refusal(await resultPromise), { remembered: false, code: 'owner_transcript_not_final' });
   assert.equal(rows(h).length, 0);
+});
+
+/** W7: a board stand-in that records what the tool owner hands it; the board itself is tested in trello-board.test.ts. */
+function stubBoard(signedIn: boolean) {
+  const seen: { kind: 'read' | 'write'; runId: string; args: Record<string, unknown>; ownerWords?: string }[] = [];
+  const board = {
+    available: () => signedIn,
+    end: () => undefined,
+    read: async (runId: string, args: Record<string, unknown>) => { seen.push({ kind: 'read', runId, args }); return { ok: true, board: 'Rob', view: 'list', list: 'Sprint', total: 1, shown: 1, cards: [{ card: 'C1', name: 'Synthetic card', list: 'Sprint' }] }; },
+    write: async (runId: string, args: Record<string, unknown>, ownerWords: string) => { seen.push({ kind: 'write', runId, args, ownerWords }); return { ok: true, written: 'move', card: 'C1', name: 'Synthetic card', list: 'Done', change: 'moved from Sprint to Done' }; },
+  };
+  return { board: board as unknown as import('../tools/trello.js').TrelloBoard, seen };
+}
+
+test('W7: a signed-in board declares trello_read and trello_write, and a write reaches the board with the owner words of the turn', async t => {
+  const { board, seen } = stubBoard(true);
+  const h = await harness(t, { tools: true, trello: board });
+  const { session } = await attached(h);
+  const names = (h.requests[0]?.tools ?? []).map(tool => tool.name);
+  assert.ok(names.includes('trello_read') && names.includes('trello_write'), JSON.stringify(names));
+  h.f.send({ serverContent: { inputTranscription: { text: 'move the synthetic card to done', finished: true } } });
+  h.f.send({ toolCall: { functionCalls: [{ id: 'trello-2', name: 'trello_write', args: { action: 'move', card: 'Synthetic card', list: 'Done' } }] } });
+  await h.f.frame(2);
+  const response = (h.f.frames[1] as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!.response;
+  assert.equal(response.change, 'moved from Sprint to Done');
+  assert.deepEqual(seen, [{ kind: 'write', runId: session.liveSessionId, args: { action: 'move', card: 'Synthetic card', list: 'Done' }, ownerWords: 'move the synthetic card to done' }]);
+  const journal = h.store.transaction(tx => tx.all("SELECT state FROM tool_calls WHERE run_id=?", [session.liveSessionId]));
+  assert.deepEqual(journal.map(row => row['state']), ['completed'], 'the write is journaled intent first, then its receipt');
+  h.f.send({ toolCall: { functionCalls: [{ id: 'trello-3', name: 'trello_read', args: { view: 'list', list: 'Sprint' } }] } });
+  await h.f.frame(3);
+  assert.equal(seen[1]?.kind, 'read');
+});
+
+test('W7: without a Trello sign-in, or under explicit grants, no Trello tool is declared', async t => {
+  const signedOut = await harness(t, { tools: true, trello: stubBoard(false).board });
+  await attached(signedOut);
+  assert.ok(!(signedOut.requests[0]?.tools ?? []).some(tool => tool.name.startsWith('trello_')));
+  const explicit = await harness(t, { tools: true, grantMode: 'explicit', trello: stubBoard(true).board });
+  await attached(explicit, 'k2');
+  assert.ok(!(explicit.requests[0]?.tools ?? []).some(tool => tool.name.startsWith('trello_')));
 });

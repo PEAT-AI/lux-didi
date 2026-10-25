@@ -27,9 +27,16 @@ const unreachableStep = (label: string): NextStep => ({ text: `${label} is not r
 /** The same failure after the bounded retries are spent: the stored login may be the cause, so the
  * Settings sign-in button is offered as the owner's way out. */
 const unreachableSpentStep = (label: string): NextStep => ({ text: `${label} is not reachable and Naya has stopped retrying. Sign in again in Settings if your stored login has expired, or reconnect from the Lux Didi menu.`, guideUrl: setupGuideUrl, signIn: true });
+/** The Mongoose rows' own steps for the reasons the generic table answers with a restart: none of them is fixed by one. */
+const mongooseReasonSteps: Partial<Record<ReasonCode, (label: string) => NextStep>> = {
+  configuration_error: label => ({ text: `The ${label} entry in your connector configuration needs a fix: a missing data class, or a changed tool list that needs your approval. Follow the MCP configuration guide; Lux Didi reads that file when it starts, so the change applies from its next start.`, guideUrl: mcpGuideUrl }),
+  discovery_failed: label => ({ text: `${label} answered, but its tool list could not be read. Use Copy diagnostics from the Lux Didi menu; the connector_failure line in host.log names the cause.` }),
+  handshake_failed: label => ({ text: `${label} did not finish connecting. Check that the VPN is on and Mongoose is up; if it stays failed, use Copy diagnostics from the Lux Didi menu.` }),
+  identity_mismatch: label => ({ text: `${label} is signed in as a different account than your configuration names. Use the Sign in button and sign in with the account your configuration names; a refused account is not retried, so the endpoint connects with the new sign-in from Lux Didi's next start.`, guideUrl: setupGuideUrl, signIn: true }),
+};
 const failureStep: NextStep = { text: "Check the connector service, then use Copy diagnostics from the Lux Didi menu." };
 /** Mongoose signs in through the browser; the pasted-token path covers the other connectors only. */
-const mongooseCredentialStep = (label: string): NextStep => ({ text: `${label} has no stored session. Run mongoose-login, or use the Sign in button in Settings once this endpoint is configured.`, command: "mongoose-login", guideUrl: setupGuideUrl });
+const mongooseCredentialStep = (label: string): NextStep => ({ text: `${label} has no stored session. Use the Sign in button on its row in Settings once this endpoint is in your connector configuration.`, guideUrl: setupGuideUrl });
 const credentialSteps: Record<string, NextStep> = {
   "lux-knowledge": { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: setupGuideUrl },
   "gmail": { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: setupGuideUrl },
@@ -61,6 +68,8 @@ export function nextStep(id: string, state: string, reason?: string, retrying = 
     // A signed-out or expired Mongoose endpoint is signed in from Settings, one endpoint at a time.
     if (reason === 'needs_sign_in' || reason === 'not_signed_in') return signInStep(label);
     if (reason === 'unreachable') return retrying ? unreachableStep(label) : unreachableSpentStep(label);
+    const own = reason !== undefined && Object.hasOwn(mongooseReasonSteps, reason) ? mongooseReasonSteps[reason as ReasonCode] : undefined;
+    if (own) return own(label);
   }
   if (state === 'missing' || reason === 'credential_missing') return Object.hasOwn(credentialSteps, id) ? credentialSteps[id]! : credentialSteps['lux-knowledge']!;
   return Object.hasOwn(reasonSteps, reason ?? '') ? reasonSteps[reason as ReasonCode]! : failureStep;

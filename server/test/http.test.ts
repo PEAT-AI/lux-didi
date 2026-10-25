@@ -11,6 +11,8 @@ import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
 import { createMongooseSignIn } from '../host/runtime.js';
+import { MongooseLoginError, runMongooseLogin } from '../host/mongoose-login.js';
+import { safeEvent } from '../host/log.js';
 import { saveLiveSelection } from '../config/live.js';
 import type { DomainPort } from '../contracts/domain.js';
 import { ServiceError } from '../contracts/errors.js';
@@ -33,11 +35,11 @@ const domain = {
     throw new ServiceError('NOT_FOUND', 'Synthetic not found', 404);
   }
 } as DomainPort;
-async function fixture(port?: DomainPort, toolsStatus?: Parameters<typeof listenService>[0]['toolsStatus'], mongooseSignIn?: Parameters<typeof listenService>[0]['mongooseSignIn'], live?: Parameters<typeof listenService>[0]['live']) {
+async function fixture(port?: DomainPort, toolsStatus?: Parameters<typeof listenService>[0]['toolsStatus'], mongooseSignIn?: Parameters<typeof listenService>[0]['mongooseSignIn'], live?: Parameters<typeof listenService>[0]['live'], extra: Partial<Parameters<typeof listenService>[0]> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-http-'));
   const store = new Store(dir, port?.migrations);
   let time = Date.now();
-  const service = await listenService({ store, now: () => time, ...(port ? { domain: port } : {}), port: 0, ...(toolsStatus ? { toolsStatus } : {}), ...(mongooseSignIn ? { mongooseSignIn } : {}), ...(live ? { live } : {}) });
+  const service = await listenService({ store, now: () => time, ...(port ? { domain: port } : {}), port: 0, ...(toolsStatus ? { toolsStatus } : {}), ...(mongooseSignIn ? { mongooseSignIn } : {}), ...(live ? { live } : {}), ...extra });
   const token = readFileSync(join(dir, 'admin-credential'), 'utf8').trim();
   const auth = { Authorization: `Bearer ${token}` };
   return { dir, store, service, auth, advance(ms: number) { time += ms; }, async cleanup() { await service.close(); store.close(); rmSync(dir, { recursive: true, force: true }); } };
@@ -350,7 +352,7 @@ test('the Mongoose sign-in route starts only on an explicit owner click and carr
   const requested: (string | undefined)[] = [];
   const f = await fixture(undefined, undefined, async (endpoint?: string) => {
     requested.push(endpoint);
-    return { status: 'started' as const, url: 'http://127.0.0.1:8768/authorize?state=synthetic' };
+    return { status: 'started' as const, attemptId: '0123456789abcdef' };
   });
   try {
     const browser = await pair(f);
@@ -360,9 +362,8 @@ test('the Mongoose sign-in route starts only on an explicit owner click and carr
     assert.equal(refused.status, 403, 'the click needs this browser authority');
     const response = await fetch(`${f.service.origin}/api/v1/connectors/mongoose/sign-in`, { method: 'POST', headers: { ...headers, 'Idempotency-Key': 'mongoose-sign-in-1' }, body: '{"endpoint":"data"}' });
     assert.equal(response.status, 200);
-    const body = await response.json() as { data: { status: string; url?: string } };
-    assert.equal(body.data.status, 'started');
-    assert.equal(body.data.url, 'http://127.0.0.1:8768/authorize?state=synthetic');
+    const body = await response.json() as { data: Record<string, unknown> };
+    assert.deepEqual(body.data, { status: 'started', attemptId: '0123456789abcdef' }, 'the reply names the attempt, never an authorize URL');
     assert.deepEqual(requested, ['data'], 'the click names the one endpoint it signs in');
   } finally { await f.cleanup(); }
 });
@@ -449,9 +450,9 @@ function mongooseConfigDir(): string {
   return dir;
 }
 
-/** The synthetic record a fake login writes: a schemaVersion 2 session for one endpoint, never a real token. */
+/** The synthetic record a fake login writes: a schemaVersion 3 session for one endpoint, never a real token. */
 function syntheticSession(name: string): string {
-  return JSON.stringify({ schemaVersion: 2, base: 'https://mongoose.example.invalid', clientId: 'synthetic-client', redirectPort: 8768, account: 'local', endpoint: name, audience: `mongoose:${name}`, accessToken: `synthetic-access-${name}`, refreshToken: `synthetic-refresh-${name}`, expiresAt: 1, consentStartedAt: 1 });
+  return JSON.stringify({ schemaVersion: 3, endpoint: name, resource: `https://mongoose.example.invalid/mcp/${name}`, issuer: 'https://mongoose.example.invalid', tokenEndpoint: 'https://mongoose.example.invalid/oauth/token', clientId: 'synthetic-client', redirectPort: 8768, account: 'local', accessToken: `synthetic-access-${name}`, refreshToken: `synthetic-refresh-${name}`, expiresAt: 1, consentStartedAt: 1 });
 }
 
 test('#649: a sign-in for data leaves the knowledge and crm records untouched', async () => {
@@ -467,11 +468,11 @@ test('#649: a sign-in for data leaves the knowledge and crm records untouched', 
       login: async options => {
         signed.push(`${options.endpoint}:${options.reference}`);
         writeFileSync(join(configDir, `${options.reference}.json`), syntheticSession(options.endpoint), { mode: 0o600 });
-        options.showAuthorizationUrl?.('http://127.0.0.1:8768/authorize?state=synthetic');
+        await options.openBrowser?.('http://127.0.0.1:8768/authorize?state=synthetic');
       },
     });
     const started = await signIn('data');
-    assert.deepEqual(started, { status: 'started', url: 'http://127.0.0.1:8768/authorize?state=synthetic' });
+    assert.equal(started.status, 'started');
     // The recovery follows the login on its own chain, so let the microtask queue drain before reading it.
     for (let tick = 0; tick < 20 && recovered === 0; tick += 1) await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(signed, ['data:mongoose-data'], 'only the requested endpoint signs in');
@@ -496,7 +497,7 @@ test('#649: an unknown endpoint name is a closed failure, and one sign-in runs a
       open: () => {},
       login: async options => {
         signed.push(options.endpoint);
-        options.showAuthorizationUrl?.('http://127.0.0.1:8768/authorize?state=synthetic');
+        await options.openBrowser?.('http://127.0.0.1:8768/authorize?state=synthetic');
         await gate;
       },
     });
@@ -508,7 +509,7 @@ test('#649: an unknown endpoint name is a closed failure, and one sign-in runs a
     const first = signIn('knowledge');
     const second = signIn('data');
     assert.deepEqual(await second, { status: 'failed', reason: 'sign-in-in-progress' }, 'a click for another endpoint is told to finish the open one first');
-    assert.deepEqual(await first, { status: 'started', url: 'http://127.0.0.1:8768/authorize?state=synthetic' });
+    assert.equal((await first).status, 'started');
     finish();
     await gate;
     assert.deepEqual(signed, ['knowledge'], 'the second click never signs a second endpoint');
@@ -606,14 +607,15 @@ test('#659: a second click on the same endpoint opens the browser again at the U
       open: url => { opened.push(url); },
       login: async options => {
         signed.push(`${options.endpoint}:${options.reference}`);
-        options.showAuthorizationUrl?.(AUTHORIZE);
+        await options.openBrowser?.(AUTHORIZE);
         await gate;
       },
     });
-    const first = signIn('knowledge');
-    const again = signIn('knowledge');
-    assert.deepEqual(await again, { status: 'started', url: AUTHORIZE }, 'the repeat click answers started, not silence');
-    assert.deepEqual(await first, { status: 'started', url: AUTHORIZE }, 'and the first click answers the same');
+    const first = await signIn('knowledge');
+    for (let tick = 0; tick < 20 && opened.length === 0; tick += 1) await new Promise(resolve => setImmediate(resolve));
+    const again = await signIn('knowledge');
+    assert.equal(first.status, 'started', 'the first click answers started');
+    assert.deepEqual(again, first, 'the repeat click answers the same attempt, not silence');
     assert.deepEqual(opened, [AUTHORIZE, AUTHORIZE], 'the browser is asked twice, at the one URL already issued');
     assert.deepEqual(signed, ['knowledge:mongoose-knowledge'], 'no second login runs');
     finish();
@@ -633,31 +635,105 @@ test('#659: a click for another endpoint while one sign-in is pending says to fi
       open: url => { opened.push(url); },
       login: async options => {
         signed.push(options.endpoint);
-        options.showAuthorizationUrl?.(AUTHORIZE);
+        await options.openBrowser?.(AUTHORIZE);
         await gate;
       },
     });
     const first = signIn('knowledge');
+    for (let tick = 0; tick < 20 && opened.length === 0; tick += 1) await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(await signIn('data'), { status: 'failed', reason: 'sign-in-in-progress' }, 'the other endpoint is told, not joined');
     assert.deepEqual(signed, ['knowledge'], 'the second click never runs a second login');
     assert.deepEqual(opened, [AUTHORIZE], 'and never opens a second sign-in page');
-    assert.deepEqual(await first, { status: 'started', url: AUTHORIZE });
+    assert.equal((await first).status, 'started');
     finish();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('#659: a browser that cannot open answers the click with browser-unavailable, never an uncaught error', async () => {
+test('#659: a browser that cannot open reaches the Settings row as browser-unavailable, never an uncaught error', async () => {
   const dir = mongooseConfigDir();
   try {
-    const signIn = (open: (url: string) => void | Promise<void>) => createMongooseSignIn({
-      configDir: dir,
-      recover: async () => {},
-      open,
-      login: async options => { options.showAuthorizationUrl?.(AUTHORIZE); },
-    });
-    assert.deepEqual(await signIn(() => { throw new Error('spawn open ENOENT'); })('knowledge'),
-      { status: 'failed', reason: 'browser-unavailable' }, 'a launch that throws reaches the click as a closed code');
-    assert.deepEqual(await signIn(async () => { throw new Error('spawn open ENOENT'); })('knowledge'),
-      { status: 'failed', reason: 'browser-unavailable' }, 'and so does a launch that rejects');
+    for (const open of [() => { throw new Error('spawn open ENOENT'); }, async () => { throw new Error('spawn open ENOENT'); }]) {
+      const signIn = createMongooseSignIn({
+        configDir: dir,
+        recover: async () => {},
+        open,
+        login: async options => {
+          try { await options.openBrowser?.(AUTHORIZE); }
+          catch { options.onHop?.({ hop: 'browser_handoff', outcome: 'unavailable' }); throw new MongooseLoginError('browser-unavailable'); }
+        },
+      });
+      const started = await signIn('knowledge');
+      assert.equal(started.status, 'started', 'the click answers at once');
+      for (let tick = 0; tick < 20 && signIn.attempt('mongoose-knowledge')?.phase !== 'failed'; tick += 1) await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(signIn.attempt('mongoose-knowledge'), { attemptId: (started as { attemptId: string }).attemptId, phase: 'failed', reason: 'browser_unavailable' });
+    }
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('W1-R1: a finished attempt is dropped once its row connects, so a later failure shows its own reason', async () => {
+  const dir = mongooseConfigDir();
+  let state = 'error';
+  const signIn = createMongooseSignIn({
+    configDir: dir, recover: async () => {}, open: () => {},
+    login: async options => {
+      await options.openBrowser?.(AUTHORIZE);
+      for (const hop of ['discovery', 'registration', 'browser_handoff', 'callback', 'token', 'stored'] as const) options.onHop?.({ hop, outcome: 'ok' } as never);
+    },
+  });
+  const rows = () => ({ endpoints: [{ id: 'mongoose-knowledge', connector: 'mongoose', state, tools: state === 'connected' ? 3 : 0, lastHandshakeAt: null, ...(state === 'connected' ? {} : { error: 'not_signed_in' }) }] });
+  const f = await fixture(undefined, rows, signIn, undefined, { mongooseSignInAttempt: (id, connected) => signIn.attempt(id, connected) });
+  try {
+    const browser = await pair(f);
+    const cookie = browser.cookie.split(';')[0]!;
+    const poll = async () => ((await (await fetch(`${f.service.origin}/api/v1/live/connections`, { headers: { Cookie: cookie, 'sec-fetch-site': 'same-origin' } })).json()).data as Array<Record<string, unknown>>)[0]!;
+    const started = await signIn('knowledge');
+    for (let tick = 0; tick < 20 && signIn.attempt('mongoose-knowledge')?.phase !== 'signed_in'; tick += 1) await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual((await poll())['signIn'], { attemptId: (started as { attemptId: string }).attemptId, phase: 'signed_in' });
+    state = 'connected';
+    assert.equal((await poll())['signIn'], undefined, 'a connected row carries no finished attempt');
+    state = 'error';
+    assert.equal((await poll())['signIn'], undefined, 'and a later failure shows only its own reason');
+    assert.equal(signIn.attempt('mongoose-knowledge'), undefined);
+  } finally { await f.cleanup(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('W1: the click route answers started at once while discovery is still pending, and the row shows the outcome', async () => {
+  const dir = mongooseConfigDir();
+  const events: Record<string, unknown>[] = [];
+  let discoveryRequests = 0;
+  // Discovery never answers: the reply must not wait for it.
+  const hanging = ((_input: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    discoveryRequests += 1;
+    init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+  })) as unknown as typeof fetch;
+  const signIn = createMongooseSignIn({
+    configDir: dir, recover: async () => {}, open: () => {}, log: event => { events.push(event); },
+    login: options => runMongooseLogin({ ...options, fetch: hanging, timeoutMs: 400 }).then(() => undefined),
+  });
+  const rows = () => ({ endpoints: [{ id: 'mongoose-knowledge', connector: 'mongoose', state: 'error', tools: 0, lastHandshakeAt: null, error: 'not_signed_in' }] });
+  const f = await fixture(undefined, rows, signIn, undefined, { mongooseSignInAttempt: (id, connected) => signIn.attempt(id, connected) });
+  try {
+    const browser = await pair(f);
+    const cookie = browser.cookie.split(';')[0]!;
+    const started = Date.now();
+    const response = await fetch(`${f.service.origin}/api/v1/connectors/mongoose/sign-in`, { method: 'POST', headers: { Cookie: cookie, Origin: f.service.origin, 'X-Didi-CSRF': browser.csrf, 'Content-Type': 'application/json', 'Idempotency-Key': 'mongoose-sign-in-pending' }, body: '{"endpoint":"knowledge"}' });
+    const elapsed = Date.now() - started;
+    assert.equal(response.status, 200);
+    const data = (await response.json()).data as { status: string; attemptId: string };
+    assert.equal(data.status, 'started');
+    assert.match(data.attemptId, /^[0-9a-f]{16}$/);
+    assert.ok(elapsed < 1000, `the click answered in ${elapsed} ms`);
+    assert.equal(discoveryRequests, 1, 'discovery is still in flight');
+    const poll = async () => ((await (await fetch(`${f.service.origin}/api/v1/live/connections`, { headers: { Cookie: cookie, 'sec-fetch-site': 'same-origin' } })).json()).data as Array<Record<string, unknown>>)[0]!;
+    assert.deepEqual((await poll())['signIn'], { attemptId: data.attemptId, phase: 'running' });
+    let row = await poll();
+    for (let wait = 0; wait < 40 && (row['signIn'] as { phase: string }).phase === 'running'; wait += 1) { await new Promise(resolve => setTimeout(resolve, 50)); row = await poll(); }
+    assert.deepEqual(row['signIn'], { attemptId: data.attemptId, phase: 'failed', reason: 'discovery_unreachable' }, 'a discovery that never answers is unreachable (the VPN), not a refusal');
+    assert.deepEqual(events.map(event => `${event['event']}:${event['outcome']}`), ['signin_requested:started', 'signin_discovery:timeout']);
+    for (const event of events) {
+      assert.deepEqual(safeEvent(event), event, 'the host log keeps every sign-in line unchanged');
+      assert.equal(event['endpoint'], 'knowledge');
+      assert.equal(event['attemptId'], data.attemptId);
+    }
+  } finally { await f.cleanup(); rmSync(dir, { recursive: true, force: true }); }
 });

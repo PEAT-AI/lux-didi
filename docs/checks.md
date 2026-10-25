@@ -31,7 +31,7 @@ Before a release, run these twelve at the release head, one at a time, with no r
 | Script | Covers |
 | --- | --- |
 | `check-service.sh` | Type-check and build; runtime store and HTTP tests (`runtime.test`, `http.test`). |
-| `check-host.sh` | Build, then host, HTTP, stdout-protocol, connector publication, connector recovery and host-log tests, then the shipped UI against a real host in the browser. Fails on any `console.log` in server source. |
+| `check-host.sh` | Build, then host, HTTP, stdout-protocol, connector publication, connector recovery and host-log tests, the `--mongoose-login` CLI sign-in (`mongoose-login.integration.mjs`), then the shipped UI against a real host in the browser. Fails on any `console.log` in server source. |
 | `check-host-entry.sh` | Host entry migration and reopen ring (`host-entry.test.mjs`). |
 | `check-domain.sh` | Domain and provenance tests against a temporary SQLite database. |
 | `check-chat.sh` | Text chat, chat tools, prompt, model, runtime, domain and HTTP regressions. |
@@ -59,7 +59,7 @@ Before a release, run these twelve at the release head, one at a time, with no r
 | --- | --- |
 | `check-knowledge-connector.sh` | Lux Knowledge reader (`knowledge-connector.test`). |
 | `check-google-connector.sh` | Gmail and Calendar reader against a stdio MCP fixture. |
-| `check-company-connectors.sh` | Mongoose and Mattermost readers, Mongoose auth and the Mattermost attention scan, against fixtures. |
+| `check-company-connectors.sh` | Mongoose and Mattermost readers, Mongoose auth and the Mattermost attention scan, against fixtures, and the Mongoose sign-in contract: the real host login against a synthetic Mongoose (`server/test/mongoose-contract-fake.ts`) that enforces the server's own OAuth rules, with the discovery shape captured from the live server (`server/test/fixtures/mongoose-discovery.json`). |
 | `check-mcp.sh` | The HTTP MCP adapter (`mcp.test`). |
 | `check-mcp-stdio.sh` | The stdio MCP transport against a child fixture. |
 | `check-mcp-config.sh` | Protected MCP configuration and consent (`mcp-config.test`). |

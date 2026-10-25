@@ -519,8 +519,8 @@ for (const releaseNineCatalogue of [true, false]) {
     } else {
       for (const endpoint of ['knowledge', 'data', 'crm'] as const) {
         await writeFile(join(config, `mongoose-${endpoint}.json`), JSON.stringify({
-          schemaVersion: 2, base: url, clientId: 'client', redirectPort: 45871, account: 'synthetic',
-          endpoint, audience: `mongoose:${endpoint}`, accessToken: 'access-token', refreshToken: 'refresh-token',
+          schemaVersion: 3, endpoint, resource: `${url}/mcp/${endpoint}`, issuer: url, tokenEndpoint: `${url}/oauth/token`,
+          clientId: 'client', redirectPort: 45871, account: 'synthetic', accessToken: 'access-token', refreshToken: 'refresh-token',
           expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now(),
         }), { mode: 0o600 });
       }

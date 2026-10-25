@@ -127,8 +127,14 @@ export function connectorState(value: unknown): { id: string; state: string; nex
   const step = nextStep(id, state, reason, row.retrying === true);
   const wantsSignIn = reason === 'needs_sign_in' || step.signIn === true;
   const endpoint = mongooseEndpoint(id);
+  // A live attempt says where it is; a failed one speaks only while the row still needs that sign-in.
+  // A finished attempt never hides the row's own reason, so a later outage reads as an outage.
+  const attempt = record(row.signIn);
+  const speaks = attempt !== undefined && (['running', 'waiting', 'finishing'].includes(String(attempt.phase))
+    || (attempt.phase === 'failed' && ['needs_sign_in', 'not_signed_in', 'credential_missing'].includes(reason)));
+  const progress = endpoint && speaks ? signInAttemptText(mongooseEndpointLabel(endpoint), attempt) : undefined;
   // Only the three Mongoose endpoint rows can start a sign-in, and each carries its own name.
-  return { id, state: label, next: step.text, ...(step.guideUrl ? { guideUrl: step.guideUrl } : {}), ...(wantsSignIn ? { signIn: true } : {}), ...(wantsSignIn && endpoint ? { signInEndpoint: endpoint } : {}) };
+  return { id, state: label, next: progress ?? step.text, ...(step.guideUrl ? { guideUrl: step.guideUrl } : {}), ...(wantsSignIn ? { signIn: true } : {}), ...(wantsSignIn && endpoint ? { signInEndpoint: endpoint } : {}) };
 }
 
 function liveRows(summary: unknown, summaryUnavailable: boolean, saved?: SettingsInput['saved']): string {
@@ -275,8 +281,33 @@ export function laneNoticesMarkup(error: string, notice: string, sheetOpen: bool
 /** What the Settings notice says when a click starts no sign-in: the closed reasons in plain words. */
 export function signInFailureNotice(reason: string): string {
   if (reason === 'sign-in-in-progress') return 'Finish the sign-in already open in the browser first, then click Sign in again.';
-  if (reason === 'browser-unavailable') return 'Your browser could not be opened. The Sign in button tries again.';
-  return 'Sign-in did not finish. Use the Sign in button to try again.';
+  if (reason === 'not-configured') return 'This Mongoose endpoint is not in your connector configuration, so there is nothing to sign in to yet.';
+  return 'Sign-in did not start. Use the Sign in button to try again.';
+}
+
+/** One sentence per step and per failure class of a sign-in attempt, from the closed tokens the host sends. */
+const attemptSentences: Record<string, (label: string) => string> = {
+  running: label => `Starting the sign-in to ${label}.`,
+  waiting: label => `The ${label} sign-in page was handed to your browser. Finish there, and the connector reconnects by itself.`,
+  finishing: label => `${label} accepted the sign-in in the browser. Saving it now.`,
+  discovery_unreachable: label => `Mongoose is not reachable right now, so the ${label} sign-in could not start: check the VPN, then try again.`,
+  discovery_refused: label => `Mongoose did not confirm this endpoint, so the ${label} sign-in stopped before opening the browser.`,
+  registration_refused: label => `Mongoose did not accept the sign-in request for ${label}. Try again in a moment.`,
+  port_in_use: label => `The ${label} sign-in could not wait for the browser because port 8768 is busy. Close the other sign-in, then try again.`,
+  browser_unavailable: label => `Your browser could not be opened for the ${label} sign-in. Use the Sign in button to try again.`,
+  callback_failed: label => `The browser's answer was refused or did not match this ${label} sign-in, so nothing was saved. Try again.`,
+  callback_timeout: label => `The ${label} sign-in timed out waiting for the browser. Use the Sign in button to try again.`,
+  token_refused: label => `Mongoose refused the sign-in at the last step, so nothing was saved for ${label}. Try again.`,
+  store_failed: label => `The ${label} sign-in finished, but it could not be saved on this Mac. Try again.`,
+  did_not_finish: label => `The ${label} sign-in did not finish. Use the Sign in button to try again.`,
+};
+export function signInAttemptText(label: string, value: unknown): string | undefined {
+  const attempt = record(value);
+  if (!attempt || typeof attempt.attemptId !== 'string' || !/^[0-9a-f]{16}$/.test(attempt.attemptId)) return undefined;
+  const steps = ['running', 'waiting', 'finishing'];
+  const key = attempt.phase === 'failed' ? attempt.reason : attempt.phase;
+  if (typeof key !== 'string' || !Object.hasOwn(attemptSentences, key) || steps.includes(key) === (attempt.phase === 'failed')) return undefined;
+  return attemptSentences[key]!(label);
 }
 
 function connectedSection(connected: SettingsInput['connected']): string {

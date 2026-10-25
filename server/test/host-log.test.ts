@@ -488,3 +488,28 @@ test('#639: a research_run row naming the company search candidate is accepted',
   const run = { event: 'research_run', researchId: 'r1', questionClass: 'cross_source', rounds: 1, perRound: [{ candidates: [{ kind: 'company_search', pUseful: 0.4 }, { kind: 'knowledge_search', pUseful: 0.4 }], chosen: ['knowledge_search', 'company_search'] }], stopReason: 'answered', status: 'answered', ops: 2, sources: [{ kind: 'mongoose', disposition: 'completed', latencyMs: 12 }], elapsedMs: 100, deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: 400, unchecked: [], canContinue: false, findingChars: [] };
   assert.deepEqual(safeEvent(run), run, 'the round names the company read and the receipt keeps it');
 });
+
+test('W1: every Mongoose sign-in hop keeps its closed content-free line, and nothing else gets through', () => {
+  const attemptId = '0123456789abcdef';
+  const lines = [
+    { event: 'signin_requested', endpoint: 'data', attemptId, outcome: 'started' },
+    { event: 'signin_requested', endpoint: 'unknown', attemptId, outcome: 'not_configured' },
+    { event: 'signin_discovery', endpoint: 'knowledge', attemptId, outcome: 'ok' },
+    { event: 'signin_discovery', endpoint: 'knowledge', attemptId, outcome: 'resource_mismatch' },
+    { event: 'signin_registration', endpoint: 'crm', attemptId, outcome: 'port_in_use' },
+    { event: 'signin_browser_handoff', endpoint: 'crm', attemptId, outcome: 'ok' },
+    { event: 'signin_callback', endpoint: 'crm', attemptId, outcome: 'timeout' },
+    { event: 'signin_token', endpoint: 'data', attemptId, outcome: 'refused', oauthError: 'invalid_target' },
+    { event: 'signin_stored', endpoint: 'data', attemptId, outcome: 'ok' },
+  ];
+  for (const line of lines) assert.deepEqual(safeEvent(line), line, line.event);
+  const base = { event: 'signin_token', endpoint: 'data', attemptId, outcome: 'refused' };
+  for (const leak of [{ url: 'https://mongoose.test/oauth/authorize?state=x' }, { code: 'auth-code' }, { state: 'state' }, { accessToken: 'token' }, { verifier: 'v' }, { body: '{}' }]) {
+    assert.equal(safeEvent({ ...base, ...leak }), undefined, `${Object.keys(leak)[0]} is never written`);
+  }
+  assert.equal(safeEvent({ ...base, outcome: 'refused because of x' }), undefined, 'outcomes are a closed set');
+  assert.equal(safeEvent({ ...base, oauthError: 'server says no' }), undefined, 'only an RFC 6749 error code');
+  assert.equal(safeEvent({ ...base, endpoint: 'admin' }), undefined, 'admin is never a sign-in endpoint');
+  assert.equal(safeEvent({ ...base, attemptId: 'not an id' }), undefined, 'the attempt id is opaque hex');
+  assert.equal(safeEvent({ event: 'signin_discovery', endpoint: 'data', attemptId, outcome: 'refused' }), undefined, 'each hop has its own outcomes');
+});

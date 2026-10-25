@@ -109,8 +109,11 @@ endpoints: knowledge, data and crm. Each one signs in on its own, because each i
 its own OAuth resource and a token for one is refused on another. In Settings,
 every Mongoose endpoint that needs a sign-in has its own button on its own row:
 **Sign in to Mongoose knowledge**, **Sign in to Mongoose data** and
-**Sign in to Mongoose CRM**. One click signs in that one endpoint and no other, and
-the connector reconnects by itself when you finish. Restart Lux Didi afterwards.
+**Sign in to Mongoose CRM**. One click signs in that one endpoint and no other.
+The endpoint's row then says where the sign-in is: starting, waiting for you in the
+browser, saving, signed in, or, if it stopped, why in one sentence, with the button
+still there to try again. Finish in the browser and the connector reconnects by
+itself; there is no restart.
 
 You can also run the sign-in from a terminal with the same configuration directory
 you selected above:

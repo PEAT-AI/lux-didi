@@ -72,6 +72,18 @@ const LATE_OUTCOMES = ['completed', 'failed'];
 /** S4a-R4: the command families a rejected client event id can name. */
 const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
+/** W1: the Mongoose sign-in hops and the closed outcomes each may name (MongooseSignInHop in host/mongoose-login.ts). */
+const SIGNIN_ENDPOINTS = ['knowledge', 'data', 'crm'];
+const SIGNIN_OUTCOMES: Record<string, readonly string[]> = {
+  signin_requested: ['started', 'reopened', 'in_progress', 'not_configured'],
+  signin_discovery: ['ok', 'config_invalid', 'unreachable', 'redirected', 'http_status', 'not_json', 'resource_mismatch', 'server_untrusted', 'metadata_unreachable', 'metadata_invalid', 'issuer_mismatch', 'endpoint_off_origin', 'timeout'],
+  signin_registration: ['ok', 'port_in_use', 'refused', 'timeout'],
+  signin_browser_handoff: ['ok', 'unavailable', 'timeout'],
+  signin_callback: ['ok', 'state_mismatch', 'authorization_refused', 'timeout'],
+  signin_token: ['ok', 'refused', 'unreachable', 'timeout'],
+  signin_stored: ['ok', 'failed'],
+};
+const SIGNIN_OAUTH_ERRORS = ['invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client', 'unsupported_grant_type', 'invalid_scope', 'invalid_target', 'access_denied'];
 /** W11-R3: the Gmail operators a compiled mail query may name, as a closed set, never the words. */
 const MAIL_QUERY_OPERATORS = ['from', 'to', 'cc', 'bcc', 'subject', 'after', 'before', 'newer_than', 'older_than', 'is', 'has', 'label', 'in'];
 /** W11-R3: a window bound is one operator from the closed set and a day count or a calendar date. */
@@ -301,6 +313,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'mongoose_catalogue_replaced' && value.endpoints === 3) {
     return { event: 'mongoose_catalogue_replaced', endpoints: 3 };
+  }
+  if (typeof value.event === 'string' && Object.hasOwn(SIGNIN_OUTCOMES, value.event)) {
+    // W1: one line per sign-in hop: endpoint, an opaque attempt id and a closed outcome, never a URL,
+    // code, state, verifier, token or registration payload.
+    const outcomes = SIGNIN_OUTCOMES[value.event]!;
+    const keys = value.oauthError === undefined ? ['attemptId', 'endpoint', 'event', 'outcome'] : ['attemptId', 'endpoint', 'event', 'oauthError', 'outcome'];
+    if (Object.keys(value).sort().join(',') !== keys.join(',')) return;
+    if (!isSafeMember(value.endpoint, value.event === 'signin_requested' ? [...SIGNIN_ENDPOINTS, 'unknown'] : SIGNIN_ENDPOINTS)) return;
+    if (typeof value.attemptId !== 'string' || !/^[0-9a-f]{16}$/.test(value.attemptId) || !isSafeMember(value.outcome, outcomes)) return;
+    if (value.oauthError !== undefined && !(value.event === 'signin_token' && value.outcome === 'refused' && isSafeMember(value.oauthError, SIGNIN_OAUTH_ERRORS))) return;
+    return { event: value.event, endpoint: value.endpoint, attemptId: value.attemptId, outcome: value.outcome, ...(value.oauthError !== undefined ? { oauthError: value.oauthError } : {}) };
   }
   if (value.event === 'live_attach_rejected' && typeof value.code === 'string' && /^[A-Za-z0-9_]{1,107}$/.test(value.code)) {
     return { event: value.event, ...(typeof value.liveSessionId === 'string' && /^[0-9a-f-]{36}$/i.test(value.liveSessionId) ? { liveSessionId: value.liveSessionId } : {}), code: value.code };

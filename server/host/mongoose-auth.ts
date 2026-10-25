@@ -1,21 +1,23 @@
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, openSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { fields, parseJson, readPrivate } from '../config/files.js';
-import { MONGOOSE_ENDPOINTS, MONGOOSE_ENDPOINT_AUDIENCES, type MongooseEndpoint } from '../connectors/mongoose.js';
+import { MONGOOSE_ENDPOINTS, MONGOOSE_ENDPOINT_PATHS, mongooseEndpointName, type MongooseEndpoint } from '../connectors/mongoose.js';
+import { validateEndpointUrl } from '../adapters/mcp/registry.js';
 
 /**
- * Host-owned OAuth state for the Mongoose connector. One record, one writer (this host), one file in
- * the private provider-config directory. A schemaVersion 1 record keeps the pasted-bearer path; a
- * schemaVersion 2 record carries the OAuth tokens and is refreshed lazily, never on boot.
+ * Host-owned OAuth state for the Mongoose connector. One record per endpoint, one writer (this host),
+ * one file in the private provider-config directory. A schemaVersion 1 file keeps the pasted-bearer
+ * path; a schemaVersion 3 record carries the OAuth tokens bound to one RFC 8707 resource URL and is
+ * refreshed lazily, never on boot.
  *
  * The persisted record is the only place a token exists on disk. The typed errors below carry a
  * closed code and never a token, a URL query or a response body.
  */
-export const MONGOOSE_RECORD_SCHEMA = 2;
+export const MONGOOSE_RECORD_SCHEMA = 3;
 /** One protected-resource probe is bounded, so a hung discovery never holds a bootstrap. */
 export const MONGOOSE_DISCOVERY_TIMEOUT_MS = 5_000;
 /** Exactly the keys the login writes and the runtime accepts, so doc and reader cannot drift. */
-export const MONGOOSE_OAUTH_KEYS = ['schemaVersion', 'base', 'clientId', 'redirectPort', 'account', 'endpoint', 'audience', 'accessToken', 'refreshToken', 'expiresAt', 'consentStartedAt'] as const;
+export const MONGOOSE_OAUTH_KEYS = ['schemaVersion', 'endpoint', 'resource', 'issuer', 'tokenEndpoint', 'clientId', 'redirectPort', 'account', 'accessToken', 'refreshToken', 'expiresAt', 'consentStartedAt'] as const;
 export const MONGOOSE_RECORD_LIMIT = 8 * 1024;
 /** Refresh this long before the advertised expiry so a request never races the deadline. */
 export const MONGOOSE_REFRESH_MARGIN_MS = 120_000;
@@ -26,15 +28,17 @@ export const MONGOOSE_CONSENT_WARN_MS = 5 * 24 * 60 * 60 * 1000;
 
 export interface MongooseOAuthRecord {
   schemaVersion: typeof MONGOOSE_RECORD_SCHEMA;
-  /** Origin of the Mongoose server, no trailing slash: `https://host`. */
-  base: string;
+  /** Which of the three endpoints this record signs in to; one record per endpoint. */
+  endpoint: MongooseEndpoint;
+  /** The canonical resource URL the grant is bound to: the configured origin plus the endpoint path. */
+  resource: string;
+  /** The authorization server that issued the grant: the configured origin. */
+  issuer: string;
+  /** Where the grant refreshes, on the issuer's origin. */
+  tokenEndpoint: string;
   clientId: string;
   redirectPort: number;
   account: string;
-  /** Which of the three endpoints this record signs in to; one record per endpoint. */
-  endpoint: MongooseEndpoint;
-  /** The OAuth resource this token is bound to, and the only endpoint it may be presented at. */
-  audience: string;
   accessToken: string;
   refreshToken: string;
   /** Epoch milliseconds when the access token stops being accepted. */
@@ -53,6 +57,42 @@ export class MongooseCredentialError extends Error {
   constructor(readonly code: MongooseCredentialCode) { super(code); }
 }
 
+/** One endpoint's resource identity, computed once from trusted configuration, never from a discovery document. */
+export interface MongooseBinding { endpoint: MongooseEndpoint; resource: string; issuer: string }
+
+/** The one transport rule of the catalogue (validateEndpointUrl): https, or http on a literal loopback address. */
+function trustedOrigin(url: URL): boolean {
+  if (url.username || url.password || url.search || url.hash || url.href.includes('#') || url.href.includes('?')) return false;
+  try { validateEndpointUrl(url.origin + '/'); } catch { return false; }
+  return true;
+}
+
+/**
+ * The binding a configured endpoint URL implies: its origin plus that endpoint's own path. A URL with
+ * userinfo, a query, a fragment, another path or a transport the catalogue refuses has no binding.
+ */
+export function mongooseBinding(configuredUrl: string, endpoint: MongooseEndpoint): MongooseBinding | undefined {
+  let url: URL;
+  try { url = new URL(configuredUrl); } catch { return undefined; }
+  if (!trustedOrigin(url) || url.pathname.replace(/\/$/, '') !== MONGOOSE_ENDPOINT_PATHS[endpoint]) return undefined;
+  return { endpoint, resource: `${url.origin}${MONGOOSE_ENDPOINT_PATHS[endpoint]}`, issuer: url.origin };
+}
+
+/** The binding of one catalogue entry, by its resource label or its path; undefined for anything else. */
+export function mongooseEntryBinding(entry: { resource: string; url?: string | undefined }): MongooseBinding | undefined {
+  if (typeof entry.url !== 'string') return undefined;
+  const endpoint = mongooseEndpointName(entry.resource) ?? mongooseEndpointName(entry.url);
+  return endpoint === undefined ? undefined : mongooseBinding(entry.url, endpoint);
+}
+
+/** An https (or literal loopback) URL on exactly this origin, with no userinfo or fragment. */
+export function onOrigin(value: unknown, origin: string): value is string {
+  if (typeof value !== 'string' || value.length > 2048) return false;
+  let url: URL;
+  try { url = new URL(value); } catch { return false; }
+  return url.origin === origin && !url.username && !url.password && !url.hash && !value.includes('#') && trustedOrigin(new URL(url.origin));
+}
+
 function secret(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 4096 && /^[\x21-\x7e]+$/.test(value);
 }
@@ -61,7 +101,7 @@ function timestamp(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) > 0;
 }
 
-/** Strict read of one schemaVersion 2 record; undefined for a missing, v1 or malformed file. */
+/** Strict read of one schemaVersion 3 record; undefined for a missing, v1, v2 or malformed file. */
 export function readMongooseOAuth(configDir: string, reference: string): MongooseOAuthRecord | undefined {
   let raw: unknown;
   try { raw = parseJson(readPrivate(join(configDir, `${reference}.json`), MONGOOSE_RECORD_LIMIT)); }
@@ -71,14 +111,15 @@ export function readMongooseOAuth(configDir: string, reference: string): Mongoos
   let record: Record<string, unknown>;
   try { record = fields(raw, MONGOOSE_OAUTH_KEYS, 'invalid_secret'); }
   catch { return undefined; }
-  const { base, clientId, redirectPort, account, endpoint, audience, accessToken, refreshToken, expiresAt, consentStartedAt } = record;
-  if (typeof base !== 'string' || !/^https?:\/\/[^\s/?#]+$/.test(base)) return undefined;
+  const { endpoint, resource, issuer, tokenEndpoint, clientId, redirectPort, account, accessToken, refreshToken, expiresAt, consentStartedAt } = record;
   if (typeof endpoint !== 'string' || !(MONGOOSE_ENDPOINTS as readonly string[]).includes(endpoint)) return undefined;
-  if (typeof audience !== 'string' || audience !== MONGOOSE_ENDPOINT_AUDIENCES[endpoint as MongooseEndpoint]) return undefined;
+  if (typeof resource !== 'string' || typeof issuer !== 'string') return undefined;
+  const binding = mongooseBinding(resource, endpoint as MongooseEndpoint);
+  if (!binding || binding.resource !== resource || binding.issuer !== issuer || !onOrigin(tokenEndpoint, issuer)) return undefined;
   if (!secret(clientId) || !secret(account) || !secret(accessToken) || !secret(refreshToken)) return undefined;
   if (!Number.isSafeInteger(redirectPort) || (redirectPort as number) < 1 || (redirectPort as number) > 65535) return undefined;
   if (!timestamp(expiresAt) || !timestamp(consentStartedAt)) return undefined;
-  return { schemaVersion: MONGOOSE_RECORD_SCHEMA, base, clientId, redirectPort: redirectPort as number, account, endpoint: endpoint as MongooseEndpoint, audience, accessToken, refreshToken, expiresAt: expiresAt as number, consentStartedAt: consentStartedAt as number };
+  return { schemaVersion: MONGOOSE_RECORD_SCHEMA, endpoint: endpoint as MongooseEndpoint, resource, issuer, tokenEndpoint: tokenEndpoint as string, clientId, redirectPort: redirectPort as number, account, accessToken, refreshToken, expiresAt: expiresAt as number, consentStartedAt: consentStartedAt as number };
 }
 
 /** Atomic replace: a private temp file in the same directory, then one rename. */
@@ -102,34 +143,39 @@ export function writeMongooseOAuth(configDir: string, reference: string, record:
   }
 }
 
+/** Why one endpoint's discovery was refused, a closed set the host log may name. */
+export type MongooseDiscoveryReason = 'unreachable' | 'redirected' | 'http_status' | 'not_json' | 'resource_mismatch' | 'server_untrusted' | 'timeout';
+
 /**
- * RFC 9728 discovery of one endpoint's protected-resource document: the audience the token must be
- * bound to and the authorization server that issues it. A document that names another audience is
- * undefined, so a data token can never be handed to the knowledge endpoint.
+ * RFC 9728 discovery of one endpoint's protected-resource document, fetched only from the configured
+ * origin with no redirect followed. Its `resource` must equal the expected URL exactly and its first
+ * authorization server must be the configured origin, so a sibling endpoint's document is refused.
  */
 export async function discoverMongooseResource(
-  post: typeof fetch, resourceUrl: string, audience: string, timeoutMs = MONGOOSE_DISCOVERY_TIMEOUT_MS,
-): Promise<{ audience: string; authorizationServer: string } | undefined> {
-  let target: URL;
-  try { target = new URL(resourceUrl); } catch { return undefined; }
+  post: typeof fetch, binding: MongooseBinding, timeoutMs = MONGOOSE_DISCOVERY_TIMEOUT_MS,
+): Promise<{ ok: true } | { ok: false; reason: MongooseDiscoveryReason }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const document = await post(`${target.origin}/.well-known/oauth-protected-resource${target.pathname.replace(/\/$/, '')}`,
-      { method: 'GET', headers: { accept: 'application/json' }, signal: controller.signal });
-    if (!document.ok) return undefined;
-    const body: unknown = await document.json();
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) return undefined;
-    const declared = (body as Record<string, unknown>)['resource'];
-    if (declared !== audience) return undefined;
+    let document: Response;
+    try {
+      document = await post(`${binding.issuer}/.well-known/oauth-protected-resource${MONGOOSE_ENDPOINT_PATHS[binding.endpoint]}`,
+        { method: 'GET', headers: { accept: 'application/json' }, redirect: 'manual', signal: controller.signal });
+    } catch { return { ok: false, reason: controller.signal.aborted ? 'timeout' : 'unreachable' }; }
+    if (document.type === 'opaqueredirect' || (document.status >= 300 && document.status < 400)) return { ok: false, reason: 'redirected' };
+    if (!document.ok) return { ok: false, reason: 'http_status' };
+    let body: unknown;
+    try { body = await document.json(); } catch { return { ok: false, reason: controller.signal.aborted ? 'timeout' : 'not_json' }; }
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) return { ok: false, reason: 'not_json' };
+    if ((body as Record<string, unknown>)['resource'] !== binding.resource) return { ok: false, reason: 'resource_mismatch' };
     const servers = (body as Record<string, unknown>)['authorization_servers'];
-    const issuer = Array.isArray(servers) && secret(servers[0]) ? servers[0] : target.origin;
-    return { audience, authorizationServer: issuer };
-  } catch { return undefined; } finally { clearTimeout(timer); }
+    if (!Array.isArray(servers) || servers[0] !== binding.issuer) return { ok: false, reason: 'server_untrusted' };
+    return { ok: true };
+  } finally { clearTimeout(timer); }
 }
 
 /**
- * One 401 that advertises its protected-resource document is the token being refused for this audience:
+ * One 401 that advertises its protected-resource document is the token being refused for this endpoint:
  * a closed credential reason for this endpoint only, never a retry against another endpoint. Any other
  * status is not that verdict.
  */
@@ -138,7 +184,8 @@ export function mongooseCredentialRefusal(status: number, resourceMetadata: stri
 }
 
 /** The startup presence check: a usable record exists, without refreshing and without any network. */
-export function mongooseCredentialPresent(configDir: string, reference: string): boolean {  const record = readMongooseOAuth(configDir, reference);
+export function mongooseCredentialPresent(configDir: string, reference: string): boolean {
+  const record = readMongooseOAuth(configDir, reference);
   return record !== undefined && secret(record.refreshToken);
 }
 
@@ -156,21 +203,29 @@ export interface MongooseAuthOptions {
   notify?: (reason: 'consent-expiring' | 'refresh-failed') => void;
 }
 
-export async function mongooseAccessToken(configDir: string, reference: string, options: MongooseAuthOptions = {}): Promise<string> {
+/**
+ * The access token for one endpoint. The record must be bound to exactly the binding the current
+ * configuration implies; any other record, or no binding, is a sign-in and never a refresh.
+ */
+export async function mongooseAccessToken(configDir: string, reference: string, binding: MongooseBinding | undefined, options: MongooseAuthOptions = {}): Promise<string> {
+  if (!binding) throw new MongooseCredentialError('credential-missing');
   const key = `${configDir}\u0000${reference}`;
   const running = inflight.get(key);
   if (running) return running;
-  const started = resolveMongooseToken(configDir, reference, options).finally(() => { inflight.delete(key); });
+  const started = resolveMongooseToken(configDir, reference, binding, options).finally(() => { inflight.delete(key); });
   inflight.set(key, started);
   return started;
 }
 
 const warned = new Set<string>();
 
-async function resolveMongooseToken(configDir: string, reference: string, options: MongooseAuthOptions): Promise<string> {
+const bound = (record: MongooseOAuthRecord, binding: MongooseBinding): boolean =>
+  record.endpoint === binding.endpoint && record.resource === binding.resource && record.issuer === binding.issuer;
+
+async function resolveMongooseToken(configDir: string, reference: string, binding: MongooseBinding, options: MongooseAuthOptions): Promise<string> {
   const now = options.now ?? Date.now;
   const record = readMongooseOAuth(configDir, reference);
-  if (!record) throw new MongooseCredentialError('credential-missing');
+  if (!record || !bound(record, binding)) throw new MongooseCredentialError('credential-missing');
   if (now() < record.expiresAt - MONGOOSE_REFRESH_MARGIN_MS) return record.accessToken;
   if (now() >= record.consentStartedAt + MONGOOSE_CONSENT_CAP_MS) throw new MongooseCredentialError('credential-consent-expired');
   const key = `${configDir}\u0000${reference}`;
@@ -178,6 +233,7 @@ async function resolveMongooseToken(configDir: string, reference: string, option
   try {
     // Re-read under the lock: another writer may have rotated the family while we waited.
     const current = readMongooseOAuth(configDir, reference) ?? record;
+    if (!bound(current, binding)) throw new MongooseCredentialError('credential-missing');
     if (now() < current.expiresAt - MONGOOSE_REFRESH_MARGIN_MS) return current.accessToken;
     let next: MongooseOAuthRecord;
     try { next = await refreshMongooseOAuth(current, options); }
@@ -224,10 +280,10 @@ interface TokenResponse { access_token?: unknown; refresh_token?: unknown; expir
 async function refreshMongooseOAuth(record: MongooseOAuthRecord, options: MongooseAuthOptions): Promise<MongooseOAuthRecord> {
   const now = options.now ?? Date.now;
   const post = options.fetch ?? fetch;
-  const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: record.refreshToken, client_id: record.clientId, resource: record.audience });
+  const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: record.refreshToken, client_id: record.clientId, resource: record.resource });
   let response: Response;
   try {
-    response = await post(`${record.base}/oauth/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body });
+    response = await post(record.tokenEndpoint, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body, redirect: 'error' });
   } catch { throw new MongooseCredentialError('credential-refresh-unavailable'); }
   if (!response.ok) throw new MongooseCredentialError('credential-refresh-failed');
   let payload: TokenResponse;

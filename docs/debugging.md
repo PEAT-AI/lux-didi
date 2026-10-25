@@ -72,6 +72,7 @@ The `event` value of every line in `host.log` is one name from a closed set. The
 | `chat` | `chat_timing` | one text chat turn: outcome, rounds, timing |
 | `mattermost` | `mattermost_shape` | the shape of a Mattermost answer, no content |
 | `mongoose` | `mongoose_catalogue_replaced` | the catalogue was replaced after a re-sign-in |
+| `signin` | `signin_requested`, `signin_discovery`, `signin_registration`, `signin_browser_handoff`, `signin_callback`, `signin_token`, `signin_stored` | one Mongoose sign-in hop: the endpoint, an opaque attempt id and a closed outcome (`ok` or why it stopped; a refused token may add its RFC 6749 `oauthError`). `signin_browser_handoff ok` means the URL was handed to the operating system, not that a page showed; the `signin_callback` line proves the browser came back. Never a URL, code, state, verifier, token or registration payload |
 | `memory` | `memory_note` | a memory note was written |
 | `standing` | `standing_memory_selection` | which standing memory was selected for a prompt |
 | `conversation` | `conversation_summary_injection`, `conversation_summary_recovery` | the conversation summary: injected, recovered |

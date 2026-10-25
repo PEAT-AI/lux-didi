@@ -183,11 +183,21 @@ function serviceRows(status: unknown, statusUnavailable: boolean, summaryName?: 
 <dt>Text chat and research model</dt><dd>${escapeHtml(modelLabel)}</dd>`;
 }
 
+/** C-OPEN 6: the closed wiring notice a connection row carries, in words that name the fix. */
+export function connectorWarning(value: unknown): string | undefined {
+  const row = record(value);
+  return row?.warning === 'google_mcp_path_unsafe'
+    ? 'This Google helper runs from a reports folder that may be archived. Fix: run the Lux Didi install again so the connector uses the installed Google helper.'
+    : undefined;
+}
+
 function connectorsSection(connections: unknown, connectionsUnavailable: boolean): string {
   if (connectionsUnavailable) return `<h3>Connectors</h3><p role="status" class="settings-unavailable">Connections unavailable. No connector values are shown while the service cannot be reached.</p>`;
-  const rows = (Array.isArray(connections) ? connections : []).map(connectorState).filter((row): row is NonNullable<ReturnType<typeof connectorState>> => row !== undefined);
+  const list = Array.isArray(connections) ? connections : [];
+  const warnings = new Map(list.map(value => [connectorState(value)?.id, connectorWarning(value)] as const));
+  const rows = list.map(connectorState).filter((row): row is NonNullable<ReturnType<typeof connectorState>> => row !== undefined);
   if (rows.length === 0) return '<h3>Connectors</h3><p class="muted">No connectors configured.</p>';
-  return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.signInEndpoint ? ` <button type="button" class="secondary mongoose-signin" data-signin data-endpoint="${escapeHtml(row.id)}">Sign in to ${escapeHtml(mongooseEndpointLabel(row.signInEndpoint))}</button>` : ''}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}</li>`).join('')}</ul>`;
+  return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.signInEndpoint ? ` <button type="button" class="secondary mongoose-signin" data-signin data-endpoint="${escapeHtml(row.id)}">Sign in to ${escapeHtml(mongooseEndpointLabel(row.signInEndpoint))}</button>` : ''}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}${warnings.get(row.id) ? ` <span class="notice" role="status">${escapeHtml(warnings.get(row.id)!)}</span>` : ''}</li>`).join('')}</ul>`;
 }
 
 /** The one element shape the sign-in binder reads, so a test can supply plain objects. */

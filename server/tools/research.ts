@@ -190,14 +190,6 @@ export const RESEARCH = Object.freeze({
    * characters: a quarter of the corpus is longer than the old 1,200 window, and the read is cheap.
    */
   knowledgeBodyChars: 2_000,
-  /**
-   * C-DEPTH item 3: the second stage of a knowledge read. The search answers with summaries; the host then
-   * reads the full entries of this many hits, taking the ones that name the owner's people or documents first
-   * and then the top of the ranking, inside the round already paid for and inside the operation deadline.
-   */
-  knowledgeReadEntries: 3,
-  /** C-DEPTH item 3: the time one stage two read may take, so the operation deadline is never eaten by it. */
-  knowledgeReadMs: 1_500,
   /** R5 (RESCAP-R5): the fewest characters of an evidence line worth keeping when it is clipped to fit. */
   clipFloorChars: 60,
   /** ROUTE-1022 (#526): the search reply carries the body, so no id is opened in a second hop. */
@@ -4870,45 +4862,6 @@ function continuesRun(run: RunState, call: ResearchCall, question: string): bool
   return question.trim() === '' || sameTopic(question);
 }
 
-/**
- * C-DEPTH item 3: the ids a search summary names, the ones that mention an asked entity first. A hit whose
- * line carries `[id N]`, `**#N**` or a `## #N` heading is one entry the host can read whole.
- */
-export function knowledgeReadIds(text: string, asked: readonly string[], limit: number = RESEARCH.knowledgeReadEntries): string[] {
-  const ids: string[] = [];
-  const named: string[] = [];
-  for (const line of text.split('\n')) {
-    const id = line.match(/\[id (\d+)\]/u)?.[1] ?? line.match(/^\s*\*\*#(\d+)\*\*/u)?.[1] ?? line.match(/^#{2,3}\s*#(\d+)\b/u)?.[1];
-    if (id === undefined || ids.includes(id) || named.includes(id)) continue;
-    const mentions = asked.some(name => line.includes(name));
-    (mentions ? named : ids).push(id);
-  }
-  return [...named, ...ids].slice(0, limit);
-}
-
-/** C-DEPTH item 3: stage two, in the round already dispatched, so no third round is ever spent on entries. */
-async function withFullEntries(
-  execute: (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]>,
-  run: RunState, results: readonly IntentSubResult[], question: string, signal: AbortSignal,
-): Promise<IntentSubResult[]> {
-  const searched = results.find(result => result.name === INTERNAL.knowledgeSearch && result.ok && result.text.trim());
-  if (searched === undefined) return [...results];
-  // W10-R6: the fetch is for the hits that matter, so it fires where the owner named a person or a document,
-  // or where the ask itself was for depth. A plain search keeps its one call and its one read span.
-  const asked = requestedEntities(question);
-  if (asked.length === 0 && budgetFor(question) !== RESEARCH.budgets.depth) return [...results];
-  const ids = knowledgeReadIds(searched.text, asked);
-  if (ids.length === 0) return [...results];
-  run.ops += 1;
-  try {
-    const bounded = AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.knowledgeReadMs)]);
-    // The read carries the search call's key, so the source's own shaping folds the entries in with the
-    // summaries instead of meeting a call key the batch never made.
-    const read = await execute([{ key: searched.key, name: INTERNAL.knowledgeRead, args: { ids } }], bounded);
-    return [...results, ...read.map(entry => ({ ...entry, key: searched.key }))];
-  } catch { return [...results]; }
-}
-
 /** The loop behind a call: unchanged by the first answer point except for what it reports late. */
 async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: AbortSignal, first: FirstAnswerState): Promise<JsonObject> {
   let limit = deps.replyLimit ?? budgetFor(call.question ?? '', call.topic ?? undefined);
@@ -5050,9 +5003,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     let results: IntentSubResult[];
     try {
       results = await executeSource(subs, progressSignal);
-      // C-DEPTH item 3 (W10-R6): the summaries are stage one. This is the one place every read passes through,
-      // so the full entries of the named and top hits are read here, batched once, inside the same round.
-      results = await withFullEntries(executeSource, run, results, run.question ?? '', progressSignal);
       // #647: the one place every read passes through, so a chat read that matched nothing on every word is
       // broadened here once, before the reply and the progress steps read it.
       if (!dispatchSignal.aborted) results = await broadenedChatRetry(executeSource, subs, results, progressSignal, run.broadenedChat);

@@ -42,8 +42,8 @@ type Control = PanelControl & { id: string; tag: string; type: string; attribute
 
 function attributesOf(source: string): Record<string, string> {
   const attributes: Record<string, string> = {};
-  for (const [, name, value] of source.matchAll(/([a-zA-Z-]+)="([^"]*)"/g)) attributes[name!] = value!;
-  for (const [, , boolean] of source.matchAll(/(^|\s)(selected|checked|disabled)(?=\s|$)/g)) attributes[boolean!] = '';
+  const bare = source.replace(/([a-zA-Z-]+)="([^"]*)"/g, (_match: string, name: string, value: string) => { attributes[name] = value; return ' '; });
+  for (const [, , name] of bare.matchAll(/(^|\s)([a-zA-Z-]+)(?=\s|$)/g)) attributes[name!] = '';
   return attributes;
 }
 function matches(control: Control, selector: string): boolean {

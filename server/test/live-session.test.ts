@@ -6564,6 +6564,12 @@ test('#660: a result that returned unspoken reaches the session that replaced it
   fake.emit({ type: 'toolCall', calls: [{ id: 'u660', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'the result went to the session that asked for it');
+  // #667: the arrival names the call's shape and never the owner's words.
+  const arrived = receipts.find(entry => entry['event'] === 'research_call_arrived');
+  assert.equal(arrived?.['action'], 'other', 'a connector read declares no research action');
+  assert.equal(arrived?.['researchIdPresent'], false, 'and carries no research id');
+  assert.equal(arrived?.['questionChars'], 0, 'the query length, never the query');
+  assert.equal(arrived?.['lookups'], 0, 'one read, no lookup batch');
   // The rung puts the unspoken result in front of the mute model instead of rebuilding over it.
   h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
   assert.equal(fake.closes, 0, 'the ladder delivers the result before it rebuilds');
@@ -6578,6 +6584,9 @@ test('#660: a result that returned unspoken reaches the session that replaced it
   assert.equal(fake.requests[1]!.openingText, undefined, 'and carries no pickup line to answer instead');
   const refused = receipts.filter(record => record['event'] === 'live_debt' && record['reason'] === 'send_failed');
   assert.equal(refused.length, 0, 'a fresh session is never sent the retired call ids');
+  // #667: the recreate names how many unspoken results the new session was handed.
+  const delivery = receipts.filter(record => record['event'] === 'live_unspoken_delivered');
+  assert.deepEqual(delivery.map(record => [record['results'], record['attempt']]), [[1, 1]], 'one result, first attempt');
   fake.emit(audibleFrame);
   await settlePort();
   assert.equal(h.owner.current().state, 'speaking', 'her answer to the delivered result is what the owner hears');

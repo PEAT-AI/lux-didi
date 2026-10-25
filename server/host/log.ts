@@ -420,6 +420,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     }
     return { event: 'live_no_pong', lastInboundAgeMs: value.lastInboundAgeMs, missedPongs: value.missedPongs, bufferedAmount: value.bufferedAmount };
   }
+  if (value.event === 'live_unspoken_delivered') {
+    // #660/#667: how many results a replaced session was handed as one text item, and which attempt landed.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'results', 'attempt'])) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
+    if (!isSafeCount(value.generation) || !isSafeCount(value.results) || !isSafeCount(value.attempt)) return;
+    if (Number(value.attempt) < 1 || Number(value.attempt) > 2) return;
+    return { event: 'live_unspoken_delivered', liveSessionId: value.liveSessionId, generation: value.generation,
+      results: value.results, attempt: value.attempt };
+  }
   if (value.event === 'live_recovery') {
     // Closed shape: one metadata-only record per recovery attempt. Never audio, text or a provider payload;
     // seedTurns/seedChars are the rebuilt journal seed's size, path is the transport chosen.
@@ -471,10 +480,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'research_call_arrived' || value.event === 'tool_output_sent') {
     // Closed shape: the frame arrival and the answer write, with the milliseconds between them.
     if (value.event === 'research_call_arrived') {
-      if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'calls'])) return;
+      // #667: the call's own shape, never the owner's words: the declared action, an id present, the question
+      // length and the lookup count. Free text has no column, and the question itself never enters the log.
+      if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'calls', 'action', 'researchIdPresent', 'questionChars', 'lookups'])) return;
       if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
       if (!isSafeCount(value.generation) || !isSafeCount(value.calls)) return;
-      return { event: 'research_call_arrived', liveSessionId: value.liveSessionId, generation: value.generation, calls: value.calls };
+      if (!isSafeMember(value.action, ['start', 'continue', 'stop', 'other'])) return;
+      if (typeof value.researchIdPresent !== 'boolean') return;
+      if (!isSafeCount(value.questionChars) || !isSafeCount(value.lookups)) return;
+      return { event: 'research_call_arrived', liveSessionId: value.liveSessionId, generation: value.generation, calls: value.calls,
+        action: value.action, researchIdPresent: value.researchIdPresent, questionChars: value.questionChars, lookups: value.lookups };
     }
     if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'tools', 'msSinceArrived', 'outcome'])) return;
     if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;

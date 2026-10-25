@@ -253,6 +253,22 @@ const UNSPOKEN_DELIVERY_PREFIX = 'Your lookup already returned this; tell the ow
 const UNSPOKEN_REPLY_LIMIT = 1_200;
 /** #660: the host's own answer to a status question while nothing runs, paraphrased aloud by the voice model. */
 export const NO_LOOKUP_RUNNING_NOTE = 'No lookup is running and no result is waiting. Say plainly that nothing is searching, and never say you are still looking.';
+/**
+ * #667: the closed facts of a call that just arrived, never the owner's words: the declared action, whether a
+ * research id came with it, how long the question was, and how many lookups the batch carries.
+ */
+const researchCallFacts = (calls: { name: string; args: JsonObject }[]):
+{ action: 'start' | 'continue' | 'stop' | 'other'; researchIdPresent: boolean; questionChars: number; lookups: number } => {
+  const call = calls.find(entry => entry.name === RESEARCH_TOOL_NAME) ?? calls[0];
+  const args = call?.args;
+  const action = args?.['action'];
+  return {
+    action: action === 'start' || action === 'continue' || action === 'stop' ? action : 'other',
+    researchIdPresent: typeof args?.['researchId'] === 'string' && String(args['researchId']).length > 0,
+    questionChars: typeof args?.['question'] === 'string' ? String(args['question']).length : 0,
+    lookups: Array.isArray(args?.['lookups']) ? args['lookups'].length : 0,
+  };
+};
 /** #660: the text of one tool result batch, bounded for the one item a fresh session accepts. */
 const unspokenReply = (outputs: LiveToolResponse[]): string | undefined => {
   const reply = outputs.map(output => JSON.stringify(output.response)).join('\n').slice(0, UNSPOKEN_REPLY_LIMIT);
@@ -452,7 +468,7 @@ interface ActiveSession {
   debtOutputs?: LiveToolResponse[] | undefined; debtBargeIn?: boolean | undefined;
   /** #660: the reply text of a result that returned but was never said, so a replaced session can still speak it,
    *  and whether the session now open has already been handed it. */
-  unspoken?: string | undefined; unspokenDelivered?: boolean | undefined;
+  unspoken?: string | undefined; unspokenDelivered?: boolean | undefined; unspokenResults?: number | undefined;
   /** #660: a stalled delegation with nothing in flight makes the owner's next status answer the host's to give. */
   hostStatusNote?: boolean | undefined;
   /** #538 R4: the provider has announced a response since the debt started, and that response is still in progress.
@@ -1772,7 +1788,7 @@ export class LiveSessionOwner {
     // #660: the result is owed until the model's own audio proves it said it, so its text travels with the debt
     // and the session that replaces this one can still speak it.
     const reply = unspokenReply(outputs);
-    if (reply !== undefined) { handle.unspoken = reply; handle.unspokenDelivered = false; }
+    if (reply !== undefined) { handle.unspoken = reply; handle.unspokenDelivered = false; handle.unspokenResults = outputs.length; }
     this.#armDebt(handle, outputs, 'tool_output');
     if (outcome === 'failed') void this.#recreateForDeadAir(handle, 'send_failed').catch(() => { /* the recreate names its own failure */ });
   }
@@ -1837,6 +1853,9 @@ export class LiveSessionOwner {
       try {
         session.sendText({ text });
         handle.unspokenDelivered = true;
+        // #667: the recreate names how many unspoken results reached the session that replaced the old one.
+        hostLogEvent({ event: 'live_unspoken_delivered', liveSessionId: handle.liveSessionId,
+          generation: handle.generation, results: handle.unspokenResults ?? 1, attempt: attempt + 1 });
         return true;
       } catch { /* the session was not ready yet, so the single retry waits for ready once more */ }
     }
@@ -2866,7 +2885,8 @@ export class LiveSessionOwner {
         }
         if (event.type === 'toolCall') {
           handle.toolCalls += event.calls.length;
-          hostLogEvent({ event: 'research_call_arrived', liveSessionId: handle.liveSessionId, generation, calls: event.calls.length });
+          hostLogEvent({ event: 'research_call_arrived', liveSessionId: handle.liveSessionId, generation, calls: event.calls.length,
+            ...researchCallFacts(event.calls) });
           handle.turnAfterTool = true;
           handle.thinking = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }

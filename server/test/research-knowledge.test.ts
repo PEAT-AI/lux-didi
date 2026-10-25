@@ -217,7 +217,7 @@ test('ROUTE-1022 K7: an instruction sentence is no knowledge query', () => {
     'an authored instruction query falls back to no search rather than a sentence');
 });
 
-test('ROUTE-1022: a knowledge question is one search call, with the full body window and no second hop', async () => {
+test('ROUTE-1022 and W10-R6: a knowledge question is one search call, then at most one batched full-entry fetch', async () => {
   const executed: IntentSubCall[] = [];
   const h = harness({
     execute: async subs => subs.map(call => {
@@ -226,7 +226,10 @@ test('ROUTE-1022: a knowledge question is one search call, with the full body wi
     }) });
   await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline', topic: 'retrieval deadline' }, new AbortController().signal);
   assert.equal(executed.filter(call => call.name === 'search_knowledge').length, 1, 'exactly one knowledge call');
-  assert.equal(executed.filter(call => call.name === 'get_insight').length, 0, 'no get_insight hop');
+  // W10-R6: the owner's 2026-10-25 order supersedes the no-second-hop clause. One search, then at most one
+  // batched full-entry fetch for the entity-matched and top hits, inside the same round and deadline.
+  assert.ok(executed.filter(call => call.name === 'get_insight').length <= 1,
+    `at most one batched full-entry fetch: ${JSON.stringify(executed.map(call => call.name))}`);
   const search = executed.find(call => call.name === 'search_knowledge')!;
   assert.equal(search.args['max_chars'], RESEARCH.knowledgeBodyChars);
   assert.equal(RESEARCH.knowledgeOpenIds, 0);

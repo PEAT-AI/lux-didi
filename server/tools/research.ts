@@ -1539,7 +1539,7 @@ async function broadenedChatRetry(execute: (subs: readonly IntentSubCall[], sign
     if (term === undefined) continue;
     const args: JsonObject = { ...sub.args, query: term };
     try {
-      const [retried] = await execute([{ key: sub.key, name: sub.name, args }], signal);
+      const [retried] = await deps.execute([{ key: sub.key, name: sub.name, args }], signal);
       // The retry ran, so the answer says the match was broadened either way, never that chat held nothing.
       broadened.set(sub.key, term);
       if (retried?.ok === true && !chatSearchFoundNothing(retried.text)) merged = merged.map((entry, at) => (at === index ? retried : entry));
@@ -4898,7 +4898,7 @@ async function withFullEntries(
   run.ops += 1;
   try {
     const bounded = AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.knowledgeReadMs)]);
-    const read = await execute([{ key: 'knowledge_entries', name: INTERNAL.knowledgeRead, args: { ids } }], bounded);
+    const read = await deps.execute([{ key: 'knowledge_entries', name: INTERNAL.knowledgeRead, args: { ids } }], bounded);
     return [...results, ...read];
   } catch { return [...results]; }
 }
@@ -4912,11 +4912,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     if (subs.some(sub => sub.name === INTERNAL.knowledgeRead)) limit = Math.max(limit, RESEARCH.readReplyChars);
   };
   const now = () => deps.now();
-  // C-DEPTH item 3: every dispatch of this run goes through stage two, so whichever path asked for a search
-  // also pays for the full entries of the hits it named, in the same round.
-  const dispatch = deps.execute;
-  const execute = async (subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]> =>
-    withFullEntries(dispatch, run, await dispatch(subs, signal), run.question ?? '', signal);
   const configured = [...new Set([...(deps.configuredNow ?? (() => deps.configured))(), ...(deps.web === undefined ? [] : ['web' as const])])];
   // P5: a source that cannot serve a read says why. The composition may hand over the connector's own
   // reason; a bare source name still reports a cause, never "nothing found".
@@ -5049,6 +5044,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     let results: IntentSubResult[];
     try {
       results = await executeSource(subs, progressSignal);
+      // C-DEPTH item 3 (W10-R6): the summaries are stage one. This is the one place every read passes through,
+      // so the full entries of the named and top hits are read here, batched once, inside the same round.
+      results = await withFullEntries(executeSource, run, results, run.question ?? '', progressSignal);
       // #647: the one place every read passes through, so a chat read that matched nothing on every word is
       // broadened here once, before the reply and the progress steps read it.
       if (!dispatchSignal.aborted) results = await broadenedChatRetry(executeSource, subs, results, progressSignal, run.broadenedChat);
@@ -5396,11 +5394,11 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const executeWithRetry = async (list: IntentSubCall[]): Promise<IntentSubResult[]> => {
             let out: IntentSubResult[] = [];
             recordShapes(deps, run, list, now);
-            try { out = await execute(list, readSignal); } catch { out = []; }
+            try { out = await deps.execute(list, readSignal); } catch { out = []; }
             const failed = list.map((_, index) => index).filter(index => list[index]?.name !== INTERNAL.mailRead && !(out[index]?.ok));
             if (failed.length > 0 && !readSignal.aborted && deadlineAt - now() > 1_000) {
               try {
-                const retried = await execute(failed.map(index => list[index]!), readSignal);
+                const retried = await deps.execute(failed.map(index => list[index]!), readSignal);
                 failed.forEach((index, position) => { const result = retried[position]; if (result?.ok) out[index] = result; });
               } catch { /* keep the first attempt's result */ }
             }

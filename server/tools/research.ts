@@ -2484,6 +2484,15 @@ export function clip(text: string, max: number): string {
 
 /** #621: the E3 states a reply must keep apart, and the E4 reason a source was never searched. */
 export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry' | 'partial_failed';
+export const DRIVE_MIME_TYPES: Readonly<Record<'deck' | 'doc' | 'sheet', readonly string[]>> = {
+  deck: ['application/vnd.google-apps.presentation', 'application/vnd.openxmlformats-officedocument.presentationml.presentation', 'application/vnd.ms-powerpoint'],
+  doc: ['application/vnd.google-apps.document', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword'],
+  sheet: ['application/vnd.google-apps.spreadsheet', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel'],
+};
+
+export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading', 'needs_clarification', 'name_not_found'] as const;
+export type ResearchSourceReason = (typeof RESEARCH_SOURCE_REASONS)[number];
+
 export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found';
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }

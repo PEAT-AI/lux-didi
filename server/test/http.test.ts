@@ -499,6 +499,8 @@ test('#649: an unknown endpoint name is a closed failure, and one sign-in runs a
         await gate;
       },
     });
+    assert.deepEqual(await signIn(), { status: 'failed', reason: 'not-configured' }, 'a click with no endpoint name never opens a browser');
+    assert.deepEqual(signed, [], 'and never runs a login');
     assert.deepEqual(await signIn('admin'), { status: 'failed', reason: 'not-configured' }, 'an unknown name never opens a browser');
     assert.deepEqual(signed, [], 'and never runs a login');
     gate = new Promise<void>(resolve => { finish = resolve; });

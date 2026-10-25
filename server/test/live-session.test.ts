@@ -6399,13 +6399,14 @@ test('#656: a research run holds the ladder to its own deadline, not the twelve 
   let calls = 0;
   // The first read returns and arms the debt clock; the research run is the one that runs long.
   const beforeTool = async () => { calls += 1; if (calls >= 2) await held; };
-  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler,
-    limits: openaiLimits, beforeTool });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true,
+    scheduler, limits: openaiLimits, beforeTool });
   await openPort(h, 'research-ceiling-656');
   await ownerInput(fake);
   fake.emit({ type: 'toolCall', calls: [{ id: 'warm656', name: 'search_knowledge', args: { query: 'warm', limit: 1 } }] });
   await settlePort();
-  fake.emit({ type: 'toolCall', calls: [{ id: 'run656', name: 'research', args: { action: 'start', question: 'what changed' } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'run656', name: 'research',
+    args: { action: 'start', question: 'what is on my calendar', topic: 'what is on my calendar' } }] });
   await settlePort();
   // A research run outlives the twelve second tool ceiling: it is still work and the ladder stands down.
   h.advance(16_000); scheduler.runDue(); await settlePort();

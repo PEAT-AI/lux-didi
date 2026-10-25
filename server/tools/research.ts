@@ -4893,7 +4893,11 @@ async function withFullEntries(
 ): Promise<IntentSubResult[]> {
   const searched = results.find(result => result.name === INTERNAL.knowledgeSearch && result.ok && result.text.trim());
   if (searched === undefined) return [...results];
-  const ids = knowledgeReadIds(searched.text, requestedEntities(question));
+  // W10-R6: the fetch is for the hits that matter, so it fires where the owner named a person or a document,
+  // or where the ask itself was for depth. A plain search keeps its one call and its one read span.
+  const asked = requestedEntities(question);
+  if (asked.length === 0 && budgetFor(question) !== RESEARCH.budgets.depth) return [...results];
+  const ids = knowledgeReadIds(searched.text, asked);
   if (ids.length === 0) return [...results];
   run.ops += 1;
   try {

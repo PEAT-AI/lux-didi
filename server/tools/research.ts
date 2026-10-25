@@ -190,14 +190,6 @@ export const RESEARCH = Object.freeze({
    * characters: a quarter of the corpus is longer than the old 1,200 window, and the read is cheap.
    */
   knowledgeBodyChars: 2_000,
-  /**
-   * C-DEPTH item 3: the second stage of a knowledge read. The search answers with summaries; the host then
-   * reads the full entries of this many hits, taking the ones that name the owner's people or documents first
-   * and then the top of the ranking, inside the round already paid for and inside the operation deadline.
-   */
-  knowledgeReadEntries: 3,
-  /** C-DEPTH item 3: the time one stage two read may take, so the operation deadline is never eaten by it. */
-  knowledgeReadMs: 1_500,
   /** R5 (RESCAP-R5): the fewest characters of an evidence line worth keeping when it is clipped to fit. */
   clipFloorChars: 60,
   /** ROUTE-1022 (#526): the search reply carries the body, so no id is opened in a second hop. */
@@ -4870,39 +4862,6 @@ function continuesRun(run: RunState, call: ResearchCall, question: string): bool
   return question.trim() === '' || sameTopic(question);
 }
 
-/**
- * C-DEPTH item 3: the ids a search summary names, the ones that mention an asked entity first. A hit whose
- * line carries `[id N]`, `**#N**` or a `## #N` heading is one entry the host can read whole.
- */
-export function knowledgeReadIds(text: string, asked: readonly string[], limit: number = RESEARCH.knowledgeReadEntries): string[] {
-  const ids: string[] = [];
-  const named: string[] = [];
-  for (const line of text.split('\n')) {
-    const id = line.match(/\[id (\d+)\]/u)?.[1] ?? line.match(/^\s*\*\*#(\d+)\*\*/u)?.[1] ?? line.match(/^#{2,3}\s*#(\d+)\b/u)?.[1];
-    if (id === undefined || ids.includes(id) || named.includes(id)) continue;
-    const mentions = asked.some(name => line.includes(name));
-    (mentions ? named : ids).push(id);
-  }
-  return [...named, ...ids].slice(0, limit);
-}
-
-/** C-DEPTH item 3: stage two, in the round already dispatched, so no third round is ever spent on entries. */
-async function withFullEntries(
-  execute: (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]>,
-  run: RunState, results: readonly IntentSubResult[], question: string, signal: AbortSignal,
-): Promise<IntentSubResult[]> {
-  const searched = results.find(result => result.name === INTERNAL.knowledgeSearch && result.ok && result.text.trim());
-  if (searched === undefined) return [...results];
-  const ids = knowledgeReadIds(searched.text, requestedEntities(question));
-  if (ids.length === 0) return [...results];
-  run.ops += 1;
-  try {
-    const bounded = AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.knowledgeReadMs)]);
-    const read = await execute([{ key: 'knowledge_entries', name: INTERNAL.knowledgeRead, args: { ids } }], bounded);
-    return [...results, ...read];
-  } catch { return [...results]; }
-}
-
 /** The loop behind a call: unchanged by the first answer point except for what it reports late. */
 async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: AbortSignal, first: FirstAnswerState): Promise<JsonObject> {
   let limit = deps.replyLimit ?? budgetFor(call.question ?? '', call.topic ?? undefined);
@@ -4912,11 +4871,6 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     if (subs.some(sub => sub.name === INTERNAL.knowledgeRead)) limit = Math.max(limit, RESEARCH.readReplyChars);
   };
   const now = () => deps.now();
-  // C-DEPTH item 3: every dispatch of this run goes through stage two, so whichever path asked for a search
-  // also pays for the full entries of the hits it named, in the same round.
-  const dispatch = deps.execute;
-  const execute = async (subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]> =>
-    withFullEntries(dispatch, run, await dispatch(subs, signal), run.question ?? '', signal);
   const configured = [...new Set([...(deps.configuredNow ?? (() => deps.configured))(), ...(deps.web === undefined ? [] : ['web' as const])])];
   // P5: a source that cannot serve a read says why. The composition may hand over the connector's own
   // reason; a bare source name still reports a cause, never "nothing found".
@@ -5218,7 +5172,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const prefetchCut = new AbortController();
           const prefetchTimer = schedule(() => prefetchCut.abort(new DOMException('Source deadline elapsed', 'TimeoutError')), Math.min(RESEARCH.sourceDeadline.knowledge, remainingMs));
           recordShapes(deps, run, knowledgeSubs, now);
-        knowledgePromise = execute(knowledgeSubs, AbortSignal.any([signal, prefetchCut.signal])).then(async (results: IntentSubResult[]) => {
+        knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, prefetchCut.signal])).then(async (results: IntentSubResult[]) => {
             // ONE-1023: a past day that matched nothing still asks the topic once, without the day filter.
             await droppedDayFilterRetry(deps, knowledgeSubs, results, AbortSignal.any([signal, prefetchCut.signal]), run.droppedDayFilters);
             knowledgeEndedAt = now();
@@ -5396,11 +5350,11 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const executeWithRetry = async (list: IntentSubCall[]): Promise<IntentSubResult[]> => {
             let out: IntentSubResult[] = [];
             recordShapes(deps, run, list, now);
-            try { out = await execute(list, readSignal); } catch { out = []; }
+            try { out = await deps.execute(list, readSignal); } catch { out = []; }
             const failed = list.map((_, index) => index).filter(index => list[index]?.name !== INTERNAL.mailRead && !(out[index]?.ok));
             if (failed.length > 0 && !readSignal.aborted && deadlineAt - now() > 1_000) {
               try {
-                const retried = await execute(failed.map(index => list[index]!), readSignal);
+                const retried = await deps.execute(failed.map(index => list[index]!), readSignal);
                 failed.forEach((index, position) => { const result = retried[position]; if (result?.ok) out[index] = result; });
               } catch { /* keep the first attempt's result */ }
             }

@@ -72,7 +72,9 @@ test('the orb stage uses the Vicuna dark gradient and a visible presence glow', 
 test('the connected consent stays inline above the composer, never inside a collapsed disclosure', () => {
   const connected = readFileSync(new URL('../src/connected.ts', import.meta.url), 'utf8');
   assert.match(connected, /<section class="connected-conversation" aria-label="Connected Naya conversation">/);
-  assert.match(connected, /\$\{grant \|\| this\.#consent \? '' : `<p class="connected-disclosure">/);
+  const section = connected.slice(connected.indexOf('<section class="connected-conversation"'), connected.indexOf('</section>', connected.indexOf('<section class="connected-conversation"')));
+  assert.match(section, /<p class="connected-disclosure">Chat messages go to/, 'the consent line renders inside the conversation panel');
+  assert.match(section, /id="connected-consent"/, 'Allow sits above the composer, not behind a disclosure');
   assert.doesNotMatch(connected, /connected-chat|Connected text chat/, 'the removed collapsed chat disclosure never returns');
 });
 

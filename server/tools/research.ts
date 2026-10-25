@@ -9,7 +9,7 @@ import type { CalendarEvent as RetainedCalendarEvent, CalendarScope, MailMessage
 import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
 import { MAIL_QUERY_OPERATORS } from '../contracts/mail-operators.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
-import { WEB_SEARCH_ACTION, broaderWebQuery, clipWebEvidence, sentencePrefix, webAttribution, webDeadlineMs, webEvidenceText, webFooter, webSourceCards, type WebSearchPort } from './web-search.js';
+import { WEB_DEADLINE_MS, WEB_SEARCH_ACTION, broaderWebQuery, clipWebEvidence, sentencePrefix, webAttribution, webDeadlineMs, webEvidenceText, webFooter, webSourceCards, type WebSearchPort } from './web-search.js';
 
 /**
  * The one declared Live read tool (#241). The model may answer with no tool at all; when it looks
@@ -94,8 +94,8 @@ export const RESEARCH = Object.freeze({
    * first calendar read took 4.4 s. P5-R1 is the owner's order that depth beats speed: every connector
    * read (knowledge, company, chat, calendar, mail) gets 12 s, and the in-process memory read 8 s.
    * This is the single table every per-source bound reads.
-   * N6 (#569): a web read settles in 3.3 to 4.4 s, so a weather or news ask carries the long web budget
-   * and every other ask keeps this one; the read and its port are told the same number.
+   * #655: the web row reads the web module's own constant, so the row that reports the budget and the
+   * timer that cuts the read cannot disagree again; the derivation is written at that constant.
    * #635: the chat read is its own row instead of the connector's 12 s, and a read cut here returns what
    * arrived as a partial timeout and says so in the header and the voice.
    * #645: that row was 6 s, under the 5 to 12 s a real chat read takes on this host (release 10 and 11
@@ -104,7 +104,7 @@ export const RESEARCH = Object.freeze({
    * the exception and a late chat finding still lands the way mail's 12 s does.
    */
   sourceDeadline: Object.freeze({
-    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 10_000, mongoose: 12_000, web: 4_000,
+    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 10_000, mongoose: 12_000, web: WEB_DEADLINE_MS,
   } as Record<SourceKind, number>),
   /** P5: a candidate that names no single source (`brief`) never gets less than the local reads. */
   defaultSourceDeadlineMs: 8_000,
@@ -3179,9 +3179,12 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // so an outage is never hidden behind a narrow answer. `knowledge` leads the findings.
   groups.sort((a, b) => SOURCE_ORDER.indexOf(a.source) - SOURCE_ORDER.indexOf(b.source));
   // #635: a chat read that failed by timing out is said as a timeout with its budget, never as a chat out of
-  // reach. The web keeps #569's two clauses: its timeout rides its own endpoint reason and names the web part.
+  // reach. #569 keeps its timeout reason on the web's endpoint; #655 says that timeout as the web taking too long.
   const chatTimedOut = run.sourcesFailed.has('chat') && TIMED_OUT.has(run.unavailableReasons.get('chat') ?? '');
-  const unreachable = SOURCE_LABELS.filter(([source]) => run.sourcesFailed.has(source) && !(chatTimedOut && source === 'chat')).map(([, label]) => label);
+  // #655: a web read cut at its budget says the web took too long, never that the web could not be reached.
+  const webTimedOut = run.sourcesFailed.has('web') && TIMED_OUT.has(run.unavailableReasons.get('web') ?? '');
+  const unreachable = SOURCE_LABELS.filter(([source]) => run.sourcesFailed.has(source)
+    && !(chatTimedOut && source === 'chat') && !(webTimedOut && source === 'web')).map(([, label]) => label);
   const searchedNothing = SOURCE_LABELS.filter(([source]) => run.emptySearches.has(source) && !run.sourcesFailed.has(source))
     .map(([source, label]) => `I searched your ${label}${run.emptySearches.get(source) ?? ''} and found nothing matching.`);
   // N3: a read cut short is not a read that found nothing, and the reply must not blur the two.
@@ -3198,6 +3201,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     : mailReads.some(read => !read.exhausted) ? 'The mail search stopped at its page limit, so there may be more mail than this.'
     : undefined;
   const clauses = [
+    ...(webTimedOut ? ['The web took too long to answer, so that part is missing.'] : []),
     ...(unreachable.length === 0 ? [] : [`I could not reach ${unreachable.length === 1 ? unreachable[0]! : `${unreachable.slice(0, -1).join(', ')} and ${unreachable[unreachable.length - 1]!}`} right now.`]),
     ...cutShort,
     ...searchedNothing,

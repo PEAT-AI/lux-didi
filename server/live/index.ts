@@ -2215,6 +2215,8 @@ export class LiveSessionOwner {
     }
     if (type === 'turnComplete' || type === 'turnFailed') {
       handle.responseInProgress = false;
+      // C-DEPTH item 5 (W10-R13): the response just ended, which is the first boundary a rebuild may use.
+      void this.#researchRebuildAtBoundary(handle);
       // The response ended: an answer that was heard ends the debt, and one that ended without audio fires the rung
       // the deferral held, which is the ruling's own order.
       if (handle.debtSince !== undefined) {
@@ -2452,6 +2454,30 @@ export class LiveSessionOwner {
   /** Only an attended call takes another provider window; a caller who already left never holds one open. */
   /** C-DEPTH item 5: the last research question of a call, so the rebuild ledger can name the entities asked. */
   readonly #lastResearchQuestion = new Map<string, string>();
+
+  /**
+   * C-DEPTH item 5 (W10-R13): the rebuild is spent at the response boundary and never from the batch that filled
+   * the conversation. It is deferred, never dropped: while the assistant is streaming, a response is pending, a
+   * barge in is open or a recovery is in flight, the seed waits for the next boundary. The rebuild itself is the
+   * existing fresh_seeded recovery, with the extractive ledger as one turn instead of the raw tool items.
+   */
+  async #researchRebuildAtBoundary(handle: ActiveSession): Promise<void> {
+    const ledger = handle.researchRebuildSeed;
+    if (ledger === undefined) return;
+    if (handle.rebuilding || handle.responseInProgress || handle.debtBargeIn || handle.pendingCallIds.size > 0) return;
+    if (this.#settled(handle)) return;
+    handle.researchRebuildSeed = undefined;
+    const prior = handle.researchRetention;
+    handle.researchRetention = { retainedChars: 0, rebuilds: prior.rebuilds + 1 };
+    hostLogEvent({ event: 'research_context_rebuild', retainedChars: prior.retainedChars, epochChars: ledger.length,
+      rebuilds: handle.researchRetention.rebuilds });
+    const now = this.#now();
+    const remaining = handle.deadlineAt - now;
+    const idle = handle.idleAt - now;
+    if (remaining <= 0 || idle <= 0) return;
+    const seed = { turns: [{ role: 'user' as const, text: ledger, dataClass: handle.inputClass }], chars: ledger.length };
+    await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, remaining, seed, 'research_context');
+  }
 
   #attended(handle: ActiveSession): boolean { return !this.#settled(handle) && handle.consumerState === 'attached'; }
 

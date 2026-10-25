@@ -62,7 +62,7 @@ export const EVENT_KINDS = [
   'playback.received', 'playback.audible', 'playback.enqueued', 'playback.started',
   'playback.drained', 'playback.interrupted', 'playback.terminated',
   'progress.commentary', 'progress.thinking', 'call.ceiling', 'command.rejected',
-  'live.dead_air_stalled', 'live.debt',
+  'live.dead_air_stalled', 'live.debt', 'owner.overlap',
 ] as const;
 export type TraceEventKind = (typeof EVENT_KINDS)[number];
 // #538: the audible debt clock, in two closed sets. Its events are enums only: no duration, no text, and no

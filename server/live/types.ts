@@ -21,7 +21,7 @@ export type LiveErrorCode =
 export type LiveConfigErrorCode =
   | 'invalid_object' | 'invalid_provider' | 'invalid_model' | 'invalid_voice' | 'invalid_key_reference'
   | 'invalid_route' | 'invalid_classes' | 'invalid_prompt' | 'invalid_limit' | 'invalid_language'
-  | 'invalid_accent' | 'invalid_voice_description' | 'invalid_playback_rate';
+  | 'invalid_accent' | 'invalid_voice_description' | 'invalid_playback_rate' | 'invalid_features';
 
 export class LiveError extends Error {
   constructor(readonly code: LiveErrorCode, message: string = code) { super(message); this.name = 'LiveError'; }
@@ -66,6 +66,8 @@ export interface LiveProfile {
   readonly route: { readonly enabled: true; readonly provider: LiveProvider; readonly modelId: string; readonly dataClasses: readonly DataClass[] };
   readonly prompt: { readonly text: string; readonly dataClass: DataClass };
   readonly limits: LiveLimits;
+  /** W6: the owner's capability switches. Absent means the shipped defaults: composed notes off, export on. */
+  readonly features?: { readonly composedNotes: boolean; readonly notesExport: boolean };
 }
 
 export type LiveToolsComposition = {

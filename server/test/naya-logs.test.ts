@@ -119,6 +119,31 @@ test('errors merges host.log failures, without a journal line to carry them', t 
   assert.equal(out.includes('debug_journal_error'), false, 'the journal receipt is gone with the journal');
 });
 
+// L8-Q04: a call with a rejected command, a stall nudge, a 25 s dead air, a rebuild and a refused open
+// printed none of them under errors.
+test('L8-Q04: errors names a rejected command, dead air, a rebuild and a refused native action', t => {
+  const root = mkdtempSync(join(tmpdir(), 'didi-naya-logs-q04-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, 'logs'), { recursive: true, mode: 0o700 });
+  const records = [
+    { timestamp: START, pid: 1, event: 'live_started', liveSessionId: 'live-q04', provider: 'openai', modelId: 'gpt-live-1', voice: 'marin' },
+    { timestamp: '2026-10-17T12:00:01.000Z', pid: 1, event: 'command_rejected', code: 'invalid_request_error', param: 'type', kind: 'cont' },
+    { timestamp: '2026-10-17T12:00:02.000Z', pid: 1, event: 'live_dead_air', deadAirMs: 25_437 },
+    { timestamp: '2026-10-17T12:00:02.100Z', pid: 1, event: 'live_dead_air', deadAirMs: 776 },
+    { timestamp: '2026-10-17T12:00:03.000Z', pid: 1, event: 'live_dead_air_nudge', elapsedMs: 20_623 },
+    { timestamp: '2026-10-17T12:00:04.000Z', pid: 1, event: 'live_rebuild', trigger: 'no_output_after_ambient', liveSessionId: 'live-q04', generation: 1 },
+    { timestamp: '2026-10-17T12:00:05.000Z', pid: 1, event: 'native_action', action: 'open_url', code: 'not_allowed', detail: 'none' },
+    { timestamp: '2026-10-17T12:00:06.000Z', pid: 1, event: 'native_action', action: 'open_url', code: 'opened', detail: 'none' },
+  ];
+  writeFileSync(join(root, 'logs', 'host.log'), records.map(row => `${JSON.stringify(row)}\n`).join(''));
+  const rows = JSON.parse(run(root, ['errors', '--json'])) as { kind: string; detail: string }[];
+  const kinds = rows.map(row => row.kind);
+  for (const kind of ['command_rejected', 'live_dead_air_nudge', 'live_rebuild', 'native_action']) assert.ok(kinds.includes(kind), `${kind} is a failure row: ${kinds.join(', ')}`);
+  assert.equal(kinds.filter(kind => kind === 'live_dead_air').length, 1, 'only the long dead air is a failure, a normal gap is not');
+  assert.equal(kinds.filter(kind => kind === 'native_action').length, 1, 'an opened native action is not a failure');
+  assert.ok(rows.some(row => row.kind === 'native_action' && row.detail.includes('not_allowed')), 'the refusal names its code');
+});
+
 test('slow lists the timings over the threshold and nothing else', t => {
   const root = fixtures(t);
   const slow = JSON.parse(run(root, ['slow', '--json', '--over', '500']));
@@ -154,7 +179,8 @@ test('the timeline command is gone: its per-turn record lives in the trace store
 test('the reader resolves the host default data dir with no --data-dir', t => {
   const home = mkdtempSync(join(tmpdir(), 'didi-naya-home-'));
   t.after(() => rmSync(home, { recursive: true, force: true }));
-  const expected = process.platform === 'darwin' ? join(home, 'Library', 'Application Support', 'Lux Didi')
+  // L8-Q10: on the Mac the default is the installed app's own directory, the one the owner's calls write.
+  const expected = process.platform === 'darwin' ? join(home, 'Library', 'Application Support', 'ai.peat.lux-didi')
     : process.platform === 'win32' ? join(home, 'AppData', 'Roaming', 'Lux Didi') : join(home, '.local', 'share', 'lux-didi');
   mkdirSync(join(expected, 'logs'), { recursive: true, mode: 0o700 });
   writeFileSync(join(expected, 'logs', 'host.log'), `${JSON.stringify({ timestamp: START, pid: 1, event: 'chat_timing', runId: 'chat-default', outcome: 'completed', rounds: [], tools: [], fenceMs: 1, acquireMs: 1, answerMs: 1 })}\n`);

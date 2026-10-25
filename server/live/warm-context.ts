@@ -68,7 +68,7 @@ export function signInNote(endpoints: readonly unknown[]): string | undefined {
     return SIGN_IN_REASONS.has(String(row.reasonCode)) || SIGN_IN_REASONS.has(String(row.error));
   });
   if (!waiting) return undefined;
-  return 'Mongoose is waiting on a sign-in, so company knowledge cannot be read yet. Say that once, briefly, at the start of this call, and say the Sign in button is in Settings.';
+  return 'Mongoose is waiting on a sign-in, so company knowledge cannot be read yet. Mention it only when an answer needs company knowledge, and say the Sign in button is in Settings.';
 }
 
 /** Sections in priority order, each trimmed to what the instruction budget has left. */

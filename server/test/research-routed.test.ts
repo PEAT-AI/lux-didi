@@ -481,7 +481,8 @@ test('#637: an unknown channel is its own closed reason in the note and the cove
   const h = harness({
     configured: ['chat'],
     execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
-      if (call.name === 'mattermost_search') sent.push(call.args);
+      // C-CHAT: a named channel is the chat read, which refuses an unknown channel with the same closed code.
+      if (call.name === 'mattermost_chat') sent.push(call.args);
       return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'channel_not_found' };
     }),
   });
@@ -934,7 +935,8 @@ test('#646: a recall ask that names a channel still reads the chat', async () =>
   assert.deepEqual(requiredSources(recall), ['memory', 'chat'], 'so the route carries her memory and the chat');
   const h = harness({ memory: () => ({ lines: ['2026-10-14 entry: we agreed the release ships on Friday'], text: '', total: 1 }) });
   await runResearch(h.deps, { action: 'start', question: recall }, new AbortController().signal);
-  assert.ok(h.executed.includes('mattermost_search'), `an ask that names the channel reads it (${h.executed.join(', ')})`);
+  // C-CHAT: a named channel is read by the chat read, which resolves the name strictly first.
+  assert.ok(h.executed.includes('mattermost_chat'), `an ask that names the channel reads it (${h.executed.join(', ')})`);
 });
 
 // #645: the chat read keeps a row of its own inside the turn, so one slow connector never spends the

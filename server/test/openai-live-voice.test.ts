@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { describe, test } from 'node:test';
 import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
-import { AUDIBLE_RMS_DBFS, FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/openai.js';
+import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
+import { AUDIBLE_RMS_DBFS, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/audio-level.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
 import { CANARY, collect, control, FakeClock, FakeSocket, fakeReady, fixture, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
 import { Pcm16Upsampler } from '../adapters/live-voice/resample.js';
@@ -436,10 +437,20 @@ describe('openai gpt-live adapter', () => {
     assert.match(FRESH_OPENING, /no greeting formula/);
     assert.match(FRESH_OPENING, /no offer of help/);
     assert.match(FRESH_OPENING, /no tool call before it/);
-    assert.match(FRESH_OPENING, /then stop and listen/);
-    assert.match(FRESH_OPENING, /the last thing you and the owner were on in the earlier conversation above/,
+    assert.match(FRESH_OPENING, /a subject from the earlier conversation above in new words/,
       'the seed history is an allowed subject, so a pending summary still grounds the line');
     assert.doesNotMatch(FRESH_OPENING, /\b(hello|hi|hey|good morning|good evening|how can i help|what can i do)\b/i);
+  });
+
+  test('L8-09/L11-05: the opening directive never asks for the earlier call\'s closing words or a stop line', () => {
+    // The stop-and-listen clause came back as a spoken stop line, and the last-thing clause as the earlier
+    // call's closing line.
+    assert.doesNotMatch(FRESH_OPENING, /stop and listen/u);
+    assert.doesNotMatch(FRESH_OPENING, /the last thing you and the owner were on/u);
+    assert.match(FRESH_OPENING, /never its closing lines/u);
+    assert.match(FRESH_OPENING, /never anything about stopping, ending or listening/u);
+    assert.match(FRESH_OPENING, /when he speaks first, answer his words/u);
+    assert.doesNotMatch(FRESH_OPENING, /[\u2013\u2014]/u);
   });
 
   test('D1: a rebuild seeded with an unanswered owner turn asks for exactly one response once ready', async t => {

@@ -131,8 +131,9 @@ export type LiveVoiceEvent = { sequence: number } & (
   | { type: 'toolCall'; calls: LiveToolCall[] }
   | { type: 'toolCallCancellation'; ids: string[] }
   /** `audible` and `rmsDbfs` are the adapter's own level classification of this chunk (16-bit PCM in, dBFS
-   *  against full scale). An adapter that does not classify leaves both out, and the host reads that as speech. */
-  | { type: 'audio'; pcm: Uint8Array; rate: number; audible?: boolean; rmsDbfs?: number }
+   *  against full scale), from the one rule in audio-level.ts. `audible` is required so no route can leave the
+   *  host guessing: an unclassified frame would reset the idle clock as if the model had spoken (C-LIVE N-2). */
+  | { type: 'audio'; pcm: Uint8Array; rate: number; audible: boolean; rmsDbfs?: number }
   | { type: 'inputTranscription' | 'outputTranscription'; text: string; finished?: boolean; providerEventId?: string; providerStartMs?: number; providerEndMs?: number; finalOrigin?: TranscriptFinalOrigin }
   | { type: 'modelText'; text: string; thought: boolean }
   | { type: 'generationComplete' | 'turnComplete' | 'interrupted' }

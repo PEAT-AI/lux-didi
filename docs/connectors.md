@@ -6,6 +6,8 @@ A connector is one more read-only source the model can search through MCP. It is
 
 The one rule that shapes all of it: a connector reads. `ConnectorToolDeclaration.effect` is the literal `'read'`, the model sees only the local projection of an accepted result, and nothing in this path writes to the remote account.
 
+Trello is deliberately not a connector in this sense. The official Trello MCP server dispatches by `action` with ARI ids, and the owner granted card writes on his one board, so it follows the gateway tool pattern of the vault note instead: a host-owned client, two gateway tools with closed schemas, and the board pin on Didi's side. The board name it pins is the owner's private `trello-board.json`, never a string in this repository (W7-R2). [tool-owner.md](tool-owner.md#the-trello-board-w7) owns it; its sign-in shares the OAuth client of the Mongoose endpoints ([mcp-configuration.md](mcp-configuration.md#the-trello-board-sign-in)).
+
 ## 1. Register the descriptor
 
 `server/connectors/index.ts` holds `CONNECTOR_DESCRIPTORS`, the one map from a connector id to its `ConnectorDescriptor`:
@@ -59,6 +61,8 @@ A connector does nothing until the owner approves one connection for it. That en
 
 Mongoose is three entries, not one: knowledge, data and CRM are separate OAuth resources with separate token records, and the admin endpoint is never approved. See [mcp-configuration.md](mcp-configuration.md) for the profile and its CLI.
 
+Google is one entry per family, each its own stdio endpoint of the lux-cli Google helper (`--family gmail`, `calendar`, `drive`) with the endpoint id `gmail`, `calendar` or `drive`: the id is what maps an endpoint to its research source (`ENDPOINT_SOURCES` in `server/tools/research.ts`). The Drive family is read-only metadata (`drive_search_files`, `drive_get_file`, schemas in the lux-cli helper) and has no own-account probe, so its helper's pinned token is the account it reads. A profile without a `drive` entry is normal: a drive lookup then settles as `drive_not_available` ("Drive is not set up for me yet"), never as an empty listing. At host start a Google entry whose command, or the interpreter its first line names, sits under `~/.lux/reports` logs `google_mcp_path_unsafe` and its Settings row says how to fix it; the connector keeps running, and the install step is what repoints the command.
+
 ## 6. Fake the server
 
 Connectors are tested against a fake, never a real account. The fake is a small stdio or loopback child under `server/test/fixtures/` (for example `google-mcp-child.mjs` and `stdio-mattermost-attention-child.mjs`) plus the contract JSON it publishes its failures from. The fixture carries the protocol evidence: the tools it advertises, the shapes it accepts, and the error codes it can return. No fixture holds a credential, owner text or a private endpoint, and the check stages its own copy of the profile so no probe writes beside the installed configuration.
@@ -68,10 +72,23 @@ Connectors are tested against a fake, never a real account. The fake is a small 
 A connector ships with a script under `scripts/` and a row in [checks.md](checks.md):
 
 - `scripts/check-knowledge-connector.sh` for the local knowledge reader (`server/test/knowledge-connector.test.ts`).
-- `scripts/check-google-connector.sh` for Gmail and Calendar against the stdio fixture.
+- `scripts/check-google-connector.sh` for Gmail, Calendar and Drive against the stdio fixture, plus the Google helper wiring guard.
 - `scripts/check-company-connectors.sh` for Mongoose and Mattermost, including Mongoose auth and the Mattermost attention scan.
 
 The test file lives in `server/test/`, runs under the shared node test runner and uses the fake from step 6. A check joins the release gate in `checks.md` only by an owner decision; adding a connector to the gate is a release decision, not part of adding the connector.
+
+## The Mattermost child build
+
+The Mattermost connector reads the local archive child (`mattermost-mcp`). Every build serves the five base reads (`mattermost_whoami`, `mattermost_get_channel_history`, `mattermost_get_thread`, `mattermost_search`, `mattermost_list_channels`), and the chat read (`mattermost_chat`) works on those alone. A build with the person reads (mattermost-mcp draft PRs #67, #68 and #69, or their merge) adds what makes the person, group and channel reads exact:
+
+| child capability | what Didi uses it for | without it |
+| --- | --- | --- |
+| `mattermost_resolve_person` | a spoken name to one account and its direct message channel; two people with one first name is a question back | the name must be the username, matched on the direct message channel; the reply says person lookups by name need the newer chat archive |
+| `mattermost_list_channels` with `query`, `types`, `member`, `sort` | a channel by its spoken name, a group chat by its members, the conversations that moved for attention | channel names match through the one full channel list; group chats match on their member names and the reply says so; attention skips the direct and group leg and says so |
+| `mattermost_conversation_overview` | everything the owner and one person exchanged: their direct messages, shared group chats and channels where both posted, with counts | both sides of the direct messages only, and the reply says an overview needs the newer chat archive |
+| `attachmentText` on posts | webhook and bot posts whose words live in the attachment | those posts show their header with an empty body |
+
+Each missing capability is named once in the reply, never replaced by a guess. Moving an installed connection to a newer build is a new connection id: delete the old `mcp.json` entry and add the new one, see [mcp-configuration.md](mcp-configuration.md).
 
 ## The clone list
 

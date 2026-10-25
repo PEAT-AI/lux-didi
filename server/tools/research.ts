@@ -9,7 +9,7 @@ import type { CalendarEvent as RetainedCalendarEvent, CalendarScope, MailMessage
 import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
 import { MAIL_QUERY_OPERATORS } from '../contracts/mail-operators.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
-import { WEB_DEADLINE_MS, WEB_SEARCH_ACTION, broaderWebQuery, clipWebEvidence, sentencePrefix, webAttribution, webDeadlineMs, webEvidenceText, webFooter, webSourceCards, type WebSearchPort } from './web-search.js';
+import { WEB_DEADLINE_MS, WEB_SEARCH_ACTION, type WebOutcome, broaderWebQuery, clipWebEvidence, sentencePrefix, webAttribution, webDeadlineMs, webEvidenceText, webFooter, webSourceCards, type WebSearchPort } from './web-search.js';
 
 /**
  * The one declared Live read tool (#241). The model may answer with no tool at all; when it looks
@@ -2046,6 +2046,8 @@ function cutAfter(ms: number, schedule: ResearchTimer = scheduleTimer): { signal
 }
 
 /** #565: the shape one source call searched with: counts and closed operator tokens, never a word. */
+export interface ResearchSourceRead { source: 'web'; outcome: 'ok' | 'failed' | 'timeout'; ms: number; results: number; reason?: string; query: string; researchId: string; at: number }
+
 export interface ResearchQueryShape { source: SourceKind | LookupSource; terms: number; operators: readonly string[]; topicWords: number }
 
 export interface ResearchDeps {
@@ -2060,6 +2062,8 @@ export interface ResearchDeps {
    * built from. The Live owner binds it to the trace store; absent means nothing is persisted.
    */
   queryShape?: ((shape: ResearchQueryShape & { researchId: string; at: number }) => void) | undefined;
+  /** L8-Q06: one row per web read, which leaves no canonical dispatch row; the query text stays in the store. */
+  sourceRead?: ((read: ResearchSourceRead) => void) | undefined;
   authorizeEvidence?: (bindings: readonly ToolResultBinding[], signal: AbortSignal) => boolean;
   now(): number;
   /** Defaults to a real timer; a test supplies a fake clock to prove the progress cadence. */
@@ -4293,13 +4297,28 @@ async function calendarGroup(deps: ResearchDeps, run: RunState, plans: readonly 
  * ROUTE-1022 K1: the web layer's own routed read. The port answers in process, so a routed web lookup
  * keeps its links, its evidence and its attribution exactly as the selector's web action does.
  */
+/**
+ * L8-Q06 (from main): one row per web read, which leaves no canonical dispatch row; the query text stays
+ * in the store. The receipt is never the answer, so a throwing writer is swallowed.
+ */
+function recordWebRead(deps: ResearchDeps, run: RunState, query: string, outcome: WebOutcome, started: number, now: () => number): void {
+  const write = deps.sourceRead;
+  if (write === undefined) return;
+  try {
+    write({ source: 'web', outcome: outcome.ok ? 'ok' : outcome.code === 'web_timeout' ? 'timeout' : 'failed', ms: Math.max(0, now() - started),
+      results: outcome.ok ? webSourceCards(outcome.evidence).length : 0, ...(outcome.ok ? {} : { reason: outcome.code }), query, researchId: run.researchId, at: now() });
+  } catch { /* the receipt is never the answer */ }
+}
+
 async function webGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], signal: AbortSignal, now: () => number): Promise<RoutedOutcome[]> {
   const started = now();
   run.ops += plans.length;
   const results = await Promise.all(plans.map(async (plan): Promise<{ plan: RoutedPlan; line?: string }> => {
     const call = plan.read.subs[0];
     const query = String(call?.args['query'] ?? plan.lookup.query);
+    const readStarted = now();
     const outcome = await deps.web!.search({ query, signal, deadlineMs: webDeadlineMs(query) });
+    recordWebRead(deps, run, query, outcome, readStarted, now);
     if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return { plan }; }
     run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
     run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));
@@ -5453,7 +5472,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             run.ops -= webCalls.length;
             return Promise.all(webCalls.map(async (call): Promise<IntentSubResult> => {
               const empty = { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0 };
+              const readStarted = now();
               const outcome = await deps.web!.search({ query: String(call.args['query'] ?? ''), signal: readSignal, deadlineMs: webDeadlineMs(String(call.args['query'] ?? '')) });
+              recordWebRead(deps, run, String(call.args['query'] ?? ''), outcome, readStarted, now);
               if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return empty; }
               run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
               run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));

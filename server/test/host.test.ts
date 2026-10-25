@@ -519,8 +519,8 @@ for (const releaseNineCatalogue of [true, false]) {
     } else {
       for (const endpoint of ['knowledge', 'data', 'crm'] as const) {
         await writeFile(join(config, `mongoose-${endpoint}.json`), JSON.stringify({
-          schemaVersion: 2, base: url, clientId: 'client', redirectPort: 45871, account: 'synthetic',
-          endpoint, audience: `mongoose:${endpoint}`, accessToken: 'access-token', refreshToken: 'refresh-token',
+          schemaVersion: 3, endpoint, resource: `${url}/mcp/${endpoint}`, issuer: url, tokenEndpoint: `${url}/oauth/token`,
+          clientId: 'client', redirectPort: 45871, account: 'synthetic', accessToken: 'access-token', refreshToken: 'refresh-token',
           expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now(),
         }), { mode: 0o600 });
       }
@@ -536,7 +536,8 @@ for (const releaseNineCatalogue of [true, false]) {
     assert.deepEqual(reports.map(report => [report.id, report.state, report.tools]).sort(), [
       ['lux-knowledge', 'connected', 2], ['gmail', 'connected', 3], ['calendar', 'connected', 2],
       // Each Mongoose connection is granted its own endpoint envelope, so the three publish disjoint reads.
-      ['mattermost', 'connected', 6], ['mongoose-knowledge', releaseNineCatalogue ? 'error' : 'connected', releaseNineCatalogue ? 0 : 4],
+      // C-CHAT: five reads plus the attention and chat composites.
+      ['mattermost', 'connected', 7], ['mongoose-knowledge', releaseNineCatalogue ? 'error' : 'connected', releaseNineCatalogue ? 0 : 4],
       ['mongoose-data', releaseNineCatalogue ? 'error' : 'connected', releaseNineCatalogue ? 0 : 1],
       ['mongoose-crm', releaseNineCatalogue ? 'error' : 'connected', releaseNineCatalogue ? 0 : 1],
     ].sort());

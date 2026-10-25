@@ -17,7 +17,7 @@
  * open handle line and the eight attendee names a schedule answer needs. LIVE_RESULT_CHARS is the
  * hard ceiling on any single model-visible result, and LIVE_COMBINED_CHARS the larger ceiling for
  * a result that combines several sources. */
-import { bodySourceLinks, withOpenHandles, mintOpenLine } from './open-handles.js';
+import { bodySourceLinks, gmailThreadUrl, mintOpenLine, openDestination, withOpenHandles } from './open-handles.js';
 export const GMAIL_BODY_CHARS = 1500;
 export const GMAIL_LIST_MESSAGES = 10;
 export const GMAIL_LIST_EXCERPT_CHARS = 300;
@@ -26,18 +26,22 @@ export const CALENDAR_EVENT_CHARS = 300;
 /** How many attendee names one event line carries; the rest are counted (#574). */
 export const CALENDAR_ATTENDEE_NAMES = 8;
 
-/** #574: as many whole names as the event's own room holds, then what is left out. The helper's own
- * truncated list never supports a count, so it keeps the unnumbered tail the base shape used. */
-function attendeeNamesLine(names: readonly string[], upstreamOmitted: boolean, room: number): string {
-  const head = '  attendees: ';
+/** L8-01: the room the attendee names get of their own, so a long title or event handle never squeezes them out. */
+export const CALENDAR_ATTENDEE_LINE_CHARS = 200;
+
+/** #574 and L8-01: the true head count first, then as many whole names as the line holds, then the rest
+ * counted. A helper that truncated its own list only supports a lower bound and an unnumbered tail. */
+function attendeeNamesLine(names: readonly string[], upstreamOmitted: boolean): string {
+  const people = (count: number): string => `${count} ${count === 1 ? 'person' : 'people'}`;
+  const head = `  attendees: ${upstreamOmitted ? `at least ${people(names.length)}` : people(names.length)}`;
   const render = (count: number): string => {
     const rest = names.length - count;
-    const tail = upstreamOmitted ? ' and others' : rest > 0 ? ` and ${rest} others` : '';
-    return `${head}${names.slice(0, count).join(', ')}${tail}`;
+    const tail = upstreamOmitted ? ' and others' : rest > 0 ? ` and ${rest} more` : '';
+    return count === 0 ? head : `${head}: ${names.slice(0, count).join(', ')}${tail}`;
   };
   let count = Math.min(names.length, CALENDAR_ATTENDEE_NAMES);
-  while (count > 0 && render(count).length >= room) count -= 1;
-  return count === 0 ? '' : render(count);
+  while (count > 0 && render(count).length > CALENDAR_ATTENDEE_LINE_CHARS) count -= 1;
+  return render(count);
 }
 export const MATTERMOST_MESSAGE_CHARS = 250;
 export const MATTERMOST_MESSAGES = 8;
@@ -141,7 +145,7 @@ function listed(items: string[], limit: number, label: string, followUp?: string
   return { text: shown.join('\n') + suffix, omitted };
 }
 /** The model-only bracket annotations a shaped result appends: the omission/paging note
- * (`[omitted: ...]`), the calendar character cut (`[+N chars]`), and the `[id ...]` handle the model
+ * (`[omitted: ...]`), the retired calendar character cut (`[+N chars]`, still stripped from stored evidence), and the `[id ...]` handle the model
  * needs to re-read one message, event or insight. The owner-facing evidence copy strips them; the
  * model's own copy keeps them. */
 export const MODEL_ONLY_NOTE = /[ \t]*\n*\[(?:omitted: [^\]\n]*|\+\d+ chars|id [^\]\s]*)\]/g;
@@ -269,8 +273,10 @@ function senderName(source: Record<string, unknown>): string {
   const from = header(source, 'From');
   return (AUTHORS.exec(from)?.[1] ?? from).trim();
 }
-function inboxUrl(id: unknown): string | undefined {
-  return typeof id === 'string' && id.length > 0 ? `https://mail.google.com/mail/u/0/#inbox/${encodeURIComponent(id)}` : undefined;
+/** C-OPEN 4: the thread in all mail under the proven account; a message with no thread id opens by its own id. */
+function threadUrl(entry: Record<string, unknown>): string | undefined {
+  const thread = str(entry['threadId']) || str(entry['id']);
+  return thread.length > 0 ? gmailThreadUrl(thread) : undefined;
 }
 function labels(source: Record<string, unknown>): string[] {
   return Array.isArray(source['labelIds']) ? source['labelIds'].filter((value): value is string => typeof value === 'string') : [];
@@ -309,7 +315,11 @@ export function shapeGmailRead(data: Record<string, unknown>): ShapedResult {
   const sourceNote = metadata ? '[Metadata-only view requested; body was not acquired.]' : unavailable ? '[Body unavailable in source response; no body bytes acquired.]' : coverage['complete'] === false ? '[Source reports incomplete inline body coverage.]' : coverage['complete'] !== true ? '[Source inline body completeness is unverified.]' : '';
   const omitted = Math.max(0, received.length - body.length) + cut.omitted;
   const note = omitted > 0 ? `\n\n[omitted: ${omitted} received characters of body omitted from this display]` : '';
-  return capped({ text: `${head.join('\n')}\n\n${cut.text}${note}${sourceNote ? `\n${sourceNote}` : ''}`, partial: omitted > 0 || unavailable || coverage['complete'] === false, originalCharacters: received.length + head.join('\n').length, omittedCharacters: omitted, sources: bodySourceLinks(cut.text, 'mail_body') });
+  // C-OPEN 2: the message itself opens; a link inside its body is someone else's text and never does.
+  const url = threadUrl(data);
+  const subject = header(data, 'Subject');
+  const sources = url ? [{ title: subject ? `Gmail: ${subject}` : 'Open in Gmail', url, sourceType: 'gmail' }] : [];
+  return capped({ text: `${head.join('\n')}\n\n${cut.text}${note}${sourceNote ? `\n${sourceNote}` : ''}`, partial: omitted > 0 || unavailable || coverage['complete'] === false, originalCharacters: received.length + head.join('\n').length, omittedCharacters: omitted, sources });
 }
 
 export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
@@ -323,7 +333,7 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
     const threadValue = entry['threadSize'] ?? entry['messageCount'];
     const size = typeof threadValue === 'number' && threadValue > 0 ? ` (thread ${threadValue})` : '';
     const named = header(entry, 'Subject');
-    const url = inboxUrl(entry['id']);
+    const url = threadUrl(entry);
     if (url) sources.push({ title: named ? `Gmail: ${named}` : 'Open in Gmail', url, sourceType: 'gmail' });
     // Open2: the handle line rides its own item, so a reply rebuilt from `- ` lines keeps it there.
     const openLine = url ? mintOpenLine({ title: named ? `Gmail: ${named}` : 'Open in Gmail', url, sourceType: 'gmail' }) : undefined;
@@ -351,6 +361,75 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
     mailPage: { messages: normalized, received: messages.length, invalid, localOmitted: Math.max(0, normalized.length - GMAIL_LIST_MESSAGES), ...(nextPageToken ? { nextPageToken } : {}), ...(data['sourceIncomplete'] === true && !nextPageToken ? { upstreamIncomplete: true } : {}), ...(Number.isSafeInteger(data['resultSizeEstimate']) && Number(data['resultSizeEstimate']) >= 0 ? { total: Number(data['resultSizeEstimate']) } : {}) } };
 }
 
+// --- Drive ---------------------------------------------------------------------------------
+
+/** C-OPEN 3: what a listing of several plausible files says instead of opening one of them. */
+export const DRIVE_CHOOSE_GUIDANCE = 'Several Drive files match and none is open. Read him two or three names with their modified dates and ask which one he means; then look up his pick with a drive lookup of id: and its id. Never read an id aloud.';
+/** How many Drive files one listing shows; the helper returns at most ten, newest first. */
+export const DRIVE_FILES_SHOWN = 5;
+const DRIVE_KINDS: Readonly<Record<string, string>> = {
+  'application/vnd.google-apps.presentation': 'Slides deck',
+  'application/vnd.google-apps.document': 'Google Doc',
+  'application/vnd.google-apps.spreadsheet': 'Google Sheet',
+  'application/vnd.google-apps.folder': 'folder',
+  'application/pdf': 'PDF',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'PowerPoint deck',
+  'application/vnd.ms-powerpoint': 'PowerPoint deck',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'Word document',
+  'application/msword': 'Word document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'Excel sheet',
+  'application/vnd.ms-excel': 'Excel sheet',
+};
+
+/** One file as a line the model may speak from, and the viewer link the host may mint from. Only webViewLink is read. */
+function driveItem(file: Record<string, unknown>): { name: string; line: string; viewer?: string } {
+  const name = str(file['name']).replace(/https?:\/\/\S+/giu, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || '(untitled)';
+  const kind = DRIVE_KINDS[str(file['mimeType'])] ?? 'file';
+  const modified = /^\d{4}-\d{2}-\d{2}/.exec(str(file['modifiedTime']))?.[0];
+  const owners = Array.isArray(file['owners']) ? file['owners'].filter(isRecord) : [];
+  const owner = owners.length > 0 ? str(owners[0]!['displayName']).slice(0, 80) : '';
+  const id = /^[A-Za-z0-9_-]{1,256}$/.test(str(file['id'])) ? str(file['id']) : '';
+  const destination = typeof file['webViewLink'] === 'string' ? openDestination(file['webViewLink']) : undefined;
+  const viewer = destination !== undefined && (destination.kind === 'docs' || destination.kind === 'drive') ? destination.url : undefined;
+  const segments = [name, kind, ...(modified ? [`modified ${modified}`] : []), ...(owner ? [`owner ${owner}`] : []), ...(viewer ? [] : ['no viewer link'])];
+  return { name, line: `- ${segments.join(' | ')}${id ? ` [id ${id}]` : ''}`, ...(viewer ? { viewer } : {}) };
+}
+
+/** One clear file: its line and, when its viewer link passes the policy, its handle line. */
+function driveOpenable(item: { name: string; line: string; viewer?: string }): { text: string; sources: ShapedSource[] } {
+  if (item.viewer === undefined) return { text: item.line, sources: [] };
+  const source = { title: `Drive: ${item.name}`, url: item.viewer, sourceType: 'drive' };
+  const open = mintOpenLine(source);
+  return { text: open === undefined ? item.line : `${item.line}\n${open}`, sources: [source] };
+}
+
+/**
+ * C-OPEN 2 and 3: a name search. One match mints its handle from webViewLink; several plausible matches mint
+ * nothing and ask, so a fresh drive_get_file of his pick is what opens; none says so.
+ */
+export function shapeDriveSearch(data: Record<string, unknown>): ShapedResult {
+  const files = Array.isArray(data['files']) ? data['files'].filter(isRecord) : [];
+  if (files.length === 0) return capped({ text: 'No Drive file matched that name. Nothing is open.', partial: data['sourceIncomplete'] === true, originalCharacters: 0, omittedCharacters: 0 });
+  const items = files.slice(0, DRIVE_FILES_SHOWN).map(driveItem);
+  const more = data['sourceIncomplete'] === true || files.length > items.length;
+  const tail = more ? `\nThese are the newest ${items.length} of more; a narrower name finds the rest.` : '';
+  if (items.length === 1) {
+    const one = driveOpenable(items[0]!);
+    return capped({ text: `${one.text}${tail}`, partial: more, originalCharacters: one.text.length, omittedCharacters: 0, sources: one.sources });
+  }
+  const text = `${DRIVE_CHOOSE_GUIDANCE}\n${items.map(item => item.line).join('\n')}${tail}`;
+  return capped({ text, partial: more, originalCharacters: text.length, omittedCharacters: 0 });
+}
+
+/** C-OPEN 3: the fresh read of the file he picked; only this result mints the handle that opens it. */
+export function shapeDriveFile(data: Record<string, unknown>): ShapedResult {
+  if (str(data['id']) === '' && str(data['name']) === '') return capped({ text: 'That Drive file was not found. Nothing is open.', partial: false, originalCharacters: 0, omittedCharacters: 0 });
+  const item = driveItem(data);
+  if (data['trashed'] === true) return capped({ text: `${item.line} | in the trash, not opened`, partial: false, originalCharacters: item.line.length, omittedCharacters: 0 });
+  const one = driveOpenable(item);
+  return capped({ text: one.text, partial: false, originalCharacters: one.text.length, omittedCharacters: 0, sources: one.sources });
+}
+
 // --- Calendar ------------------------------------------------------------------------------
 
 export function shapeGcalCalendars(data: Record<string, unknown>): ShapedResult {
@@ -376,37 +455,38 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const eventId = str(entry['id']);
     // A merged fan-out tags the event with its calendar name; a single-calendar read does not.
     const calendar = field(entry, 'calendar');
-    const lines = [`- ${start}, ${title}${location ? `, ${location}` : ''}${calendar ? ` | ${calendar}` : ''}${eventId ? ` [id ${eventId}]` : ''}`];
-    // A header longer than the whole per-event bound is no title but a wall of text, and it is cut as
-    // one with the rest so a hostile fixture cannot blow the result budget.
-    const headerLine = lines[0]!;
-    const titleFits = headerLine.length <= CALENDAR_EVENT_CHARS;
-    const budget = titleFits ? Math.max(0, CALENDAR_EVENT_CHARS - headerLine.length - 1) : CALENDAR_EVENT_CHARS;
+    const header = `- ${start}, ${title}${location ? `, ${location}` : ''}${calendar ? ` | ${calendar}` : ''}${eventId ? ` [id ${eventId}]` : ''}`;
+    // A header longer than the whole per-event bound is no title but a wall of text: it alone is cut.
+    const headerCut = header.length <= CALENDAR_EVENT_CHARS ? undefined : cutAtSentence(header, CALENDAR_EVENT_CHARS);
+    const lines = [headerCut === undefined ? header : `${headerCut.text} [omitted: the rest of this line]`];
     const link = field(entry, 'htmlLink');
     if (link) sources.push({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' });
     const openLine = link ? mintOpenLine({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' }) : undefined;
-    if (openLine) lines.splice(1, 0, openLine);
+    if (openLine) lines.push(openLine);
     const attendees = Array.isArray(entry['attendees']) ? entry['attendees'] : [];
     const names = attendees.filter(isRecord).map(a => field(a, 'displayName', 'email')).filter(Boolean);
-    // #574: whole names only, as many as the event's own room holds, and the rest counted, so a long list
-    // is never spoken as complete and no name is ever cut in half.
-    const attendeeRoom = titleFits ? budget - (openLine === undefined ? 0 : openLine.length + 1) : 0;
-    if (names.length) { const attendeeLine = attendeeNamesLine(names, entry['attendeesOmitted'] === true, attendeeRoom); if (attendeeLine) lines.push(attendeeLine); }
+    // L8-01: the people lines are whole, never the part a cut removes, and carry no character count.
+    if (names.length) lines.push(attendeeNamesLine(names, entry['attendeesOmitted'] === true));
     const organizer = isRecord(entry['organizer']) ? field(entry['organizer'], 'displayName', 'email') : '';
     if (organizer) lines.push(`  organizer: ${organizer}`);
     const conference = field(entry, 'hangoutLink') || (isRecord(entry['conferenceData']) ? 'yes' : '');
     if (conference) lines.push('  conference: yes');
+    // Only the description is cut against what is left of the per-event bound.
     const description = stripDialIn(cleanMailBody(field(entry, 'description'))).replace(/\n+/g, ' ');
-    if (description) lines.push(`  ${description}`);
-    // #7: the first line is the event's own identity (time, title, place), so it is never the part a
-    // cut removes: a long company name survives whole and only the body is trimmed against the bound.
-    const bodyLines = titleFits ? lines.slice(1) : lines;
-    const cut = cutAtSentence(bodyLines.join('\n'), budget);
-    if (cut.omitted === 0) { const line = lines.join('\n'); normalized.push({ id: eventId, start, line, bodyTruncated: false }); return line; }
-    const note = (omitted: number): string => ` [+${omitted} chars]`;
-    const recut = cutAtSentence(bodyLines.join('\n'), Math.max(0, budget - note(cut.omitted).length));
-    const line = titleFits ? [headerLine, `${recut.text}${note(recut.omitted)}`].filter(part => part.length > 0).join('\n') : `${recut.text}${note(recut.omitted)}`;
-    normalized.push({ id: eventId, start, line, bodyTruncated: true });
+    let cutDescription = headerCut !== undefined;
+    if (description) {
+      const room = CALENDAR_EVENT_CHARS - lines.join('\n').length - 3;
+      if (description.length <= room) lines.push(`  ${description}`);
+      else {
+        cutDescription = true;
+        const note = ' [omitted: the rest of the description]';
+        const cut = cutAtSentence(description, Math.max(0, room - note.length));
+        if (cut.text) lines.push(`  ${cut.text}${note}`);
+        else lines[lines.length - 1] = `${lines[lines.length - 1]!} [omitted: the description]`;
+      }
+    }
+    const line = lines.join('\n');
+    normalized.push({ id: eventId, start, line, bodyTruncated: cutDescription });
     return line;
   });
   const unread = isRecord(data['partial']) && typeof data['partial']['unread'] === 'number' && data['partial']['unread'] > 0 ? data['partial']['unread'] : 0;
@@ -442,7 +522,10 @@ function renderPost(post: Record<string, unknown>): { lines: string[]; omitted: 
   const time = field(post, 'time', 'timestamp') || scalar(post['create_at']);
   const postId = str(post['id'] ?? post['post_id']);
   const header2 = [channel, author, time].filter(Boolean).join(' | ') + (postId ? ` [post ${postId}]` : '');
-  const raw = str(post['text'] ?? post['message']);
+  // C-CHAT (L4-10): a webhook post's words live in its attachment text, rendered after the message.
+  const message = str(post['text'] ?? post['message']);
+  const attachment = str(post['attachmentText']).trim();
+  const raw = attachment === '' ? message : message.trim() === '' ? attachment : `${message}\n${attachment}`;
   const cut = cutAtSentence(raw, MATTERMOST_MESSAGE_CHARS);
   const reactions = reactionCount(post);
   const meta = `${reactions > 0 ? ` (${reactions} reactions)` : ''}${threadPosition(post)}`;
@@ -577,7 +660,9 @@ export function shapeMattermost(tool: string, data: unknown): ShapedResult {
   const body = listed(rendered.map(entry => entry.lines.join('\n')), MATTERMOST_MESSAGES, 'messages');
   const omitted = body.omitted + rendered.reduce((sum, entry) => sum + entry.omitted, 0);
   const sources = rendered.map(entry => entry.source).filter((source): source is ShapedSource => source !== undefined);
-  return capped({ text: body.text, partial: omitted > 0, originalCharacters: rendered.map(l => l.lines.join('\n')).join('\n').length, omittedCharacters: omitted, shape: extracted.shape, itemCount: visible.length, sources });
+  // C-CHAT (AUD-002, L4-03): a search's own match count leads the text, so "8 of 71" is said, never "8 of 8".
+  const total = tool === 'mattermost_search' && isRecord(data) && Number.isSafeInteger(data['total']) ? Number(data['total']) : undefined;
+  return capped({ text: total === undefined ? body.text : `matched: ${total}\n${body.text}`, partial: omitted > 0, originalCharacters: rendered.map(l => l.lines.join('\n')).join('\n').length, omittedCharacters: omitted, shape: extracted.shape, itemCount: visible.length, sources });
 }
 
 // --- lux-knowledge -------------------------------------------------------------------------

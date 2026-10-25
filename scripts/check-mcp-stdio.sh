@@ -27,6 +27,7 @@ cp "$root/server/adapters/live-voice/types.ts" "$out/source/adapters/live-voice/
 cp "$root"/server/config/{mcp,files}.ts "$out/source/config/"
 cp "$root/server/host/mcp.ts" "$out/source/host/"
 cp "$root/server/host/mongoose-auth.ts" "$out/source/host/"
+cp "$root/server/host/oauth-client.ts" "$out/source/host/"
 cp "$root/server/test/mcp-stdio.test.ts" "$out/source/test/"
 mkdir -p "$out/source/test/fixtures"
 cp "$root/server/test/fixtures/stdio-mcp-child.mjs" "$out/source/test/fixtures/"

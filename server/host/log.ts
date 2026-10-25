@@ -1,5 +1,6 @@
 import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
+import { TRELLO_CALL_TOOLS } from '../tools/trello.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { TURN_FAILED_REASONS } from '../adapters/live-voice/types.js';
@@ -14,7 +15,7 @@ import { join } from 'node:path';
 const SAFE_TOKEN = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/;
 const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/;
 const SAFE_CALL_ID = /^[A-Za-z0-9_.:~-]{1,128}$/;
-const RESEARCH_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'memory', 'web'];
+const RESEARCH_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'memory', 'web', 'drive'];
 const RESEARCH_CANDIDATES = ['knowledge_search', 'calendar_window', 'mail_search', 'mail_open', 'chat_search', 'chat_thread', 'company_search', 'web_search', 'brief', 'stop_answer', 'stop_insufficient', 'memory_search'];
 const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exhausted', 'no_candidates', 'voi_stop', 'ops_exhausted', 'deadline', 'cancelled', 'fallback', 'stop', 'failed', 'refused'];
 const RESEARCH_PHASES = ['started', 'round', 'done', 'stopped'];
@@ -27,6 +28,8 @@ const RESEARCH_PLANS = ['knowledge_only', 'named_sources'];
 const RESEARCH_SKIP_REASONS = ['not_configured', 'not_granted', 'endpoint_unavailable', 'window_unparsed', 'timeout', 'read_failed'];
 // Release 4: why a source result is partial, a closed set, and how many pages it lost.
 const RESEARCH_PARTIAL_REASONS = ['pages_failed'];
+/** L8-Q07: the closed reason a research_source receipt gives for a read that did not answer. */
+const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading'];
 // R7, 1015: the warm calendar digest's own closed vocabulary. `timeout` and `stale` are states in
 // their own right, so a cut-off or old read is never reported as an empty day.
 const CALENDAR_DIGEST_STATES = ['present', 'empty', 'failed', 'timeout', 'unconfigured', 'stale', 'absent'];
@@ -47,7 +50,7 @@ const LIVE_TOOL_SEND_OUTCOMES = ['sent', 'deferred', 'failed'] as const;
 const SESSION_ID = /^[0-9a-f-]{36}$/i;
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 /** K6: the layers a routed research call may name, in the model's own words. */
-const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'web'];
+const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'drive', 'web'];
 /** R6: how a late finding reached the voice model, and why it did or did not reach the owner. */
 const LATE_DELIVERIES = ['commentary', 'thinking', 'response', 'ledger', 'dropped'];
 const LATE_REASONS = ['quiet', 'no_new_findings', 'source_failed', 'run_cut', 'session_closed', 'no_thinking_channel',
@@ -72,6 +75,26 @@ const LATE_OUTCOMES = ['completed', 'failed'];
 /** S4a-R4: the command families a rejected client event id can name. */
 const COMMAND_KINDS = ['tool_out', 'cont', 'cmt', 'thk', 'other'];
 const isSafeToken = (value: unknown): value is string => typeof value === 'string' && SAFE_TOKEN.test(value);
+/** W1: the Mongoose sign-in hops and the closed outcomes each may name (MongooseSignInHop in host/mongoose-login.ts). */
+const SIGNIN_ENDPOINTS = ['knowledge', 'data', 'crm', 'trello'];
+const SIGNIN_OUTCOMES: Record<string, readonly string[]> = {
+  signin_requested: ['started', 'reopened', 'in_progress', 'not_configured'],
+  signin_discovery: ['ok', 'config_invalid', 'unreachable', 'redirected', 'http_status', 'not_json', 'resource_mismatch', 'server_untrusted', 'metadata_unreachable', 'metadata_invalid', 'issuer_mismatch', 'endpoint_off_origin', 'timeout'],
+  signin_registration: ['ok', 'port_in_use', 'refused', 'timeout'],
+  signin_browser_handoff: ['ok', 'unavailable', 'timeout'],
+  signin_callback: ['ok', 'state_mismatch', 'authorization_refused', 'timeout'],
+  signin_token: ['ok', 'refused', 'unreachable', 'timeout'],
+  signin_stored: ['ok', 'failed'],
+};
+const SIGNIN_OAUTH_ERRORS = ['invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client', 'unsupported_grant_type', 'invalid_scope', 'invalid_target', 'access_denied'];
+/**
+ * W7: the Trello board tool actions and the closed reasons a call may name (TRELLO_GUIDANCE in tools/trello.ts).
+ * F12: the tool names are built from the tool module's own closed lists, so a new read view or write action
+ * is logged instead of being dropped here without a trace.
+ */
+const TRELLO_CALL_TOOL = new RegExp(`^(?:${TRELLO_CALL_TOOLS.map(tool => tool.replace('.', '\\.')).join('|')})$`);
+const TRELLO_CALL_REASONS = ['not_configured', 'not_signed_in', 'auth_failed', 'rate_limited', 'unavailable', 'board_not_found', 'board_ambiguous', 'unsupported', 'result_unrecognized', 'outside_scope',
+  'list_unknown', 'list_ambiguous', 'card_unknown', 'card_ambiguous', 'label_unknown', 'item_unknown', 'invalid_due', 'description_full', 'not_owner_requested', 'no_change', 'write_failed', 'outcome_unknown', 'replayed'];
 /** W11-R3: the Gmail operators a compiled mail query may name, as a closed set, never the words. */
 const MAIL_QUERY_OPERATORS = ['from', 'to', 'cc', 'bcc', 'subject', 'after', 'before', 'newer_than', 'older_than', 'is', 'has', 'label', 'in'];
 /** W11-R3: a window bound is one operator from the closed set and a day count or a calendar date. */
@@ -228,6 +251,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'connector_identity', connector: value.connector, proven: value.proven, match: value.match,
       ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasCode ? { code: value.code } : {}) };
   }
+  if (value.event === 'gmail_account_unknown') {
+    // C-OPEN 4: a Gmail link fell back to account index 0 because the connector proved no account.
+    return closedKeys(value, ['event']) ? { event: 'gmail_account_unknown' } : undefined;
+  }
+  if (value.event === 'google_mcp_path_unsafe') {
+    // C-OPEN 6: the Google helper runs from the reports folder; the endpoint id only, never the path.
+    if (!closedKeys(value, ['endpointId', 'event']) || !isSafeId(value.endpointId)) return;
+    return { event: 'google_mcp_path_unsafe', endpointId: value.endpointId };
+  }
   if (value.event === 'connector_connected' || value.event === 'connector_recovered'
     || value.event === 'connector_recovery_exhausted' || value.event === 'connector_unavailable'
     || value.event === 'connector_helper_stderr') {
@@ -302,6 +334,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'mongoose_catalogue_replaced' && value.endpoints === 3) {
     return { event: 'mongoose_catalogue_replaced', endpoints: 3 };
   }
+  if (typeof value.event === 'string' && Object.hasOwn(SIGNIN_OUTCOMES, value.event)) {
+    // W1: one line per sign-in hop: endpoint, an opaque attempt id and a closed outcome, never a URL,
+    // code, state, verifier, token or registration payload.
+    const outcomes = SIGNIN_OUTCOMES[value.event]!;
+    const keys = value.oauthError === undefined ? ['attemptId', 'endpoint', 'event', 'outcome'] : ['attemptId', 'endpoint', 'event', 'oauthError', 'outcome'];
+    if (Object.keys(value).sort().join(',') !== keys.join(',')) return;
+    if (!isSafeMember(value.endpoint, value.event === 'signin_requested' ? [...SIGNIN_ENDPOINTS, 'unknown'] : SIGNIN_ENDPOINTS)) return;
+    if (typeof value.attemptId !== 'string' || !/^[0-9a-f]{16}$/.test(value.attemptId) || !isSafeMember(value.outcome, outcomes)) return;
+    if (value.oauthError !== undefined && !(value.event === 'signin_token' && value.outcome === 'refused' && isSafeMember(value.oauthError, SIGNIN_OAUTH_ERRORS))) return;
+    return { event: value.event, endpoint: value.endpoint, attemptId: value.attemptId, outcome: value.outcome, ...(value.oauthError !== undefined ? { oauthError: value.oauthError } : {}) };
+  }
   if (value.event === 'live_attach_rejected' && typeof value.code === 'string' && /^[A-Za-z0-9_]{1,107}$/.test(value.code)) {
     // C-LIVE behaviour 7: the exception class is a bare identifier and the one known detail token, never text.
     return { event: value.event, ...(typeof value.liveSessionId === 'string' && /^[0-9a-f-]{36}$/i.test(value.liveSessionId) ? { liveSessionId: value.liveSessionId } : {}), code: value.code,
@@ -366,6 +409,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       if (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0) return;
     }
     return { event: 'conversation_summary_injection', injected: value.injected, omitted: value.omitted, chars: value.chars };
+  }
+  if (value.event === 'connector_call' && value.connector === 'trello') {
+    // W7: one line per Trello board call phase: Didi's own tool and action, the phase and a closed outcome. Never card text.
+    const hasReason = value.reason !== undefined;
+    if (!closedKeys(value, ['event', 'connector', 'tool', 'phase', 'outcome', ...(hasReason ? ['reason'] : [])])) return;
+    if (typeof value.tool !== 'string' || !TRELLO_CALL_TOOL.test(value.tool)) return;
+    if (!isSafeMember(value.phase, ['admit', 'dispatch', 'settle']) || !isSafeMember(value.outcome, ['ok', 'refused', 'failed', 'unknown'])) return;
+    if (hasReason && !isSafeMember(value.reason, TRELLO_CALL_REASONS)) return;
+    return { event: 'connector_call', connector: 'trello', tool: value.tool, phase: value.phase, outcome: value.outcome, ...(hasReason ? { reason: value.reason } : {}) };
   }
   if (value.event === 'vault_write') {
     // Closed shape: the operation state token, the vault's own insight id on a confirmed save, and the wire latency. Never text.
@@ -955,9 +1007,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // ROUTE-1022 K5: the same plan token as the run receipt, admitted only from its closed set.
     const hasPlan = Object.prototype.hasOwnProperty.call(value, 'plan');
     const hasPartial = Object.prototype.hasOwnProperty.call(value, 'partial');
+    const hasReason = Object.prototype.hasOwnProperty.call(value, 'reason');
+    if (hasReason && !isSafeMember(value.reason, RESEARCH_SOURCE_REASONS)) return;
     if (hasPlan && !isSafeMember(value.plan, RESEARCH_PLANS)) return;
     if (hasPartial && (!isSafeMember(value.partial, RESEARCH_PARTIAL_REASONS) || !isSafeCount(value.failedPages))) return;
-    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : []), ...(hasChat ? ['chat'] : []), ...(hasPlan ? ['plan'] : []), ...(hasPartial ? ['partial', 'failedPages'] : [])].sort().join(',')) return;
+    if (Object.keys(value).sort().join(',') !== [...keys, ...(hasKnowledge ? ['knowledge'] : []), ...(hasMail ? ['mail'] : []), ...(hasChat ? ['chat'] : []), ...(hasPlan ? ['plan'] : []), ...(hasPartial ? ['partial', 'failedPages'] : []), ...(hasReason ? ['reason'] : [])].sort().join(',')) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_source');
     if (typeof value.source !== 'string' || !ROUTED_SOURCES.includes(value.source)) return;
     if (typeof value.outcome !== 'string' || !ROUTED_OUTCOMES.includes(value.outcome)) return;
@@ -1013,7 +1067,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
         chat = { terms: terms as number, operators: [...operators] as string[], limit: limit as number, sort };
       }
     }
-    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(chat !== undefined ? { chat } : {}), ...(hasPlan ? { plan: value.plan as string } : {}), ...(hasPartial ? { partial: value.partial as string, failedPages: value.failedPages as number } : {}) };
+    return { event: 'research_source', researchId: value.researchId, source: value.source, outcome: value.outcome, ms: value.ms, deadlineMs: value.deadlineMs, coalesced: value.coalesced, ...(knowledge !== undefined ? { knowledge } : {}), ...(mail !== undefined ? { mail } : {}), ...(chat !== undefined ? { chat } : {}), ...(hasPlan ? { plan: value.plan as string } : {}), ...(hasPartial ? { partial: value.partial as string, failedPages: value.failedPages as number } : {}), ...(hasReason ? { reason: value.reason as string } : {}) };
   }
   if (value.event === 'research_first_answer') {
     // R6: when a call answered with sources still reading: the elapsed ms, the sources already in the

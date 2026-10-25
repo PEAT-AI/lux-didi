@@ -1,3 +1,5 @@
+import { closeSync, openSync, readSync, realpathSync } from 'node:fs';
+import { isAbsolute, resolve, sep } from 'node:path';
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type SourceDispatchEvidence } from '../adapters/mcp/port.js';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
@@ -7,15 +9,17 @@ import type { McpRegistry } from '../adapters/mcp/registry.js';
  * envelope is refused even when the remote lists it: the local read classification is the
  * authority, never the remote's readOnlyHint.
  */
-export const GOOGLE_TOOLS = ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message', 'calendar_list_calendars', 'calendar_list_events'] as const;
+export const GOOGLE_TOOLS = ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message', 'calendar_list_calendars', 'calendar_list_events', 'drive_search_files', 'drive_get_file'] as const;
 export type GoogleTool = (typeof GOOGLE_TOOLS)[number];
 
 /** Each family is one stdio endpoint; its catalog is a closed subset of the envelope. */
 export const GOOGLE_FAMILIES: Readonly<Record<GoogleFamily, readonly GoogleTool[]>> = {
   gmail: ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message'],
   calendar: ['calendar_list_calendars', 'calendar_list_events'],
+  // C-OPEN 2: read-only Drive metadata (lux-cli drive family, C-DRIVE.md), its own endpoint and token.
+  drive: ['drive_search_files', 'drive_get_file'],
 };
-export type GoogleFamily = 'gmail' | 'calendar';
+export type GoogleFamily = 'gmail' | 'calendar' | 'drive';
 
 /** Bounded argument defaults; a caller may only narrow them. */
 export const GOOGLE_DEFAULTS = { listResults: 10, mailListResults: 10, maxListResults: 50, readBodyChars: 4000 } as const;
@@ -65,6 +69,11 @@ export type GoogleResult = GoogleEvidence | GoogleRefused | GoogleUnknown;
 export interface GmailListInput { maxResults?: number; q?: string; pageToken?: string }
 export interface GmailReadInput { id: string; format?: 'metadata' | 'full' }
 export interface GcalCalendarsInput { maxResults?: number; pageToken?: string }
+/** C-DRIVE drive_search_files: a name query, optional type filter and window, at most ten files. */
+export interface DriveSearchInput { query: string; mime_types?: readonly string[]; modified_after?: string; limit?: number }
+export interface DriveGetInput { file_id: string }
+/** The Drive search page bounds (C-DRIVE): 1 to 10, five when the caller names none. */
+export const DRIVE_LIMIT = { default: 5, max: 10 } as const;
 export interface GcalListInput {
   calendarId?: string; calendarIds?: readonly string[]; maxResults?: number; pageToken?: string; timeMin?: string; timeMax?: string; timeZone?: string; now?: () => number;
   /** The caller's remaining source budget as an absolute epoch ms; the fan-out never plans past it. */
@@ -103,6 +112,8 @@ export interface GoogleReader {
   gmailRead(input: GmailReadInput, signal?: AbortSignal): Promise<GoogleResult>;
   gcalCalendars(input: GcalCalendarsInput, signal?: AbortSignal): Promise<GoogleResult>;
   gcalList(input: GcalListInput, signal?: AbortSignal): Promise<GoogleResult>;
+  driveSearch(input: DriveSearchInput, signal?: AbortSignal): Promise<GoogleResult>;
+  driveGet(input: DriveGetInput, signal?: AbortSignal): Promise<GoogleResult>;
 }
 
 export interface GoogleOptions { port: McpPort; registry: McpRegistry; config: GoogleConfig }
@@ -129,7 +140,7 @@ interface Settings {
 
 /** A family the config names must be a real one; an unknown family is a config fault, never a silent default. */
 export function googleFamilyTools(family: unknown): { ok: true; family: GoogleFamily; tools: readonly GoogleTool[] } | { ok: false; reason: string } {
-  if (family !== 'gmail' && family !== 'calendar') return { ok: false, reason: 'unknown-family' };
+  if (family !== 'gmail' && family !== 'calendar' && family !== 'drive') return { ok: false, reason: 'unknown-family' };
   return { ok: true, family, tools: GOOGLE_FAMILIES[family] };
 }
 
@@ -398,7 +409,58 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       // #574: a single-calendar day read carries the same attendee and organizer projection as a merged one.
       return dispatch('calendar_list_events', { ...bounded.args, ...includeArgs() }, signal);
     },
+    async driveSearch(input: DriveSearchInput, signal?: AbortSignal): Promise<GoogleResult> {
+      const denied = gate('drive_search_files');
+      if (denied) return { state: 'refused', reason: denied };
+      if (typeof input.query !== 'string' || input.query.trim().length < 1 || input.query.length > 200) return { state: 'refused', reason: 'invalid-query' };
+      const args: Record<string, unknown> = { query: input.query.trim() };
+      if (input.mime_types !== undefined) {
+        const types = input.mime_types;
+        if (!Array.isArray(types) || types.length < 1 || types.length > 8 || !types.every(type => typeof type === 'string' && /^[a-z0-9.+-]{1,40}\/[A-Za-z0-9.+-]{1,120}$/.test(type))) return { state: 'refused', reason: 'invalid-mime-types' };
+        args['mime_types'] = [...types];
+      }
+      if (input.modified_after !== undefined) {
+        if (typeof input.modified_after !== 'string' || !RFC3339.test(input.modified_after)) return { state: 'refused', reason: 'invalid-time-window' };
+        args['modified_after'] = input.modified_after;
+      }
+      const limit = input.limit ?? DRIVE_LIMIT.default;
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > DRIVE_LIMIT.max) return { state: 'refused', reason: 'limit-out-of-budget' };
+      args['limit'] = limit;
+      return dispatch('drive_search_files', args, signal);
+    },
+    async driveGet(input: DriveGetInput, signal?: AbortSignal): Promise<GoogleResult> {
+      const denied = gate('drive_get_file');
+      if (denied) return { state: 'refused', reason: denied };
+      // A Drive file id is an opaque token; anything else is refused before it reaches the helper.
+      if (typeof input.file_id !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(input.file_id)) return { state: 'refused', reason: 'invalid-file-id' };
+      return dispatch('drive_get_file', { file_id: input.file_id }, signal);
+    },
   };
+}
+
+/**
+ * C-OPEN 6: a Google helper that runs from the reports folder (a private working copy that may be
+ * archived at any time) is unsafe wiring. True when the command, or the interpreter its first line
+ * names, sits under <home>/.lux/reports, as written or resolved. A file that cannot be read is the
+ * connector's own failure to report, never this notice.
+ */
+export function googleMcpPathUnsafe(command: string, home: string): boolean {
+  const reports = resolve(home, '.lux', 'reports');
+  let reportsReal = reports;
+  try { reportsReal = realpathSync(reports); } catch { /* an absent folder still names the place */ }
+  const under = (path: string): boolean => [reports, reportsReal].some(root => path === root || path.startsWith(`${root}${sep}`));
+  const real = (path: string): string | undefined => { try { return realpathSync(path); } catch { return undefined; } };
+  const commandReal = real(command);
+  if (commandReal === undefined) return false;
+  const candidates = [command, commandReal];
+  let head = '';
+  try {
+    const fd = openSync(commandReal, 'r');
+    try { const buffer = Buffer.alloc(512); head = buffer.toString('utf8', 0, readSync(fd, buffer, 0, 512, 0)); } finally { closeSync(fd); }
+  } catch { head = ''; }
+  const interpreter = /^#!\s*(\S+)/.exec(head)?.[1];
+  if (interpreter !== undefined && isAbsolute(interpreter)) candidates.push(interpreter, real(interpreter) ?? interpreter);
+  return candidates.some(under);
 }
 
 /** The most one warm calendar digest may put in the session's Today: line (issue 339). */

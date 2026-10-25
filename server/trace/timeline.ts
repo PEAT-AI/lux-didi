@@ -50,6 +50,8 @@ export interface TraceGap {
 export interface NativeGap { sourceInstanceId: string; fromSeq: number; toSeq: number }
 export interface TimelineReport {
   tools?: ToolDiagnostics;
+  /** L8-Q04: what went wrong in the call as its receipts record it, a lower bound by kind. */
+  callFailures: { count: number; kinds: Record<string, number> };
   coverage?: { metadata: string; content: string; native: string; failureCountLowerBound: number | null; lastReason: string | null; unassociatedTranscriptRows: number | null };
   contentAccess?: DiagnosticContentAccess;
   transcript?: { journalId: number; role: UtteranceRole; text: string; final: boolean; finalOrigin: string | null; providerStartMs: number | null; providerEndMs: number | null }[];
@@ -123,6 +125,18 @@ function continuationDecisions(read: TraceRead, liveSessionId: string): Map<stri
   return decisions;
 }
 
+/** L8-Q04: the failure receipts of one call: rejected commands, stalls, failed responses and failed calls. */
+const FAILED_RESPONSE_REASONS = new Set(['failed', 'provider_error', 'timeout']);
+const FAILED_CALL_OUTCOMES = new Set(['failed', 'timeout', 'aborted']);
+function callFailuresOf(read: TraceRead, liveSessionId: string, responses: readonly ResponseView[], calls: readonly CallView[]): { count: number; kinds: Record<string, number> } {
+  const kinds: Record<string, number> = {};
+  const add = (kind: string): void => { kinds[kind] = (kinds[kind] ?? 0) + 1; };
+  for (const row of read.all("SELECT kind FROM trace_event WHERE live_session_id=? AND kind IN ('command.rejected','live.dead_air_stalled') ORDER BY seq", [liveSessionId])) add(String(row.kind));
+  for (const response of responses) if (response.terminalReason !== null && FAILED_RESPONSE_REASONS.has(response.terminalReason)) add(`response.${response.terminalReason}`);
+  for (const call of calls) if (FAILED_CALL_OUTCOMES.has(call.outcome)) add(`call.${call.outcome}`);
+  return { count: Object.values(kinds).reduce((sum, n) => sum + n, 0), kinds };
+}
+
 export interface TimelineOptions { turn?: number; content?: boolean; contentAuthority?: DiagnosticContentAuthority; capturedAt?: number }
 
 export function buildTimeline(read: TraceRead, liveSessionId: string, options: TimelineOptions = {}): TimelineReport {
@@ -170,11 +184,13 @@ export function buildTimeline(read: TraceRead, liveSessionId: string, options: T
     });
 
   const audibilityReported = playback.some(segment => segment.audibleAt !== null);
+  const callFailures = callFailuresOf(read, liveSessionId, responses, calls);
   const gaps = turns.flatMap(track => gapsFor(track, audibilityReported)).sort((a, b) => a.turnIndex - b.turnIndex || a.obligation.localeCompare(b.obligation) || a.turnId.localeCompare(b.turnId));
   return {
     tools: readToolDiagnostics(read,liveSessionId,{content: options.content === true,...(options.contentAuthority ? {authority: options.contentAuthority} : {})}),
     liveSessionId,unattributedCalls: calls.filter(call => call.turnId === null),unattributedResponses: responses.filter(response => response.turnId === null),...(coverage ? { coverage } : {}),...(contentAccess ? { contentAccess } : {}),...(transcript ? { transcript } : {}),
     capturedAt: options.capturedAt ?? Date.now(),
+    callFailures,
     turns,
     gaps,
     nativeGaps: missingNativeRanges(read, liveSessionId),
@@ -339,6 +355,7 @@ export function renderTimeline(report: TimelineReport): string {
   }
   for (const call of report.unattributedCalls) lines.push(`unattributed call ${call.name} key=${call.callKey} outcome=${call.outcome} execution_ms=${call.executionMs ?? 'unknown'}`);
   for (const response of report.unattributedResponses) lines.push(`unattributed response ${response.responseKey} status=${response.status}`);
+  lines.push(`call_failures_at_least=${report.callFailures.count}${Object.entries(report.callFailures.kinds).map(([kind, n]) => ` ${kind}=${n}`).join('')}`);
   if (report.coverage) lines.push(`coverage metadata=${report.coverage.metadata} content=${report.coverage.content} native=${report.coverage.native} failures_at_least=${report.coverage.failureCountLowerBound ?? 'unknown'}`);
   if (report.contentAccess) lines.push(`content: ${report.contentAccess.state}${report.contentAccess.state === 'denied' ? ` reason=${report.contentAccess.reason}` : ''}`);
   for (const row of report.transcript ?? []) lines.push(`transcript journal=${row.journalId} role=${row.role} source=automatic_transcription final_origin=${row.finalOrigin ?? 'unknown'} ${JSON.stringify(row.text)}`);

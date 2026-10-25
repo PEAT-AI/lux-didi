@@ -95,11 +95,43 @@ test('a changed tool list is approved by name, and a mismatch names the account'
   assert.match(mismatch.text, /different account/);
 });
 
-test('a missing Mongoose credential points at the one sign-in command', () => {
-  for (const [id] of endpointRows) {
+test('a missing Mongoose credential points at the Sign in button, never a command that does not exist', () => {
+  for (const [id, label] of endpointRows) {
     const step = nextStep(id, 'error', 'credential_missing');
-    assert.equal(step.command, 'mongoose-login');
+    assert.equal(step.command, undefined);
+    assert.doesNotMatch(step.text, /mongoose-login|Run /);
+    assert.match(step.text, new RegExp(`${label} has no stored session\\. Use the Sign in button`));
     assert.match(step.guideUrl!, /docs\/user-guide\.md#connector-setup/);
     assert.doesNotMatch(step.text, /token|bearer/i);
   }
+});
+
+test('W1-R3: a Mongoose row never says restart Lux Didi; each reason gets its true next step', () => {
+  for (const [id, label] of endpointRows) {
+    for (const reason of ['configuration_error', 'discovery_failed', 'handshake_failed', 'identity_mismatch'] as const) {
+      const step = nextStep(id, 'error', reason);
+      assert.doesNotMatch(step.text, /restart Lux Didi/i, `${id} with ${reason}`);
+      assert.match(step.text, new RegExp(label), `${id} with ${reason} names its endpoint`);
+    }
+    assert.match(nextStep(id, 'error', 'configuration_error').text, /MCP configuration guide/);
+    assert.match(nextStep(id, 'error', 'configuration_error').text, /reads that file when it starts/);
+    assert.match(nextStep(id, 'error', 'handshake_failed').text, /VPN/);
+    assert.match(nextStep(id, 'error', 'discovery_failed').text, /Copy diagnostics/);
+    const mismatch = nextStep(id, 'error', 'identity_mismatch');
+    assert.match(mismatch.text, /different account/);
+    assert.equal(mismatch.signIn, true, 'a wrong account is fixed with the Sign in button');
+  }
+  // The other connectors keep their own wording.
+  assert.match(nextStep('gmail', 'error', 'handshake_failed').text, /restart Lux Didi/);
+});
+
+// W7-R3: the native Settings row for the Trello board, matching the web row.
+test('W7-R3: the Trello board is a connector row with the same next steps in native and web', () => {
+  assert.ok((connectorIDs as readonly string[]).includes('trello'), 'the row is in the catalogue the app renders');
+  const swift = readFileSync(new URL('../../Sources/LuxDidi/NativeNextSteps.swift', import.meta.url), 'utf8');
+  assert.match(swift, /"trello": "Trello"/, 'the native row carries the same label');
+  assert.match(swift, /"trello": signInStep\("Trello"\)/, 'the native row offers the same sign-in step');
+  const web = nextStep('trello', 'error', 'not_signed_in');
+  assert.equal(web.signIn, true, 'the web row offers its Sign in button');
+  assert.match(web.text, /^Sign in to Trello in Settings/);
 });

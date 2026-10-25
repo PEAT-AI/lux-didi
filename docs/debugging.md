@@ -3,7 +3,10 @@
 Every store a debugger can read sits in the host data directory, which is `--data-dir`, else
 `DIDI_STATE_DIR`, else the platform default the host itself uses: `~/Library/Application
 Support/Lux Didi` on macOS, `%LOCALAPPDATA%\Lux Didi` on Windows, and `$XDG_DATA_HOME/lux-didi`
-(or `~/.local/share/lux-didi`) elsewhere. Every reader resolves it the same way.
+(or `~/.local/share/lux-didi`) elsewhere. The installed app passes `~/Library/Application
+Support/ai.peat.lux-didi` as `--data-dir`, and on a Mac the two readers (`naya-logs.mjs` and
+`didi-timeline`) default to that installed directory, since it is the one the owner's calls write;
+for a host started from source, pass its directory with `--data-dir`.
 
 | path | holds | privacy |
 | --- | --- | --- |
@@ -44,7 +47,9 @@ ids and the terminal reason, `call.intent`, `call.executed`, `call.output_prepar
 `deferred`, `failed`) and, when it skipped, why (`awaiting_calls`, `draining`, `epoch_stale`). The
 host adds `turn.opened`, `turn.closed` with its close reason, and `live.dead_air_stalled` with the
 turn's age, whether any audio arrived and the inaudible milliseconds, which is the receipt D12-3 was
-missing. All of it lands under the session's `connection_epoch`; a rebuilt socket gets a new epoch
+missing, and `owner.overlap` once per owner turn when two of his words land while she is audible
+(`words`, `msSinceAudible`, and `cut`, which is always false: the provider owns barge-in and the host
+never cuts her, ruling W1-R1). All of it lands under the session's `connection_epoch`; a rebuilt socket gets a new epoch
 and a late receipt from the one it replaced is refused as `STALE_EPOCH`.
 
 ## The host.log event catalog
@@ -66,12 +71,13 @@ The `event` value of every line in `host.log` is one name from a closed set. The
 | `gptlive` | `gptlive_append_ack`, `gptlive_delegation_stalled`, `gptlive_setup_error`, `gptlive_tool_output`, `gptlive_turn_complete`, `gptlive_unknown_frame` | the GPT-Live wire: setup error, unknown frame, append ack, tool output, turn complete, stalled delegation |
 | `tool` | `tool_arguments_rejected`, `tool_cancelled`, `tool_ceiling_hit`, `tool_ceiling_late`, `tool_diagnostic_capture`, `tool_failure`, `tool_output_sent`, `tool_redaction` | a tool call: refusal, cancellation, ceiling, redaction, failure, send outcome, diagnostic capture |
 | `research` | `research_call_arrived`, `research_first_answer`, `research_joined`, `research_late_findings`, `research_progress`, `research_refused`, `research_routed`, `research_run`, `research_source`, `research_subcall` | a research run: arrival, routing, sub-calls, sources, first answer, late findings, progress, refusal |
-| `connector` | `connector_connected`, `connector_failure`, `connector_helper_stderr`, `connector_identity`, `connector_recovered`, `connector_recovery_exhausted` | a connector connection: connected, identity, failure, recovered, recovery exhausted, helper stderr |
+| `connector` | `connector_connected`, `connector_failure`, `connector_helper_stderr`, `connector_identity`, `connector_recovered`, `connector_recovery_exhausted`, `google_mcp_path_unsafe` | a connector connection: connected, identity, failure, recovered, recovery exhausted, helper stderr, the Google helper runs from under the reports folder (endpoint id only) |
 | `connection` | `connection_quality` | the connection quality sample of the local socket |
 | `calendar` | `calendar_digest`, `calendar_digest_refreshed`, `calendar_digest_timeout` | the calendar digest: published, refreshed, timed out |
 | `chat` | `chat_timing` | one text chat turn: outcome, rounds, timing |
 | `mattermost` | `mattermost_shape` | the shape of a Mattermost answer, no content |
 | `mongoose` | `mongoose_catalogue_replaced` | the catalogue was replaced after a re-sign-in |
+| `signin` | `signin_requested`, `signin_discovery`, `signin_registration`, `signin_browser_handoff`, `signin_callback`, `signin_token`, `signin_stored` | one Mongoose or Trello sign-in hop: the endpoint (`knowledge`, `data`, `crm` or `trello`), an opaque attempt id and a closed outcome (`ok` or why it stopped; a refused token may add its RFC 6749 `oauthError`). `signin_browser_handoff ok` means the URL was handed to the operating system, not that a page showed; the `signin_callback` line proves the browser came back. Never a URL, code, state, verifier, token or registration payload |
 | `memory` | `memory_note` | a memory note was written |
 | `standing` | `standing_memory_selection` | which standing memory was selected for a prompt |
 | `conversation` | `conversation_summary_injection`, `conversation_summary_recovery` | the conversation summary: injected, recovered |
@@ -85,8 +91,9 @@ The `event` value of every line in `host.log` is one name from a closed set. The
 | `consumer` | `consumer_gone_end` | the output consumer went away at the end of a call |
 | `debug` | `debug_journal_removal_failed`, `debug_journal_removed` | the debug journal files were removed, or their removal failed |
 | `native` | `native_action` | a native action was forwarded to the host |
-| `open` | `open_claim_corrected` | an open request was corrected |
+| `open` | `gmail_account_unknown`, `open_claim_corrected` | a Gmail link fell back to account `/u/0` because the mailbox proved no account (once per session); an open claim was corrected |
 | `thinking` | `thinking_sent` | a thinking line was sent |
+| `trello` | `connector_call` with `connector: trello` | one Trello board call phase: Didi's tool and action (`read.due`, `write.move`), the phase `admit`, `dispatch` or `settle`, the outcome `ok`, `refused`, `failed` or `unknown`, and a closed reason; never card text |
 | `uplink` | `uplink_shed` | uplink backpressure shed a frame |
 | `vault` | `vault_write` | a vault note was written |
 | `warm` | `warm_prewarm` | the warm context was prewarmed |
@@ -318,7 +325,7 @@ The timeline includes canonical transcription outside traced turns, including mo
 
 Call and response trace keys are scoped to session and connection epoch; raw provider ids are separate. Event clock domains identify host process or native producer. Historical null domains remain unknown. Execution duration is calculated only from measured start/completion observations in the same non-null domain. Prepared and written events remain distinct; a missing completion is unknown, never zero work. A new host holding the exclusive Store writer lock marks previously in-progress capture unknown/host_terminated. No audio-frame transaction was added.
 
-Always pass `--data-dir` for the installed app: `~/Library/Application Support/ai.peat.lux-didi`. The CLI's older default `Lux Didi` directory is a different runtime. Default timeline and metadata export exclude content. `--content` is protected owner-local inspection and uses current lifecycle/class gating; it is not an external sharing command. The existing trace preview limit and retention do not promise complete durable source results; those require a verified canonical dispatch record.
+On a Mac both readers (`didi-timeline` and `naya-logs.mjs`) default to the installed app's directory, `~/Library/Application Support/ai.peat.lux-didi`; pass `--data-dir` (or set `DIDI_STATE_DIR`) to read a dev host's `Lux Didi` directory or a copy. The timeline also prints `call_failures_at_least=N` with a count per kind (`command.rejected`, `live.dead_air_stalled`, failed responses and calls); the `failures_at_least` on the coverage line stays the count of lost diagnostic writes. `research_source` carries a closed `reason` (`no_query`, `never_ran`, `timed_out`, `provider_failed` and the unsearched reasons) when a read did not answer. Two lookups that shared one execution still write one receipt each with the same `coalesced` count, so two identical lines are one read, by design. `naya-logs.mjs errors` lists `command_rejected`, `live_dead_air_nudge`, a `live_dead_air` of 5 s or more, `live_rebuild` and every `native_action` that did not open, next to the provider and tool failures. Default timeline and metadata export exclude content. `--content` is protected owner-local inspection and uses current lifecycle/class gating; it is not an external sharing command. The existing trace preview limit and retention do not promise complete durable source results; those require a verified canonical dispatch record.
 
 Focused actual-runtime proof: after server compilation, run `node server/test/diagnostic-trace.integration.mjs`. It exercises actual adapter, Store and CLI, new reference resolution, model-first greeting, forced write failure, forgotten/class-denied content, restart unknown state, scoped call/response ids and unlike-clock observations. No provider or audio device is used.
 

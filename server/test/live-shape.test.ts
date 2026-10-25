@@ -127,7 +127,7 @@ test('calendar list keeps time, title, location, attendees and conference presen
     attendees: [{ displayName: 'Dana' }, { email: 'kim@example.invalid' }], description: 'Daily sync', hangoutLink: 'https://meet.example/abc',
   }] });
   assert.match(shaped.text, /2024-01-01T09:00:00Z, Standup, Room 1/);
-  assert.match(shaped.text, /attendees: Dana, kim@example\.invalid/);
+  assert.match(shaped.text, /attendees: 2 people: Dana, kim@example\.invalid/);
   assert.match(shaped.text, /conference: yes/);
   assert.match(shaped.text, /Daily sync/);
   assert.equal(/https?:\/\//.test(shaped.text), false, 'calendar model text has no raw link url');
@@ -410,7 +410,7 @@ test('R6: organizer renders, and a capped attendee list says and others', () => 
     attendees: [{ displayName: 'Dana', responseStatus: 'accepted' }, { email: 'kim@example.invalid', responseStatus: 'tentative' }],
     attendeesOmitted: true, organizer: { email: 'rob@example.invalid', displayName: 'Rob' },
   }] });
-  assert.match(shaped.text, /attendees: Dana, kim@example\.invalid and others/u);
+  assert.match(shaped.text, /attendees: at least 2 people: Dana, kim@example\.invalid and others/u);
   assert.match(shaped.text, /organizer: Rob/u);
 });
 
@@ -522,7 +522,7 @@ test('#574: a twelve person event prints eight names and the four it leaves out,
   const many = Array.from({ length: 12 }, (_, n) => ({ displayName: `Dana Whitfield ${n}` }));
   const shaped = shapeGcalList({ events: [{ summary: 'Design review', location: 'Room 1', start: { dateTime: '2026-10-19T09:00:00Z' },
     htmlLink: 'https://calendar.google.com/event?eid=e1', attendees: many }] });
-  assert.match(shaped.text, /attendees: Dana Whitfield 0, Dana Whitfield 1, Dana Whitfield 2, Dana Whitfield 3, Dana Whitfield 4, Dana Whitfield 5, Dana Whitfield 6, Dana Whitfield 7 and 4 others/);
+  assert.match(shaped.text, /attendees: 12 people: Dana Whitfield 0, Dana Whitfield 1, Dana Whitfield 2, Dana Whitfield 3, Dana Whitfield 4, Dana Whitfield 5, Dana Whitfield 6, Dana Whitfield 7 and 4 more/);
   assert.doesNotMatch(shaped.text, /Dana Whitfield 8/, 'the ninth name is never spoken');
   assert.equal(/\[\+\d+ chars\]/.test(shaped.text), false, 'the attendee line is never the part the per-event bound cuts');
   const empty = shapeGcalList({ events: [{ summary: 'Focus block', start: { dateTime: '2026-10-19T11:00:00Z' }, attendees: [] }] });
@@ -544,4 +544,42 @@ test('#7: a long event title survives whole and the body is what the bound trims
     htmlLink: 'https://calendar.google.com/event?eid=e1', description: 'Agenda. '.repeat(60) }] });
   assert.ok(shaped.text.includes(title), 'the title is never the part a cut removes');
   assert.equal(shaped.text.includes('Agenda. '.repeat(60)), false, 'the long body is what the per-event bound trims');
+});
+
+// L8-01: a long event id left the people lines about 75 characters, the cut ran through the
+// attendee line and appended a character count, and the model read that count as a head count.
+test('L8-01: attendee and organizer lines are never cut, the count is true and no character marker is appended', () => {
+  const shaped = shapeGcalList({ events: [{
+    id: `${'e'.repeat(60)}_${'7'.repeat(79)}`, summary: 'Re: demo / Example', location: 'Video call',
+    start: { dateTime: '2026-10-26T06:30:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e1',
+    attendees: [{ email: 'owner@example.invalid', displayName: 'Robin Vale' }, { email: 'a@example.invalid', displayName: 'Ari Andor' },
+      { email: 'dana.d@example.invalid' }, { email: 'kim.l@example.invalid' }, { email: 'wes@example.invalid', displayName: 'Wes Rowan', organizer: true }],
+    organizer: { email: 'wes@example.invalid', displayName: 'Wes Rowan' }, hangoutLink: 'https://meet.example/abc',
+    description: 'Agenda for the demo. '.repeat(20),
+  }] });
+  assert.equal(/\[\+\d+ chars\]/u.test(shaped.text), false, `no character count marker reaches the model: ${shaped.text}`);
+  const line = shaped.text.split('\n').find(entry => entry.trimStart().startsWith('attendees: '));
+  assert.ok(line !== undefined, `the attendee line survives: ${shaped.text}`);
+  assert.match(line.trim(), /^attendees: 5 people: /u, `the line carries the true head count: ${line}`);
+  const spoken = ['Robin Vale', 'Ari Andor', 'dana.d@example.invalid', 'kim.l@example.invalid', 'Wes Rowan'].filter(name => line.includes(name)).length;
+  const more = Number(/ and (\d+) more$/u.exec(line.trim())?.[1] ?? 0);
+  assert.equal(spoken + more, 5, `every attendee is named or counted: ${line}`);
+  assert.match(shaped.text, /^ {2}organizer: Wes Rowan$/mu, 'the organizer line is whole');
+  assert.equal(shaped.text.includes('Agenda for the demo. '.repeat(20)), false, 'only the description is cut');
+});
+
+test('L8-01: no line the model may voice carries a character count marker, in any calendar shape', () => {
+  const shapes = [
+    { summary: 'T'.repeat(400), start: { dateTime: '2026-10-26T06:30:00Z' }, description: 'Body. '.repeat(80) },
+    { summary: 'Short', start: { dateTime: '2026-10-26T06:30:00Z' }, attendees: Array.from({ length: 30 }, (_, n) => ({ displayName: `Person ${n}` })), description: 'Body. '.repeat(80) },
+    { summary: 'Short', start: { dateTime: '2026-10-26T06:30:00Z' }, attendees: [{ displayName: 'Dana' }], attendeesOmitted: true, organizer: { displayName: 'Kim' } },
+  ];
+  for (const event of shapes) {
+    const shaped = shapeGcalList({ events: [event] });
+    assert.equal(/\[\+\d+ chars\]|\+\d+ chars/u.test(shaped.text), false, `no character count marker: ${shaped.text}`);
+  }
+  const omitted = shapeGcalList({ events: [shapes[2]!] }).text;
+  assert.match(omitted, /attendees: at least 1 person: Dana and others/u, 'a helper-truncated list gives a lower bound, never an invented count');
+  const crowd = shapeGcalList({ events: [shapes[1]!] }).text;
+  assert.match(crowd, /attendees: 30 people: Person 0, .* and \d+ more/u, 'a crowd is counted, never cut');
 });

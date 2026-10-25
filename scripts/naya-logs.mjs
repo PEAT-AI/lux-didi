@@ -55,7 +55,8 @@ function dataDirectory() {
   if (options.dataDir !== undefined) return options.dataDir;
   const state = process.env.DIDI_STATE_DIR;
   if (state) return state;
-  if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', 'Lux Didi');
+  // L8-Q10: the installed app's own directory, the store and logs the owner's calls write; a dev host passes --data-dir.
+  if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', 'ai.peat.lux-didi');
   if (process.platform === 'win32') return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'Lux Didi');
   return join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'lux-didi');
 }
@@ -245,16 +246,27 @@ function cmdTools() {
 
 /** The receipts host.log keeps for things that went wrong: a closed set of event names, never a message. */
 const FAILURE_EVENTS = new Set(['host_error', 'live_provider_error', 'provider_error_unclassified', 'connector_failure',
-  'turn_failed', 'tool_failure', 'tool_cancelled', 'tool_ceiling_hit', 'tool_ceiling_late', 'live_trace_rejected']);
+  'turn_failed', 'tool_failure', 'tool_cancelled', 'tool_ceiling_hit', 'tool_ceiling_late', 'live_trace_rejected',
+  'command_rejected', 'live_dead_air_nudge', 'live_rebuild']);
+/** L8-Q04: an ask-to-audio gap this long is dead air, not a pause; a shorter one is an ordinary turn. */
+const DEAD_AIR_FAILURE_MS = 5_000;
+
+function failureRecord(record) {
+  if (FAILURE_EVENTS.has(record.event)) return true;
+  if (record.event === 'session_end') return record.reason !== undefined && record.reason !== 'ended';
+  if (record.event === 'live_dead_air') return typeof record.deadAirMs === 'number' ? record.deadAirMs >= DEAD_AIR_FAILURE_MS : typeof record.msSinceAudible === 'number';
+  // L8-Q04: a native action that did not open is a refusal or a failure.
+  if (record.event === 'native_action') return record.code !== 'opened';
+  return false;
+}
 
 function commandFailures(cutoff) {
   const rows = [];
   for (const record of readHostLog(cutoff)) {
-    const failing = FAILURE_EVENTS.has(record.event)
-      || (record.event === 'session_end' && record.reason !== undefined && record.reason !== 'ended');
-    if (!failing) continue;
+    if (!failureRecord(record)) continue;
     const id = typeof record.liveSessionId === 'string' ? record.liveSessionId : typeof record.runId === 'string' ? record.runId : '-';
-    const detail = [record.code, record.kind, record.tool, record.reason].filter(value => typeof value === 'string').join('/');
+    const detail = [record.code, record.kind, record.tool, record.reason, record.trigger, record.action].filter(value => typeof value === 'string').join('/')
+      || [record.deadAirMs, record.msSinceAudible, record.elapsedMs].filter(value => typeof value === 'number').map(ms => `${ms}ms`).join('/');
     rows.push({ at: record.at, session: id, kind: record.event, detail });
   }
   return rows.sort((a, b) => a.at - b.at);

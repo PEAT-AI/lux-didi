@@ -410,6 +410,13 @@ test('release 4: the partial source receipt and the window reason reach host.log
   assert.ok(safeEvent({ ...run, sources: [row] }) !== undefined, 'the window reason reaches host.log');
   assert.equal(safeEvent({ ...run, sources: [{ ...row, reason: 'whatever' }] }), undefined, 'and the closed set still refuses anything else');
 });
+// L8-Q07: a failed read names its closed reason in host.log, and nothing outside the set passes.
+test('L8-Q07: a research_source receipt carries a closed failure reason', () => {
+  const source = { event: 'research_source', researchId: 'r1', source: 'mail', outcome: 'failed', ms: 0, deadlineMs: 12_000, coalesced: 1 };
+  assert.deepEqual(safeEvent({ ...source, reason: 'no_query' }), { ...source, reason: 'no_query' }, 'the reason reaches host.log');
+  assert.deepEqual(safeEvent({ ...source, reason: 'timed_out' }), { ...source, reason: 'timed_out' });
+  assert.equal(safeEvent({ ...source, reason: 'the mail server said no' }), undefined, 'a free text reason is refused');
+});
 test('vault_write keeps its closed shape: a state token, an insight id on a save, latency, never text', () => {
   const saved = { event: 'vault_write', state: 'confirmed', insightId: 'insight-7', latencyMs: 42 };
   assert.deepEqual(safeEvent(saved), saved, 'the confirmed receipt passes the allowlist');
@@ -489,6 +496,31 @@ test('#639: a research_run row naming the company search candidate is accepted',
   assert.deepEqual(safeEvent(run), run, 'the round names the company read and the receipt keeps it');
 });
 
+test('W1: every Mongoose sign-in hop keeps its closed content-free line, and nothing else gets through', () => {
+  const attemptId = '0123456789abcdef';
+  const lines = [
+    { event: 'signin_requested', endpoint: 'data', attemptId, outcome: 'started' },
+    { event: 'signin_requested', endpoint: 'unknown', attemptId, outcome: 'not_configured' },
+    { event: 'signin_discovery', endpoint: 'knowledge', attemptId, outcome: 'ok' },
+    { event: 'signin_discovery', endpoint: 'knowledge', attemptId, outcome: 'resource_mismatch' },
+    { event: 'signin_registration', endpoint: 'crm', attemptId, outcome: 'port_in_use' },
+    { event: 'signin_browser_handoff', endpoint: 'crm', attemptId, outcome: 'ok' },
+    { event: 'signin_callback', endpoint: 'crm', attemptId, outcome: 'timeout' },
+    { event: 'signin_token', endpoint: 'data', attemptId, outcome: 'refused', oauthError: 'invalid_target' },
+    { event: 'signin_stored', endpoint: 'data', attemptId, outcome: 'ok' },
+  ];
+  for (const line of lines) assert.deepEqual(safeEvent(line), line, line.event);
+  const base = { event: 'signin_token', endpoint: 'data', attemptId, outcome: 'refused' };
+  for (const leak of [{ url: 'https://mongoose.test/oauth/authorize?state=x' }, { code: 'auth-code' }, { state: 'state' }, { accessToken: 'token' }, { verifier: 'v' }, { body: '{}' }]) {
+    assert.equal(safeEvent({ ...base, ...leak }), undefined, `${Object.keys(leak)[0]} is never written`);
+  }
+  assert.equal(safeEvent({ ...base, outcome: 'refused because of x' }), undefined, 'outcomes are a closed set');
+  assert.equal(safeEvent({ ...base, oauthError: 'server says no' }), undefined, 'only an RFC 6749 error code');
+  assert.equal(safeEvent({ ...base, endpoint: 'admin' }), undefined, 'admin is never a sign-in endpoint');
+  assert.equal(safeEvent({ ...base, attemptId: 'not an id' }), undefined, 'the attempt id is opaque hex');
+  assert.equal(safeEvent({ event: 'signin_discovery', endpoint: 'data', attemptId, outcome: 'refused' }), undefined, 'each hop has its own outcomes');
+});
+
 // C-LIVE behaviour 7: the error class of a refused attach and of a failed recovery open survives the writer,
 // content-free, and the new admission and deadline receipts are closed shapes.
 test('C-LIVE: live_attach_rejected keeps its class, and a recovery failure keeps class, key, mode and cause', () => {
@@ -506,4 +538,17 @@ test('C-LIVE: live_attach_rejected keeps its class, and a recovery failure keeps
     { event: 'research_blocked', liveSessionId: id, generation: 0, action: 'continue', reason: 'no_turn_since_result' });
   assert.deepEqual(safeEvent({ event: 'research_operation_deadline', liveSessionId: id, generation: 0, ms: 7_000 }),
     { event: 'research_operation_deadline', liveSessionId: id, generation: 0, ms: 7_000 });
+});
+
+test('W7: a Trello connector_call line keeps its closed shape and a Trello sign-in names its own row', () => {
+  const settled = { event: 'connector_call', connector: 'trello', tool: 'write.move', phase: 'settle', outcome: 'unknown', reason: 'outcome_unknown' };
+  assert.deepEqual(safeEvent(settled), settled);
+  const read = { event: 'connector_call', connector: 'trello', tool: 'read.due', phase: 'settle', outcome: 'ok' };
+  assert.deepEqual(safeEvent(read), read);
+  assert.equal(safeEvent({ ...read, tool: 'write.delete' }), undefined, 'no tool outside the closed set');
+  assert.equal(safeEvent({ ...read, card: 'Call the plumber' }), undefined, 'never card text');
+  assert.equal(safeEvent({ ...settled, reason: 'Call the plumber' }), undefined, 'a reason is a closed code');
+  assert.equal(safeEvent({ ...read, connector: 'mongoose' }), undefined);
+  const hop = { event: 'signin_callback', endpoint: 'trello', attemptId: '0123456789abcdef', outcome: 'ok' };
+  assert.deepEqual(safeEvent(hop), hop);
 });

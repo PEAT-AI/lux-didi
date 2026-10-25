@@ -7,11 +7,14 @@ import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
 import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteOwnerWords, noteSpoken, openClaimCorrection } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
-import { VaultWriter } from '../tools/vault-write.js';
+import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
+import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
+import { beginStage, currentOwnerTurn, freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, type PlaybackSignalKind } from '../tools/lux-note.js';
+import { NotesExporter } from '../tools/notes-export.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import type { WebSearchPort } from '../tools/web-search.js';
+import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
 import { ADMISSION_BLOCKED, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
@@ -23,7 +26,7 @@ import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, Rese
 
 import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption, type OpeningOptionKind } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
-import { liveTracePort, record, recordCallResult, recordQueryShape, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
+import { liveTracePort, record, recordCallLink, recordCallResult, recordQueryShape, recordResearchText, recordSourceRead, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
 import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
@@ -76,8 +79,13 @@ export function openersNote(openers: readonly string[], topics: readonly (string
   };
   const note = (lines: readonly string[]): string => `Open on a different subject and different words than these earlier openers: ${lines.join(' ')}`;
   const taken: string[] = [];
+  const seen = new Set<string>();
   const spoken = openers.map(openingSentencesOf).filter(Boolean).slice(0, 3);
   for (const [index, opener] of spoken.entries()) {
+    // L8-09: two calls that opened alike are one sentence to avoid, never a quote repeated in the prompt.
+    const key = opener.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
     const next = line(opener, topics[index]);
     if (note([...taken, next]).length <= OPENER_CONTEXT_CHARS) taken.push(next);
   }
@@ -305,7 +313,7 @@ export const REBUILD_AUDIO_HOLD_MS = 3_000;
 export const REBUILD_AUDIO_HOLD_BYTES = REBUILD_AUDIO_HOLD_MS * 32;
 
 /** The write tools the Live model may decline or call, and the resource each one is pinned to. */
-const OWNER_WRITE_RESOURCES = new Map([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault']]);
+const OWNER_WRITE_RESOURCES = new Map([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault'], ['trello_write', 'owner-trello'], ['stage_lux_note', 'owner-vault']]);
 /** #592: the closed set of causes an idle arm may name, in the host log and in the arm itself. */
 export const IDLE_RESET_CAUSES = ['opened', 'unmuted', 'tool_result', 'turn_failed', 'typed', 'owner_speech', 'model_audio'] as const;
 /** #592: idle is conversational silence: a finalized owner transcript with content, or model audio. */
@@ -327,6 +335,15 @@ function ownerTurnFinalized(handle: ActiveSession, event: LiveVoiceEvent): boole
   if (event.finished !== true || handle.admissionSpeechPending !== true) return false;
   handle.admissionSpeechPending = false;
   return true;
+}
+/**
+ * C-LIVE behaviour 4 (W5-R3): the run a host deadline reply may answer from. A continue keeps the run it named; a
+ * start may name only a run this call created, so the ledger's last run from an earlier call is never handed to
+ * the model as this call's findings. `''` is knownReply's answer for "no run of mine is known".
+ */
+export function deadlineResearchId(call: { researchId?: string | undefined }, priorRunId: string | undefined, currentRunId: string | undefined): string {
+  if (call.researchId !== undefined) return call.researchId;
+  return currentRunId !== undefined && currentRunId !== priorRunId ? currentRunId : '';
 }
 /** Every job row is written with a one day expiry (server/tools/jobs.ts); past it the row is stale data. */
 const JOB_EXPIRY_MS = 86_400_000;
@@ -434,6 +451,8 @@ interface ActiveSession {
   turnAfterTool: boolean; turnInterrupted: boolean;
   inputJournalId?: number;
   inputFinalTimer?: ReturnType<JobTimer>;
+  /** W6: the composed-note settle window runs on its own timer, so a late fragment can still cancel. */
+  noteSettleTimer?: ReturnType<JobTimer> | undefined;
   inputFinalWaiters?: Set<() => void>;
   generation: number; attempts: number; rebuilding: boolean;
   /** #591: a rebuild nothing asked for stays quiet: no reconnect marker, no pickup, no instruction to open. */
@@ -541,6 +560,9 @@ interface ActiveSession {
   /** Wall-clock start per model call id, for tool_cancelled ms-in-flight and per-turn latency. */
   callStartedAt: Map<string, number>;
   speaking: boolean;
+  /** L8-11: owner words heard while she was audible this owner turn, and whether the turn's overlap receipt is written. */
+  overlapWords?: number;
+  overlapReceipted?: boolean;
   /** Output audio that arrived below the audible threshold this turn, in playback milliseconds. */
   inaudibleMs: number;
   // E1 interruption telemetry: provider-side facts for the last turn only, never audio or text.
@@ -636,6 +658,8 @@ const NON_LEXICAL_TAG = /\[(?:breath|inhale|exhale|laugh|laughs|sigh|cough|noise
 export function stripNonLexicalTags(text: string): string { return text.replace(NON_LEXICAL_TAG, ''); }
 
 /** R7: the dropped-line opener is cancellable only until its own audio has started. */
+/** L8-11: how many owner words over her audible answer make an overlap worth a receipt. */
+export const OVERLAP_RECEIPT_WORDS = 2;
 export function openerCancelled(dropOpener: boolean, openerSpoken: boolean): boolean { return dropOpener && !openerSpoken; }
 
 function identity(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
@@ -1013,6 +1037,12 @@ export class LiveSessionOwner {
   readonly #rebuildThresholdChars: number;
   readonly #store: LiveStorePort;
   readonly #vault: VaultWriter;
+  /** W6: the same one lux endpoint the vault writer uses, kept for the exporter's near-duplicate probe. */
+  readonly #luxWrite: ReturnType<typeof createLuxWriteTransport>;
+  /** W6: sessions that have staged a composed note, so no other session pays a query per owner turn. */
+  readonly #noteSessions = new Set<string>();
+  /** W6-R2 B2/C1: the one segment carrying each stage's read-back, keyed by session and bound to the stage. */
+  readonly #noteReadback = new Map<string, { readonly stageId: string; readonly key: string }>();
   readonly #voice: LiveVoicePort;
   readonly #profile: LiveProfile;
   readonly #now: () => number;
@@ -1069,7 +1099,8 @@ export class LiveSessionOwner {
       const timer = setTimeout(callback, delayMs);
       return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } };
     });
-    this.#vault = new VaultWriter({ store: this.#store, transport: createLuxWriteTransport(luxWriteEndpoint()), now: this.#now, log: event => hostLogEvent(event) });
+    this.#luxWrite = createLuxWriteTransport(luxWriteEndpoint());
+    this.#vault = new VaultWriter({ store: this.#store, transport: this.#luxWrite, now: this.#now, log: event => hostLogEvent(event) });
     this.#jobs = new LiveToolJobs(this.#store, this.#now);
     this.#profileIdentity = liveProfileIdentity(this.#profile);
     memoryOwners.set(this.#store, this);
@@ -1085,12 +1116,13 @@ export class LiveSessionOwner {
 
   /** Host-generated runtime context: host clock and timezone, plus the groups this session can reach. */
   #liveRuntimeContext(toolNames: readonly string[], timeZone: string): string {
-    const connected = toolGroupNames(toolNames);
+    const connected = toolGroupNames(this.#researchWeb === undefined ? toolNames : [...toolNames, WEB_SEARCH_ACTION]);
     const endpoints = this.#tools?.status?.().endpoints ?? [];
     const unavailable = endpoints.filter(endpoint => endpoint.state !== 'connected')
       .flatMap(endpoint => connectorGroupNames(endpoint.connector))
       .filter((group, index, all) => all.indexOf(group) === index && !connected.includes(group));
-    const context = buildRuntimeContext({ now: new Date(this.#now()), timeZone, connected, unavailable });
+    const context = buildRuntimeContext({ now: new Date(this.#now()), timeZone, connected, unavailable,
+      vault: { dictation: true, composed: this.#composedNotes() } });
     const signIn = signInNote(endpoints);
     return signIn ? `${context}\n\n${signIn}` : context;
   }
@@ -1548,10 +1580,12 @@ export class LiveSessionOwner {
     const abort = new AbortController();
     const dataClasses = classes.filter(c => c === inputClass || acceptedPrompt.dataClasses.includes(c));
     let registry: readonly ToolDefinition[] = [], host: HostContext | undefined;
+    // W6-R2 B1: the stage needs this session's turn facts, so the closure resolves the handle lazily.
+    let stageHandle: ActiveSession | undefined;
     if (this.#tools) {
       const saved = this.#store.transaction(tx => tx.get('SELECT acceptance_json FROM live_tool_acceptances WHERE live_session_id=?', [liveSessionId]));
       if (!saved) throw new LiveError('invalidated');
-      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => rememberOwnerNote(tx, id, args, this.#now()), claim => this.#vault.dispatch(claim)).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
+      registry = Object.freeze(this.#tools.owner.liveDefinitions(liveSessionId, (tx, id, args) => rememberOwnerNote(tx, id, args, this.#now()), claim => this.#vault.dispatch(claim), (tx, id, args) => this.#stageComposedNote(tx, id, args, stageHandle), this.#composedNotes()).map(tool => Object.freeze({ ...tool, parameters: structuredClone(tool.parameters) })));
       host = { runId: liveSessionId, actorId: context.clientId, authorityEpoch: context.authorityEpoch, revision,
         grants: registry.filter(tool => tool.effect === 'read' || this.#tools!.owner.liveRememberApproved() && OWNER_WRITE_RESOURCES.get(tool.name) === tool.resourceId && tool.accountId === 'gateway:live-voice').map(tool => ({ tool: tool.name, effect: tool.effect, accountId: tool.accountId, resourceId: tool.resourceId })) };
     }
@@ -1560,7 +1594,7 @@ export class LiveSessionOwner {
     const history = [...seed.turns, ...(this.#jobHistory(liveSessionId, inputClass) ?? [])];
     // Only the coarse intent tools (and remember) are declared to the model; the connector reads stay
     // dispatchable through the registry so the intent fan-out and the session cache keep working.
-    const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'remember_note' || tool.name === 'save_to_vault' || OPEN_TOOL_NAMES.has(tool.name));
+const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'remember_note' || tool.name === 'save_to_vault' || tool.name === 'stage_lux_note' || OPEN_TOOL_NAMES.has(tool.name) || TRELLO_TOOL_NAMES.has(tool.name));
     // The port carries the original JSON schemas; each adapter builds its own provider dialect.
     const declarations = modelFacing.map(tool => ({ name: tool.name, description: tool.description, parameters: structuredClone(tool.parameters) }));
     const system = acceptedPrompt.system;
@@ -1610,6 +1644,7 @@ export class LiveSessionOwner {
       diagnosticTerminalCode: 'outcome_unknown', diagnosticsEmitted: false,
       loopDone: deferred<void>(), done: deferred<LiveSessionSnapshot>(), resolveDone: () => {}, persistFailure: undefined,
     };
+    stageHandle = handle;
     const initialSnapshot = this.#readSnapshot(liveSessionId);
     handle.resolveDone = () => {
       try { handle.done.resolve(this.#readSnapshot(liveSessionId)); }
@@ -1660,6 +1695,138 @@ export class LiveSessionOwner {
     };
   }
 
+  /** W6 item 10: the composed-note capability is off unless live.json turns it on. */
+  #composedNotes(): boolean { return this.#profile.features?.composedNotes === true; }
+
+  /** W6 item 12: the notes exporter's own switch, on unless live.json turns it off. */
+  #notesExport(): boolean { return this.#profile.features?.notesExport !== false; }
+
+  /**
+   * W6 items 1 to 4: the model stages a composed note and nothing more. The owner's own finalized
+   * microphone turn is the only authorization, the evidence refs must name journal rows this session
+   * holds, and the whole payload is frozen here, before any read-back.
+   */
+  #stageComposedNote(tx: Transaction, liveSessionId: string, args: { title: string; body: string; evidenceRefs: string[] }, handle: ActiveSession | undefined): JsonObject {
+    const rows = tx.all("SELECT journal_id,text,final_origin,finalized_at FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND finished=1 ORDER BY journal_id DESC LIMIT 50", [liveSessionId])
+      .map(row => ({ journalId: Number(row['journal_id']), text: String(row['text'] ?? ''),
+        finalOrigin: String(row['final_origin'] ?? 'unknown'), finalizedAt: Number(row['finalized_at'] ?? 0) }));
+    // W6-R2 B1: only this turn's finalized mic transcript can authorize, never the previous turn.
+    const read = currentOwnerTurn(rows, handle?.inputAt, handle?.inputFinal === true, this.#now());
+    if (read.state === 'refused') {
+      hostLogEvent({ event: 'lux_note_stage', staged: false, code: read.code });
+      return { staged: false, code: read.code };
+    }
+    const now = this.#now();
+    const outcome = beginStage({ stageId: randomUUID(), sessionId: liveSessionId, ownerText: read.text,
+      title: args.title, body: args.body, evidence: args.evidenceRefs, heldEvidence: read.evidence, enabled: this.#composedNotes(), now });
+    if (outcome.state === 'refused') {
+      hostLogEvent({ event: 'lux_note_stage', staged: false, code: outcome.code });
+      return { staged: false, code: outcome.code };
+    }
+    const note = outcome.note;
+    saveNoteState(tx, note);
+    this.#noteSessions.add(liveSessionId);
+    hostLogEvent({ event: 'lux_note_stage', staged: true, digest: note.payloadSha.slice(0, 12) });
+    return { staged: true, stageId: note.stageId, title: note.title, body: note.body,
+      readBack: `Read the note back exactly, then wait for the owner: ${note.title}. ${note.body}` };
+  }
+
+  /** W6 item 5: only the app's own drained receipt arms the confirmation; an interruption kills the stage. */
+  #notePlayback(handle: ActiveSession, receipt: NativePlaybackReceipt): void {
+    if (!this.#noteSessions.has(handle.liveSessionId)) return;
+    const note = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
+    if (!note) return;
+    // W6-R2 B2: the read-back is one segment; its own drain arms, its own cut kills, and a segment
+    // that began before the stage does neither.
+    const key = `${receipt.sourceInstanceId}:${receipt.segmentSeq}`;
+    const read = noteSegmentSignal(note, this.#noteReadback.get(handle.liveSessionId), { receipt: receipt.receipt as PlaybackSignalKind, key, wallMs: receipt.wallMs });
+    if (read.binding === undefined) this.#noteReadback.delete(handle.liveSessionId);
+    else this.#noteReadback.set(handle.liveSessionId, read.binding);
+    if (read.note === note) return;
+    this.#store.transaction(tx => saveNoteState(tx, read.note));
+    hostLogEvent({ event: 'lux_note_readback', state: read.note.state, code: read.note.code ?? receipt.receipt });
+  }
+
+  /** W6 item 6: the next finalized owner turn decides, and the settle window runs on its own timer. */
+  #noteOwnerTurn(handle: ActiveSession, text: string): void {
+    if (!this.#noteSessions.has(handle.liveSessionId)) return;
+    const open = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
+    if (!open) return;
+    const next = noteOwnerUtterance(open, { text, now: this.#now() });
+    if (next === open) return;
+    this.#store.transaction(tx => saveNoteState(tx, next));
+    hostLogEvent({ event: 'lux_note_confirm', state: next.state, code: next.code ?? '' });
+    if (next.state !== 'settling') { this.#noteReadback.delete(handle.liveSessionId); return; }
+    handle.noteSettleTimer?.cancel();
+    handle.noteSettleTimer = this.#schedule(() => { void this.#noteSettle(handle); }, Math.max(0, (next.settleAt ?? 0) - this.#now()));
+    handle.noteSettleTimer.unref();
+  }
+
+  /** W6 item 6: any owner fragment inside the settle window cancels, so a VAD split never commits. */
+  #noteFragment(handle: ActiveSession): void {
+    if (!this.#noteSessions.has(handle.liveSessionId)) return;
+    const open = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
+    if (!open || open.state !== 'settling') return;
+    const next = noteOwnerFragment(open, this.#now());
+    if (next === open) return;
+    handle.noteSettleTimer?.cancel(); handle.noteSettleTimer = undefined;
+    this.#store.transaction(tx => saveNoteState(tx, next));
+    hostLogEvent({ event: 'lux_note_confirm', state: next.state, code: next.code ?? '' });
+    this.#noteReadback.delete(handle.liveSessionId);
+  }
+
+  /** W6 item 7: the dispatcher claims the frozen payload and dispatches it once through the vault writer. */
+  async #noteSettle(handle: ActiveSession): Promise<void> {
+    handle.noteSettleTimer = undefined;
+    const open = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
+    if (!open || open.state !== 'settling') return;
+    const settled = noteSettle(open, this.#now());
+    if (settled.state !== 'committed') return;
+    // The digest frozen at stage time is the only payload that may ever be sent.
+    const frozen = freezeNote({ title: settled.title, body: settled.body });
+    if (frozen.state !== 'frozen' || frozen.payloadSha !== settled.payloadSha) {
+      const invalid = { ...settled, state: 'invalidated' as const, code: 'payload_changed' };
+      this.#store.transaction(tx => saveNoteState(tx, invalid));
+      hostLogEvent({ event: 'lux_note_saved', saved: false, code: 'payload_changed' });
+      return;
+    }
+    this.#store.transaction(tx => saveNoteState(tx, settled));
+    const claim = this.#store.transaction(tx => authorizeComposedWrite(tx, { liveSessionId: handle.liveSessionId, stageId: settled.stageId, content: settled.body, title: settled.title, now: this.#now() }));
+    let receipt: VaultReceipt;
+    try { receipt = claim.state === 'dispatch' ? await this.#vault.dispatch(claim) : claim.receipt; }
+    catch { receipt = { saved: false, code: 'outcome_unknown' }; }
+    this.#store.transaction(tx => markCommitted(tx, settled.stageId, receipt.insightId));
+    this.#noteReadback.delete(handle.liveSessionId);
+    hostLogEvent({ event: 'lux_note_saved', saved: receipt.saved, code: receipt.code ?? 'inserted' });
+    if (this.#settled(handle)) return;
+    const line = receipt.saved
+      ? 'The note is saved in the vault. Say that in one short sentence.'
+      : `The note was not saved (${receipt.code ?? 'unknown'}). Say plainly that it was not saved.`;
+    try { handle.session.sendText({ text: line }); } catch { /* a closed transport settles on its own */ }
+  }
+
+  /**
+   * W6 item 12: the session-end flush of remember_note facts and preferences. One row per note, the
+   * same vault client, no spoken confirmation, and a log event that carries counts only.
+   */
+  async #flushNotes(handle: ActiveSession): Promise<void> {
+    if (!this.#notesExport()) return;
+    const rows = this.#store.transaction(tx => tx.all(`SELECT e.id AS id, e.text AS text, s.note AS note FROM entries e
+      JOIN source_references s ON s.owner_kind='entry' AND s.owner_id=e.id
+      WHERE s.provider='live-voice' AND s.note IN ('kind:fact','kind:preference')
+        AND NOT EXISTS (SELECT 1 FROM entry_tombstones t WHERE t.entry_id=e.id)
+      ORDER BY e.captured_at, e.id`));
+    if (rows.length === 0) return;
+    const candidates = rows.map(row => ({ id: String(row['id']), text: String(row['text']),
+      kind: String(row['note']) === 'kind:preference' ? 'preference' as const : 'fact' as const }));
+    const exporter = new NotesExporter({
+      store: this.#store, sessionId: handle.liveSessionId, transport: this.#luxWrite,
+      nearDuplicate: async text => this.#luxWrite.nearDuplicate?.(text), now: this.#now,
+      log: event => hostLogEvent({ ...event, event: 'notes_export' }), enabled: true,
+    });
+    await exporter.flush(candidates);
+  }
+
   /**
    * O1b-N: one native playback receipt, validated against the O1a ingestion types and recorded as a
    * native trace event plus its playback summary row. A refusal is a typed code in the debug journal
@@ -1669,6 +1836,7 @@ export class LiveSessionOwner {
     try {
       const receipt = parsePlaybackReceipt(frame);
       recordPlaybackReceipt(this.#store, handle.liveSessionId, receipt, this.#playbackAttribution(handle, receipt));
+      this.#notePlayback(handle, receipt);
     } catch (error) {
       const code = error instanceof IngestReject || error instanceof TraceRecordError ? error.code : 'record_failed';
       hostLogEvent({ event: 'live_trace_rejected', kind: 'playback.received', code });
@@ -2314,6 +2482,34 @@ export class LiveSessionOwner {
     });
   }
 
+  /** L8-11: one content-free receipt per owner turn when two of his words land over her audible answer. The
+   *  provider owns barge-in and the host never cuts her (lux 90488, ruling W1-R1), so `cut` is false. */
+  #noteOverlap(handle: ActiveSession, text: string): void {
+    if (handle.overlapReceipted === true) return;
+    handle.overlapWords = (handle.overlapWords ?? 0) + text.split(/\s+/u).filter(word => /[\p{L}\p{N}]/u.test(word)).length;
+    if (handle.overlapWords < OVERLAP_RECEIPT_WORDS) return;
+    const turnId = handle.connection.turnId;
+    if (turnId === undefined) return;
+    handle.overlapReceipted = true;
+    const at = this.#now();
+    this.#receipt(handle, 'owner.overlap', { turnId }, { at, words: handle.overlapWords,
+      msSinceAudible: handle.lastModelAudioAt === undefined ? 0 : Math.max(0, at - handle.lastModelAudioAt), cut: false });
+  }
+
+  /** L8-Q01/Q05: the store-side link of one research call. Owner text goes to the content table only. */
+  #linkResearchCall(handle: ActiveSession, host: HostContext, callId: string, question: string | undefined, response: JsonObject, firstStep: number | undefined): void {
+    const researchId = typeof response['researchId'] === 'string' && response['researchId'].length > 0 ? response['researchId'] : undefined;
+    const callKey = scopedTraceKey(handle.liveSessionId, handle.connection.epoch, 'call', callId);
+    try {
+      recordCallLink(this.#store, { callKey, ...(researchId === undefined ? {} : { researchId }),
+        ...(firstStep === undefined ? {} : { canonicalRunId: host.runId, canonicalExecutionId: `${host.runId}:${firstStep}:0` }) });
+      if (researchId !== undefined && question !== undefined && question.trim().length > 0) recordResearchText(this.#store, { researchId, callKey, kind: 'question', text: question }, this.#now());
+    } catch (error) {
+      hostLogEvent({ event: 'live_trace_rejected', kind: 'call.linked', code: error instanceof TraceRecordError ? error.code : 'unknown' });
+      this.#diagnosticFailure(handle, 'trace_write_failed');
+    }
+  }
+
   #closeTurn(handle: ActiveSession, closeReason: TurnCloseReason, outcome?: TurnOutcome): void {
     const turnId = handle.connection.turnId;
     if (turnId === undefined) return;
@@ -2540,6 +2736,8 @@ export class LiveSessionOwner {
     if (this.#settled(handle)) return false;
     // O1b-A: a rebuilt socket is a new connection epoch. Receipts the socket it replaces still emits carry the old
     // epoch and are refused by the store, which is what "a reconnect rejects stale-epoch receipts" means here.
+    // L8-Q03: the turn the dead socket was answering is closed under its own epoch, never left open forever.
+    if (handle.connection.turnId !== undefined) this.#closeTurn(handle, 'recovered');
     handle.connection = { seq: handle.connection.seq + 1, epoch: `e${handle.connection.seq + 1}`, turnId: undefined, turnIndex: handle.connection.turnIndex };
     handle.deadlineAt = this.#now() + remaining; handle.deadlineMs = Date.now() + remaining;
     // #660: a result that returned unspoken is why this window exists, so the new session opens model-first and
@@ -3106,7 +3304,9 @@ export class LiveSessionOwner {
             ownerTurnOpen = true;
             handle.connectorRecovery = this.#tools?.recover?.();
             this.#openTurn(handle);
+            handle.overlapWords = 0; handle.overlapReceipted = false;
           }
+          if (handle.speaking) this.#noteOverlap(handle, event.text);
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;
@@ -3344,6 +3544,16 @@ export class LiveSessionOwner {
           this.#diagnosticFailure(handle, 'trace_write_failed');
         }
       },
+      // L8-Q06: a web read leaves its own row (the web has no canonical dispatch), its query in the content table.
+      sourceRead: read => {
+        try {
+          recordSourceRead(this.#store, { source: read.source, outcome: read.outcome, ms: read.ms, results: read.results, ...(read.reason === undefined ? {} : { reason: read.reason }) }, read.at, read.researchId);
+          if (read.query.trim().length > 0) recordResearchText(this.#store, { researchId: read.researchId, kind: 'web_query', text: read.query }, read.at);
+        } catch (error) {
+          hostLogEvent({ event: 'live_trace_rejected', kind: 'source.read_written', code: error instanceof TraceRecordError ? error.code : 'unknown' });
+          this.#diagnosticFailure(handle, 'trace_write_failed');
+        }
+      },
       // R6: the loop's own clocks (the first answer point, the dead-air beat) run on the owner's scheduler,
       // so a test drives whole seconds instead of sleeping through them.
       schedule: this.#schedule,
@@ -3380,9 +3590,14 @@ export class LiveSessionOwner {
         hostLogEvent({ event: 'research_blocked', liveSessionId: handle.liveSessionId, generation, action: parsed.call.action, reason: verdict.reason });
         response = { ...ADMISSION_BLOCKED };
       } else {
+        const firstStep = handle.toolStep;
         try {
-          response = await this.#boundedResearch(handle, scheduler.call({ ...parsed.call, callId: call.id }, handle.abort.signal), parsed.call, configured, generation);
+          const priorRunId = handle.researchLedger.last()?.researchId;
+          response = await this.#boundedResearch(handle, scheduler.call({ ...parsed.call, callId: call.id }, handle.abort.signal), parsed.call, configured, generation, priorRunId);
         } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
+        // L8-Q01/Q05: the run this call started or continued, its question, and its first canonical execution
+        // (only when this call ran alone, so a batch step is never credited to the wrong call).
+        this.#linkResearchCall(handle, host, call.id, parsed.call.question, response, event.calls.length === 1 && handle.toolStep > firstStep ? firstStep : undefined);
         if (response['error'] === undefined && parsed.call.action !== 'stop' && generation === handle.generation) handle.researchAdmission.delivered();
       }
       // R6: a reply that names sources still reading is the call's first answer point, so the late-findings
@@ -3420,7 +3635,7 @@ export class LiveSessionOwner {
    * not, `hostGraceMs` later the host answers with what the ledger holds, so the in-flight state clears even when a
    * downstream cancellation is slow, and the model is asked to answer from that.
    */
-  async #boundedResearch(handle: ActiveSession, work: Promise<JsonObject>, call: { action: string; researchId?: string | undefined }, configured: readonly ResearchSourceKind[], generation: number): Promise<JsonObject> {
+  async #boundedResearch(handle: ActiveSession, work: Promise<JsonObject>, call: { action: string; researchId?: string | undefined }, configured: readonly ResearchSourceKind[], generation: number, priorRunId: string | undefined): Promise<JsonObject> {
     if (call.action === 'stop') return work;
     let timer: { cancel(): void } | undefined;
     const startedAt = this.#now();
@@ -3429,7 +3644,7 @@ export class LiveSessionOwner {
     timer?.cancel();
     if (outcome !== 'deadline') return outcome;
     hostLogEvent({ event: 'research_operation_deadline', liveSessionId: handle.liveSessionId, generation, ms: Math.max(0, this.#now() - startedAt) });
-    const researchId = call.researchId ?? handle.researchLedger.last()?.researchId ?? '';
+    const researchId = deadlineResearchId(call, priorRunId, handle.researchLedger.last()?.researchId);
     return { ...knownReply(handle.researchLedger, researchId, configured, 'partial'), operationStop: 'deadline' };
   }
 
@@ -3541,7 +3756,7 @@ export class LiveSessionOwner {
       const host = structuredClone(handle.host), step = ++handle.toolStep;
       const jobAbort = new AbortController();
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
-      if (event.calls.some(call => call.name === 'remember_note' || call.name === 'save_to_vault')) await this.#waitForOwnerTranscript(handle, event.sequence);
+if (event.calls.some(call => call.name === 'remember_note' || call.name === 'save_to_vault' || call.name === 'trello_write' || call.name === 'stage_lux_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
       if (this.#settled(handle) || generation !== handle.generation) return;
       if (event.calls.every(call => call.name === RESEARCH_TOOL_NAME)) {
         const outcome = await this.#researchBatch(handle, event, generation, host, dispatchGate.state === 'allowed');
@@ -3613,6 +3828,17 @@ export class LiveSessionOwner {
       const raced = await this.#withCeiling(runBatch(subCalls, step), outcome => {
         for (const unit of pending) hostLogEvent({ event: 'tool_ceiling_late', tool: unit.call.name, outcome });
       });
+      // L8-Q01: each direct call's first canonical execution, `runId:step:offset`, the id its dispatch rows carry.
+      for (const unit of pending) {
+        if (unit.subs.length === 0) continue;
+        try {
+          recordCallLink(this.#store, { callKey: scopedTraceKey(handle.liveSessionId, handle.connection.epoch, 'call', unit.call.id),
+            canonicalRunId: host.runId, canonicalExecutionId: `${host.runId}:${step}:${offsets.get(unit.index) ?? 0}` });
+        } catch (error) {
+          hostLogEvent({ event: 'live_trace_rejected', kind: 'call.linked', code: error instanceof TraceRecordError ? error.code : 'unknown' });
+          this.#diagnosticFailure(handle, 'trace_write_failed');
+        }
+      }
       if ((this.#settled(handle) || generation !== handle.generation)) return;
       // S4a ceiling: a call still running at the host limit is answered as a timeout through the same
       // continuation owner, so the backend gets one output per call and one response.create for the batch.
@@ -3794,6 +4020,9 @@ export class LiveSessionOwner {
     const now = this.#now();
     const events = handle.journalEvents + 1;
     const total = handle.journalBytes + bytes;
+    // W6 item 6: the composed note acts on the persisted turn, so the hook never nests a transaction.
+    let pendingOwnerText: string | undefined;
+    let pendingOwnerFragment = false;
     const persist = (tx: Transaction) => {
       const transcription = event.type === 'inputTranscription' || event.type === 'outputTranscription' ? event : undefined;
       const mono = hostMonotonicMs();
@@ -3818,10 +4047,16 @@ export class LiveSessionOwner {
         // #573: the open tools are checked against the words of the turn they answer.
         if (ownerTurn) noteOwnerWords(handle.liveSessionId, ownerTurn);
         if (ownerTurn && transcription?.finalOrigin !== 'typed') this.#vault.observe(tx, handle.liveSessionId, String(journalId), ownerTurn);
+        // W6 item 6: the composed note listens to the same finalized owner turn, and to nothing else.
+        if (ownerTurn && transcription?.finalOrigin !== 'typed') pendingOwnerText = ownerTurn;
       }
       return journalId;
     };
     const journalSequence = transaction ? persist(transaction) : this.#store.transaction(persist);
+    if (!transaction && kind === 'inputTranscription') {
+      if (pendingOwnerFragment) this.#noteFragment(handle);
+      if (pendingOwnerText !== undefined) this.#noteOwnerTurn(handle, pendingOwnerText);
+    }
     if (!transaction) handle.pendingDiagnosticLoss = false;
     handle.journalEvents = events;
     handle.journalBytes = total;
@@ -3847,6 +4082,7 @@ export class LiveSessionOwner {
       attempt(() => handle.session.close());
     } finally {
       attempt(() => this.#closeTurn(handle, 'session_end'));
+      attempt(() => { void this.#flushNotes(handle).catch(() => hostLogEvent({ event: 'notes_export', failed: 1 })); });
       attempt(() => this.#tools?.owner.releaseEvidence(handle.liveSessionId));
       attempt(() => { handle.sessionTimer?.cancel(); handle.callTimer?.cancel(); handle.idleTimer?.cancel();
         handle.muteTimer?.cancel(); handle.mutedOfferTimer?.cancel(); handle.inputFinalTimer?.cancel(); });

@@ -18,8 +18,10 @@ import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history
 import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
+import { STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, validateStageNote } from './lux-note.js';
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
+import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
 import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, ownerWords, validateOpen, type NativeActionCode } from './open.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
@@ -205,17 +207,32 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
       return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 1024 } } };
     }
+    if (call.toolName === STAGE_NOTE_IDENTITY.name && call.accountId === STAGE_NOTE_IDENTITY.accountId && call.resourceId === STAGE_NOTE_IDENTITY.resourceId) {
+      if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
+      return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 1024 } } };
+    }
     if (call.toolName === REMEMBER_IDENTITY.name && call.accountId === REMEMBER_IDENTITY.accountId && call.resourceId === REMEMBER_IDENTITY.resourceId) {
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
       return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 1024 } } };
+    }
+    if ((call.toolName === TRELLO_READ_IDENTITY.name || call.toolName === TRELLO_WRITE_IDENTITY.name) && call.accountId === TRELLO_READ_IDENTITY.accountId && call.resourceId === TRELLO_READ_IDENTITY.resourceId) {
+      // W7: the owner's own Trello board, a gateway tool pinned to one board on Didi's side.
+      if (options.grantMode !== 'owner-trusted-reads' || !options.trello) throw Error('builtin_grant_denied');
+      return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 65536 } } };
     }
     if (call.accountId === OPEN_IDENTITY.accountId && call.resourceId === OPEN_IDENTITY.resourceId && OPEN_TOOL_NAMES.has(call.toolName)) {
       // Host-native open tools; the native side re-checks the allowlist before anything opens.
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
       return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 1024 } } };
     }
-    const matches = snapshot.connections.filter(b => snapshot.acceptance.connectionIds.includes(b.connectionId) && b.policy.toolNames.includes(call.toolName) && b.policy.endpoint.account === call.accountId && b.policy.endpoint.resource === call.resourceId);
+    // TR-R15: a composed read is in the run's scope exactly when every base read it composes is granted by the
+    // connection's own policy, the same derivation the door and the host use. Nothing is stored: the composite is
+    // never added to the policy, so an unapproved name still finds no connection and still refuses.
+    const inScope = (b: { policy: { connector: string; toolNames: readonly string[] } }): boolean =>
+      b.policy.toolNames.includes(call.toolName) || composedGrantedNames(b.policy.connector, b.policy.toolNames).includes(call.toolName);
+    const matches = snapshot.connections.filter(b => snapshot.acceptance.connectionIds.includes(b.connectionId) && inScope(b) && b.policy.endpoint.account === call.accountId && b.policy.endpoint.resource === call.resourceId);
     if (matches.length !== 1) throw Error('intent_scope_mismatch'); return matches[0]!;
+    return matches[0]!;
   };
   const validateCallRun = (tx: Transaction, call: ToolCallRefusal): RunSnapshot => {
     const { snapshot } = readRun(tx, call.runId);
@@ -499,12 +516,16 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       tx.run('INSERT INTO tool_runs VALUES (?,?,?,?)', [ownerId, acceptance.runId, bytes, hash]); return { sha256: hash };
     },
     durableConnectionIds(tx) {
+      // W2B-R1: the configuration file is the single source of truth for connections, so a row whose id is
+      // no longer an enabled entry there is retired: it contributes no id, grant or tool definition to a run.
+      const configured = options.configuredConnectionIds?.();
       return tx.all('SELECT connection_id FROM tool_connections WHERE owner_id=? ORDER BY connection_id', [ownerId])
         .map(row => String(row['connection_id']))
-        .filter(id => { try { return connection(tx, id).policy.enabled; } catch { return false; } });
+        .filter(id => { try { return connection(tx, id).policy.enabled; } catch { return false; } })
+        .filter(id => configured === undefined || configured.includes(id));
     },
     liveRememberApproved() { return options.grantMode === 'owner-trusted-reads'; },
-    liveDefinitions(runId, rememberNote, vaultDispatch) {
+    liveDefinitions(runId, rememberNote, vaultDispatch, stageNote, composedNotes) {
       // The Live model is declared only the one research tool plus remember; the connector reads
       // stay in the registry so the research fan-out and the session cache keep working, but the Live
       // session never declares them to the provider. A research tool is answered by a host-side loop
@@ -532,6 +553,27 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
             const response = rememberNote(tx, runId, args);
             return complete(call as ToolCallIntent, response, ['ordinary'], tx);
+          });
+          return { status: 'completed', result };
+        },
+      });
+      // Item 1/10: the composed stage is declared to the live model only while the capability switch is
+      // on, and it can never write: the host commits after its own read-back boundary and confirmation.
+      if (composedNotes) definitions.push({ ...STAGE_NOTE_IDENTITY, description: 'Stage a note composed from this conversation for the Lux vault. The host reads it back and saves it only after the owner confirms. It never saves by itself.', effect: 'write', parameters: STAGE_NOTE_PARAMETERS, validate: validateStageNote,
+        async execute(args, context) {
+          if (context.runId !== runId || !validateStageNote(args) || context.signal.aborted) return { status: 'failed' };
+          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
+          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' };
+          const result = store.transaction(tx => {
+            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
+            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+            const call = storedCall(tx, row);
+            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, executionId: context.executionId };
+            if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
+            const snapshot = validateCallRun(tx, call);
+            assertLiveIdentity(tx, call); target(snapshot, call, tx);
+            if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
+            return complete(call as ToolCallIntent, stageNote === undefined ? { staged: false, code: 'not_enabled' } : stageNote(tx, runId, args), ['ordinary'], tx);
           });
           return { status: 'completed', result };
         },
@@ -591,6 +633,35 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           return { status: 'completed' as const, result };
         },
       });
+      // W7: the owner's Trello board, offered only while a sign-in record exists. Reads and writes are
+      // resolved on the pinned board by the board service before anything reaches the server.
+      const board = options.trello;
+      if (board && options.grantMode === 'owner-trusted-reads' && board.available()) {
+        for (const [identity, parameters, validate, description] of [
+          [TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, validateTrelloRead, TRELLO_READ_DESCRIPTION],
+          [TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloWrite, TRELLO_WRITE_DESCRIPTION],
+        ] as const) definitions.push({ ...identity, description, guidance: TRELLO_ARGUMENT_GUIDANCE, effect: identity === TRELLO_WRITE_IDENTITY ? 'write' : 'read', parameters, validate,
+          async execute(args, context) {
+            if (context.runId !== runId || !validate(args) || context.signal.aborted) return { status: 'failed' as const };
+            const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
+            if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
+            const staged = store.transaction(tx => {
+              const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
+              if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+              const call = storedCall(tx, row);
+              const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: identity.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: identity.accountId, resourceId: identity.resourceId, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
+              if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
+              const snapshot = validateCallRun(tx, call);
+              assertLiveIdentity(tx, call); target(snapshot, call, tx);
+              if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
+              return call as ToolCallIntent;
+            });
+            const response = identity === TRELLO_WRITE_IDENTITY ? await board.write(runId, args, ownerWords(context.runId), context.signal) : await board.read(runId, args, context.signal);
+            const result = store.transaction(tx => complete(staged, response, ['ordinary'], tx));
+            return { status: 'completed' as const, result };
+          },
+        });
+      }
       return definitions;
     },
     definitions(runId, tx?: Transaction) {
@@ -650,11 +721,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               // connector whose current generation is not published and ready never reaches its
               // handler, even when a stale run snapshot still names one of its tools.
               const grant = registry.currentGrant(p.endpoint.id);
-              if (!grant || grant.generation !== p.generation) { return { status: 'failed' }; }
+              if (!grant || grant.generation !== p.generation) { return { status: 'failed', code: 'not_granted' }; }
               // #604: a composite is authorized by the approved policy name; the registry grant keeps
               // the published child names, so a granted composite is never in `grant.toolNames`.
-              const policyComposite = composedNames.includes(name) && p.toolNames.includes(name);
-              if (!grant.toolNames.includes(name) && !policyComposite) { return { status: 'failed' }; }
+              // TR-R8: the door covers a composite exactly when the host's own derivation grants it, that is
+              // when every base read it stands on is granted; the derivation is the one function above, never
+              // a copy, and the composed names are never stored in the registry grant.
+              if (!grant.toolNames.includes(name) && !composedNames.includes(name)) { return { status: 'failed', code: 'not_granted' }; }
               if (!declaration.validate(args)) { return { status: 'failed' }; }
               // Normalize at the boundary; the intent hash below stays over the model's original args.
               const prepared = declaration.normalize === undefined ? undefined : declaration.normalize(args);

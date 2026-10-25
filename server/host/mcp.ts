@@ -8,11 +8,14 @@ import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter, type McpTransportState } from '../adapters/mcp/adapter.js';
 import { mongooseCredentialAtStart, mongooseFailureStage, mongooseReadOnly } from '../connectors/mongoose.js';
-import { MongooseCredentialError, MONGOOSE_CONSENT_CAP_MS, mongooseAccessToken, mongooseCredentialPresent, readMongooseOAuth } from './mongoose-auth.js';
+import { MongooseCredentialError, MONGOOSE_CONSENT_CAP_MS, mongooseAccessToken, mongooseCredentialPresent, mongooseEntryBinding, readMongooseOAuth } from './mongoose-auth.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { identityAction, identityProofMemo, proveIdentity, refusalCode, IDENTITY_TIMEOUT_MS, type IdentityErrorCode, type IdentityProof } from '../connectors/identity.js';
+import { googleMcpPathUnsafe } from '../connectors/google.js';
+import { noteGmailAccount } from '../tools/open-handles.js';
+import { homedir } from 'node:os';
 
 export interface McpConnectionBundle {
   state: 'applied' | 'unchanged' | 'refused' | 'pending';
@@ -66,7 +69,7 @@ export function composeMcpConnection(options: { store: Store; owner: ToolsOwner;
 }
 
 export type McpEndpointState = 'missing' | 'configured' | 'connecting' | 'connected' | 'error';
-export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; reasonCode?: 'identity_mismatch' | 'not_signed_in' | IdentityErrorCode; identity?: IdentityProof; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'owner-approval-required' | 'ambiguous-legacy-policy'; exception?: { class: string; code: string } }
+export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; reasonCode?: 'identity_mismatch' | 'not_signed_in' | IdentityErrorCode; identity?: IdentityProof; /** C-OPEN 6: a closed wiring notice the Settings row names; it never stops the connector. */ warning?: 'google_mcp_path_unsafe'; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'owner-approval-required' | 'ambiguous-legacy-policy'; exception?: { class: string; code: string } }
 export interface McpRuntimeComposition {
   registry: McpRegistry;
   port: McpPort;
@@ -192,7 +195,8 @@ export type ConnectorLifecycleEvent =
   | { event: 'connector_recovered'; endpointId: string; attempts: number; connectMs: number }
   | { event: 'connector_recovery_exhausted'; endpointId: string; attempts: number; reason: string }
   | { event: 'connector_unavailable'; endpointId: string; reason: string }
-  | { event: 'connector_helper_stderr'; endpointId: string; bytes: number };
+  | { event: 'connector_helper_stderr'; endpointId: string; bytes: number }
+  | { event: 'google_mcp_path_unsafe'; endpointId: string };
 
 /** Compose the inert MCP runtime once at startup: config, owner and registry only, no remote work. */
 export async function composeMcpRuntime(options: {
@@ -210,10 +214,19 @@ export async function composeMcpRuntime(options: {
   recoveryDelaysMs?: readonly number[];
   /** Hold connector initialization until `start()`; the supervised host writes the ready frame first. */
   deferConnectors?: boolean;
+  /** Test seam: the home folder the Google wiring guard checks against; production uses the user's home. */
+  home?: string;
+  /** W7: the owner's Trello board service, handed to the tools owner as is. */
+  trello?: ToolsOwnerOptions['trello'];
 }): Promise<McpRuntimeComposition> {
   const { store, ownerId, configDir } = options; const now = options.now ?? Date.now;
   const registry = new ProbeRegistry();
   const selection = loadMcpEndpoints({ configDir });
+  // W2B-R1: the enabled entries of mcp.json are the connections a run may hold. A readable catalog with
+  // no entry for a stored row retires it; a catalog that is missing retires nothing, because it says nothing.
+  const configuredConnectionIds = selection.state === 'missing'
+    ? undefined
+    : selection.catalog.endpoints.filter(entry => entry.enabled).map(entry => entry.id);
   const expectedIdentities = selection.state === 'configured'
     ? [selection.catalog.ownerIdentity, selection.catalog.ownerChatUsername].filter((value): value is string => typeof value === 'string' && value.length > 0)
     : [];
@@ -222,15 +235,16 @@ export async function composeMcpRuntime(options: {
   const callDeadlineMs = options.callDeadlineMs ?? ENDPOINT_CALL_DEADLINE_MS;
   const callTimeoutMsByEndpoint = new Map(selection.state === 'configured'
     ? selection.catalog.endpoints.map(entry => [entry.id, callDeadlineMs] as const) : []);
-  // One credential seam for both shapes: a schemaVersion 1 pasted bearer, or the schemaVersion 2
-  // OAuth record this host owns and refreshes lazily. A v2 record is never read as a bearer token.
+  // One credential seam for both shapes: a schemaVersion 1 pasted bearer, or the schemaVersion 3
+  // OAuth record this host owns and refreshes lazily. An OAuth record is never read as a bearer token.
   const credentialOwners = new Map(selection.state === 'configured'
     ? selection.catalog.endpoints.filter(entry => entry.credentialRef).map(entry => [entry.credentialRef!, entry] as const) : []);
   const resolveCredential = async (reference: string): Promise<string> => {
     if (!readMongooseOAuth(configDir, reference)) return readMcpCredential(configDir, reference);
     const owner = credentialOwners.get(reference);
     try {
-      return await mongooseAccessToken(configDir, reference, {
+      // The record must be bound to the resource this catalogue entry configures, or it is a sign-in.
+      return await mongooseAccessToken(configDir, reference, owner ? mongooseEntryBinding(owner) : undefined, {
         now,
         // #502: a refused refresh is spoken once, by the endpoint's own typed connector_failure line
         // (credential-refresh-failed), never twice through this notice as well. A consent notice has no
@@ -252,6 +266,9 @@ export async function composeMcpRuntime(options: {
   const reports = new Map<string, McpEndpointReport>();
   const connectors = new Map<string, string>();
   const ready = new Set<string>();
+  // TR-R12: the endpoints whose connect has ever succeeded, so a recovery round retries only a first-connect
+  // failure and never re-settles an endpoint whose grant was revoked, refused or closed on purpose.
+  const everConnected = new Set<string>();
   const generations = new Map<string, number>();
   const recovery = createRecoverySchedule(options.recoveryDelaysMs);
   // The per-tool digest of each endpoint's readable names as of its last approved round.
@@ -275,7 +292,7 @@ export async function composeMcpRuntime(options: {
       ? { id: previous.id, state: 'connected', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt }
       : { id: previous.id, state: 'configured', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt, error: status.reason });
   };
-  const owner = createToolsOwner({ grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, ...(options.log ? { log: options.log } : {}) });
+  const owner = createToolsOwner({ grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, configuredConnectionIds: () => configuredConnectionIds, ...(options.log ? { log: options.log } : {}), ...(options.trello ? { trello: options.trello } : {}) });
   const sourcePort = owner.sourcePort;
   if (selection.state === 'missing') {
     const empty: McpRuntimeComposition = { registry, port: sourcePort, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), start: async () => {}, refresh: async () => {}, recover: async () => {}, close: () => port.close() };
@@ -307,11 +324,17 @@ export async function composeMcpRuntime(options: {
         connectors.set(entry.id, entry.connector);
         continue;
       }
+      // W2B-R2: an enabled entry is a connection the owner has; a disabled one is not, so it reports no
+      // state at all. A `connecting` row for an entry nobody connects would name its source unreachable.
+      reports.set(entry.id, { id: entry.id, state: 'connecting', tools: 0, lastHandshakeAt: null });
+      connectors.set(entry.id, entry.connector);
     }
-    reports.set(entry.id, { id: entry.id, state: 'connecting', tools: 0, lastHandshakeAt: null });
-    connectors.set(entry.id, entry.connector);
   }
   const active = endpoints.filter(entry => entry.enabled && entry.allowEgress && !rejected.has(entry.id));
+  // C-OPEN 6: a Google helper run from the reports folder works until that folder is archived; say so at
+  // start, once per endpoint, and keep the connector running. The install step repoints the config.
+  const unsafeWiring = new Set(endpoints.filter(entry => entry.connector === 'google' && entry.transport === 'stdio' && googleMcpPathUnsafe(entry.command, options.home ?? homedir())).map(entry => entry.id));
+  for (const id of unsafeWiring) options.lifecycleLog?.({ event: 'google_mcp_path_unsafe', endpointId: id });
 
   const eligible = new Map<string, { session: number; revision: number }>();
   // Endpoints parked on a sign-in reason: a login rewrites the credential, and the next recover()
@@ -355,7 +378,7 @@ export async function composeMcpRuntime(options: {
         }
         const grant = registry.currentGrant(id);
         if (!grant) { eligible.delete(id); reports.set(id, { ...previous, state: 'error', tools: 0, error: 'recovery-invalidated' }); return; }
-        eligible.delete(id); ready.add(id);
+        eligible.delete(id); ready.add(id); everConnected.add(id);
         const { error: _error, exception: _exception, ...report } = previous;
         reports.set(id, { ...report, state: 'connected', tools: grant.toolNames.length, lastHandshakeAt: new Date(now()).toISOString() });
       } else {
@@ -467,7 +490,7 @@ export async function composeMcpRuntime(options: {
       reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code, configurationError: code }); return { retryable: false };
     }
     // A missing or malformed credential is a visible, typed status; discovery never runs with a blank bearer.
-    // A schemaVersion 2 OAuth record counts as present on its refresh token alone: no refresh happens here.
+    // A schemaVersion 3 OAuth record counts as present on its refresh token alone: no refresh happens here.
     if (entry.credentialRef) {
       const stored = mongooseCredentialPresent(configDir, entry.credentialRef) || pastedCredentialPresent(configDir, entry.credentialRef);
       // H19,D4: no stored refresh material, or a consent family past its absolute cap, means only a new
@@ -512,6 +535,7 @@ export async function composeMcpRuntime(options: {
       const granted = [...names, ...composed].sort();
       // Healthy discovery without an approved envelope is status-only, not an empty owner policy.
       if (!names.length) {
+        everConnected.add(entry.id);
         reports.set(entry.id, { id: entry.id, state: 'connected', tools: 0, lastHandshakeAt: new Date(discovery.observedAt).toISOString() });
         return { retryable: false };
       }
@@ -674,7 +698,10 @@ export async function composeMcpRuntime(options: {
       ready.add(entry.id);
       if (attempt === 'first-connect') options.lifecycleLog?.({ event: 'connector_connected', endpointId: entry.id, connectMs: Math.max(0, now() - roundStarted) });
       // R1: the count includes a granted composite, so the owner sees every callable read tool.
+      everConnected.add(entry.id);
       reports.set(entry.id, { id: entry.id, state: 'connected', tools: granted.length, lastHandshakeAt: new Date(now()).toISOString(), ...(identity ? { identity } : {}) });
+      // C-OPEN 4: a Gmail link names the account the mailbox proved here, never one a model or a body named.
+      if (entry.connector === 'google' && policy.toolNames.includes('gmail_get_profile') && !policy.toolNames.some(name => name.startsWith('calendar_')) && identity?.proven === true) noteGmailAccount(identity.value ?? undefined);
       return { retryable: false };
     } catch (error) {
       if (stale()) return { retryable: false };
@@ -720,6 +747,7 @@ export async function composeMcpRuntime(options: {
       return active.filter(entry => ready.has(entry.id) && reports.get(entry.id)?.state === 'connected' && !!registry.currentGrant(entry.id)).map(entry => entry.id);
     },
     status: () => ({ endpoints: [...reports.values()].map(report => ({ ...report,
+      ...(unsafeWiring.has(report.id) ? { warning: 'google_mcp_path_unsafe' as const } : {}),
       ...(report.state === 'connected' && report.tools > 0 && !registry.currentGrant(report.id) ? { state: 'error' as const, tools: 0, error: 'connector-unavailable' } : {}),
       retrying: recovery.pending(report.id),
       connector: connectors.get(report.id) ?? report.id })) }),
@@ -744,7 +772,25 @@ export async function composeMcpRuntime(options: {
           .then(result => { if (result.retryable) scheduleRecovery(entry); })
           .catch(() => { /* the per-connector report already carries the failure */ });
       }));
+      // TR-R12 / #671-R2: a endpoint whose first connect failed is retried here too, once per recover() call and
+      // with no loop of its own, so a Settings change (a sign-in, a fixed child) takes effect on the next
+      // recovery round. The round is the pass worth reading, so its attempt names itself as a refresh.
       await Promise.all([...eligible.keys()].map(recoverEndpoint));
+      // Only an endpoint whose first connect failed is retried: it never published a grant, so no read and no
+      // approved binding exists to disturb. An endpoint that connected once and then failed a read keeps the
+      // refusal rules above, so a changed catalog, binding, revocation or late close is still refused.
+      const parkedOnError = active.filter(entry => !closed && !eligible.has(entry.id) && !needsSignIn.has(entry.id)
+        && reports.get(entry.id)?.state === 'error' && !everConnected.has(entry.id)
+        && entry.configurationError === undefined && entry.unknownClass !== null);
+      await Promise.all(parkedOnError.map(async entry => {
+        const token = (generations.get(entry.id) ?? 0) + 1;
+        generations.set(entry.id, token);
+        recovery.stop(entry.id);
+        registry.suspend(entry.id);
+        await settle(entry, token, 'refresh', identityOnce)
+          .then(result => { if (result.retryable) scheduleRecovery(entry); })
+          .catch(() => { /* the per-connector report already carries the failure */ });
+      }));
     },
     close: () => { closed = true; recovery.stopAll(); for (const entry of active) { generations.set(entry.id, (generations.get(entry.id) ?? 0) + 1); registry.suspend(entry.id); } eligible.clear(); bursts.clear(); const closing = port.close(); return Promise.all([closing, ...flights.values()]).then(() => {}); },
   };

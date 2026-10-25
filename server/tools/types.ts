@@ -1,6 +1,8 @@
+import type { TrelloBoard } from './trello.js';
 import type { RemoteResultLineage } from './received-body.js';
 import type { RememberNotePort } from './remember.js';
 import type { VaultDispatchPort } from './vault-write.js';
+import type { JsonObject as JsonValue } from '../adapters/model/types.js';
 import type { LiveVoiceProvider } from '../adapters/live-voice/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
 import type { HistorySourceRef } from '../domain/history-reader.js';
@@ -52,10 +54,20 @@ export interface ToolsOwnerOptions {
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
   /** Reports a connector-classified connection status after a call; null clears it (R4). */
   reportToolStatus?(connectionId: string, status: { state: 'configured' | 'error'; reason: string } | null): void;
+  /**
+   * W2B-R1: the connection ids the configuration file enables, or undefined when there is no readable
+   * catalog to judge by. A stored row outside that set is retired from new runs.
+   */
+  configuredConnectionIds?(): readonly string[] | undefined;
+  /** W7: the owner's Trello board service; absent means no Trello tools are ever offered. */
+  trello?: TrelloBoard;
 }
 export interface ConnectionIntent { expectedPolicySha256: string | null; policy: ConnectionPolicy }
 export interface ConnectionApplyResult { state: 'applied' | 'unchanged'; sha256: string }
 export type ConnectionRestoreResult = { state: 'restored' } | { state: 'refused' | 'unavailable'; reason: string };
+/** W6: the host decides a composed-note stage; the tool only asks, and the frozen payload is the host's own. */
+export type StageNotePort = (tx: Transaction, runId: string, args: { title: string; body: string; evidenceRefs: string[] }) => JsonValue;
+
 export interface ToolsOwner {
   readonly sourcePort: McpPort;
   journal: ToolCallJournal; resultGate: ToolResultGate;
@@ -70,7 +82,7 @@ export interface ToolsOwner {
   projectConnection(connectionId: string): void;
   snapshotRun(tx: Transaction, acceptance: RunAcceptance): { sha256: string };
   definitions(runId: string): ToolDefinition[];
-  liveDefinitions(runId: string, rememberNote: RememberNotePort, vaultDispatch?: VaultDispatchPort): ToolDefinition[];
+  liveDefinitions(runId: string, rememberNote: RememberNotePort, vaultDispatch?: VaultDispatchPort, stageNote?: StageNotePort, composedNotes?: boolean): ToolDefinition[];
   liveRememberApproved(): boolean;
   complete(call: ToolCallIntent, response: JsonObject, dataClasses: readonly DataClass[]): ToolResultRef;
 }

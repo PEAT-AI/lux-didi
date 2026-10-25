@@ -3,7 +3,7 @@ import type { CompletedResult, McpPort, StoredPayload } from '../adapters/mcp/po
 import type { GoogleEvidence, GoogleResult, GoogleTool } from '../connectors/google.js';
 import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
 import { sha256 } from './canonical.js';
-import { shapeGcalCalendars, shapeGcalList, shapeGmailList, shapeGmailRead, receivedGmailBody, type ShapedResult, type ShapedSource } from './live-shape.js';
+import { shapeDriveFile, shapeDriveSearch, shapeGcalCalendars, shapeGcalList, shapeGmailList, shapeGmailRead, receivedGmailBody, type ShapedResult, type ShapedSource } from './live-shape.js';
 
 export interface GoogleProjection {
   mailPage?: ShapedResult['mailPage'];
@@ -75,6 +75,9 @@ export const GOOGLE_ERROR_TABLE: Readonly<Record<string, GoogleErrorEntry>> = {
   // them, when the lux-cli release carrying error-contract.json 6ee466f0 is installed.
   'credential-missing-env': { class: 'credential', pinned: true, ownerLine: `auth needed: run ${AUTHORIZE} to sign in again`, recovery: 'none' },
   credential_missing: { class: 'credential', pinned: true, ownerLine: `auth needed: run ${AUTHORIZE} to sign in again`, recovery: 'none' },
+  // C-OPEN 2: the Drive family's two typed refusals (lux-cli drive family, C-DRIVE.md).
+  scope_missing: { class: 'credential', pinned: true, ownerLine: `Drive needs a one-time consent first: run ${AUTHORIZE} once`, recovery: 'none' },
+  not_found: { class: 'caller', pinned: false, ownerLine: 'that Drive file is not there any more, or it is not shared with him', recovery: 'none' },
 };
 
 /** The closed reason for a code outside the table: never silent, never a raw helper line. */
@@ -175,7 +178,8 @@ function authorizeCommandFor(family: string): string {
 }
 
 function googleFamilyOf(evidence: ConnectorEvidence): string {
-  return typeof evidence.tool === 'string' && evidence.tool.startsWith('gmail') ? 'gmail' : 'calendar';
+  if (typeof evidence.tool !== 'string') return 'calendar';
+  return evidence.tool.startsWith('gmail') ? 'gmail' : evidence.tool.startsWith('drive') ? 'drive' : 'calendar';
 }
 
 /** Rich, clean projection of one tool's decoded envelope data (see live-shape.ts). */
@@ -184,6 +188,8 @@ export function renderGoogleTool(tool: string, data: unknown): GoogleProjection 
   const shaped: ShapedResult = tool === 'gmail_search_messages' ? shapeGmailList(dataRecord)
     : tool === 'gmail_read_message' ? shapeGmailRead(dataRecord)
     : tool === 'calendar_list_calendars' ? shapeGcalCalendars(dataRecord)
+    : tool === 'drive_search_files' ? shapeDriveSearch(dataRecord)
+    : tool === 'drive_get_file' ? shapeDriveFile(dataRecord)
     : shapeGcalList(dataRecord);
   return shaped;
 }

@@ -21,6 +21,7 @@ export const TOOL_PHRASES: Record<string, ToolPhrase> = {
   mattermost_get_thread: { verb: 'Reading', object: 'a Mattermost thread' },
   mattermost_search: { verb: 'Searching', object: 'Mattermost' },
   mattermost_list_channels: { verb: 'Listing', object: 'your Mattermost channels' },
+  mattermost_chat: { verb: 'Reading', object: 'a Mattermost conversation' },
   // owner memory
   remember_note: { verb: 'Saving', object: 'that to your memory' },
 };

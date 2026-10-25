@@ -1,3 +1,5 @@
+import { hostLogEvent } from './host-events.js';
+
 /**
  * Handles and the open destination policy. A handle is minted only here, from a structured source
  * record the host already built, so no model argument and no retrieved sentence can register one.
@@ -8,13 +10,17 @@ export const OPEN_HANDLE_CAP = 3;
 export const HOME_APPS = ['gmail', 'calendar', 'mattermost'] as const;
 export type HomeApp = (typeof HOME_APPS)[number];
 export type OpenKind = 'gmail' | 'calendar' | 'docs' | 'drive' | 'youtube' | 'mattermost' | 'home' | 'file' | 'app';
-export type OpenProvenance = 'structured' | 'knowledge_body' | 'mail_body';
+export type OpenProvenance = 'structured' | 'knowledge_body';
 export interface OpenHandle { handle: string; url: string; kind: OpenKind; provenance: OpenProvenance; title: string }
 export interface SourceLink { title: string; url?: string; sourceType?: string }
 
 const REJECT_PATH = /(^|\/)(url|redirect|export|download)(\/|$)/;
-const MAIL_PATH = /^\/mail\/u\/\d+\/?$/;
+/** An account address Gmail accepts in place of the account index; the host takes it from the Gmail proof. */
+const ACCOUNT_ADDRESS = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$/;
+const MAIL_PATH = /^\/mail\/u\/(\d{1,2}|[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+)\/?$/;
 const CALENDAR_PATH = /^\/(calendar\/)?event\/?$/;
+/** The link the Calendar API returns for an event: www.google.com, exactly this path, and an eid. */
+const CALENDAR_EVENT_LINK = '/calendar/event';
 const CALENDAR_HOME = /^\/$/;
 const DOCS_PATH = /^\/(document|presentation|spreadsheets)\/d\/[A-Za-z0-9_-]{1,256}(\/(edit|view))?\/?$/;
 const DRIVE_PATH = /^\/(file\/d\/[A-Za-z0-9_-]{1,256}|drive\/folders\/[A-Za-z0-9_-]{1,256})(\/view)?\/?$/;
@@ -49,7 +55,7 @@ export function openDestination(raw: string): { url: string; kind: OpenKind } | 
   let url: URL;
   try { url = new URL(raw); } catch { return undefined; }
   if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.port !== '') return undefined;
-  if (REJECT_PATH.test(url.pathname) || url.searchParams.has('q') || url.searchParams.has('redirect')) return undefined;
+  if (REJECT_PATH.test(url.pathname) || url.searchParams.has('q') || url.searchParams.has('redirect') || url.searchParams.has('export')) return undefined;
   const host = url.hostname.toLowerCase();
   const path = url.pathname;
   if (host === 'mail.google.com') return MAIL_PATH.test(path) ? { url: url.href, kind: 'gmail' } : undefined;
@@ -57,6 +63,7 @@ export function openDestination(raw: string): { url: string; kind: OpenKind } | 
     if (CALENDAR_HOME.test(path)) return { url: url.href, kind: 'calendar' };
     return CALENDAR_PATH.test(path) && url.searchParams.has('eid') ? { url: url.href, kind: 'calendar' } : undefined;
   }
+  if (host === 'www.google.com') return path === CALENDAR_EVENT_LINK && url.searchParams.has('eid') ? { url: url.href, kind: 'calendar' } : undefined;
   if (host === 'docs.google.com') return DOCS_PATH.test(path) ? { url: url.href, kind: 'docs' } : undefined;
   if (host === 'drive.google.com') return DRIVE_PATH.test(path) ? { url: url.href, kind: 'drive' } : undefined;
   if (host === 'www.youtube.com' || host === 'youtube.com') {
@@ -67,9 +74,31 @@ export function openDestination(raw: string): { url: string; kind: OpenKind } | 
   return undefined;
 }
 
+let gmailAddress: string | undefined;
+let accountUnknownLogged = false;
+
+/** C-OPEN 4: the account the Gmail connector proved at host start; anything that is not an address is none. */
+export function noteGmailAccount(value: string | undefined): void {
+  gmailAddress = typeof value === 'string' && ACCOUNT_ADDRESS.test(value) ? value : undefined;
+}
+
+export function gmailAccount(): string | undefined { return gmailAddress }
+
+/** The account segment of a Gmail link; /u/0 only when the connector reported no account, and the log says so once per session. */
+function gmailAccountSegment(): string {
+  if (gmailAddress !== undefined) return gmailAddress;
+  if (!accountUnknownLogged) { accountUnknownLogged = true; hostLogEvent({ event: 'gmail_account_unknown' }); }
+  return '0';
+}
+
+/** A thread in all mail, so an archived thread opens too, under the signed-in account. */
+export function gmailThreadUrl(threadId: string): string {
+  return `https://mail.google.com/mail/u/${gmailAccountSegment()}/#all/${encodeURIComponent(threadId)}`;
+}
+
 /** The three home pages the owner may ask for; every destination is fixed here, never by an argument. */
 export function homeDestination(app: HomeApp): { url: string; kind: OpenKind } | undefined {
-  if (app === 'gmail') return { url: 'https://mail.google.com/mail/u/0/', kind: 'home' };
+  if (app === 'gmail') return { url: `https://mail.google.com/mail/u/${gmailAccountSegment()}/`, kind: 'home' };
   if (app === 'calendar') return { url: 'https://calendar.google.com/', kind: 'home' };
   return mattermostHost === undefined ? undefined : { url: `https://${mattermostHost}/`, kind: 'home' };
 }
@@ -83,12 +112,12 @@ let minted = 0;
 /** One registry per Live session: a new session drops every handle the last one minted. */
 export function beginHandleSession(runId: string): void {
   if (session === runId) return;
-  handles.clear(); exposed.clear(); mintedLines.clear(); minted = 0; session = runId;
+  handles.clear(); exposed.clear(); mintedLines.clear(); minted = 0; session = runId; accountUnknownLogged = false;
 }
 
 export function endHandleSession(runId: string): void {
   if (session !== runId) return;
-  handles.clear(); exposed.clear(); mintedLines.clear(); minted = 0; session = undefined;
+  handles.clear(); exposed.clear(); mintedLines.clear(); minted = 0; session = undefined; accountUnknownLogged = false;
 }
 
 /** A handle resolves only when its line was in the text the model was actually given. */
@@ -138,7 +167,7 @@ function kindTitle(raw: string): string {
   if (url.hostname === 'docs.google.com') return 'Document';
   if (url.hostname === 'drive.google.com') return 'Drive file';
   if (url.hostname.endsWith('youtube.com') || url.hostname === 'youtu.be') return 'Video';
-  if (url.hostname === 'calendar.google.com') return 'Calendar event';
+  if (url.hostname === 'calendar.google.com' || url.hostname === 'www.google.com') return 'Calendar event';
   if (url.hostname === 'mail.google.com') return 'Gmail thread';
   return 'Mattermost thread';
 }
@@ -156,7 +185,7 @@ function sourceDestination(source: SourceLink): { url: string; kind: OpenKind } 
 export function mintOpenLine(source: SourceLink): string | undefined {
   const destination = sourceDestination(source);
   if (!destination) return undefined;
-  const provenance: OpenProvenance = source.sourceType === 'knowledge' ? 'knowledge_body' : source.sourceType === 'mail_body' ? 'mail_body' : 'structured';
+  const provenance: OpenProvenance = source.sourceType === 'knowledge' ? 'knowledge_body' : 'structured';
   const handle = `L${++minted}`;
   const title = safeTitle(source.title);
   handles.set(handle, { handle, url: destination.url, kind: destination.kind, provenance, title });
@@ -179,8 +208,11 @@ export function withOpenHandles<T extends { text: string; sources?: readonly Sou
   return lines.length === 0 ? stripped : { ...stripped, text: `${text}\n${lines.join('\n')}` };
 }
 
-/** Links the host pulls out of a body it shaped; every one still passes the destination policy. */
-export function bodySourceLinks(text: string, sourceType: 'knowledge' | 'mail_body' = 'knowledge'): SourceLink[] {
+/**
+ * Links the host pulls out of the owner's own knowledge notes; every one still passes the destination
+ * policy. A mail body is someone else's text, so a link inside one is never minted (C-OPEN 2).
+ */
+export function bodySourceLinks(text: string, sourceType: 'knowledge' = 'knowledge'): SourceLink[] {
   const found: SourceLink[] = [];
   for (const raw of text.match(/https:\/\/[^\s<>"'`)\]]+/g) ?? []) {
     if (found.length >= OPEN_HANDLE_CAP) break;

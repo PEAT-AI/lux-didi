@@ -202,6 +202,11 @@ test('the tools conduct names conditional capabilities and preserves source iden
   assert.match(NAYA_VOICE_TOOLS, /The vault and memory are different places\. The vault is lux/);
   assert.match(NAYA_VOICE_TOOLS, /he says the save phrase first, "save to my vault" and then the note/);
   assert.match(NAYA_VOICE_TOOLS, /Say the note is saved only on saved:true/);
+  // W6 item 11: a composed note is staged, read back word for word, and saved only after the owner says yes.
+  assert.match(NAYA_VOICE_TOOLS, /For a note worked out together call stage_lux_note/);
+  assert.match(NAYA_VOICE_TOOLS, /read the frozen title and body back word for word/);
+  assert.match(NAYA_VOICE_TOOLS, /let the host save it only after he says yes/);
+  assert.match(NAYA_VOICE_TOOLS, /An add or change ask is not supported: offer a new note\./);
   assert.match(NAYA_VOICE_TOOLS, /On outcome_unknown say you are not sure it landed and that he can check the vault, and never claim it was saved/);
   assert.doesNotMatch(NAYA_TOOLS, /three to five word|never announce progress|One moment|or call it at once/i);
   assert.doesNotMatch(NAYA_TOOLS, /[\u2013\u2014]/);
@@ -348,10 +353,10 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
 test('the public character, voice surface and tool conduct are the authored verbatim constants', () => {
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '1b188117660fe12204cd542001b585fcce69add4f1cc6d27689720e193cac977');
-  assert.equal(sha(NAYA_VOICE_SURFACE), 'a4b4f1f26c023751657f6844c12a870d6d9658552911944487b0ad58a042fcaf');
-  assert.equal(sha(NAYA_VOICE_TOOLS), 'd2627bdfd9a795496dcb68ae21cbdc1f2c1875b08efc7029eae22678596fcea9');
+  assert.equal(sha(NAYA_VOICE_SURFACE), '1cf4e572cd49ae7d8d7e16ee3c11b53c6dc652dc1511b8b5625d4a8a3bcb0768');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '7eaf8ffa269fcf9343e8162cc40e199e5fe00451fc493ad01e30bdcefb7f3e04');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '92c556c1112232a01b24e05964a29e2082c27a8e93b2610f83aa498ba5090669');
-  assert.equal(sha(NAYA_TOOLS), '95f50069b1fa21188cb1f00dc7c340242a10252ee2f81407641d85ff94ae0ea0');
+  assert.equal(sha(NAYA_TOOLS), 'ee33899337f69d3834124cfe8a17e168034b5ffa2195e707754976ab4195790c');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));
@@ -668,7 +673,9 @@ const WRAPPER_3O_CHARS = 6603;
 // the one thing she cannot do. #621 raises it for the coverage header the voice reads once, and the bound
 // carries the measured wrapper at this sha.
 // #665/#666: the honesty rules and the turn-taking line they replace raise it to the measured wrapper.
-const WRAPPER_W5_CHARS = 14_100;
+// TR-R5: the owner rule for authored text is re-pin, never trim a reviewed rule, so the bound carries the merged measure.
+// TR-R15: restoring W7's "rather than claiming it happened" clause, which W6's rewrite had dropped, measured 14_224.
+const WRAPPER_W5_CHARS = 14_300;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
@@ -692,7 +699,9 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   const growth = wrapper.length - WRAPPER_3O_CHARS;
   // #589/#590: the honesty line that names the stop phrases is the growth this bound carries.
   // #621: the coverage header adds its own measure. #665/#666: the honesty rules add theirs.
-  const cap = 7_500;
+  // TR-R5: a house budget re-pinned to the merged measure; no reviewed rule was trimmed for it.
+  // TR-R15: measured 7_621 once W7's write-honesty clause was restored.
+  const cap = 7_700;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
@@ -903,7 +912,7 @@ test('PV1: a saved accent takes the next session start, replacing the frozen blo
 // cut snippets, and a timed-out research call was handed back to the owner and then re-fired. Three
 // unconditional rules, each stated once, replacing the sentences they supersede.
 const Q5_RULES = [
-  "Open a fresh call on one current specific, never a generic ready-to-help line; use work, the calendar or an open loop, and never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them; if one matters, raise it later, once, never first.",
+  "Open a fresh call on one current specific, never a generic ready-to-help line, and never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them; if one matters, raise it later, once, never first.",
   'Distinguish no match, unavailable access, missing sign-in, timeout, stale archive, partial content and unread pages.',
   // C-LIVE: one operation per owner turn supersedes the request-ordering sentence.
   'One owner turn allows one research operation: after a result arrives, never call research again until the owner speaks, except to stop.',
@@ -1299,7 +1308,9 @@ const W5_REPLACED = [
 // one thing she cannot do.
 // #621: the coverage header the voice reads once is the growth this bound carries.
 // #665/#666: the voice surface grows by the five honesty rules and the turn-taking line they replace.
-const W5_VOICE_BEFORE = 10_400;
+// TR-R5: the owner rule for authored text is re-pin, never trim, so the cap carries the merged voice instruction.
+// TR-R15: measured 10_507 once W7's write-honesty clause was restored.
+const W5_VOICE_BEFORE = 10_600;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],
@@ -1338,6 +1349,21 @@ test('the open paragraph says what she can open, names open_source, and carries 
   assert.equal(/https?:|\/\/|\.com|\.google/.test(NAYA_OPEN_SURFACE), false, 'the open paragraph carries no url or host');
 });
 
+test('C-OPEN 8: an open ask for a document, deck or sheet uses Drive and asks before opening one of several', async () => {
+  const { NAYA_OPEN_SURFACE, NAYA_VOICE_TOOLS } = await import('../prompt/live-persona.js');
+  const { DRIVE_CHOOSE_GUIDANCE } = await import('../tools/live-shape.js');
+  assert.match(NAYA_VOICE_TOOLS, /To open a document, deck or sheet, use a drive lookup; use the exact item already returned when it fits\./);
+  assert.match(NAYA_VOICE_TOOLS, /If it lists several files and no handle, ask which one, then look up his pick by its id\./);
+  assert.match(NAYA_OPEN_SURFACE, /Say it opened only after the open tool returned opened\./);
+  assert.match(NAYA_OPEN_SURFACE, /Never read a handle or web address aloud\./);
+  assert.equal(NAYA_VOICE_TOOLS.includes('Search again only when needed.'), false, 'the drive rule replaced the vague search line');
+  // The tool result that asks is product text too: it names what to say and never invites reading an id or a link.
+  assert.match(DRIVE_CHOOSE_GUIDANCE, /none is open/);
+  assert.match(DRIVE_CHOOSE_GUIDANCE, /two or three names with their modified dates/);
+  assert.match(DRIVE_CHOOSE_GUIDANCE, /Never read an id aloud\./);
+  assert.equal(/https?:|\/\/|\.com|\.google/.test(DRIVE_CHOOSE_GUIDANCE), false);
+});
+
 test('O-R2: the open paragraph asks for several sources in one research call with its lookups list', async () => {
   const { NAYA_OPEN_SURFACE } = await import('../prompt/live-persona.js');
   assert.match(NAYA_OPEN_SURFACE, /one research call/);
@@ -1369,13 +1395,33 @@ test('LAT-1023: the first ack before a lookup names the sources it is reading', 
   assert.doesNotMatch(NAYA_VOICE_SURFACE, /[\u2013\u2014]/u, 'no dash stands in the rule text');
 });
 
+test('L8-07: missing evidence is said as missing, never as a negative fact', () => {
+  const rule = 'Missing evidence is no negative fact and no yes to a leading question: say you found nothing that says so.';
+  assert.equal(NAYA_LIVE_BASE.split(rule).length - 1, 1, 'the rule reaches the live persona once');
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /[\u2013\u2014]/u);
+});
+
+test('L11-07/L11-08: agreement needs evidence, and a label or a yes never stands alone', () => {
+  assert.equal(NAYA_LIVE_BASE.split('Agree only when the evidence agrees').length - 1, 1, 'the agreement rule reaches the live persona once');
+  const rule = 'Never stop at a bare label or a bare yes; give the reason.';
+  assert.equal(NAYA_LIVE_BASE.split(rule).length - 1, 1, 'the reason rule reaches the live persona once');
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /[\u2013\u2014]/u);
+});
+
+test('L1-14/L11-05: she never says the stop phrase or a stop line on her own', () => {
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /When his words were not one of those, say the exact phrase/u, 'the old rule had her say the phrase unprompted');
+  assert.match(NAYA_VOICE_SURFACE, /If he asks to end it in other words, tell him the exact phrase once\./u);
+  assert.match(NAYA_VOICE_SURFACE, /You cannot mute or stop yourself; never say you did, that you will stay quiet, or any stop line of your own\./u);
+  assert.equal(NAYA_LIVE_BASE.split('any stop line of your own').length - 1, 1, 'the rule reaches the live persona once');
+});
+
 test('#589/#590: the voice surface names the stop phrases and promises no silence it cannot keep', () => {
   // She ends the call on the owner's own words, so the words are stated where she can read them.
   assert.match(NAYA_VOICE_SURFACE, /Naya, stop listening/);
   assert.match(NAYA_VOICE_SURFACE, /Naya, shut down/);
   // The honesty line: what she cannot do, and the way out she names instead of promising.
   assert.match(NAYA_VOICE_SURFACE, /You cannot mute or stop yourself/);
-  assert.match(NAYA_VOICE_SURFACE, /say the exact phrase/);
+  assert.match(NAYA_VOICE_SURFACE, /tell him the exact phrase/);
   // #590: no first-person promise of a silence or a stopped mic stands in for the call ending.
   for (const lie of [/\bI(?:'ll| will) (?:stay quiet|be quiet|go quiet|stop listening)\b/,
     /\bI(?:'ve| have) (?:stopped|muted|turned off)\b/, /\bI(?:'m| am) (?:not recording|muting|stopping)\b/]) {

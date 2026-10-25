@@ -792,6 +792,11 @@ test('page Live projection is cookie-only, same-origin, read-only and no-store',
   for (const name of ['liveSessionId', 'args', 'key', 'grants', 'pcm', 'thoughts']) assert.equal(JSON.stringify(body).includes(name), false);
 });
 
+// TR-R10: the model's own turn must be audible to the adapter's level rule. The shared fixture payload is eight
+// zero bytes, which W5 made digital silence, so a spoken turn sent with it can never move presence to speaking.
+// These are the -12 dBFS samples W5-R5 used for the same reason in live-session.test.ts.
+const speechPcm = () => Uint8Array.from({ length: 8 }, (_unused, index) => (index % 2 === 0 ? 0x40 : 0x1f));
+
 test('gateway forwards safe tool-call/result markers and keeps a refused tool batch alive', async t => {
   const h = await harness(t, { config: configJson(true) });
   const created = await createBody(h, 'tool-markers');
@@ -831,7 +836,7 @@ test('gateway forwards safe tool-call/result markers and keeps a refused tool ba
   // Input resumes without requiring an audioStreamEnd turn boundary.
   ws.send(pcm, { binary: true }); await h.f.frame(3);
   const modelAudio = once(ws, 'message');
-  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] } } });
+  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(speechPcm()).toString('base64') } }] } } });
   const [, binary] = await modelAudio; assert.equal(binary, true);
   assert.equal((await json(h.origin, '/api/v1/live/current', { headers })).body.data.state, 'speaking');
   const interruption = once(ws, 'message'); h.f.send({ serverContent: { interrupted: true } });

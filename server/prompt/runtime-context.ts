@@ -8,6 +8,16 @@ export interface RuntimeContextInput {
   readonly timeZone: string;
   readonly connected: readonly string[];
   readonly unavailable: readonly string[];
+  /** W6 item 14: what this session may write to lux, as the host reads it, never as the model guesses. */
+  readonly vault?: { readonly dictation: boolean; readonly composed: boolean };
+}
+
+/** The exact vault-write capability fact, so no answer blames a connector for a write that is off. */
+export function vaultCapabilityLine(vault: { readonly dictation: boolean; readonly composed: boolean }): string | undefined {
+  if (!vault.dictation) return undefined;
+  return vault.composed
+    ? 'Vault: Naya saves exactly the note the owner dictates, and a note composed from the conversation only when he asks and confirms the read-back.'
+    : 'Vault: Naya saves exactly the note the owner dictates; composed notes are switched off.';
 }
 
 const shortWeekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
@@ -61,6 +71,8 @@ export function toolGroupNames(toolNames: readonly string[]): string[] {
     else if (name === 'search_knowledge' || name === 'get_insight') add('knowledge base');
     else if (name === 'remember_note') add('memory');
     else if (name.startsWith('ask_mongoose') || name.startsWith('search_mongoose') || name.startsWith('get_knowledge_item') || name.startsWith('read_knowledge_body')) add('company knowledge');
+    // L8-10: the web read is a research source, so the session's own list names it when it can run.
+    else if (name === 'web_search') add('web search');
   }
   return groups;
 }
@@ -99,6 +111,7 @@ export function buildRuntimeContext(input: RuntimeContextInput): string {
     `This week: ${weekYmd(monday)}T00:00:00${weekOffset(monday)} to ${weekYmd(sunday)}T23:59:59${weekOffset(sunday)}.`,
     `Connected now: ${connected}.`,
     `Not available: ${unavailable}.`,
+    ...(input.vault === undefined ? [] : [vaultCapabilityLine(input.vault)].filter((line): line is string => line !== undefined)),
     'Naya can read and search; she cannot send anything to anyone.',
   ].join('\n');
 }

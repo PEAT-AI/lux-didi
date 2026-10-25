@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import assert_ from 'node:assert/strict';
 import {
-  RESEARCH, ResearchLedger, researchLedgerOf, researchRebuildAllowed, researchRebuildDue, retainedAfterSend, runResearch,
+  RESEARCH, ResearchLedger, researchLedgerOf, researchRebuildAllowed, researchRebuildDue, researchRebuildStep, retainedAfterSend, runResearch,
 } from '../tools/research.js';
 import type { ResearchBoundary, ResearchRetention, ResearchDeps } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -105,3 +105,21 @@ test('HYGIENE 6 (J2): a fetch that misses its bound still delivers the summaries
 });
 
 function assert_ok(value: unknown, message: string): void { assert_(value, message); }
+
+test('HYGIENE 7 (W10-R15 P2): the seed and the count are reset only on the branch that really rebuilds', () => {
+  const due: ResearchRetention = { retainedChars: 26_000, rebuilds: 1 };
+  const safe: ResearchBoundary = { ...SAFE };
+  const kept = researchRebuildStep(due, 4_000, safe, 30_000, 30_000);
+  assert.equal(kept.action, 'rebuild', 'a safe boundary with budget rebuilds');
+  assert.deepEqual(kept.retention, { retainedChars: 0, rebuilds: 2 }, 'and only then the count restarts');
+  const outOfTime = researchRebuildStep(due, 4_000, safe, 0, 30_000);
+  assert.equal(outOfTime.action, 'defer', 'a deadline miss defers');
+  assert.deepEqual(outOfTime.retention, due, 'and never drops the count or the seed');
+  assert.equal(outOfTime.seedChars, 4_000, 'the seed is still there for the next boundary');
+  const outOfIdle = researchRebuildStep(due, 4_000, safe, 30_000, -1);
+  assert.equal(outOfIdle.action, 'defer', 'an idle miss defers too');
+  assert.deepEqual(outOfIdle.retention, due, 'with the count untouched');
+  const busy = researchRebuildStep(due, 4_000, { ...SAFE, responsePending: true }, 30_000, 30_000);
+  assert.equal(busy.action, 'defer', 'a pending response defers');
+  assert.deepEqual(busy.retention, due, 'and the count is untouched');
+});

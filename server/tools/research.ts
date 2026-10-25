@@ -4423,13 +4423,8 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     // never had. A same-source batch shares one bound, so the count is the group's own size.
     const batchSizes = new Map<SourceKind | 'memory', number>();
     for (const outcome of batch) batchSizes.set(outcome.source, (batchSizes.get(outcome.source) ?? 0) + 1);
-    // L8-Q07: lookups that shared one execution are one receipt, never the same line twice.
-    const logged = new Set<string>();
     for (const outcome of batch) {
-      const receiptKey = `${outcome.source}|${outcome.outcome}|${outcome.ms}`;
-      const repeat = (batchSizes.get(outcome.source) ?? 1) > 1 && logged.has(receiptKey);
-      logged.add(receiptKey);
-      if (!repeat) logLookup({
+      logLookup({
         event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms, ...briefPlanField(run),
         deadlineMs: outcome.source === 'memory' ? RESEARCH.sourceDeadline.memory : lookupBound(outcome.source, batchSizes.get(outcome.source) ?? 1, run.deadlineMs),
         coalesced: batchSizes.get(outcome.source) ?? 1,

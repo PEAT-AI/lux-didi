@@ -589,9 +589,9 @@ test('L8-13: a mail read that never ran is never called a read that took too lon
   assert.match(header, /mail never_ran \(say: [^)]+\)/u, `the header names the real outcome with its clause: ${header}`);
 });
 
-// L8-Q07: a failed read's receipt named no reason, and two lookups that shared one execution wrote the same
-// receipt line twice.
-test('L8-Q07: a source receipt names why a read failed, and a shared execution is one receipt', async () => {
+// L8-Q07: a failed read's receipt named no reason. Two lookups that share one execution keep one receipt each,
+// with coalesced naming the share (3r R1), so identical lines there are by design.
+test('L8-Q07: a source receipt names why a read failed', async () => {
   const sources: Record<string, unknown>[] = [];
   const failing = harness({ web: { search: async () => ({ ok: false as const, code: 'web_timeout' as const }) } });
   failing.deps.logSource = event => { sources.push({ ...event }); };
@@ -601,11 +601,8 @@ test('L8-Q07: a source receipt names why a read failed, and a shared execution i
   assert.equal(web[0]!['outcome'], 'failed');
   assert.equal(web[0]!['reason'], 'timed_out', `the receipt names the closed reason: ${JSON.stringify(web[0])}`);
   sources.length = 0;
-  const shared = harness({ execute: async calls => calls.map(call => sub(call.name, call.name.includes('gmail') ? mailRows(2) : knowledgeHits(1), true, call.key)) });
-  shared.deps.logSource = event => { sources.push({ ...event }); };
-  await runResearch(shared.deps, { action: 'start', question: 'release notes from Ana', lookups: [{ source: 'mail', query: 'release notes' }, { source: 'mail', query: 'release notes' }] }, new AbortController().signal);
-  const mail = sources.filter(entry => entry['source'] === 'mail');
-  const lines = mail.map(entry => JSON.stringify(entry));
-  assert.equal(new Set(lines).size, lines.length, `no receipt line is written twice: ${lines.join(' | ')}`);
-  assert.ok(mail.every(entry => entry['reason'] === undefined), 'an answered read carries no reason');
+  const answered = harness({ execute: async calls => calls.map(call => sub(call.name, call.name.includes('gmail') ? mailRows(2) : knowledgeHits(1), true, call.key)) });
+  answered.deps.logSource = event => { sources.push({ ...event }); };
+  await runResearch(answered.deps, { action: 'start', question: 'release notes from Ana', lookups: [{ source: 'mail', query: 'release notes' }] }, new AbortController().signal);
+  assert.ok(sources.length > 0 && sources.every(entry => entry['reason'] === undefined), `an answered read carries no reason: ${JSON.stringify(sources)}`);
 });

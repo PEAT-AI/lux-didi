@@ -38,8 +38,8 @@ interface FixtureOptions {
   call?: (tool: string) => { delayMs?: number; payload: unknown };
   /** The endpoint's own token route, so a refresh can be made to fail the way the owner's Mac saw it. */
   token?: (res: ServerResponse) => void;
-  /** #671: which tool call loses its socket, so the transport reports the loss it really had. */
-  dropCall?: (index: number) => boolean;
+  /** #671: which tool call answers 503, the transient unavailability the owner's Mac reported. */
+  unavailableCall?: (index: number) => boolean;
 }
 
 async function fixture(options: FixtureOptions = {}) {
@@ -57,7 +57,7 @@ async function fixture(options: FixtureOptions = {}) {
       });
       sdk.setRequestHandler('tools/call', async request => {
         calls += 1;
-        if (options.dropCall?.(calls) === true) { res.destroy(); return {} as never; }
+        if (options.unavailableCall?.(calls) === true) { res.writeHead(503); res.end(); return {} as never; }
         const tool = (request.params as { name: string }).name;
         const answer = options.call?.(tool) ?? { payload: {} };
         await new Promise(resolve => setTimeout(resolve, answer.delayMs ?? 0));
@@ -355,8 +355,8 @@ test('671: a start-time identity proof that runs out of time is retried and prov
 });
 
 test('671: a transient transport loss marks the source unavailable on one closed log line', async t => {
-  // The first wire call loses its socket: the loss the owner saw as a 0 ms unavailable read.
-  const gmail = await fixture({ tools: GMAIL_TOOLS, dropCall: index => index === 1, call: () => ({ payload: { emailAddress: ACCOUNT } }) });
+  // The first wire call answers 503: the transient unavailability the owner saw as a 0 ms read.
+  const gmail = await fixture({ tools: GMAIL_TOOLS, unavailableCall: index => index === 1, call: () => ({ payload: { emailAddress: ACCOUNT } }) });
   t.after(() => gmail.close());
   const dir = mkdtempSync(join(tmpdir(), 'didi-google-transport-loss-'));
   const configDir = join(dir, 'provider-config');
@@ -375,7 +375,7 @@ test('671: a transient transport loss marks the source unavailable on one closed
   });
   t.after(() => runtime.close());
   const first = runtime.status().endpoints[0]!;
-  assert.equal(first.state, 'error', 'the lost socket left the source unavailable');
+  assert.equal(first.state, 'error', 'the 503 left the source unavailable');
   const unavailable = lifecycle.filter(entry => entry.event === 'connector_unavailable');
   assert.equal(unavailable.length, 1, 'one line per mark, not one per read');
   assert.deepEqual(unavailable[0], { event: 'connector_unavailable', endpointId: 'gmail', reason: 'transport_unavailable' });

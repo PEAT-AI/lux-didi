@@ -3485,6 +3485,12 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     target.total += entry.total === undefined ? items.length : entry.total === entry.lines.length ? items.length : entry.total;
     if (!existing) groups.push(target);
   }
+  // C-DEPTH item 2: an ask that names a person or a document gives her memory no allocation at all, unless
+  // it refers to a past conversation, so her own notes can never crowd out the evidence she was asked for.
+  if (requestedEntities(run.question ?? '').length > 0 && !pastConversationAsk(run.question ?? '')) {
+    const at = groups.findIndex(group => group.source === 'memory');
+    if (at >= 0) groups.splice(at, 1);
+  }
   const calendarEvents = new Map<string, RetainedCalendarEvent>();
   for (const read of run.calendar.values()) for (const [key, event] of read.events) calendarEvents.set(key, event);
   const remaining = [...calendarEvents].filter(([key]) => !run.calendarDelivered.has(key)).sort(([, a], [, b]) => a.start.localeCompare(b.start));

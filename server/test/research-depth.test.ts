@@ -203,7 +203,7 @@ test('ALLOC 6: a requested person with no evidence is named missing and never in
 
 test('COVER 1: the header counts per source what was represented, and says full or excerpt', async () => {
   const h = harness({
-    text: { search_knowledge: knowledgeHits(30), gmail_search_messages: mailRows(3) },
+    text: { search_knowledge: knowledgeHits(200), gmail_search_messages: mailRows(3) },
   });
   const reply = await research(h.deps, {
     action: 'start', question: 'what do we know about the release plan and the mail about it',
@@ -228,7 +228,7 @@ test('COVER 2: an asked for entity that was covered is counted, and an excerpt i
 });
 
 test('DEPTH 1: the depth tier delivers more evidence, not more metadata', async () => {
-  const text = { search_knowledge: knowledgeHits(120), gmail_search_messages: mailRows(120) };
+  const text = { search_knowledge: knowledgeHits(200) };
   const shallow = harness({ text: { ...text }, replyLimit: RESEARCH.budgets.default });
   const deep = harness({ text: { ...text }, replyLimit: RESEARCH.budgets.depth });
   const ask = {

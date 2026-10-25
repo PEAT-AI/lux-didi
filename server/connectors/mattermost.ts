@@ -15,7 +15,15 @@ export const MATTERMOST_TOOLS = [
   'mattermost_search',
   'mattermost_list_channels',
 ] as const;
-export type MattermostTool = (typeof MATTERMOST_TOOLS)[number];
+/**
+ * C-CHAT: the person reads a newer child publishes (mattermost-mcp draft PRs A and B). They join the read
+ * envelope so an approval can grant them; a child without them still serves every base read, and each
+ * chat read that needs one says once which capability is missing.
+ */
+export const MATTERMOST_PERSON_TOOLS = ['mattermost_resolve_person', 'mattermost_conversation_overview'] as const;
+/** Every name the connector may ever read: the base reads plus the person reads. */
+export const MATTERMOST_READ_TOOLS = [...MATTERMOST_TOOLS, ...MATTERMOST_PERSON_TOOLS] as const;
+export type MattermostTool = (typeof MATTERMOST_READ_TOOLS)[number];
 
 /** Bounded argument defaults; a caller may only narrow these, never widen them. */
 export const MATTERMOST_DEFAULTS = { limit: 12, maxLimit: 50, queryChars: 200 } as const;
@@ -25,9 +33,13 @@ export const MATTERMOST_AUTH_NEEDED = 'auth needed: run mattermost_login once';
 
 /** The connector's own view name: one synthesized digest over several child reads. */
 export const MATTERMOST_ATTENTION_TOOL = 'mattermost_attention';
+/** C-CHAT: the connector's own person, group and channel read, one composed view over several child reads. */
+export const MATTERMOST_CHAT_TOOL = 'mattermost_chat';
+/** C-CHAT: the window a person, group or channel read covers when the ask names none, and its page bounds. */
+export const MATTERMOST_CHAT = { days: 30, limit: 8, maxOffset: 1000, maxPeople: 4, candidates: 3, overviewPosts: 3, channelRows: 10, groupRows: 200 } as const;
 
 /** Attention window and read bounds; a caller may only narrow `days` and `limit`. */
-export const MATTERMOST_ATTENTION = { days: 7, maxDays: 30, limit: 20, maxDmChannels: 4, maxThreads: 8, historyLimit: 20, snippet: 160 } as const;
+export const MATTERMOST_ATTENTION = { days: 7, maxDays: 30, limit: 20, maxDmChannels: 10, maxThreads: 8, historyLimit: 20, snippet: 160 } as const;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** The channel index ceiling: a child that never reports exhaustion must not be paged forever. */
@@ -56,7 +68,7 @@ export interface MattermostConfig {
 }
 
 /** A child tool read, or the connector's own synthesized digest over several reads. */
-export type MattermostEvidenceTool = MattermostTool | typeof MATTERMOST_ATTENTION_TOOL;
+export type MattermostEvidenceTool = MattermostTool | typeof MATTERMOST_ATTENTION_TOOL | typeof MATTERMOST_CHAT_TOOL;
 
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
 export interface MattermostEvidence extends SourceDispatchEvidence {
@@ -76,7 +88,7 @@ export type MattermostResult = MattermostEvidence | MattermostRefused | Mattermo
 export interface BoundedInput { limit?: number }
 export interface ChannelInput { channel: string; limit?: number }
 export interface ThreadInput { postId: string }
-export interface QueryInput { query: string; limit?: number; after?: string; before?: string; /** A channel the ask names: name, display name or id. */ channel?: string }
+export interface QueryInput { query: string; limit?: number; after?: string; before?: string; /** A channel the ask names: name, display name or id. */ channel?: string; /** C-CHAT: the page after the ones already read. */ offset?: number }
 export interface AttentionInput { days?: number; limit?: number }
 export type AttentionReason = 'mention' | 'dm' | 'thread';
 
@@ -90,7 +102,37 @@ export interface AttentionItem {
   snippet: string;
 }
 /** The digest the attention view renders: newest first, one line per item. */
-export interface MattermostAttention { after: string; items: AttentionItem[] }
+export interface MattermostAttention { after: string; items: AttentionItem[]; /** C-CHAT: a capability this child lacks, said once. */ missing?: string }
+
+/** C-CHAT: which chat read the ask wants: one person, the overview with one person, a channel, a group. */
+export type ChatReadIntent = 'person' | 'overview' | 'channel' | 'group';
+export interface ChatReadInput {
+  intent: ChatReadIntent;
+  person?: string; people?: string[]; channel?: string; query?: string;
+  /** YYYY-MM-DD local days; a read without `from_date` covers the last `MATTERMOST_CHAT.days`. */
+  from_date?: string; to_date?: string;
+  /** person: only their posts, or both sides of the direct conversation. */
+  sides?: 'theirs' | 'both';
+  offset?: number; limit?: number;
+}
+/** One post a chat read returns, with its attachment text folded after the message. */
+export interface ChatReadPost { id: string; channel: string; author: string; time: string; text: string; permalink?: string; rootId?: string }
+/** One section of a person overview: what kind, its name, and its counts in words. */
+export interface ChatOverviewSection { kind: 'dm' | 'group' | 'channel'; name: string; counts: string; last?: string }
+/**
+ * The chat read's own decoded result. `read` says in plain words what was read, so the voice can name it;
+ * `total` is the child's own count of matches, never the page; `clarify` is the question to ask back when a
+ * person or channel is ambiguous; `missing` names a capability this child lacks.
+ */
+export interface MattermostChatRead {
+  intent: ChatReadIntent;
+  read: string;
+  window: { from: string; to?: string };
+  total?: number; returned: number; offset: number;
+  posts: ChatReadPost[];
+  sections?: ChatOverviewSection[];
+  clarify?: string; notFound?: string; missing?: string;
+}
 
 export interface MattermostReader {
   whoami(signal?: AbortSignal): Promise<MattermostResult>;
@@ -99,11 +141,12 @@ export interface MattermostReader {
   search(input: QueryInput, signal?: AbortSignal): Promise<MattermostResult>;
   listChannels(input: BoundedInput, signal?: AbortSignal): Promise<MattermostResult>;
   attention(input: AttentionInput, signal?: AbortSignal): Promise<MattermostResult>;
+  chat(input: ChatReadInput, signal?: AbortSignal): Promise<MattermostResult>;
 }
 
 export interface MattermostOptions { port: McpPort; registry: McpRegistry; config: MattermostConfig }
 
-const ELIGIBLE: ReadonlySet<string> = new Set<string>(MATTERMOST_TOOLS);
+const ELIGIBLE: ReadonlySet<string> = new Set<string>(MATTERMOST_READ_TOOLS);
 type FailedCall = { state: 'refused' | 'unknown'; reason: string };
 function isFailed(result: CallResult): result is FailedCall {
   return result.state === 'refused' || result.state === 'unknown';
@@ -123,7 +166,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** One channel as the list_channels result describes it; the id is absent in some fixtures. */
-export interface MattermostChannel { id?: string; name?: string; displayName?: string; type?: string }
+export interface MattermostChannel { id?: string; name?: string; displayName?: string; type?: string; /** C-CHAT: the server's last post time, on a filtered page. */ lastPostAt?: string; /** C-CHAT: D and G member usernames, on a filtered page. */ members?: string[] }
 
 /**
  * The reader's channel index: the list_channel result is stable for minutes, so one internal read
@@ -161,6 +204,8 @@ export function parseChannelList(parsed: unknown): MattermostChannel[] | undefin
     ...(typeof entry['display_name'] === 'string' ? { displayName: entry['display_name'] }
       : typeof entry['displayName'] === 'string' ? { displayName: entry['displayName'] } : {}),
     ...(typeof entry['type'] === 'string' ? { type: entry['type'] } : {}),
+    ...(typeof entry['last_post_at'] === 'string' ? { lastPostAt: entry['last_post_at'] } : {}),
+    ...(Array.isArray(entry['members']) ? { members: entry['members'].filter((member): member is string => typeof member === 'string') } : {}),
   }));
 }
 
@@ -230,8 +275,15 @@ function firstText(source: Record<string, unknown>, names: readonly string[]): s
 /** One post as the child describes it, carrying its own instant so every rule compares numbers. */
 interface ChildPost { id?: string; rootId?: string; channel: string; author: string; text: string; at: number; permalink: string }
 
+/** C-CHAT (L4-10): a webhook post carries its words in the attachment; they follow the message. */
+function postText(raw: Record<string, unknown>): string {
+  const message = typeof raw['text'] === 'string' ? raw['text'] : typeof raw['message'] === 'string' ? raw['message'] : '';
+  const attachment = typeof raw['attachmentText'] === 'string' ? raw['attachmentText'].trim() : '';
+  return attachment === '' ? message : message.trim() === '' ? attachment : `${message}\n${attachment}`;
+}
+
 function childPost(raw: Record<string, unknown>): ChildPost | undefined {
-  const text = typeof raw['text'] === 'string' ? raw['text'] : typeof raw['message'] === 'string' ? raw['message'] : '';
+  const text = postText(raw);
   const stamp = firstText(raw, ['time', 'timestamp', 'create_at']);
   const parsed = stamp === '' ? Number.NaN : Date.parse(stamp);
   const at = Number.isNaN(parsed) ? Number(stamp) : parsed;
@@ -283,13 +335,6 @@ function mentionsOwner(owner: Owner, text: string): boolean {
   return new RegExp(`(?:^|[^\\w@])@${name}(?![\\w])`, 'iu').test(text);
 }
 
-/** A direct or group conversation: the child's type letter, or the two-account channel name. */
-function isDirectChannel(channel: MattermostChannel, owner: Owner): boolean {
-  if (channel.type === 'D' || channel.type === 'G') return true;
-  const parts = (channel.name ?? '').split('__');
-  return parts.length === 2 && owner.id !== '' && parts.includes(owner.id);
-}
-
 function snippetOf(text: string): string {
   const line = text.replace(/\s+/gu, ' ').trim();
   return line.length <= MATTERMOST_ATTENTION.snippet ? line : `${line.slice(0, MATTERMOST_ATTENTION.snippet - 1)}...`;
@@ -315,10 +360,100 @@ function preflight(registry: McpRegistry, settings: Settings, tool: MattermostEv
   if (visible.some(name => !ELIGIBLE.has(name))) return 'ineligible-tool-granted';
   // #604: the composite is Didi's own view over granted children, never a name the endpoint
   // publishes, so the approved policy name authorizes it and each child read checks its own grant.
-  if (tool === MATTERMOST_ATTENTION_TOOL) return settings.names.includes(tool) ? undefined : 'tool-not-granted';
+  if (tool === MATTERMOST_ATTENTION_TOOL || tool === MATTERMOST_CHAT_TOOL) return settings.names.includes(tool) ? undefined : 'tool-not-granted';
   if (!grant.toolNames.includes(tool)) return 'tool-not-granted';
   if (!visible.includes(tool)) return 'required-definition-absent';
   return undefined;
+}
+
+/** C-CHAT: a spoken or written name in one comparable form: case, accents, "&" and "and", plural words. */
+export function nameKey(text: string): string {
+  return text.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/&/gu, ' and ')
+    .split(/[^\p{L}\p{N}]+/u).filter(Boolean)
+    .map(word => (word.length > 3 && word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word)).join(' ');
+}
+
+/** "A", "A or B", "A, B or C": a short spoken list. */
+function spokenList(items: readonly string[], joiner: 'or' | 'and' = 'or'): string {
+  if (items.length <= 1) return items[0] ?? '';
+  return `${items.slice(0, -1).join(', ')} ${joiner} ${items[items.length - 1]!}`;
+}
+
+/** A candidate person as the owner hears it: the full name and the username that tells two apart. */
+function personLabel(candidate: Record<string, unknown>): string {
+  const username = firstText(candidate, ['username']);
+  const display = firstText(candidate, ['display_name']);
+  return display !== '' && display !== username ? `${display} (@${username})` : `@${username}`;
+}
+
+function channelLabel(channel: MattermostChannel): string {
+  return channel.displayName ?? channel.name ?? channel.id ?? '';
+}
+
+/** One child post as a chat read carries it, attachment text after the message. */
+function chatPost(raw: Record<string, unknown>): ChatReadPost {
+  const permalink = firstText(raw, ['url', 'permalink']);
+  const rootId = firstText(raw, ['rootId', 'root_id']);
+  return {
+    id: firstText(raw, ['id', 'post_id']),
+    channel: firstText(raw, ['channel', 'channel_name']),
+    author: firstText(raw, ['username', 'author']),
+    time: firstText(raw, ['timestamp', 'created_at', 'time']),
+    text: postText(raw),
+    ...(permalink !== '' ? { permalink } : {}),
+    ...(rootId !== '' ? { rootId } : {}),
+  };
+}
+
+/**
+ * C-CHAT: the child's conversation overview in the read's own shape: one counted section per conversation,
+ * at most three groups and three channels named, and the newest anchor posts across all of them.
+ */
+function overviewOf(data: unknown, owner: string, span: string): Pick<MattermostChatRead, 'read' | 'total' | 'returned' | 'posts' | 'sections'> {
+  const record = isRecord(data) ? data : {};
+  const person = isRecord(record['person']) ? record['person'] : {};
+  const username = firstText(person, ['username']);
+  const display = firstText(person, ['display_name']) || username;
+  const first = display.split(' ')[0] ?? display;
+  const label = display !== username ? `${display} (@${username})` : `@${username}`;
+  const count = (value: unknown): number => (Number.isSafeInteger(value) ? value as number : 0);
+  const sections: ChatOverviewSection[] = [];
+  const anchors: ChatReadPost[] = [];
+  const take = (posts: unknown, where: string): void => {
+    for (const post of Array.isArray(posts) ? posts.filter(isRecord) : []) {
+      const permalink = firstText(post, ['permalink', 'url']);
+      anchors.push({ id: firstText(post, ['id']), channel: where, author: firstText(post, ['author', 'username']), time: firstText(post, ['created_at', 'timestamp']), text: postText(post), ...(permalink !== '' ? { permalink } : {}) });
+    }
+  };
+  const dm = isRecord(record['dm']) ? record['dm'] : undefined;
+  if (dm !== undefined && count(dm['post_count']) > 0) {
+    const last = firstText(dm, ['last_post_at']);
+    sections.push({ kind: 'dm', name: 'direct messages', counts: `${count(dm['post_count'])} posts`, ...(last !== '' ? { last } : {}) });
+    take(dm['posts'], 'direct messages');
+  }
+  const groups = Array.isArray(record['groups']) ? record['groups'].filter(isRecord) : [];
+  for (const group of groups.slice(0, MATTERMOST_CHAT.candidates)) {
+    const members = Array.isArray(group['members']) ? group['members'].filter((member): member is string => typeof member === 'string' && member !== owner && member !== username) : [];
+    const name = members.length === 0 ? 'group' : `group with ${spokenList(members, 'and')}`;
+    const last = firstText(group, ['last_post_at']);
+    sections.push({ kind: 'group', name, counts: `${count(group['post_count'])} posts`, ...(last !== '' ? { last } : {}) });
+    take(group['posts'], name);
+  }
+  const channels = Array.isArray(record['channels']) ? record['channels'].filter(isRecord) : [];
+  for (const channel of channels.slice(0, MATTERMOST_CHAT.candidates)) {
+    const name = firstText(channel, ['display_name']);
+    const last = firstText(channel, ['last_post_at']);
+    sections.push({ kind: 'channel', name: `channel ${name}`, counts: `you ${count(channel['posts_by_owner'])}, ${first} ${count(channel['posts_by_person'])}`, ...(last !== '' ? { last } : {}) });
+    take(channel['posts'], name);
+  }
+  const totals = isRecord(record['totals']) ? record['totals'] : {};
+  const moreGroups = count(totals['groups']) - Math.min(groups.length, MATTERMOST_CHAT.candidates);
+  const moreChannels = count(totals['channels']) - Math.min(channels.length, MATTERMOST_CHAT.candidates);
+  if (moreGroups > 0) sections.push({ kind: 'group', name: `${moreGroups} more group chats`, counts: 'not named' });
+  if (moreChannels > 0) sections.push({ kind: 'channel', name: `${moreChannels} more channels`, counts: 'not named' });
+  const posts = anchors.sort((a, b) => Date.parse(b.time) - Date.parse(a.time)).slice(0, 5);
+  const total = count(totals['dm_posts']) + count(totals['group_posts']) + count(totals['channel_posts_by_owner']) + count(totals['channel_posts_by_person']);
+  return { read: `everything you and ${label} exchanged${span}`, total, returned: posts.length, posts, sections };
 }
 
 export function createMattermostReader(options: MattermostOptions): MattermostReader {
@@ -331,7 +466,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     generation: requirePositiveSafeInteger(config.generation),
     maxLimit: Math.min(positive(config.maxLimit, MATTERMOST_DEFAULTS.maxLimit), MATTERMOST_DEFAULTS.maxLimit),
     queryChars: Math.min(positive(config.queryChars, MATTERMOST_DEFAULTS.queryChars), MATTERMOST_DEFAULTS.queryChars),
-    names: config.names ?? MATTERMOST_TOOLS,
+    names: config.names ?? MATTERMOST_READ_TOOLS,
   };
 
   const schemaValidator = new AjvJsonSchemaValidator();
@@ -551,10 +686,19 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     // #610: the independent reads run under one budget. The two attention searches and the channel
     // list answer on their own, so they go out together at the attention page size, never the maximum.
     const attentionLimit = Math.min(MATTERMOST_ATTENTION.limit, settings.maxLimit);
-    const written = read('mattermost_search', { query: `from:${who.owner.username}`, limit: attentionLimit }, signal);
-    const mentions = read('mattermost_search', { query: `@${who.owner.username}`, limit: attentionLimit }, signal);
-    const channelList = loadChannels(signal);
-    const [writtenRead, mentionsRead, channels] = await Promise.all([written, mentions, channelList]);
+    // C-CHAT (L4-11): both searches read the window newest first in keyword mode, never the whole archive
+    // ranked by the slow default mode and filtered afterwards.
+    const windowed = { ...keywordMode(), ...(searchWindow(new Date(cutoff).toISOString(), undefined) ?? {}) };
+    delete windowed['after'];
+    const written = read('mattermost_search', { query: `from:${who.owner.username}`, limit: attentionLimit, ...windowed }, signal);
+    const mentions = read('mattermost_search', { query: `@${who.owner.username}`, limit: attentionLimit, ...windowed }, signal);
+    // C-CHAT (L4-04): the direct and group conversations by their last post, never the first few in list
+    // order. A child whose channel list has no recency cannot say which ones moved, so that leg is skipped
+    // and the digest says which capability is missing.
+    const recent = listFilters().types && listFilters().sort
+      ? read('mattermost_list_channels', { types: ['D', 'G'], sort: 'recent', limit: MATTERMOST_ATTENTION.maxDmChannels }, signal)
+      : Promise.resolve(undefined);
+    const [writtenRead, mentionsRead, recentRead] = await Promise.all([written, mentions, recent]);
     // The owner's own-author search seeds threads whatever the channel: a thread nobody mentioned the
     // owner in never reaches the handle search.
     if (!writtenRead.ok) return writtenRead.result;
@@ -575,23 +719,23 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       threadCandidate(post);
     }
     // Direct and group conversations: the owner's own posts await no reply, but they seed the thread rule.
-    if (!Array.isArray(channels)) return { state: 'refused', reason: channels.error };
-    if (channelIndex.origin) children.push(channelIndex.origin);
-    const direct = channels.filter(entry => isDirectChannel(entry, who.owner)).slice(0, MATTERMOST_ATTENTION.maxDmChannels);
-    const histories = await Promise.all(direct.map(async channel => {
-      const reference = channel.name ?? channel.id;
-      if (reference === undefined) return undefined;
-      return read('mattermost_get_channel_history', { channel: reference, limit: MATTERMOST_ATTENTION.historyLimit }, signal);
-    }));
-    for (const history of histories) {
-      if (history === undefined) continue;
-      if (!history.ok) return history.result;
-      capture(history.evidence);
-      for (const raw of postsIn(history.evidence.decodedResult) ?? []) {
-        const post = childPost(raw);
-        if (post === undefined || post.at < cutoff) continue;
-        if (!isOwnerPost(who.owner, post.author)) push('dm', post);
-        threadCandidate(post);
+    let missing: string | undefined;
+    if (recentRead === undefined) missing = 'direct messages by recency need the newer chat archive';
+    else {
+      if (!recentRead.ok) return recentRead.result;
+      capture(recentRead.evidence);
+      const moved = (parseChannelList(recentRead.evidence.decodedResult) ?? [])
+        .filter(channel => channel.id !== undefined && (channel.lastPostAt === undefined || Date.parse(channel.lastPostAt) >= cutoff));
+      const reads = await Promise.all(moved.map(async channel => read('mattermost_search', { query: '', channel: channel.id!, limit: MATTERMOST_ATTENTION.historyLimit, ...windowed }, signal)));
+      for (const history of reads) {
+        if (!history.ok) return history.result;
+        capture(history.evidence);
+        for (const raw of postsIn(history.evidence.decodedResult) ?? []) {
+          const post = childPost(raw);
+          if (post === undefined || post.at < cutoff) continue;
+          if (!isOwnerPost(who.owner, post.author)) push('dm', post);
+          threadCandidate(post);
+        }
       }
     }
     // Threads the owner started or joined: only a newest post from someone else awaits a reply. The
@@ -610,7 +754,224 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     // The digest stands on the identity read: its provenance is what the projection reports.
     const composed = {...who.evidence};
     delete composed[SOURCE_DISPATCH];
-    return { ...composed, [SOURCE_CHILD_DISPATCHES]: children, tool: MATTERMOST_ATTENTION_TOOL, decodedResult: { after: new Date(cutoff).toISOString(), items } satisfies MattermostAttention };
+    return { ...composed, [SOURCE_CHILD_DISPATCHES]: children, tool: MATTERMOST_ATTENTION_TOOL, decodedResult: { after: new Date(cutoff).toISOString(), items, ...(missing === undefined ? {} : { missing }) } satisfies MattermostAttention };
+  }
+
+  /** C-CHAT: the argument names a child tool declares, so a read sends only what that child understands. */
+  function schemaProperties(tool: MattermostTool): string[] {
+    const definition = port.visibleTools(settings.endpointId).find(entry => entry.name === tool);
+    const schema = definition?.inputSchema;
+    return isRecord(schema) && isRecord(schema['properties']) ? Object.keys(schema['properties']) : [];
+  }
+  /** C-CHAT: a child read this grant allows and this child publishes. */
+  function granted(tool: MattermostTool): boolean {
+    return preflight(registry, settings, tool) === undefined;
+  }
+  /** C-CHAT: the filters a newer child's channel list takes (PR-A): words, types, member and recency. */
+  function listFilters(): { query: boolean; types: boolean; member: boolean; sort: boolean } {
+    const declared = granted('mattermost_list_channels') ? schemaProperties('mattermost_list_channels') : [];
+    return { query: declared.includes('query'), types: declared.includes('types'), member: declared.includes('member'), sort: declared.includes('sort') };
+  }
+
+  /** C-CHAT: one read of a chat read, with the child's own count, never the page length. */
+  async function postsRead(filters: Record<string, unknown>, limit: number, offset: number, capture: (evidence: MattermostEvidence) => void, signal?: AbortSignal): Promise<{ ok: true; total?: number; posts: ChatReadPost[] } | { ok: false; result: MattermostResult }> {
+    const declared = declaredSearchArguments();
+    const args: Record<string, unknown> = { query: typeof filters['query'] === 'string' ? filters['query'] : '', ...keywordMode(), limit };
+    if (declared.includes('sort')) args['sort'] = 'newest';
+    for (const key of ['channel', 'author', 'from_date', 'to_date'] as const) {
+      if (filters[key] === undefined) continue;
+      // A filter this child cannot apply would widen the read past what the ask named: refuse it.
+      if (!declared.includes(key)) return { ok: false, result: { state: 'refused', reason: `search-filter-missing: ${key}` } };
+      args[key] = filters[key];
+    }
+    if (offset > 0) {
+      if (!declared.includes('offset')) return { ok: false, result: { state: 'refused', reason: 'search-filter-missing: offset' } };
+      args['offset'] = offset;
+    }
+    const result = await read('mattermost_search', args, signal);
+    if (!result.ok) return result;
+    capture(result.evidence);
+    const data = contentJson(result.evidence.decodedResult);
+    const posts = (postsIn(result.evidence.decodedResult) ?? []).map(chatPost);
+    const total = isRecord(data) && Number.isSafeInteger(data['total']) ? data['total'] as number : undefined;
+    return { ok: true, ...(total === undefined ? {} : { total }), posts };
+  }
+
+  type PersonOutcome = { kind: 'person'; username: string; display: string; dmChannelId?: string; missing?: string }
+    | { kind: 'clarify'; text: string; missing?: string } | { kind: 'not-found'; text: string; missing?: string } | { kind: 'failed'; result: MattermostResult };
+
+  /**
+   * C-CHAT: a spoken name to one account, strictly. The child's resolve_person matches names; an ambiguous
+   * name is a question back, never a pick. A child without it is matched on the direct message channel
+   * whose name is that username, and the reply says person lookups need the newer archive.
+   */
+  async function findPerson(name: string, capture: (evidence: MattermostEvidence) => void, signal?: AbortSignal): Promise<PersonOutcome> {
+    if (granted('mattermost_resolve_person')) {
+      const resolved = await read('mattermost_resolve_person', { name }, signal);
+      if (!resolved.ok) return { kind: 'failed', result: resolved.result };
+      capture(resolved.evidence);
+      const data = contentJson(resolved.evidence.decodedResult);
+      const candidates = isRecord(data) && Array.isArray(data['candidates']) ? data['candidates'].filter(isRecord) : [];
+      if (candidates.length === 0) return { kind: 'not-found', text: `I found nobody called ${name} in the team chat.` };
+      if (isRecord(data) && data['ambiguous'] === true) {
+        return { kind: 'clarify', text: `Which ${name} do you mean: ${spokenList(candidates.slice(0, MATTERMOST_CHAT.candidates).map(personLabel))}?` };
+      }
+      const top = candidates[0]!;
+      const username = firstText(top, ['username']);
+      const dm = firstText(top, ['dm_channel_id']);
+      return { kind: 'person', username, display: firstText(top, ['display_name']) || username, ...(dm !== '' ? { dmChannelId: dm } : {}) };
+    }
+    const missing = 'person lookups by name need the newer chat archive';
+    const channels = await loadChannels(signal);
+    if (!Array.isArray(channels)) return { kind: 'failed', result: { state: 'refused', reason: channels.error } };
+    const wanted = name.trim().replace(/^@/u, '').toLowerCase();
+    const direct = channels.filter(channel => channel.type === 'D' && (channel.displayName ?? '').toLowerCase() === wanted);
+    if (direct.length === 1 && direct[0]!.id !== undefined) return { kind: 'person', username: wanted, display: wanted, dmChannelId: direct[0]!.id, missing };
+    return { kind: 'not-found', text: `I found no direct messages with a user named ${name}.`, missing };
+  }
+
+  /** C-CHAT: a person, group or channel read in one call. Ambiguity is a question back, never a guess. */
+  async function chat(input: ChatReadInput, signal?: AbortSignal): Promise<MattermostResult> {
+    const denied = preflight(registry, settings, MATTERMOST_CHAT_TOOL);
+    if (denied) return { state: 'refused', reason: denied };
+    const intents: readonly ChatReadIntent[] = ['person', 'overview', 'channel', 'group'];
+    if (!intents.includes(input.intent)) return { state: 'refused', reason: 'invalid-intent' };
+    const day = /^\d{4}-\d{2}-\d{2}$/u;
+    if ([input.from_date, input.to_date].some(value => value !== undefined && (typeof value !== 'string' || !day.test(value)))) return { state: 'refused', reason: 'invalid-window' };
+    const offset = input.offset ?? 0;
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > MATTERMOST_CHAT.maxOffset) return { state: 'refused', reason: 'invalid-offset' };
+    const limit = input.limit ?? Math.min(MATTERMOST_CHAT.limit, settings.maxLimit);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > settings.maxLimit) return { state: 'refused', reason: 'limit-out-of-budget' };
+    const query = input.query === undefined ? '' : boundedText(input.query);
+    if (query === undefined) return { state: 'refused', reason: 'invalid-query' };
+    const who = await ownerIdentity(signal);
+    if (!who.ok) return who.result;
+    const children: SourceDispatchRef[] = who.evidence[SOURCE_DISPATCH] ? [who.evidence[SOURCE_DISPATCH]!] : [];
+    const capture = (evidence: MattermostEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
+    const window = { from: input.from_date ?? new Date(Date.now() - MATTERMOST_CHAT.days * DAY_MS).toISOString().slice(0, 10), ...(input.to_date === undefined ? {} : { to: input.to_date }) };
+    const span = window.to === undefined ? ` since ${window.from}` : window.to === window.from ? ` on ${window.from}` : ` from ${window.from} to ${window.to}`;
+    const about = query === '' ? '' : `, about ${query}`;
+    const dates = { from_date: window.from, ...(window.to === undefined ? {} : { to_date: window.to }) };
+    const base = { intent: input.intent, window, returned: 0, offset, posts: [] as ChatReadPost[] };
+    const finish = (out: MattermostChatRead): MattermostResult => {
+      if (channelIndex.origin && !children.includes(channelIndex.origin)) children.push(channelIndex.origin);
+      const composed = { ...who.evidence };
+      delete composed[SOURCE_DISPATCH];
+      return { ...composed, [SOURCE_CHILD_DISPATCHES]: children, tool: MATTERMOST_CHAT_TOOL, decodedResult: out };
+    };
+    const missingOf = (...notes: (string | undefined)[]): { missing?: string } => {
+      const said = notes.filter((note): note is string => note !== undefined);
+      return said.length === 0 ? {} : { missing: said.join('; ') };
+    };
+    const page = (read: string, posts: { total?: number; posts: ChatReadPost[] }, missing?: string): MattermostResult => finish({
+      ...base, read: `${read}${span}${about}`, ...(posts.total === undefined ? {} : { total: posts.total }), returned: posts.posts.length, posts: posts.posts, ...missingOf(missing),
+    });
+
+    if (input.intent === 'person' || input.intent === 'overview') {
+      const name = input.person === undefined ? undefined : boundedText(input.person);
+      if (name === undefined) return { state: 'refused', reason: 'invalid-person' };
+      if (input.intent === 'overview' && granted('mattermost_conversation_overview')) {
+        const asked = await read('mattermost_conversation_overview', { person: name, ...dates, per_section_limit: MATTERMOST_CHAT.overviewPosts }, signal);
+        if (!asked.ok) {
+          // The child refuses an ambiguous or unknown person with a JSON body naming the candidates.
+          const body = 'decodedResult' in asked.result ? contentJson(asked.result.decodedResult) : undefined;
+          const refusal = isRecord(body) ? firstText(body, ['error']) : '';
+          if (refusal === 'ambiguous') {
+            const candidates = Array.isArray((body as Record<string, unknown>)['candidates']) ? ((body as Record<string, unknown>)['candidates'] as unknown[]).filter(isRecord) : [];
+            return finish({ ...base, read: `a person called ${name}`, clarify: `Which ${name} do you mean: ${spokenList(candidates.slice(0, MATTERMOST_CHAT.candidates).map(personLabel))}?` });
+          }
+          if (refusal === 'not_found') return finish({ ...base, read: `a person called ${name}`, notFound: `I found nobody called ${name} in the team chat.` });
+          return asked.result;
+        }
+        capture(asked.evidence);
+        return finish({ ...base, ...overviewOf(contentJson(asked.evidence.decodedResult), who.owner.username, `${span}${about}`) });
+      }
+      const person = await findPerson(name, capture, signal);
+      if (person.kind === 'failed') return person.result;
+      const overviewMissing = input.intent === 'overview' ? 'an overview across group chats and channels needs the newer chat archive' : undefined;
+      if (person.kind !== 'person') return finish({ ...base, read: `a person called ${name}`, ...(person.kind === 'clarify' ? { clarify: person.text } : { notFound: person.text }), ...missingOf(person.missing, overviewMissing) });
+      const label = person.display !== person.username ? `${person.display} (@${person.username})` : `@${person.username}`;
+      const theirs = input.intent === 'person' && input.sides !== 'both';
+      if (person.dmChannelId === undefined) {
+        const anywhere = await postsRead({ query, author: person.username, ...dates }, limit, offset, capture, signal);
+        if (!anywhere.ok) return anywhere.result;
+        return page(`posts by ${label} in every channel, because you have no direct messages with them,`, anywhere, missingOf(person.missing, overviewMissing).missing);
+      }
+      const direct = await postsRead({ query, channel: person.dmChannelId, ...(theirs ? { author: person.username } : {}), ...dates }, limit, offset, capture, signal);
+      if (!direct.ok) return direct.result;
+      return page(theirs ? `direct messages from ${label}` : `your direct messages with ${label}`, direct, missingOf(person.missing, overviewMissing).missing);
+    }
+
+    if (input.intent === 'channel') {
+      const spoken = input.channel === undefined ? undefined : boundedText(input.channel);
+      if (spoken === undefined) return { state: 'refused', reason: 'invalid-channel' };
+      const key = nameKey(spoken);
+      if (key === '') return { state: 'refused', reason: 'invalid-channel' };
+      let rows: MattermostChannel[];
+      const filters = listFilters();
+      if (filters.query && filters.types) {
+        const listed = await read('mattermost_list_channels', { query: key, types: ['O', 'P'], limit: MATTERMOST_CHAT.channelRows }, signal);
+        if (!listed.ok) return listed.result;
+        capture(listed.evidence);
+        rows = parseChannelList(listed.evidence.decodedResult) ?? [];
+      } else {
+        const channels = await loadChannels(signal);
+        if (!Array.isArray(channels)) return { state: 'refused', reason: channels.error };
+        const wanted = key.split(' ');
+        rows = channels.filter(channel => channel.type !== 'D' && channel.type !== 'G').filter(channel => {
+          const own = nameKey(`${channel.name ?? ''} ${channel.displayName ?? ''}`).split(' ');
+          return wanted.every(word => own.some(part => part.startsWith(word)));
+        });
+      }
+      const strong = rows.filter(channel => nameKey(channel.displayName ?? '') === key || nameKey(channel.name ?? '') === key);
+      const target = strong.length === 1 ? strong[0]! : undefined;
+      if (target === undefined || target.id === undefined) {
+        if (rows.length === 0) return finish({ ...base, read: `a channel called ${spoken}`, notFound: `I found no channel called ${spoken}.` });
+        const named = (strong.length > 1 ? strong : rows).slice(0, MATTERMOST_CHAT.candidates).map(channelLabel);
+        return finish({ ...base, read: `a channel called ${spoken}`, clarify: `Which channel do you mean: ${spokenList(named)}?` });
+      }
+      const posts = await postsRead({ query, channel: target.id, ...dates }, limit, offset, capture, signal);
+      if (!posts.ok) return posts.result;
+      return page(`the channel ${channelLabel(target)}`, posts);
+    }
+
+    // group
+    const spokenPeople = Array.isArray(input.people) ? input.people.map(boundedText) : [];
+    if (spokenPeople.length < 2 || spokenPeople.length > MATTERMOST_CHAT.maxPeople || spokenPeople.some(name => name === undefined)) return { state: 'refused', reason: 'invalid-people' };
+    const people: string[] = [];
+    const notes: (string | undefined)[] = [];
+    for (const name of spokenPeople as string[]) {
+      const person = await findPerson(name, capture, signal);
+      if (person.kind === 'failed') return person.result;
+      notes.push(person.missing);
+      if (person.kind !== 'person') return finish({ ...base, read: `a group chat with ${spokenList(spokenPeople as string[], 'and')}`, ...(person.kind === 'clarify' ? { clarify: person.text } : { notFound: person.text }), ...missingOf(...notes) });
+      people.push(person.username);
+    }
+    let rows: MattermostChannel[];
+    const filters = listFilters();
+    if (filters.member && filters.types) {
+      const listed = await read('mattermost_list_channels', { types: ['G'], member: people[0]!, ...(filters.sort ? { sort: 'recent' } : {}), limit: MATTERMOST_CHAT.groupRows }, signal);
+      if (!listed.ok) return listed.result;
+      capture(listed.evidence);
+      rows = parseChannelList(listed.evidence.decodedResult) ?? [];
+    } else {
+      const channels = await loadChannels(signal);
+      if (!Array.isArray(channels)) return { state: 'refused', reason: channels.error };
+      rows = channels.filter(channel => channel.type === 'G');
+      notes.push('group lookups by member need the newer chat archive');
+    }
+    const membersOf = (channel: MattermostChannel): string[] => channel.members ?? (channel.displayName ?? '').split(/\s*,\s*/u).filter(Boolean);
+    const withAll = rows.filter(channel => people.every(person => membersOf(channel).includes(person)));
+    const exact = withAll.filter(channel => membersOf(channel).filter(member => member !== who.owner.username).length === people.length);
+    const target = exact.length === 1 ? exact[0]! : withAll.length === 1 ? withAll[0]! : undefined;
+    const groupLabel = (channel: MattermostChannel): string => spokenList(membersOf(channel).filter(member => member !== who.owner.username), 'and');
+    if (target === undefined || target.id === undefined) {
+      if (withAll.length === 0) return finish({ ...base, read: `a group chat with ${spokenList(spokenPeople as string[], 'and')}`, notFound: `I found no group chat with ${spokenList(spokenPeople as string[], 'and')}.`, ...missingOf(...notes) });
+      return finish({ ...base, read: `a group chat with ${spokenList(spokenPeople as string[], 'and')}`, clarify: `Which group chat do you mean: the one with ${spokenList(withAll.slice(0, MATTERMOST_CHAT.candidates).map(groupLabel))}?`, ...missingOf(...notes) });
+    }
+    const posts = await postsRead({ query, channel: target.id, ...dates }, limit, offset, capture, signal);
+    if (!posts.ok) return posts.result;
+    return page(`the group chat with ${groupLabel(target)}`, posts, missingOf(...notes).missing);
   }
 
   return {
@@ -660,7 +1021,10 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       // and the closest-names hint behind it both stay visible in the refusal.
       if (resolved !== undefined && 'error' in resolved) return { state: 'refused', reason: resolved.error };
       const filter = resolved === undefined || !declaredChannel ? {} : { channel: (resolved as { channel: string }).channel };
-      return dispatch('mattermost_search', { query, ...keywordMode(), ...bounded, ...window, ...filter }, signal);
+      // C-CHAT: the next page of the same search, sent only where the child declares paging.
+      if (input.offset !== undefined && (!Number.isSafeInteger(input.offset) || input.offset < 0 || input.offset > MATTERMOST_CHAT.maxOffset)) return { state: 'refused', reason: 'invalid-offset' };
+      const page = input.offset !== undefined && input.offset > 0 && declaredSearchArguments().includes('offset') ? { offset: input.offset } : {};
+      return dispatch('mattermost_search', { query, ...keywordMode(), ...bounded, ...window, ...filter, ...page }, signal);
     },
     async listChannels(input: BoundedInput, signal?: AbortSignal): Promise<MattermostResult> {
       const denied = preflight(registry, settings, 'mattermost_list_channels');
@@ -670,5 +1034,6 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       return dispatch('mattermost_list_channels', bounded, signal);
     },
     attention,
+    chat,
   };
 }

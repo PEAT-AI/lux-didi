@@ -442,7 +442,10 @@ function renderPost(post: Record<string, unknown>): { lines: string[]; omitted: 
   const time = field(post, 'time', 'timestamp') || scalar(post['create_at']);
   const postId = str(post['id'] ?? post['post_id']);
   const header2 = [channel, author, time].filter(Boolean).join(' | ') + (postId ? ` [post ${postId}]` : '');
-  const raw = str(post['text'] ?? post['message']);
+  // C-CHAT (L4-10): a webhook post's words live in its attachment text, rendered after the message.
+  const message = str(post['text'] ?? post['message']);
+  const attachment = str(post['attachmentText']).trim();
+  const raw = attachment === '' ? message : message.trim() === '' ? attachment : `${message}\n${attachment}`;
   const cut = cutAtSentence(raw, MATTERMOST_MESSAGE_CHARS);
   const reactions = reactionCount(post);
   const meta = `${reactions > 0 ? ` (${reactions} reactions)` : ''}${threadPosition(post)}`;
@@ -577,7 +580,9 @@ export function shapeMattermost(tool: string, data: unknown): ShapedResult {
   const body = listed(rendered.map(entry => entry.lines.join('\n')), MATTERMOST_MESSAGES, 'messages');
   const omitted = body.omitted + rendered.reduce((sum, entry) => sum + entry.omitted, 0);
   const sources = rendered.map(entry => entry.source).filter((source): source is ShapedSource => source !== undefined);
-  return capped({ text: body.text, partial: omitted > 0, originalCharacters: rendered.map(l => l.lines.join('\n')).join('\n').length, omittedCharacters: omitted, shape: extracted.shape, itemCount: visible.length, sources });
+  // C-CHAT (AUD-002, L4-03): a search's own match count leads the text, so "8 of 71" is said, never "8 of 8".
+  const total = tool === 'mattermost_search' && isRecord(data) && Number.isSafeInteger(data['total']) ? Number(data['total']) : undefined;
+  return capped({ text: total === undefined ? body.text : `matched: ${total}\n${body.text}`, partial: omitted > 0, originalCharacters: rendered.map(l => l.lines.join('\n')).join('\n').length, omittedCharacters: omitted, shape: extracted.shape, itemCount: visible.length, sources });
 }
 
 // --- lux-knowledge -------------------------------------------------------------------------

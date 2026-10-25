@@ -138,6 +138,8 @@ export const INTERNAL = {
   calendarList: 'calendar_list_events',
   chatSearch: 'mattermost_search',
   chatAttention: 'mattermost_attention',
+  /** C-CHAT: the person, group and channel read (server/connectors/mattermost.ts). */
+  chatRead: 'mattermost_chat',
   /** K6: the company knowledge base, read by the routed research path when the model names `company`. */
   mongooseSearch: 'search',
 } as const;
@@ -192,6 +194,7 @@ function sourceLabel(name: string): string {
     case INTERNAL.mailList: return 'mail';
     case INTERNAL.chatSearch: return 'chat';
     case INTERNAL.chatAttention: return 'chat';
+    case INTERNAL.chatRead: return 'chat';
     case INTERNAL.knowledgeSearch: return 'knowledge';
     default: return 'source';
   }

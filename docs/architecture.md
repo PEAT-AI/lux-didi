@@ -23,7 +23,7 @@ The app supervises the host rather than relying on an independently installed da
 
 Voice and text have different owners but share host-side capabilities:
 
-- `LiveSessionOwner` in `server/live/index.ts` owns a live call. Its `recover()` path can retry a failed initial connection as well as recover an existing call. Lifecycle, mute, stop and dead-air handling belong in [live-call.md](live-call.md).
+- `LiveSessionOwner` in `server/live/index.ts` owns a live call, including provider-drop recovery. Its public `recover()` method is the startup sweep for interrupted durable sessions, not the provider reconnect operation. Lifecycle, mute, stop and dead-air handling belong in [live-call.md](live-call.md).
 - `LiveVoicePort` in `server/adapters/live-voice/types.ts` is the voice-provider boundary. `liveVoiceProviders` lists the supported adapters. Provider selection and credentials belong in [provider-configuration.md](provider-configuration.md).
 - `ChatService` in `server/chat/index.ts` owns text conversation. See [text-chat.md](text-chat.md) for streaming and consent.
 - `composeLiveInstruction` in `server/prompt/live-persona.ts` assembles the voice instructions. See [prompt-composition.md](prompt-composition.md) for their inputs and authority.

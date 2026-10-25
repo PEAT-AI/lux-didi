@@ -19,7 +19,7 @@ This page describes the first stable release merged by [PR #683](https://github.
 - Mongoose sign-in and renewal are handled per endpoint, rather than treating one token as authority for every resource (`server/host/mongoose-login.ts`, `server/host/mongoose-auth.ts`).
 - Open-in-Chrome and Drive lookup paths provide a way to act on a found result. Drive remains a separately configured and consented Google family, not an implied part of Gmail access.
 - Mattermost person and conversation capabilities are used when the child advertises and the connection grants them. Missing capabilities remain visible limitations.
-- Voice recovery includes retrying an initial failed connection (`LiveSessionOwner.recover`). A release containing recovery code is not a guarantee that a network or provider cannot fail.
+- Voice recovery includes provider-drop handling in `LiveSessionOwner` (`server/live/index.ts`). Its public `recover()` method instead sweeps interrupted durable sessions at host startup. A release containing recovery code is not a guarantee that a network or provider cannot fail.
 - Trello is a host-owned board gateway, not an unrestricted write connector.
 - Composed Lux notes are optional and require a staged readback and owner confirmation. The staging tool is gated by `composedNotes`; do not describe it as an automatic memory export.
 

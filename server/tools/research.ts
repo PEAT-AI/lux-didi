@@ -1821,6 +1821,8 @@ export interface RunState {
   deferredSources?: SourceKind[];
   /** #654: this run was opened fresh because an old researchId carried a new source or topic. */
   startedFresh?: boolean;
+  /** C-DEPTH item 3 (W10-R6): the full entry read of this run was cut, so the summaries are what shipped. */
+  knowledgeFetchCut?: boolean;
 }
 
 function invalidateEvidence(run: RunState): void {
@@ -2051,7 +2053,6 @@ export interface ResearchDeps {
   /** C-DEPTH item 3: the stage two bound for this run, so a test drives it without a real wait. */
   knowledgeReadMs?: number | undefined;
   /** C-DEPTH item 3 (W10-R6): the full entry read was cut, so the summaries are what shipped. */
-  knowledgeFetchCut?: boolean;
   /** L11-03: the live call this research runs in. Its own rows are never memory, by identity. */
   liveSessionId?: string | undefined;
   /**

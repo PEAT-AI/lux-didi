@@ -297,7 +297,7 @@ export interface ConfiguredEndpointStatus {
  * C-DEPTH item 1: the owner asking to go deep is the owner ordering the long answer, and a comparison or a
  * synthesis across sources is the analytical tier. Everything else is the default tier.
  */
-const DEPTH_ASK = /\b(?:go deep|in depth|deep dive|in detail|every detail|all the detail|everything|the full (?:entries|bodies|detail)|all of it|thorough|thoroughly)\b/iu;
+const DEEP_TIER_ASK = /\b(?:go deep|in depth|deep dive|in detail|every detail|all the detail|everything|the full (?:entries|bodies|detail)|all of it|thorough|thoroughly)\b/iu;
 const ANALYTICAL_ASK = /\b(?:compare|comparison|versus|vs|difference between|implications|across|synth\w*|analyse|analyze|analysis|team)\b/iu;
 /** Words that open a sentence or a clause, never a requested person or document. */
 const ENTITY_STOP = new Set(['The', 'What', 'Who', 'When', 'Where', 'Which', 'Why', 'How', 'Does', 'Did', 'Can', 'Could', 'Would', 'Should', 'Tell', 'Show', 'Give', 'Please', 'And', 'But', 'For', 'Any', 'All', 'Is', 'Are', 'Was', 'Were', 'Do', 'Has', 'Have', 'Summarise', 'Summarize', 'Also', 'Then', 'Now']);
@@ -328,7 +328,7 @@ export function requestedEntities(question: string): string[] {
 /** C-DEPTH item 1: the tier an owner question asks for, classified before the run reads anything. */
 export function budgetFor(question: string, topic?: string): number {
   const asked = topic === undefined ? question : `${question} ${topic}`;
-  if (DEPTH_ASK.test(asked)) return RESEARCH.budgets.depth;
+  if (DEEP_TIER_ASK.test(asked)) return RESEARCH.budgets.depth;
   if (ANALYTICAL_ASK.test(asked)) return RESEARCH.budgets.analytical;
   return RESEARCH.budgets.default;
 }
@@ -2502,7 +2502,7 @@ const HEADER_SHARE_OF_CAP = 4;
  * #634: past a quarter of the cap in force the header keeps each source's status word and drops only the
  * counts and the spoken clauses, so no source ever vanishes from it and it never eats the prose.
  */
-export function coverageLine(searched: readonly CoverageSearched[], unsearched: readonly CoverageUnsearched[], limit: number = RESEARCH.replyLimitChars): string {
+export function coverageLine(searched: readonly CoverageSearched[], unsearched: readonly CoverageUnsearched[], limit: number = RESEARCH.budgets.default): string {
   const bound = Math.floor(limit / HEADER_SHARE_OF_CAP);
   const line = (entries: readonly string[]): string => entries.length === 0 ? 'coverage: none' : `coverage: ${entries.join('; ')}`;
   const detailed = line([
@@ -5543,7 +5543,7 @@ export function supersededStub(researchId: string, configured: readonly SourceKi
 }
 
 /** What is known now for a researchId, without waiting on the loop. */
-export function knownReply(ledger: ResearchLedger, researchId: string, configured: readonly SourceKind[], status: 'answered' | 'partial' | 'stopped' | 'unavailable' = 'stopped', limit = RESEARCH.replyLimitChars): JsonObject {
+export function knownReply(ledger: ResearchLedger, researchId: string, configured: readonly SourceKind[], status: 'answered' | 'partial' | 'stopped' | 'unavailable' = 'stopped', limit = RESEARCH.budgets.default): JsonObject {
   const run = ledger.find(researchId);
   if (!run) return { researchId, status, findings: [], unchecked: [...configured], canContinue: false };
   return buildReply(run, status, configured, false, limit);

@@ -6418,7 +6418,7 @@ test('#656: the 03:42 sequence, four serial research calls with two refused, nev
   assert.equal(fake.closes, 0, 'and the session that owns the read is never closed');
   release();
   await settlePort();
-  assert.equal(fake.toolResponses.length, 1, 'the read that finished still answers the model');
+  assert.equal(fake.toolResponses.length, 4, 'every call of the sequence, the long read included, answers the model');
   // The model stays mute after the call settled, so the ladder recovers the mute once, in the normal window.
   h.advance(AUDIBLE_DEBT_RUNG_MS + 1_000); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'one rebuild, after the read and not under it');

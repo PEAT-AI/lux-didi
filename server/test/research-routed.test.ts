@@ -538,7 +538,7 @@ test('P5-R5: a routed read that returns a failure is failed, never empty', async
 // --- Q5-R1: a named entry is read whole, never searched for again ------------------------------
 
 test('Q5-R1: a lookup that names an insight reads it by id and returns the whole body, never a second search', async () => {
-  const body = `${'Deep body sentence. '.repeat(400)}End of the entry.`;
+  const body = `${'Deep body sentence. '.repeat(1100)}End of the entry.`;
   const executed: string[] = [];
   const h = harness({ execute: async (subs: readonly IntentSubCall[]) => {
     for (const call of subs) executed.push(call.name);

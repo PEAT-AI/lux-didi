@@ -8,18 +8,19 @@ import type { Credentials } from '../adapters/model/types.js';
  */
 export const WEB_SEARCH_ACTION = 'web_search';
 export const WEB_MODEL = 'gemini-3.8-flash';
-/** The council's hard deadline: the transport is cancelled at this point, never left running. */
-export const WEB_DEADLINE_MS = 6_000;
 /**
- * N6 (#569): a weather or news read settles in 3.3 to 4.4 s, so those asks get a budget that holds them.
- * The routed lookup kind is `web_search` for every ask, so the ask itself is what names the longer budget.
+ * The council's hard deadline: the transport is cancelled at this point, never left running.
+ * #655: one web budget, derived from the read it must hold. The web reads that succeeded on this host
+ * (host.log, 2026-10-22 and 2026-10-24) took 3.3 to 4.4 s, and Gemini may spend a second grounded
+ * attempt inside the same budget, so 8 s sits above that measured tail with headroom for the retry
+ * (#645: a budget at the low end of the typical range cuts the reads it should have held). It stays
+ * under the 12 s connector timeout and the 20 s answer cap, and no ask is slower than another: the
+ * weather and news asks that took 10 s take this number too.
  */
-export const WEB_SLOW_DEADLINE_MS = 10_000;
-const SLOW_ASK = /\b(?:weather|forecast|temperature|rain|rains|raining|rainfall|snow|snowing|wind|windy|storm|humidity|sunrise|sunset|air quality|pollen|news|headlines?|breaking)\b/i;
+export const WEB_DEADLINE_MS = 8_000;
 
-export function webDeadlineMs(query: string): number {
-  return SLOW_ASK.test(query) ? WEB_SLOW_DEADLINE_MS : WEB_DEADLINE_MS;
-}
+/** The one place the web budget is read, so the research row and this module cannot drift apart. */
+export function webDeadlineMs(_query: string): number { return WEB_DEADLINE_MS; }
 export const WEB_SOURCE_CAP = 5;
 export const WEB_WORDS_CAP = 220;
 export const WEB_QUERY_CHARS = 200;

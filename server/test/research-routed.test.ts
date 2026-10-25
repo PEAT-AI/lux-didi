@@ -949,7 +949,7 @@ test('#645: the chat read is bounded at ten seconds, and a timed out one says ti
   const header = String(reply['coverage']);
   assert.match(header, /chat timed_out/u, `a chat read that timed out with nothing arrived says timed_out (${header})`);
   assert.doesNotMatch(header, /chat provider_failed/u, 'a timeout is never voiced as a provider failure');
-  assert.match(header, /chat timed_out \(say: team chat took too long\)/u, `and the voiceable clause says it took too long (${header})`);
+  assert.match(header, /chat timed_out \(say: team chat did not answer within 10 seconds\)/u, `and the voiceable clause says it took too long (${header})`);
   const note = String(reply['note']);
   assert.match(note, /team chat: not read \(timed out after 10 s\)/u, `the note names the timeout and its budget (${note})`);
   assert.doesNotMatch(note, /could not reach/u, 'and never that the chat was out of reach');

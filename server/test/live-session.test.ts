@@ -50,12 +50,13 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
+import { RESEARCH, RESEARCH_TOOL_NAME } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 
 const MODEL = 'models/live-session-test';
@@ -2788,27 +2789,31 @@ test('queued PCM is dropped at the cut and capture during rebuilding is never re
     if (item.value.kind === 'marker' && item.value.marker.kind === 'continuity') break;
   }
   attachment.sendAudio({ pcm }); attachment.endAudioStream();
-  assert.equal(h.f.frames.length, 3, 'capture during rebuilding is dropped');
+  // #656: the frame is held across the rebuild instead of dropped, so nothing reaches the old session.
+  assert.equal(h.f.frames.length, 3, 'capture during rebuilding is held for the new session');
   h.f.send({ setupComplete: {}, serverContent: { modelTurn: { parts: [audio()] } } });
   await continuity(output, 'resumed');
   const resumedAudio = await output.next();
   assert.equal(resumedAudio.value.kind, 'audio');
-  assert.equal(h.f.frames.length, 3, 'no old PCM replay follows setupComplete');
+  // #656: the held capture reaches the new session once it is ready. Which opportunity delivers it is not the
+  // claim, so the mic is allowed to speak again until it lands: every frame the owner sent reaches the adapter.
+  for (let attempt = 0; attempt < 10 && h.f.frames.length < 4; attempt++) { attachment.sendAudio({ pcm }); await h.f.frame(4); }
+  assert.ok(h.f.frames.length >= 4, 'the held capture reaches the new session');
   attachment.close(); const finalSnapshot = await attachment.done;
   let matching: Record<string, number | string>[] = [];
   for (let attempt = 0; attempt < 20 && matching.length === 0; attempt++) {
     await tick();
     matching = diagnosticLines.map(line => JSON.parse(line) as Record<string, number | string>)
-      .filter(value => value.ownerAudioCalls === 2 && value.ownerRebuildingDropCalls === 1);
+      .filter(value => Number(value.ownerAudioCalls) >= 2 && value.ownerRebuildingDropCalls === 0);
   }
   assert.equal(matching.length, 1);
   const diagnostics = matching[0]!;
   const terminalCode = finalSnapshot.terminal && 'code' in finalSnapshot.terminal ? finalSnapshot.terminal.code : finalSnapshot.terminal?.state;
   assert.equal(diagnostics.event, 'live_session_diagnostics'); assert.equal(diagnostics.terminalCode, terminalCode);
   assert.equal(diagnostics.adapterGenerations, 2);
-  assert.equal(diagnostics.ownerAudioCalls, 2); assert.equal(diagnostics.ownerAudioBytes, pcm.byteLength * 2);
-  assert.equal(diagnostics.ownerRebuildingDropCalls, 1); assert.equal(diagnostics.ownerRebuildingDropBytes, pcm.byteLength);
-  assert.equal(diagnostics.adapterAudioCalls, 1); assert.equal(diagnostics.adapterAudioBytes, pcm.byteLength);
+  assert.equal(diagnostics.ownerRebuildingDropCalls, 0); assert.equal(diagnostics.ownerRebuildingDropBytes, 0);
+  // #656: nothing the owner said into the gap is lost, so every frame the owner sent reaches the adapter.
+  assert.equal(diagnostics.adapterAudioCalls, diagnostics.ownerAudioCalls);
   assert.equal(diagnostics.outputAudioFrames, 2); assert.equal(diagnostics.outputAudioPCMBytes, pcm.byteLength * 2);
 });
 
@@ -3393,6 +3398,32 @@ test('W10: a source whose grant publishes after the call started joins the next 
   const reply = lastToolResponse(h);
   assert.doesNotMatch(reply, /calendar: unavailable/, 'the published grant is offered, not reported broken');
   assert.ok(h.calls.slice(before).some(call => String(call.name).startsWith('calendar_')), `the late source serves the read: calls=${JSON.stringify(h.calls.map(call => call.name))} reply=${reply}`);
+});
+
+// #651: a chat read the connector refused for a channel it does not know keeps its own closed code
+// through the live research hop, so the reply names the channel instead of an unreachable source.
+test('#651: an unknown channel reaches research as its own closed code', async t => {
+  const h = await harness(t, { tools: true, mattermost: true });
+  await attached(h, 'failreason-channel');
+  const question = 'what did they say in the nowhere channel about the deploy';
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question, topic: 'deploy in the nowhere channel' });
+  const reply = lastToolResponse(h);
+  assert.match(reply, /I do not know a channel called nowhere/, 'the reply names the unknown channel');
+  assert.match(reply, /"unavailable":\{"chat":"channel_not_found"\}/, 'the reply header keeps the code the chat read gave');
+});
+
+// #651 FAILREASON-R1: a read the connector cut at its own budget is said as a timeout, never as a source
+// that failed for no stated reason, so the owner hears why nothing came back.
+test('#651: a timed-out chat read reaches research as a timeout', async t => {
+  const h = await harness(t, { tools: true, mattermost: true,
+    mattermostWork: () => new Promise<void>(resolve => { setTimeout(resolve, 1300); }) });
+  await attached(h, 'failreason-timeout');
+  await ownerSpoke(h);
+  h.f.send({ toolCall: { functionCalls: [{ id: 'r1', name: 'research', args: { action: 'start', question: 'what was said in chat about the deploy', topic: 'deploy in chat' } }] } });
+  // The connector's own 1 s budget has to expire for real, so this waits on it rather than on a tick.
+  for (let i = 0; i < 400 && toolResponseCount(h) === 0; i++) await new Promise<void>(resolve => { setTimeout(resolve, 10); });
+  const reply = lastToolResponse(h);
+  assert.match(reply, /team chat: not read \(timed out after \d+ s\)/, 'the reply names the timeout it hit');
 });
 
 test('U1: research progress reaches the live channel with metadata only', async t => {
@@ -4082,8 +4113,13 @@ function progressPort() {
   /** Every text input the host pushed: the OpenAI path must never send the `Continue.` user turn (review F2). */
   const texts: string[] = [];
   const toolResponses: LiveToolResponse[][] = [];
+  /** #656: every owner frame the host handed a provider session, tagged with which session received it. */
+  const audioInput: { session: number; pcm: Uint8Array }[] = [];
   let emit: (event: unknown) => void = () => {};
   let sessionsOpened = 0;
+  /** #656: a rebuild held half open, so the owner audio that arrives between the close and the new ready is seen. */
+  let readyGate: Promise<void> | undefined;
+  let releaseReady: () => void = () => {};
   /** #538: what the adapter reports back for the next tool answer, so a failed write can be driven here. */
   let sendOutcome: LiveToolSendOutcome = 'sent';
   let closes = 0;
@@ -4107,7 +4143,13 @@ function progressPort() {
       const events: AsyncIterable<LiveVoiceEvent> = {
         async *[Symbol.asyncIterator]() {
           while (!closed) {
-            if (!readySeen) { readySeen = true; yield { sequence: ++sequence, type: 'ready' }; continue; }
+            if (!readySeen) {
+              readySeen = true;
+              const gate = readyGate;
+              if (gate !== undefined) await gate;
+              yield { sequence: ++sequence, type: 'ready' };
+              continue;
+            }
             if (!pending.length) { await new Promise<void>(resolve => { waiter = resolve; }); continue; }
             yield pending.shift()!;
           }
@@ -4116,7 +4158,8 @@ function progressPort() {
       return {
         ready: Promise.resolve(), events, done,
         sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome { toolResponses.push(input.responses); return sendOutcome; },
-        sendAudio(): void {}, sendText(input: { text: string }): void { texts.push(input.text); }, endAudioStream(): void {},
+        sendAudio(input: { pcm: Uint8Array }): void { audioInput.push({ session: sessionsOpened, pcm: input.pcm }); },
+        sendText(input: { text: string }): void { texts.push(input.text); }, endAudioStream(): void {},
         sendCommentary(input: { text: string }): boolean {
           if (!commentaryDelivered) return false;
           commentary.push(input.text);
@@ -4126,7 +4169,13 @@ function progressPort() {
       };
     },
   };
-  return { port, commentary, thinking, texts, toolResponses, emit: (event: unknown) => emit(event),
+  return { port, commentary, thinking, texts, toolResponses, audioInput, emit: (event: unknown) => emit(event),
+    /** #656: hold the next rebuilt session short of ready; the returned release lets it open. */
+    holdNextReady: () => {
+      const gate = new Promise<void>(resolve => { releaseReady = resolve; });
+      readyGate = gate;
+      return () => { readyGate = undefined; releaseReady(); };
+    },
     /** #538: what the next tool answer reports, and how many provider sessions the host closed. */
     reportToolSend: (outcome: LiveToolSendOutcome) => { sendOutcome = outcome; },
     get closes() { return closes; },
@@ -6258,4 +6307,203 @@ test('R3 bare commands close the real fake-provider socket and consumer, not the
     assert.equal(next.terminal, null, 'ending a call does not shut down the host owner');
     assert.equal(frames.filter(frame => frame !== 'binary' && JSON.parse(frame).type === 'terminal').length, 1);
   }
+});
+
+/** #656: one second of 16 kHz s16 mono owner audio, the frame size the uplink carries. */
+const ownerSecond = (fill = 3): Uint8Array => new Uint8Array(32_000).fill(fill);
+const rebuildReceipts = (receipts: Record<string, unknown>[], event: string): Record<string, unknown>[] =>
+  receipts.filter(entry => entry['event'] === event);
+
+test('#656: a ten second read is work, so no rebuild fires over it and the answer lands in the same session', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  // The first read returns and its output creates the debt; the second is the one that runs long.
+  const beforeTool = async () => { calls += 1; if (calls >= 2) await held; };
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler,
+    limits: openaiLimits, beforeTool });
+  await openPort(h, 'inflight-read-656');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'first656', name: 'search_knowledge', args: { query: 'warm', limit: 1 } }] });
+  await settlePort();
+  fake.emit({ type: 'toolCall', calls: [{ id: 'chat656', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  // The 03:42 shape: the read runs its whole ten second budget and the model says nothing in between.
+  for (let elapsed = 0; elapsed < 10_000; elapsed += 1_000) { h.advance(1_000); scheduler.runDue(); await settlePort(); }
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'a call in flight is work, not a mute');
+  assert.equal(fake.sessionsOpened, 1, 'the session the read belongs to is never closed under it');
+  assert.equal(fake.closes, 0);
+  release();
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 2, 'the long read returns to the session that asked for it');
+  // The model speaks the result, and the ladder stays out of the answer it asked for.
+  fake.emit({ type: 'audio', pcm: new Uint8Array([1, 0]), rate: 24_000 });
+  await settlePort();
+  h.advance(AUDIBLE_DEBT_RUNG_MS + RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0);
+  assert.equal(fake.sessionsOpened, 1, 'the answer is spoken where the read ran');
+});
+
+test('#656: a model silent after the read settles still rebuilds once, after the normal window', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler,
+    limits: openaiLimits, beforeTool: () => held });
+  await openPort(h, 'inflight-then-mute-656');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'mute656', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  for (let elapsed = 0; elapsed < 10_000; elapsed += 1_000) { h.advance(1_000); scheduler.runDue(); await settlePort(); }
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0);
+  release();
+  await settlePort();
+  // The call settled and the model never spoke: the normal window still recovers the mute.
+  h.advance(AUDIBLE_DEBT_RUNG_MS + 1_000); scheduler.runDue(); await settlePort();
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'the mute that outlives the read recovers');
+  assert.equal(fake.sessionsOpened, 2);
+  // One rebuild per recovery window: the second silence inside it is not a second rebuild.
+  h.advance(RESPONSE_WATCHDOG_WINDOW_MS / 2); scheduler.runDue(); await settlePort();
+  const muteRebuilds = rebuildReceipts(receipts, 'live_rebuild')
+    .filter(entry => entry['trigger'] === 'no_output_after_owner' || entry['trigger'] === 'no_output_after_ambient');
+  assert.equal(muteRebuilds.length, 1, 'never two model-mute rebuilds in one window');
+});
+
+test('#656: owner audio sent during a rebuild is held and delivered to the new session, not dropped', async t => {
+  const diagnosticLines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('live_session_diagnostics')) diagnosticLines.push(args[0]);
+  });
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  const { attachment } = await openPort(h, 'rebuild-hold-656');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'hold656', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  const releaseReady = fake.holdNextReady();
+  h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
+  assert.equal(fake.sessionsOpened, 2, 'the mute rebuilds the session');
+  // The owner keeps talking into the gap: four seconds of it, against a three second hold.
+  const frames = [ownerSecond(1), ownerSecond(2), ownerSecond(3), ownerSecond(4)];
+  for (const frame of frames) attachment.sendAudio({ pcm: frame });
+  releaseReady();
+  await settlePort();
+  const delivered = fake.audioInput.filter(entry => entry.session === 2).map(entry => entry.pcm);
+  assert.deepEqual(delivered, frames.slice(1), 'the newest held seconds reach the new session, the oldest is dropped');
+  // Past the cap the oldest frame is the one lost, and the counter the diagnostics carry records exactly that.
+  attachment.close();
+  await attachment.done;
+  let diagnostics: Record<string, number | string> | undefined;
+  for (let attempt = 0; attempt < 20 && diagnostics === undefined; attempt++) {
+    await tick();
+    diagnostics = diagnosticLines.map(line => JSON.parse(line) as Record<string, number | string>)
+      .find(value => value.ownerAudioCalls === frames.length);
+  }
+  assert.ok(diagnostics !== undefined, 'the settle diagnostics name the four owner frames');
+  assert.equal(diagnostics.ownerRebuildingDropCalls, 1, 'one frame past the cap is dropped, not four');
+  assert.equal(diagnostics.ownerRebuildingDropBytes, frames[0]!.byteLength, 'and it is the oldest frame the owner sent');
+});
+
+test('#656: the ladder waits out each call on that call\'s own ceiling, a research run on its deadline', async t => {
+  // A plain call is bounded by the non-research ceiling; a research run outlives it and is bounded by RESEARCH.
+  assert.equal(callCeilingMs('search_knowledge'), TOOL_CEILING_MS);
+  assert.equal(callCeilingMs(RESEARCH_TOOL_NAME), RESEARCH.continueDeadlineMs);
+  assert.equal(callCeilingMs(undefined), TOOL_CEILING_MS, 'a call whose name is unknown keeps the plain ceiling');
+  assert.ok(RESEARCH.continueDeadlineMs > TOOL_CEILING_MS, 'the research bound is the longer of the two');
+  // And the hold itself ends at the ceiling: a plain call older than TOOL_CEILING_MS no longer owns the silence.
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  const beforeTool = async () => { calls += 1; if (calls >= 2) await held; };
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler,
+    limits: openaiLimits, beforeTool });
+  await openPort(h, 'ceiling-656');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'warm656', name: 'search_knowledge', args: { query: 'warm', limit: 1 } }] });
+  await settlePort();
+  fake.emit({ type: 'toolCall', calls: [{ id: 'slow656', name: 'search_knowledge', args: { query: 'slow', limit: 1 } }] });
+  await settlePort();
+  h.advance(TOOL_CEILING_MS - 1_000); scheduler.runDue(); await settlePort();
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'inside its ceiling the call holds the silence');
+  h.advance(TOOL_CEILING_MS); scheduler.runDue(); await settlePort();
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'past its ceiling the ladder recovers the silence');
+  release();
+});test('#656: a call past its own ceiling no longer holds the ladder, so a wedged read still recovers', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  const beforeTool = async () => { calls += 1; if (calls >= 2) await held; };
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler,
+    limits: openaiLimits, beforeTool });
+  await openPort(h, 'wedged-read-656');
+  await ownerInput(fake);
+  // The first read returns, so the debt clock is running; the second one never does.
+  fake.emit({ type: 'toolCall', calls: [{ id: 'ok656', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  fake.emit({ type: 'toolCall', calls: [{ id: 'wedged656', name: 'search_knowledge', args: { query: 'y', limit: 1 } }] });
+  await settlePort();
+  h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'the read in flight holds the ladder');
+  // TOOL_CEILING_MS is the call's own hard ceiling: past it the call is no longer the owner of the silence.
+  h.advance(TOOL_CEILING_MS); scheduler.runDue(); await settlePort();
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'a wedged call still recovers');
+  release();
+});
+
+test('#656: the 03:42 sequence, four serial research calls with two refused, never rebuilds under the read', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  // Two refused research calls, one quick read, then the chat read that runs its whole ten seconds.
+  const beforeTool = async () => {
+    calls += 1;
+    if (calls <= 2) throw new Error('connector refused');
+    if (calls === 4) await held;
+  };
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler,
+    limits: openaiLimits, beforeTool });
+  await openPort(h, 'sequence-0342');
+  await ownerInput(fake);
+  for (const id of ['refused1', 'refused2', 'quick3']) {
+    fake.emit({ type: 'toolCall', calls: [{ id, name: 'search_knowledge', args: { query: id, limit: 1 } }] });
+    await settlePort();
+  }
+  fake.emit({ type: 'toolCall', calls: [{ id: 'chat4', name: 'search_knowledge', args: { query: 'chat', limit: 1 } }] });
+  await settlePort();
+  // He speaks nothing between the calls, and the last read runs its whole ten seconds under the ladder.
+  for (let elapsed = 0; elapsed < 10_000; elapsed += 1_000) { h.advance(1_000); scheduler.runDue(); await settlePort(); }
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'no rebuild lands in the middle of the read');
+  assert.equal(fake.closes, 0, 'and the session that owns the read is never closed');
+  release();
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 4, 'every call of the sequence, the long read included, answers the model');
+  // The model stays mute after the call settled, so the ladder recovers the mute once, in the normal window.
+  h.advance(AUDIBLE_DEBT_RUNG_MS + 1_000); scheduler.runDue(); await settlePort();
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'one rebuild, after the read and not under it');
+  assert.equal(fake.sessionsOpened, 2);
 });

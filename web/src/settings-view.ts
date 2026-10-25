@@ -29,6 +29,24 @@ export const LIVE_PROVIDERS: readonly { provider: string; label: string; voices:
  *  characters) rather than a preset name. The config CLI stores one; the picker only shows it. */
 export function isCustomVoiceId(voice: string): boolean { return /^voice_[0-9a-f]{16,64}$/.test(voice); }
 /**
+ * How the text chat model is named: the provider and the model, in that order. Settings and the
+ * chat lane share it so the two surfaces can never describe the same model in two ways.
+ */
+export function chatModelLabel(provider: string | undefined, model: string | undefined): string {
+  return [provider, model].map(value => value?.trim()).filter(Boolean).join(' ') || 'Configured';
+}
+/**
+ * The sentence the Settings form shows when the service refuses the Live selection. The server
+ * answers a typed code (invalid_voice, invalid_accent, invalid_provider) or its own sentence, and
+ * either one names the field the owner must change: the raw code is never shown.
+ */
+export function settingsSaveError(code: string, message: string): string {
+  if (code === 'invalid_voice' || /voice/i.test(message)) return 'That voice is not one this provider offers. Pick one from the list.';
+  if (code === 'invalid_accent' || /accent/i.test(message)) return 'That accent is not one this voice offers. Pick one from the list.';
+  if (code === 'invalid_provider' || /provider/i.test(message)) return 'That voice provider is not one Lux Didi offers. Pick one from the list.';
+  return message;
+}
+/**
  * The accent selections the host composes with, in order, with the value an absent setting means. The
  * labels are the owner's words for the three choices; the server validates the values.
  */
@@ -160,7 +178,7 @@ function serviceRows(status: unknown, statusUnavailable: boolean, summaryName?: 
   if (statusUnavailable) return `<dt>Persona name</dt><dd>${personaCell}</dd><dt>Text chat and research model</dt><dd>${unavailable()}</dd>`;
   const row = record(status);
   const model = record(row?.model);
-  const modelLabel = model?.configured === true ? [text(model.provider, 60), text(model.model, 120)].filter(Boolean).join(' ') || 'Configured' : 'Not configured';
+  const modelLabel = model?.configured === true ? chatModelLabel(text(model.provider, 60), text(model.model, 120)) : 'Not configured';
   return `<dt>Persona name</dt><dd>${personaCell}</dd>
 <dt>Text chat and research model</dt><dd>${escapeHtml(modelLabel)}</dd>`;
 }
@@ -172,17 +190,24 @@ function connectorsSection(connections: unknown, connectionsUnavailable: boolean
   return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.signInEndpoint ? ` <button type="button" class="secondary mongoose-signin" data-signin data-endpoint="${escapeHtml(row.id)}">Sign in to ${escapeHtml(mongooseEndpointLabel(row.signInEndpoint))}</button>` : ''}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}</li>`).join('')}</ul>`;
 }
 
-/** The one element shape the sign-in binder needs, so a test can supply plain objects. */
-export interface SignInButton { getAttribute(name: string): string | null; addEventListener(type: 'click', listener: () => void): void }
+/** The one element shape the sign-in binder reads, so a test can supply plain objects. */
+export interface SignInTarget { closest(selector: string): { getAttribute(name: string): string | null } | null }
 /**
  * One click per endpoint button: the click sends that row's endpoint name to the host, never a shared
- * or guessed one. A button whose data-endpoint is missing or outside the closed set is left unbound.
+ * or guessed one. One listener sits on the stable root, so a Settings repaint or a full render swaps the
+ * buttons underneath it and the next click still arrives. A click off every sign-in button sends nothing.
  */
-export function bindSignInButtons(root: { querySelectorAll(selector: string): ArrayLike<SignInButton> }, send: (endpoint: MongooseEndpointName) => void): void {
-  for (const node of Array.from(root.querySelectorAll('[data-signin]'))) {
-    const endpoint = mongooseEndpoint(node.getAttribute('data-endpoint') ?? '');
-    if (endpoint) node.addEventListener('click', () => send(endpoint));
-  }
+export function bindSignInButtons(root: { addEventListener(type: 'click', listener: (event: { target: SignInTarget }) => void): void }, send: (endpoint: MongooseEndpointName) => void): void {
+  root.addEventListener('click', event => {
+    const endpoint = mongooseEndpoint(event.target.closest('[data-signin]')?.getAttribute('data-endpoint') ?? '');
+    if (endpoint) send(endpoint);
+  });
+}
+/** What the Settings notice says when a click starts no sign-in: the closed reasons in plain words. */
+export function signInFailureNotice(reason: string): string {
+  if (reason === 'sign-in-in-progress') return 'Finish the sign-in already open in the browser first, then click Sign in again.';
+  if (reason === 'browser-unavailable') return 'Your browser could not be opened. The Sign in button tries again.';
+  return 'Sign-in did not finish. Use the Sign in button to try again.';
 }
 
 function connectedSection(connected: SettingsInput['connected']): string {

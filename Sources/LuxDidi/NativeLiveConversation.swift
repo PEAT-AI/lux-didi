@@ -206,7 +206,7 @@ enum State: String, CaseIterable {
                 case .terminal(let outcome):
                     // #589: the host's voice stop is the owner's own sentence, so this end is presented as
                     // her stop. The app closes it through presence.stop(.voice), never as a session ending.
-                    if outcome.code == "voice_stop" { self.hostVoiceStop = true; self.latch.ownerStopped() }
+                    if outcome.code == "voice_stop" { self.noteHostVoiceStop() }
                     switch outcome.code {
                     case "session_timeout": if !self.endRecorded { self.endRecorded = true; self.journal.append(.sessionLimit) }
                     case "idle_timeout": if !self.endRecorded { self.endRecorded = true; self.journal.append(.idleLimit) }
@@ -417,6 +417,9 @@ enum State: String, CaseIterable {
             await coordinator.setInputMuted(value)
         }
     }
+    /// #657: the host's voice_stop is the end it announced itself, so the stop that follows it is the
+    /// host's own end and never a deadline the host missed.
+    func noteHostVoiceStop() { hostVoiceStop = true; latch.ownerStopped() }
     /// Stop capture and presentation synchronously before asynchronous transport cleanup.
     func stopCapture() {
         generation &+= 1; startTask?.cancel(); startTask = nil
@@ -444,7 +447,10 @@ enum State: String, CaseIterable {
             state = .ended
         }
         if firstStop {
-            journal.append(["event": "live_stop_outcome", "outcome": confirmed == nil ? "deadline" : "confirmed"])
+            // #657: a host that said voice_stop ended the call itself, so the close has no receipt to give
+            // and the stop is the host's own end, never a deadline it missed.
+            let outcome = confirmed != nil ? "confirmed" : (hostVoiceStop ? "host_ended" : "deadline")
+            journal.append(["event": "live_stop_outcome", "outcome": outcome])
         }
         await captureSummaryTask?.value
         guard generation == token else { return }

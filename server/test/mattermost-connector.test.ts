@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
+import type { CompletedResult, EndpointConfig, McpPort } from '../adapters/mcp/port.js';
 import { createMattermostReader, MATTERMOST_AUTH_NEEDED, MATTERMOST_TOOLS, parseChannelList, resolveChannelReference } from '../connectors/index.js';
 import { mattermostToolStatus, projectMattermostResult } from '../tools/mattermost.js';
 import { mongooseFailureStage } from '../connectors/mongoose.js';
@@ -285,7 +285,65 @@ test('#581: a chat window ask sends from_date and sort newest and no inline Afte
   assert.equal(first.arguments['from_date'], '2026-10-21', 'the window is the day the ask named, in the child own argument');
   assert.equal(first.arguments['sort'], 'newest', 'a windowed read is newest first');
   assert.ok(!String(first.arguments['query']).includes('After:'), 'no inline operator rides the query text');
+  assert.doesNotMatch(String(first.arguments['query']), /\b(what|did|about|say|this)\b/i, 'the query carries topic words only, never a stop word or a continuation word');
   assert.ok((reply['findings'] as unknown[]).length > 0, 'the read reaches the answer');
+});
+
+// #647: the child defaults a search to hybrid, which embeds the query on CPU over the whole archive, so
+// one chat read took tens of seconds. Every search this connector sends asks for keyword mode.
+test('#647: a search asks the child for keyword mode, never hybrid or semantic', async () => {
+  // The search schema the real mattermost-mcp child publishes, `mode` included (#647 re-read the child).
+  const tools: ReturnType<McpPort['visibleTools']> = [{
+    name: 'mattermost_search', description: 'Synthetic mattermost_search',
+    inputSchema: { type: 'object', properties: { query: { type: 'string' }, mode: { type: 'string', enum: ['keyword', 'semantic', 'hybrid'] }, limit: { type: 'integer', minimum: 1, maximum: 50 }, from_date: { type: 'string' }, to_date: { type: 'string' }, sort: { type: 'string', enum: ['relevance', 'newest'] } } },
+  }];
+  const sent: Record<string, unknown>[] = [];
+  // The registry hands back the canonical digest of exactly these tools, the way the adapter's discovery does.
+  const registry = new McpRegistry();
+  registry.register(config('mattermost', 'ok', tmpdir()));
+  registry.enable('mattermost'); registry.allowEgress('mattermost');
+  const digest = registry.observed('mattermost', tools, registry.revision('mattermost'));
+  const scope = { endpointId: 'mattermost', url: 'https://chat.example.invalid', schemaDigest: digest, generation: 1, account: ACCOUNT, resource: RESOURCE };
+  const port: McpPort = {
+    discover: async () => ({ state: 'discovered', endpointId: 'mattermost', schemaDigest: digest, tools, observedAt: 0 }),
+    visibleTools: () => tools,
+    call: async request => {
+      sent.push({ ...(request.arguments as Record<string, unknown>) });
+      return {
+        state: 'completed', decodedResult: { content: [{ type: 'text', text: JSON.stringify({ total: 0, returned: 0, results: [] }) }] },
+        source: { ...scope, toolName: request.toolName }, coverage: { completeCorpus: false, basis: 'single-tool-result', remoteSideEffects: 'unverified' },
+        freshness: { receivedAt: 0, sourceVersion: 'unknown' }, projection: { text: '', omitted: false, originalCharacters: 0, omittedCharacters: 0 },
+        payload: { state: 'unavailable', reason: 'capacity' },
+      } as CompletedResult;
+    },
+    readSlice: () => ({ state: 'unavailable', reason: 'capacity' }),
+    whenSuspended: async () => {},
+    close: async () => {},
+  };
+  registry.approve({ endpointId: 'mattermost', schemaDigest: digest, toolNames: ['mattermost_search'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+  assert.equal((await reader(port, registry, digest).search({ query: 'release freeze' })).state, 'completed');
+  assert.deepEqual(sent.map(args => args['mode']), ['keyword'], 'the read never leaves the child free to embed the query');
+  assert.equal(sent[0]!['query'], 'release freeze');
+});
+
+// #647: keyword is an every-term match, so a paraphrased ask can miss. One retry with the single most
+// specific term, and the answer says the match was broadened, never that chat held nothing.
+test('#647: an empty multi-term chat search earns one single-term retry and a broadened note', async () => {
+  const dispatched: IntentSubCall[] = [];
+  const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => subs.map(call => {
+    dispatched.push({ key: call.key, name: call.name, args: { ...call.args } });
+    const broadened = String(call.args['query']) === 'release';
+    const text = broadened ? '- the release freeze moved to Monday, from Ana [post abcdef1234567890abcdefghij]' : '';
+    return { key: call.key, name: call.name, ok: true, text, originalCharacters: text.length, omittedCharacters: 0 };
+  });
+  const deps: ResearchDeps = {
+    now: () => Date.parse('2026-10-21T05:30:00Z'), timeZone: 'Asia/Kolkata', configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the release freeze' }, new AbortController().signal);
+  const searches = dispatched.filter(call => call.name === 'mattermost_search');
+  assert.deepEqual(searches.map(call => [call.args['query'], call.args['from_date']]), [['release freeze', undefined], ['release', undefined]], 'the empty multi-term read earns exactly one retry with the single most specific term');
+  assert.match(String(reply['note']), /broadened/, 'the answer says the match was broadened');
+  assert.ok((reply['findings'] as unknown[]).length > 0, 'the broadened read reaches the answer');
 });
 
 // #610: a channel named in the ask is resolved through list_channels, then searched once with the

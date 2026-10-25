@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
@@ -11,6 +11,7 @@ import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
 import { createMongooseSignIn } from '../host/runtime.js';
+import { saveLiveSelection } from '../config/live.js';
 import type { DomainPort } from '../contracts/domain.js';
 import { ServiceError } from '../contracts/errors.js';
 const migrations = [{ owner: 'synthetic', version: 1, statements: ['CREATE TABLE calls(id INTEGER PRIMARY KEY, title TEXT)'] }];
@@ -32,11 +33,11 @@ const domain = {
     throw new ServiceError('NOT_FOUND', 'Synthetic not found', 404);
   }
 } as DomainPort;
-async function fixture(port?: DomainPort, toolsStatus?: Parameters<typeof listenService>[0]['toolsStatus'], mongooseSignIn?: Parameters<typeof listenService>[0]['mongooseSignIn']) {
+async function fixture(port?: DomainPort, toolsStatus?: Parameters<typeof listenService>[0]['toolsStatus'], mongooseSignIn?: Parameters<typeof listenService>[0]['mongooseSignIn'], live?: Parameters<typeof listenService>[0]['live']) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-http-'));
   const store = new Store(dir, port?.migrations);
   let time = Date.now();
-  const service = await listenService({ store, now: () => time, ...(port ? { domain: port } : {}), port: 0, ...(toolsStatus ? { toolsStatus } : {}), ...(mongooseSignIn ? { mongooseSignIn } : {}) });
+  const service = await listenService({ store, now: () => time, ...(port ? { domain: port } : {}), port: 0, ...(toolsStatus ? { toolsStatus } : {}), ...(mongooseSignIn ? { mongooseSignIn } : {}), ...(live ? { live } : {}) });
   const token = readFileSync(join(dir, 'admin-credential'), 'utf8').trim();
   const auth = { Authorization: `Bearer ${token}` };
   return { dir, store, service, auth, advance(ms: number) { time += ms; }, async cleanup() { await service.close(); store.close(); rmSync(dir, { recursive: true, force: true }); } };
@@ -506,10 +507,157 @@ test('#649: an unknown endpoint name is a closed failure, and one sign-in runs a
     gate = new Promise<void>(resolve => { finish = resolve; });
     const first = signIn('knowledge');
     const second = signIn('data');
-    assert.equal(second, first, 'a second click joins the pending sign-in instead of starting another');
+    assert.deepEqual(await second, { status: 'failed', reason: 'sign-in-in-progress' }, 'a click for another endpoint is told to finish the open one first');
     assert.deepEqual(await first, { status: 'started', url: 'http://127.0.0.1:8768/authorize?state=synthetic' });
     finish();
     await gate;
-    assert.deepEqual(signed, ['knowledge'], 'the joined click never signs a second endpoint');
+    assert.deepEqual(signed, ['knowledge'], 'the second click never signs a second endpoint');
   } finally { rmSync(configDir, { recursive: true, force: true }); }
+});
+
+/** A private config dir with both credential slots seeded, and a Live service that really saves. */
+function liveSettings() {
+  const root = mkdtempSync(join(tmpdir(), 'didi-live-settings-')); chmodSync(root, 0o700);
+  const configDir = join(root, 'config'); mkdirSync(configDir, { mode: 0o700 }); chmodSync(configDir, 0o700);
+  const put = (name: string, value: unknown) => writeFileSync(join(configDir, name), JSON.stringify(value), { mode: 0o600 });
+  put('live.json', {
+    schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/gemini-3.8-live', voice: 'Aoede',
+    keyReference: 'gemini-primary', dataClasses: ['ordinary'],
+    preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' },
+    limits: { sessionMs: 900000 },
+  });
+  put('gemini-primary.json', { schemaVersion: 1, keyReference: 'gemini-primary', key: 'gemini_NEVER_PRINT' });
+  put('openai-primary.json', { schemaVersion: 1, keyReference: 'openai-primary', key: 'openai_NEVER_PRINT' });
+  const saved = () => JSON.parse(readFileSync(join(configDir, 'live.json'), 'utf8')) as Record<string, unknown>;
+  const live = {
+    enabled: true, profileIdentity: 'synthetic-profile-identity', maxIncomingBytes: 1, maxBufferedBytes: 1,
+    status: () => ({
+      service: 'live' as const, status: 'configured' as const, provider: 'gemini' as const, model: 'gemini-synthetic-live',
+      voice: 'Aoede', dataClasses: ['ordinary' as const], profileIdentity: 'synthetic-profile-identity',
+      limits: { sessionMs: 900000, idleMs: 300000 },
+    }),
+    saveSelection: (input: { provider: unknown; voice?: unknown; accent?: unknown }) => saveLiveSelection({
+      configDir, provider: input.provider,
+      ...(input.voice !== undefined ? { voice: input.voice } : {}),
+      ...(input.accent !== undefined ? { accent: input.accent } : {}),
+    }),
+  } as unknown as Parameters<typeof listenService>[0]['live'];
+  return { live, saved, cleanup() { rmSync(root, { recursive: true, force: true }); } };
+}
+
+test('a settings save reaches the Live service with its body and stores provider, voice and accent', async () => {
+  const live = liveSettings();
+  const f = await fixture(undefined, undefined, undefined, live.live);
+  try {
+    // The owner's Settings page is a browser: same cookie, CSRF token and authority epoch as any mutation.
+    const browser = await pair(f);
+    const headers = { Cookie: browser.cookie.split(';')[0]!, Origin: f.service.origin, 'X-Didi-CSRF': browser.csrf,
+      'X-Didi-Authority-Epoch': f.store.authorityEpoch, 'Idempotency-Key': 'settings-one', 'Content-Type': 'application/json' };
+    const response = await fetch(`${f.service.origin}/api/v1/live/settings`, {
+      method: 'POST', headers, body: JSON.stringify({ provider: 'openai', voice: 'marin', accent: 'indian-light' }),
+    });
+    assert.equal(response.status, 200, 'the owner Save button succeeds');
+    const selection = (await response.json()).data as Record<string, unknown>;
+    assert.equal(selection.provider, 'openai');
+    assert.equal(selection.voice, 'marin');
+    assert.equal(selection.accent, 'indian-light');
+    assert.equal(live.saved()['provider'], 'openai', 'the choice is stored, not only echoed');
+    assert.equal(live.saved()['voice'], 'marin');
+    assert.equal(live.saved()['accent'], 'indian-light');
+  } finally { await f.cleanup(); live.cleanup(); }
+});
+
+test('a refused voice is answered with the field named and stores nothing', async () => {
+  const live = liveSettings();
+  const f = await fixture(undefined, undefined, undefined, live.live);
+  try {
+    const browser = await pair(f);
+    const headers = { Cookie: browser.cookie.split(';')[0]!, Origin: f.service.origin, 'X-Didi-CSRF': browser.csrf,
+      'X-Didi-Authority-Epoch': f.store.authorityEpoch, 'Idempotency-Key': 'settings-bad', 'Content-Type': 'application/json' };
+    const refused = await fetch(`${f.service.origin}/api/v1/live/settings`, {
+      method: 'POST', headers, body: JSON.stringify({ provider: 'gemini', voice: 'marin' }),
+    });
+    assert.equal(refused.status, 400);
+    const failure = (await refused.json()).error as { code: string; message: string };
+    assert.match(failure.message, /voice/, 'the refusal names the voice, never a generic settings error');
+    assert.equal(live.saved()['voice'], 'Aoede', 'a refused save writes nothing');
+    const empty = await fetch(`${f.service.origin}/api/v1/live/settings`, {
+      method: 'POST', headers: { ...headers, 'Idempotency-Key': 'settings-empty' }, body: JSON.stringify({ provider: 'gemini', voice: '' }),
+    });
+    assert.equal(empty.status, 400);
+    assert.match(((await empty.json()).error as { message: string }).message, /voice/);
+  } finally { await f.cleanup(); live.cleanup(); }
+});
+
+// --- #659: a repeat click reaches the browser again, and another endpoint is told plainly. ---
+
+const AUTHORIZE = 'http://127.0.0.1:8768/authorize?state=synthetic';
+
+test('#659: a second click on the same endpoint opens the browser again at the URL already issued', async () => {
+  const dir = mongooseConfigDir();
+  try {
+    const opened: string[] = [];
+    const signed: string[] = [];
+    let finish: () => void = () => {};
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const signIn = createMongooseSignIn({
+      configDir: dir,
+      recover: async () => {},
+      open: url => { opened.push(url); },
+      login: async options => {
+        signed.push(`${options.endpoint}:${options.reference}`);
+        options.showAuthorizationUrl?.(AUTHORIZE);
+        await gate;
+      },
+    });
+    const first = signIn('knowledge');
+    const again = signIn('knowledge');
+    assert.deepEqual(await again, { status: 'started', url: AUTHORIZE }, 'the repeat click answers started, not silence');
+    assert.deepEqual(await first, { status: 'started', url: AUTHORIZE }, 'and the first click answers the same');
+    assert.deepEqual(opened, [AUTHORIZE, AUTHORIZE], 'the browser is asked twice, at the one URL already issued');
+    assert.deepEqual(signed, ['knowledge:mongoose-knowledge'], 'no second login runs');
+    finish();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('#659: a click for another endpoint while one sign-in is pending says to finish the open one first', async () => {
+  const dir = mongooseConfigDir();
+  try {
+    const opened: string[] = [];
+    const signed: string[] = [];
+    let finish: () => void = () => {};
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const signIn = createMongooseSignIn({
+      configDir: dir,
+      recover: async () => {},
+      open: url => { opened.push(url); },
+      login: async options => {
+        signed.push(options.endpoint);
+        options.showAuthorizationUrl?.(AUTHORIZE);
+        await gate;
+      },
+    });
+    const first = signIn('knowledge');
+    assert.deepEqual(await signIn('data'), { status: 'failed', reason: 'sign-in-in-progress' }, 'the other endpoint is told, not joined');
+    assert.deepEqual(signed, ['knowledge'], 'the second click never runs a second login');
+    assert.deepEqual(opened, [AUTHORIZE], 'and never opens a second sign-in page');
+    assert.deepEqual(await first, { status: 'started', url: AUTHORIZE });
+    finish();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('#659: a browser that cannot open answers the click with browser-unavailable, never an uncaught error', async () => {
+  const dir = mongooseConfigDir();
+  try {
+    const signIn = (open: (url: string) => void | Promise<void>) => createMongooseSignIn({
+      configDir: dir,
+      recover: async () => {},
+      open,
+      login: async options => { options.showAuthorizationUrl?.(AUTHORIZE); },
+    });
+    assert.deepEqual(await signIn(() => { throw new Error('spawn open ENOENT'); })('knowledge'),
+      { status: 'failed', reason: 'browser-unavailable' }, 'a launch that throws reaches the click as a closed code');
+    assert.deepEqual(await signIn(async () => { throw new Error('spawn open ENOENT'); })('knowledge'),
+      { status: 'failed', reason: 'browser-unavailable' }, 'and so does a launch that rejects');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

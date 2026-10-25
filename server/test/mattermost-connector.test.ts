@@ -13,7 +13,7 @@ import type { EndpointConfig, McpPort } from '../adapters/mcp/port.js';
 import { createMattermostReader, MATTERMOST_AUTH_NEEDED, MATTERMOST_TOOLS, parseChannelList, resolveChannelReference } from '../connectors/index.js';
 import { mattermostToolStatus, projectMattermostResult } from '../tools/mattermost.js';
 import { mongooseFailureStage } from '../connectors/mongoose.js';
-import { ResearchLedger, runResearch, type ResearchDeps } from '../tools/research.js';
+import { ResearchLedger, refusalCode, runResearch, type ResearchDeps } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { Store } from '../runtime/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
@@ -366,15 +366,20 @@ test('#637: a refused channel read through the real tool layer is voiced as an u
     });
     return subs.map((sub, index) => {
       executed.push(sub.name);
-      const record = batch.tools[index];
-      const acceptedCall = batch.accepted.find(entry => entry.binding.callId === `s${index}`);
+      const callId = `s${index}`;
+      // Exactly the live session's own reads (server/live/index.ts:2995-3002), so this test cannot pass
+      // where production yields a different code (CHANNELS-REVIEW F-B2).
+      const slot = batch.bindings.findIndex(binding => binding.callId === callId);
+      const record = slot >= 0 ? batch.tools[slot] : undefined;
+      const acceptedCall = batch.accepted.find(entry => entry.binding.callId === callId);
       const response = acceptedCall?.response ?? {};
-      if (record?.status === 'completed' && acceptedCall !== undefined) {
-        return { key: `s${index}`, name: sub.name, ok: true, text: String(response.text ?? ''), originalCharacters: 0, omittedCharacters: 0 };
-      }
-      // The code precedence the live session uses for a failed sub-call.
-      const code = typeof response.code === 'string' ? response.code : record?.reason ?? 'refused';
-      return { key: `s${index}`, name: sub.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code };
+      const ok = record?.status === 'completed' && acceptedCall !== undefined;
+      if (ok) return { key: callId, name: sub.name, ok: true, text: String(response.text ?? ''), originalCharacters: 0, omittedCharacters: 0 };
+      const code = typeof response.code === 'string' ? response.code
+        : typeof response.reason === 'string' ? response.reason
+        : record?.status === 'refused' ? refusalCode(record.reason)
+        : record ? String(record.status) : 'refused';
+      return { key: callId, name: sub.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code };
     });
   };
   const deps: ResearchDeps = { now: () => 0, configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger() };

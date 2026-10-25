@@ -394,8 +394,8 @@ describe('openai gpt-live adapter', () => {
   });
 
   test('L8-09/L11-05: the opening directive never asks for the earlier call\'s closing words or a stop line', () => {
-    // "then stop and listen" came back as the spoken opener "Yeah. Stopping.", and "the last thing you and the
-    // owner were on" as the earlier call's closing line.
+    // The stop-and-listen clause came back as a spoken stop line, and the last-thing clause as the earlier
+    // call's closing line.
     assert.doesNotMatch(FRESH_OPENING, /stop and listen/u);
     assert.doesNotMatch(FRESH_OPENING, /the last thing you and the owner were on/u);
     assert.match(FRESH_OPENING, /never its closing lines/u);

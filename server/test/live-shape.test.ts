@@ -547,7 +547,7 @@ test('#7: a long event title survives whole and the body is what the bound trims
 });
 
 // L8-01: a long event id left the people lines about 75 characters, the cut ran through the
-// attendee line and appended a character count, and the model spoke "plus forty one others".
+// attendee line and appended a character count, and the model read that count as a head count.
 test('L8-01: attendee and organizer lines are never cut, the count is true and no character marker is appended', () => {
   const shaped = shapeGcalList({ events: [{
     id: `${'e'.repeat(60)}_${'7'.repeat(79)}`, summary: 'Re: demo / Example', location: 'Video call',

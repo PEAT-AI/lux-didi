@@ -4019,7 +4019,7 @@ test('#538: the Gemini path sends its one Continue at 8 s and never closes or re
   attachment.close();
 });
 
-// L8-11/L11-06: the owner said "I understand" three times while she kept speaking, and the store held no
+// L8-11/L11-06: the owner talked over her answer three times while she kept speaking, and the store held no
 // receipt of it. gpt-live-1 owns barge-in and the host never cuts her (lux 90488, ruling W1-R1), so the host
 // records the overlap as a content-free receipt: counts only, and whether output was cut (never, here).
 test('L8-11: owner words over her audible answer leave one content-free overlap receipt per owner turn', async t => {
@@ -4031,13 +4031,13 @@ test('L8-11: owner words over her audible answer leave one content-free overlap 
   await attachment.ready;
   fake.emit(audibleFrame);
   await settlePort();
-  fake.emit(portEvent({ type: 'inputTranscription', text: 'I', finished: false }));
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'Synthetic', finished: false }));
   await settlePort();
   const rows = (): Record<string, unknown>[] => h.store.transaction(tx => tx.all(
     "SELECT turn_id, detail FROM trace_event WHERE live_session_id=? AND kind='owner.overlap' ORDER BY seq", [session.liveSessionId]));
   assert.equal(rows().length, 0, 'one word over her is not yet an overlap');
   fake.emit(audibleFrame);
-  fake.emit(portEvent({ type: 'inputTranscription', text: ' understand, I understand', finished: false }));
+  fake.emit(portEvent({ type: 'inputTranscription', text: ' overlap words here', finished: false }));
   await settlePort();
   fake.emit(portEvent({ type: 'inputTranscription', text: ' you', finished: false }));
   await settlePort();
@@ -4048,7 +4048,7 @@ test('L8-11: owner words over her audible answer leave one content-free overlap 
   assert.ok(Number(detail['words']) >= 2, `the receipt counts the words: ${JSON.stringify(detail)}`);
   assert.equal(detail['cut'], false, 'the host cut nothing (ruling W1-R1)');
   assert.ok(typeof seen[0]!['turn_id'] === 'string', 'the receipt belongs to the owner turn');
-  assert.equal(JSON.stringify(seen).includes('understand'), false, 'no owner word reaches the metadata row');
+  assert.equal(JSON.stringify(seen).includes('overlap words'), false, 'no owner word reaches the metadata row');
   attachment.close(); await attachment.done.catch(() => undefined);
 });
 

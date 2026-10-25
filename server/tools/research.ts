@@ -4204,7 +4204,6 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     recordShapes(deps, run, calls, now);
     try { results = await deps.execute(calls, signal); }
     catch { for (const read of reads) { read.failed = true; read.inflight = false; } if (signal.aborted) run.cutShort.add('calendar'); break; }
-    results = await withFullEntries(deps, run, results, run.question ?? '', signal, now, sourceDeadlineAt);
     // E8: the window this batch paid for is kept for the session, so the run that superseded it never pays again.
     if (deps.authorizeEvidence?.(deps.ledger.evidenceBindings(run.researchId), new AbortController().signal) ?? true) rememberCalendarWindow(deps, reads, results, slots, now());
     if (parent.aborted || run.cancelled || run.stopped) { run.cancelled = true; invalidateEvidence(run); break; }
@@ -4889,17 +4888,17 @@ export function knowledgeReadIds(text: string, asked: readonly string[], limit: 
 
 /** C-DEPTH item 3: stage two, in the round already dispatched, so no third round is ever spent on entries. */
 async function withFullEntries(
-  deps: ResearchDeps, run: RunState, results: readonly IntentSubResult[], question: string,
-  signal: AbortSignal, now: () => number, sourceDeadlineAt: number,
+  execute: (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]>,
+  run: RunState, results: readonly IntentSubResult[], question: string, signal: AbortSignal,
 ): Promise<IntentSubResult[]> {
   const searched = results.find(result => result.name === INTERNAL.knowledgeSearch && result.ok && result.text.trim());
   if (searched === undefined) return [...results];
   const ids = knowledgeReadIds(searched.text, requestedEntities(question));
   if (ids.length === 0) return [...results];
-  if (now() + RESEARCH.knowledgeReadMs > sourceDeadlineAt) return [...results];
   run.ops += 1;
   try {
-    const read = await deps.execute([{ key: 'knowledge_entries', name: INTERNAL.knowledgeRead, args: { ids } }], signal);
+    const bounded = AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.knowledgeReadMs)]);
+    const read = await execute([{ key: 'knowledge_entries', name: INTERNAL.knowledgeRead, args: { ids } }], bounded);
     return [...results, ...read];
   } catch { return [...results]; }
 }
@@ -4913,6 +4912,11 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     if (subs.some(sub => sub.name === INTERNAL.knowledgeRead)) limit = Math.max(limit, RESEARCH.readReplyChars);
   };
   const now = () => deps.now();
+  // C-DEPTH item 3: every dispatch of this run goes through stage two, so whichever path asked for a search
+  // also pays for the full entries of the hits it named, in the same round.
+  const dispatch = deps.execute;
+  const execute = async (subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]> =>
+    withFullEntries(dispatch, run, await dispatch(subs, signal), run.question ?? '', signal);
   const configured = [...new Set([...(deps.configuredNow ?? (() => deps.configured))(), ...(deps.web === undefined ? [] : ['web' as const])])];
   // P5: a source that cannot serve a read says why. The composition may hand over the connector's own
   // reason; a bare source name still reports a cause, never "nothing found".
@@ -5392,11 +5396,11 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const executeWithRetry = async (list: IntentSubCall[]): Promise<IntentSubResult[]> => {
             let out: IntentSubResult[] = [];
             recordShapes(deps, run, list, now);
-            try { out = await deps.execute(list, readSignal); } catch { out = []; }
+            try { out = await execute(list, readSignal); } catch { out = []; }
             const failed = list.map((_, index) => index).filter(index => list[index]?.name !== INTERNAL.mailRead && !(out[index]?.ok));
             if (failed.length > 0 && !readSignal.aborted && deadlineAt - now() > 1_000) {
               try {
-                const retried = await deps.execute(failed.map(index => list[index]!), readSignal);
+                const retried = await execute(failed.map(index => list[index]!), readSignal);
                 failed.forEach((index, position) => { const result = retried[position]; if (result?.ok) out[index] = result; });
               } catch { /* keep the first attempt's result */ }
             }

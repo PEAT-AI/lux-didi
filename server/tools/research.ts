@@ -190,6 +190,14 @@ export const RESEARCH = Object.freeze({
    * characters: a quarter of the corpus is longer than the old 1,200 window, and the read is cheap.
    */
   knowledgeBodyChars: 2_000,
+  /**
+   * C-DEPTH item 3 (W10-R7): the second stage. The search answers with summaries; the host then fetches the
+   * full bodies of this many hits, the ones naming the owner's people or documents first, in one batched read
+   * inside the round already dispatched and inside the operation deadline.
+   */
+  knowledgeReadEntries: 3,
+  /** C-DEPTH item 3: the time one stage two read may take, so the operation deadline is never eaten by it. */
+  knowledgeReadMs: 1_500,
   /** R5 (RESCAP-R5): the fewest characters of an evidence line worth keeping when it is clipped to fit. */
   clipFloorChars: 60,
   /** ROUTE-1022 (#526): the search reply carries the body, so no id is opened in a second hop. */
@@ -4862,6 +4870,60 @@ function continuesRun(run: RunState, call: ResearchCall, question: string): bool
   return question.trim() === '' || sameTopic(question);
 }
 
+/** The hit id one shaped line or one fetched entry names, if it names one. */
+function hitIdOf(line: string): string | undefined {
+  return line.match(/\[id (\d+)\]/u)?.[1] ?? line.match(/^\s*\*\*#(\d+)\*\*/u)?.[1] ?? line.match(/^#{2,3}\s*#(\d+)\b/u)?.[1];
+}
+
+/** C-DEPTH item 3: the ids a summary names, the hits that mention an asked entity first. */
+export function knowledgeReadIds(text: string, asked: readonly string[], limit: number = RESEARCH.knowledgeReadEntries): string[] {
+  const ids: string[] = [];
+  const named: string[] = [];
+  for (const line of text.split('\n')) {
+    const id = hitIdOf(line);
+    if (id === undefined || ids.includes(id) || named.includes(id)) continue;
+    (asked.some(name => line.includes(name)) ? named : ids).push(id);
+  }
+  return [...named, ...ids].slice(0, limit);
+}
+
+/**
+ * C-DEPTH item 3 (W10-R7): the full body replaces the summary of the hit it came from, keyed by that hit's own
+ * id, so the knowledge shaping still sees one block of hits and no other source learns a second keyed read.
+ * An entry that names no hit is left out rather than appended: a fetched entry reaches the reply or was not paid for.
+ */
+async function withFullEntries(
+  execute: (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]>,
+  run: RunState, results: readonly IntentSubResult[], question: string, signal: AbortSignal,
+): Promise<IntentSubResult[]> {
+  const searched = results.find(result => result.name === INTERNAL.knowledgeSearch && result.ok && result.text.trim());
+  if (searched === undefined) return [...results];
+  // The fetch is for the hits that matter: the ask named a person or a document, or asked for depth.
+  const asked = requestedEntities(question);
+  if (asked.length === 0 && budgetFor(question) !== RESEARCH.budgets.depth) return [...results];
+  const ids = knowledgeReadIds(searched.text, asked);
+  if (ids.length === 0) return [...results];
+  run.ops += 1;
+  try {
+    const bounded = AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.knowledgeReadMs)]);
+    const read = await execute([{ key: 'knowledge_entries', name: INTERNAL.knowledgeRead, args: { ids } }], bounded);
+    const bodies = new Map<string, string>();
+    for (const entry of read) {
+      if (!entry.ok || !entry.text.trim()) continue;
+      for (const line of entry.text.split('\n')) {
+        const id = hitIdOf(line);
+        if (id !== undefined && !bodies.has(id)) bodies.set(id, line.trim().slice(0, RESEARCH.knowledgeBodyChars));
+      }
+    }
+    if (bodies.size === 0) return [...results];
+    const enriched = searched.text.split('\n').map(line => {
+      const id = hitIdOf(line);
+      return id === undefined || !bodies.has(id) ? line : bodies.get(id)!;
+    }).join('\n');
+    return results.map(result => (result === searched ? { ...result, text: enriched } : result));
+  } catch { return [...results]; }
+}
+
 /** The loop behind a call: unchanged by the first answer point except for what it reports late. */
 async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: AbortSignal, first: FirstAnswerState): Promise<JsonObject> {
   let limit = deps.replyLimit ?? budgetFor(call.question ?? '', call.topic ?? undefined);
@@ -5003,6 +5065,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     let results: IntentSubResult[];
     try {
       results = await executeSource(subs, progressSignal);
+      // C-DEPTH item 3 (W10-R7): this is the one place every read passes through, so the summaries are enriched
+      // with the full bodies of the hits that matter here, batched once, inside the same round.
+      results = await withFullEntries(executeSource, run, results, run.question ?? '', progressSignal);
       // #647: the one place every read passes through, so a chat read that matched nothing on every word is
       // broadened here once, before the reply and the progress steps read it.
       if (!dispatchSignal.aborted) results = await broadenedChatRetry(executeSource, subs, results, progressSignal, run.broadenedChat);

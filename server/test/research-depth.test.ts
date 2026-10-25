@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { RESEARCH, ResearchLedger, budgetFor, raiseBudget, requestedEntities, runResearch } from '../tools/research.js';
+import { RESEARCH, ResearchLedger, budgetFor, knowledgeReadIds, raiseBudget, requestedEntities, runResearch } from '../tools/research.js';
 import type { ResearchDeps } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import type { SourceKind } from '../tools/research.js';
@@ -256,4 +256,48 @@ test('ENTITIES 1: the requested people and documents come from the question, not
   assert.deepEqual(requestedEntities('summarise the "vendor review" note'), ['vendor review'],
     'a quoted document is an entity');
   assert.deepEqual(requestedEntities('what is waiting on me'), [], 'an ask naming nobody requests no entity');
+});
+
+test('TWO STAGE 1: the Clifton profiles arrive from the full entries the fetch brings back', async () => {
+  const h = harness({
+    text: {
+      search_knowledge: THREE_PROFILES,
+      get_insight: [
+        '### Ana Clifton (person | 2026-09-14) [id 301] The whole entry: she leads the rollout, owns the vendor review and chairs the board review in November.',
+        '### Ben Clifton (person | 2026-09-02) [id 302] The whole entry: he runs the family trust and signs off on spend above the threshold.',
+        '### Cara Clifton (person | 2026-08-21) [id 303] The whole entry: she chairs the foundation and hosts the October dinner.',
+      ].join('\n'),
+    },
+  });
+  const reply = await research(h.deps, {
+    action: 'start', question: 'what do we know about Ana, Ben and Cara Clifton',
+    lookups: [{ source: 'knowledge', query: 'Clifton' }],
+  });
+  const evidence = allEvidence(reply as Record<string, unknown>);
+  for (const person of ['Ana', 'Ben', 'Cara']) {
+    assert.match(evidence, new RegExp(`${person} Clifton[^\\n]*The whole entry`, 'u'),
+      `${person} is delivered from the full body: ${evidence.slice(0, 200)}`);
+  }
+  const reads = h.executed.filter(call => call.name === 'get_insight');
+  assert.equal(reads.length, 1, `one batched fetch, never a hop per hit: ${JSON.stringify(h.executed.map(call => call.name))}`);
+  assert.ok(((reads[0]!.args['ids'] ?? []) as string[]).includes('301'), 'the named hits are the ones fetched');
+});
+
+test('TWO STAGE 2: a plain search spends no second hop', async () => {
+  const h = harness({ text: { search_knowledge: '### Release plan (decision | 2026-10-17) [id 11] plain' } });
+  await research(h.deps, {
+    action: 'start', question: 'what do we know about the release plan',
+    lookups: [{ source: 'knowledge', query: 'release plan' }],
+  });
+  assert.deepEqual(h.executed.filter(call => call.name === 'get_insight'), [], 'no entity and no depth ask, no fetch');
+});
+
+test('TWO STAGE 3: the ids put the hits naming an asked person first, and the entry cap holds', () => {
+  const text = [
+    '### Release plan (decision | 2026-10-17) [id 11]',
+    '### Ana Clifton (person | 2026-09-14) [id 12]',
+    '### Ben Clifton (person | 2026-09-02) [id 13]',
+    '### Cara Clifton (person | 2026-08-21) [id 14]',
+  ].join('\n');
+  assert.deepEqual(knowledgeReadIds(text, ['Cara'], 2), ['14', '11'], 'the named hit first, then the ranking');
 });

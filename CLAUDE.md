@@ -4,7 +4,7 @@ Lux Didi is Naya's local Mac application: Swift native owners, a Node host and a
 
 | If you need | Read |
 | --- | --- |
-| Product, install or first call | [README.md](README.md), [docs/user-guide.md](docs/user-guide.md) |
+| Product, install, first call or account setup | [README.md](README.md), [docs/user-guide.md](docs/user-guide.md) |
 | Development and check prerequisites | [docs/local-development.md](docs/local-development.md), [docs/checks.md](docs/checks.md) |
 | Release and installation | [docs/releases.md](docs/releases.md), [docs/macos-install.md](docs/macos-install.md) |
 | Source/tool or write authority | [docs/connectors.md](docs/connectors.md), [docs/tool-owner.md](docs/tool-owner.md), [docs/privacy-and-authority.md](docs/privacy-and-authority.md) |

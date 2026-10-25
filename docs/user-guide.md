@@ -94,6 +94,8 @@ Login and installer relaunches do not automatically connect. In those cases, tap
 
 Only a bare Right Command tap counts; holding it or using a normal Command chord must not steal other apps' shortcuts. Muting Naya does not change system input/output or another application's audio. Closing the full window does not end the call. [Mac experience](mac-experience.md) explains the native ownership.
 
+<a id="connector-setup"></a>
+
 ## 4. Add connected accounts
 
 A sign-in requires a configured endpoint/helper, its own account authorization and host approval. Install the appropriate connector server first; Didi does not ship every service's server or a universal account wizard. Keep its private account/token configuration outside this repository. Settings reports what is missing; a visible row alone is not proof of a usable read grant.

@@ -644,6 +644,20 @@ test('O1b-A: a turn that stalls before any delegation prints its typed GAP and t
   });
 });
 
+// L8-Q04: the timeline said failureCountLowerBound 0 for a call with a rejected command and a stall.
+test('L8-Q04: the timeline counts the call failures its receipts hold', () => {
+  withStore(store => {
+    const id = { liveSessionId: SESSION, connectionEpoch: 'e0' };
+    openTurn(store, 't1', 1, T0 + 1_000);
+    record(store, 'response.created', { ...id, responseKey: 'r1', turnId: 't1' }, { createdAt: T0 + 1_050 });
+    record(store, 'command.rejected', { ...id, turnId: 't1' }, { rejectedAt: T0 + 2_000, code: 'invalid_request_error', param: 'type', kind: 'cont' });
+    record(store, 'live.dead_air_stalled', { ...id, turnId: 't1' }, { stalledAt: T0 + 9_000, turnAgeMs: 8_000, anyAudio: false, inaudibleMs: 0 });
+    const report = buildTimeline(readOf(store), SESSION);
+    assert.deepEqual(report.callFailures, { count: 2, kinds: { 'command.rejected': 1, 'live.dead_air_stalled': 1 } });
+    assert.match(renderTimeline(report), /call_failures_at_least=2 command\.rejected=1 live\.dead_air_stalled=1/u);
+  });
+});
+
 test('O1b-A: a rebuilt connection gets a new epoch and the old port cannot write into it', () => {
   withStore(store => {
     const first = liveTracePort({ port: store, liveSessionId: SESSION, connectionEpoch: 'e1' });

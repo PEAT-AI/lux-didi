@@ -43,7 +43,8 @@ function dataDirectory() {
   if (options.dataDir !== undefined) return options.dataDir;
   const state = process.env.DIDI_STATE_DIR;
   if (state) return state;
-  if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', 'Lux Didi');
+  // L8-Q10: the installed app's own directory; a dev host passes --data-dir.
+  if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', 'ai.peat.lux-didi');
   if (process.platform === 'win32') return join(process.env.LOCALAPPDATA ?? homedir(), 'Lux Didi');
   return join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'lux-didi');
 }

@@ -285,7 +285,44 @@ test('#581: a chat window ask sends from_date and sort newest and no inline Afte
   assert.equal(first.arguments['from_date'], '2026-10-21', 'the window is the day the ask named, in the child own argument');
   assert.equal(first.arguments['sort'], 'newest', 'a windowed read is newest first');
   assert.ok(!String(first.arguments['query']).includes('After:'), 'no inline operator rides the query text');
+  assert.doesNotMatch(String(first.arguments['query']), /\b(what|did|about|say|this)\b/i, 'the query carries topic words only, never a stop word or a continuation word');
   assert.ok((reply['findings'] as unknown[]).length > 0, 'the read reaches the answer');
+});
+
+// #647: the child defaults a search to hybrid, which embeds the query on CPU over the whole archive, so
+// one chat read took tens of seconds. Every search this connector sends asks for keyword mode instead.
+test('#647: every search this connector sends asks for keyword mode', async t => {
+  const f = setup('ok');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const r = reader(f.adapter, f.registry, await approve(f.adapter, f.registry));
+  assert.equal((await r.search({ query: 'release freeze' })).state, 'completed');
+  assert.equal((await r.search({ query: 'release freeze', channel: 'Dogcation' })).state, 'completed');
+  const modes = f.calls().filter(call => call.name === 'mattermost_search').map(call => call.arguments['mode']);
+  assert.ok(modes.length >= 2, 'both searches reached the child');
+  assert.deepEqual([...new Set(modes)], ['keyword'], 'no search left the child free to embed the query');
+});
+
+// #647: keyword is an every-term match, so a paraphrased ask can miss. One retry with the single most
+// specific term, and the answer says the match was broadened, never that chat held nothing.
+test('#647: an empty multi-term chat search earns one single-term retry and a broadened note', async () => {
+  const dispatched: IntentSubCall[] = [];
+  const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => subs.map(call => {
+    dispatched.push({ key: call.key, name: call.name, args: { ...call.args } });
+    const broadened = String(call.args['query']) === 'release';
+    const text = broadened ? '**team** [post abcdef1234567890abcdefghij]\nthe release freeze moved to Monday' : '';
+    return { key: call.key, name: call.name, ok: true, text, originalCharacters: text.length, omittedCharacters: 0 };
+  });
+  const deps: ResearchDeps = {
+    now: () => Date.parse('2026-10-21T05:30:00Z'), timeZone: 'Asia/Kolkata', configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the release freeze' }, new AbortController().signal);
+  const searches = dispatched.filter(call => call.name === 'mattermost_search');
+  assert.equal(searches.length, 2, 'the empty multi-term read earns exactly one retry');
+  assert.equal(searches[0]!.args['query'], 'release freeze', 'the first read is the query the ask named');
+  assert.equal(searches[1]!.args['query'], 'release', 'the retry carries the single most specific term');
+  assert.deepEqual({ ...searches[1]!.args, query: 'same' }, { ...searches[0]!.args, query: 'same' }, 'the retry narrows the query only, the window and bounds stay');
+  assert.match(String(reply['note']), /broadened/, 'the answer says the match was broadened');
+  assert.ok((reply['findings'] as unknown[]).length > 0, 'the broadened read reaches the answer');
 });
 
 // #610: a channel named in the ask is resolved through list_channels, then searched once with the

@@ -52,3 +52,8 @@ test('tool and connector names map to the human group names', () => {
   assert.deepEqual(connectorGroupNames('lux-knowledge'), ['knowledge base']);
   assert.deepEqual(connectorGroupNames('mongoose'), ['company knowledge']);
 });
+
+test('L8-10: a session that can search the web names it among what it can reach', () => {
+  assert.deepEqual(toolGroupNames(['search_knowledge', 'gmail_search_messages', 'remember_note', 'web_search']), ['knowledge base', 'mail', 'memory', 'web search']);
+  assert.deepEqual(toolGroupNames(['search_knowledge']), ['knowledge base'], 'no web group without the web read');
+});

@@ -137,7 +137,8 @@ The Live path composes its system instruction separately from the text compiler:
 `composeLiveInstruction({base, runtimeContext?, ownerProfile?, overlay?, language?, memory?, tools?})`
 in `server/prompt/live-persona.ts` returns `{text, sha256, sections}`. The order is
 fixed: the shared public Naya character plus the voice surface (`NAYA_LIVE_BASE`, no biography), the host-generated
-runtime context (`server/prompt/runtime-context.ts`, from the Mac clock and timezone),
+runtime context (`server/prompt/runtime-context.ts`, from the Mac clock and timezone; its `Connected now` line names the
+groups this session's declared reads reach, web search included when the session can search the web),
 owner lore, historical memory, the tool conduct, owner style, the optional local overlay
 verbatim, then the terminal LANGUAGE AND VOICE anchor (a LANGUAGE paragraph, exactly one
 ACCENT directive, a language-follows-the-user clause and the final anchor as the absolute

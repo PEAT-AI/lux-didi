@@ -159,6 +159,7 @@ async function harness(t: TestContext, overrides: {
   onSessionTerminal?: (liveSessionId: string) => void;
   memoryFailure?: boolean;
   failingWrite?: string;
+  researchWeb?: import('../tools/web-search.js').WebSearchPort;
 } = {}): Promise<Harness> {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-session-'));
@@ -402,7 +403,7 @@ async function harness(t: TestContext, overrides: {
       return { id: record.entryId, text: record.text, dataClass };
     });
   };
-  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), ...(overrides.researchWeb ? { researchWeb: overrides.researchWeb } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), ...(publishCalendar ? { publishCalendar } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
@@ -649,6 +650,22 @@ test('Live transcripts and completion, interruption and terminal events stay jou
   const kinds = h.store.transaction(tx => tx.all('SELECT kind FROM live_journal WHERE live_session_id=?', [session.liveSessionId]).map(row => row['kind']));
   for (const kind of ['inputTranscription', 'outputTranscription', 'turnComplete', 'interrupted', 'terminal']) assert.ok(kinds.includes(kind));
   assert.equal(h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n'])), before);
+});
+
+test('L8-10: the runtime context names web search when the session can search the web, and only then', async t => {
+  const web = { search: async () => { throw new Error('not called at start'); } };
+  const native = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
+  const withWeb = await harness(t, { tools: true, researchWeb: web, system: native });
+  const { attachment: withAttachment } = await attached(withWeb);
+  const connected = /^Connected now: (.*)\.$/mu.exec(withWeb.requests[0]!.system.text)?.[1] ?? '';
+  assert.ok(connected.split(', ').includes('web search'), `the declared web read is named: ${connected}`);
+  assert.ok(connected.split(', ').includes('knowledge base'), `the knowledge read stays named: ${connected}`);
+  withAttachment.close(); await withAttachment.done;
+  const without = await harness(t, { tools: true, system: native });
+  const { attachment } = await attached(without);
+  assert.match(without.requests[0]!.system.text, /^Connected now: /mu, 'the runtime context is composed');
+  assert.equal(/^Connected now: .*web search/mu.test(without.requests[0]!.system.text), false, 'no web read, no web claim');
+  attachment.close(); await attachment.done;
 });
 
 test('a session with a tool declaration carries the tools conduct; without one composes exactly as before', async t => {

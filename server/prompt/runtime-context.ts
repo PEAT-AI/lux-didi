@@ -61,6 +61,8 @@ export function toolGroupNames(toolNames: readonly string[]): string[] {
     else if (name === 'search_knowledge' || name === 'get_insight') add('knowledge base');
     else if (name === 'remember_note') add('memory');
     else if (name.startsWith('ask_mongoose') || name.startsWith('search_mongoose') || name.startsWith('get_knowledge_item') || name.startsWith('read_knowledge_body')) add('company knowledge');
+    // L8-10: the web read is a research source, so the session's own list names it when it can run.
+    else if (name === 'web_search') add('web search');
   }
   return groups;
 }

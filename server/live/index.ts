@@ -11,7 +11,7 @@ import { VaultWriter } from '../tools/vault-write.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import type { WebSearchPort } from '../tools/web-search.js';
+import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
 import { RESEARCH, RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
@@ -1054,7 +1054,7 @@ export class LiveSessionOwner {
 
   /** Host-generated runtime context: host clock and timezone, plus the groups this session can reach. */
   #liveRuntimeContext(toolNames: readonly string[], timeZone: string): string {
-    const connected = toolGroupNames(toolNames);
+    const connected = toolGroupNames(this.#researchWeb === undefined ? toolNames : [...toolNames, WEB_SEARCH_ACTION]);
     const endpoints = this.#tools?.status?.().endpoints ?? [];
     const unavailable = endpoints.filter(endpoint => endpoint.state !== 'connected')
       .flatMap(endpoint => connectorGroupNames(endpoint.connector))

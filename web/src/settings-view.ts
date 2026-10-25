@@ -29,6 +29,17 @@ export const LIVE_PROVIDERS: readonly { provider: string; label: string; voices:
  *  characters) rather than a preset name. The config CLI stores one; the picker only shows it. */
 export function isCustomVoiceId(voice: string): boolean { return /^voice_[0-9a-f]{16,64}$/.test(voice); }
 /**
+ * The sentence the Settings form shows when the service refuses the Live selection. The server
+ * answers a typed code (invalid_voice, invalid_accent, invalid_provider) or its own sentence, and
+ * either one names the field the owner must change: the raw code is never shown.
+ */
+export function settingsSaveError(code: string, message: string): string {
+  if (code === 'invalid_voice' || /voice/i.test(message)) return 'That voice is not one this provider offers. Pick one from the list.';
+  if (code === 'invalid_accent' || /accent/i.test(message)) return 'That accent is not one this voice offers. Pick one from the list.';
+  if (code === 'invalid_provider' || /provider/i.test(message)) return 'That voice provider is not one Lux Didi offers. Pick one from the list.';
+  return message;
+}
+/**
  * The accent selections the host composes with, in order, with the value an absent setting means. The
  * labels are the owner's words for the three choices; the server validates the values.
  */

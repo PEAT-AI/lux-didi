@@ -218,6 +218,48 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
     print("DURATION \(started.duration(to: .now)) interruption-restart")
 }
 
+/// #657: the stop the host said itself is an end it already announced, so the record names the host's
+/// end; a native Stop the host never answers still names the deadline.
+@MainActor private func checkStopOutcome() async throws {
+    let started = ContinuousClock.now
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("didi-stop-outcome-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+    let authority: (origin: URL, request: NativeLiveRequestBuilder) =
+        (URL(string: "http://127.0.0.1:1")!, { _, _ in throw LiveClientError.unavailable })
+    func make(_ name: String, closeHook: @escaping NativeLiveConversation.CloseHook) -> (NativeLiveConversation, URL) {
+        let directory = root.appendingPathComponent(name)
+        let device = NativeLiveAudioDevice(captureInput: format,
+            defaultInput: { (id: "synthetic", name: "Synthetic input") })
+        return (NativeLiveConversation(authority: authority, dictationIsCapturing: { false },
+            logsDirectory: directory, audioDevice: device, closeHook: closeHook), directory)
+    }
+    func outcome(_ directory: URL) throws -> String? {
+        let text = (try? String(contentsOf: directory.appendingPathComponent("native-live.log"),
+            encoding: .utf8)) ?? ""
+        return text.split(separator: "\n").compactMap {
+            try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+        }.first { $0["event"] as? String == "live_stop_outcome" }?["outcome"] as? String
+    }
+    // The host's own voice_stop closed this session, so the close that follows has no receipt to give;
+    // the voice stop travels the Stop button's own teardown (NativePresence.swift:136 to 139).
+    let (hostStopped, hostDirectory) = make("host") { _ in nil }
+    hostStopped.noteHostVoiceStop()
+    await hostStopped.stop(reason: .userStop, trigger: .button)
+    try audioRequire(try outcome(hostDirectory) == "host_ended", "a stop the host announced names the host end")
+    // A native Stop whose host never answers is the deadline, and it still never holds the stop open.
+    let (silent, silentDirectory) = make("silent") { _ in
+        try? await Task.sleep(nanoseconds: 60_000_000_000)
+        return nil
+    }
+    await silent.stop(reason: .userStop, trigger: .button)
+    try audioRequire(started.duration(to: .now) < .seconds(2), "a silent host never holds the stop open past the deadline")
+    try audioRequire(try outcome(silentDirectory) == "deadline", "a stop the host never answered names the deadline")
+    try audioRequire(silent.state == .ended && hostStopped.state == .ended, "both stops settle the conversation")
+    print("PASS a host announced stop names host_ended, a stop the host never answered names the deadline")
+    print("DURATION \(started.duration(to: .now)) stop-outcome")
+}
+
 @MainActor private func checkCaptureTapExecutor() async throws {
     let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
     let capture = NativeCaptureBuffer(converter: try NativePCMConverter(input: format))
@@ -1021,6 +1063,11 @@ private func checkPrimaryChannelConversion() throws {
             catch { fatalError("Capture summary: \(error)") }
             return
         }
+        if CommandLine.arguments.dropFirst().contains("--stop-outcome-only") {
+            do { try await checkStopOutcome() }
+            catch { fatalError("Stop outcome: \(error)") }
+            return
+        }
         if CommandLine.arguments.dropFirst().contains("--capture-tap-only") {
             do { try await checkCaptureTapExecutor() }
             catch { fatalError("Capture tap: \(error)") }
@@ -1161,6 +1208,7 @@ private func checkPrimaryChannelConversion() throws {
             try await checkCaptureLedger()
             try await checkConversationDiagnostics()
             try await checkInterruptionRestart()
+            try await checkStopOutcome()
             try checkProductionAudioJournal()
             try checkMinimumDucking()
             try checkReleaseLeakAndDeallocation()

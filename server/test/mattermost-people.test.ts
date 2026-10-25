@@ -506,7 +506,7 @@ test('C-CHAT (W2B-R1, W2B-R2): the mcp.json edit alone moves the connection, and
     store.close(); rmSync(dir, { recursive: true, force: true });
   });
   // One restart: a fresh store over the same data dir, so every durable row survives the edit.
-  const start = async (endpoints: readonly { id: string; path: string; enabled: boolean }[], tools: Record<string, readonly string[]>) => {
+  const start = async (endpoints: readonly { id: string; path: string; enabled: boolean; allowEgress?: boolean }[], tools: Record<string, readonly string[]>, writeConfig = true) => {
     if (runtime) { await runtime.close(); store.close(); store = new ProbeStore(join(dir, 'data'), probeMigrations); }
     for (const { sdk, transport } of servers.values()) { await sdk.close(); await transport.close(); }
     servers.clear();
@@ -519,11 +519,11 @@ test('C-CHAT (W2B-R1, W2B-R2): the mcp.json edit alone moves the connection, and
       servers.set(path, { sdk, transport });
     }
     const config = join(configDir, 'mcp.json');
-    probeWrite(config, JSON.stringify({
+    if (!writeConfig) rmSync(config, { force: true });
+    else { probeWrite(config, JSON.stringify({
       schemaVersion: 1, grantMode: 'owner-trusted-reads',
-      endpoints: endpoints.map(endpoint => ({ id: endpoint.id, connector: 'mattermost', transport: 'streamable-http', url: `http://127.0.0.1:18766${endpoint.path}`, account: 'mattermost', resource: 'mattermost', credentialRef: null, enabled: endpoint.enabled, allowEgress: true, unknownClass: 'private' })),
-    }));
-    await probeChmod(config, 0o600);
+      endpoints: endpoints.map(endpoint => ({ id: endpoint.id, connector: 'mattermost', transport: 'streamable-http', url: `http://127.0.0.1:18766${endpoint.path}`, account: 'mattermost', resource: 'mattermost', credentialRef: null, enabled: endpoint.enabled, allowEgress: endpoint.allowEgress ?? true, unknownClass: 'private' })),
+    })); await probeChmod(config, 0o600); }
     runtime = await probeCompose({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
     await runtime.start();
     return runtime;
@@ -567,4 +567,12 @@ test('C-CHAT (W2B-R1, W2B-R2): the mcp.json edit alone moves the connection, and
   assert.ok(compose(back, backIds, 'rollback-run').includes('mattermost_chat'));
   assert.deepEqual(states(back), ['mattermost:connected']);
   assert.deepEqual(probeUnreachable(back.status().endpoints as never), []);
+
+  // The reviewer's traps: a missing catalog says nothing about connections, so it retires nothing, and an
+  // entry that exists and is enabled is never retired even when it cannot leave the host.
+  const missing = await start([], {}, false);
+  assert.deepEqual(acceptanceIds(missing), ['mattermost', 'mattermost-people'], 'a missing mcp.json retires nothing');
+  assert.deepEqual(states(missing), []);
+  const noEgress = await start([{ id: 'mattermost', path: '/old', enabled: true, allowEgress: false }], { '/old': MATTERMOST_TOOLS });
+  assert.deepEqual(acceptanceIds(noEgress), ['mattermost'], 'an enabled entry stays active with no egress, and the deleted one stays retired');
 });

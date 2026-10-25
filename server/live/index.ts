@@ -3138,7 +3138,7 @@ export class LiveSessionOwner {
           this.#persist(handle, { type: 'continuity', sequence: 0, text: JSON.stringify(view) }, 'researchProgress');
         }
       },
-      log: entry => hostLogEvent(entry), logJoined: researchId => hostLogEvent({ event: 'research_joined', researchId }), ledger: handle.researchLedger,
+      log: entry => hostLogEvent(entry), logJoined: (researchId, research_branch) => hostLogEvent({ event: 'research_joined', researchId, research_branch }), ledger: handle.researchLedger,
       // #565: one trace row per source call's query shape. A refused write is a diagnostic failure, never
       // the answer: the owner's read has already succeeded by the time this lands.
       queryShape: shape => {

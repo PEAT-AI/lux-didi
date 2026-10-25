@@ -502,14 +502,14 @@ test('C-CHAT (W2B-R1, W2B-R2): the mcp.json edit alone moves the connection, and
   const owner = (composition: NonNullable<typeof runtime>) => composition.owner as unknown as { durableConnectionIds(tx: unknown): string[]; snapshotRun(tx: unknown, acceptance: ProbeAcceptance): unknown; liveDefinitions(runId: string, remember: () => { remembered: boolean; code: string }): { name: string }[] };
   // Exactly what server/live/index.ts #connectionIds computes at session acceptance (live/index.ts:3123-3126).
   const acceptanceIds = (composition: NonNullable<typeof runtime>): string[] => store.transaction(tx => [...new Set([...composition.connectionIds(), ...owner(composition).durableConnectionIds(tx)])]);
-  const compose = (composition: NonNullable<typeof runtime>, ids: string[]): string[] => {
+  const compose = (composition: NonNullable<typeof runtime>, ids: string[], runId: string): string[] => {
     const acceptance: ProbeAcceptance = {
-      ownerId: store.assistantId, actorId: 'synthetic-actor', runId: 'move-run', authorityEpoch: store.authorityEpoch, revision: 1,
+      ownerId: store.assistantId, actorId: 'synthetic-actor', runId, authorityEpoch: store.authorityEpoch, revision: 1,
       route: { identity: 'gateway:live-voice', provider: 'gemini', modelId: 'models/synthetic', allowedClasses: ['ordinary', 'private'] },
       allowedClasses: ['ordinary', 'private'], connectionIds: ids,
     };
     store.transaction(tx => owner(composition).snapshotRun(tx, acceptance));
-    return owner(composition).liveDefinitions('move-run', () => ({ remembered: false, code: 'owner_transcript_not_final' })).map(tool => tool.name);
+    return owner(composition).liveDefinitions(runId, () => ({ remembered: false, code: 'owner_transcript_not_final' })).map(tool => tool.name);
   };
   const states = (composition: NonNullable<typeof runtime>): string[] => composition.status().endpoints.map(endpoint => `${endpoint.id}:${endpoint.state}`);
 
@@ -518,7 +518,7 @@ test('C-CHAT (W2B-R1, W2B-R2): the mcp.json edit alone moves the connection, and
   const moved = await start([{ id: 'mattermost-people', path: '/people', enabled: true }], { '/people': MATTERMOST_READ_TOOLS });
   const movedIds = acceptanceIds(moved);
   assert.deepEqual(movedIds, ['mattermost-people'], 'the run holds the new connection alone: the deleted entry survives no durable row');
-  const names = compose(moved, movedIds);
+  const names = compose(moved, movedIds, 'install-run');
   assert.ok(names.includes('mattermost_chat'), 'the run composes its tools: a second mattermost connection would throw ambiguous_model_tool_name');
   assert.deepEqual(states(moved), ['mattermost-people:connected'], 'a deleted entry is never a connection report');
   assert.deepEqual(probeUnreachable(moved.status().endpoints as never), [], 'research never calls the chat source unreachable');
@@ -527,7 +527,7 @@ test('C-CHAT (W2B-R1, W2B-R2): the mcp.json edit alone moves the connection, and
   const back = await start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
   const backIds = acceptanceIds(back);
   assert.deepEqual(backIds, ['mattermost'], 'a stored row whose id is enabled in the file stays active, and the removed id retires');
-  assert.ok(compose(back, backIds).includes('mattermost_chat'));
+  assert.ok(compose(back, backIds, 'rollback-run').includes('mattermost_chat'));
   assert.deepEqual(states(back), ['mattermost:connected']);
   assert.deepEqual(probeUnreachable(back.status().endpoints as never), []);
 });

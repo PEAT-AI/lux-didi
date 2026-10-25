@@ -76,10 +76,11 @@ export function createMongooseSignIn(options: { configDir: string; recover: () =
         return endpoint === undefined ? [] : [{ entry: candidate, endpoint }];
       })
       : [];
-    // The three endpoint names are the whole closed set; anything else never reaches the login.
-    const wanted = requested === undefined ? undefined : MONGOOSE_ENDPOINTS.find(name => name === requested);
-    if (requested !== undefined && wanted === undefined) return Promise.resolve({ status: 'failed' as const, reason: 'not-configured' });
-    const named = wanted === undefined ? candidates[0] : candidates.find(candidate => candidate.endpoint === wanted);
+    // The three endpoint names are the whole closed set, and a click must name one: a missing or
+    // unknown name is a closed failure, never a guess at the first entry in the catalogue.
+    const wanted = MONGOOSE_ENDPOINTS.find(name => name === requested);
+    if (wanted === undefined) return Promise.resolve({ status: 'failed' as const, reason: 'not-configured' });
+    const named = candidates.find(candidate => candidate.endpoint === wanted);
     if (!named) return Promise.resolve({ status: 'failed' as const, reason: 'not-configured' });
     const { entry, endpoint } = named;
     let release: (value: { status: 'started'; url: string } | { status: 'failed'; reason: string }) => void = () => {};

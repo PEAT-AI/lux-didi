@@ -124,3 +124,14 @@ test('W1-R3: a Mongoose row never says restart Lux Didi; each reason gets its tr
   // The other connectors keep their own wording.
   assert.match(nextStep('gmail', 'error', 'handshake_failed').text, /restart Lux Didi/);
 });
+
+// W7-R3: the native Settings row for the Trello board, matching the web row.
+test('W7-R3: the Trello board is a connector row with the same next steps in native and web', () => {
+  assert.ok((connectorIDs as readonly string[]).includes('trello'), 'the row is in the catalogue the app renders');
+  const swift = readFileSync(new URL('../../Sources/LuxDidi/NativeNextSteps.swift', import.meta.url), 'utf8');
+  assert.match(swift, /"trello": "Trello"/, 'the native row carries the same label');
+  assert.match(swift, /"trello": signInStep\("Trello"\)/, 'the native row offers the same sign-in step');
+  const web = nextStep('trello', 'error', 'not_signed_in');
+  assert.equal(web.signIn, true, 'the web row offers its Sign in button');
+  assert.match(web.text, /^Sign in to Trello in Settings/);
+});

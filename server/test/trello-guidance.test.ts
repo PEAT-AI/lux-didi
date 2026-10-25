@@ -24,6 +24,17 @@ test('the write description: asked this turn, single turn, receipt only, clarify
   assert.match(TRELLO_ARGUMENT_GUIDANCE, /null is not supported/);
 });
 
+test('a note is a dated line in the description, because the server has no comment tool (W7-R5)', () => {
+  assert.match(TRELLO_WRITE_DESCRIPTION, /no comment tool/i);
+  assert.match(TRELLO_WRITE_DESCRIPTION, /description/);
+  assert.doesNotMatch(TRELLO_WRITE_DESCRIPTION, /add a comment|post a comment/i);
+  assert.match(String((TRELLO_WRITE_PARAMETERS.properties.text as { description: string }).description), /description/);
+});
+
+test('the read description names the Inbox he jots into, and never a comment tool (W7-R1)', () => {
+  assert.match(TRELLO_READ_DESCRIPTION, /inbox/i);
+});
+
 test('no contradiction with the persona: she never promises a callback, and a write that did not happen is never claimed', () => {
   assert.match(NAYA_VOICE_TOOLS, /Do not promise an unsolicited callback/);
   assert.match(NAYA_VOICE_TOOLS, /If a requested write is unavailable, say so rather than claiming it happened/);

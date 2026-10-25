@@ -1,11 +1,11 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTrelloBoard, runTrelloLogin, trelloBinding, trelloSignedIn, trelloTokenSource, TRELLO_REFERENCE, TRELLO_SCOPE } from '../host/trello.js';
 import { createTrelloTransport } from '../adapters/trello/client.js';
-import { foldName, indexTrelloSchemas, ownerAskedForChange, planTrelloCall, trelloDueInstant, validateTrelloRead, validateTrelloWrite, TRELLO_SERVER_ALLOW, TRELLO_SERVER_DENY, type TrelloBoard } from '../tools/trello.js';
+import { foldName, indexTrelloSchemas, ownerAskedForChange, planTrelloCall, trelloDueInstant, validateTrelloRead, validateTrelloWrite, TRELLO_SERVER_ALLOW, TRELLO_SERVER_DENY, TRELLO_WRITE_DESCRIPTION, type TrelloBoard } from '../tools/trello.js';
 import { OAuthLoginError, writeOAuthRecord, type OAuthSignInHop } from '../host/oauth-client.js';
 import { fakeToolSchemas, startTrelloFake, type TrelloFake } from './trello-fake.js';
 
@@ -150,16 +150,44 @@ test('search, recent and one card read only the pinned board', async () => {
   assert.equal(card.comments, 'not offered by the Trello server');
 });
 
-test('a card, list or id from another board is outside_scope and never dispatched', async () => {
+test('a card, list or id from another board is outside_scope: reads classify it, no write is ever dispatched', async () => {
   const foreignCard = fake.cards.find(card => card.name === 'Foreign card')!;
   const foreignList = fake.lists.find(list => list.boardId !== fake.boards[0]!.id)!;
   const run = session();
+  const start = fake.calls.length;
   assert.equal((await board.read(run, { view: 'card', card: foreignCard.id })).code, 'outside_scope');
   const before = writes().length;
   assert.equal((await board.write(run, { action: 'move', card: 'Call the plumber', list: foreignList.id }, 'move it')).code, 'outside_scope');
   assert.equal((await board.write(run, { action: 'archive', card: foreignCard.id }, 'archive it')).code, 'outside_scope');
   assert.equal((await board.write(run, { action: 'archive', card: 'ari:cloud:trello::board/workspace/w0fake/abc' }, 'archive it')).code, 'outside_scope');
   assert.equal(writes().length, before);
+  const sent = fake.calls.slice(start);
+  assert.ok(sent.every(call => call.tool.startsWith('trelloRead')), 'only reads go out to classify his foreign card');
+  assert.equal(sent.filter(call => call.tool === 'trelloReadCard' && call.args.action === 'get').length, 2, 'the foreign card is read to classify it, once for the read and once for the refused write');
+});
+
+test('W7-F4: a write the live tools/list does not offer is unsupported, and nothing reaches the server', async () => {
+  const local = await startTrelloFake({ now: NOW, withoutTool: 'trelloWriteCard' });
+  const configDir = mkdtempSync(join(tmpdir(), 'trello-noschema-'));
+  try {
+    await signIn(configDir, local);
+    writeFileSync(join(configDir, 'trello-board.json'), JSON.stringify({ board: 'Rob' }), { mode: 0o600 });
+    const noCardWrites = createTrelloBoard({ configDir, binding: trelloBinding(local.resource, local.issuer), timeZone: 'UTC', now });
+    const before = local.calls.length;
+    const refused = await noCardWrites.write(session(), { action: 'archive', card: 'Call the plumber' }, 'archive it');
+    assert.equal(refused.code, 'unsupported');
+    assert.ok(local.calls.slice(before).every(call => call.tool.startsWith('trelloRead')), 'no write shape was sent');
+  } finally { await local.close(); rmSync(configDir, { recursive: true, force: true }); }
+  const index = indexTrelloSchemas(fakeToolSchemas());
+  assert.equal(planTrelloCall(index, 'trelloWriteCard', [{ action: 'move', cardId: 'ari:cloud:trello::card/workspace/w0fake/1' }]), undefined, 'a planned property the schema does not carry is unsupported');
+});
+
+test('W7-F6: a reply with another id, or one over the size bound, is attributed to nothing', async () => {
+  const transport = createTrelloTransport({ url: fake.mcpUrl, token: async () => ({ ok: true, token: fake.accessToken }) });
+  fake.replyWithWrongId();
+  assert.deepEqual(await transport.call('trelloReadBoard', { action: 'list' }), { ok: false, code: 'protocol_error' });
+  fake.bloatNextReply(2_000_000);
+  assert.deepEqual(await transport.call('trelloReadBoard', { action: 'list' }), { ok: false, code: 'reply_too_large' });
 });
 
 test('tools for boards, lists, members, Inbox and Planner are never planned and never called', async () => {
@@ -313,8 +341,134 @@ test('the host log lines are content-free: tool, phase, outcome and a closed rea
   }
 });
 
-/** The Objective's asks, judged by rule on what reached the server: the arguments a correct model call forwards. */
-const EVAL_ROWS: { ask: string; tool: 'read' | 'write'; args: Record<string, unknown>; judge: (calls: { tool: string; args: Record<string, unknown> }[], result: Record<string, unknown>) => boolean }[] = [
+// W7-R1: quick capture from his phone lands in the Trello Inbox, not on the board.
+test('what he jotted today reads the Inbox and the board cards he added today', async () => {
+  const run = session();
+  const before = fake.calls.length;
+  const result = await board.read(run, { view: 'inbox' });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.today, '2026-10-26');
+  const jotted = result.jotted as { card: string; name: string; list: string; jotted: string }[];
+  assert.deepEqual(jotted.map(entry => entry.name), ['Jotted note from the phone'], 'today Inbox cards, and only today ones');
+  assert.deepEqual([jotted[0]!.list, jotted[0]!.jotted], ['Inbox', '2026-10-26']);
+  const cards = result.cards as { name: string }[];
+  assert.ok(cards.some(entry => entry.name === 'Quick note from the phone'), 'the board cards he added today are read with it');
+  assert.ok(!cards.some(entry => entry.name === 'Call the plumber'), 'an older board card is not today');
+  const tools = fake.calls.slice(before).map(call => call.tool);
+  assert.ok(tools.includes('trelloReadInbox'), 'the Inbox is read through the server');
+  assert.ok(tools.every(tool => tool.startsWith('trelloRead')), 'a jot read writes nothing');
+});
+
+test('an Inbox card moves onto a list of the pinned board, and no other Inbox write exists', async () => {
+  const run = session();
+  const inboxCard = fake.inbox.cards[0]!;
+  const read = await board.read(run, { view: 'inbox' });
+  assert.equal(read.ok, true, JSON.stringify(read));
+  const handle = (read.jotted as { card: string }[])[0]!.card;
+  const listId = fake.lists.find(list => list.name === 'Short Term Backlog' && list.boardId === fake.boards[0]!.id)!.id;
+  const before = writes().length;
+  const moved = await board.write(run, { action: 'move', card: handle, list: 'Short Term Backlog' }, 'put that note into Short Term Backlog');
+  assert.equal(moved.ok, true, JSON.stringify(moved));
+  assert.equal(moved.change, 'moved from the Inbox to Short Term Backlog');
+  assert.deepEqual(writes().slice(before), [{ tool: 'trelloWriteCard', args: { action: 'move', cardId: inboxCard.id, listId } }]);
+  assert.equal(inboxCard.listId, listId, 'the note is in that list now');
+  for (const [args, words] of [
+    [{ action: 'archive', card: handle }, 'archive it'],
+    [{ action: 'note', card: handle, text: 'a line' }, 'note on the card'],
+    [{ action: 'done', card: handle }, 'mark it done'],
+    [{ action: 'label', card: handle, label: 'green' }, 'add the green label'],
+  ] as const) {
+    assert.equal((await board.write(run, args, words)).code, 'outside_scope', JSON.stringify(args));
+  }
+  assert.equal(writes().length, before + 1, 'the only Inbox write is the move onto the board');
+});
+
+// W7-R2: the repository is public, so the board name lives only in the owner's private config.
+test('the board name comes only from the private config: with none, nothing on Trello is touched', async () => {
+  const unnamed = mkdtempSync(join(tmpdir(), 'trello-noname-'));
+  const local = await startTrelloFake({ now: NOW });
+  try {
+    await signIn(unnamed, local);
+    const board2 = createTrelloBoard({ configDir: unnamed, binding: trelloBinding(local.resource, local.issuer), timeZone: 'UTC', now });
+    const before = local.calls.length;
+    const read = await board2.read(session(), { view: 'overview' });
+    assert.equal(read.code, 'not_configured');
+    assert.match(String(read.guidance), /trello-board\.json/, 'the plain next step names the file to write');
+    assert.equal((await board2.write(session(), { action: 'archive', card: 'Call the plumber' }, 'archive it')).code, 'not_configured');
+    assert.equal(local.calls.length, before, 'no call reaches the server without a configured board');
+  } finally { await local.close(); rmSync(unnamed, { recursive: true, force: true }); }
+});
+
+test('the configured name is the pin, and no board name is in the code', async () => {
+  const configured = mkdtempSync(join(tmpdir(), 'trello-configured-'));
+  const local = await startTrelloFake({ now: NOW });
+  try {
+    await signIn(configured, local);
+    writeFileSync(join(configured, 'trello-board.json'), JSON.stringify({ board: 'Rob' }), { mode: 0o600 });
+    const board2 = createTrelloBoard({ configDir: configured, binding: trelloBinding(local.resource, local.issuer), timeZone: 'UTC', now });
+    const result = await board2.read(session(), { view: 'overview' });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.board, 'Rob', 'the pin is the name the owner configured');
+    const module = await import('../tools/trello.js');
+    assert.equal(Object.hasOwn(module, 'TRELLO_DEFAULT_BOARD'), false, 'the code carries no default board name');
+    assert.ok(!JSON.stringify(Object.values(module)).includes('Rob'), 'no exported value names the board');
+  } finally { await local.close(); rmSync(configured, { recursive: true, force: true }); }
+});
+
+// W7-R4: the per-session idempotency ledger is cleared when the session ends.
+test('the idempotency ledger is cleared when the session ends', async () => {
+  const run = session();
+  const args = { action: 'note', card: 'Renew the passport', text: 'the form is in the hall' };
+  const before = writes().length;
+  assert.equal((await board.write(run, args, 'note on the card')).ok, true);
+  const replay = await board.write(run, args, 'note on the card');
+  assert.equal(replay.replayed, true, 'the same write in one session answers from its receipt');
+  assert.equal(writes().length, before + 1);
+  board.end(run);
+  const after = await board.write(run, args, 'note on the card');
+  assert.equal(after.replayed, undefined, 'an ended session leaves no receipt behind');
+  assert.equal(writes().length, before + 2);
+});
+
+// W7-R5: the server has no comment tool, so a note is a dated line in the description.
+test('a note appends a dated line to the description, and the words say description', async () => {
+  const run = session();
+  const card = fake.cards.find(entry => entry.name === 'Sort the photo archive')!;
+  const noted = await board.write(run, { action: 'note', card: 'Sort the photo archive', text: 'the album is in the loft' }, 'note on the card');
+  assert.equal(noted.ok, true, JSON.stringify(noted));
+  assert.equal(noted.change, 'note added to the description');
+  assert.equal(card.desc, '2026-10-26: the album is in the loft', 'the note is one dated line in the description');
+  const again = await board.write(run, { action: 'note', card: 'Sort the photo archive', text: 'and the negatives too' }, 'note on the card');
+  assert.equal(again.ok, true, JSON.stringify(again));
+  assert.equal(card.desc, '2026-10-26: the album is in the loft\n\n2026-10-26: and the negatives too', 'a second note is a new dated line');
+  assert.match(TRELLO_WRITE_DESCRIPTION, /no comment tool/i, 'the tool description says a note goes in the description');
+  assert.ok(!/add a comment|post a comment/i.test(TRELLO_WRITE_DESCRIPTION), 'nothing promises a comment');
+});
+
+test('W7-F2: a card he asks for with a label is created with that label in the same turn', async () => {
+  const run = session();
+  const green = fake.labels.find(label => label.color === 'green')!.id;
+  const before = writes().length;
+  const created = await board.write(run, { action: 'create', list: 'Ideas', name: 'Call about the shed', label: 'green' }, 'add a card to ideas about the shed with the green label');
+  assert.equal(created.ok, true, JSON.stringify(created));
+  assert.deepEqual(created.labels, ['green'], 'the receipt names the label it attached');
+  assert.deepEqual(fake.cards.find(entry => entry.name === 'Call about the shed')!.labelIds, [green]);
+  assert.deepEqual(writes().slice(before).map(call => call.args.action), ['create', 'add_label'], 'create then attach, never a silent drop');
+  assert.equal(validateTrelloWrite({ action: 'create', list: 'Ideas', name: 'x', label: 'green' }), true);
+});
+
+test('W7-F5: the guard reads a change in his own words, so a read ask never admits a write', () => {
+  for (const ask of ['what did I jot down today', "show me what's due", 'what is on my board', 'anything due this week', 'what did I note down']) {
+    assert.equal(ownerAskedForChange(ask), false, ask);
+  }
+  for (const ask of ['add a card to Short Term Backlog', 'move the OCP card to Done', 'set the due date of X to Friday', 'note on the Gates card that the call moved',
+    'put that note into Short Term Backlog', 'mark the venue card done', 'archive the shed card']) {
+    assert.equal(ownerAskedForChange(ask), true, ask);
+  }
+  assert.match(TRELLO_WRITE_DESCRIPTION, /his own words this turn name a change/, 'the description says what the guard is');
+});
+
+/** The Objective's asks, judged by rule on what reached the server: the arguments a correct model call forwards. */const EVAL_ROWS: { ask: string; tool: 'read' | 'write'; args: Record<string, unknown>; judge: (calls: { tool: string; args: Record<string, unknown> }[], result: Record<string, unknown>) => boolean }[] = [
   { ask: "what's in my sprint", tool: 'read', args: { view: 'list', list: 'Sprint' }, judge: (calls, result) => calls.every(call => call.tool.startsWith('trelloRead')) && result.list === 'Sprint' },
   { ask: "what's overdue", tool: 'read', args: { view: 'due', window: 'overdue' }, judge: (calls, result) => calls.every(call => call.tool.startsWith('trelloRead')) && Array.isArray(result.overdue) },
   { ask: 'add a card to Short Term Backlog: call the accountant about the budget', tool: 'write', args: { action: 'create', list: 'Short Term Backlog', name: 'call the accountant about the budget' },
@@ -322,7 +476,7 @@ const EVAL_ROWS: { ask: string; tool: 'read' | 'write'; args: Record<string, unk
   { ask: 'move the venue card to Done', tool: 'write', args: { action: 'move', card: 'Book the venue', list: 'Done' }, judge: calls => calls.filter(call => call.tool.startsWith('trelloWrite')).map(call => call.args.action).join() === 'move' },
   { ask: 'set the due date of the venue card to Friday', tool: 'write', args: { action: 'due', card: 'Book the venue', due: '2026-10-30' }, judge: calls => calls.some(call => call.args.due === '2026-10-30T09:00:00.000Z') },
   { ask: 'note on the bank card that the call moved', tool: 'write', args: { action: 'note', card: 'Answer from the bank', text: 'the call moved' }, judge: calls => calls.some(call => typeof call.args.desc === 'string' && call.args.desc.endsWith('2026-10-26: the call moved')) },
-  { ask: 'what did I jot down today', tool: 'read', args: { view: 'recent' }, judge: (calls, result) => calls.every(call => call.tool.startsWith('trelloRead')) && Array.isArray(result.cards) },
+  { ask: 'what did I jot down today', tool: 'read', args: { view: 'inbox' }, judge: (calls, result) => calls.some(call => call.tool === 'trelloReadInbox') && Array.isArray(result.jotted) && Array.isArray(result.cards) },
 ];
 for (const row of EVAL_ROWS) {
   test(`eval: "${row.ask}"`, async () => {

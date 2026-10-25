@@ -29,6 +29,8 @@ export interface TrelloFakeOptions {
   boardName?: string;
   /** Card list pages are this long, so paging is exercised. */
   pageSize?: number;
+  /** A server tool the advertised tools/list leaves out, so a plan against it is unsupported. */
+  withoutTool?: string;
   now: number;
 }
 
@@ -36,6 +38,8 @@ export interface TrelloFake {
   resource: string; issuer: string; mcpUrl: string;
   boards: { id: string; name: string; closed: boolean }[];
   lists: FakeList[]; cards: FakeCard[]; labels: FakeLabel[]; checklists: FakeChecklist[];
+  /** The owner's quick-capture Inbox: cards he jotted from his phone, on no board of the workspace. */
+  inbox: { listId: string; cards: FakeCard[] };
   /** Every tools/call the server received, in order: tool and arguments. */
   calls: { tool: string; args: Record<string, unknown> }[];
   /** Token requests: grant type and the resource each one named. */
@@ -47,6 +51,10 @@ export interface TrelloFake {
   dropNextCall(): void;
   /** The next write tools/call answers with a tool error and changes nothing. */
   failNextCall(): void;
+  /** The next tools/call is answered with a reply carrying another id. */
+  replyWithWrongId(): void;
+  /** The next tools/call is answered with a reply at least this many bytes. */
+  bloatNextReply(bytes: number): void;
   /** Overrides for discovery documents, to prove refusals. */
   override: { prm?: Record<string, unknown>; as?: Record<string, unknown> };
   accessToken: string;
@@ -138,6 +146,13 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
     card('Plan review', 'Short Term Backlog'),
     card('Plan review', 'Long Term Backlog'),
   ];
+  // W7-R1: the Inbox is quick capture, not a list of the pinned board, so a board read never shows it.
+  const inboxListId = ari('list', objectId(now - 120 * day));
+  const inboxBoardId = ari('board', objectId(now - 500 * day));
+  const jotted = (name: string, createdAt: number): FakeCard =>
+    ({ id: ari('card', objectId(createdAt)), name, desc: '', due: null, dueComplete: false, listId: inboxListId, boardId: inboxBoardId, closed: false, labelIds: [] });
+  const inboxCards = [jotted('Jotted note from the phone', now - 30_000), jotted('Older jotting', now - 3 * day)];
+  cards.push(...inboxCards);
   cards.push({ id: ari('card', objectId(now - 5 * day)), name: 'Foreign card', desc: '', due: null, dueComplete: false, listId: listId('Sprint', other.id), boardId: other.id, closed: false, labelIds: [] });
   const checklists: FakeChecklist[] = [{ id: ari('checklist', objectId(now - 9 * day)), name: 'Prep', cardId: cards[2]!.id, items: [{ id: ari('check-item', objectId(now - 9 * day)), name: 'Call the venue', state: 'incomplete' }] }];
 
@@ -145,7 +160,7 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
   const tokens: TrelloFake['tokens'] = [];
   const registrations: Record<string, unknown>[] = [];
   const override: TrelloFake['override'] = {};
-  let drop = false; let fail = false;
+  let drop = false; let fail = false; let wrongId = false; let bloat: number | undefined;
   const state = { accessToken: randomBytes(16).toString('hex'), refreshToken: randomBytes(16).toString('hex') };
   const codes = new Map<string, { clientId: string; redirectUri: string; challenge: string; resource: string }>();
   const clients = new Set<string>();
@@ -175,6 +190,10 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
       case 'trelloReadList.list_by_board': { const p = page(lists.filter(list => list.boardId === args.boardId && !list.closed), args.cursor); return ok({ lists: p.slice.map(list => ({ id: list.id, name: list.name, closed: list.closed })), pageInfo: p.pageInfo }); }
       case 'trelloReadCard.list_by_list': { const p = page(cards.filter(entry => entry.listId === args.listId && !entry.closed), args.cursor); return ok({ cards: p.slice.map(cardJson), pageInfo: p.pageInfo }); }
       case 'trelloReadCard.get': { const found = findCard(args.cardId); return found ? ok({ card: cardJson(found) }) : toolError('not found'); }
+      case 'trelloReadInbox.list': {
+        const p = page(inboxCards.filter(card => !card.closed), args.cursor);
+        return ok({ cards: p.slice.map(cardJson), pageInfo: p.pageInfo });
+      }
       case 'trelloReadChecklist.list_by_card': { const p = page(checklists.filter(list => list.cardId === args.cardId), args.cursor); return ok({ checklists: p.slice.map(list => ({ id: list.id, name: list.name, checkItems: list.items })), pageInfo: p.pageInfo }); }
       case 'trelloWriteCard.create': {
         if (!lists.some(list => list.id === args.listId)) return toolError('list not found');
@@ -224,13 +243,20 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
     }
     if (!sessions.has(String(request.headers['mcp-session-id']))) { json(response, 404, { error: 'session' }); return; }
     if (message.method === 'notifications/initialized') { response.writeHead(202).end(); return; }
-    if (message.method === 'tools/list') { json(response, 200, { jsonrpc: '2.0', id: message.id, result: { tools: fakeToolSchemas() } }); return; }
+    if (message.method === 'tools/list') { json(response, 200, { jsonrpc: '2.0', id: message.id, result: { tools: fakeToolSchemas().filter(tool => tool.name !== options.withoutTool) } }); return; }
     if (message.method === 'tools/call') {
       const tool = String(message.params?.name);
       const args = (message.params?.arguments ?? {}) as Record<string, unknown>;
       calls.push({ tool, args: structuredClone(args) });
       if (drop && tool.startsWith('trelloWrite')) { drop = false; run(tool, args); request.socket.destroy(); return; }
       if (fail && tool.startsWith('trelloWrite')) { fail = false; json(response, 200, { jsonrpc: '2.0', id: message.id, result: toolError('refused') }); return; }
+      if (wrongId) { wrongId = false; json(response, 200, { jsonrpc: '2.0', id: `other-${String(message.id)}`, result: run(tool, args) }); return; }
+      if (bloat !== undefined) {
+        const filler = 'x'.repeat(bloat);
+        bloat = undefined;
+        json(response, 200, { jsonrpc: '2.0', id: message.id, result: ok({ filler }) });
+        return;
+      }
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.end(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: message.id, result: run(tool, args) })}\n\n`);
       return;
@@ -274,7 +300,7 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
   resource = `http://127.0.0.1:${mcpPort}/v1`;
   issuer = `http://127.0.0.1:${authPort}/${FAKE_TENANT}`;
   return {
-    resource, issuer, mcpUrl: resource, boards, lists, cards, labels, checklists, calls, tokens, registrations, override,
+    resource, issuer, mcpUrl: resource, boards, lists, cards, labels, checklists, inbox: { listId: inboxListId, cards: inboxCards }, calls, tokens, registrations, override,
     get accessToken() { return state.accessToken; },
     async consent(authorizeUrl: string) {
       const url = new URL(authorizeUrl);
@@ -286,6 +312,8 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
     },
     dropNextCall() { drop = true; },
     failNextCall() { fail = true; },
+    replyWithWrongId() { wrongId = true; },
+    bloatNextReply(bytes: number) { bloat = bytes; },
     async close() {
       await new Promise<void>(resolve => { mcp.close(() => resolve()); mcp.closeAllConnections(); });
       await new Promise<void>(resolve => { auth.close(() => resolve()); auth.closeAllConnections(); });

@@ -4041,6 +4041,10 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
       const words = channelWordsOf(plan.read.subs);
       if (words !== undefined) run.chatChannel ??= words;
     }
+    // #651 FAILREASON-R1: a read the connector cut at its own budget keeps its timeout code, so the reply
+    // says the source was not read in time instead of a failure with no stated reason.
+    const timedOut = own.find(result => !result.ok && result.code !== undefined && TIMED_OUT.has(result.code))?.code;
+    if (timedOut !== undefined) run.unavailableReasons.set(plan.read.source, timedOut);
     // #565: a routed read counts as read, so a continuation of this run never dispatches it again.
     if ((outcome === 'ok' || outcome === 'empty') && plan.read.kind !== 'memory_search') run.readKinds.add(plan.read.kind);
     // #635: a read that answered in part and then ran out of its budget is a partial timeout, so the header
@@ -4999,6 +5003,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
                 const words = channelWordsOf(served);
                 if (words !== undefined) run.chatChannel ??= words;
               }
+              // #651 FAILREASON-R1: a read the connector cut at its own budget keeps its timeout code, so
+              // the reply says the source was not read in time instead of a failure with no stated reason.
+              const timedOut = part.results.find(result => !result.ok && result.code !== undefined && TIMED_OUT.has(result.code))?.code;
+              if (timedOut !== undefined) run.unavailableReasons.set(part.source, timedOut);
               // F17/R3: a chat triage ask rides the connector's own composite. Its reason is the failure
               // the sub-call really returned: only the two availability codes read as not granted, and a
               // credential, timeout or transport failure keeps its own closed reason.

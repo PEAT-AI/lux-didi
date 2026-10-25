@@ -17,6 +17,7 @@ import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
+import { isToolFailureCode } from '../adapters/model/types.js';
 import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
@@ -2988,7 +2989,9 @@ export class LiveSessionOwner {
       }
       return calls.map(call => {
         const slot = authorized.bindings.findIndex(binding => binding.callId === call.id);
-        const record = slot >= 0 ? authorized.tools[slot] : undefined;
+        // #651 FAILREASON-R1: a read that was interrupted by its deadline or ended unknown is fatal to the
+        // batch, so it carries no binding; its own record is still on the batch and is found by call id.
+        const record = slot >= 0 ? authorized.tools[slot] : authorized.tools.find(entry => entry.callId === call.id);
         const accepted = authorized.accepted.find(result => result.binding.callId === call.id);
         const response = accepted?.response ?? {};
         const text = typeof response.text === 'string' ? response.text : '';
@@ -2997,11 +3000,15 @@ export class LiveSessionOwner {
         // Q1-R3(d/e): a failed sub-call names its cause for the research_subcall log, never silently.
         // A sub-call that never dispatched reports its real reason (unknown_tool, grant_not_permitted,
         // invalid_arguments, round_deadline), never a bare refused.
+        // #651 FAILREASON-R1: a read that did not complete keeps its own closed reason (a timeout, a
+        // cancellation, a refused channel), so the reply says why instead of falling back to a bare status.
+        const closed = record !== undefined && record.status !== 'completed' && typeof record.reason === 'string'
+          && isToolFailureCode(record.reason) ? record.reason : undefined;
         const code = ok ? undefined
           : typeof response.code === 'string' ? response.code
           : typeof response.reason === 'string' ? response.reason
-          : record?.status === 'refused' ? refusalCode(record.reason)
-          : record ? String(record.status) : 'refused';
+          : closed ?? (record?.status === 'refused' ? refusalCode(record.reason)
+          : record ? String(record.status) : 'refused');
         return { key: call.id, name: call.name, ok, text,
           ...(consumed?.state === 'allowed' && consumed.evidence.kind === 'remote-body' ? { hostEvidence: consumed.evidence } : {}),
           ...(ok && call.name === HISTORY_IDENTITY.name ? { historyPage: response } : {}), ...(ok && accepted ? { binding: accepted.binding } : {}),

@@ -140,6 +140,7 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
     if (body) {
       if (direct[1] === 'pair') { fields(body, ['pairingCode'], ['pairingCode']); text(body.pairingCode, 100); }
       else if (direct[1] === 'chat') { fields(body, ['sessionId', 'text', 'timeZone'], ['sessionId', 'text', 'timeZone']); uuid(body.sessionId); text(body.text); zone(body.timeZone); }
+      else if (direct[1] === 'mongooseSignIn') { fields(body, ['endpoint']); if (body.endpoint !== undefined) text(body.endpoint, 16); }
       else fields(body, []);
     }
     return { kind: direct[1] as DirectKind, mutation: direct[0] !== 'GET' };

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, candidateSubs, chatQuestionWords, fallbackSelection, lookupBound, normalizeLookups, ownerScheduleQuestion, recallQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
+  CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, chatAttentionReason, candidateSubs, chatQuestionWords, fallbackSelection, lookupBound, normalizeLookups, ownerScheduleQuestion, recallQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
   validateResearch,
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchRoutedLog, type ResearchSubcallLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
@@ -472,6 +472,31 @@ test('P5: a dead connector is reported unavailable with its reason, never empty 
   assert.deepEqual(reply['unavailable'], { chat: 'connector_failure mattermost stage=credential' }, 'and the reply carries the reason the connector gave');
   assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['chat', 'unavailable', RESEARCH.sourceDeadline.chat]]);
   assert.deepEqual(h.executed, [], 'the dead connector is never asked');
+});
+
+// #637: a channel the list does not know is its own closed reason, spoken in words, never a failed
+// read and never a search that found nothing.
+test('#637: an unknown channel is its own closed reason in the note and the coverage header', async () => {
+  const sent: Record<string, unknown>[] = [];
+  const h = harness({
+    configured: ['chat'],
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
+      if (call.name === 'mattermost_search') sent.push(call.args);
+      return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'channel_not_found' };
+    }),
+  });
+  const question = 'what is new in the AI channel';
+  const reply = await runResearch(h.deps, { action: 'start', question, lookups: [{ source: 'chat', query: question }] }, new AbortController().signal);
+  assert.deepEqual(sent.map(args => args['channel']), ['AI'], 'the words the ask names reach the connector as its channel argument');
+  const note = String(reply['note'] ?? '');
+  assert.match(note, /I do not know a channel called AI\./u);
+  assert.equal(note.includes('found nothing matching'), false, 'an unknown channel is never voiced as an empty search');
+  assert.equal(note.includes('could not reach'), false, 'and never as a chat that could not be reached');
+  assert.match(String(reply['coverage']), /chat channel_not_found/u);
+  // F3 (CHANNELS-R2): the chat receipt names the miss instead of clamping it to a bare refused.
+  const miss = { key: 'c0', name: 'mattermost_search', ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'channel_not_found' };
+  assert.equal(chatAttentionReason([miss]), 'channel_not_found');
+  assert.ok(CHAT_RECEIPT_REASONS.includes('channel_not_found'), 'and the closed receipt vocabulary carries the token');
 });
 
 test('P5-R5: a routed read that returns a failure is failed, never empty', async () => {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, chatAttentionReason, candidateSubs, chatQuestionWords, fallbackSelection, lookupBound, normalizeLookups, ownerScheduleQuestion, recallQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
+  CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, RESEARCH_OPERATION, ResearchLedger, calendarWindowOf, chatAttentionReason, candidateSubs, chatQuestionWords, fallbackSelection, lookupBound, normalizeLookups, ownerScheduleQuestion, recallQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
   validateResearch,
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchRoutedLog, type ResearchSubcallLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
@@ -963,8 +963,15 @@ test('#645: the chat read is bounded at ten seconds, and a timed out one says ti
     lookups: [{ source: 'chat', query: 'release' }],
   }, new AbortController().signal);
   await flushed();
+  // C-LIVE: the operation answers at its deadline with the chat still reading; the chat's own 10 s cut is what a
+  // later read of the closed run reports.
+  clock.advance(RESEARCH_OPERATION.deadlineMs);
+  const early = await call;
+  assert.match(String(early['coverage']), /chat still_reading/u, `the operation answers on time and says the chat is still reading (${String(early['coverage'])})`);
+  await flushed();
   clock.advance(RESEARCH.sourceDeadline.chat);
-  const reply = await call;
+  await flushed();
+  const reply = await runResearch(h.deps, { action: 'stop', researchId: String(early['researchId']) }, new AbortController().signal);
   const header = String(reply['coverage']);
   assert.match(header, /chat timed_out/u, `a chat read that timed out with nothing arrived says timed_out (${header})`);
   assert.doesNotMatch(header, /chat provider_failed/u, 'a timeout is never voiced as a provider failure');
@@ -993,8 +1000,14 @@ test('#635: a chat read cut by its own budget after it answered is a partial tim
   });
   const call = runResearch(h.deps, { action: 'start', question: 'what did the team say in chat about the release' }, new AbortController().signal);
   await flushed();
+  // C-LIVE: the operation answers at its deadline with what the chat had; the cut is reported once the run closed.
+  clock.advance(RESEARCH_OPERATION.deadlineMs);
+  const early = await call;
+  assert.match(String(early['coverage']), /chat still_reading/u, `the early answer says the chat is still reading (${String(early['coverage'])})`);
+  await flushed();
   clock.advance(RESEARCH.sourceDeadline.chat);
-  const reply = await call;
+  await flushed();
+  const reply = await runResearch(h.deps, { action: 'stop', researchId: String(early['researchId']) }, new AbortController().signal);
   const header = String(reply['coverage']);
   const note = String(reply['note']);
   assert.match(header, /chat partial_timeout 1 of 1 shown/u, `a read that answered and then ran out of its budget keeps what it read and is partial (${header})`);

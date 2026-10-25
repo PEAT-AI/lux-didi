@@ -191,7 +191,7 @@ export const RESEARCH = Object.freeze({
    * LAT-1023: one short clause, so an answer that ran out of rounds or of room never reads as a whole
    * record and never lets the model claim a record does not exist.
    */
-  moreAvailableNote: 'Partial: answer from this now, state the coverage, and offer the rest in one short statement; read more only if the owner asks.',
+  moreAvailableNote: 'Partial: answer now, offer the rest; read on only if asked.',
   /**
    * Q5-R1: an explicit read by id is answered with the entry's whole body, and the connector's own
    * knowledge body cap is 20,000 chars, so that reply is sized for the body instead of the search
@@ -3532,7 +3532,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       const rest = `The rest come next: ${deferred.map(source => SOURCE_LABEL[source]).join(', ')}.`;
       settledNote = settledNote === undefined ? rest : `${settledNote} ${rest}`;
     }
-    return { findings, reply: { coverage: coverageOf(findings), sourceCoverage: operationCoverage(run, findings), researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
+    return { findings, reply: { coverage: coverageOf(findings), ...coverageRows(operationCoverage(run, findings)), researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, down to a source's last line: the Live budget is a hard bound, so a kept
   // line wider than the budget is dropped whole rather than left to overrun it (LAT-1023 B3). R5 (RESCAP-R5):
@@ -3598,7 +3598,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // the reply is measured with the header it carries.
   const capped = capReply(result, limit, () => {
     if (typeof result['coverage'] === 'string') result['coverage'] = coverageOf(Array.isArray(result['findings']) ? result['findings'] as unknown as FindingLike[] : []);
-    if (Array.isArray(result['sourceCoverage'])) result['sourceCoverage'] = operationCoverage(run, Array.isArray(result['findings']) ? result['findings'] as unknown as FindingLike[] : []);
+    if (typeof result['coverage'] === 'string') {
+      const rows = operationCoverage(run, Array.isArray(result['findings']) ? result['findings'] as unknown as FindingLike[] : []);
+      if (rows.length === 0) delete result['sourceCoverage']; else result['sourceCoverage'] = rows;
+    }
   });
   // #575: what this reply actually carried is what the session must not hand over again.
   for (const finding of (Array.isArray(capped['findings']) ? capped['findings'] as { text?: string }[] : [])) {
@@ -4651,7 +4654,13 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const early = await firstAnswerOf(deps, first, loop);
   if (early === undefined) { const reply = await loop; if (!deps.authorizeEvidence) markCalendarReply(deps.ledger, reply); return reply; }
   // The call answers now. The readers keep going to their own deadlines, so their findings still land.
-  deps.background?.(loop.then(() => undefined, () => undefined));
+  // C-LIVE: the detached loop's own closing reply is never handed to the model, so the findings it marks as
+  // given are unmarked again; an owner follow-up then hears them instead of "already given".
+  const detached = first.snapshot?.().run;
+  const given = detached === undefined ? undefined : new Set(detached.deliveredFindings);
+  const unmark = (): void => { if (detached === undefined || given === undefined) return; for (const key of [...detached.deliveredFindings]) if (!given.has(key)) detached.deliveredFindings.delete(key); };
+  deps.background?.(loop.then(unmark, unmark));
+  if (deps.background === undefined) void loop.then(unmark, unmark);
   if (!deps.authorizeEvidence) markCalendarReply(deps.ledger, early);
   return early;
 }
@@ -5727,6 +5736,9 @@ function boundedPages<T extends { lastPageMs?: number; boundStop?: boolean }>(ru
 
 type CoverageStop = 'exhausted' | 'deadline' | 'page_failed' | 'failed' | 'page_cap' | 'page_limit' | 'enough_for_answer' | 'reply_budget' | 'cancelled' | 'not_read';
 
+/** The rows ride the reply only when a source has a gap to name. */
+function coverageRows(rows: JsonObject[]): { sourceCoverage?: JsonObject[] } { return rows.length === 0 ? {} : { sourceCoverage: rows }; }
+
 /** How many lines of one source the reply the model hears actually carries. */
 function representedOf(findings: readonly FindingLike[], source: SourceKind): number {
   const text = findings.find(entry => entry.source === source && typeof entry.text === 'string')?.text ?? '';
@@ -5798,6 +5810,9 @@ export function operationCoverage(run: RunState, findings: readonly FindingLike[
     }
     if (stop === 'exhausted' && represented < examined) stop = 'reply_budget';
     const complete = stop === 'exhausted';
+    // A source read whole is said by the header alone ("truncated_to_budget 9 of 38 shown" when the reply cut it);
+    // a row is the measured cost of a gap the header cannot state: a deadline, a failed page, an unknown total.
+    if (complete || stop === 'reply_budget') continue;
     rows.push({ source, examined, total, matches, represented, state: complete ? 'complete' : 'partial', stop,
       more: upstream || stop === 'deadline' ? 'upstream' : represented < examined ? 'local' : 'none' });
   }

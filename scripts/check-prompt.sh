@@ -87,11 +87,12 @@ for (const removed of [
 for (const rule of [
   'One owner turn allows one research operation',
   'after a result arrives, never call research again until the owner speaks, except to stop',
-  'answer at once from what it holds, even when it is partial',
-  'Lead with what matters, then state the coverage honestly in a few words, such as nine of thirty-eight events',
-  'Never call a partial result complete',
+  'Answer at once from a result, even a partial one',
+  'state its coverage honestly in a few words, such as nine of thirty-eight events',
+  'never call a partial result complete',
+  'lead with the answer and the qualification that changes its meaning',
   'offer it in one short plain statement, not a question and not a stock line',
-  'If research answers blocked, answer the owner now from the result you already have',
+  'If research answers blocked, answer from the result you have',
 ]) assert.ok(voice.includes(rule), `voice rule missing: ${rule}`);
 for (const rule of [
   'One owner turn allows one research operation',
@@ -102,6 +103,6 @@ for (const rule of [
 assert.ok(persona.NAYA_LIVE_BASE.includes('Never fill the silence while a lookup runs'), 'the no-filler rule is kept');
 assert.ok(voice.includes('never use a stock waiting line'), 'the stock waiting line ban is kept');
 assert.equal(research.RESEARCH.mailLines, 8); assert.equal(research.RESEARCH.chatLines, 8);
-assert.equal(research.RESEARCH.moreAvailableNote, 'Partial: answer from this now, state the coverage, and offer the rest in one short statement; read more only if the owner asks.');
-console.log(JSON.stringify({ case: 'partial_result_rules', removed: 6, voiceRules: 7, backendRules: 3 }));
+assert.equal(research.RESEARCH.moreAvailableNote, 'Partial: answer now, offer the rest; read on only if asked.');
+console.log(JSON.stringify({ case: 'partial_result_rules', removed: 6, voiceRules: 8, backendRules: 3 }));
 NODE

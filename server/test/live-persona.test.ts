@@ -348,7 +348,7 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
 test('the public character, voice surface and tool conduct are the authored verbatim constants', () => {
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '1b188117660fe12204cd542001b585fcce69add4f1cc6d27689720e193cac977');
-  assert.equal(sha(NAYA_VOICE_SURFACE), '4e6649726ab2676627682c9dc99a48a851fbae23298a8845d2c582f76a452b3b');
+  assert.equal(sha(NAYA_VOICE_SURFACE), '1cf4e572cd49ae7d8d7e16ee3c11b53c6dc652dc1511b8b5625d4a8a3bcb0768');
   assert.equal(sha(NAYA_VOICE_TOOLS), '9a514f03300b3603a5844a2d11b6f47cdede998d4da39fc673781704d58ef445');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'f421a3148fc20caef9fbdcb21d816b283cc48ac723e59ea601f799df8a6e8b31');
   assert.equal(sha(NAYA_TOOLS), 'a08e4c3520e4d196612c65e724183aa89be1aef5adafb4a5e3a8933393b33a5b');
@@ -1370,6 +1370,13 @@ test('LAT-1023: the first ack before a lookup names the sources it is reading', 
 test('L8-07: missing evidence is said as missing, never as a negative fact', () => {
   const rule = 'Missing evidence is no negative fact and no yes to a leading question: say you found nothing that says so.';
   assert.equal(NAYA_LIVE_BASE.split(rule).length - 1, 1, 'the rule reaches the live persona once');
+  assert.doesNotMatch(NAYA_VOICE_SURFACE, /[\u2013\u2014]/u);
+});
+
+test('L11-07/L11-08: agreement needs evidence, and a label or a yes never stands alone', () => {
+  assert.equal(NAYA_LIVE_BASE.split('Agree only when the evidence agrees').length - 1, 1, 'the agreement rule reaches the live persona once');
+  const rule = 'Never stop at a bare label or a bare yes; give the reason.';
+  assert.equal(NAYA_LIVE_BASE.split(rule).length - 1, 1, 'the reason rule reaches the live persona once');
   assert.doesNotMatch(NAYA_VOICE_SURFACE, /[\u2013\u2014]/u);
 });
 

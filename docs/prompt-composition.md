@@ -158,7 +158,11 @@ short line on an opening option or a subject from the earlier conversation in ne
 conversation's closing lines and never anything about stopping, ending or listening, and when the owner speaks
 first she answers his words instead. The `previous-openers` section quotes each earlier opener once, however many
 calls opened with it. The voice surface's "Ending the call" rule has her tell him the stop phrase only when he
-asks to end the call in other words; she never says the phrase, a stop line or a sign-off on her own.
+asks to end the call in other words; she never says the phrase, a stop line or a sign-off on her own. The
+surface also says missing evidence as missing ("I found nothing that says so", never a negative fact or a yes to a
+leading question) and never stops at a bare label or a bare yes; the character's "Agree only when the evidence
+agrees" holds for what was said before. The character, voice surface and voice tools together stay under the
+10,400 character cap that `live-persona.test.ts` holds.
 
 ## Verification and remaining gates
 

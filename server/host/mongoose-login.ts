@@ -243,7 +243,7 @@ async function discover(post: typeof fetch, binding: MongooseBinding, wait: <T>(
   let metadata: unknown;
   try {
     const response = await post(`${binding.issuer}/.well-known/oauth-authorization-server`, { method: 'GET', headers: { accept: 'application/json' }, redirect: 'manual' });
-    if (!response.ok) return fail({ hop: 'discovery', outcome: response.status >= 300 && response.status < 400 ? 'redirected' : 'metadata_unreachable' }, 'metadata-unavailable');
+    if (!response.ok) return fail({ hop: 'discovery', outcome: response.status >= 300 && response.status < 400 ? 'redirected' : 'http_status' }, 'metadata-unavailable');
     metadata = await wait(response.json());
   } catch (error) {
     if (error instanceof MongooseLoginError) throw error;

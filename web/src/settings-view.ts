@@ -290,6 +290,7 @@ const attemptSentences: Record<string, (label: string) => string> = {
   running: label => `Starting the sign-in to ${label}.`,
   waiting: label => `The ${label} sign-in page was handed to your browser. Finish there, and the connector reconnects by itself.`,
   finishing: label => `${label} accepted the sign-in in the browser. Saving it now.`,
+  discovery_unreachable: label => `Mongoose is not reachable right now, so the ${label} sign-in could not start: check the VPN, then try again.`,
   discovery_refused: label => `Mongoose did not confirm this endpoint, so the ${label} sign-in stopped before opening the browser.`,
   registration_refused: label => `Mongoose did not accept the sign-in request for ${label}. Try again in a moment.`,
   port_in_use: label => `The ${label} sign-in could not wait for the browser because port 8768 is busy. Close the other sign-in, then try again.`,

@@ -42,7 +42,7 @@ export type AuthoritySource = (runId: string, signal: AbortSignal) => Promise<Li
 export type MongooseSignInStart = { status: 'started'; attemptId: string } | { status: 'failed'; reason: 'not-configured' | 'sign-in-in-progress' };
 /** Where one attempt is, as the Settings row shows it through the connection poll. */
 export type MongooseSignInPhase = 'running' | 'waiting' | 'finishing' | 'signed_in' | 'failed';
-export type MongooseSignInFailure = 'discovery_refused' | 'registration_refused' | 'port_in_use' | 'browser_unavailable' | 'callback_failed' | 'callback_timeout' | 'token_refused' | 'store_failed' | 'did_not_finish';
+export type MongooseSignInFailure = 'discovery_unreachable' | 'discovery_refused' | 'registration_refused' | 'port_in_use' | 'browser_unavailable' | 'callback_failed' | 'callback_timeout' | 'token_refused' | 'store_failed' | 'did_not_finish';
 export interface MongooseSignInAttempt { attemptId: string; phase: MongooseSignInPhase; reason?: MongooseSignInFailure }
 /** One owner click names the endpoint it signs in and answers at once; the attempt runs on and reports by row. */
 export interface MongooseSignIn {
@@ -75,7 +75,8 @@ export interface LiveToolsComposition {
 /** The failure class a failed hop names, so each one reads as its own sentence on the Settings row. */
 function failureOf(hop: MongooseSignInHop): MongooseSignInFailure {
   switch (hop.hop) {
-    case 'discovery': return 'discovery_refused';
+    // No answer at all (the VPN is off, Mongoose is down) is not a refusal by Mongoose.
+    case 'discovery': return hop.outcome === 'unreachable' || hop.outcome === 'timeout' || hop.outcome === 'metadata_unreachable' ? 'discovery_unreachable' : 'discovery_refused';
     case 'registration': return hop.outcome === 'port_in_use' ? 'port_in_use' : 'registration_refused';
     case 'browser_handoff': return 'browser_unavailable';
     case 'callback': return hop.outcome === 'timeout' ? 'callback_timeout' : 'callback_failed';

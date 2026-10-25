@@ -29,7 +29,7 @@ function signInConnector(row: Record<string, unknown>): boolean {
 }
 
 const SIGN_IN_PHASES = ['running', 'waiting', 'finishing', 'signed_in', 'failed'];
-const SIGN_IN_FAILURES = ['discovery_refused', 'registration_refused', 'port_in_use', 'browser_unavailable', 'callback_failed', 'callback_timeout', 'token_refused', 'store_failed', 'did_not_finish'];
+const SIGN_IN_FAILURES = ['discovery_unreachable', 'discovery_refused', 'registration_refused', 'port_in_use', 'browser_unavailable', 'callback_failed', 'callback_timeout', 'token_refused', 'store_failed', 'did_not_finish'];
 /** One Mongoose row's sign-in attempt as closed tokens and an opaque id, or nothing. */
 function signInAttempt(value: { attemptId: string; phase: string; reason?: string } | undefined): Record<string, string> | undefined {
   if (!value || !/^[0-9a-f]{16}$/.test(value.attemptId) || !SIGN_IN_PHASES.includes(value.phase)) return undefined;

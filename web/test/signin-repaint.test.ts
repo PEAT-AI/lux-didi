@@ -97,6 +97,7 @@ test('W1: the Settings row says where the sign-in is, one plain sentence per ste
     ['waiting', /handed to your browser/],
     ['finishing', /accepted the sign-in/],
     ['failed:discovery_refused', /did not confirm this endpoint/],
+    ['failed:discovery_unreachable', /Mongoose is not reachable.*check the VPN/],
     ['failed:registration_refused', /did not accept the sign-in request/],
     ['failed:port_in_use', /port 8768 is busy/],
     ['failed:browser_unavailable', /browser could not be opened/],

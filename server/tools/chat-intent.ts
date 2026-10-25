@@ -77,7 +77,11 @@ function cleanName(raw: string): string | undefined {
   return NOT_A_PERSON.has(parts[0]!.toLowerCase()) ? undefined : name;
 }
 
+/** A list of sources ("my calendar, mail and team chat") is never a channel name. */
+const SOURCE_WORDS = /\b(?:mails?|e-?mails?|inbox|calendar|knowledge|memory|vault|web)\b/iu;
+
 function cleanChannel(raw: string): string | undefined {
+  if (/[,;]/u.test(raw) || SOURCE_WORDS.test(raw)) return undefined;
   const parts = raw.trim().replace(/[.!?,;:]+$/u, '').split(/\s+/u).filter(Boolean);
   while (parts.length > 0 && CHANNEL_EDGE.has(parts[0]!.toLowerCase())) parts.shift();
   while (parts.length > 0 && CHANNEL_EDGE.has(parts[parts.length - 1]!.toLowerCase())) parts.pop();

@@ -1482,8 +1482,8 @@ function noteChatReads(run: RunState, subs: readonly IntentSubCall[], results: r
     const notFound = lead('not found');
     if (read !== undefined && clarify === undefined && notFound === undefined) add(`I read ${read}.`);
     if (missing !== undefined) add(`Say once: ${missing}.`);
-    if (clarify !== undefined) { add(clarify); run.chatClarify = true; }
-    if (notFound !== undefined) add(notFound);
+    if (clarify !== undefined) { add(`Ask him: ${clarify}`); run.chatUnresolved = 'needs_clarification'; }
+    if (notFound !== undefined) { add(notFound); run.chatUnresolved ??= 'name_not_found'; }
     const matched = Number(lead('matched') ?? Number.NaN);
     const returned = (result.text.match(/^\*\*.+\*\*$/gmu) ?? []).length;
     const offset = typeof sub.args['offset'] === 'number' ? sub.args['offset'] : 0;
@@ -1744,8 +1744,8 @@ export interface RunState {
   chatChannelClosest: string[];
   /** C-CHAT: what each chat read said it read, a capability it lacks, or the question it asks back. Said once. */
   chatNotes: string[];
-  /** C-CHAT: a chat read asked which person, channel or group was meant, so it found nothing by design. */
-  chatClarify?: boolean;
+  /** C-CHAT: a chat read asked which person, channel or group was meant, or knew nobody by that name. */
+  chatUnresolved?: 'needs_clarification' | 'name_not_found';
   /** C-CHAT: the next page of the last chat read that matched more than it returned. */
   chatPage?: { sub: IntentSubCall; next: number; total: number };
   /** #621: the sources this ask routed to, whether or not the session configured them, for the header. */
@@ -2312,7 +2312,7 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
         direction: { type: 'string', description: 'Optional steer for a continue, e.g. "look in mail".' },
         lookups: {
           type: 'array', maxItems: MAX_LOOKUPS,
-          description: 'Optional: ' + LOOKUP_LIMIT_TEXT + '. When present the host skips its own source choice and reads every lookup in parallel; when absent the host selects the sources. memory: retained conversations, remembered notes and imported notes, within the accepted permissions. knowledge: his knowledge base of decisions, project status, technical notes, meeting transcripts and work sessions. company: permissioned company, product and commercial records; this does not guarantee directory coverage. calendar: primary calendar only; query must be today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD. Unknown or contradictory windows are unresolved, never widened. Calendar coverage separates received events, shown events, retained remainder, unread pages and truncated descriptions; continue returns retained remainder before reading more pages. mail: his mail; lookup.mail supports an exact Gmail q/maxResults search or exact id/format read. Search coverage counts received metadata messages, not full bodies or complete threads. Source order is preserved. continue returns retained metadata before requesting another page. An exact full-message read returns bodySlices with immutable UTF16 offsets, received total and separate upstream completeness. Continue nextCursor to consume received body remainder without another source read; quoted history remains included. Metadata format deliberately omits bodies. alreadyDelivered is a model-context receipt, not a claim that the owner heard it. chat: his team chat. replies: what is waiting on him in the team chat.',
+          description: 'Optional: ' + LOOKUP_LIMIT_TEXT + '. When present the host skips its own source choice and reads every lookup in parallel; when absent the host selects the sources. memory: retained conversations, remembered notes and imported notes, within the accepted permissions. knowledge: his knowledge base of decisions, project status, technical notes, meeting transcripts and work sessions. company: permissioned company, product and commercial records; this does not guarantee directory coverage. calendar: primary calendar only; query must be today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD. Unknown or contradictory windows are unresolved, never widened. Calendar coverage separates received events, shown events, retained remainder, unread pages and truncated descriptions; continue returns retained remainder before reading more pages. mail: his mail; lookup.mail supports an exact Gmail q/maxResults search or exact id/format read. Search coverage counts received metadata messages, not full bodies or complete threads. Source order is preserved. continue returns retained metadata before requesting another page. An exact full-message read returns bodySlices with immutable UTF16 offsets, received total and separate upstream completeness. Continue nextCursor to consume received body remainder without another source read; quoted history remains included. Metadata format deliberately omits bodies. alreadyDelivered is a model-context receipt, not a claim that the owner heard it. chat: his team chat; keep the person, group or channel in the question as he said it (what a person wrote him, what he discussed with a person, the newest in a named channel, his group chat with some people), because the host resolves the name strictly and its reply names what it read, over which days, or asks which one he means. replies: what is waiting on him in the team chat.',
           items: {
             type: 'object', additionalProperties: false, required: ['source'],
             anyOf: [
@@ -2408,7 +2408,7 @@ export function clip(text: string, max: number): string {
 
 /** #621: the E3 states a reply must keep apart, and the E4 reason a source was never searched. */
 export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry';
-export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'needs_clarification';
+export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'needs_clarification' | 'name_not_found';
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
 
@@ -2426,6 +2426,7 @@ const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: Source
   channel_not_found: () => 'I do not know that channel',
   // C-CHAT: the name fits several people, channels or groups, so she asks which one before reading.
   needs_clarification: () => 'ask which one he means',
+  name_not_found: () => 'I do not know that name',
 };
 
 /** A not-searched reason code from the host, narrowed to the closed set the header publishes. */
@@ -2486,7 +2487,7 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
     if (!wasSearched) continue;
     const finding = findings.find(entry => entry.source === source && typeof entry.text === 'string');
     // C-CHAT: a chat read that asked back read nothing yet, so the header says so instead of an empty count.
-    if (source === 'chat' && run.chatClarify === true && finding === undefined) continue;
+    if (source === 'chat' && run.chatUnresolved !== undefined && finding === undefined) continue;
     const text = finding?.text ?? '';
     const head = FINDING_HEAD.exec(text);
     const shown = head === null ? 0 : Number(head[1]);
@@ -2498,10 +2499,10 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
   }
   const unsearched: CoverageUnsearched[] = [];
   for (const source of SOURCE_ORDER) {
-    const clarifying = source === 'chat' && run.chatClarify === true && !searched.some(entry => entry.source === source);
-    if (!run.route.has(source) && !clarifying) continue;
+    const unresolved = source === 'chat' && !searched.some(entry => entry.source === source) ? run.chatUnresolved : undefined;
+    if (!run.route.has(source) && unresolved === undefined) continue;
     if (searched.some(entry => entry.source === source)) continue;
-    unsearched.push({ source, reason: clarifying ? 'needs_clarification' : unsearchedReasonGiven(run, configured, source) });
+    unsearched.push({ source, reason: unresolved ?? unsearchedReasonGiven(run, configured, source) });
   }
   return coverageLine(searched, unsearched, limit);
 }
@@ -3425,8 +3426,8 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     && !(source === 'chat' && (run.unavailableReasons.get('chat') ?? '').startsWith('channel_not_found'))
     // #655: the web's own clause below says it took too long, so it is never also called unreachable.
     && !(webTimedOut && source === 'web')).map(([, label]) => label);
-  // C-CHAT: a chat read that asked which person or channel was meant found nothing by design, never "nothing matching".
-  const searchedNothing = SOURCE_LABELS.filter(([source]) => run.emptySearches.has(source) && !run.sourcesFailed.has(source) && !(source === 'chat' && run.chatClarify === true))
+  // C-CHAT: a chat read that asked which one was meant, or knew no such name, read nothing by design, never "nothing matching".
+  const searchedNothing = SOURCE_LABELS.filter(([source]) => run.emptySearches.has(source) && !run.sourcesFailed.has(source) && !(source === 'chat' && run.chatUnresolved !== undefined))
     .map(([source, label]) => `I searched your ${label}${run.emptySearches.get(source) ?? ''} and found nothing matching.`);
   // N3: a read cut short is not a read that found nothing, and the reply must not blur the two.
   const cutShort = SOURCE_LABELS.filter(([source]) => run.cutShort.has(source) && !run.sourcesFailed.has(source) && run.sourcesDone.has(source))

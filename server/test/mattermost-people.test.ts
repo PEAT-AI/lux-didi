@@ -423,7 +423,7 @@ test('C-CHAT: "last week" sends both ends of the window', async t => {
 test('C-CHAT: an ambiguous person is voiced as one short question, never an empty chat', async t => {
   const f = await setup(t, 'people');
   const reply = await runResearch(researchDeps(f), { action: 'start', question: 'what did Lena write me', topic: 'Lena' }, new AbortController().signal);
-  assert.match(String(reply['note']), /Which Lena do you mean: Lena Berg \(@lena\.berg\) or Lena Sand \(@lena\.sand\)\?/u);
+  assert.match(String(reply['note']), /Ask him: Which Lena do you mean: Lena Berg \(@lena\.berg\) or Lena Sand \(@lena\.sand\)\?/u);
   assert.doesNotMatch(String(reply['note']), /found nothing matching/u);
   assert.match(String(reply['coverage']), /chat needs_clarification/u);
 });

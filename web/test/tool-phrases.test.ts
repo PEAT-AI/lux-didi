@@ -16,6 +16,7 @@ const LIVE_TOOLS: readonly (readonly [string, string])[] = [
   ['mattermost_get_thread', 'Reading a Mattermost thread'],
   ['mattermost_search', 'Searching Mattermost'],
   ['mattermost_list_channels', 'Listing your Mattermost channels'],
+  ['mattermost_chat', 'Reading a Mattermost conversation'],
 ];
 
 test('every Live tool maps to its human phrase', () => {

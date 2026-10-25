@@ -4902,8 +4902,10 @@ async function withFullEntries(
   run.ops += 1;
   try {
     const bounded = AbortSignal.any([signal, AbortSignal.timeout(RESEARCH.knowledgeReadMs)]);
-    const read = await execute([{ key: 'knowledge_entries', name: INTERNAL.knowledgeRead, args: { ids } }], bounded);
-    return [...results, ...read];
+    // The read carries the search call's key, so the source's own shaping folds the entries in with the
+    // summaries instead of meeting a call key the batch never made.
+    const read = await execute([{ key: searched.key, name: INTERNAL.knowledgeRead, args: { ids } }], bounded);
+    return [...results, ...read.map(entry => ({ ...entry, key: searched.key }))];
   } catch { return [...results]; }
 }
 

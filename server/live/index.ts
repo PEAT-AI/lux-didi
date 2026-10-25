@@ -2469,7 +2469,7 @@ export class LiveSessionOwner {
     const now = this.#now();
     const boundary: ResearchBoundary = {
       assistantAudioStreaming: false, responsePending: handle.responseInProgress,
-      bargeIn: handle.debtBargeIn ?? false, toolInFlight: handle.pendingCallIds.size > 0,
+      bargeIn: handle.debtBargeIn === true, toolInFlight: handle.pendingCallIds.size > 0,
     };
     // W10-R15 P2: the decision is one function, so a deferral keeps both the seed and the count for the next
     // boundary and only the branch that really rebuilds resets them.

@@ -1019,7 +1019,7 @@ let keyOnStep = NativeNextSteps.singleKeyStep(enabled: true, tapped: true)
 expect(keyOnStep.text != keyOffStep.text && keyOnStep.text.contains("mutes and unmutes"),
     "a key with a live tap gets the working line, never the warning")
 let mongooseStep = NativeNextSteps.lookup(id: "mongoose-knowledge", state: "missing", reason: nil)
-expect(mongooseStep.command == "mongoose-login", "the Mongoose next step offers exactly the sign-in action id")
+expect(mongooseStep.command == nil && mongooseStep.text.contains("Use the Sign in button on its row in Settings"), "the Mongoose next step points at the Settings sign-in and offers no command, since mongoose-login does not exist")
 expect(mongooseStep.command != "cp" && !(mongooseStep.command ?? "").hasPrefix("cp ") && !(mongooseStep.command ?? "").contains("/"), "credential path is not a copy command")
 let onboardingRows = NativeGettingStartedItems.rows(microphone: "denied", notifications: "denied", login: "off", connections: [("calendar", "missing", "credential_missing"), ("mongoose-data", "error", "needs_sign_in")])
 expect(onboardingRows.count == 7, "fixture includes permissions, login, shortcuts and every connection")

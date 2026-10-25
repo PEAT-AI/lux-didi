@@ -30,7 +30,7 @@ enum NativeNextSteps {
         NativeNextStep(text: "\(label) is not reachable right now. Naya retries in the background and reconnects by itself when Mongoose answers.", command: nil)
     }
     private static func mongooseCredentialStep(_ label: String) -> NativeNextStep {
-        NativeNextStep(text: "\(label) has no stored session. Run mongoose-login, or use the Sign in button in Settings once this endpoint is configured.", command: "mongoose-login", guideURL: setupGuide)
+        NativeNextStep(text: "\(label) has no stored session. Use the Sign in button on its row in Settings once this endpoint is in your connector configuration.", command: nil, guideURL: setupGuide)
     }
     static let credentialSteps: [String: NativeNextStep] = [
         "lux-knowledge": configureStep, "gmail": configureStep, "calendar": configureStep, "mattermost": configureStep,

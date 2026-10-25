@@ -6,6 +6,8 @@ A connector is one more read-only source the model can search through MCP. It is
 
 The one rule that shapes all of it: a connector reads. `ConnectorToolDeclaration.effect` is the literal `'read'`, the model sees only the local projection of an accepted result, and nothing in this path writes to the remote account.
 
+Trello is deliberately not a connector in this sense. The official Trello MCP server dispatches by `action` with ARI ids, and the owner granted card writes on his one board, so it follows the gateway tool pattern of the vault note instead: a host-owned client, two gateway tools with closed schemas, and the board pin on Didi's side. [tool-owner.md](tool-owner.md#the-trello-board-w7) owns it; its sign-in shares the OAuth client of the Mongoose endpoints ([mcp-configuration.md](mcp-configuration.md#the-trello-board-sign-in)).
+
 ## 1. Register the descriptor
 
 `server/connectors/index.ts` holds `CONNECTOR_DESCRIPTORS`, the one map from a connector id to its `ConnectorDescriptor`:

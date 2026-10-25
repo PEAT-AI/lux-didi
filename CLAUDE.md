@@ -10,7 +10,7 @@ Lux Didi is a local Mac voice companion called Naya: a Swift app (`Sources/LuxDi
 4. No real credentials, tokens, keys, personal data, private names, mail subjects or transcript text anywhere in the repository, including docs, fixtures, comments, logs and PR text. The repository is public.
 5. Fail loudly. Never weaken, skip or silence a failing check to get green, and never add a fallback that hides a failure (a missing dependency or an empty upstream result is an error, not stub data).
 6. The host writes nothing to stdout except the supervision protocol (`writeProtocolFrame` in `server/host/index.ts`); never `console.log` in server source.
-7. Connectors are read-only. The only write outside Naya's own notes is the dictated vault note. Open tools only open; they never type, click or send.
+7. Connectors are read-only. The writes outside Naya's own notes are the dictated vault note and, owner-granted, card changes on the owner's one Trello board through `trello_write` (never another board, never board, list or member admin, never Inbox or Planner, never a delete; see [docs/tool-owner.md](docs/tool-owner.md#the-trello-board-w7)). Open tools only open; they never type, click or send.
 8. No backward compatibility shims, rollback paths or `v2` names. Replace cleanly under the canonical name.
 9. Voice content (`server/prompt/`, tool guidance strings) is product: change it with content assertions in `check-prompt.sh` and look for contradictions with the rules already there.
 10. A launch may connect a call by itself only for the interactive kind (`LaunchKind.autoConnects`). A login start, `--install-relaunch` and every proof launch must never connect.

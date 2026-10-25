@@ -48,11 +48,6 @@ const CUT_SEARCH = [
   'truncated: yes (5,432 chars stored)',
 ].join('\n');
 
-const LONG_BODY = [
-  '# Knowledge Search',
-  '**#123** [TECHNICAL_DECISION] Retrieval deadline',
-  `the deadline is the fifteenth${' and the corpus keeps the rest'.repeat(120)}`,
-].join('\n');
 
 /** #580: the server's own ranker line for a query nothing in the vault matches. */
 const NO_CANDIDATE = [

@@ -427,7 +427,8 @@ test('the idempotency ledger is cleared when the session ends', async () => {
   const run = session();
   const args = { action: 'note', card: 'Renew the passport', text: 'the form is in the hall' };
   const before = writes().length;
-  assert.equal((await board.write(run, args, 'note on the card')).ok, true);
+  const first = await board.write(run, args, 'note on the card');
+  assert.equal(first.ok, true, JSON.stringify(first));
   const replay = await board.write(run, args, 'note on the card');
   assert.equal(replay.replayed, true, 'the same write in one session answers from its receipt');
   assert.equal(writes().length, before + 1);

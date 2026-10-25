@@ -105,3 +105,22 @@ test('a missing Mongoose credential points at the Sign in button, never a comman
     assert.doesNotMatch(step.text, /token|bearer/i);
   }
 });
+
+test('W1-R3: a Mongoose row never says restart Lux Didi; each reason gets its true next step', () => {
+  for (const [id, label] of endpointRows) {
+    for (const reason of ['configuration_error', 'discovery_failed', 'handshake_failed', 'identity_mismatch'] as const) {
+      const step = nextStep(id, 'error', reason);
+      assert.doesNotMatch(step.text, /restart Lux Didi/i, `${id} with ${reason}`);
+      assert.match(step.text, new RegExp(label), `${id} with ${reason} names its endpoint`);
+    }
+    assert.match(nextStep(id, 'error', 'configuration_error').text, /MCP configuration guide/);
+    assert.match(nextStep(id, 'error', 'configuration_error').text, /reads that file when it starts/);
+    assert.match(nextStep(id, 'error', 'handshake_failed').text, /VPN/);
+    assert.match(nextStep(id, 'error', 'discovery_failed').text, /Copy diagnostics/);
+    const mismatch = nextStep(id, 'error', 'identity_mismatch');
+    assert.match(mismatch.text, /different account/);
+    assert.equal(mismatch.signIn, true, 'a wrong account is fixed with the Sign in button');
+  }
+  // The other connectors keep their own wording.
+  assert.match(nextStep('gmail', 'error', 'handshake_failed').text, /restart Lux Didi/);
+});

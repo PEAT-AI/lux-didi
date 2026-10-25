@@ -96,3 +96,10 @@ test('C-OPEN 2: an open ask for a deck, doc or sheet routes to Drive only when D
   const notOpen = routedSelection('what did we decide about the harbour deck', ['knowledge', 'drive']);
   assert.equal(notOpen?.actions.some(action => action.kind === 'drive_search') ?? false, false, 'a question about a deck is not a Drive read');
 });
+
+test('C-OPEN 4 and 6: the host log admits the two wiring lines with ids only', () => {
+  assert.deepEqual(safeEvent({ event: 'google_mcp_path_unsafe', endpointId: 'gmail' }), { event: 'google_mcp_path_unsafe', endpointId: 'gmail' });
+  assert.equal(safeEvent({ event: 'google_mcp_path_unsafe', endpointId: 'gmail', command: '/somewhere/google-mcp' }), undefined, 'never the path');
+  assert.deepEqual(safeEvent({ event: 'gmail_account_unknown' }), { event: 'gmail_account_unknown' });
+  assert.equal(safeEvent({ event: 'gmail_account_unknown', account: 'owner@example.test' }), undefined, 'never an address');
+});

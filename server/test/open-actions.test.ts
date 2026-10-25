@@ -254,19 +254,6 @@ test('C-OPEN 2: a link inside a mail body never mints a handle; only the message
   assert.equal([...hostile.text.matchAll(/^open: L\d+ = Slides/gm)].length, 0, 'an off-policy body link mints nothing');
   endHandleSession('live-open2-mail');
 });
-  const line = /^open: (L\d+) = Slides \(from knowledge note\)$/m.exec(shaped.text);
-  assert.equal(line, null, 'a mail body is not a knowledge note');
-  const handle = /^open: (L\d+) = Slides$/m.exec(shaped.text)?.[1];
-  assert.ok(handle, 'the deck link inside the mail body minted a handle');
-  exposeHandles(shaped.text);
-  assert.equal(resolveHandle(handle)!.provenance, 'mail_body');
-  const resolved = openTarget('open_source', { handle }, 'open it');
-  assert.ok('target' in resolved);
-  assert.equal(resolved.target.kind, 'docs');
-  const hostile = shapeGmailRead({ id: 'm2', body: 'deck: https://docs.google.com.evil.example/presentation/d/ABC/edit', bodyCoverage: { complete: true } });
-  assert.equal(/^open: /m.test(hostile.text), false, 'an off-policy body link mints nothing');
-  endHandleSession('live-open2-mail');
-});
 
 test('Open2-5: the correction receipt carries one closed reason and no words of hers', () => {
   assert.deepEqual(safeEvent({ event: 'open_claim_corrected', reason: 'no_receipt' }), { event: 'open_claim_corrected', reason: 'no_receipt' });

@@ -138,7 +138,7 @@ export function openClaimCorrection(runId: string): { text: string; reason: 'no_
   if (receipts.length === 0) {
     return { reason: 'no_receipt', text: 'Correction: nothing opened just then, whatever I said. Tell him plainly that nothing is open, and offer to look it up again.' };
   }
-  if (named !== undefined && !receipts.some(receipt => receipt.kind === named)) {
+  if (named !== undefined && !receipts.some(receipt => receipt.kind === named || (named === 'docs' && receipt.kind === 'drive'))) {
     const actual = receipts.map(receipt => `${receipt.kind} item titled ${receipt.title}`).join(' and ');
     return { reason: 'kind_mismatch', text: `Correction: I did not open the ${claimedNoun(named)}. What opened was ${actual}. Tell him plainly what opened, and that the ${claimedNoun(named)} he asked for is still closed.` };
   }
@@ -163,7 +163,8 @@ function claimedNoun(kind: OpenKind): string {
 const OPEN_INTENT = /(?:\b(?:open|opened|opening|show|shows|launch|start|display)\w*\b|\b(?:oeffne|öffne|zeig|zeige)\w*\b|\b(?:pull|bring)\s+(?:it\s+|that\s+|them\s+|this\s+)?up\b)/iu;
 /** The kind words a turn can name, so an item of another kind is never opened as if it matched. */
 const ASK_KINDS: readonly { words: RegExp; kinds: readonly OpenKind[] }[] = [
-  { words: /\b(?:presentation|presentations|deck|decks|slides|slide)\b/u, kinds: ['docs'] },
+  // C-OPEN 2: an Office deck stored in Drive opens in the Drive viewer, so a deck is either kind.
+  { words: /\b(?:presentation|presentations|deck|decks|slides|slide)\b/u, kinds: ['docs', 'drive'] },
   { words: /\b(?:document|documents|doc|docs|sheet|sheets|spreadsheet)\b/u, kinds: ['docs', 'drive'] },
   { words: /\b(?:mail|mails|email|emails|thread|threads|inbox)\b/u, kinds: ['gmail'] },
   { words: /\b(?:event|events|meeting|meetings)\b/u, kinds: ['calendar'] },

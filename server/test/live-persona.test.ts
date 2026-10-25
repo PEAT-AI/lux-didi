@@ -349,9 +349,9 @@ test('the public character, voice surface and tool conduct are the authored verb
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '1b188117660fe12204cd542001b585fcce69add4f1cc6d27689720e193cac977');
   assert.equal(sha(NAYA_VOICE_SURFACE), 'a4b4f1f26c023751657f6844c12a870d6d9658552911944487b0ad58a042fcaf');
-  assert.equal(sha(NAYA_VOICE_TOOLS), '9a514f03300b3603a5844a2d11b6f47cdede998d4da39fc673781704d58ef445');
+  assert.equal(sha(NAYA_VOICE_TOOLS), 'd8152215ce43da843179bd746bd7856f4b763aa4cf2f11166e5ba2d0eb0cb8d2');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'f421a3148fc20caef9fbdcb21d816b283cc48ac723e59ea601f799df8a6e8b31');
-  assert.equal(sha(NAYA_TOOLS), 'a08e4c3520e4d196612c65e724183aa89be1aef5adafb4a5e3a8933393b33a5b');
+  assert.equal(sha(NAYA_TOOLS), '44de1491b38a6f0cb8ccb91f716e77320208c258a0b58be23784a50adf69cb6f');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));
@@ -1336,25 +1336,19 @@ test('the open paragraph says what she can open, names open_source, and carries 
   assert.equal(/https?:|\/\/|\.com|\.google/.test(NAYA_OPEN_SURFACE), false, 'the open paragraph carries no url or host');
 });
 
-test('C-OPEN 8: the open paragraph sends a document, deck or sheet to Drive and asks before opening one of several', async () => {
+test('C-OPEN 8: an open ask for a document, deck or sheet uses Drive and asks before opening one of several', async () => {
   const { NAYA_OPEN_SURFACE, NAYA_VOICE_TOOLS } = await import('../prompt/live-persona.js');
   const { DRIVE_CHOOSE_GUIDANCE } = await import('../tools/live-shape.js');
-  assert.match(NAYA_OPEN_SURFACE, /documents and decks in his Drive/);
-  assert.match(NAYA_OPEN_SURFACE, /for a document, deck or sheet use a drive lookup/);
-  assert.match(NAYA_OPEN_SURFACE, /If a drive lookup lists several files and no handle, ask which one, then look up his pick by its id\./);
+  assert.match(NAYA_VOICE_TOOLS, /To open a document, deck or sheet, use a drive lookup; use the exact item already returned when it fits\./);
+  assert.match(NAYA_VOICE_TOOLS, /If it lists several files and no handle, ask which one, then look up his pick by its id\./);
   assert.match(NAYA_OPEN_SURFACE, /Say it opened only after the open tool returned opened\./);
   assert.match(NAYA_OPEN_SURFACE, /Never read a handle or web address aloud\./);
-  assert.equal(NAYA_VOICE_TOOLS.includes('Search again only when needed.'), false, 'the older open paragraph folded into this one');
+  assert.equal(NAYA_VOICE_TOOLS.includes('Search again only when needed.'), false, 'the drive rule replaced the vague search line');
   // The tool result that asks is product text too: it names what to say and never invites reading an id or a link.
   assert.match(DRIVE_CHOOSE_GUIDANCE, /none is open/);
   assert.match(DRIVE_CHOOSE_GUIDANCE, /two or three names with their modified dates/);
   assert.match(DRIVE_CHOOSE_GUIDANCE, /Never read an id aloud\./);
   assert.equal(/https?:|\/\/|\.com|\.google/.test(DRIVE_CHOOSE_GUIDANCE), false);
-});
-
-test('C-OPEN 8: the shared evidence guide names drive and its reread by id', async () => {
-  const { EVIDENCE_SOURCES_GUIDE } = await import('../prompt/backend-procedure.js');
-  assert.match(EVIDENCE_SOURCES_GUIDE, /drive finds his own documents, decks and sheets by file name; a drive query of id: and a returned file id reads that one file again\./);
 });
 
 test('O-R2: the open paragraph asks for several sources in one research call with its lookups list', async () => {

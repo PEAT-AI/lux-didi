@@ -23,7 +23,6 @@ import { composeMcpRuntime } from '../host/mcp.js';
 import { GOOGLE_FAMILIES, GOOGLE_TOOLS, createGoogleReader, type GoogleConfig, type GoogleEvidence, type GoogleResult } from '../connectors/index.js';
 import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, googleMcpPathUnsafe, type GcalListInput } from '../connectors/google.js';
 import { gmailAccount, noteGmailAccount } from '../tools/open-handles.js';
-import { safeEvent } from '../host/log.js';
 import { GOOGLE_ERROR_TABLE, UNKNOWN_HELPER_OWNER_LINE, UNKNOWN_HELPER_REASON, decodeGoogleEnvelope, googleErrorEntry, googleOwnerLine, googleToolStatus, readGooglePayload, renderGoogleTool } from '../tools/google.js';
 import { GMAIL_LIST_MESSAGES } from '../tools/live-shape.js';
 import { configuredSourcesForEndpoints, plainReason, type ConfiguredEndpointStatus } from '../tools/research.js';
@@ -1040,7 +1039,6 @@ test('C-OPEN 6: host start logs google_mcp_path_unsafe and the connection row ca
   try {
     const unsafe = events.filter(event => (event as { event?: string }).event === 'google_mcp_path_unsafe');
     assert.deepEqual(unsafe, [{ event: 'google_mcp_path_unsafe', endpointId: 'gmail' }]);
-    assert.deepEqual(safeEvent(unsafe[0]), unsafe[0], 'the host log admits the line');
     const report = runtime.status().endpoints.find(endpoint => endpoint.id === 'gmail');
     assert.equal(report?.warning, 'google_mcp_path_unsafe');
     assert.equal(report?.state, 'connected', 'the notice never stops a working connector');

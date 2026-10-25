@@ -6,7 +6,7 @@ import { HOST_EVIDENCE, type ConnectionEndpoint, type ConnectionPolicy, type Mod
 import { createLuxKnowledgeReader, isCalendarDay, KNOWLEDGE_BODY_MAX_CHARS, KNOWLEDGE_BODY_MIN_CHARS, KNOWLEDGE_DEADLINE_MAX_MS, KNOWLEDGE_DEADLINE_MIN_MS, KNOWLEDGE_SNIPPET_MAX_CHARS, KNOWLEDGE_SNIPPET_MIN_CHARS, LUX_KNOWLEDGE_TOOLS } from './lux-knowledge.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
-import type { GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
+import type { DriveGetInput, DriveSearchInput, GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
 import { googleToolStatus, projectGoogleResult } from '../tools/google.js';
 import { createMongooseReader, mongooseEndpointName, MONGOOSE_ENDPOINT_TOOLS, MONGOOSE_READ_TOOLS, type MongooseEndpoint, type SearchInput } from './mongoose.js';
 import { createMattermostReader, MATTERMOST_ATTENTION_TOOL, MATTERMOST_DEFAULTS, MATTERMOST_TOOLS } from './mattermost.js';
@@ -254,7 +254,8 @@ const luxKnowledgeDescriptor: ConnectorDescriptor = {
 };
 
 function googleFamily(toolNames: readonly string[]): GoogleFamily {
-  return toolNames.some(name => name.startsWith('calendar_')) ? 'calendar' : 'gmail';
+  if (toolNames.some(name => name.startsWith('calendar_'))) return 'calendar';
+  return toolNames.some(name => name.startsWith('gmail_')) ? 'gmail' : toolNames.some(name => name.startsWith('drive_')) ? 'drive' : 'gmail';
 }
 function googleProject(evidence: ConnectorEvidence, port: McpPort, policy: ConnectionPolicy): ModelSnapshot {
   const projection = projectGoogleResult(port, evidence);
@@ -293,6 +294,8 @@ const googleDescriptor: ConnectorDescriptor = {
       { name: 'gmail_search_messages', description: 'List Gmail messages matching a Gmail query, newest first. q uses Gmail operators, for example from:name after:2026/10/07 or subject:(board deck) is:unread. Returns message ids; read the full message with gmail_read_message. Returns at most 5 messages with 300-character excerpts.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: { ...listProps, q: { type: 'string', minLength: 1, description: 'Gmail search query using Gmail operators.' } } }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken', 'q'].includes(key)) },
       { name: 'gmail_read_message', description: 'Read one full Gmail message by id from gmail_search_messages: subject, from, date and body. Returns the body up to 1500 characters.', effect: 'read', parameters: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string', minLength: 1 }, format: { type: 'string', enum: ['metadata', 'full'] } } }, validate: args => isRecord(args) && typeof args['id'] === 'string' && (args['id'] as string).length > 0 && Object.keys(args).every(key => ['id', 'format'].includes(key)) },
       { name: 'calendar_list_calendars', description: 'List the calendars visible to the selected binding. Returns names only, no events. Call it only when the owner asks which calendars exist; an event read needs no calendar list.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: listProps }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken'].includes(key)) },
+      { name: 'drive_search_files', description: 'Find the owner\'s own Drive files by name, newest first: name, type, modified date and owner, and an open: handle when exactly one file matches. Several matches carry ids and no handle; read the one he picks with drive_get_file. Returns at most 5 files.', effect: 'read', parameters: { type: 'object', additionalProperties: false, required: ['query'], properties: { query: { type: 'string', minLength: 1, maxLength: 200, description: 'Words from the file name, for example harbour review.' }, mime_types: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', minLength: 3, maxLength: 161 }, description: 'Optional file types, for example application/vnd.google-apps.presentation for a deck.' }, modified_after: { type: 'string', minLength: 1, description: 'Optional RFC3339 lower bound on the modified time.' }, limit: { type: 'integer', minimum: 1, maximum: 10 } } }, validate: args => isRecord(args) && typeof args['query'] === 'string' && Object.keys(args).every(key => ['query', 'mime_types', 'modified_after', 'limit'].includes(key)) },
+      { name: 'drive_get_file', description: 'Read one Drive file by the id a drive_search_files result carried: name, type, modified date and owner, and its open: handle unless it is in the trash.', effect: 'read', parameters: { type: 'object', additionalProperties: false, required: ['file_id'], properties: { file_id: { type: 'string', minLength: 1, maxLength: 256 } } }, validate: args => isRecord(args) && typeof args['file_id'] === 'string' && Object.keys(args).every(key => key === 'file_id') },
       { name: 'calendar_list_events', description: 'List events on one calendar in a time window. timeMin and timeMax are RFC3339 timestamps with the offset from the runtime context; pass exact start and end instead of asking for a date. Omit both for today in the host timezone. Returns time, title, location, attendees and organizer. Returns at most 8 events of 300 characters with up to eight attendee names, without dial-in text.', effect: 'read', parameters: { type: 'object', additionalProperties: false, properties: { ...listProps, calendarId: { type: 'string', minLength: 1, description: 'Calendar id; defaults to the primary calendar.' }, timeMin: { type: 'string', minLength: 1, description: 'Window start, RFC3339 with the runtime timezone offset.' }, timeMax: { type: 'string', minLength: 1, description: 'Window end, RFC3339 with the runtime timezone offset.' }, deadlineAt: { type: 'number', description: "Internal: the caller's remaining source budget as an absolute epoch ms. The host sets it; a model call never needs it." } } }, validate: args => isRecord(args) && Object.keys(args).every(key => ['maxResults', 'pageToken', 'calendarId', 'timeMin', 'timeMax', 'deadlineAt'].includes(key)) },
     ];
   },
@@ -307,6 +310,8 @@ const googleDescriptor: ConnectorDescriptor = {
         if (tool === 'gmail_search_messages') return await reader.gmailList(args as GmailListInput, signal);
         if (tool === 'gmail_read_message') return await reader.gmailRead(args as unknown as GmailReadInput, signal);
         if (tool === 'calendar_list_calendars') return await reader.gcalCalendars(args as GcalCalendarsInput, signal);
+        if (tool === 'drive_search_files') return await reader.driveSearch(args as unknown as DriveSearchInput, signal);
+        if (tool === 'drive_get_file') return await reader.driveGet(args as unknown as DriveGetInput, signal);
         return await reader.gcalList(args as GcalListInput, signal);
       },
     };
@@ -314,7 +319,10 @@ const googleDescriptor: ConnectorDescriptor = {
   project: googleProject,
   status: googleStatus,
   identity(policy) {
-    return googleFamily(policy.toolNames) === 'calendar'
+    const family = googleFamily(policy.toolNames);
+    // The Drive family has no own-account read; its helper pins the account its own token was issued for.
+    if (family === 'drive') return null;
+    return family === 'calendar'
       ? { tool: 'calendar_list_calendars', args: {}, values: calendarIdentityValues, strict: true }
       : { tool: 'gmail_get_profile', args: {}, values: gmailIdentityValues, strict: true };
   },

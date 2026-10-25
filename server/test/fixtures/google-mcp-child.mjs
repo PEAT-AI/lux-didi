@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Synthetic stdio MCP child for check-google-connector.sh.
 // No real account, network, credential or application file is touched. It exposes the five
-// Gmail/Calendar read tools (decoy mode adds the Drive pair) plus a decoy write tool so a test can prove
-// the write is never granted.
+// Gmail/Calendar read tools and the Drive pair, plus a decoy write tool so a test can prove the write
+// is never granted.
 // argv[2] = mode (ok | credential | flaky | gmail-only | drive | drive-code:<helper code> | code:<helper code> |
 // first:<helper code> | first-mail:<helper code>),
 // argv[3] = pid file.
@@ -36,11 +36,11 @@ const DRIVE_TOOLS = [
   { name: 'drive_get_file', description: 'Synthetic Drive file read', inputSchema: { type: 'object', properties: { file_id: { type: 'string' } }, required: ['file_id'], additionalProperties: false } },
 ];
 const DECOY = { name: 'gmail_send', description: 'Decoy write tool that must never be granted', inputSchema: { type: 'object', properties: { to: { type: 'string' } }, additionalProperties: false } };
-// gmail-only publishes the mailbox family alone, drive and drive-code:<code> the Drive family alone, as the
-// installed helper does per endpoint.
+// Every other mode publishes all seven read tools; gmail-only publishes the mailbox family alone, drive and
+// drive-code:<code> the Drive family alone, as the installed helper does per endpoint.
 const TOOLS = mode === 'decoy' ? [...BASE_TOOLS, ...DRIVE_TOOLS, DECOY]
   : mode === 'gmail-only' ? BASE_TOOLS.filter(tool => tool.name.startsWith('gmail_'))
-  : mode === 'drive' || mode.startsWith('drive-code:') ? DRIVE_TOOLS : BASE_TOOLS;
+  : mode === 'drive' || mode.startsWith('drive-code:') ? DRIVE_TOOLS : [...BASE_TOOLS, ...DRIVE_TOOLS];
 const DRIVE_OWNERS = [{ displayName: 'Synthetic Owner', emailAddress: 'owner@example.invalid' }];
 const DRIVE_FILES = [
   { id: 'SyntheticDeckNew01', name: 'Harbour review deck', mimeType: 'application/vnd.google-apps.presentation', modifiedTime: '2026-10-24T08:00:00.000Z', owners: DRIVE_OWNERS, webViewLink: 'https://docs.google.com/presentation/d/SyntheticDeckNew01/edit?usp=drivesdk' },

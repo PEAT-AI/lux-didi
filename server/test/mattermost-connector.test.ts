@@ -15,6 +15,10 @@ import { mattermostToolStatus, projectMattermostResult } from '../tools/mattermo
 import { mongooseFailureStage } from '../connectors/mongoose.js';
 import { ResearchLedger, runResearch, type ResearchDeps } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
+import { Store } from '../runtime/store.js';
+import { createToolsOwner, toolsMigrations } from '../tools/index.js';
+import { runToolCalls } from '../tools/declarations.js';
+import type { LiveAuthority, RunAcceptance } from '../tools/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const child = join(here, 'fixtures', 'stdio-mattermost-child.mjs');
@@ -322,6 +326,45 @@ test('#637: a plain words channel reference resolves its words, and names the ch
   const miss = resolveChannelReference('singapore summit', conference);
   assert.equal('error' in miss && miss.error.startsWith('channel-not-found: singapore summit'), true);
   assert.equal('error' in resolveChannelReference('!!!', conference), true, 'a reference with no words resolves nothing');
+});
+
+// #637 CHANNELS-R6 (a): a refused channel read driven through the real tools owner records the closed
+// code channel_not_found, and no wide archive read is issued for it.
+test('#637: a refused channel read through the real tools owner records the closed code', async t => {
+  const f = setup('ok');
+  const store = new Store(join(f.dir, 'data'), toolsMigrations);
+  t.after(async () => { await f.adapter.close(); store.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const discovered = await f.adapter.discover('mattermost');
+  assert.equal(discovered.state, 'discovered');
+  if (discovered.state !== 'discovered') throw new Error('not discovered');
+  let live: LiveAuthority | null = null;
+  const owner = createToolsOwner({ store, ownerId: store.assistantId, registry: f.registry, port: f.adapter, lookupAuthority: async () => live });
+  owner.applyConnection({
+    schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mattermost', generation: 1, enabled: true, connector: 'mattermost',
+    endpoint: { ...config('mattermost', 'ok', f.dir, join(f.dir, 'calls.log')), credentialRef: null },
+    toolNames: [...MATTERMOST_TOOLS], schemaDigest: discovered.schemaDigest,
+    sourcePolicy: { id: 'mattermost-read', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+    route: { identity: 'voice', allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 200, maxSearchLimit: 50, maxGetIds: 10, maxEntityBytes: 20000, maxResultBytes: 200000 },
+  } as never);
+  // applyConnection suspends the grant; a fresh discovery followed by the projection publishes it.
+  const again = await f.adapter.discover('mattermost');
+  assert.equal(again.state, 'discovered');
+  owner.projectConnection('mattermost');
+  const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1,
+    route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['ordinary'] }, allowedClasses: ['ordinary'], connectionIds: ['mattermost'] };
+  const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
+  live = { ...acceptance, acceptedRunHash: accepted.sha256 };
+  // The run's own read grants, the same shape the host hands a real run.
+  const host = { ...live, grants: MATTERMOST_TOOLS.map(tool => ({ tool, effect: 'read', accountId: ACCOUNT, resourceId: RESOURCE })) };
+  const batch = await runToolCalls(owner, [{ id: 's0', name: 'mattermost_search', args: { query: 'release', channel: 'nowhere' } }], {
+    registry: owner.definitions('run'), host: host as never, authority: { isCurrent: async () => true } as never,
+    control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step: 0, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'],
+  });
+  const record = batch.tools.find(entry => entry.callId === 's0');
+  assert.equal(record?.status, 'failed');
+  assert.equal(record?.reason, 'channel_not_found', 'the refused read records the closed code the reply keys on');
+  assert.ok(!f.calls().some(call => call.name === 'mattermost_search'), 'no wide archive search follows the unknown channel');
 });
 
 // #614: the fixture answers the installed child's real envelopes, so a decode that only knew the

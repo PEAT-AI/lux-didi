@@ -299,13 +299,52 @@ test('#610: a channel named in the ask resolves through the channel list and fil
   assert.equal(search?.arguments['sort'], 'newest');
 });
 
-test('#610: an unknown channel name is one closed refusal with no archive search', async t => {
+test('#637: an unknown channel name is one closed refusal with no archive search', async t => {
   const f = setup('ok');
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
   const r = reader(f.adapter, f.registry, await approve(f.adapter, f.registry));
   const result = await r.search({ query: 'latest topics', channel: 'nowhere' });
-  assert.equal(result.state === 'refused' ? result.reason : result.state, 'channel-not-found: nowhere; closest names: Town Square, Dogcation');
+  assert.equal(result.state === 'refused' ? result.reason : result.state, 'channel_not_found: nowhere');
   assert.ok(!f.calls().some(call => call.name === 'mattermost_search'), 'no archive search follows a missing channel');
+});
+
+// #637: an owner names a channel by the words he sees, so a plain word reference resolves the display
+// name and the name alike, and two channels that carry the word are named, never picked.
+test('#637: a plain words channel reference resolves its words, and names the channels when several do', () => {
+  const aiTeam = [{ id: 'chan-ai-team', name: 'ai-team', displayName: 'AI Team' }];
+  const aiMl = [{ id: 'chan-ai-ml', name: 'ai-ml', displayName: 'AI/ML' }];
+  assert.deepEqual(resolveChannelReference('ai', aiTeam), { channel: 'chan-ai-team' });
+  assert.deepEqual(resolveChannelReference('ai', aiMl), { channel: 'chan-ai-ml' });
+  const both = resolveChannelReference('ai', [...aiTeam, ...aiMl]);
+  assert.equal('error' in both && both.error.startsWith('channel-ambiguous: ai matches '), true);
+  const conference = [{ id: 'chan-singapore', name: 'singapore-conference-2026', displayName: 'Singapore Conference 2026' }];
+  assert.deepEqual(resolveChannelReference('singapore conference', conference), { channel: 'chan-singapore' });
+  const miss = resolveChannelReference('singapore summit', conference);
+  assert.equal('error' in miss && miss.error.startsWith('channel-not-found: singapore summit'), true);
+  assert.equal('error' in resolveChannelReference('!!!', conference), true, 'a reference with no words resolves nothing');
+});
+
+// #637: the ask names a channel the list does not know, so the reply says so in words instead of
+// voicing a wide archive search that happened to find nothing.
+test('#637: the research reply says the channel is unknown and no archive search is issued', async t => {
+  const f = setup('ok');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  await approve(f.adapter, f.registry);
+  const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => Promise.all(subs.map(async call => {
+    const result = await f.adapter.call({ endpointId: 'mattermost', toolName: call.name, arguments: call.args as Record<string, unknown>, generation: 1, account: ACCOUNT, resource: RESOURCE } as never);
+    if ('reason' in result) return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: result.reason };
+    const text = '**team** [post abcdef1234567890abcdefghij]\nnothing new';
+    return { key: call.key, name: call.name, ok: true, text, originalCharacters: text.length, omittedCharacters: 0 };
+  }));
+  const deps: ResearchDeps = { now: () => 0, configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger() };
+  const question = 'what is new in the nowhere channel';
+  const reply = await runResearch(deps, { action: 'start', question, topic: question }, new AbortController().signal);
+  const note = String(reply['note'] ?? '');
+  assert.match(note, /I do not know a channel called nowhere\./u);
+  assert.equal(note.includes('found nothing matching'), false, 'an unknown channel is never voiced as an empty search');
+  assert.equal(note.includes('could not reach'), false, 'and never as a chat that could not be reached');
+  assert.match(String(reply['coverage']), /chat channel_not_found/u);
+  assert.ok(!f.calls().some(call => call.name === 'mattermost_search'), 'no archive search follows the unknown channel');
 });
 
 // #614: the fixture answers the installed child's real envelopes, so a decode that only knew the

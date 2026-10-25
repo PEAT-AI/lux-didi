@@ -472,6 +472,27 @@ test('P5: a dead connector is reported unavailable with its reason, never empty 
   assert.deepEqual(h.executed, [], 'the dead connector is never asked');
 });
 
+// #637: a channel the list does not know is its own closed reason, spoken in words, never a failed
+// read and never a search that found nothing.
+test('#637: an unknown channel is its own closed reason in the note and the coverage header', async () => {
+  const sent: Record<string, unknown>[] = [];
+  const h = harness({
+    configured: ['chat'],
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
+      if (call.name === 'mattermost_search') sent.push(call.args);
+      return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'channel_not_found: AI' };
+    }),
+  });
+  const question = 'what is new in the AI channel';
+  const reply = await runResearch(h.deps, { action: 'start', question, lookups: [{ source: 'chat', query: question }] }, new AbortController().signal);
+  assert.deepEqual(sent.map(args => args['channel']), ['AI'], 'the words the ask names reach the connector as its channel argument');
+  const note = String(reply['note'] ?? '');
+  assert.match(note, /I do not know a channel called AI\./u);
+  assert.equal(note.includes('found nothing matching'), false, 'an unknown channel is never voiced as an empty search');
+  assert.equal(note.includes('could not reach'), false, 'and never as a chat that could not be reached');
+  assert.match(String(reply['coverage']), /chat channel_not_found/u);
+});
+
 test('P5-R5: a routed read that returns a failure is failed, never empty', async () => {
   const receipts: ResearchSourceLog[] = [];
   const failed = (key: string, name: string): IntentSubResult =>

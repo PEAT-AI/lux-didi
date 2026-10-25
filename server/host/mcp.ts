@@ -210,6 +210,8 @@ export async function composeMcpRuntime(options: {
   recoveryDelaysMs?: readonly number[];
   /** Hold connector initialization until `start()`; the supervised host writes the ready frame first. */
   deferConnectors?: boolean;
+  /** W7: the owner's Trello board service, handed to the tools owner as is. */
+  trello?: ToolsOwnerOptions['trello'];
 }): Promise<McpRuntimeComposition> {
   const { store, ownerId, configDir } = options; const now = options.now ?? Date.now;
   const registry = new ProbeRegistry();
@@ -276,7 +278,7 @@ export async function composeMcpRuntime(options: {
       ? { id: previous.id, state: 'connected', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt }
       : { id: previous.id, state: 'configured', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt, error: status.reason });
   };
-  const owner = createToolsOwner({ grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, ...(options.log ? { log: options.log } : {}) });
+  const owner = createToolsOwner({ grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, ...(options.log ? { log: options.log } : {}), ...(options.trello ? { trello: options.trello } : {}) });
   const sourcePort = owner.sourcePort;
   if (selection.state === 'missing') {
     const empty: McpRuntimeComposition = { registry, port: sourcePort, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), start: async () => {}, refresh: async () => {}, recover: async () => {}, close: () => port.close() };

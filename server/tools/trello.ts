@@ -1,0 +1,777 @@
+import type { JsonObject } from '../adapters/model/types.js';
+
+/**
+ * Naya on the owner's one Trello board, through the official Trello remote MCP server. Didi never hands
+ * the model a server tool: the model sees two gateway tools with closed schemas, and every argument that
+ * names a list, card or label is resolved on the pinned board before anything is dispatched. Server tools
+ * that create boards, create or move lists, change members, or touch Inbox or Planner are never called.
+ */
+export const TRELLO_READ_IDENTITY = { name: 'trello_read', accountId: 'gateway:live-voice', resourceId: 'owner-trello' } as const;
+export const TRELLO_WRITE_IDENTITY = { name: 'trello_write', accountId: 'gateway:live-voice', resourceId: 'owner-trello' } as const;
+export const TRELLO_TOOL_NAMES: ReadonlySet<string> = new Set([TRELLO_READ_IDENTITY.name, TRELLO_WRITE_IDENTITY.name]);
+/** The board Naya may use, by name, unless the owner configures another. */
+export const TRELLO_DEFAULT_BOARD = 'Rob';
+
+export const TRELLO_READ_VIEWS = ['overview', 'list', 'search', 'due', 'card', 'recent'] as const;
+export const TRELLO_DUE_WINDOWS = ['overdue', 'today', 'week'] as const;
+export const TRELLO_WRITE_ACTIONS = ['create', 'update', 'note', 'checklist', 'due', 'move', 'done', 'label', 'archive'] as const;
+export type TrelloReadView = (typeof TRELLO_READ_VIEWS)[number];
+export type TrelloWriteAction = (typeof TRELLO_WRITE_ACTIONS)[number];
+
+export const TRELLO_PAGE_MAX = 25;
+export const TRELLO_NAME_MAX = 512;
+export const TRELLO_DESC_MAX = 4000;
+export const TRELLO_NOTE_MAX = 1000;
+/** A board read never follows more pages than this per collection; a cut is reported, never hidden. */
+export const TRELLO_MAX_PAGES = 20;
+/** A board snapshot older than this is read again before it answers. */
+export const TRELLO_SNAPSHOT_TTL_MS = 60_000;
+/** Trello's own description ceiling; an appended note that would pass it is refused. */
+export const TRELLO_DESC_LIMIT = 16_384;
+
+/** The only server tools Didi may call, and for each the only actions. Everything else is unreachable. */
+export const TRELLO_SERVER_ALLOW: Readonly<Record<string, readonly string[]>> = {
+  trelloReadMember: ['get_me'],
+  trelloReadBoard: ['list', 'list_labels'],
+  trelloReadList: ['list_by_board'],
+  trelloReadCard: ['get', 'list_by_list', 'list_comments'],
+  trelloReadChecklist: ['list_by_card'],
+  trelloWriteCard: ['create', 'update', 'move', 'archive', 'add_label', 'remove_label', 'attach_label', 'detach_label'],
+  trelloWriteChecklist: ['create', 'add_item', 'create_item', 'update_item'],
+};
+/** Never offered, never called: board and list admin, members, Inbox and Planner. */
+export const TRELLO_SERVER_DENY = ['trelloWriteBoard', 'trelloWriteList', 'trelloReadInbox', 'trelloWriteInbox', 'trelloReadPlanner', 'trelloWritePlanner', 'trelloWriteMember'] as const;
+
+const TEXT = (max: number, description: string) => ({ type: 'string', minLength: 1, maxLength: max, description });
+
+export const TRELLO_READ_PARAMETERS = {
+  type: 'object', additionalProperties: false, required: ['view'],
+  properties: {
+    view: { type: 'string', enum: [...TRELLO_READ_VIEWS], description: 'overview: every list with its card count and newest cards. list: the cards of one list, paged. search: cards whose name or description match the query. due: overdue cards first, then the window. card: one card with its checklists. recent: cards created today.' },
+    list: TEXT(120, 'A list on his board, by its name as he says it, for view list.'),
+    query: TEXT(200, 'A few words to find, for view search.'),
+    window: { type: 'string', enum: [...TRELLO_DUE_WINDOWS], description: 'For view due: overdue, today or week.' },
+    card: TEXT(TRELLO_NAME_MAX, 'For view card: a card handle like C3 from an earlier result, or the card name.'),
+    offset: { type: 'integer', minimum: 0, maximum: 10_000, description: 'For view list: how many cards to skip, from the nextOffset of an earlier page.' },
+    limit: { type: 'integer', minimum: 1, maximum: TRELLO_PAGE_MAX, description: `For view list or search: at most ${TRELLO_PAGE_MAX} cards.` },
+  },
+};
+
+export const TRELLO_WRITE_PARAMETERS = {
+  type: 'object', additionalProperties: false, required: ['action'],
+  properties: {
+    action: { type: 'string', enum: [...TRELLO_WRITE_ACTIONS], description: 'create a card; update its name or description; note adds a dated line to its description; checklist adds an item or ticks one; due sets or clears the due date; move to another list; done finishes it; label attaches or removes a label; archive.' },
+    card: TEXT(TRELLO_NAME_MAX, 'The card: a handle like C3 from an earlier result, or the card name. Not for create.'),
+    list: TEXT(120, 'A list on his board by its name, for create and move.'),
+    name: TEXT(TRELLO_NAME_MAX, 'The card title, for create, or the new title for update.'),
+    description: TEXT(TRELLO_DESC_MAX, 'The card description, for create or update.'),
+    text: TEXT(TRELLO_NOTE_MAX, 'The note in his words, for note.'),
+    item: TEXT(300, 'The checklist item, for checklist.'),
+    checklist: TEXT(120, 'Which checklist on the card, for checklist; omit for the first one.'),
+    checked: { type: 'boolean', description: 'For checklist: tick (true) or untick (false) an existing item.' },
+    due: { type: 'string', minLength: 4, maxLength: 16, description: 'For create or due: his local date YYYY-MM-DD, or date and time YYYY-MM-DDTHH:MM, or none to clear.' },
+    complete: { type: 'boolean', description: 'For due: mark the due date complete (true) or open again (false).' },
+    label: TEXT(60, 'For label: the label name or its colour.'),
+    remove: { type: 'boolean', description: 'For label: true removes the label instead of attaching it.' },
+  },
+};
+
+type Args = Record<string, unknown>;
+const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
+const str = (value: unknown, max: number): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= max;
+const only = (args: Args, allowed: readonly string[]): boolean => Object.keys(args).every(key => allowed.includes(key));
+
+/** Each view takes exactly its own arguments; anything else is an unusable shape, refused at the boundary. */
+export function validateTrelloRead(args: unknown): args is Args {
+  if (!isRecord(args) || typeof args.view !== 'string') return false;
+  const limit = args.limit === undefined || Number.isSafeInteger(args.limit) && (args.limit as number) >= 1 && (args.limit as number) <= TRELLO_PAGE_MAX;
+  const offset = args.offset === undefined || Number.isSafeInteger(args.offset) && (args.offset as number) >= 0 && (args.offset as number) <= 10_000;
+  if (!limit || !offset) return false;
+  switch (args.view) {
+    case 'overview': case 'recent': return only(args, ['view']);
+    case 'list': return only(args, ['view', 'list', 'offset', 'limit']) && str(args.list, 120);
+    case 'search': return only(args, ['view', 'query', 'limit']) && str(args.query, 200);
+    case 'due': return only(args, ['view', 'window']) && (TRELLO_DUE_WINDOWS as readonly string[]).includes(String(args.window));
+    case 'card': return only(args, ['view', 'card']) && str(args.card, TRELLO_NAME_MAX);
+    default: return false;
+  }
+}
+
+const WRITE_SHAPES: Readonly<Record<TrelloWriteAction, { required: readonly string[]; optional: readonly string[] }>> = {
+  create: { required: ['list', 'name'], optional: ['description', 'due'] },
+  update: { required: ['card'], optional: ['name', 'description'] },
+  note: { required: ['card', 'text'], optional: [] },
+  checklist: { required: ['card', 'item'], optional: ['checklist', 'checked'] },
+  due: { required: ['card', 'due'], optional: ['complete'] },
+  move: { required: ['card', 'list'], optional: [] },
+  done: { required: ['card'], optional: [] },
+  label: { required: ['card', 'label'], optional: ['remove'] },
+  archive: { required: ['card'], optional: [] },
+};
+const WRITE_LIMITS: Readonly<Record<string, number>> = { card: TRELLO_NAME_MAX, list: 120, name: TRELLO_NAME_MAX, description: TRELLO_DESC_MAX, text: TRELLO_NOTE_MAX, item: 300, checklist: 120, due: 16, label: 60 };
+
+export function validateTrelloWrite(args: unknown): args is Args {
+  if (!isRecord(args) || typeof args.action !== 'string' || !(TRELLO_WRITE_ACTIONS as readonly string[]).includes(args.action)) return false;
+  const shape = WRITE_SHAPES[args.action as TrelloWriteAction];
+  if (!only(args, ['action', ...shape.required, ...shape.optional]) || !shape.required.every(key => args[key] !== undefined)) return false;
+  for (const [key, value] of Object.entries(args)) {
+    if (key === 'action') continue;
+    if (key === 'checked' || key === 'complete' || key === 'remove') { if (typeof value !== 'boolean') return false; continue; }
+    if (!str(value, WRITE_LIMITS[key] ?? 0)) return false;
+  }
+  if (args.action === 'update' && args.name === undefined && args.description === undefined) return false;
+  return true;
+}
+
+/** Case, spacing and "&" against "and" are not part of a name; nothing else is folded. */
+export function foldName(value: string): string {
+  return value.normalize('NFKC').toLowerCase().replace(/&/g, ' and ').replace(/\s+/g, ' ').trim();
+}
+
+/** One owner turn must ask for a change before any board write: a write cue, in his own words. */
+const WRITE_CUE = /\b(?:add|create|put|make|new|move|moved|mark|done|finish(?:ed)?|complete(?:d)?|tick|untick|check(?:\s+off)?|uncheck|set|due|deadline|remind|note|log|jot|write|rename|change|update|label|tag|untag|archive|clear|remove|drop|shift|schedule|push)\b|\b(?:hinzuf(?:ü|ue)gen|verschieb\w*|erledigt|archivier\w*|notier\w*|anlegen|setz\w*)\b/iu;
+export function ownerAskedForChange(words: string): boolean { return WRITE_CUE.test(words); }
+
+/** The server's own words for one call outcome, closed: never a body, never a token. */
+export type TrelloCallCode = 'not_signed_in' | 'auth_failed' | 'rate_limited' | 'unavailable' | 'unknown' | 'tool_error' | 'protocol_error' | 'not_allowed';
+export type TrelloCallResult = { ok: true; value: unknown } | { ok: false; code: TrelloCallCode };
+export interface TrelloServerTool { name: string; inputSchema: unknown }
+/** The one door to the server: the advertised tools, and one call. It never retries. */
+export interface TrelloTransport {
+  tools(signal?: AbortSignal): Promise<{ ok: true; value: readonly TrelloServerTool[] } | { ok: false; code: TrelloCallCode }>;
+  call(tool: string, args: Args, signal?: AbortSignal): Promise<TrelloCallResult>;
+}
+
+/** Per action of one server tool: the properties it accepts and the ones it requires. */
+export type TrelloSchemaIndex = Map<string, Map<string, { props: Set<string>; required: Set<string> }>>;
+
+function actionsOf(schema: Record<string, unknown>): string[] {
+  const action = isRecord(schema.properties) ? schema.properties.action : undefined;
+  if (!isRecord(action)) return [];
+  if (Array.isArray(action.enum)) return action.enum.filter((value): value is string => typeof value === 'string');
+  return typeof action.const === 'string' ? [action.const] : [];
+}
+
+/** The advertised schemas, indexed by tool and action. A flat schema lets every action use every property. */
+export function indexTrelloSchemas(tools: readonly TrelloServerTool[]): TrelloSchemaIndex {
+  const index: TrelloSchemaIndex = new Map();
+  for (const tool of tools) {
+    if (!Object.hasOwn(TRELLO_SERVER_ALLOW, tool.name) || !isRecord(tool.inputSchema)) continue;
+    const schema = tool.inputSchema;
+    const flat = new Set(Object.keys(isRecord(schema.properties) ? schema.properties : {}).filter(key => key !== 'action'));
+    const topRequired = new Set((Array.isArray(schema.required) ? schema.required : []).filter((key): key is string => typeof key === 'string' && key !== 'action'));
+    const actions = new Map<string, { props: Set<string>; required: Set<string> }>();
+    const branches = [...(Array.isArray(schema.oneOf) ? schema.oneOf : []), ...(Array.isArray(schema.anyOf) ? schema.anyOf : [])].filter(isRecord);
+    for (const branch of branches) {
+      const props = new Set(Object.keys(isRecord(branch.properties) ? branch.properties : {}).filter(key => key !== 'action'));
+      const required = new Set((Array.isArray(branch.required) ? branch.required : []).filter((key): key is string => typeof key === 'string' && key !== 'action'));
+      for (const action of actionsOf(branch)) actions.set(action, { props: new Set([...props, ...(props.size ? [] : flat)]), required: new Set([...required, ...topRequired]) });
+    }
+    for (const action of actionsOf(schema)) if (!actions.has(action)) actions.set(action, { props: flat, required: topRequired });
+    const allowed = TRELLO_SERVER_ALLOW[tool.name]!;
+    for (const action of [...actions.keys()]) if (!allowed.includes(action)) actions.delete(action);
+    index.set(tool.name, actions);
+  }
+  return index;
+}
+
+export interface TrelloPlannedCall { tool: string; args: Args }
+/** The first candidate the advertised schema really accepts, or nothing: an unknown shape is unsupported, never guessed. */
+export function planTrelloCall(index: TrelloSchemaIndex, tool: string, candidates: readonly Args[]): TrelloPlannedCall | undefined {
+  const actions = index.get(tool);
+  if (!actions || (TRELLO_SERVER_DENY as readonly string[]).includes(tool)) return undefined;
+  for (const candidate of candidates) {
+    const action = candidate.action;
+    if (typeof action !== 'string') continue;
+    const accepted = actions.get(action);
+    if (!accepted) continue;
+    const keys = Object.keys(candidate).filter(key => key !== 'action');
+    if (keys.every(key => accepted.props.has(key)) && [...accepted.required].every(key => keys.includes(key) || key === 'cursor')) return { tool, args: candidate };
+  }
+  return undefined;
+}
+
+/** One card as Didi keeps it: only what the board view, the pin and a receipt need. */
+export interface TrelloCard { id: string; name: string; desc: string; due: string | null; dueComplete: boolean; listId: string; closed: boolean; labels: { id: string; name: string; color: string }[]; createdAt?: number; activityAt?: number }
+interface TrelloList { id: string; name: string }
+interface TrelloLabel { id: string; name: string; color: string }
+
+const ARI = (entity: string) => new RegExp(`^ari:cloud:trello::${entity}/workspace/[A-Za-z0-9]{1,64}/[A-Za-z0-9]{1,64}$`);
+const CARD_ARI = ARI('card'); const LIST_ARI = ARI('list'); const BOARD_ARI = ARI('board'); const LABEL_ARI = ARI('label');
+const CHECKLIST_ARI = ARI('checklist'); const ITEM_ARI = ARI('check-item');
+const text = (value: unknown): string => typeof value === 'string' ? value : '';
+const idOf = (value: unknown, shape: RegExp): string | undefined => typeof value === 'string' && shape.test(value) ? value : undefined;
+
+/** A Trello object id carries its creation second in its first eight hex digits. */
+function createdFromId(ari: string): number | undefined {
+  const raw = ari.split('/').pop() ?? '';
+  return /^[0-9a-f]{24}$/.test(raw) ? Number.parseInt(raw.slice(0, 8), 16) * 1000 : undefined;
+}
+
+/** The structured value of a call: JSON text content or structured content. Anything else is unrecognized. */
+export function trelloPayload(result: unknown): unknown {
+  if (!isRecord(result)) return undefined;
+  if (result.structuredContent !== undefined) return result.structuredContent;
+  if (!Array.isArray(result.content)) return undefined;
+  for (const item of result.content) {
+    if (isRecord(item) && item.type === 'text' && typeof item.text === 'string') {
+      try { return JSON.parse(item.text); } catch { return undefined; }
+    }
+  }
+  return undefined;
+}
+
+const COLLECTION_KEYS = ['cards', 'lists', 'boards', 'labels', 'checklists', 'comments', 'items', 'results', 'data', 'nodes'];
+/** The records of one page and its continuation, or nothing when the page is not a collection. */
+export function trelloPage(value: unknown): { items: Record<string, unknown>[]; next?: string } | undefined {
+  let items: unknown;
+  if (Array.isArray(value)) items = value;
+  else if (isRecord(value)) {
+    for (const key of COLLECTION_KEYS) if (Array.isArray(value[key])) { items = value[key]; break; }
+    if (items === undefined && Array.isArray(value.edges)) items = value.edges.map(edge => isRecord(edge) ? edge.node : undefined);
+  }
+  if (!Array.isArray(items) || !items.every(isRecord)) return undefined;
+  const info = isRecord(value) && isRecord(value.pageInfo) ? value.pageInfo : isRecord(value) ? value : {};
+  const more = info.hasNextPage === true || info.hasMore === true;
+  const cursor = typeof info.endCursor === 'string' ? info.endCursor : typeof info.nextCursor === 'string' ? info.nextCursor : undefined;
+  return { items: items as Record<string, unknown>[], ...(more && cursor ? { next: cursor } : {}) };
+}
+
+/** One card record from any read or write reply, or nothing when it does not carry a card id. */
+export function trelloCardOf(value: unknown): TrelloCard | undefined {
+  const record = isRecord(value) && isRecord(value.card) ? value.card : value;
+  if (!isRecord(record)) return undefined;
+  const id = idOf(record.id, CARD_ARI);
+  if (!id) return undefined;
+  const list = isRecord(record.list) ? record.list.id : undefined;
+  const listId = idOf(record.listId ?? record.idList ?? list, LIST_ARI) ?? '';
+  const labels = Array.isArray(record.labels) ? record.labels.filter(isRecord).flatMap(label => {
+    const labelId = idOf(label.id, LABEL_ARI);
+    return labelId ? [{ id: labelId, name: text(label.name), color: text(label.color) }] : [];
+  }) : [];
+  const due = typeof record.due === 'string' && Number.isFinite(Date.parse(record.due)) ? record.due : null;
+  const activity = typeof record.dateLastActivity === 'string' ? Date.parse(record.dateLastActivity) : NaN;
+  const created = createdFromId(id);
+  return { id, name: text(record.name), desc: text(record.desc ?? record.description), due, dueComplete: record.dueComplete === true, listId, closed: record.closed === true || record.archived === true, labels,
+    ...(created !== undefined ? { createdAt: created } : {}), ...(Number.isFinite(activity) ? { activityAt: activity } : {}) };
+}
+
+/** Closed codes the model hears, each with the one clause Naya says. */
+export const TRELLO_GUIDANCE: Readonly<Record<string, string>> = {
+  not_signed_in: 'Trello is not signed in. Tell him to use Sign in to Trello in Settings once.',
+  auth_failed: 'Trello refused the stored sign-in. Tell him to sign in to Trello again in Settings.',
+  rate_limited: 'Trello asked to slow down. Say so and offer to try again in a moment.',
+  unavailable: 'Trello did not answer. Say Trello is not reachable right now; nothing changed.',
+  board_not_found: 'His board was not found in the signed-in Trello workspace. Say so plainly.',
+  board_ambiguous: 'More than one board has his board name. Say so plainly; nothing was read.',
+  unsupported: 'The Trello server does not offer this yet. Say plainly that it cannot be done through Trello right now.',
+  result_unrecognized: 'Trello answered in a shape Naya does not know. Say the read failed; never guess the content.',
+  outside_scope: 'That is not on his board. Naya only works on his own board; say so.',
+  list_unknown: 'No list on his board has that name. Name the closest lists and ask which one.',
+  list_ambiguous: 'More than one list matches. Name them and ask which one.',
+  card_unknown: 'No card on his board matches. Ask him which card, or offer to search.',
+  card_ambiguous: 'More than one card matches. Name them and ask which one.',
+  label_unknown: 'His board has no label by that name or colour. Name the labels it has.',
+  item_unknown: 'That checklist item is not on the card. Name the items it has.',
+  invalid_due: 'The date was not a real date. Ask him for the date again.',
+  description_full: 'The card description is full, so the note was not added. Say so.',
+  not_owner_requested: 'He did not ask for a change this turn. Nothing changed; never claim it did.',
+  no_change: 'The card is already there, so nothing changed. Say so.',
+  write_failed: 'Trello refused the change, so nothing changed. Say so.',
+  outcome_unknown: 'Naya is not sure the change landed. Say so and suggest he look at the card in Trello.',
+};
+
+export type TrelloLog = (event: { event: 'connector_call'; connector: 'trello'; tool: string; phase: 'admit' | 'dispatch' | 'settle'; outcome: 'ok' | 'refused' | 'failed' | 'unknown'; reason?: string }) => void;
+
+interface Snapshot { lists: TrelloList[]; labels: TrelloLabel[]; cards: TrelloCard[]; complete: boolean; at: number }
+interface Session {
+  board?: { id: string; name: string };
+  index?: TrelloSchemaIndex;
+  snapshot?: Snapshot | undefined;
+  handles: Map<string, string>;
+  byId: Map<string, string>;
+  ledger: Map<string, JsonObject>;
+}
+
+/** One resolved write: the calls in order, an optional follow-up call built from the first reply, its ledger key and its receipt. */
+interface WritePlan { calls: TrelloPlannedCall[]; followUp?: (previous: unknown) => TrelloPlannedCall | undefined; key: string; card?: TrelloCard; describe: (card: TrelloCard | undefined, snapshot: Snapshot) => JsonObject }
+
+class Refusal extends Error { constructor(readonly code: string, readonly extra: JsonObject = {}) { super(code); } }
+
+export interface TrelloBoardOptions {
+  transport: TrelloTransport;
+  /** Whether a sign-in record exists; checked without any network before the tools are offered. */
+  signedIn: () => boolean;
+  boardName?: string;
+  /** The owner's time zone for due dates; the host's own zone when absent. */
+  timeZone?: string;
+  now?: () => number;
+  log?: TrelloLog;
+}
+
+/** Local calendar parts of an instant in one zone. */
+function localParts(at: number, timeZone: string): { date: string; hour: number; minute: number } {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(at)).map(part => [part.type, part.value]));
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour), minute: Number(parts.minute) };
+}
+
+/** A local date (and time, 09:00 when absent) in the owner's zone as the UTC instant Trello stores. */
+export function trelloDueInstant(value: string, timeZone: string): string | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?$/.exec(value);
+  if (!match) return undefined;
+  const [y, m, d, hh, mm] = [Number(match[1]), Number(match[2]), Number(match[3]), Number(match[4] ?? 9), Number(match[5] ?? 0)];
+  if (m < 1 || m > 12 || d < 1 || d > 31 || hh > 23 || mm > 59) return undefined;
+  const guess = Date.UTC(y, m - 1, d, hh, mm);
+  if (new Date(guess).getUTCDate() !== d) return undefined;
+  // Two passes settle a zone offset, including the day a clock change happens.
+  let instant = guess;
+  for (let pass = 0; pass < 2; pass++) {
+    const local = localParts(instant, timeZone);
+    const shown = Date.UTC(Number(local.date.slice(0, 4)), Number(local.date.slice(5, 7)) - 1, Number(local.date.slice(8, 10)), local.hour, local.minute);
+    instant += guess - shown;
+  }
+  return new Date(instant).toISOString();
+}
+
+/**
+ * The board service: one per host, one session state per Live session. Reads come from a board snapshot
+ * loaded through the allowed server reads; writes are resolved against the pinned board, keyed by
+ * session, action and resolved arguments, dispatched once and never retried.
+ */
+export class TrelloBoard {
+  readonly #transport: TrelloTransport;
+  readonly #signedIn: () => boolean;
+  readonly #boardName: string;
+  readonly #timeZone: string;
+  readonly #now: () => number;
+  readonly #log: TrelloLog | undefined;
+  readonly #sessions = new Map<string, Session>();
+
+  constructor(options: TrelloBoardOptions) {
+    this.#transport = options.transport;
+    this.#signedIn = options.signedIn;
+    this.#boardName = options.boardName ?? TRELLO_DEFAULT_BOARD;
+    this.#timeZone = options.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+    this.#now = options.now ?? Date.now;
+    this.#log = options.log;
+  }
+
+  /** Offered to the model only while a sign-in record exists. */
+  available(): boolean { try { return this.#signedIn(); } catch { return false; } }
+
+  /** A session's cache ends with the session. */
+  end(runId: string): void { this.#sessions.delete(runId); }
+
+  #session(runId: string): Session {
+    let session = this.#sessions.get(runId);
+    if (!session) { session = { handles: new Map(), byId: new Map(), ledger: new Map() }; this.#sessions.set(runId, session); }
+    return session;
+  }
+
+  #emit(tool: string, phase: 'admit' | 'dispatch' | 'settle', outcome: 'ok' | 'refused' | 'failed' | 'unknown', reason?: string): void {
+    try { this.#log?.({ event: 'connector_call', connector: 'trello', tool, phase, outcome, ...(reason ? { reason } : {}) }); } catch { /* a log never changes a call */ }
+  }
+
+  async #call(planned: TrelloPlannedCall, signal?: AbortSignal): Promise<unknown> {
+    const allowed = TRELLO_SERVER_ALLOW[planned.tool];
+    if (!allowed || !allowed.includes(String(planned.args.action))) throw new Refusal('unsupported');
+    const result = await this.#transport.call(planned.tool, planned.args, signal);
+    if (!result.ok) throw new Refusal(result.code === 'unknown' || result.code === 'protocol_error' ? 'unavailable' : result.code === 'tool_error' || result.code === 'not_allowed' ? 'unsupported' : result.code);
+    return result.value;
+  }
+
+  async #index(session: Session, signal?: AbortSignal): Promise<TrelloSchemaIndex> {
+    if (session.index) return session.index;
+    const listed = await this.#transport.tools(signal);
+    if (!listed.ok) throw new Refusal(listed.code === 'unknown' || listed.code === 'protocol_error' || listed.code === 'tool_error' || listed.code === 'not_allowed' ? 'unavailable' : listed.code);
+    session.index = indexTrelloSchemas(listed.value);
+    return session.index;
+  }
+
+  /** Every page of one collection, bounded; `complete` is false when the bound cut it. */
+  async #pages(index: TrelloSchemaIndex, tool: string, candidates: readonly Args[], signal?: AbortSignal): Promise<{ items: Record<string, unknown>[]; complete: boolean }> {
+    const items: Record<string, unknown>[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < TRELLO_MAX_PAGES; page++) {
+      const planned = planTrelloCall(index, tool, candidates.map(candidate => cursor === undefined ? candidate : { ...candidate, cursor }));
+      if (!planned) throw new Refusal('unsupported');
+      const parsed = trelloPage(trelloPayload(await this.#call(planned, signal)));
+      if (!parsed) throw new Refusal('result_unrecognized');
+      items.push(...parsed.items);
+      if (parsed.next === undefined) return { items, complete: true };
+      cursor = parsed.next;
+    }
+    return { items, complete: false };
+  }
+
+  /** The board pin: exactly one open board with the configured name, resolved through the server once per session. */
+  async #board(session: Session, signal?: AbortSignal): Promise<{ id: string; name: string }> {
+    if (session.board) return session.board;
+    const index = await this.#index(session, signal);
+    const boards = await this.#pages(index, 'trelloReadBoard', [{ action: 'list' }], signal);
+    const wanted = foldName(this.#boardName);
+    const named = boards.items.filter(board => typeof board.name === 'string' && foldName(board.name) === wanted && board.closed !== true && idOf(board.id, BOARD_ARI));
+    if (named.length === 0) throw new Refusal(boards.complete ? 'board_not_found' : 'unavailable');
+    if (named.length > 1) throw new Refusal('board_ambiguous');
+    session.board = { id: String(named[0]!.id), name: this.#boardName };
+    return session.board;
+  }
+
+  async #snapshot(session: Session, signal?: AbortSignal, fresh = false): Promise<Snapshot> {
+    if (!fresh && session.snapshot && this.#now() - session.snapshot.at < TRELLO_SNAPSHOT_TTL_MS) return session.snapshot;
+    const board = await this.#board(session, signal);
+    const index = await this.#index(session, signal);
+    const listPages = await this.#pages(index, 'trelloReadList', [{ action: 'list_by_board', boardId: board.id }], signal);
+    const lists = listPages.items.flatMap(list => {
+      const id = idOf(list.id, LIST_ARI);
+      return id && list.closed !== true ? [{ id, name: text(list.name) }] : [];
+    });
+    const labelPlan = planTrelloCall(index, 'trelloReadBoard', [{ action: 'list_labels', boardId: board.id }]);
+    let labels: TrelloLabel[] = [];
+    let complete = listPages.complete;
+    if (labelPlan) {
+      const page = await this.#pages(index, 'trelloReadBoard', [{ action: 'list_labels', boardId: board.id }], signal);
+      labels = page.items.flatMap(label => { const id = idOf(label.id, LABEL_ARI); return id ? [{ id, name: text(label.name), color: text(label.color) }] : []; });
+      complete &&= page.complete;
+    }
+    const cards: TrelloCard[] = [];
+    for (const list of lists) {
+      const page = await this.#pages(index, 'trelloReadCard', [{ action: 'list_by_list', listId: list.id }], signal);
+      complete &&= page.complete;
+      for (const item of page.items) {
+        const card = trelloCardOf(item);
+        if (!card) throw new Refusal('result_unrecognized');
+        if (!card.closed) cards.push({ ...card, listId: list.id });
+      }
+    }
+    session.snapshot = { lists, labels, cards, complete, at: this.#now() };
+    return session.snapshot;
+  }
+
+  #handle(session: Session, cardId: string): string {
+    const known = session.byId.get(cardId);
+    if (known) return known;
+    const handle = `C${session.handles.size + 1}`;
+    session.handles.set(handle, cardId); session.byId.set(cardId, handle);
+    return handle;
+  }
+
+  #view(session: Session, snapshot: Snapshot, card: TrelloCard): JsonObject {
+    const list = snapshot.lists.find(entry => entry.id === card.listId)?.name ?? 'unknown';
+    const local = card.due ? localParts(Date.parse(card.due), this.#timeZone) : undefined;
+    return { card: this.#handle(session, card.id), name: card.name, list,
+      ...(local ? { due: `${local.date} ${String(local.hour).padStart(2, '0')}:${String(local.minute).padStart(2, '0')}`, dueComplete: card.dueComplete } : {}),
+      ...(card.labels.length ? { labels: card.labels.map(label => label.name || label.color).filter(Boolean) } : {}) };
+  }
+
+  /** A list by its spoken name: exact after folding, or a typed refusal naming the closest lists. */
+  #list(snapshot: Snapshot, name: string): TrelloList {
+    if (LIST_ARI.test(name)) {
+      const pinned = snapshot.lists.find(list => list.id === name);
+      if (!pinned) throw new Refusal('outside_scope');
+      return pinned;
+    }
+    const wanted = foldName(name);
+    const exact = snapshot.lists.filter(list => foldName(list.name) === wanted);
+    if (exact.length === 1) return exact[0]!;
+    if (exact.length > 1) throw new Refusal('list_ambiguous', { choices: exact.map(list => list.name) });
+    const words = wanted.split(' ').filter(word => word.length > 1);
+    const close = snapshot.lists.map(list => ({ list, score: words.filter(word => foldName(list.name).includes(word)).length })).filter(entry => entry.score > 0)
+      .sort((a, b) => b.score - a.score).slice(0, 3).map(entry => entry.list.name);
+    throw new Refusal('list_unknown', { choices: close.length ? close : snapshot.lists.map(list => list.name) });
+  }
+
+  /** A card by handle, exact folded name, or id; an id is checked against the pinned board through the server once. */
+  async #card(session: Session, snapshot: Snapshot, ref: string, signal?: AbortSignal): Promise<TrelloCard> {
+    const handled = /^C\d{1,4}$/i.test(ref.trim()) ? session.handles.get(ref.trim().toUpperCase()) : undefined;
+    const id = handled ?? (CARD_ARI.test(ref) ? ref : undefined);
+    if (id) {
+      const known = snapshot.cards.find(card => card.id === id);
+      if (known) return known;
+      if (/^ari:/.test(ref) && !CARD_ARI.test(ref)) throw new Refusal('outside_scope');
+      const index = await this.#index(session, signal);
+      const planned = planTrelloCall(index, 'trelloReadCard', [{ action: 'get', cardId: id }]);
+      if (!planned) throw new Refusal('unsupported');
+      const card = trelloCardOf(trelloPayload(await this.#call(planned, signal)));
+      if (!card) throw new Refusal('result_unrecognized');
+      if (!snapshot.lists.some(list => list.id === card.listId)) throw new Refusal('outside_scope');
+      if (card.closed) throw new Refusal('card_unknown');
+      snapshot.cards.push(card);
+      return card;
+    }
+    if (/^ari:/.test(ref)) throw new Refusal('outside_scope');
+    const wanted = foldName(ref);
+    const exact = snapshot.cards.filter(card => foldName(card.name) === wanted);
+    if (exact.length === 1) return exact[0]!;
+    const matches = exact.length > 1 ? exact : snapshot.cards.filter(card => foldName(card.name).includes(wanted));
+    if (matches.length === 1) return matches[0]!;
+    if (matches.length > 1) throw new Refusal('card_ambiguous', { choices: matches.slice(0, 5).map(card => this.#view(session, snapshot, card)) });
+    throw new Refusal('card_unknown');
+  }
+
+  #refusal(error: unknown, tool: string, phase: 'admit' | 'settle'): JsonObject {
+    const code = error instanceof Refusal ? error.code : 'unavailable';
+    const extra = error instanceof Refusal ? error.extra : {};
+    this.#emit(tool, phase, 'refused', code);
+    return { ok: false, code, guidance: TRELLO_GUIDANCE[code] ?? TRELLO_GUIDANCE.unavailable!, ...extra };
+  }
+
+  /** One read on the pinned board. A failure is a closed code, never an empty success. */
+  async read(runId: string, args: Args, signal?: AbortSignal): Promise<JsonObject> {
+    const tool = `read.${String(args.view)}`;
+    if (!this.available()) return this.#refusal(new Refusal('not_signed_in'), tool, 'admit');
+    const session = this.#session(runId);
+    try {
+      const snapshot = await this.#snapshot(session, signal);
+      const result = await this.#readView(session, snapshot, args, signal);
+      this.#emit(tool, 'settle', 'ok');
+      return { ok: true, board: this.#boardName, ...result, ...(snapshot.complete ? {} : { partial: 'the board has more cards than one read follows; counts are at least these' }) };
+    } catch (error) { return this.#refusal(error, tool, 'settle'); }
+  }
+
+  async #readView(session: Session, snapshot: Snapshot, args: Args, signal?: AbortSignal): Promise<JsonObject> {
+    const newest = (cards: TrelloCard[]) => [...cards].sort((a, b) => (b.createdAt ?? b.activityAt ?? 0) - (a.createdAt ?? a.activityAt ?? 0));
+    switch (args.view as TrelloReadView) {
+      case 'overview':
+        return { view: 'overview', lists: snapshot.lists.map(list => {
+          const cards = newest(snapshot.cards.filter(card => card.listId === list.id));
+          return { list: list.name, cards: cards.length, newest: cards.slice(0, 3).map(card => this.#view(session, snapshot, card)) };
+        }) };
+      case 'list': {
+        const list = this.#list(snapshot, String(args.list));
+        const cards = snapshot.cards.filter(card => card.listId === list.id);
+        const offset = typeof args.offset === 'number' ? args.offset : 0;
+        const limit = typeof args.limit === 'number' ? args.limit : 10;
+        const page = cards.slice(offset, offset + limit);
+        return { view: 'list', list: list.name, total: cards.length, shown: page.length, offset, ...(offset + page.length < cards.length ? { nextOffset: offset + page.length } : {}), cards: page.map(card => this.#view(session, snapshot, card)) };
+      }
+      case 'search': {
+        const words = foldName(String(args.query)).split(' ').filter(word => word.length > 1);
+        const limit = typeof args.limit === 'number' ? args.limit : 10;
+        const hits = snapshot.cards.map(card => ({ card, score: words.filter(word => foldName(`${card.name} ${card.desc}`).includes(word)).length }))
+          .filter(entry => entry.score > 0).sort((a, b) => b.score - a.score);
+        return { view: 'search', matched: hits.length, shown: Math.min(limit, hits.length), cards: hits.slice(0, limit).map(entry => this.#view(session, snapshot, entry.card)) };
+      }
+      case 'due': {
+        const now = this.#now();
+        const today = localParts(now, this.#timeZone).date;
+        const dated = snapshot.cards.filter(card => card.due !== null && !card.dueComplete);
+        const byDue = (cards: TrelloCard[]) => [...cards].sort((a, b) => Date.parse(a.due!) - Date.parse(b.due!));
+        const overdue = byDue(dated.filter(card => Date.parse(card.due!) < now && localParts(Date.parse(card.due!), this.#timeZone).date < today || Date.parse(card.due!) < now && args.window === 'overdue'));
+        const inWindow = args.window === 'overdue' ? [] : byDue(dated.filter(card => {
+          const day = localParts(Date.parse(card.due!), this.#timeZone).date;
+          if (overdue.includes(card)) return false;
+          if (args.window === 'today') return day === today;
+          return day >= today && Date.parse(card.due!) < now + 7 * 24 * 60 * 60 * 1000;
+        }));
+        return { view: 'due', window: String(args.window), today, datedCards: snapshot.cards.filter(card => card.due !== null).length,
+          overdue: overdue.map(card => this.#view(session, snapshot, card)), ...(args.window === 'overdue' ? {} : { due: inWindow.map(card => this.#view(session, snapshot, card)) }) };
+      }
+      case 'recent': {
+        const today = localParts(this.#now(), this.#timeZone).date;
+        const cards = newest(snapshot.cards.filter(card => card.createdAt !== undefined && localParts(card.createdAt, this.#timeZone).date === today));
+        return { view: 'recent', today, created: cards.length, cards: cards.map(card => this.#view(session, snapshot, card)) };
+      }
+      case 'card': {
+        const card = await this.#card(session, snapshot, String(args.card), signal);
+        const index = await this.#index(session, signal);
+        const checklists = await this.#checklists(index, card.id, signal);
+        const commentPlan = planTrelloCall(index, 'trelloReadCard', [{ action: 'list_comments', cardId: card.id }]);
+        let comments: JsonObject[] | undefined;
+        if (commentPlan) {
+          const page = trelloPage(trelloPayload(await this.#call(commentPlan, signal)));
+          if (!page) throw new Refusal('result_unrecognized');
+          comments = page.items.slice(0, 5).map(comment => ({ text: text(comment.text ?? (isRecord(comment.data) ? comment.data.text : '')).slice(0, 280) }));
+        }
+        return { view: 'card', ...this.#view(session, snapshot, card), description: card.desc.slice(0, 1200), ...(card.desc.length > 1200 ? { descriptionCut: true } : {}),
+          checklists: checklists.map(list => ({ name: list.name, items: list.items.map(item => ({ item: item.name, checked: item.checked })) })),
+          ...(comments ? { comments } : { comments: 'not offered by the Trello server' }) };
+      }
+    }
+  }
+
+  async #checklists(index: TrelloSchemaIndex, cardId: string, signal?: AbortSignal): Promise<{ id: string; name: string; items: { id: string; name: string; checked: boolean }[] }[]> {
+    const page = await this.#pages(index, 'trelloReadChecklist', [{ action: 'list_by_card', cardId }], signal);
+    return page.items.flatMap(list => {
+      const id = idOf(list.id, CHECKLIST_ARI);
+      if (!id) return [];
+      const raw = Array.isArray(list.checkItems) ? list.checkItems : Array.isArray(list.items) ? list.items : [];
+      const items = raw.filter(isRecord).flatMap(item => {
+        const itemId = idOf(item.id, ITEM_ARI);
+        return itemId ? [{ id: itemId, name: text(item.name), checked: item.state === 'complete' || item.checked === true || item.complete === true }] : [];
+      });
+      return [{ id, name: text(list.name), items }];
+    });
+  }
+
+  /**
+   * One owner-asked write on the pinned board. Resolution refuses before dispatch; the same resolved
+   * write in one session answers from its first receipt; the server is called once and never again.
+   */
+  async write(runId: string, args: Args, ownerWords: string, signal?: AbortSignal): Promise<JsonObject> {
+    const action = String(args.action) as TrelloWriteAction;
+    const tool = `write.${action}`;
+    if (!this.available()) return this.#refusal(new Refusal('not_signed_in'), tool, 'admit');
+    if (!ownerAskedForChange(ownerWords)) return this.#refusal(new Refusal('not_owner_requested'), tool, 'admit');
+    const session = this.#session(runId);
+    let plan: WritePlan;
+    let snapshot: Snapshot;
+    try {
+      snapshot = await this.#snapshot(session, signal);
+      plan = await this.#plan(session, snapshot, action, args, signal);
+    } catch (error) { return this.#refusal(error, tool, 'admit'); }
+    const replay = session.ledger.get(plan.key);
+    if (replay) { this.#emit(tool, 'admit', 'refused', 'replayed'); return { ...replay, replayed: true }; }
+    this.#emit(tool, 'admit', 'ok');
+    let last: unknown;
+    const steps = [...plan.calls];
+    for (let step = 0; step < steps.length + (plan.followUp ? 1 : 0); step++) {
+      const call = step < steps.length ? steps[step] : plan.followUp!(trelloPayload(last));
+      const allowed = call ? TRELLO_SERVER_ALLOW[call.tool] : undefined;
+      if (!call || !allowed || !allowed.includes(String(call.args.action))) {
+        // Nothing was sent for this step; a step after a sent one leaves the outcome open.
+        const code = step === 0 ? 'unsupported' : 'outcome_unknown';
+        this.#emit(tool, 'settle', step === 0 ? 'refused' : 'unknown', code);
+        session.snapshot = undefined;
+        const receipt: JsonObject = { ok: false, code, guidance: TRELLO_GUIDANCE[code]! };
+        if (step > 0) session.ledger.set(plan.key, receipt);
+        return receipt;
+      }
+      this.#emit(tool, 'dispatch', 'ok');
+      const result = await this.#transport.call(call.tool, call.args, signal);
+      if (!result.ok) {
+        // A refused first step changed nothing; anything after a sent step is not known.
+        const definite = step === 0 && (result.code === 'tool_error' || result.code === 'auth_failed' || result.code === 'not_signed_in' || result.code === 'rate_limited' || result.code === 'unavailable' || result.code === 'not_allowed');
+        const code = definite ? (result.code === 'auth_failed' || result.code === 'not_signed_in' || result.code === 'rate_limited' || result.code === 'unavailable' ? result.code : 'write_failed') : 'outcome_unknown';
+        this.#emit(tool, 'settle', definite ? 'failed' : 'unknown', code);
+        session.snapshot = undefined;
+        const receipt: JsonObject = { ok: false, code, guidance: TRELLO_GUIDANCE[code]! };
+        if (!definite) session.ledger.set(plan.key, receipt);
+        return receipt;
+      }
+      last = result.value;
+    }
+    session.snapshot = undefined;
+    let card = trelloCardOf(trelloPayload(last));
+    if (!card && plan.card) {
+      // The reply carried no card: read it back once to build the receipt; the write is never sent again.
+      try { card = await this.#card(session, await this.#snapshot(session, signal, true), plan.card.id, signal); } catch { card = undefined; }
+    }
+    if (!card && action !== 'checklist') {
+      const receipt: JsonObject = { ok: false, code: 'outcome_unknown', guidance: TRELLO_GUIDANCE.outcome_unknown! };
+      session.ledger.set(plan.key, receipt);
+      this.#emit(tool, 'settle', 'unknown', 'outcome_unknown');
+      return receipt;
+    }
+    const receipt: JsonObject = { ok: true, written: action, ...plan.describe(card, snapshot) };
+    session.ledger.set(plan.key, receipt);
+    this.#emit(tool, 'settle', 'ok');
+    return receipt;
+  }
+
+  async #plan(session: Session, snapshot: Snapshot, action: TrelloWriteAction, args: Args, signal?: AbortSignal): Promise<WritePlan> {
+    const index = await this.#index(session, signal);
+    const need = (planned: TrelloPlannedCall | undefined): TrelloPlannedCall => { if (!planned) throw new Refusal('unsupported'); return planned; };
+    const key = (resolved: Args) => JSON.stringify([action, Object.keys(resolved).sort().map(name => [name, resolved[name]])]);
+    const listName = (listId: string) => snapshot.lists.find(list => list.id === listId)?.name ?? 'unknown';
+    const view = (card: TrelloCard | undefined) => card ? this.#view(session, snapshot, card) : {};
+    const due = (value: string): string | null => {
+      if (foldName(value) === 'none') return null;
+      const instant = trelloDueInstant(value, this.#timeZone);
+      if (!instant) throw new Refusal('invalid_due');
+      return instant;
+    };
+    if (action === 'create') {
+      const list = this.#list(snapshot, String(args.list));
+      const payload: Args = { action: 'create', listId: list.id, name: String(args.name).trim() };
+      if (args.description !== undefined) payload.desc = String(args.description);
+      if (args.due !== undefined) { const instant = due(String(args.due)); if (instant) payload.due = instant; }
+      return { calls: [need(planTrelloCall(index, 'trelloWriteCard', [payload]))], key: key(payload), describe: card => ({ ...view(card), change: `created in ${list.name}` }) };
+    }
+    const card = await this.#card(session, snapshot, String(args.card), signal);
+    const base = { cardId: card.id };
+    switch (action) {
+      case 'update': {
+        const payload: Args = { action: 'update', ...base, ...(args.name !== undefined ? { name: String(args.name).trim() } : {}), ...(args.description !== undefined ? { desc: String(args.description) } : {}) };
+        return { calls: [need(planTrelloCall(index, 'trelloWriteCard', [payload]))], key: key(payload), card, describe: after => ({ ...view(after), change: args.name !== undefined ? `renamed from ${card.name}` : 'description replaced' }) };
+      }
+      case 'note': {
+        const line = `${localParts(this.#now(), this.#timeZone).date}: ${String(args.text).trim()}`;
+        const desc = card.desc ? `${card.desc}\n\n${line}` : line;
+        if (desc.length > TRELLO_DESC_LIMIT) throw new Refusal('description_full');
+        const payload: Args = { action: 'update', ...base, desc };
+        return { calls: [need(planTrelloCall(index, 'trelloWriteCard', [payload]))], key: key({ ...base, note: String(args.text).trim() }), card, describe: after => ({ ...view(after), change: 'note added to the description', note: line }) };
+      }
+      case 'due': {
+        const instant = due(String(args.due));
+        const payload: Args = { action: 'update', ...base, due: instant, ...(args.complete !== undefined ? { dueComplete: args.complete } : {}) };
+        return { calls: [need(planTrelloCall(index, 'trelloWriteCard', [payload]))], key: key(payload), card,
+          describe: after => ({ ...view(after), change: instant === null ? 'due date cleared' : args.complete === true ? 'due date set and marked complete' : 'due date set' }) };
+      }
+      case 'move': {
+        const list = this.#list(snapshot, String(args.list));
+        if (list.id === card.listId) throw new Refusal('no_change', { already: `the card is already in ${list.name}` });
+        const planned = need(planTrelloCall(index, 'trelloWriteCard', [{ action: 'move', ...base, listId: list.id }, { action: 'update', ...base, listId: list.id }, { action: 'update', ...base, idList: list.id }]));
+        return { calls: [planned], key: key({ ...base, listId: list.id }), card, describe: after => ({ ...view(after ? { ...after, listId: after.listId || list.id } : after), change: `moved from ${listName(card.listId)} to ${list.name}` }) };
+      }
+      case 'done': {
+        const done = snapshot.lists.find(list => foldName(list.name) === 'done');
+        if (done) {
+          if (done.id === card.listId) throw new Refusal('no_change', { already: 'the card is already in Done' });
+          const planned = need(planTrelloCall(index, 'trelloWriteCard', [{ action: 'move', ...base, listId: done.id }, { action: 'update', ...base, listId: done.id }, { action: 'update', ...base, idList: done.id }]));
+          return { calls: [planned], key: key({ ...base, done: true }), card, describe: after => ({ ...view(after ? { ...after, listId: after.listId || done.id } : after), change: `moved from ${listName(card.listId)} to ${done.name}` }) };
+        }
+        const payload: Args = { action: 'update', ...base, dueComplete: true };
+        return { calls: [need(planTrelloCall(index, 'trelloWriteCard', [payload]))], key: key(payload), card, describe: after => ({ ...view(after), change: 'marked complete' }) };
+      }
+      case 'label': {
+        const wanted = foldName(String(args.label));
+        const labels = snapshot.labels.filter(label => foldName(label.name) === wanted || foldName(label.color) === wanted);
+        if (labels.length !== 1) throw new Refusal('label_unknown', { labels: snapshot.labels.map(label => label.name || label.color) });
+        const label = labels[0]!;
+        const remove = args.remove === true;
+        const current = card.labels.map(entry => entry.id);
+        const next = remove ? current.filter(id => id !== label.id) : [...new Set([...current, label.id])];
+        const planned = need(planTrelloCall(index, 'trelloWriteCard', remove
+          ? [{ action: 'remove_label', ...base, labelId: label.id }, { action: 'detach_label', ...base, labelId: label.id }, { action: 'update', ...base, labelIds: next }, { action: 'update', ...base, idLabels: next }]
+          : [{ action: 'add_label', ...base, labelId: label.id }, { action: 'attach_label', ...base, labelId: label.id }, { action: 'update', ...base, labelIds: next }, { action: 'update', ...base, idLabels: next }]));
+        return { calls: [planned], key: key({ ...base, labelId: label.id, remove }), card, describe: after => ({ ...view(after), change: `${remove ? 'removed' : 'attached'} the ${label.name || label.color} label` }) };
+      }
+      case 'archive': {
+        const planned = need(planTrelloCall(index, 'trelloWriteCard', [{ action: 'archive', ...base }, { action: 'update', ...base, closed: true }]));
+        return { calls: [planned], key: key(base), card, describe: () => ({ name: card.name, list: listName(card.listId), change: 'archived; it can be restored in Trello' }) };
+      }
+      case 'checklist': {
+        const lists = await this.#checklists(index, card.id, signal);
+        const wantedList = args.checklist === undefined ? undefined : foldName(String(args.checklist));
+        const target = wantedList === undefined ? lists[0] : lists.find(list => foldName(list.name) === wantedList);
+        const itemName = String(args.item).trim();
+        const done = (after: TrelloCard | undefined) => ({ ...view(after ?? card) });
+        if (args.checked !== undefined) {
+          const item = target?.items.find(entry => foldName(entry.name) === foldName(itemName));
+          if (!target || !item) throw new Refusal('item_unknown', { items: (target?.items ?? []).map(entry => entry.name) });
+          const planned = need(planTrelloCall(index, 'trelloWriteChecklist', [
+            { action: 'update_item', checklistId: target.id, itemId: item.id, state: args.checked ? 'complete' : 'incomplete' },
+            { action: 'update_item', checklistId: target.id, itemId: item.id, checked: args.checked },
+            { action: 'update_item', itemId: item.id, state: args.checked ? 'complete' : 'incomplete' },
+          ]));
+          return { calls: [planned], key: key({ itemId: item.id, checked: args.checked }), describe: after => ({ ...done(after), change: `${args.checked ? 'ticked' : 'unticked'} ${item.name}` }) };
+        }
+        const add = (checklistId: string) => need(planTrelloCall(index, 'trelloWriteChecklist', [
+          { action: 'add_item', checklistId, name: itemName }, { action: 'create_item', checklistId, name: itemName },
+        ]));
+        if (target) return { calls: [add(target.id)], key: key({ checklistId: target.id, item: itemName }), describe: after => ({ ...done(after), change: `added ${itemName} to ${target.name}` }) };
+        if (wantedList !== undefined && lists.length) throw new Refusal('item_unknown', { checklists: lists.map(list => list.name) });
+        // A card with no checklist gets one, then the item; the second step is planned once the first returns its id.
+        const create = need(planTrelloCall(index, 'trelloWriteChecklist', [{ action: 'create', cardId: card.id, name: args.checklist === undefined ? 'Checklist' : String(args.checklist) }]));
+        const followUp = (previous: unknown): TrelloPlannedCall | undefined => {
+          const created = isRecord(previous) && isRecord(previous.checklist) ? previous.checklist : previous;
+          const checklistId = isRecord(created) ? idOf(created.id, CHECKLIST_ARI) : undefined;
+          return checklistId ? planTrelloCall(index, 'trelloWriteChecklist', [{ action: 'add_item', checklistId, name: itemName }, { action: 'create_item', checklistId, name: itemName }]) : undefined;
+        };
+        return { calls: [create], followUp, key: key({ cardId: card.id, item: itemName }), describe: after => ({ ...done(after), change: `added ${itemName} to a new checklist` }) };
+      }
+    }
+    throw new Refusal('unsupported');
+  }
+}

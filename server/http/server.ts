@@ -23,9 +23,9 @@ import { createLiveUpgrader, liveServiceError, type LiveService } from './live-u
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('base64url');
 const equal = (a: string, b: string) => timingSafeEqual(Buffer.from(hash(a)), Buffer.from(hash(b)));
-/** Mongoose is the one connector the owner can sign in to, so the sign-in reason is scoped to it. */
+/** Mongoose and Trello are the connectors the owner signs in to, so the sign-in reason is scoped to them. */
 function signInConnector(row: Record<string, unknown>): boolean {
-  return row.connector === 'mongoose';
+  return row.connector === 'mongoose' || row.connector === 'trello';
 }
 
 const SIGN_IN_PHASES = ['running', 'waiting', 'finishing', 'signed_in', 'failed'];
@@ -68,7 +68,7 @@ async function readBody(req: IncomingMessage, limit = 65536): Promise<Record<str
   try { return object(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError('BAD_REQUEST', 'Malformed JSON'); }
 }
 interface Principal { clientId: string; mode: 'bearer' | 'browser'; tokenHash?: string; csrfToken?: string }
-export interface ServiceOptions { ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; live?: LiveService; toolsStatus?: () => { endpoints: unknown[] }; mongooseSignIn?: (endpoint?: string) => Promise<{ status: 'started'; attemptId: string } | { status: 'failed'; reason: string }>; mongooseSignInAttempt?: (endpointId: string, connected: boolean) => { attemptId: string; phase: string; reason?: string } | undefined }
+export interface ServiceOptions { ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; live?: LiveService; toolsStatus?: () => { endpoints: unknown[] }; mongooseSignIn?: (endpoint?: string) => Promise<{ status: 'started'; attemptId: string } | { status: 'failed'; reason: string }>; mongooseSignInAttempt?: (endpointId: string, connected: boolean) => { attemptId: string; phase: string; reason?: string } | undefined; trelloSignIn?: () => Promise<{ status: 'started'; attemptId: string } | { status: 'failed'; reason: string }>; trelloRow?: () => Record<string, unknown> }
 export interface EntryDeletionResponse extends EntryTombstone { liveSessionRetainsUntilRebuild: boolean }
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
@@ -207,7 +207,8 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         if (actor.mode !== 'browser' || req.headers.authorization !== undefined || (req.headers['sec-fetch-site'] !== undefined && req.headers['sec-fetch-site'] !== 'same-origin')) throw new ServiceError('FORBIDDEN', 'Page session required', 403);
         res.setHeader('Cache-Control', 'no-store');
         if (route.kind === 'liveConnections') {
-          const endpoints = (options.toolsStatus?.().endpoints ?? []).map(value => {
+          // The Trello board row rides beside the catalogue rows; it carries its own latest sign-in attempt.
+          const endpoints = [...(options.toolsStatus?.().endpoints ?? []), ...(options.trelloRow ? [options.trelloRow()] : [])].map(value => {
             const row = value && typeof value === 'object' ? value as Record<string, unknown> : {};
             const state = ['missing', 'configured', 'connecting', 'connected', 'error'].includes(String(row.state)) ? String(row.state) : 'error';
             // Classify privately; return only closed reason tokens, never the original diagnostic.
@@ -218,7 +219,8 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
             const identity = projectIdentity(row.identity);
             // The latest sign-in attempt of a Mongoose row: the click answered at once, the row tells the rest.
             // A connected row settles its finished attempt, so a later failure never carries an old outcome.
-            const signIn = signInConnector(row) && typeof row.id === 'string' ? signInAttempt(options.mongooseSignInAttempt?.(row.id, state === 'connected')) : undefined;
+            const signIn = row.connector === 'trello' ? signInAttempt(row.signIn as { attemptId: string; phase: string; reason?: string } | undefined)
+              : signInConnector(row) && typeof row.id === 'string' ? signInAttempt(options.mongooseSignInAttempt?.(row.id, state === 'connected')) : undefined;
             return {
               id: typeof row.id === 'string' && /^[\w.-]{1,128}$/.test(row.id) ? row.id : 'unknown', state,
               tools: typeof row.tools === 'number' && Number.isSafeInteger(row.tools) && row.tools >= 0 ? row.tools : 0,
@@ -253,6 +255,10 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         const endpoint = typeof body.endpoint === 'string' ? body.endpoint : undefined;
         const started = options.mongooseSignIn ? await options.mongooseSignIn(endpoint) : { status: 'failed' as const, reason: 'not-configured' };
         send(res, 200, success(started)); return;
+      }
+      if (route.kind === 'trelloSignIn') {
+        // The Trello row's one click: answered at once with its attempt id, never a URL or a token.
+        send(res, 200, success(options.trelloSignIn ? await options.trelloSignIn() : { status: 'failed' as const, reason: 'not-configured' })); return;
       }
       if (route.kind === 'session') { send(res, 200, success({ clientId: actor.clientId, csrfToken: actor.csrfToken ?? null })); return; }
       if (route.kind === 'connected' && ['enroll', 'accept'].includes(route.action) && (!chat || modelStatus.status !== 'configured')) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Model route is not locally configured', 503);

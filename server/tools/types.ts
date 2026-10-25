@@ -1,3 +1,4 @@
+import type { TrelloBoard } from './trello.js';
 import type { RemoteResultLineage } from './received-body.js';
 import type { RememberNotePort } from './remember.js';
 import type { VaultDispatchPort } from './vault-write.js';
@@ -52,6 +53,8 @@ export interface ToolsOwnerOptions {
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
   /** Reports a connector-classified connection status after a call; null clears it (R4). */
   reportToolStatus?(connectionId: string, status: { state: 'configured' | 'error'; reason: string } | null): void;
+  /** W7: the owner's Trello board service; absent means no Trello tools are ever offered. */
+  trello?: TrelloBoard;
 }
 export interface ConnectionIntent { expectedPolicySha256: string | null; policy: ConnectionPolicy }
 export interface ConnectionApplyResult { state: 'applied' | 'unchanged'; sha256: string }

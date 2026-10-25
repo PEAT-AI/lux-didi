@@ -25,6 +25,8 @@ import { composeMcpRuntime, type ConnectorLifecycleEvent } from './mcp.js';
 import { spawn } from 'node:child_process';
 import { runMongooseLogin, type MongooseLoginOptions, type MongooseSignInHop } from './mongoose-login.js';
 import { MONGOOSE_ENDPOINTS, mongooseEndpointName } from '../connectors/mongoose.js';
+import { createTrelloBoard, runTrelloLogin, trelloBinding, trelloSignedIn, type TrelloLoginOptions } from './trello.js';
+import type { OAuthBinding } from './oauth-client.js';
 import type { McpRuntimeComposition } from './mcp.js';
 import { createGoogleReader, readCalendarDigest, type CalendarDigestRead, type CalendarDigestReadResult } from '../connectors/google.js';
 import { CalendarDigestCache } from '../live/warm-context.js';
@@ -176,6 +178,66 @@ export function createMongooseSignIn(options: {
     return latest;
   };
   return signIn;
+}
+
+/** The Trello row's one sign-in: the same attempt machine as a Mongoose row, for the one board resource. */
+export interface TrelloSignIn {
+  (): Promise<MongooseSignInStart>;
+  attempt(signedIn: boolean): MongooseSignInAttempt | undefined;
+}
+export function createTrelloSignIn(options: {
+  configDir: string; binding?: OAuthBinding | undefined; open?: (url: string) => void | Promise<void>;
+  login?: (options: TrelloLoginOptions) => Promise<unknown>; log?: (event: Record<string, unknown>) => void;
+}): TrelloSignIn {
+  const open = options.open ?? openInDefaultBrowser;
+  const login = options.login ?? runTrelloLogin;
+  const binding = 'binding' in options ? options.binding : trelloBinding();
+  const log = (event: Record<string, unknown>): void => { try { options.log?.(event); } catch { /* the log never changes a sign-in */ } };
+  let latest: MongooseSignInAttempt | undefined;
+  let pending: { attemptId: string; issued?: string } | undefined;
+  const start = (): MongooseSignInStart => {
+    if (pending) {
+      const again = pending;
+      log({ event: 'signin_requested', endpoint: 'trello', attemptId: again.attemptId, outcome: 'reopened' });
+      if (again.issued !== undefined) {
+        const handoff = (outcome: 'ok' | 'unavailable') => log({ event: 'signin_browser_handoff', endpoint: 'trello', attemptId: again.attemptId, outcome });
+        let launched: Promise<void>;
+        try { launched = Promise.resolve(open(again.issued)); } catch { launched = Promise.reject(new Error('browser-unavailable')); }
+        void launched.then(() => handoff('ok'), () => handoff('unavailable'));
+      }
+      return { status: 'started', attemptId: again.attemptId };
+    }
+    const attemptId = randomBytes(8).toString('hex');
+    const current: { attemptId: string; issued?: string } = { attemptId };
+    pending = current;
+    const move = (phase: MongooseSignInPhase, reason?: MongooseSignInFailure): void => { latest = { attemptId, phase, ...(reason ? { reason } : {}) }; };
+    move('running');
+    log({ event: 'signin_requested', endpoint: 'trello', attemptId, outcome: 'started' });
+    let failure: MongooseSignInFailure | undefined;
+    const onHop = (hop: MongooseSignInHop): void => {
+      const { hop: name, ...outcome } = hop;
+      log({ event: `signin_${name}`, endpoint: 'trello', attemptId, ...outcome });
+      if (hop.outcome !== 'ok') { failure ??= failureOf(hop); move('failed', failure); return; }
+      if (hop.hop === 'browser_handoff') move('waiting');
+      if (hop.hop === 'callback') move('finishing');
+    };
+    void Promise.resolve()
+      .then(() => login({ configDir: options.configDir, binding, onHop, openBrowser: async (url: string) => { current.issued = url; await open(url); } }))
+      .then(() => { move('signed_in'); }, () => { move('failed', failure ?? 'did_not_finish'); })
+      .finally(() => { if (pending === current) pending = undefined; });
+    return { status: 'started', attemptId };
+  };
+  const signIn = (() => Promise.resolve(start())) as TrelloSignIn;
+  signIn.attempt = (signedIn: boolean) => {
+    if (signedIn && latest && (latest.phase === 'signed_in' || latest.phase === 'failed')) { latest = undefined; return undefined; }
+    return latest;
+  };
+  return signIn;
+}
+
+/** The Trello row the Settings poll shows: signed in or not, from the record alone, never a network probe. */
+export function trelloConnectionRow(configDir: string, binding: OAuthBinding | undefined = trelloBinding()): { id: string; connector: string; state: string; tools: number; error?: string } {
+  return trelloSignedIn(configDir, binding) ? { id: 'trello', connector: 'trello', state: 'configured', tools: 2 } : { id: 'trello', connector: 'trello', state: 'configured', tools: 0, error: 'not_signed_in' };
 }
 
 /**
@@ -563,7 +625,8 @@ export async function startHost(config: HostConfig) {
     // L2: the same for the first connect of a run, whose start read raced the connector.
     let refreshCalendarFirstConnect = (_endpointId: string): void => { /* bound once the composition exists */ };
     const hostStartedAt = (config.now ?? Date.now)();
-    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match, endpointId) => log.event({ event: 'connector_identity', connector, proven, match, ...(endpointId === undefined ? {} : { endpointId }) }), lifecycleLog: connectorLifecycleSink({ log: event => log.event(event), onRecovered: endpointId => refreshCalendarDigest(endpointId), onConnected: endpointId => refreshCalendarFirstConnect(endpointId) }) });
+    const trello = createTrelloBoard({ configDir: providerConfigDir, log: event => log.event(event) });
+    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, trello, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match, endpointId) => log.event({ event: 'connector_identity', connector, proven, match, ...(endpointId === undefined ? {} : { endpointId }) }), lifecycleLog: connectorLifecycleSink({ log: event => log.event(event), onRecovered: endpointId => refreshCalendarDigest(endpointId), onConnected: endpointId => refreshCalendarFirstConnect(endpointId) }) });
     // 1015: the digest's background owner. It reads once at host start and every 15 minutes after, with
     // the connector's own 30 s budget and off every request path, and keeps the fetch time with the text.
     const digestNow = config.now ?? Date.now;
@@ -631,7 +694,8 @@ export async function startHost(config: HostConfig) {
     };
     startupStage = 'listen';
     const signIn = createMongooseSignIn({ configDir: effectiveConfigDir, recover: () => mcp.recover(), log: event => log.event(event) });
-    const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), mongooseSignIn: signIn, mongooseSignInAttempt: (endpointId, connected) => signIn.attempt(endpointId, connected), webRoot, port, ...(config.now ? { now: config.now } : {}) });
+    const trelloSignIn = createTrelloSignIn({ configDir: effectiveConfigDir, log: event => log.event(event) });
+    const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), mongooseSignIn: signIn, mongooseSignInAttempt: (endpointId, connected) => signIn.attempt(endpointId, connected), trelloSignIn, trelloRow: () => { const row = trelloConnectionRow(effectiveConfigDir); const attempt = trelloSignIn.attempt(row.error === undefined); return attempt ? { ...row, signIn: attempt } : row; }, webRoot, port, ...(config.now ? { now: config.now } : {}) });
     try {
       const descriptor: RuntimeDescriptor = { schemaVersion: 1, origin: service.origin, authorityEpoch: store.authorityEpoch, assistantId: store.assistantId, pid: process.pid, startedAt: new Date().toISOString() };
       await publish(descriptorPath, descriptor); // Never use a stale descriptor as authority or carry bearer material.

@@ -12,7 +12,7 @@ import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import type { WebSearchPort } from '../tools/web-search.js';
-import { ADMISSION_BLOCKED, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, retainedAfterSend, type ResearchRetention } from '../tools/research.js';
+import { ADMISSION_BLOCKED, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -2466,15 +2466,23 @@ export class LiveSessionOwner {
     if (ledger === undefined) return;
     if (handle.rebuilding || handle.responseInProgress || handle.debtBargeIn || handle.pendingCallIds.size > 0) return;
     if (this.#settled(handle)) return;
-    handle.researchRebuildSeed = undefined;
-    const prior = handle.researchRetention;
-    handle.researchRetention = { retainedChars: 0, rebuilds: prior.rebuilds + 1 };
-    hostLogEvent({ event: 'research_context_rebuild', retainedChars: prior.retainedChars, epochChars: ledger.length,
-      rebuilds: handle.researchRetention.rebuilds });
     const now = this.#now();
+    const boundary: ResearchBoundary = {
+      assistantAudioStreaming: false, responsePending: handle.responseInProgress,
+      bargeIn: handle.debtBargeIn ?? false, toolInFlight: handle.pendingCallIds.size > 0,
+    };
+    // W10-R15 P2: the decision is one function, so a deferral keeps both the seed and the count for the next
+    // boundary and only the branch that really rebuilds resets them.
+    const step = researchRebuildStep(handle.researchRetention, ledger.length, boundary,
+      handle.deadlineAt - now, handle.idleAt - now);
+    if (step.action !== 'rebuild') return;
+    const prior = handle.researchRetention;
+    handle.researchRebuildSeed = undefined;
+    handle.researchRetention = step.retention;
+    hostLogEvent({ event: 'research_context_rebuild', retainedChars: prior.retainedChars, epochChars: ledger.length,
+      rebuilds: step.retention.rebuilds });
     const remaining = handle.deadlineAt - now;
     const idle = handle.idleAt - now;
-    if (remaining <= 0 || idle <= 0) return;
     const seed = { turns: [{ role: 'user' as const, text: ledger, dataClass: handle.inputClass }], chars: ledger.length };
     await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, remaining, seed, 'research_context');
   }

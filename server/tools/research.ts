@@ -5715,6 +5715,23 @@ export function researchRebuildAllowed(boundary: ResearchBoundary): boolean {
   return !boundary.assistantAudioStreaming && !boundary.responsePending && !boundary.bargeIn && !boundary.toolInFlight;
 }
 
+/**
+ * C-DEPTH item 5 (W10-R15 P2): one rebuild decision. A deferral is a deferral: the count and the seed are
+ * handed back untouched so the next boundary can spend them, and only the branch that really rebuilds resets.
+ */
+export type ResearchRebuildStep =
+  | { action: 'defer'; retention: ResearchRetention; seedChars: number }
+  | { action: 'rebuild'; retention: ResearchRetention; seedChars: number };
+
+export function researchRebuildStep(
+  retention: ResearchRetention, seedChars: number, boundary: ResearchBoundary,
+  remainingMs: number, idleMs: number,
+): ResearchRebuildStep {
+  if (!researchRebuildAllowed(boundary)) return { action: 'defer', retention, seedChars };
+  if (remainingMs <= 0 || idleMs <= 0) return { action: 'defer', retention, seedChars };
+  return { action: 'rebuild', retention: { retainedChars: 0, rebuilds: retention.rebuilds + 1 }, seedChars };
+}
+
 /** C-DEPTH item 5: the ledger a rebuild seeds, built from the run's own evidence and never from a model call. */
 export interface LedgerInput {
   question: string;

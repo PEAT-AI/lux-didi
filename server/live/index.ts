@@ -2468,7 +2468,7 @@ export class LiveSessionOwner {
     if (this.#settled(handle)) return;
     const now = this.#now();
     const boundary: ResearchBoundary = {
-      assistantAudioStreaming: false, responsePending: handle.responseInProgress === true,
+      assistantAudioStreaming: false, responsePending: Boolean(handle.responseInProgress),
       bargeIn: Boolean(handle.debtBargeIn), toolInFlight: handle.pendingCallIds.size > 0,
     };
     // W10-R15 P2: the decision is one function, so a deferral keeps both the seed and the count for the next

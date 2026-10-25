@@ -3663,6 +3663,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // when that line is a source's only evidence, it is clipped to the room left instead, because dropping it
   // emptied the answer for a long best hit.
   let webDropped = false;
+  let clippedEvidence = false;
   let guard = 4096;
   // #621: two passes. The floor first, which is one whole finding line per source that returned a hit, so a
   // capped reply never hides a source; then proportional fill, which takes from the source furthest above its
@@ -3703,7 +3704,9 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     const last = widest.lines[widest.lines.length - 1]!;
     const room = last.length - (rendered - limit) - 1;
     const clipped = room >= FLOOR_CLIP_CHARS ? sentencePrefix(last, room) || clip(last, room) : '';
-    if (clipped.length >= FLOOR_CLIP_CHARS) { widest.lines[widest.lines.length - 1] = clipped; continue; }
+    // C-DEPTH item 2: a shortened line is still a compacted answer, so the receipt records it as one even
+    // though no whole item was dropped: the floor protects short sources and the widest one is cut instead.
+    if (clipped.length >= FLOOR_CLIP_CHARS) { widest.lines[widest.lines.length - 1] = clipped; clippedEvidence = true; continue; }
     // The floor wins: a reply slightly over its prose budget still names every source that answered.
     if (shownOf(widest) <= 1) break;
     widest.lines.pop(); dropped += 1;
@@ -3724,7 +3727,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     }
     result[mailDelivery] = { researchId: run.researchId, runId: run.runId, keys: mailRemaining.slice(0, shown).map(([key]) => key), ...(run.mailCursorRequested ? { cursor: run.mailCursorRequested } : {}), ...(nextCursor ? { nextCursor } : {}) };
   }
-  if (compactItems > 0) (result as CompactionReply)[compactionDelivery] = { items: compactItems };
+  if (compactItems > 0 || clippedEvidence) (result as CompactionReply)[compactionDelivery] = { items: compactItems };
   if (calendarReads.length > 0) result[calendarDelivery] = { researchId: run.researchId, runId: run.runId, keys: remaining.slice(0, shownOf(groups.find(group => group.source === 'calendar') ?? { lines: [] })).map(([key]) => key) };
   if (webDropped && !findings.some(finding => finding.source === 'web')) webInsufficient(result, 'reply_budget');
   // #634: the header is rebuilt inside every measured pass, so its counts match the evidence that ships and

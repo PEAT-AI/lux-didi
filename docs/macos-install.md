@@ -1,117 +1,68 @@
-# Building and installing the Mac app
+# Build and install on macOS
 
-Requirements: Apple silicon, macOS 26 or newer (`LSMinimumSystemVersion`), the Xcode Command Line Tools, and Node 26 plus npm to build. The app bundles its own Node 26 (default 26.8.2, checksum-verified). Every check named here is described in [checks.md](checks.md).
+Lux Didi's native application targets Apple silicon and macOS 26 or newer (`LSMinimumSystemVersion` in `Resources/Info.plist`). Building requires the Xcode Command Line Tools, Node 26 and npm. The installed application bundles its Node runtime; it does not depend on a terminal's PATH to start its host.
 
-One canonical producer builds the native shell and, optionally, composes an
-accepted asset bundle into a single `.app`. Production is built **without**
-`COMPANION_TEST`. The build and the install are separate steps.
+## Build a complete application
 
-## Build
+From a clean, committed checkout:
 
-```
-scripts/build-macos-app.sh "<output>/Lux Didi.app" \
-  [--assets DIR] [--install-id UUID] [--release-commit 40hex] [--cache DIR]
-```
-
-- The native compile identity (flags, `-parse-as-library Sources/LuxDidi/*.swift`,
-  `Resources/Info.plist`, entitlements) is fixed in this producer and reused by
-  `Tests/DidiMacTests/check-mac.sh`; there is no second compile/identity path and
-  no duplicate `Info.plist`, entitlements or launcher. `Resources/AppIcon.icns` is
-  copied to `Contents/Resources/AppIcon.icns` and named by `CFBundleIconFile`, so
-  the Dock tile and the app switcher show the Naya icon.
-- `--assets DIR` composes the output of `scripts/build-asset-bundle.sh`:
-  - `DIR/Resources/node/bin/node` goes to `Contents/MacOS/node`
-  - `DIR/server/node_modules/@lux-didi/service` goes to
-    `Contents/Resources/server/node_modules/@lux-didi/service`
-  - `DIR/Resources/web/dist` goes to `Contents/Resources/web/dist`
-  - `Contents/Resources/didi-runtime.json` is written with `nodePath`
-    `Contents/MacOS/node` (bundle-relative), `serverEntry`
-    `server/node_modules/@lux-didi/service/dist/host/index.js`, `webRoot`
-    `web/dist`, `schemaVersion` 1, and the real bundled Node major. The app
-    validates it on every launch.
-- Nested Mach-O code (bundled Node and any `.node`/`.dylib`) is signed first and
-  the completed bundle last, then `codesign --verify --deep --strict`.
-
-## Install
-
-```
-scripts/install-macos-app.sh "<built>/Lux Didi.app" --to "$HOME/Applications"
+```sh
+npm --prefix server ci
+npm --prefix web ci
+bash scripts/build-asset-bundle.sh /tmp/didi-assets
+bash scripts/build-macos-app.sh "/tmp/build/Lux Didi.app" --assets /tmp/didi-assets
 ```
 
-Installs an already built and verified app into an explicit user-local
-Applications target. It validates before swap, preserves the prior app as a
-uniquely named `Lux Didi.app.rollback-<UTC>` and restores it if post-swap
-validation fails. It never deletes or reseeds user data, never uses `--force`,
-and never touches an unrelated application. It does not create or migrate MCP or Live configuration, install connector servers,
-or grant network access. Existing configuration files and symlinks remain untouched.
+`build-asset-bundle.sh` builds the service and web assets and obtains the checksum-verified bundled Node. `build-macos-app.sh` is the canonical native producer; it signs nested executable code before signing and verifying the completed app. Its Swift compile goes through `scripts/with-compile-lock.sh`. Do not create a second compile path or add `COMPANION_TEST` to a production app.
 
-### Exact install command
+The runtime descriptor, `Contents/Resources/didi-runtime.json`, binds the bundle to its service, web root and release source. An arbitrary successful Swift compile is not a complete installable product. Keep build output outside the source tree, and do not reuse an output path containing unrelated files.
 
+The producer also accepts `--install-id`, `--release-commit` and `--cache`; consult its usage in `scripts/build-macos-app.sh` before constructing release automation. [Releases](releases.md) owns the release flow and installed-source verification.
+
+## Local signing
+
+To preserve a stable local code requirement across rebuilds, create the local identity once:
+
+```sh
+bash scripts/create-signing-identity.sh --dry-run
+bash scripts/create-signing-identity.sh
 ```
-scripts/install-macos-app.sh "/path/to/Lux Didi.app" --to "$HOME/Applications"
+
+The second command changes the owner's login keychain and prints the trust command the owner must review and run. It is an interactive owner step, not a test prerequisite to perform silently. The builder can fall back to ad-hoc signing with a warning; an ad-hoc code hash changes on rebuild and can invalidate macOS permission grants. Local signing is not notarization or proof of cross-Mac Gatekeeper acceptance.
+
+## Install an already built app
+
+```sh
+bash scripts/install-macos-app.sh "/tmp/build/Lux Didi.app" --to "$HOME/Applications"
 ```
 
-## First launch after an install
+The installer validates the app, preserves the previous app as a uniquely named rollback sibling, swaps the new bundle and restores the old bundle if post-swap validation fails. It does not delete or reseed the owner's state. It does not configure providers, install connector helpers or sign in to accounts.
 
-An installer or script that relaunches the app should pass `--install-relaunch` (for example `open -g -a "Lux Didi" --args --install-relaunch`). That launch shows the orb, takes no focus and never connects a call, so an install can never open the microphone. A launch by hand from Finder or the Dock is the interactive kind and connects once by itself. App state lives in `~/Library/Application Support/ai.peat.lux-didi` and the selected configuration directory is recorded in `ai.peat.lux-didi-operator`.
+Do not clear quarantine or use a force-install workaround to turn a failed validation into apparent success. Read the installer error and [debugging.md](debugging.md).
 
-## Protected operator configuration
+## Select protected configuration
 
-Configure the existing native executable; there is no second writer language,
-no new UI and no in-app editor.
+Create and populate the owner's configuration outside the application bundle, then select the existing directory:
 
-```
+```sh
 "$HOME/Applications/Lux Didi.app/Contents/MacOS/LuxDidi" --configure \
-  [--config-dir /abs/dir] [--owner-profile /abs/file.json]
+  --config-dir /absolute/private/config
 ```
 
-- Store: `~/Library/Application Support/ai.peat.lux-didi-operator/settings.json`,
-  directory `0700`, file `0600`, closed key schema
-  (`schemaVersion`, optional `configDir`, optional `ownerProfilePath`).
-- Rules: absolute targets, correct type (dir/file), owned by the current user,
-  not group/world writable, outside any `.app` bundle, no symlink at the target.
-  A refusal prints `DIDI CONFIGURE: invalid target` and exits `2`, with no path
-  or content in the message.
-- **Update semantics**: an omitted field is preserved. Changing only
-  `--config-dir` never drops a configured owner profile, and vice versa. There is
-  no clear/reset grammar yet.
-- Launch reads the store only: absent keeps the public default, valid forwards
-  `--config-dir`/`--owner-profile` to the existing host entry, invalid refuses
-  before any child is spawned. No ambient discovery, no hot reload, no secrets in
-  argv. The server keeps credential/profile validation, snapshots and policy.
+The same command accepts `--owner-profile /absolute/private/profile.json`. `OperatorSettings` in `Sources/LuxDidi/OperatorSettings.swift` owns validation and the selection store. Targets must be explicit absolute paths of the right type, safely owned and outside an app bundle. A rejected target prints `DIDI CONFIGURE: invalid target` without echoing private content.
 
-## Checks
+An omitted field is preserved: selecting a configuration directory must not silently drop an existing owner-profile selection. This selects paths; it does not generate credentials, repair unsafe files or enable network access. See [provider-configuration.md](provider-configuration.md), [mcp-configuration.md](mcp-configuration.md) and [owner-profile.md](owner-profile.md) for those inputs.
 
-- `scripts/check-macos-install.sh`: composes the real app and drives it through
-  LaunchServices (no external descriptor, bundled Node only), plus signatures,
-  artifact hygiene, the configure matrix and install/rollback.
-  Status and P1/P2 replay assertions remain in the installer script. A private,
-  nonce/PID/service/stage-bound observation holds the same owned host until those
-  actual authenticated requests succeed; only then does the observer forward
-  completion. Failed requests/assertions cancel and join cleanup without losing
-  their exit status. Runtime negatives exercise the real native gate, including
-  post-release premature acknowledgement, wrong/stale/duplicate acknowledgement,
-  cancellation/EOF and an actual HTTP assertion failure. This adds no public
-  endpoint, ordinary-launch hold, configuration authority or longer deadline.
-- `Tests/DidiMacTests/check-mac.sh`: native shell proof.
-- `Tests/DidiCompanionTests/check-companion.sh`,
-  `Tests/DidiCompanionTests/check-launch-services-probe.sh`: companion and
-  LaunchServices proofs.
+## First launch
 
-## Limits
+An interactive Finder or Dock launch can start one call automatically. Login and installer relaunches do not. For automation that relaunches after an install, use the dedicated launch kind:
 
-Owned installed connections use the existing strict private host credential file
-directly, so native rebuilds do not depend on a Keychain item's code-hash permission.
-Each native request validates the same live owned connection and file bytes.
-An unsafe or changed file retires that connection and requires explicit Reconnect;
-a new owned start accepts the current valid file. External descriptor connections
-retain their Keychain authority. Existing Keychain items are not migrated or changed.
-The schema2 installed proof records the actual canonical-file source and validation,
-with observed child cleanup rather than an invented Keychain import/cleanup claim.
-Changed-executable upgrade acceptance requires two meaningful fresh-process runs
-with preserved installId, config and state; a signature check alone does not prove it.
+```sh
+open -g -a "Lux Didi" --args --install-relaunch
+```
 
-The first artifact is a local, ad-hoc-signed prerelease. Same-Mac relocation is
-not cross-Mac Gatekeeper acceptance; quarantine is never cleared and paid
-signing/notarization are later work. Real provider/Google/voice parity is
-unproven and not claimed by the synthetic fixtures.
+That command is an owner or installer action, not permission for a worker to launch the installed app. [User guide](user-guide.md) covers permissions, sign-in and the first call. [Local runtime](local-runtime.md) owns state and log locations.
+
+## Verification limits
+
+[Checks](checks.md) documents the native and installer checks. Those checks exercise synthetic configuration and packaging boundaries; they do not prove real provider keys, microphone hardware, Google consent or a healthy installed account. A source release is not an assertion that every existing installation has already been upgraded.

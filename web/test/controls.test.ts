@@ -8,6 +8,7 @@ import { LiveMachine } from '../src/live-view.ts';
 const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const bridge = readFileSync(new URL('../src/native-bridge.ts', import.meta.url), 'utf8');
 const swift = readFileSync(new URL('../../Sources/LuxDidi/NativeBridge.swift', import.meta.url), 'utf8');
+const lane = readFileSync(new URL('../src/connected.ts', import.meta.url), 'utf8');
 
 const section = (from: string, to: string): string => source.slice(source.indexOf(from), source.indexOf(to));
 
@@ -47,4 +48,10 @@ test('every web to native message is one the native side decodes', () => {
   const switchBlock = swift.slice(swift.indexOf('switch type {'), swift.indexOf('default: return .unknown(type)'));
   const native = [...switchBlock.matchAll(/case "(\w+)": return/g)].map(match => match[1]).sort();
   assert.deepEqual(web, native, 'the web emits exactly the types BridgeInbound.decode handles');
+});
+
+test('the chat lane offers Allow only when a text model is configured', () => {
+  assert.match(lane, /!available\s*\?\s*`<p class="connected-disclosure" id="chat-unconfigured">Text chat is not configured\. Set the text chat model in Settings\.<\/p>`/, 'with no model the lane says so and offers no Allow');
+  assert.match(lane, /grant \|\| this\.#consent\s*\?\s*''\s*:\s*`<p class="connected-disclosure">Chat messages go to <strong>\$\{escape\(chatModelLabel\(provider, model\)\)\}<\/strong>/, 'with a model the lane names it the way Settings does');
+  assert.match(lane, /\$\{disclosure\}/, 'the lane renders exactly the line it computed');
 });

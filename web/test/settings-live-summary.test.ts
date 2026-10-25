@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { providerDefaultVoice, providerVoices, settingsMarkup, settingsSaveError } from '../src/settings-view.ts';
+import { chatModelLabel, providerDefaultVoice, providerVoices, settingsMarkup, settingsSaveError } from '../src/settings-view.ts';
 
 const status = {
   ownerProfile: { status: 'default', displayName: 'Naya' },
@@ -75,4 +75,10 @@ test('a refused provider choice names the field that was refused', () => {
   assert.match(settingsSaveError('invalid_voice', 'Invalid voice'), /voice/i);
   assert.doesNotMatch(settingsSaveError('invalid_voice', 'invalid_voice'), /invalid_voice/);
   assert.equal(settingsSaveError('BAD_REQUEST', 'Something else broke'), 'Something else broke');
+});
+
+test('the chat lane names the text model with the same words as Settings', () => {
+  assert.equal(chatModelLabel('gemini', 'gemini-2.5'), 'gemini gemini-2.5');
+  assert.equal(chatModelLabel('openai', undefined), 'openai');
+  assert.equal(chatModelLabel(undefined, undefined), 'Configured');
 });

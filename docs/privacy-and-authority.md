@@ -1,184 +1,59 @@
 # Privacy and authority
 
-> Historical document. The product policy written during planning. The authority rules still guide the build, but wording such as "proposed" and "later implementation issues" predates the implementation; [architecture.md](architecture.md) and [implementation-status.md](implementation-status.md) describe what is built.
+Lux Didi keeps its durable state on the Mac, but configured voice and text providers receive the context needed for their requests. "Local application" does not mean "offline inference". Connector reads and optional writes also contact their configured services. This page describes implemented boundaries, not the broader historical product-policy proposal.
 
-Status: proposed product policy. These are the rules later implementation issues must encode and test. They are written as defaults that need no user decision to ship. Two layers are distinct: user-configurable product preferences (retention windows, notification style, default account for reads) can be changed by the operator, while provider policy, organization restrictions and operating system authority are not overridable in the product and are reported honestly when they block something. Every override of a configurable preference is logged.
+## Configuration is not consent
 
-## Starting state
+The installer preserves configuration; it does not create provider keys, sign in to connected accounts or approve new data routes. The owner selects protected configuration explicitly. See [provider-configuration.md](provider-configuration.md), [mcp-configuration.md](mcp-configuration.md) and [macos-install.md](macos-install.md).
 
-A fresh install carries no credentials, no tokens, no grants and no allowlist entries belonging to anyone. A clean install can read nothing until the installing person completes their own consent and picks their own accounts. There is no shared service account, no baked-in OAuth client secret and no default company endpoint. Optional integrations (company knowledge, session supervision, chat or Trello) are off until the user configures an endpoint they are themselves entitled to use, and each one degrades to a clear not-configured state rather than a silent failure.
+Three decisions remain separate:
 
-## Accounts and isolation
+1. A credential identifies the configured provider or source account.
+2. A connection policy permits particular source tools and data classes.
+3. A model route and its consent permit particular classes to leave for inference.
 
-- Authorization is per user and per account. The per-account Google mechanism is the installed-app OAuth flow with a loopback redirect and PKCE, and the refresh token is stored per account in the operating system credential store.
-- The default account may be stored for reads and drafts. Every send or commit action names its account explicitly; the account is never inferred from context. (C01, C04, C06, C09)
-- Authorization tokens carry an audience. A token issued for one server is never presented to another, and the credential model records this as a first-class field. (C15)
-- Same-user processes are not an isolation boundary between each other. A process split buys an authorization chokepoint, not isolation, and the product never claims otherwise. (A13, F12)
-- Full local control (screen capture, Accessibility, Automation, broad shell) on distributed builds uses a Developer ID signed, notarized, non-sandboxed build, and the operating system's own permission prompts cannot be bypassed or pre-granted. A local Stage A developer pilot can exercise the same TCC-granted capabilities without that distribution step; Developer ID and notarization are a distribution choice, not an inherent prerequisite for using local permission-gated features on one's own machine. Those permissions are recorded as part of capability state: a product-level grant can be disabled immediately in the app, while removing an operating system permission itself is done in System Settings, outside the product's control. (F12, F13)
-- Multi-account mix-up is an explicit adverse test: a scenario that proves a read or draft can never silently use a different account than the one the user chose. (C16)
+A reachable endpoint or valid token does not substitute for all three. `server/host/mcp.ts` owns MCP connection approval; `server/tools/index.ts` owns accepted tool context and result release. `ToolResultGate` in `server/adapters/model/types.ts` is the text-loop disclosure boundary. Unknown classification must not be relabeled ordinary to make a request work.
 
-## Capability state
+## Models and remote text do not grant authority
 
-The product can answer "what may Didi do, with which account, right now" by listing grants, credential references (never values), route-class permissions and operating system capability grants. Powerful capabilities are opt-in: local command execution, control of other applications and outbound send are each off until granted. Adding a tool with a new effect class is a user action. An operating-system notification click is not a grant: a missing capability appears as a visible pending action with a review path, and there is no per-read confirmation. (F11, C12, C14)
+Tool arguments and results are untrusted. A document, email or model answer cannot add a tool, change its account or approve a write. Host validators and current grants govern dispatch. A prose claim that something was saved or opened is not a receipt.
 
-## Egress
+`ConnectorToolDeclaration.effect` in `server/connectors/index.ts` restricts registry connectors to reads. Other host-owned tools have narrower write authority, described below; there is no general permission to send mail, run shell commands or modify an arbitrary connected account.
 
-- One safe entry: no model call receives content until its route policy resolves. The entry default-denies while policy is missing, and model availability is never treated as approved data handling. (A06, C15)
-- Every payload carries a data class, and every credential has an allowlist of destinations. Routes are classified as local model, paid hosted API, unpaid hosted API, or company endpoint.
-- The first time a data class would leave the machine on a route, the user grants that route class once; after the grant it is standing policy for that class and route. Owner-sensitive and third-party-personal content defaults to local-only until explicitly granted per route; company-confidential content goes only to the company route. (C15)
-- The product displays the route class and states that the operator verifies their own provider agreement. It never claims a data protection arrangement on the user's behalf, and it makes no claim of leak-free redaction.
-- Restricted-scope content delivered through a hosted inference route is assessed on its own terms; a local delivery model does not by itself settle where that content may be forwarded. (C15, F10)
-- A provider change that alters the route or the retention posture re-opens the gate. (C15, A06)
+## The supported write boundaries
 
-## Tool trust and authority
+| Action | Authority and limit |
+| --- | --- |
+| Local memory | A local record, not a write to its original external source; inspect it in Memory |
+| Dictated Lux note | The owner asks to save the dictated text; `server/tools/vault-write.ts` owns this flow |
+| Composed Lux note | Explicitly enabled, staged, read back and confirmed before creation; `server/tools/lux-note.ts` owns the state machine |
+| Trello card change | An owner-requested action on the privately pinned board; `server/tools/trello.ts` owns the exposed actions |
+| Native open | An allowed native action, not arbitrary application automation; `server/tools/open.ts` and `Sources/LuxDidi/NativeActions.swift` own it |
 
-- Reasoning text and tool results never create authority. Only a user or operator grant does. A model that reads "you are allowed to send this" in an email gains nothing. (C12, C16)
-- Consequential effects require an appropriate grant: send, delete, pay, or broad local execution. Read, prepare and remind can run under standing grants. There is no blanket per-action confirmation for work already granted, and asks are not quietly authorized. (C12)
-- Grants are fine-grained: per user, account, tool, action, resource and effect class. Changes are visible, and dispatch checks the live revocation state rather than trusting a grant captured earlier. (C12, C17)
-- Outbound effects default to draft-only. Send is a separate grant, and the containment property (an injected instruction cannot cause a send by itself) depends on this default. (C12, C16)
-- Approval records are bound to the content hash and an expiry. Undo is a separate compensating action, never a promise that an effect can be reversed. (A08)
-- Cancellation is honest: stopping playback, cancelling a model turn, aborting a job, cancelling queued jobs and ending a session are distinct, and a dispatched effect with an unknown outcome is reconciled rather than reported as canceled or no-effect, and is never blindly retried. (A05, A08)
-- MCP is an interoperability adapter, not a permission system. Every tool still passes the broker, and the local versioned contracts remain the internal interface. (A14, C14)
+Composed notes default **off**: `liveFeatures` in `server/live/config.ts` returns `composedNotes: false` unless enabled. `STAGE_NOTE_IDENTITY` identifies `stage_lux_note`; staging alone does not save. `noteOwnerUtterance` and `noteOwnerFragment` handle confirmation and interruption, rather than treating any earlier "yes" in a conversation as authorization.
 
-## Company and shared systems
+Trello's `TRELLO_WRITE_ACTIONS` is a closed surface. The board pin is configured privately through `TRELLO_BOARD_FILE` in `server/host/trello.ts`. Do not publish its real name or infer board administration, member changes or permanent deletion from the fact that card writes are available. Already granted card actions do not use the composed-note confirmation flow. Unknown write outcomes must remain unknown, not be retried as if nothing happened.
 
-Where a company service has its own permission model, Didi presents the token that service issued and honours the service's group scopes. It never re-implements, widens or proxies those permissions, and it never exports company data to a route outside the user's grant. (C13, C18)
+## Conversation consent and audio
 
-## Data lifecycle
+Text conversation consent is enforced by `ChatService` in `server/chat/index.ts`. A remembered disclosure is a server-side scoped grant, not a browser preference. It does not enroll Live voice, grant microphone access or broaden a connector approval.
 
-- Local-first is the default: state, transcripts and execution stay on the user's Mac. An unconfigured install makes no external calls, and no third party is involved until the user configures and approves a route. Once a cloud route is configured and approved for a data class, approved inference calls are the designed behavior, not a violation of local-first.
-- A cached copy of an authorized remote source is a versioned cache with stated coverage, never a new authority. (B03, B09)
-- Deleting a Didi memory deletes the Didi copy and records the propagation state of anything derived from it. It does not claim to delete an external source that Didi does not own. (B09)
-- The trace store in `state.sqlite` keeps its metadata content-free by construction: turn, response, call and playback rows hold ids, closed codes, counts and durations, and the writer rejects any field outside its allowlist, so provider messages, tool arguments, result previews, paths and titles cannot be written there. Owner transcript lines and tool result text live in two separate content tables.
-- Trace content keeps 30 days and is pruned at host startup; trace metadata is never pruned by that pass. Deletion is logical: SQLite WAL frames, free pages and filesystem blocks are not forensically erased, and no backup or snapshot the owner took is covered. The metadata export prints named metadata columns and never a database dump.
-- Raw audio defaults to discard after bounded transcription processing. Retention is a user-controlled choice, and the user can choose whether audio is included in their own export. The plan does not promise an indefinite buffer pending confirmation, and it does not claim a universal export ban. (B09)
-- Resolved, cancelled and forgotten items are suppressed before planning and cannot silently reappear from stale retrieval. (B08, D03)
+The Mac's microphone permission and native audio owner are separate again. `AudioOwner` in `Sources/LuxDidi/AudioOwner.swift` owns capture and playback. Muting Naya does not authorize changing system audio settings or another application's devices. See [mac-experience.md](mac-experience.md).
+
+## Local records and deletion
+
+Deleting a memory removes that local memory from future reads. It does not delete the remote source, an old conversation that quoted it, a provider's already received request, a filesystem snapshot or a backup.
+
+The authenticated entry-delete path in `server/http/server.ts` composes domain deletion with retained-context and cached-response redaction. `scrubDeletedMemoryResponses` in `server/runtime/store.ts` removes stale cached response content without re-executing the original mutation. Errors roll back the transaction rather than claiming a partial deletion as complete.
+
+An already open provider connection can still hold the deleted note. The response field `liveSessionRetainsUntilRebuild` makes that limit explicit. Stop and restart Live to discard the current provider context; local redaction cannot un-send data already disclosed. See [selected-memory.md](selected-memory.md) for the memory-selection boundary.
+
+## Diagnostics and publication
+
+Operational logs and metadata exports are designed to use safe codes, counts, IDs and timings. The database also contains private conversation and result content: it is not a safe support attachment merely because some tables are content-free. Follow [debugging.md](debugging.md) and [diagnostic-store.md](diagnostic-store.md); prefer the app's Copy diagnostics flow to copying arbitrary logs or database rows.
+
+Never publish real credentials, private profiles, board names, account content, transcript text or private machine paths in this public repository. `scripts/check-docs.sh` catches dash and home-path patterns in current documentation; it is not a semantic privacy audit. Human review still has to catch private names and content.
 
 ## Honest limits
 
-- Notification display is not proof the user saw anything.
-- The product does not promise urgent alerts that bypass Focus, because that needs an entitlement the product may not have; copy must not imply otherwise. (D10, F09)
-- While the Mac is asleep, closed or offline, nothing executes and nothing is sent. The companion queues and says so. (F16, F17)
-- Prompt-injection immunity is not promised. The design contains it with draft-only defaults, grant separation and output review, and it states the residual risk. (C16, A13)
-
-## Publication hygiene for this repository
-
-Never commit or copy into public artifacts: personal profiles and facts, private transcripts or message contents, internal hostnames, ports or endpoint URLs, internal record identifiers, unpublished prompt or persona text, credential values of any kind, internal run or session records, or one person's private operating rules presented as product policy. Publish the generic rule and its rationale instead, with synthetic identities (`example.invalid`) where an example is needed. The planning validator scans the repository for common violations; the independent reviewer judges content, not just patterns.
-
-## Authority epochs and host transfer
-
-One assistant has exactly one active authority epoch, and every write path must present the epoch
-token. A laptop and a virtual machine never both hold it: there is no cloud and local multi-writer
-synchronisation, no last-writer-wins merge and no automatic transfer. Moving the assistant is an
-explicit prepare, quiesce, revoke, activate and verify sequence, and the previous holder's writes are
-refused rather than reconciled. Every transfer is audited with its reason and evidence (C21).
-
-## Cloud egress
-
-Running the service off the laptop changes what leaves the machine, so the route table is evaluated
-at the deployed service boundary as well as in local mode. A destination and purpose that is not
-classified is denied by default. A payload class the route table does not permit is blocked and the
-product degrades (a local summary, or a question) rather than sending anyway. Credential values are
-resolved at call time and never travel in a payload, in a configuration file, in an image or in a log
-(A21, C15).
-
-## Device grants
-
-A device holds its own authority and the service holds none over it. The device pulls scoped,
-expiring intents outbound, checks its own local grants, and refuses an intent it did not grant. An
-intent is single-use, replay is refused by a nonce check, and an expired intent is refused rather
-than refreshed silently. A device that revokes its own grant wins over any service request (C22).
-
-## Channels are not identity
-
-Signal, email and Mattermost are channels and transports. A verified sender address, a workspace
-membership or a phone number is never promoted into authority by the product. The product keeps two
-separate records, the source account the user bound and the channel identity that carried a message,
-and links them only by an explicit user action. An unbound or mismatched identity can be read and
-cannot act, and no message is an administrative bypass (C19, C20).
-
-## Browser and offline data
-
-The browser client caches the shell only: the application shell, the manifest and static assets,
-never a command, a query result or a progress payload. Private records are read-only and unavailable
-while the service is unreachable, there is no offline writing of commitments, sessions or recall
-results, and signing out clears the partitioned cache. A shared or stolen device therefore exposes
-the shell, not the person's data (F20).
-
-## The web page holds no authority
-
-The shared web interface is a rendering surface, not a privilege boundary. It has no inbound
-JavaScript-to-native handler, no generic native RPC and no injected bearer; the service bearer lives
-in the native credential store. It holds its own scoped HttpOnly session cookie and a same-origin
-CSRF flow for browser pairing, and it owns no operating-system permission: screen capture,
-accessibility and automation grants belong to the native process. The web view uses a nonpersistent
-data store and loads only the exact configured origin and main frame, so redirected content, popups,
-downloads and subframes are refused rather than rendered.
-
-Same-user process separation is not a security sandbox, and this document does not claim that it is.
-Hidden-view graphics-context loss and cookie behaviour across a content-process termination are open
-questions with measurements attached, not established facts.
-
-Connection-scoped tools admission freezes the owner-approved usable connection IDs and the model route's allowed data-class set when the run is accepted. A connection's policy is source/local-operation authority, not a model-route approval. The canonical owner checks the selected connection's current approval and effective locally configured source class before MCP dispatch and again at result release, using exact class-set membership, and journals the run route identity in intent and result rows. Discovery cannot expand an existing run, missing source classification disables only its connection, and an in-flight revocation withholds the result rather than releasing stale evidence.
-
-The installer supplies no Live allowed-class set, MCP catalog or network grant. It preserves existing owner files. The owner explicitly configures the model route classes and source classifications; a missing profile remains unconfigured.
-
-### Remembered connected-chat provider disclosure
-
-Remembering the connected-chat provider disclosure is an explicit owner action, not a browser preference. The server records a standing grant with the owner, provider, route, model, permitted data classes and disclosure revision. Existing conversation grants keep their original scope. Neither localStorage nor a UI checkbox can substitute for the server's consent resolution during generation.
-
-A standing grant applies only to its exact validated tuple. Revocation or a changed route, provider, model, permitted-class policy or disclosure revision makes it unusable. In particular, ordinary-route consent cannot authorize a private route. The UI's standing-consent indicator and revoke control reflect the server payload, and a revoked grant cannot authorize a new conversation. A conversation-scoped grant can still authorize its own conversation under its existing validation rules.
-
-Standing chat disclosure does not authorize connector reads, broaden connector grants, enroll Live voice, or authorize microphone capture. Those authority boundaries remain unchanged.
-
-## Memory deletion boundary
-
-The paired owner can delete an entry through `DELETE /api/v1/entries/:id`, using the
-existing cookie principal, origin/CSRF protection, authority epoch, and request-key
-contract. The admin credential path is unchanged. Entry text and entry source metadata
-are removed from the domain tables atomically, leaving a content-free tombstone
-(entry id, deletion time, actor, reason code, and a canonical Live source-turn identity when present). This is a local deletion journal, not an
-outbox delivery: deletion must not dispatch any network side effect.
-
-This does not scrub old provider requests, quoted chat messages, Live transcripts,
-or frozen `chat_run_context.resolved_records` / Live accepted-prompt snapshots.
-Already accepted chat runs read back their frozen resolved records for composition;
-preventing that later dispatch is tracked separately. Domain-row erasure is not a
-claim of forensic erasure of SQLite free pages, WAL files, filesystem snapshots,
-or backups. New domain reads, recall queries, and Live CREATEs exclude deleted ids. The content-free Live source-turn key prevents remember_note from recreating a deleted note from the same retained voice turn; the existing already_remembered outcome carries only its deleted entry id.
-
-Provider resumption handles are provider-opaque secrets, retained by the live
-owner only and sent only in provider setup. They never appear in projections,
-client events, logs or errors. Resumption restores provider-side continuity; the
-service reconstructs no conversation history, adds no recap instruction and
-replays no PCM. Accepted prompt, memory and tool authority snapshots remain
-frozen across connection replacement, except that owner memory deletion redacts the
-deleted memory record from the retained prompt. Tool authority is not expanded by redaction.
-
-
-### Retained copies after owner memory deletion
-
-The authenticated HTTP delete composes the domain deletion with chat-context,
-Live-snapshot and runtime-response redaction in one SQLite transaction. Each owner
-scrubs its own table; an error rolls back all changes. Chat frozen records become
-content-free entry references, and dispatch separately revalidates surviving
-records against the domain before composing a prompt. Live removes the matching
-memory record without changing surviving notes, and maintains its replay identity.
-For an active Live session, the manager stages its retained request update and
-writes one content-free scrub journal row through its normal counter-maintaining
-journal path. The in-process update is published only after the transaction
-commits, before any later connection replacement can run. Inactive sessions need
-only the persisted snapshot scrub.
-Runtime keeps the original request fingerprints but replaces cached owner responses
-containing the deleted text with a content-free NOT_FOUND response. It does not
-re-execute the original mutation on replay.
-
-Conversation transcripts and model output that quoted a note are conversation
-history, including chat_runs.partial_text and live_journal transcriptions. They
-are outside memory deletion; the owner removes those by deleting the conversation.
-The provider connection that is CURRENTLY open already holds the deleted note in
-its context and nothing we send can un-tell it. The scrub guarantees only that no
-later setup (rebuild or new session) carries it. The delete response's typed
-`liveSessionRetainsUntilRebuild` flag is true when an active Live connection still
-holds the entry at deletion time. The page then confirms honestly:
-"Naya's current live conversation still has this note until it reconnects or ends."
+Same-user process separation is not an operating-system sandbox. Data-class enforcement is routing policy, not perfect sensitivity detection. Prompt-injection immunity, forensic erasure, guaranteed notification delivery and universal provider availability are not claimed. Future policy belongs in [roadmap.md](roadmap.md), not in descriptions of the installed release.

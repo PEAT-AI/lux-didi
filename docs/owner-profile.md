@@ -1,41 +1,25 @@
-# Protected local owner character
+# Protected owner profile
 
-Lux Didi can optionally use one explicitly selected, protected local JSON file for authored presentation style and background lore. The product and stored assistant identity remain Lux Didi. A display label is presentation only, not a new assistant/account identity.
+An owner profile is optional, private presentation context: authored style and background lore. It is not a new account, a replacement authority policy or permission to read more memory. The public assistant is Naya; a configured display name does not replace the stored assistant identity.
 
-## Explicit activation
+## Select a file explicitly
 
-The service CLI accepts `--owner-profile PATH` alongside its existing options. The flag selects exactly that file; there is no directory discovery, marker, environment/global setting, browser override or hot reload. Omission intentionally uses the public/default character. The host reads and validates once, outside a Store transaction, and shares an immutable snapshot with text and Live. Deliberate restart reloads the file for new acceptances, not historical runs.
+The host's `--owner-profile` option selects one file. Without it, `loadOwnerProfile` in `server/config/owner-profile.ts` returns `publicOwnerProfile`. There is no profile discovery or hot reload. Restart deliberately to load a changed file for new acceptances; an existing accepted run must not silently change character underneath its recorded instruction.
 
-The file must be a single-link regular file owned by the service user, mode `0600`, in a directory owned by that user, mode `0700`. Neither may be a symlink. Ancestors are trusted under the existing protected-config boundary; same-user ancestor replacement is not an operating-system sandbox. A selected missing, unsafe, invalid or oversize file produces a safe activation error and prevents inference. It never silently selects defaults. Do not commit a real profile to source control.
+For an installed application, use the protected configuration selection described in [macos-install.md](macos-install.md). Keep real profile text outside the repository and application bundle.
 
-## Closed JSON schema
+The loader uses `validateRoot` and `readPrivate` from `server/config/files.ts`: the parent directory and file must meet the protected ownership, type and permission rules. An explicitly selected unsafe or invalid profile reports an error rather than silently falling back to the public character.
 
-This example is entirely synthetic:
+## Authoring contract
 
-```json
-{
-  "schemaVersion": 1,
-  "kind": "profile",
-  "profileVersion": "example-v1",
-  "displayName": "Example Companion",
-  "ownerId": "the-local-store-assistant-id",
-  "style": { "text": "Speak warmly and clearly.", "dataClass": "private" },
-  "lore": { "text": "A fictional companion from a quiet library.", "dataClass": "sensitive" }
-}
-```
+`validateOwnerProfile` in `server/prompt/index.ts` owns the closed schema. Read it before authoring or changing a profile. It binds the profile to the local owner and validates its version, display name, style and lore. Use that schema rather than a copied example that may drift from the validator.
 
-All fields are required and additional fields are rejected, including in `style` and `lore`. The owner ID must exactly match the local Store; this does not change it. Schema version is integer `1` and the file discriminator is `profile`. Each classification must be exactly `ordinary`, `private` or `sensitive`; unknown labels are errors. Both style and lore contribute classes, even though they enter system text. Classifying private material as ordinary does not make it public: choose labels conservatively.
+Style and lore each carry a data class. `ownerProfileClasses` contributes those classes to provider disclosure policy; system-text placement does not make private content ordinary. Classify conservatively and never use an authored paragraph to claim extra tools, grants or source availability.
 
-`profileVersion` is nonempty and at most 80 UTF-16 code units. `displayName` is nonempty, trimmed, control-character-free, at most 80 UTF-16 code units. Each authored text is at most 60,000 UTF-16 code units (empty strings allowed); the complete file is at most 65,536 bytes and must be valid UTF-8 JSON. These are independent upper bounds, not guaranteed capacity: the complete canonical prompt must fit the shared 60,000 UTF-16 code-unit trusted-system ceiling after required rules, capabilities, tools and voice anchors are composed. Oversize instructions fail; authored content is never truncated.
+The host composes its canonical runtime rules around the authored sections. Oversized instructions fail rather than truncating required authority rules. [prompt-composition.md](prompt-composition.md) owns prompt assembly; [privacy-and-authority.md](privacy-and-authority.md) owns class and consent enforcement.
 
-## Authority and provider gating
+## Accepted runs and public status
 
-Authored style and delimited background are not a replacement system prompt or a tool/grant configuration. Didi continues to generate canonical runtime rules, actual capability/source availability, epistemic boundaries, memory coverage and valid receipt rules. Chat and Live share the exact owner-section renderer while retaining their existing surrounding system instructions. Outgoing class sets include every included style, lore, preference, evidence/history or audio input class. Existing route, consent and grant gates must permit the whole set before inference; no extra classification or unknown-to-ordinary conversion exists.
+`ChatService` in `server/chat/index.ts` stores the selected profile in `chat_run_owner_profile` at acceptance. Dispatch must use the accepted snapshot, not reread the mutable file. Live acceptance is owned by `server/live/index.ts`; changing a current profile is not permission to open an old session with invented instructions.
 
-## Durable acceptance
-
-Chat migration 4 binds a closed snapshot to each new run in the same transaction as the run/entry/policy/frozen memory. Replay retains that snapshot; an explicit retry is a new acceptance and may bind a newer profile. Dispatch reads the accepted row, not the file or mutable current config. Migration backfills genuinely pre-profile runs with an explicit public/default selection. Missing or corrupt new bindings fail closed. Existing interrupted-run recovery behavior is unchanged.
-
-Live migration 2 stores a versioned exact accepted instruction, its owner snapshot, generic compiler version and full included class set before dispatch intent. Open uses the accepted instruction and classes, with current route/grant/epoch validation. Changed routes and terminal/recovered lifecycles still refuse honestly; there is no silent recompilation, retry or automatic resume. Nullable pre-migration instructions are documented legacy records and cannot be opened against a current private character: they refuse as invalidated rather than invent a missing instruction. Create a new session explicitly.
-
-The typed public `ownerProfile` status projection supplies the current display label independently of provider/model configuration, including when providers are unconfigured. Public status exposes only safe current activation state and display label; no authored text, profile path, private version/hash or accepted record is exposed in status/ready/errors/receipts. Current UI headings use the display label, while stored historical records/titles/assistant IDs are unchanged. There is no claim of account setup, installation completion, listening, provider availability, model obedience, identical speech or automatic memory access. Structural tests establish assembly, persistence and pre-egress boundaries, not how a model will behave.
+The public `ownerProfile` projection is status and display information, not an export of authored text. Keep profile paths, lore, private versions and accepted instruction content out of status, errors and diagnostic receipts. An active profile proves neither provider readiness nor that a model will follow its style exactly.

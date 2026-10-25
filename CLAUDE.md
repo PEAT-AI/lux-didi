@@ -1,91 +1,54 @@
-# Lux Didi: instructions for coding agents
+# Lux Didi: repository mechanics
 
-Lux Didi is a local Mac voice companion called Naya: a Swift app (`Sources/LuxDidi`), a Node host (`server/`) and a web UI (`web/`). The repository is public. Read [README.md](README.md) for what she is and [docs/architecture.md](docs/architecture.md) for how she works before changing anything.
+Lux Didi is Naya's local Mac application: Swift native owners, a Node host and a TypeScript web interface; this public repository's runtime ownership is mapped in [docs/architecture.md](docs/architecture.md).
 
-## Hard rules
-
-1. The orb's visual design is frozen: the old floating orb, only less text, smooth transitions, smaller, more transparent. Behaviour and wiring may change; the look needs an explicit ask.
-2. Never touch audio devices outside the app's single audio owner (`AudioOwner.swift`). Never change system input or output devices, volume or routing, and never break Mac audio. The host never touches audio at all.
-3. Tests use fakes and synthetic fixtures only. No real account, provider call, microphone, credential or owner data in any test or check.
-4. No real credentials, tokens, keys, personal data, private names, mail subjects or transcript text anywhere in the repository, including docs, fixtures, comments, logs and PR text. The repository is public.
-5. Fail loudly. Never weaken, skip or silence a failing check to get green, and never add a fallback that hides a failure (a missing dependency or an empty upstream result is an error, not stub data).
-6. The host writes nothing to stdout except the supervision protocol (`writeProtocolFrame` in `server/host/index.ts`); never `console.log` in server source.
-7. Connectors are read-only. The only writes outside Naya's own notes are to the owner's own vault: the dictated note, and a composed note that only the host commits, after it read the frozen payload back and the owner confirmed it (C-LUXWRITE items 1 to 10). Owner-granted card changes on the owner's one Trello board go through `trello_write` (never another board, never board, list or member admin, never an Inbox write, never Planner, never a delete). Open tools only open; they never type, click or send.
-8. No backward compatibility shims, rollback paths or `v2` names. Replace cleanly under the canonical name.
-9. Voice content (`server/prompt/`, tool guidance strings) is product: change it with content assertions in `check-prompt.sh` and look for contradictions with the rules already there.
-10. A launch may connect a call by itself only for the interactive kind (`LaunchKind.autoConnects`). A login start, `--install-relaunch` and every proof launch must never connect.
-
-## Layout
-
-- `Sources/LuxDidi/`: Mac app. Entry `LuxDidiApp.swift`; launch kinds `SingleInstanceGuard.swift`; presence machine `NativePresence.swift`; surfaces `PresentationCoordinator.swift` and `NativeMiniOrb.swift`; keys `SingleKeyTrigger.swift`, `NativeShortcuts.swift`; audio `AudioOwner.swift`; host supervision `NativeServiceSupervisor.swift`.
-- `server/`: host. `host/` wiring and logs, `live/` call core and stop phrase, `adapters/live-voice/` providers, `tools/` research and tools, `connectors/`, `prompt/`, `chat/`, `domain/`, `runtime/`, `trace/`, `config/`, `http/`, `test/`.
-- `web/`: UI. `src/orb*.ts`, `live-view.ts`, `settings-view.ts`, `main.ts`; tests in `web/test/`.
-- `Tests/`: Swift test sources and `check-mac.sh`, `check-companion.sh`.
-- `scripts/`: build, install, checks, log readers. `docs/`: documentation. `planning/` and the planning docs listed in the README are history.
-
-## Commands
-
-```sh
-npm --prefix server ci && npm --prefix web ci          # locked installs
-bash scripts/run-local.sh --build-only                 # build web and server
-node server/dist/host/index.js --help                  # host flags
-bash scripts/build-asset-bundle.sh OUTDIR              # needs a clean committed tree
-bash scripts/build-macos-app.sh "OUT/Lux Didi.app" --assets OUTDIR
-bash scripts/install-macos-app.sh "OUT/Lux Didi.app" --to "$HOME/Applications"
-node scripts/naya-logs.mjs --help                      # read content-free logs
-bash scripts/check-install-smoke.sh                    # install research smoke against the repo build
-```
-
-Do not launch the installed app from an agent session and do not start a call. Runtime proof of the app goes through the check scripts.
-
-## Checks
-
-There is no hosted CI. Run the `scripts/check-*.sh` that cover your change, one at a time, and paste the output into the PR; [docs/checks.md](docs/checks.md) maps each script to what it covers. The release gate is twelve checks at the release head (listed there), `check-install-smoke.sh` among them. Browser-backed and native-launch checks need `lux-browser-slot`; without it they are blocked, not passed. Do not run the unit suites by hand for their own sake.
-
-## Which doc owns which subject
-
-One subject, one doc: when a change touches a subject, you edit the doc that owns it and link to it elsewhere instead of describing it twice. If a doc here does not fit its line, fix the line and the doc in the same change.
-
-| doc | owns |
+| If you need | Read |
 | --- | --- |
-| [README.md](README.md) | the one-page introduction, the install commands, the reader map |
-| [docs/architecture.md](docs/architecture.md) | the shape, the processes, one call and one question end to end, presence, where the data is, the boundaries |
-| [docs/service.md](docs/service.md) | the local service: wire contract, auth, state invariants, packaging |
-| [docs/text-chat.md](docs/text-chat.md) | the text conversation: run, steps, partial answers |
-| [docs/live-call.md](docs/live-call.md) | a live call: session core, gateway, voice transports |
-| [docs/native-app.md](docs/native-app.md) | the Swift app: live client, conversation protocol, recovery, companion trust |
-| [docs/mac-experience.md](docs/mac-experience.md) | what the owner sees and feels on the Mac: launch kinds, orb, window, keys, Dock |
-| [docs/selected-memory.md](docs/selected-memory.md) | explicit selected memory, backend and interface |
-| [docs/domain-contract.md](docs/domain-contract.md) | the domain tables, migrations and operations |
-| [docs/local-runtime.md](docs/local-runtime.md) | running the store and the runtime locally |
-| [docs/web-client.md](docs/web-client.md) | the web UI: views, transport, browser proofs |
-| [docs/mcp-adapter.md](docs/mcp-adapter.md) | the MCP adapter: transport, schemas, projection boundary |
-| [docs/mcp-configuration.md](docs/mcp-configuration.md) | the protected MCP profile, standing consent, the Mongoose endpoints |
-| [docs/connectors.md](docs/connectors.md) | how a connector is added end to end |
-| [docs/lux-knowledge-connector.md](docs/lux-knowledge-connector.md) | the Lux Knowledge read path and its bounds |
-| [docs/model-adapter.md](docs/model-adapter.md) | the text model port and its adapters |
-| [docs/provider-configuration.md](docs/provider-configuration.md) | live.json: provider, model, voice, credential binding, route classes |
-| [docs/prompt-composition.md](docs/prompt-composition.md) | the persona and the composition of the instruction sections |
-| [docs/tool-owner.md](docs/tool-owner.md) | the tool table, the grants, the research header and allocator |
-| [docs/memory-import.md](docs/memory-import.md) | importing notes into memory |
-| [docs/owner-profile.md](docs/owner-profile.md) | the owner profile and the persona style it feeds |
-| [docs/checks.md](docs/checks.md) | every check script, the gate, the compile lock |
-| [docs/releases.md](docs/releases.md) | what a release is, the pin, the install and the smoke |
-| [docs/implementation-status.md](docs/implementation-status.md) | the release table and the known limits |
-| [docs/debugging.md](docs/debugging.md) | reading the logs: host.log events, native logs, receipts, the timeline |
-| [docs/diagnostic-store.md](docs/diagnostic-store.md) | querying the store read only, with the timeline and SQL recipes |
-| [docs/local-development.md](docs/local-development.md) | building and running from source: flags, ports, data directories |
-| [docs/macos-install.md](docs/macos-install.md) | building, signing and installing the app |
-| [docs/user-guide.md](docs/user-guide.md) | using Naya day to day |
-| [docs/roadmap.md](docs/roadmap.md) | forward plans, marked historical where they are not current |
-| [docs/privacy-and-authority.md](docs/privacy-and-authority.md) | the authority model as designed, historical |
-| [docs/history/](docs/history/README.md) | documents that were true once and are kept for the record |
+| Product, install, first call or account setup | [README.md](README.md), [docs/user-guide.md](docs/user-guide.md) |
+| Development and check prerequisites | [docs/local-development.md](docs/local-development.md), [docs/checks.md](docs/checks.md) |
+| Release and installation | [docs/releases.md](docs/releases.md), [docs/macos-install.md](docs/macos-install.md) |
+| Source/tool or write authority | [docs/connectors.md](docs/connectors.md), [docs/tool-owner.md](docs/tool-owner.md), [docs/privacy-and-authority.md](docs/privacy-and-authority.md) |
+| Voice, text or native integration | [docs/live-call.md](docs/live-call.md), [docs/text-chat.md](docs/text-chat.md), [docs/native-app.md](docs/native-app.md) |
+| Private character or provider configuration | [docs/owner-profile.md](docs/owner-profile.md), [docs/provider-configuration.md](docs/provider-configuration.md) |
+| Safe operational evidence | [docs/debugging.md](docs/debugging.md), [docs/diagnostic-store.md](docs/diagnostic-store.md) |
 
-## Working rules
+## Stack and layout
 
-- Work in a git worktree, never in the main checkout. One change, one branch, one pull request into `main`; the PR body is a few lines and ends with `## Closes` naming each issue it closes.
-- Touch only what the task names. A bug fix does not rename, reformat or clean up neighbours.
-- A change to behaviour updates the doc that describes it in the same PR; deleting or renaming a public file, flag or route means grepping the docs and fixing every reference.
-- Comments: one line for a live constraint, nothing narrative.
-- Write plain words. No em-dashes or en-dashes in docs, comments, commits or PR text.
-- Logs and the trace store hold metadata, not owner speech: keep `host.log` content-free (see [docs/debugging.md](docs/debugging.md)).
+| Layer | Location | Version authority |
+| --- | --- | --- |
+| Native app | `Sources/LuxDidi/`, `Resources/` | `Resources/Info.plist`, canonical native producer |
+| Host and shared contracts | `server/host/`, `server/contracts/` | `server/package.json`, `server/package-lock.json` |
+| Persistent owners | `server/runtime/`, `server/domain/`, `server/chat/`, `server/live/`, `server/tools/` | Owning migrations and TypeScript contracts |
+| Provider and source adapters | `server/adapters/`, `server/connectors/`, `server/config/` | Locked dependencies and validators |
+| Shared UI | `web/src/`, `web/public/` | `web/package.json`, `web/package-lock.json` |
+| Synthetic verification | `server/test/`, `web/test/`, `Tests/`, `scripts/check-*.sh` | [Check catalog](docs/checks.md) |
+
+## Commands and routing
+
+- When preparing a checkout, install committed dependencies with `npm --prefix server ci` and `npm --prefix web ci` rather than changing lockfiles to repair a local tool gap.
+- When building the source-run application, use `bash scripts/run-local.sh --build-only` and follow [local development](docs/local-development.md) for an isolated foreground host.
+- When checking a managed change, run the declared controller check for the affected owner rather than bypassing it with a direct producer or unrelated suite.
+- When checking current documentation hygiene, use `bash scripts/check-docs.sh`, which checks dashes and home-path patterns but does not replace semantic privacy or symbol review.
+- When compiling Swift, enter through the canonical producers and `scripts/with-compile-lock.sh` rather than invoking a parallel `swiftc` path.
+- When running browser-backed proofs, satisfy the selected producer's installed-browser and `lux-browser-slot` prerequisites rather than downloading a browser or bypassing its lease.
+
+## Ownership constraints
+
+- When changing persistence, keep `Store` in `server/runtime/store.ts` as the writer and compose mutations/effect intents in the caller's transaction rather than opening another database owner.
+- When touching audio, keep hardware in `AudioOwner` (`Sources/LuxDidi/AudioOwner.swift`) and never change system devices, volume or another application's routing.
+- When changing orb behavior, preserve its visual design unless the owner explicitly authorizes a visual change.
+- When changing launch behavior, preserve `LaunchKind.autoConnects` in `SingleInstanceGuard.swift` so only an interactive launch auto-connects.
+- When adding a source read, use `CONNECTOR_DESCRIPTORS` and the canonical tools owner rather than approving tools in a renderer or treating MCP discovery as authority.
+- When changing a write path, preserve the separate local-memory, dictated-note, confirmed composed-note and board-scoped Trello gates described in [tool owner](docs/tool-owner.md) rather than granting generic remote-write authority.
+- When changing prompt or tool guidance, update the corresponding `scripts/check-prompt.sh` assertions and behavior-focused evidence rather than relying on a string change alone.
+- When testing provider, connector or effect behavior, use fakes and synthetic records rather than real accounts, microphones, credentials or owner content.
+- When adding diagnostics, pass closed fields through `safeEvent` in `server/host/log.ts` rather than logging exception messages, arguments, titles or transcript text.
+- When authoring public artifacts, exclude real credentials, private profiles, board names, account content, private machine paths and long dashes, and review semantics in addition to the `check-docs.sh` pattern gate.
+- When changing a public contract, update its owning guide in the same change and point copied schemas back to the source validator.
+
+## Branch, review and release
+
+- When proposing a change, target `main`, keep source and owning documentation together, and use [docs/checks.md](docs/checks.md) for the applicable gates rather than copying a changing check count here.
+- When packaging a candidate, use `scripts/build-asset-bundle.sh` and `scripts/build-macos-app.sh` rather than creating another bundle layout or compile identity.
+- When installing or exercising the owner's app, obtain explicit authorization before any launch, quit, relaunch or real-account probe.
+- When a candidate is reviewed, leave merge and installation decisions to the maintainer and follow [docs/releases.md](docs/releases.md), since a merged source commit is not proof of the installed runtime.

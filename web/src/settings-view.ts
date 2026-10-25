@@ -1,7 +1,7 @@
 // Read-only projection of the running Didi service settings. Pure mapping and markup only.
 // Every rendered field is whitelisted and escaped by name; no provider, config or route payload is
 // ever interpolated wholesale, so a secret-looking field cannot reach the page.
-import { nextStep, reasonCodes } from './next-steps.ts';
+import { mongooseEndpoint, mongooseEndpointLabel, nextStep, reasonCodes, type MongooseEndpointName } from './next-steps.ts';
 import { escapeHtml } from './markdown.ts';
 import { connectionIdentity } from './connector-status.ts';
 import type { Theme } from './theme.ts';
@@ -94,7 +94,7 @@ export function limitMinutes(value: unknown): string | undefined {
 }
 
 /** Whitelist one connection row: id, state and reasonCode, mapped to a fixed state name and next step. */
-export function connectorState(value: unknown): { id: string; state: string; next: string; identity?: string; guideUrl?: string; signIn?: boolean } | undefined {
+export function connectorState(value: unknown): { id: string; state: string; next: string; identity?: string; guideUrl?: string; signIn?: boolean; signInEndpoint?: 'knowledge' | 'data' | 'crm' } | undefined {
   const row = record(value);
   if (!row) return undefined;
   const id = typeof row.id === 'string' && /^[\w.-]{1,128}$/.test(row.id) ? row.id : undefined;
@@ -107,7 +107,10 @@ export function connectorState(value: unknown): { id: string; state: string; nex
   const reason = typeof row.reasonCode === 'string' && reasonCodes.some(reason => reason === row.reasonCode) ? row.reasonCode : 'unknown';
   const label = state === 'missing' || reason === 'credential_missing' ? 'Credential missing' : reason === 'needs_sign_in' ? 'Sign-in needed' : 'Failed';
   const step = nextStep(id, state, reason, row.retrying === true);
-  return { id, state: label, next: step.text, ...(step.guideUrl ? { guideUrl: step.guideUrl } : {}), ...(reason === 'needs_sign_in' || step.signIn === true ? { signIn: true } : {}) };
+  const wantsSignIn = reason === 'needs_sign_in' || step.signIn === true;
+  const endpoint = mongooseEndpoint(id);
+  // Only the three Mongoose endpoint rows can start a sign-in, and each carries its own name.
+  return { id, state: label, next: step.text, ...(step.guideUrl ? { guideUrl: step.guideUrl } : {}), ...(wantsSignIn ? { signIn: true } : {}), ...(wantsSignIn && endpoint ? { signInEndpoint: endpoint } : {}) };
 }
 
 function liveRows(summary: unknown, summaryUnavailable: boolean, saved?: SettingsInput['saved']): string {
@@ -166,7 +169,20 @@ function connectorsSection(connections: unknown, connectionsUnavailable: boolean
   if (connectionsUnavailable) return `<h3>Connectors</h3><p role="status" class="settings-unavailable">Connections unavailable. No connector values are shown while the service cannot be reached.</p>`;
   const rows = (Array.isArray(connections) ? connections : []).map(connectorState).filter((row): row is NonNullable<ReturnType<typeof connectorState>> => row !== undefined);
   if (rows.length === 0) return '<h3>Connectors</h3><p class="muted">No connectors configured.</p>';
-  return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.signIn && row.id === 'mongoose' ? ' <button type="button" id="mongoose-signin" class="secondary">Sign in to Mongoose</button>' : ''}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}</li>`).join('')}</ul>`;
+  return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.signInEndpoint ? ` <button type="button" class="secondary mongoose-signin" data-signin data-endpoint="${escapeHtml(row.id)}">Sign in to ${escapeHtml(mongooseEndpointLabel(row.signInEndpoint))}</button>` : ''}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}</li>`).join('')}</ul>`;
+}
+
+/** The one element shape the sign-in binder needs, so a test can supply plain objects. */
+export interface SignInButton { getAttribute(name: string): string | null; addEventListener(type: 'click', listener: () => void): void }
+/**
+ * One click per endpoint button: the click sends that row's endpoint name to the host, never a shared
+ * or guessed one. A button whose data-endpoint is missing or outside the closed set is left unbound.
+ */
+export function bindSignInButtons(root: { querySelectorAll(selector: string): ArrayLike<SignInButton> }, send: (endpoint: MongooseEndpointName) => void): void {
+  for (const node of Array.from(root.querySelectorAll('[data-signin]'))) {
+    const endpoint = mongooseEndpoint(node.getAttribute('data-endpoint') ?? '');
+    if (endpoint) node.addEventListener('click', () => send(endpoint));
+  }
 }
 
 function connectedSection(connected: SettingsInput['connected']): string {

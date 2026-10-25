@@ -1,6 +1,6 @@
 # Implementation status
 
-State of the source tree at release 12 (train head 57240ad9, 2026-10-25); release 11 landed on main as 5fcacc91. It describes the source, not proof that a given installation contains every change: a bundle's `didi-runtime.json` `releaseCommit` names its source. A green build alone proves neither working accounts, voice hardware nor a healthy installed app.
+State of the source tree at release 13 (train head 1350fad2, 2026-10-25, the train head that has not merged yet); release 12 landed on main as dfe81348 and release 11 as 5fcacc91. It describes the source, not proof that a given installation contains every change: a bundle's `didi-runtime.json` `releaseCommit` names its source. A green build alone proves neither working accounts, voice hardware nor a healthy installed app.
 
 ## What works today
 
@@ -27,6 +27,7 @@ State of the source tree at release 12 (train head 57240ad9, 2026-10-25); releas
 | 10 | 2026-10-24 | A stop stays stopped and a call's state is never guessed, a Dock click shows the orb only, the opener waits for the calendar, Mongoose knowledge, data and crm on three sign-ins, memory recall reads earlier conversations only, every lookup answer opens with what was searched, and no lookup leaves dead air |
 | 11 | 2026-10-25 | A chat read runs only when the ask names chat and a read that runs out of time says it took too long, a mail read that fails speaks the helper's own words while the account stays connected, and the coverage header counts inside the 2,500 character reply cap |
 | 12 | 2026-10-25 | A chat read gets ten seconds so it finishes and an ask about what she said earlier runs no chat read, a memory recall keeps every matching line and puts a summary first at the same match, and a company read reaches the host log instead of being refused |
+| 13 | 2026-10-25 | Sign in to each Mongoose endpoint with its own button in Settings, each connector's row names the next step that actually fits it, and a channel ask finds a channel by the words in its name while an unknown channel gets its own line instead of a guess |
 
 Each release is one squash-merged pull request; its body lists the checks run at the head commit and the issues it closes.
 

@@ -1,29 +1,67 @@
 // Fixed instructions only, never provider payloads or credential contents.
-export const connectorIDs = ["lux-knowledge", "gmail", "calendar", "mattermost", "mongoose"] as const;
-export const reasonCodes = ["credential_missing", "needs_sign_in", "unreachable", "discovery_failed", "handshake_failed", "unknown"] as const;
-export interface NextStep { text: string; guideUrl?: string; command?: string; signIn?: boolean }
-/** One sign-in row: the Settings button does the work, so this carries no command. */
-const signInStep: NextStep = { text: "Sign in to Mongoose in Settings: the Sign in button is on the Mongoose row, and the connector reconnects by itself when you finish.", guideUrl: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup", signIn: true };
-const credentialSteps: Record<string, NextStep> = {
-  "lux-knowledge": { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup" },
-  "gmail": { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup" },
-  "calendar": { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup" },
-  "mattermost": { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup" },
-  "mongoose": { text: "Mongoose session expired, reconnect Mongoose: sign in once in your browser, then restart Lux Didi.", command: "mongoose-login", guideUrl: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup" },
+/** The seven connector rows the host can emit (release 11 catalogue, server/test/fixtures/installed-mcp-config.json). */
+export const connectorIDs = ["lux-knowledge", "gmail", "calendar", "mattermost", "mongoose-knowledge", "mongoose-data", "mongoose-crm"] as const;
+/** The nine reason codes the host's connectionReasonCode can return (server/http/server.ts). */
+export const reasonCodes = ["configuration_error", "credential_missing", "needs_sign_in", "not_signed_in", "unreachable", "discovery_failed", "handshake_failed", "identity_mismatch", "unknown"] as const;
+export type ReasonCode = (typeof reasonCodes)[number];
+
+/** The three Mongoose endpoints, each its own OAuth resource with its own sign-in. */
+const mongooseNames: Record<string, "knowledge" | "data" | "crm"> = {
+  "mongoose-knowledge": "knowledge", "mongoose-data": "data", "mongoose-crm": "crm",
 };
-const failureStep: NextStep = { text: "Check the connector service, then use Copy diagnostics from the Lux Didi menu." };
+const mongooseLabels = { knowledge: "Mongoose knowledge", data: "Mongoose data", crm: "Mongoose CRM" } as const;
+export type MongooseEndpointName = keyof typeof mongooseLabels;
+/** The endpoint name a row id signs in, or undefined: only these three rows can be signed in. */
+export function mongooseEndpoint(id: string): MongooseEndpointName | undefined {
+  return Object.hasOwn(mongooseNames, id) ? mongooseNames[id] : undefined;
+}
+export function mongooseEndpointLabel(name: MongooseEndpointName): string { return mongooseLabels[name]; }
+
+export interface NextStep { text: string; guideUrl?: string; command?: string; signIn?: boolean }
+const setupGuideUrl = "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup";
+const mcpGuideUrl = "https://github.com/PEAT-AI/lux-didi/blob/main/docs/mcp-configuration.md";
+/** One sign-in row: the Settings button does the work, so this carries no command. */
+const signInStep = (label: string): NextStep => ({ text: `Sign in to ${label} in Settings: the Sign in button is on the ${label} row, and the connector reconnects by itself when you finish.`, guideUrl: setupGuideUrl, signIn: true });
 /** A transport timeout: Naya retries on its own, so the owner is told that, not asked to fix anything. */
-const unreachableStep: NextStep = { text: "Mongoose is not reachable right now. Naya retries in the background and reconnects by itself when Mongoose answers." };
+const unreachableStep = (label: string): NextStep => ({ text: `${label} is not reachable right now. Naya retries in the background and reconnects by itself when Mongoose answers.` });
 /** The same failure after the bounded retries are spent: the stored login may be the cause, so the
  * Settings sign-in button is offered as the owner's way out. */
-const unreachableSpentStep: NextStep = { text: "Mongoose is not reachable and Naya has stopped retrying. Sign in again in Settings if your stored login has expired, or reconnect from the Lux Didi menu.", guideUrl: signInStep.guideUrl, signIn: true };
-export const nextSteps: Record<string, Record<string, NextStep>> = Object.fromEntries(connectorIDs.map(id => [
-  id, Object.fromEntries(reasonCodes.map(reason => [reason, reason === 'needs_sign_in' && id === 'mongoose' ? signInStep : reason === 'unreachable' && id === 'mongoose' ? unreachableStep : reason === 'credential_missing' ? credentialSteps[id]! : failureStep])),
-]));
+const unreachableSpentStep = (label: string): NextStep => ({ text: `${label} is not reachable and Naya has stopped retrying. Sign in again in Settings if your stored login has expired, or reconnect from the Lux Didi menu.`, guideUrl: setupGuideUrl, signIn: true });
+const failureStep: NextStep = { text: "Check the connector service, then use Copy diagnostics from the Lux Didi menu." };
+/** Mongoose signs in through the browser; the pasted-token path covers the other connectors only. */
+const mongooseCredentialStep = (label: string): NextStep => ({ text: `${label} has no stored session. Run mongoose-login, or use the Sign in button in Settings once this endpoint is configured.`, command: "mongoose-login", guideUrl: setupGuideUrl });
+const credentialSteps: Record<string, NextStep> = {
+  "lux-knowledge": { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: setupGuideUrl },
+  "gmail": { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: setupGuideUrl },
+  "calendar": { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: setupGuideUrl },
+  "mattermost": { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: setupGuideUrl },
+  "mongoose-knowledge": mongooseCredentialStep("Mongoose knowledge"),
+  "mongoose-data": mongooseCredentialStep("Mongoose data"),
+  "mongoose-crm": mongooseCredentialStep("Mongoose CRM"),
+};
+/** One fixed sentence per reason code, so no row with a known reason falls back to the failure text. */
+const reasonSteps: Record<ReasonCode, NextStep> = {
+  configuration_error: { text: "This connector's tool list changed and needs your approval. Approve the new tool list with the approve command the MCP configuration guide describes, then restart Lux Didi.", guideUrl: mcpGuideUrl },
+  credential_missing: credentialSteps["lux-knowledge"]!,
+  needs_sign_in: { text: "This connector needs a fresh sign-in with its own credentials. Sign in with its own command, then restart Lux Didi.", guideUrl: setupGuideUrl },
+  not_signed_in: { text: "This connector has no active session. Sign in again with its own credentials, then restart Lux Didi.", guideUrl: setupGuideUrl },
+  unreachable: { text: "The connector service is not reachable right now. Start it, then restart Lux Didi.", guideUrl: setupGuideUrl },
+  discovery_failed: { text: "Tool discovery failed for this connector. Check its service tool configuration, then restart Lux Didi." },
+  handshake_failed: { text: "This connector's handshake failed. Check that its service is ready, then restart Lux Didi." },
+  identity_mismatch: { text: "This connector is signed in as a different account. Sign in again with the account your configuration names, then restart Lux Didi." },
+  unknown: failureStep,
+};
+
 export function nextStep(id: string, state: string, reason?: string, retrying = false): NextStep {
   if (state === 'connected') return { text: 'no action needed' };
   if (state === 'configured') return { text: 'a Live session connects on demand' };
-  if (reason === 'unreachable' && id === 'mongoose') return retrying ? unreachableStep : unreachableSpentStep;
-  if (state === 'missing' || reason === 'credential_missing') return Object.hasOwn(nextSteps, id) ? nextSteps[id]!.credential_missing! : { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup" };
-  return Object.hasOwn(nextSteps, id) && Object.hasOwn(nextSteps[id]!, reason ?? 'unknown') ? nextSteps[id]![reason ?? 'unknown']! : failureStep;
+  const endpoint = mongooseEndpoint(id);
+  if (endpoint) {
+    const label = mongooseEndpointLabel(endpoint);
+    // A signed-out or expired Mongoose endpoint is signed in from Settings, one endpoint at a time.
+    if (reason === 'needs_sign_in' || reason === 'not_signed_in') return signInStep(label);
+    if (reason === 'unreachable') return retrying ? unreachableStep(label) : unreachableSpentStep(label);
+  }
+  if (state === 'missing' || reason === 'credential_missing') return Object.hasOwn(credentialSteps, id) ? credentialSteps[id]! : credentialSteps['lux-knowledge']!;
+  return Object.hasOwn(reasonSteps, reason ?? '') ? reasonSteps[reason as ReasonCode]! : failureStep;
 }

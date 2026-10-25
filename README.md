@@ -13,7 +13,7 @@ Every source is read only and each one is connected separately (Settings shows t
 - Lux Knowledge: your notes and past decisions.
 - Gmail and Google Calendar (through the lux-google-mcp helper, pinned to one account): "anything important in mail?", "what is on tomorrow?".
 - Mattermost (through the mattermost-mcp server): "anything urgent on Mattermost?", "find that channel".
-- Mongoose: company knowledge, business data and CRM, each endpoint with its own sign-in; the admin endpoint is never connected.
+- Mongoose: company knowledge, business data and CRM, each endpoint with its own sign in button in Settings; the admin endpoint is never connected.
 - The web, for public facts, weather and news.
 
 What she says about a lookup is honest: an empty window says so, a source she could not search says why, and a weak match is reported as nothing matched.

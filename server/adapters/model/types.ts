@@ -70,7 +70,9 @@ export type ToolCallRefusal = Omit<ToolCallIntent, 'accountId' | 'resourceId'> &
 /** Closed, privacy-safe stage for a dispatched MCP call that failed. */
 export const MCP_FAILURE_STAGES = ['timeout', 'cancelled', 'child_exited', 'pipe_closed', 'sdk_protocol_rejected', 'invalid_result'] as const;
 export type McpFailureStage = (typeof MCP_FAILURE_STAGES)[number];
-export const TOOL_FAILURE_CODES = [...MCP_FAILURE_STAGES, 'connector_error', 'handler_outcome'] as const;
+export const TOOL_FAILURE_CODES = [...MCP_FAILURE_STAGES, 'connector_error', 'handler_outcome',
+  // #637: the ask named a channel the chat connector does not know, so no read was made.
+  'channel_not_found'] as const;
 export type ToolFailureCode = (typeof TOOL_FAILURE_CODES)[number];
 export function isMcpFailureStage(value: string): value is McpFailureStage {
   return (MCP_FAILURE_STAGES as readonly string[]).includes(value);

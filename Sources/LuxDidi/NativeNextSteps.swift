@@ -7,36 +7,63 @@ struct NativeNextStep {
     var guideURL: URL? = nil
 }
 enum NativeNextSteps {
-    static let connectorIDs = ["lux-knowledge", "gmail", "calendar", "mattermost", "mongoose"]
-    static let reasonCodes = ["credential_missing", "needs_sign_in", "unreachable", "discovery_failed", "handshake_failed", "unknown"]
+    // The seven connector rows the host can emit and the nine reason codes it can return, matching
+    // web/src/next-steps.ts one for one (web/test/next-steps.test.ts reads these two lines).
+    static let connectorIDs = ["lux-knowledge", "gmail", "calendar", "mattermost", "mongoose-knowledge", "mongoose-data", "mongoose-crm"]
+    static let reasonCodes = ["configuration_error", "credential_missing", "needs_sign_in", "not_signed_in", "unreachable", "discovery_failed", "handshake_failed", "identity_mismatch", "unknown"]
+    private static let setupGuide = URL(string: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup")
+    private static let mcpGuide = URL(string: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/mcp-configuration.md")
+    private static let configureStep = NativeNextStep(text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", command: nil, guideURL: setupGuide)
+    /// The three Mongoose endpoints, each its own OAuth resource with its own browser sign-in.
+    private static let endpointLabels: [String: String] = [
+        "mongoose-knowledge": "Mongoose knowledge", "mongoose-data": "Mongoose data", "mongoose-crm": "Mongoose CRM",
+    ]
+    private static let endpointNames: [String: String] = [
+        "mongoose-knowledge": "knowledge", "mongoose-data": "data", "mongoose-crm": "crm",
+    ]
+    /// The endpoint name a row signs in, or nil: only these three rows can be signed in.
+    static func endpointName(_ id: String) -> String? { endpointNames[id] }
+    static func signInStep(_ label: String) -> NativeNextStep {
+        NativeNextStep(text: "Sign in to \(label) in Settings: the Sign in button is on the \(label) row, and the connector reconnects by itself when you finish.", command: nil, guideURL: setupGuide)
+    }
+    private static func unreachableStep(_ label: String) -> NativeNextStep {
+        NativeNextStep(text: "\(label) is not reachable right now. Naya retries in the background and reconnects by itself when Mongoose answers.", command: nil)
+    }
+    private static func mongooseCredentialStep(_ label: String) -> NativeNextStep {
+        NativeNextStep(text: "\(label) has no stored session. Run mongoose-login, or use the Sign in button in Settings once this endpoint is configured.", command: "mongoose-login", guideURL: setupGuide)
+    }
     static let credentialSteps: [String: NativeNextStep] = [
-        "lux-knowledge": NativeNextStep(text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", command: nil, guideURL: URL(string: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup")),
-        "gmail": NativeNextStep(text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", command: nil, guideURL: URL(string: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup")),
-        "calendar": NativeNextStep(text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", command: nil, guideURL: URL(string: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup")),
-        "mattermost": NativeNextStep(text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", command: nil, guideURL: URL(string: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup")),
-        "mongoose": NativeNextStep(text: "Mongoose session expired, reconnect Mongoose: sign in once in your browser, then restart Lux Didi.", command: "mongoose-login", guideURL: URL(string: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup")),
+        "lux-knowledge": configureStep, "gmail": configureStep, "calendar": configureStep, "mattermost": configureStep,
+        "mongoose-knowledge": mongooseCredentialStep("Mongoose knowledge"),
+        "mongoose-data": mongooseCredentialStep("Mongoose data"),
+        "mongoose-crm": mongooseCredentialStep("Mongoose CRM"),
+    ]
+    /// One fixed sentence per reason code, so no row with a known reason falls back to the failure text.
+    private static let reasonSteps: [String: NativeNextStep] = [
+        "configuration_error": NativeNextStep(text: "This connector's tool list changed and needs your approval. Approve the new tool list with the approve command the MCP configuration guide describes, then restart Lux Didi.", command: nil, guideURL: mcpGuide),
+        "credential_missing": configureStep,
+        "needs_sign_in": NativeNextStep(text: "This connector needs a fresh sign-in with its own credentials. Sign in with its own command, then restart Lux Didi.", command: nil, guideURL: setupGuide),
+        "not_signed_in": NativeNextStep(text: "This connector has no active session. Sign in again with its own credentials, then restart Lux Didi.", command: nil, guideURL: setupGuide),
+        "unreachable": NativeNextStep(text: "The connector service is not reachable right now. Start it, then restart Lux Didi.", command: nil, guideURL: setupGuide),
+        "discovery_failed": NativeNextStep(text: "Tool discovery failed for this connector. Check its service tool configuration, then restart Lux Didi.", command: nil),
+        "handshake_failed": NativeNextStep(text: "This connector's handshake failed. Check that its service is ready, then restart Lux Didi.", command: nil),
+        "identity_mismatch": NativeNextStep(text: "This connector is signed in as a different account. Sign in again with the account your configuration names, then restart Lux Didi.", command: nil),
     ]
     static let failureStep = NativeNextStep(text: "Check the connector service, then use Copy diagnostics from the Lux Didi menu.", command: nil)
-    /// R6: the key's own step, so the next-steps surface names why the key is off and offers the
-    /// pane that fixes it, with the same words and the same address as the menu bar notice.
     @MainActor static func singleKeyStep(enabled: Bool, tapped: Bool) -> NativeNextStep {
         NativeNextStep(text: SingleKeyTrigger.grantNoticeTitle(enabled: enabled, tapped: tapped)
                         ?? "On: a bare Right Command tap mutes and unmutes her.",
                        command: nil,
                        guideURL: URL(string: SingleKeyTrigger.grantSettingsURL))
     }
-    static let signInStep = NativeNextStep(text: "Sign in to Mongoose in Settings: the Sign in button is on the Mongoose row, and the connector reconnects by itself when you finish.", command: nil, guideURL: URL(string: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup"))
-    static let table: [String: [String: NativeNextStep]] = Dictionary(uniqueKeysWithValues: connectorIDs.map { id in
-        (id, Dictionary(uniqueKeysWithValues: reasonCodes.map { reason in
-            (reason, id == "mongoose" && reason == "needs_sign_in" ? signInStep : reason == "credential_missing" ? credentialSteps[id]! : failureStep)
-        }))
-    })
     static func lookup(id: String, state: String, reason: String?) -> NativeNextStep {
         if state == "connected" { return NativeNextStep(text: "no action needed", command: nil) }
         if state == "configured" { return NativeNextStep(text: "a Live session connects on demand", command: nil) }
+        if let label = endpointLabels[id], reason == "needs_sign_in" || reason == "not_signed_in" { return signInStep(label) }
+        if let label = endpointLabels[id], reason == "unreachable" { return unreachableStep(label) }
         if state == "missing" || reason == "credential_missing" {
-            return table[id]?["credential_missing"] ?? NativeNextStep(text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", command: nil, guideURL: URL(string: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup"))
+            return credentialSteps[id] ?? configureStep
         }
-        return table[id]?[reason ?? "unknown"] ?? failureStep
+        return reasonSteps[reason ?? "unknown"] ?? failureStep
     }
 }

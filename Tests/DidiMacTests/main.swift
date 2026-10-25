@@ -992,12 +992,18 @@ expect(keyOffStep.guideURL?.absoluteString == SingleKeyTrigger.grantSettingsURL
 let keyOnStep = NativeNextSteps.singleKeyStep(enabled: true, tapped: true)
 expect(keyOnStep.text != keyOffStep.text && keyOnStep.text.contains("mutes and unmutes"),
     "a key with a live tap gets the working line, never the warning")
-let mongooseStep = NativeNextSteps.lookup(id: "mongoose", state: "missing", reason: nil)
+let mongooseStep = NativeNextSteps.lookup(id: "mongoose-knowledge", state: "missing", reason: nil)
 expect(mongooseStep.command == "mongoose-login", "the Mongoose next step offers exactly the sign-in action id")
 expect(mongooseStep.command != "cp" && !(mongooseStep.command ?? "").hasPrefix("cp ") && !(mongooseStep.command ?? "").contains("/"), "credential path is not a copy command")
-let onboardingRows = NativeGettingStartedItems.rows(microphone: "denied", notifications: "denied", login: "off", connections: [("calendar", "missing", "credential_missing"), ("mongoose", "connected", nil)])
+let onboardingRows = NativeGettingStartedItems.rows(microphone: "denied", notifications: "denied", login: "off", connections: [("calendar", "missing", "credential_missing"), ("mongoose-data", "error", "needs_sign_in")])
 expect(onboardingRows.count == 7, "fixture includes permissions, login, shortcuts and every connection")
 expect(onboardingRows.contains { $0.title == "calendar" && $0.detail == "missing: \(calendarStep.text)" && $0.command == nil }, "fixture projects exact connector next step")
+// #649: the native closed sets match the web lists, and a signed-out endpoint names its own sign-in.
+expect(NativeNextSteps.connectorIDs == ["lux-knowledge", "gmail", "calendar", "mattermost", "mongoose-knowledge", "mongoose-data", "mongoose-crm"], "the native connector ids are the seven production endpoint ids")
+expect(NativeNextSteps.reasonCodes == ["configuration_error", "credential_missing", "needs_sign_in", "not_signed_in", "unreachable", "discovery_failed", "handshake_failed", "identity_mismatch", "unknown"], "the native reason codes are the nine the host emits")
+let dataSignIn = NativeNextSteps.lookup(id: "mongoose-data", state: "error", reason: "needs_sign_in")
+expect(dataSignIn.text.contains("Sign in to Mongoose data in Settings") && dataSignIn.command == nil, "a signed-out data endpoint carries its own sign-in step")
+expect(NativeNextSteps.endpointName("mongoose-data") == "data" && NativeNextSteps.endpointName("mongoose") == nil, "only the three endpoint rows can be signed in")
 
 // R-SEC-3: ordinary owner/device labels are not safe support exports.
 let personalRoute = NativeDiagnosticsSnapshot.render(DiagnosticsSnapshotInput(audioRoute: "Microphone: Alice Smith's AirPods · Output: Alice Smith's AirPods"))

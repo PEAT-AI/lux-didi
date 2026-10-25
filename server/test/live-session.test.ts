@@ -6388,7 +6388,7 @@ test('#656: owner audio sent during a rebuild is held and delivered to the new s
   assert.equal(diagnostics.ownerRebuildingDropBytes, frames[0]!.byteLength, 'and it is the oldest frame the owner sent');
 });
 
-test('#656: a research run holds the ladder to its own deadline, not the twelve second tool ceiling', async t => {
+test('#656: a research run past the twelve second ceiling still holds the ladder to its own deadline', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
@@ -6397,28 +6397,34 @@ test('#656: a research run holds the ladder to its own deadline, not the twelve 
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   let calls = 0;
-  // The first read returns and arms the debt clock; the research run is the one that runs long.
-  const beforeTool = async () => { calls += 1; if (calls >= 2) await held; };
+  let holdFrom = Number.POSITIVE_INFINITY;
+  // Every fixture read before the continue runs free; the continue's own read is the one held open.
+  const beforeTool = async () => { calls += 1; if (calls >= holdFrom) await held; };
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, calendar: true,
     scheduler, limits: openaiLimits, beforeTool });
-  await openPort(h, 'research-ceiling-656');
+  await openPort(h, 'research-deadline-656');
   await ownerInput(fake);
+  // One settled read arms the debt clock, so the ladder is running when the research run starts.
   fake.emit({ type: 'toolCall', calls: [{ id: 'warm656', name: 'search_knowledge', args: { query: 'warm', limit: 1 } }] });
   await settlePort();
-  fake.emit({ type: 'toolCall', calls: [{ id: 'run656', name: 'research',
+  // A start run settles on its own; its id is what a continue needs to stay open past the plain tool ceiling.
+  fake.emit({ type: 'toolCall', calls: [{ id: 'start656', name: 'research',
     args: { action: 'start', question: 'what is on my calendar', topic: 'what is on my calendar' } }] });
   await settlePort();
-  assert.ok(h.calls.length >= 2, 'the research run read a source, so its call is still pending');
-  // A research run outlives the twelve second tool ceiling: it is still work and the ladder stands down.
+  const opened = fake.toolResponses.at(-1)?.[0]?.response as Record<string, unknown> | string | undefined;
+  const researchId = typeof opened === 'string' ? undefined : opened?.['researchId'];
+  assert.equal(typeof researchId, 'string', 'the start run names the run a continue resumes');
+  holdFrom = calls + 1;
+  fake.emit({ type: 'toolCall', calls: [{ id: 'run656', name: 'research', args: { action: 'continue', researchId } }] });
+  await settlePort();
+  assert.ok(calls >= holdFrom, 'the continue read a source, so its call is still pending');
+  // The run is older than TOOL_CEILING_MS and still work: RESEARCH.continueDeadlineMs is what bounds the wait.
   h.advance(16_000); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'a sixteen second research run is still work');
-  assert.equal(fake.sessionsOpened, 1);
-  // Past its own published deadline the run no longer owns the silence, so the ladder recovers it.
   h.advance(RESEARCH.continueDeadlineMs); scheduler.runDue(); await settlePort();
-  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'a research run past its deadline still recovers');
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'past its own deadline the run still recovers');
   release();
 });
-
 test('#656: a call past its own ceiling no longer holds the ladder, so a wedged read still recovers', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });

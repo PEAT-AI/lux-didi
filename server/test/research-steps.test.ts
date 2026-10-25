@@ -121,7 +121,7 @@ test('F3 a subject refuses identifier-shaped values and control characters', () 
 // current question are never its own memory.
 const MEMORY_AT = Date.parse('2026-10-24T12:00:00.000Z');
 const MEMORY_ASK = 'what did we talk about last time';
-interface MemoryHit { snippet: string; role: 'user' | 'assistant'; date: string; sessionId: string }
+interface MemoryHit { snippet: string; role: 'user' | 'assistant'; date: string; sessionId: string; sourceKind?: 'entry' | 'live' | 'summary' }
 
 function memoryDeps(hits: readonly MemoryHit[]): ResearchDeps {
   return {
@@ -142,6 +142,10 @@ const memoryAsk = (deps: ResearchDeps, question = MEMORY_ASK) =>
 const memoryEvidence = (reply: Record<string, unknown>): string => JSON.stringify({ findings: reply['findings'], pages: reply['historyPages'] });
 
 const minutesAgo = (minutes: number): string => new Date(MEMORY_AT - minutes * 60_000).toISOString();
+
+/** The kept history page hits, in the order the ranking put them. */
+const keptHits = (reply: Record<string, unknown>): Record<string, unknown>[] =>
+  (reply['historyPages'] as { hits: Record<string, unknown>[] }[] | undefined)?.[0]?.hits ?? [];
 
 test('#615: memory evidence is an earlier conversation, never the live session or the current question', async () => {
   const hits: MemoryHit[] = [
@@ -165,14 +169,39 @@ test('#615: an earlier assistant line is evidence when no owner line matches', a
   assert.equal((reply['sources'] as Record<string, string>)['memory'], 'ok');
 });
 
-test('#615: an owner line from an earlier session leads her own line at the same match', async () => {
+test('#615/#638: an owner line leads her own entry at the same match without removing it', async () => {
   const reply = await memoryAsk(memoryDeps([
     { snippet: 'we talked about the dentist and the party', role: 'assistant', date: minutesAgo(2880), sessionId: 'older-session' },
     { snippet: 'we talked about the dentist', role: 'user', date: minutesAgo(1440), sessionId: 'earlier-session' },
   ]));
   const evidence = memoryEvidence(reply as Record<string, unknown>);
+  const hits = keptHits(reply);
   assert.match(evidence, /we talked about the dentist/, 'the owner line is the evidence');
-  assert.doesNotMatch(evidence, /and the party/, 'her own line is evidence only when no owner line matches');
+  assert.match(evidence, /and the party/, 'her own earlier entry is memory too, never dropped');
+  assert.deepEqual(hits.map(hit => hit['role']), ['user', 'assistant'], 'the newer owner entry leads at the same match');
+});
+
+test('#638: a matching summary is evidence beside the owner entry and leads it at the same match', async () => {
+  const reply = await memoryAsk(memoryDeps([
+    { snippet: 'we talked about the dentist', role: 'user', date: minutesAgo(1440), sessionId: 'earlier-session', sourceKind: 'entry' },
+    { snippet: 'we talked about the dentist', role: 'assistant', date: minutesAgo(1500), sessionId: 'summary-session', sourceKind: 'summary' },
+    { snippet: 'we talked about the dentist', role: 'assistant', date: minutesAgo(60), sessionId: 'past-live-session', sourceKind: 'live' },
+  ]));
+  assert.deepEqual(keptHits(reply).map(hit => hit['sourceKind']), ['summary', 'entry', 'live'],
+    'a summary leads an entry leads a live transcript line at the same match, whatever the role');
+});
+
+test('#638: a recall ask keeps the summary beside the owner lines it shares words with', async () => {
+  const reply = await memoryAsk(memoryDeps([
+    { snippet: 'we talked about the holiday', role: 'user', date: minutesAgo(3000), sessionId: 'oldest-session', sourceKind: 'entry' },
+    { snippet: 'we talked about the dentist and the party', role: 'assistant', date: minutesAgo(2900), sessionId: 'summary-session', sourceKind: 'summary' },
+    { snippet: 'what did we talk about the dentist', role: 'user', date: minutesAgo(2400), sessionId: 'older-session', sourceKind: 'entry' },
+  ]));
+  const hits = keptHits(reply);
+  assert.equal(hits.length, 3, 'no matching line is filtered out by its role');
+  assert.deepEqual(hits.map(hit => hit['sourceKind']), ['entry', 'summary', 'entry'],
+    'the best match leads, then the summary before the weaker owner entry');
+  assert.match(memoryEvidence(reply as Record<string, unknown>), /dentist and the party/, 'the summary reaches the model');
 });
 
 test('#615: a memory lookup with nothing from an earlier session reports empty, never the current turn', async () => {

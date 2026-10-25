@@ -195,7 +195,7 @@ test('scenario 12: a commentary acknowledgement with no audio is not delivery', 
   await replay.release();
 });
 
-test('scenario 13: a provider error frame mid tool turn ends in a typed failure, not a silent rebuild', { todo: 'still open on fc331da0 (new issue for the master): a provider error at 1500 ms, after the tool call at 1200 ms, leaves call_1 with no output submission and no typed disposition (invariant 1) and the orb reads listening while call_1 is unanswered (invariant 5); the boundary is "the lookup is delegated" in server/test/live-rebuild-sweep.test.ts, the provider error path is openai.ts providerError at server/adapters/live-voice/openai.ts:1223 and the endResponse(undefined) that no turnFailed follows' }, async t => {
+test('scenario 13: a provider error frame mid tool turn ends in a typed failure, not a silent rebuild', { todo: 'still open on fc331da0 (#677): a provider error at 1500 ms, after the tool call at 1200 ms, leaves call_1 with no output submission and no typed disposition (invariant 1) and the orb reads listening while call_1 is unanswered (invariant 5); the boundary is "the lookup is delegated" in server/test/live-rebuild-sweep.test.ts, the provider error path is openai.ts providerError at server/adapters/live-voice/openai.ts:1223 and the endResponse(undefined) that no turnFailed follows' }, async t => {
   const played = await play(t, 'scenario-13-provider-error', { tools: true, scripts: [{ latencyMs: 1_500 }] });
   const { replay } = played;
   const call = replay.calls[0];

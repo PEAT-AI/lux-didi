@@ -66,7 +66,7 @@ The `event` value of every line in `host.log` is one name from a closed set. The
 | `gptlive` | `gptlive_append_ack`, `gptlive_delegation_stalled`, `gptlive_setup_error`, `gptlive_tool_output`, `gptlive_turn_complete`, `gptlive_unknown_frame` | the GPT-Live wire: setup error, unknown frame, append ack, tool output, turn complete, stalled delegation |
 | `tool` | `tool_arguments_rejected`, `tool_cancelled`, `tool_ceiling_hit`, `tool_ceiling_late`, `tool_diagnostic_capture`, `tool_failure`, `tool_output_sent`, `tool_redaction` | a tool call: refusal, cancellation, ceiling, redaction, failure, send outcome, diagnostic capture |
 | `research` | `research_call_arrived`, `research_first_answer`, `research_joined`, `research_late_findings`, `research_progress`, `research_refused`, `research_routed`, `research_run`, `research_source`, `research_subcall` | a research run: arrival, routing, sub-calls, sources, first answer, late findings, progress, refusal |
-| `connector` | `connector_connected`, `connector_failure`, `connector_helper_stderr`, `connector_identity`, `connector_recovered`, `connector_recovery_exhausted` | a connector connection: connected, identity, failure, recovered, recovery exhausted, helper stderr |
+| `connector` | `connector_connected`, `connector_failure`, `connector_helper_stderr`, `connector_identity`, `connector_recovered`, `connector_recovery_exhausted`, `google_mcp_path_unsafe` | a connector connection: connected, identity, failure, recovered, recovery exhausted, helper stderr, the Google helper runs from under the reports folder (endpoint id only) |
 | `connection` | `connection_quality` | the connection quality sample of the local socket |
 | `calendar` | `calendar_digest`, `calendar_digest_refreshed`, `calendar_digest_timeout` | the calendar digest: published, refreshed, timed out |
 | `chat` | `chat_timing` | one text chat turn: outcome, rounds, timing |
@@ -85,7 +85,7 @@ The `event` value of every line in `host.log` is one name from a closed set. The
 | `consumer` | `consumer_gone_end` | the output consumer went away at the end of a call |
 | `debug` | `debug_journal_removal_failed`, `debug_journal_removed` | the debug journal files were removed, or their removal failed |
 | `native` | `native_action` | a native action was forwarded to the host |
-| `open` | `open_claim_corrected` | an open request was corrected |
+| `open` | `gmail_account_unknown`, `open_claim_corrected` | a Gmail link fell back to account `/u/0` because the mailbox proved no account (once per session); an open claim was corrected |
 | `thinking` | `thinking_sent` | a thinking line was sent |
 | `uplink` | `uplink_shed` | uplink backpressure shed a frame |
 | `vault` | `vault_write` | a vault note was written |

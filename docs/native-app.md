@@ -465,10 +465,25 @@ URL, HTTP 200, displayable `text/html`, and no Content-Disposition. Redirect
 callbacks stop provisional loads rather than accepting an unexpected hop.
 `WKUIDelegate.createWebViewWith` never creates a popup; media capture permission
 is always denied via the documented delegate. Media requires user action.
+`runJavaScriptConfirmPanelWithMessage` answers the page's `window.confirm` (memory
+delete uses it) with a native sheet on the page's own window (`ConfirmPanel.swift`):
+OK is true and Cancel false, and a subframe, a page the route does not approve or a
+missing window answer false without showing anything. Without this delegate WebKit
+answers every confirm false. An external link the page activates opens through the
+same browser choice as the open actions below.
 The content controller has zero handlers and zero injected scripts; website data
 is nonpersistent. These policies do not claim to make WebKit an OS sandbox or
 prevent every same-origin page subresource; service CSP/Permissions-Policy and
 trusted shared web code remain their owners' responsibilities.
+
+**Open actions.** `NativeActions.swift` re-checks every `native_action` frame against
+its own destination list (the same table the host uses, see
+[tool-owner.md](tool-owner.md#opening-things)), allows five opens a minute, and
+opens a web destination in Google Chrome when the workspace resolves the bundle id
+`com.google.Chrome`, otherwise in the default browser. A file opens in its own app
+and an application through the workspace launch. There is no script, no profile flag
+and no keystroke: only the workspace open call, through the `BrowserWorkspace` port a
+test replaces.
 
 A local page attempt has a five-second deadline covering cookie preparation and
 document load. Ready requires an approved HTTP response AND canonical URL; a

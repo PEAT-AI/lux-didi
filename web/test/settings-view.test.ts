@@ -59,7 +59,7 @@ test('maps each connector state to its sentence and one-line next step', () => {
   assert.equal(connectorState(connections[1])?.state, 'Credential missing');
   assert.match(connectorState(connections[1])!.next, /explicitly selected protected configuration directory/);
   assert.equal(connectorState(connections[3])?.state, 'Failed');
-  assert.match(connectorState(connections[3])!.next, /Copy diagnostics/);
+  assert.match(connectorState(connections[3])!.next, /not reachable right now/);
   const html = settingsMarkup({ status, connections });
   for (const label of ['Connected', 'Configured', 'Credential missing', 'Failed']) assert.match(html, new RegExp(label));
 });
@@ -72,21 +72,22 @@ test('each Mongoose endpoint row carries its own Sign in button while it needs a
   ];
   const html = settingsMarkup({ status, connections: signedOut });
   assert.match(html, /Sign-in needed/);
-  for (const [id, name, label] of [['mongoose-knowledge', 'knowledge', 'Mongoose knowledge'], ['mongoose-data', 'data', 'Mongoose data'], ['mongoose-crm', 'crm', 'Mongoose CRM']] as const) {
-    assert.match(html, new RegExp(`<button type="button" class="secondary mongoose-signin" data-mongoose-signin="${name}">Sign in to ${label}</button>`), `${id} carries its own button`);
+  for (const [id, label] of [['mongoose-knowledge', 'Mongoose knowledge'], ['mongoose-data', 'Mongoose data'], ['mongoose-crm', 'Mongoose CRM']] as const) {
+    assert.match(html, new RegExp(`<button type="button" class="secondary mongoose-signin" data-signin data-endpoint="${id}">Sign in to ${label}</button>`), `${id} carries its own button`);
   }
-  assert.equal([...html.matchAll(/data-mongoose-signin=/g)].length, 3, 'one button per endpoint row, never a shared one');
+  assert.equal([...html.matchAll(/data-signin/g)].length, 3, 'one button per endpoint row, never a shared one');
+  assert.doesNotMatch(html, /id="mongoose-signin"/, 'a fixed element id cannot express one per endpoint');
   const healthy = settingsMarkup({ status, connections: [{ id: 'mongoose-data', state: 'connected', tools: 3, lastHandshakeAt: '2026-10-12T14:52:00Z', reasonCode: null }] });
-  assert.doesNotMatch(healthy, /data-mongoose-signin/, 'a connected connector offers no sign-in');
+  assert.doesNotMatch(healthy, /data-signin/, 'a connected connector offers no sign-in');
   // CONNECT-R3: unreachable with its retries spent still leaves the owner a way out.
   const spent = settingsMarkup({ status, connections: [{ id: 'mongoose-crm', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'unreachable', retrying: false }] });
-  assert.match(spent, /data-mongoose-signin="crm"/, 'the owner still has a way out of an unreachable Mongoose endpoint');
+  assert.match(spent, /data-endpoint="mongoose-crm"/, 'the owner still has a way out of an unreachable Mongoose endpoint');
   assert.match(spent, /Naya has stopped retrying/);
   const retrying = settingsMarkup({ status, connections: [{ id: 'mongoose-knowledge', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'unreachable', retrying: true }] });
-  assert.doesNotMatch(retrying, /data-mongoose-signin/, 'a scheduled retry offers no button yet');
+  assert.doesNotMatch(retrying, /data-signin/, 'a scheduled retry offers no button yet');
   assert.match(retrying, /Naya retries in the background/);
   const otherConnector = settingsMarkup({ status, connections: [{ id: 'gmail', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'needs_sign_in' }] });
-  assert.doesNotMatch(otherConnector, /data-mongoose-signin/, 'the button never points a non-Mongoose row at a Mongoose sign-in');
+  assert.doesNotMatch(otherConnector, /data-signin/, 'the button never points a non-Mongoose row at a Mongoose sign-in');
   assert.doesNotMatch(otherConnector, /Sign in to Mongoose/, 'and the row keeps its own wording');
 });
 
@@ -119,8 +120,8 @@ test('marks every on-disk setting with its file name and a restart note', () => 
 test('connector-specific setup instructions render safely', () => {
   const html = settingsMarkup({ connections: [
     { id: 'calendar', state: 'missing', reasonCode: 'credential_missing' },
-    { id: 'mongoose', state: 'missing', reasonCode: 'credential_missing' },
-    { id: 'gmail', state: 'error', reasonCode: 'unreachable' },
+    { id: 'mongoose-knowledge', state: 'missing', reasonCode: 'credential_missing' },
+    { id: 'gmail', state: 'error', reasonCode: 'unknown' },
   ] });
   assert.match(html, /explicitly selected protected configuration directory/);
   assert.equal(html.includes("Copy command"), false);

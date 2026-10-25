@@ -259,6 +259,8 @@ try {
   await settle();
   fake.emit({ type: 'inputTranscription', text: 'synthetic owner turn', finished: true });
   await settle();
+  // TR-R18: W5's admission allows one research operation per owner turn, so a continue speaks again first.
+  const ownerTurn = async text => { fake.emit({ type: 'inputTranscription', text, finished: true }); await settle(); };
   const call = async (id, args) => {
     fake.emit({ type: 'toolCall', calls: [{ id, name: declaration.name, args }] });
     for (let i = 0; i < 100; i++) {
@@ -276,20 +278,24 @@ try {
   assert.equal(liveStart.response.error, undefined, `the live research start was refused: ${JSON.stringify(liveStart.response)}`);
   assert.match(JSON.stringify(liveStart.response.findings), /Synthetic evidence/, `the live research start returned ${JSON.stringify(liveStart.response.findings)}`);
   assert.equal(liveStart.projection.status, 'completed');
+  await ownerTurn('synthetic owner turn 2');
   const liveNext = await call('next', { action: 'continue', researchId: liveStart.response.researchId, cursor: liveStart.response.nextCursor });
   assert.match(JSON.stringify(liveNext.response.findings), /Synthetic evidence 12/);
   const count = sourceCalls;
+  await ownerTurn('synthetic owner turn 3');
   const liveRetained = await call('retained', { action: 'continue', researchId: liveStart.response.researchId, cursor: liveStart.response.nextCursor });
   assert.equal(liveRetained.response.alreadyDelivered, true);
   assert.deepEqual(liveRetained.response.findings, []);
   assert.equal(liveRetained.projection.status, 'completed');
   assert.equal(sourceCalls, count);
   await call('stop', { action: 'stop', researchId: liveStart.response.researchId });
+  await ownerTurn('synthetic owner turn 4');
   const liveStopped = await call('unavailable', { action: 'continue', researchId: liveStart.response.researchId });
   assert.equal(liveStopped.response.status, 'unavailable');
   assert.equal(liveStopped.response.error, 'continuation_unavailable');
   assert.equal(liveStopped.projection.status, 'error', 'an unavailable continuation must project as an error');
   assert.equal(sourceCalls, count);
+  await ownerTurn('synthetic owner turn 5');
   const unknown = await call('unknown', { action: 'continue', researchId: 'nonexistent-synthetic-run' });
   assert.equal(unknown.response.error, 'unknown_research_run');
   assert.equal(unknown.projection.status, 'error');

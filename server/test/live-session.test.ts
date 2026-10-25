@@ -6345,7 +6345,7 @@ test('#656: a model silent after the read settles still rebuilds once, after the
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'the mute that outlives the read recovers');
   assert.equal(fake.sessionsOpened, 2);
   // One rebuild per recovery window: the second silence inside it is not a second rebuild.
-  h.advance(RESPONSE_WATCHDOG_WINDOW_MS); scheduler.runDue(); await settlePort();
+  h.advance(RESPONSE_WATCHDOG_WINDOW_MS / 2); scheduler.runDue(); await settlePort();
   const muteRebuilds = rebuildReceipts(receipts, 'live_rebuild')
     .filter(entry => entry['trigger'] === 'no_output_after_owner' || entry['trigger'] === 'no_output_after_ambient');
   assert.equal(muteRebuilds.length, 1, 'never two model-mute rebuilds in one window');

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, RESEARCH_OPERATION, ResearchLedger, calendarWindowOf, chatAttentionReason, candidateSubs, chatQuestionWords, fallbackSelection, lookupBound, normalizeLookups, ownerScheduleQuestion, recallQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
+  CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, RESEARCH_OPERATION, ResearchLedger, capReply, calendarWindowOf, chatAttentionReason, candidateSubs, chatQuestionWords, fallbackSelection, lookupBound, normalizeLookups, ownerScheduleQuestion, recallQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
   validateResearch,
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchRoutedLog, type ResearchSubcallLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
@@ -1107,4 +1107,40 @@ test('L11-02: a reply that offers a continuation serves it, with or without the 
     assert.notEqual(next['error'], 'continuation_unavailable', `an offered continuation is served (cursor ${String(cursor)}): ${JSON.stringify(next).slice(0, 400)}`);
     assert.notEqual(next['status'], 'unavailable', 'and never as an unavailable run');
   }
+});
+
+// L11-03 (lane 11): memory search returned the live call's own just-spoken question as hit 2 (sessionId of the
+// current call, dated twelve seconds before the lookup), and the header said "8 of 70 shown" over a finding that
+// said "7 of 70". The current call is never its own memory, by identity, and the header and the finding count
+// from one number.
+test('L11-03: a memory hit from the current live session is excluded by identity, whatever its time', async () => {
+  const current = '0f0f0f0f-1111-4222-8333-944455556666';
+  const h = harness({ now: () => Date.parse('2026-10-25T10:37:49Z') });
+  const deps = { ...h.deps, liveSessionId: current } as unknown as ResearchDeps;
+  const execute = deps.execute;
+  deps.execute = async (calls, signal) => {
+    if (!calls.every(call => call.name === 'conversation_history')) return execute(calls, signal);
+    return calls.map(call => ({ key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0,
+      binding: { executionId: call.key } as NonNullable<IntentSubResult['binding']>,
+      historyPage: { status: 'ok', totalMatches: 2, nextCursor: null, hits: [
+        { snippet: 'Synthetic older talk about team strengths', sessionId: '1a1a1a1a-1111-4222-8333-944455556666', date: '2026-10-20T09:00:00Z', sourceKind: 'live' },
+        { snippet: 'and then the synthetic team and their strengths', sessionId: current, date: '2026-10-25T10:37:37Z', sourceKind: 'live' },
+      ] } }));
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'which direction are we taking with the team strengths', topic: 'team strengths',
+    lookups: [{ source: 'memory', query: 'team strengths' }] }, new AbortController().signal);
+  const text = JSON.stringify(reply);
+  assert.match(text, /Synthetic older talk/u, 'an earlier conversation is memory');
+  assert.doesNotMatch(text, /and then the synthetic team/u, `the call in progress is never its own memory (${text.slice(0, 500)})`);
+});
+
+test('L11-03: a trim after the header was built keeps the header count equal to the finding count', () => {
+  const lines = Array.from({ length: 3 }, (_, n) => `Synthetic memory line ${n + 1} ${'with enough words to need room. '.repeat(3)}`);
+  const reply = { coverage: 'coverage: memory complete 3 of 9 shown', researchId: 'r-l11', status: 'partial', canContinue: true,
+    findings: [{ source: 'memory', text: `memory: 3 of 9 shown\n${lines.join('\n')}`, chars: lines.join('\n').length }] };
+  const capped = capReply(reply, JSON.stringify(reply).length - 60);
+  const finding = (capped['findings'] as { text: string }[])[0]!;
+  const shown = /^memory: (\d+) of 9 shown/u.exec(finding.text)?.[1];
+  assert.ok(shown !== undefined && Number(shown) < 3, `the cap removed a line (${finding.text.split('\n')[0]})`);
+  assert.match(String(capped['coverage']), new RegExp(`memory \\S+ ${shown} of 9 shown`, 'u'), `the header says the same count (${String(capped['coverage'])})`);
 });

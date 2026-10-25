@@ -1,140 +1,39 @@
-# Portable model adapter
+# Text model adapter
 
-`server/adapters/model/index.ts` exposes the asynchronous `ModelPort`, native-fetch
-`GeminiAdapter`, and deterministic `runTools` orchestration. No SDK, Pi, Llama,
-HTTP server, database, credential file, global environment loading, or real effect
-handler is part of this unit. All automated tests are offline injected HTTP/SSE
-fixtures with synthetic content and synthetic credentials.
+The text model adapter is the host's asynchronous model boundary. It is separate from the live voice adapters in `server/adapters/live-voice/`; a voice-provider choice does not imply that text chat uses the same provider.
 
-## Integration
+## Components
 
-SERVICE owns package installation/compilation (Node >=26, strict TypeScript ESM,
-`.js` imports). Include `adapters/model/**/*.ts` and `test/model.test.ts` in the
-SERVICE build. `bash scripts/check-model.sh` compiles just this unit and executes
-Node's test runner. It uses installed `server/node_modules`, or the sibling
-SERVICE worktree's installed TypeScript/@types/node when this isolated worktree
-has no manifest. `DIDI_TYPESCRIPT_ROOT` can identify an already installed tooling
-root; the script never downloads tooling or changes manifests. No runtime sibling
-implementation imports exist.
+`server/adapters/model/index.ts` exports the public surface:
 
-The host supplies:
+| Symbol | Role |
+| --- | --- |
+| `ModelPort` | Generate from a host-authored request and explicit control |
+| `GeminiAdapter` | Translate that request to Gemini's streaming HTTP API |
+| `runTools` | Validate and orchestrate model-requested tools |
 
-- An explicitly configured model ID, a single named key reference and an injected
-  credential resolver. The adapter does not select the newest model or probe
-  availability. A later authorized synthetic deployment probe must verify the
-  configured model/key. Changing provider means injecting another `ModelPort`;
-  there is no implicit failover.
-- An explicit enabled route bound to `gemini`, the exact model ID and permitted
-  data classes. Every request class and selected evidence class must be allowed
-  **before payload construction, key resolution or network**. Classification and
-  external-processing consent belong to the host; this is not a content scanner.
-- Host-authored system/context inputs, prompt version, selected evidence IDs and
-  a bounded evidence character budget. No archive/session is appended implicitly.
-  Whole evidence snippets that exceed the remaining budget are omitted, not
-  silently clipped. Omission IDs include unselected snippets. The budget measures
-  snippet text; total serialized request also has a 1 MB cap and 100-content cap.
-  Metadata hashes the actual serialized provider request with SHA-256 (not the
-  credential). Generic persona and any private local overlay remain separate,
-  host-versioned inputs; the transport hardcodes no personality.
-- A signal and absolute epoch-millisecond deadline. Deadline uses the real wall
-  clock; an injected monotonic `now` measures latency only. Fixture latency is
-  labelled `synthetic`, not a provider-performance claim.
+Exact request, result, event and tool contracts live in `server/adapters/model/types.ts`. Transport implementation belongs in `gemini.ts`; tool-loop policy belongs in `loop.ts`. Do not copy their schemas into another layer.
 
-Requests go only to
-`https://generativelanguage.googleapis.com/v1beta/models/{configured-model}:streamGenerateContent?alt=sse`.
-Model IDs cannot contain path/query characters. The key travels only in
-`x-goog-api-key`. Redirects are disabled; redirected/nonmatching response URLs
-are rejected. Errors contain fixed reason codes, never HTTP bodies, resolver
-exceptions, credential values, or transport exception messages. A transport
-injection is a trusted in-process test seam, **not an operator-configurable URL**;
-an injected transport can see the key and therefore must never be untrusted.
+## Configuration and disclosure
 
-`ModelEvent` text is provisional. Only a validated `STOP` with visible output or
-function calls is `complete`. EOF without a terminal event or an incomplete SSE
-frame is `truncated`; safety, model errors, empty output, cancellation, deadline
-and route denial remain distinct. SSE parses arbitrary byte boundaries including
-UTF-8 and CR/LF splits. Response bytes are capped at 4 MB. Final internal
-`providerContent` retains opaque thought signatures and provider parts for exact
-continuation; **never send these raw parts to UI or log them**. Thought text is
-excluded from visible text and events; signatures are not reasoning content.
+The host supplies the model, credential reference, route, data classes, selected context and cancellation/deadline control. The adapter is not an account sign-in mechanism or an automatic model-discovery service. [provider-configuration.md](provider-configuration.md) owns operator setup; [prompt-composition.md](prompt-composition.md) owns the prompt inputs.
 
-## Tools are requests, not authority
+`GeminiAdapter` sends the credential using `x-goog-api-key`, not a query parameter, and disables redirects. The injected transport is a trusted in-process seam because it can see that credential. Never expose it as an arbitrary operator-configured URL or log the serialized request.
 
-The registry is explicit: each tool declares its name, schema, validator, read or
-write effect, and host-bound account/resource. Declarations derive only from that
-registry, not model/handler text or request-supplied declarations. Tool arguments
-are untrusted. Validators must reject undeclared fields and identity overrides;
-handlers receive actor/run/authority/revision/account/resource separately from
-trusted host context. Unknown tools, invalid arguments, absent grants and stale
-or revoked authority produce `refused` results without handler dispatch.
+Streamed text is provisional. The adapter distinguishes a validated `STOP` from truncated output, cancellation, deadline and provider failures. Opaque provider continuation parts must remain host-side; they are not UI text or diagnostic material.
 
-`authority.isCurrent` must consult live authority/revision state before every
-execution. Both `journal: ToolCallJournal` and `resultGate: ToolResultGate` are
-mandatory loop ports: there is no default allow or optional raw-result path.
-After validation, current grants/authority and interruption checks, the loop
-records `journal.intent` **before** execution. An existing intent stops as
-`uncertain` (`tool_intent_exists`) and never redispatches; journal failure stops
-as `error` (`tool_journal_failed`). Arguments hashes bind identity, not permission.
-The future journal/executor owner must atomically persist the immutable snapshot
-and completion before returning its `{ id, sha256 }` reference. This loop slice
-supplies only the port: it implements neither durable storage nor production
-account integration, and does not make a remote effect atomic.
+## A tool request is not authority
 
-A completed `ToolOutcome` contains `result: ToolResultRef`, **not `value`**.
-Refusals and failed/unknown handlers get safe referenced journal records, not
-handler exception text. Cancellation of a non-cooperative port returns promptly;
-a dispatched write is `unknown` if interrupted/throws. Explicit handler `failed`
-remains failed. Unknown outcomes stop as `uncertain`, with no transport/effect
-retry. Duplicate provider call IDs are refused. If Gemini omits an optional call
-ID, it is not fabricated on the wire; execution IDs remain `runId:step:index`.
+The loop uses an explicit tool registry, argument validators, host-bound identity and current authority. A function call from a model cannot add a tool or expand a grant.
 
-Before **every** `model.generate`, including the initial request with no results,
-the gate reauthorizes host policy, route, grants and all references under the
-existing cancellation/deadline control. Its owner must verify hash, ownership,
-run/call/execution binding, current policy generation and exact class-set
-permission. Unknown content without applicable trusted source policy stays
-local-only; do not manufacture a DataClass or infer permission from prose.
-Sensitive-only permission does not imply private or ordinary permission.
-The loop requires exactly one positional binding per `functionResponse`, checks
-the gate's exact returned binding correspondence and reconstructed JSON, and
-unions allowed result classes with all baseline request classes. A denial,
-unbound response, mismatch or gate error stops before provider disclosure;
-never remove context or drop a classification and continue. Completed values
-over 100 KB or unserializable values cannot be disclosed; the gate owner may
-explicitly reconstruct a safe omission record instead of the value.
+`ToolCallJournal` records intent before dispatch. `ToolResultRef` identifies accepted journaled results rather than carrying arbitrary handler output directly into a later provider request. An existing intent is not permission to repeat an uncertain effect.
 
-Tool output is untrusted evidence, never a new registry/grant/system instruction.
-IDs and signature-bearing provider parts survive continuation. Both
-`LoopResult.continuation` and `LoopResult.resultBindings` are host-only. For an
-explicit next turn pass the selected history in `request.contents` **and its
-matching bindings in `carriedResults`**, preserving content/part indexes. Older
-references are reauthorized and carried JSON must exactly match reconstructed
-responses. The host must bound/reclassify history before reuse; never serialize
-these artifacts to UI. Incomplete model output is not a completed turn, and an
-interrupted tool batch may have pending calls: non-complete continuations must
-not be blindly replayed. Limits remain 1–32 model steps, 32 registered tools and
-16 calls per step. Exhaustion is `limit`, never success. A final answer does not
-override refused/failed tool records; clients must render those records rather
-than infer effects from model prose. Existing synthetic write-tool tests do not
-enable an actual write tool. Standing policy acquisition, real host/account
-composition and durable journaling belong to their future owners.
+`ToolResultGate` is mandatory: the host must reauthorize references, route and classes before disclosure. Handler success alone does not prove that a result is authorized for the next model request. Tool output remains untrusted evidence, never a system instruction.
 
-## Official contract evidence (retrieved 2026-10-09)
+For an explicit continuation, the host carries selected provider contents together with their matching `carriedResults` bindings. `LoopResult.continuation` and `LoopResult.resultBindings` remain host-only. Do not blindly replay an interrupted batch with pending calls, or infer a successful write from a final prose answer.
 
-- https://ai.google.dev/api/generate-content — v1beta
-  `models.streamGenerateContent`, `contents`, `systemInstruction`, candidate
-  `finishReason`, `Part.thought`, `thoughtSignature`, function calls/responses.
-- https://ai.google.dev/gemini-api/docs/function-calling — REST declarations,
-  `functionCall`/`functionResponse`, optional call IDs and preservation of opaque
-  thought signatures in multi-turn tool continuation.
-- https://ai.google.dev/gemini-api/docs/models — documents the exact
-  `gemini-2.5-flash` ID used by synthetic fixtures. This is **not a claim that it
-  is newest or available to the deployment key**. Earlier readiness material
-  mentioned Gemini 3.8; historical knowledge mentioned 3.7. Neither name was
-  adopted from memory. Deployment model selection is deliberately unresolved and
-  configurable (MODEL-R1); the adapter has no hardcoded default model.
+## Integration and verification
 
-No live model request was made. Fetching public documentation is not a model
-availability check. Source snippets and tool text remain untrusted regardless of
-persona. Host context ownership, consent and durable effect authority are
-required integration dependencies, not implemented network side effects here.
+`ChatService` in `server/chat/index.ts` is the text-conversation integration owner. Durable records, consent and production effects belong to the host, not this adapter; see [text-chat.md](text-chat.md) and [tool-owner.md](tool-owner.md).
+
+`bash scripts/check-model.sh` is the focused offline adapter check. Consult [checks.md](checks.md) for routing before running it. Synthetic HTTP and stream fixtures prove contract handling, not model availability to a real key. This documentation change does not claim a live provider request or a fresh model-check run.

@@ -303,6 +303,10 @@ const ANALYTICAL_ASK = /\b(?:compare|comparison|versus|vs|difference between|imp
 const ENTITY_STOP = new Set(['The', 'What', 'Who', 'When', 'Where', 'Which', 'Why', 'How', 'Does', 'Did', 'Can', 'Could', 'Would', 'Should', 'Tell', 'Show', 'Give', 'Please', 'And', 'But', 'For', 'Any', 'All', 'Is', 'Are', 'Was', 'Were', 'Do', 'Has', 'Have', 'Summarise', 'Summarize', 'Also', 'Then', 'Now']);
 const QUOTED_ENTITY = /"([^"]{2,80})"/gu;
 const CAPITALISED_ENTITY = /\b([A-Z][a-z]{1,}[\w'-]*)\b/gu;
+/** An ask that refers to a past conversation may use her memory even when it names someone. */
+const PAST_CONVERSATION = /\b(?:last time|last we|we said|we discussed|we talked|what did we|did we say|earlier we|remember when)\b/iu;
+
+export function pastConversationAsk(question: string): boolean { return PAST_CONVERSATION.test(question); }
 
 /**
  * C-DEPTH item 2: the people and documents the owner named, read off the question itself. Deterministic, so
@@ -3626,11 +3630,17 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   while (guard-- > 0) {
     const rendered = spokenReplySize(render().reply);
     if (rendered <= limit) break;
-    const fillable = groups.filter(group => shownOf(group) > (group.days === undefined ? 1 : 2));
+    // C-DEPTH item 2: a source keeps about its floor of substantive evidence, so one line is not "shown".
+    const charsOf = (group: { lines: string[] }): number => group.lines.reduce((sum, line) => sum + line.length + 1, 0);
+    const fillable = groups.filter(group => shownOf(group) > (group.days === undefined ? 1 : 2)
+      && charsOf(group) > RESEARCH.sourceFloorChars);
     if (fillable.length > 0) {
       const kept = (group: { lines: string[]; total: number }): number => shownOf(group) / Math.max(1, group.total);
       // L11-01: memory the ask did not name yields first, so it can never starve a source that answered beside it.
-      const memory = run.route.has('memory') ? undefined : fillable.find(group => group.source === 'memory');
+      // C-DEPTH item 2: an ask that names a person or a document gives her memory no allocation at all, unless
+      // the ask refers to a past conversation, so her own notes can never crowd out the evidence she was asked for.
+      const names = requestedEntities(run.question ?? '').length > 0 && !pastConversationAsk(run.question ?? '');
+      const memory = names || !run.route.has('memory') ? fillable.find(group => group.source === 'memory') : undefined;
       const trimmed = memory !== undefined && groups.some(group => group.source !== 'memory' && shownOf(group) > 0) ? memory
         : fillable.reduce((worst, group) => (kept(group) > kept(worst) ? group : worst));
       // #4: a calendar day line is a list of whole events, so it loses one event at a time, the count it

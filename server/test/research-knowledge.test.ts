@@ -180,10 +180,10 @@ test('ROUTE-1022: a body read is never clipped by the host, and the search windo
   assert.equal(opened.lines[0]!.includes('cut at'), false, 'a body read reaches the reply whole');
   assert.equal(opened.source, 'knowledge');
   // F3: the wider window belongs to a body read. A named-id read stays whole.
-  const deepBody = `${'Deep body sentence. '.repeat(400)}End of the entry.`;
+  const deepBody = `${'Deep body sentence. '.repeat(1_200)}End of the entry.`;
   const named = shapeBlock('knowledge_search', [sub('get_insight', `### Release 3p scope [id 412]\n${deepBody}`, true, 'kr0')]);
   assert.ok(named.lines[0]!.includes('End of the entry.'), 'a named-id read is never clipped by the host');
-  assert.ok(named.lines[0]!.length > RESEARCH.budgets.default);
+  assert.ok(named.lines[0]!.length > RESEARCH.budgets.depth, 'a named body is whole beyond any tier');
   // P5-R1 holds: a search hit is bounded by the server's own window, never cut again in the host.
   const whole = 'x'.repeat(4_000);
   const searched = shapeBlock('knowledge_search', [sub('search_knowledge', `### Long insight (DECISION | 2026-10-19) [id 7]\n${whole}`)]);

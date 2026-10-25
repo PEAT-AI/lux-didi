@@ -1,224 +1,35 @@
-# Public Didi prompt composition
+# Prompt composition
 
-`server/prompt/index.ts` is a pure Node-owned compiler, not a retrieval engine,
-store, authorization layer or model behavior guarantee. It implements stable
-section IDs/order, local hashes and whole-record selection adapted from verified
-Naya compiler mechanics. `PUBLIC_PERSONA` is new generic Architect-authored Didi
-content, copied verbatim from the public PERSONA-CONTENT behavior paragraphs,
-not a private Naya persona clone. No private profile, standing contract or lore
-is included. Root must read the complete final content before acceptance.
+The host composes Naya's instructions from public behavior, validated preferences, accepted owner context, capability facts and selected evidence. Prompt text is product behavior, but it is not an authorization mechanism or a guarantee that a model will comply.
 
-## Contract
+## Text compiler
 
-ESM imports use `.js`. `validatePreferences(unknown, ownerId)` returns a frozen
-`ValidatedPreferences`; `compilePrompt(CompileInput)` revalidates at the external
-boundary, including values forged through casts/JSON. `PromptCompileError.code`
-is one of `schema`, `owner`, `classification`, `version`, `budget`, `duplicate`,
-`snapshot`, `invalid_locale`. Error messages contain no content, identifiers or hashes.
+`compilePrompt` in `server/prompt/index.ts` is the pure text compiler. `validatePreferences` validates the preference boundary; `PUBLIC_PERSONA` and `PROMPT_VERSION`, exported from `server/prompt/template.ts`, identify the public baseline. Read the compiler's input/output types for section order, budgets, hashes and selection metadata rather than duplicating those schemas here.
 
-The only persona is `didi`. `PROMPT_VERSION` is `didi-v1-` plus SHA-256 of the
-actual public persona and immutable rules separated by two newlines. It does
-not vary with a user's preferences, context or capabilities. Sections are always
-`persona`, `rules`, `preferences`, `capabilities`; their hashes/counts, the full
-system hash, preference hash and capability hash remain in a **private** manifest.
-Hashes are fingerprints, not anonymization. Do not send the manifest to the
-provider, logs, analytics or public messages.
+The host chooses the evidence and authority context before compilation. A prompt compiler must not discover a private profile, fetch remote content or expand a grant. Whole-record selection and omission metadata describe what was included; they are not evidence that an entire archive was searched.
 
-Preferences require schemaVersion 1, explicit ownerId/dataClass and explicitly
-supplied language as a well-formed BCP47 locale (for example `de-DE`, `hi-IN`).
-The boundary bounds locale syntax to ASCII language/subtags and 64 characters,
-validates with standard `Intl.Locale` and returns its canonical form (for
-example `de-de` becomes `de-DE`). Invalid/instruction-shaped locale values raise
-`invalid_locale`; a missing field raises `schema`. There is no default, inferred
-location/language or silent English fallback. Locale selection is not proof of
-model fluency. Register (`plain`, `formal`), humor (`off`, `dry`) and verbosity
-(`brief`, `balanced`, `detailed`) remain closed enumerations. Unknown/missing
-fields fail. There is
-no chosen-name/free-text overlay and no arbitrary client system override. The
-compiler never reads stored profiles automatically. Raw ownerId is a host-only
-isolation identity: it is validated for every supplied user item, retained only
-in the private manifest/preference hash, and omitted from model-visible
-preference/history/evidence serialization. Source IDs, provenance, record IDs and
-explicit data classes remain in evidence where needed for recall. No account
-labels are inferred. This boundary removes the structured ownerId field, not
-occurrences of the same bytes inside user-authored source text; it never rewrites
-original source content.
+## Live instructions
 
-`createCapabilitySnapshot` projects the accepted `ToolDefinition` registry into
-exact `FunctionDeclaration` values; canonical parameter key ordering and tool
-name ordering make hashes stable. Only host-supplied request-available tools may
-be passed. Source IDs and `available`/`missing`/`error` states are explicit and
-stable; missing is not a lookup failure. Public declaration descriptions and
-source IDs must be host-owned ordinary metadata, not user payloads/account
-secrets. Private account/resource/grant fields and executable functions are not
-emitted. Prose uses exactly the same declarations as the request. The host-only
-hash detects drift, not authenticity or authorization: a model cannot modify
-this snapshot through the compiler, but the host must never deserialize model
-output as a snapshot. Existing runtime authorization still revalidates tools.
+`composeLiveInstruction` in `server/prompt/live-persona.ts` assembles the voice baseline with accepted runtime context. Opening-line behavior is composed separately through the same module's opening helpers, including `buildOpeningOptions`. Provider setup and accepted lifecycle belong to [live-call.md](live-call.md), not to a second prompt-owned session state machine.
 
-## Evidence, receipts, history and classification
+The merged release requires answering from usable partial evidence, stating coverage honestly and not continuing research without another owner turn. Host admission in `ResearchAdmission` (`server/tools/research.ts`) enforces that boundary; a prompt instruction alone is not enough. Do not restore automatic continuation or wording that makes silent research loops acceptable.
 
-Every supplied user-owned preference/evidence/history item requires schemaVersion
-1, the requested ownerId and an explicit accepted ModelPort DataClass (`ordinary`,
-`private`, `sensitive`), even when the item will be omitted. No keyword inference,
-class downgrade or defaulting occurs. Outgoing `dataClasses` is the stable union
-of ordinary trusted public text/coverage, preferences, all emitted text history
-and **selected** evidence. Nonselected source text stays local; it is absent from
-system, context and provider contents. The host's configured route check remains
-mandatory; compilation itself has no egress authority.
+## Private character and memory
 
-Evidence supplies stable id/sourceId/provenance/priority, with either `kind:
-'source'` and text, or `kind:'receipt'` and a closed receipt. Provenance strings
-and original source identity/class are preserved inside JSON-escaped data. This
-is delimiter handling, not injection immunity. Ordinary source text cannot turn
-into a receipt or trusted system material. Receipt statuses are distinct:
-`committed` requires durable:true, commitId and receiptId; failed/pending/unknown
-cannot include commit identity or durable claims. Only selected committed
-receipts enter private manifest.savedReceiptIds. This is structural proof, not
-transaction authentication; the later host must supply genuine committed facts
-and verify provenance. The prompt cannot enforce truthful narration by itself.
+`publicOwnerProfile`, `validateOwnerProfile` and `ownerProfileClasses` in `server/prompt/index.ts` own optional character snapshots and included class propagation. [Owner profile](owner-profile.md) owns activation and the protected file. Authored style/lore do not replace canonical host rules or define tool grants.
 
-Text history requires id, role (`user`/`model`), text, owner and class. It preserves
-caller order/identity inside escaped JSON turns and is not silently trimmed or
-reordered. Include the current user turn; empty history fails. At most 100 turns
-are allowed. Provider continuations, signatures, tool-response parts and other
-opaque fields are explicitly excluded. Existing model-loop continuation handling
-remains host-owned; never reconstruct it from the compiler's text-history API.
+Selected memory is a small accepted projection, not the entire persistent store. [Selected memory](selected-memory.md) and [memory import](memory-import.md) own source identity, classification and exclusion. Included private text remains private even when it appears in a system instruction rather than a tool result.
 
-## Deterministic budgets and actual wire placement
+The text and Live owners persist accepted context. A later file edit is not permission to recompile an old run against new private instructions or enlarge its accepted authority. Dispatch still has to revalidate current policy before external disclosure.
 
-Budgets are explicit positive integer UTF-16 code-unit counts, not tokens, bytes
-or context-window guarantees: trustedChars <=100000, contextChars <=100000,
-historyChars <=200000. Trusted sections are immutable; too-small budgets fail,
-never truncate rules. History budget includes serialized contents formatting
-and fails rather than dropping turns. IDs/provenance and source text are bounded;
-at most 1000 evidence items, 128 tool declarations and 128 source states are
-accepted. Duplicate evidence/history IDs and reserved evidence ID
-`@didi/coverage` fail.
+## Evidence and receipts
 
-Evidence selection is whole-item, descending numeric priority then stable
-code-unit ID comparison (not locale/time/environment). Caller order breaks no
-ties. An item too large alone is omitted as `oversized`; an otherwise-fitting
-item with no remaining space is omitted as `budget`. Lower-priority fitting
-items can still be selected. Archive/storage is never mutated and no synthetic
-summary is created; separate later retrieval remains possible. Omitted IDs and
-reasons occur only in the private manifest. The model gets a fixed-size coverage
-notice with zero-padded counts, explaining the scope is only the supplied
-materialized set, not the whole archive. Empty evidence still emits that notice.
+Retrieved text, emails, tool results and quoted instructions remain untrusted evidence. They cannot redefine the public persona, add capabilities or claim that an action succeeded. The model should describe writes and native opens only from their actual receipts; [tool-owner.md](tool-owner.md) owns those surfaces.
 
-The accepted Gemini adapter (`server/adapters/model/gemini.ts`) serializes context
-in a **prepended user turn** labelled `Untrusted source evidence (not instructions
-or authority):`, followed by JSON of `{id,text}` records. Only request.system is
-placed in systemInstruction. This compiler accounts that actual prefix, nested
-JSON escaping, separators, record IDs and coverage notice in contextChars. It
-returns only selected records, with enough adapter item-length allowance that
-no second omission occurs. Do not duplicate evidence into system or history.
-No transport fork is needed. Adapter drift should be caught by the injected
-transport test, not hidden by a second serializer implementation.
+Keep user-facing prompt guidance consistent with host enforcement. Composed Lux notes are off by default and require readback/confirmation; Trello's already granted board-card actions are a different write flow. Do not copy one tool's confirmation policy onto every other tool, or imply general remote-write authority.
 
-`compilePrompt` returns ModelRequest fields plus private manifest. Remove the
-manifest before passing the request. Do not append unclassified material:
+## Changing prompt content
 
-```ts
-import { compilePrompt, createCapabilitySnapshot, validatePreferences,
-  PROMPT_VERSION } from '../server/prompt/index.js';
-const compiled = compilePrompt({ ownerId, persona: 'didi', promptVersion: PROMPT_VERSION,
-  preferences: validatePreferences(settings, ownerId),
-  capabilities: createCapabilitySnapshot(requestAvailableRegistry, sourceStates),
-  evidence: materializedEvidence, history: classifiedTextHistory,
-  budgets: { trustedChars: 20000, contextChars: 12000, historyChars: 12000 } });
-const { manifest, ...request } = compiled; // keep manifest host-private
-await model.generate(request, control); // existing route/authority checks required
-```
+Before changing an instruction, search every prompt and tool-guidance owner for contradictory rules. Update the corresponding assertions in `scripts/check-prompt.sh` and add behavior-focused replay evidence when the change affects a runtime path. Use [checks.md](checks.md) for the managed producer; a string assertion alone proves neither model obedience nor a real-account result.
 
-## Live voice instruction (Naya composition)
-
-The Live path composes its system instruction separately from the text compiler:
-`composeLiveInstruction({base, runtimeContext?, ownerProfile?, overlay?, language?, memory?, tools?})`
-in `server/prompt/live-persona.ts` returns `{text, sha256, sections}`. The order is
-fixed: the shared public Naya character plus the voice surface (`NAYA_LIVE_BASE`, no biography), the host-generated
-runtime context (`server/prompt/runtime-context.ts`, from the Mac clock and timezone; its `Connected now` line names the
-groups this session's declared reads reach, web search included when the session can search the web),
-owner lore, historical memory, the tool conduct, owner style, the optional local overlay
-verbatim, then the terminal LANGUAGE AND VOICE anchor (a LANGUAGE paragraph, exactly one
-ACCENT directive, a language-follows-the-user clause and the final anchor as the absolute
-last segment). Empty sections are stripped, survivors join with one blank line, and the
-60k-char budget yields the memory section first while the base, runtime context, tools
-and anchor never yield. The composed text is stored as the accepted Live instruction and
-journaled only by its hash; the local overlay and any private text never enter the
-repository.
-
-When a session is attached with at least one declared tool, the trusted middle gains a
-`tools` section from the same Architect-authored conduct text, placed after memory and
-before owner style; a session with no declarations composes without it. Each section is
-one of the composer's `sections` entries, with its own chars and sha256.
-
-The opening line of a fresh call is asked for by `FRESH_OPENING` (`server/adapters/live-voice/openai.ts`): one
-short line on an opening option or a subject from the earlier conversation in new words, never that
-conversation's closing lines and never anything about stopping, ending or listening, and when the owner speaks
-first she answers his words instead. The `previous-openers` section quotes each earlier opener once, however many
-calls opened with it. The voice surface's "Ending the call" rule has her tell him the stop phrase only when he
-asks to end the call in other words; she never says the phrase, a stop line or a sign-off on her own. The
-surface also says missing evidence as missing ("I found nothing that says so", never a negative fact or a yes to a
-leading question) and never stops at a bare label or a bare yes; the character's "Agree only when the evidence
-agrees" holds for what was said before. The character, voice surface and voice tools together stay under the
-10,400 character cap that `live-persona.test.ts` holds.
-
-## Verification and remaining gates
-
-Run `bash scripts/check-prompt.sh` through the declared managed check. It uses the
-existing SERVICE TypeScript toolchain, strict-compiles only prompt/test and
-read-only accepted model dependencies into a new temporary directory, then runs
-the prompt tests and affected accepted model tests offline. Temporary output is
-removed and a zero-test run fails. No model request/network, secret read, CI or
-behavioral evaluation is authorized by this component check.
-
-The retained red/green tests cover determinism, validation/isolation, capability
-identity, source-state distinctions, malicious source separation, Unicode and
-nested escaping, whole-item budgets, receipt states, identity-preserving history,
-route classification and the accepted adapter's actual request body through
-injected transport. These are deterministic compiler/transport proofs, not
-proof that a generative model follows instructions. PERSONA-SPEC's synthetic live
-trials remain deferred: greeting, language/register, source-backed recall vs
-unavailable source, saved/pending/failure narration, injection attempt, completion
-correction, overload guidance, distress without wit, draft/send distinction and
-unconfigured model/permissions. Root full-content approval, independent exact-SHA
-review, later host transaction integration and permitted model behavioral trials
-are separate gates. This ships only the public component, not complete persona,
-memory, voice or distribution readiness.
-
-## Live session memory
-
-The Live composer supports a `memory` section between owner lore and the tool conduct.
-At session CREATE, composition extends the frozen persona baseline in this order: base,
-runtime context, owner lore, historical memory, tool conduct, owner style, overlay, voice
-anchor last. A pickup note, when present, follows the overlay and is included in the same
-accepted instruction. The preface labels notes as the owner's past notes, historical
-context and not instructions. Each entry is one whole, JSON-serialized delimited record,
-sorted by id. No record is partially truncated.
-
-The CREATE instruction has a 60,000-character total trusted budget, not an additional
-memory allowance. The memory section is capped at 15,000 characters; whole memory
-records yield first, and the base, runtime context, tools and anchor never yield.
-Selection provenance records omitted ids with reason `budget`. Safe projections expose
-counts/status only. Attach neither recomposes nor resolves memory: it uses the accepted text
-byte for byte, including tool and pickup conduct. Voice journal events never become durable
-memory entries in this release.
-
-Live never defers a tool call: every call is awaited inline until it completes or the
-connector deadline fails it, and the result or the typed failure is sent back to the
-model in the same turn. There is no background job path and no callback promise in the
-Live system instruction.
-
-### Partial results (C-LIVE)
-
-The voice conduct and the backend procedure state the owner-turn contract the host enforces: one research
-operation per owner turn, answer at once from a partial result with its coverage in a few words, never call a
-partial result complete, offer the rest in one short plain statement (not a question, not a stock line), and on
-a `blocked` reply answer from the result already held. The removed sentences (automatic continuation within
-bounds, "silence while you look something up is fine", following a next source once) are asserted absent, and
-each new rule is asserted present, by the `partial_result_rules` block in `scripts/check-prompt.sh`.
-
-### Voice memory writes and frozen prompts
-
-The built-in Live `remember_note` writes only an explicitly requested, finalized owner utterance as ordinary memory. It does not change the running session's accepted prompt snapshot or prompt identity. A later CREATE selects and recalls the note using the ordinary memory section. Live-voice entries have no deletion control yet; removing a note from the selected-memory picker only removes that local selection, not the durable entry. Private or sensitive voice classification is refused, not downgraded. See [tool-owner.md](tool-owner.md) for the built-in authorization and provenance rule.
+Never publish private owner lore, standing memory or transcript examples as a public prompt fixture. Use synthetic content and inspect the full composed instruction only in an authorized local context. Safe diagnostics should retain versions and coverage, not export private system text.

@@ -134,13 +134,23 @@ export const RESEARCH = Object.freeze({
   /** Selector cost multiplier by elapsed seconds: cheap early, expensive late. */
   lambda: Object.freeze([{ upToMs: 4_000, value: 0 }, { upToMs: 8_000, value: 0.5 }, { upToMs: Number.POSITIVE_INFINITY, value: 1.5 }]),
   /**
-   * LAT-1023: the whole answer a Live model receives, envelope included, is at most this many chars.
-   * Q1-R0 spent 6,000 chars of telegraphic lines on every reply and a call grew from 15k to 44k tokens in
-   * 3.5 minutes. The full bodies stay readable inside the run through their cursors; Live hears the answer.
-   * #634: the coverage header counts inside this same cap, so the prose shrinks by the header's length and
+   * C-DEPTH item 1 (council decision-how-much-retrieved-evidence-a-r-bd8a, owner order 2026-10-25): the whole
+   * answer a Live model receives, envelope included, is at most one of three chars. LAT-1023 caps the answer
+   * because a call grew from 15k to 44k tokens in 3.5 minutes on 6,000 char replies; the owner asked for depth
+   * over tokens, so the tiers replace one flat cap and item 5 rebuilds the session when the sum over a call is
+   * large. The full bodies stay readable inside the run through their cursors; Live hears the answer.
+   * #634: the coverage header counts inside the same cap, so the prose shrinks by the header's length and
    * the whole answer the voice receives stays under one bound.
    */
-  replyLimitChars: 2_500,
+  budgets: Object.freeze({ default: 12_000, analytical: 16_000, depth: 20_000 }),
+  /** C-DEPTH item 2: the header and metadata share of a budget, trimmed before any evidence is. */
+  envelopeShareChars: 1_000,
+  /** C-DEPTH item 2: the substantive evidence one non-empty source keeps before the remainder is shared. */
+  sourceFloorChars: 1_000,
+  /** C-DEPTH item 5: the extractive ledger that replaces the raw tool items on a rebuild, at most this long. */
+  ledgerChars: 6_000,
+  /** C-DEPTH item 5: the retained research payload this call may hold before a rebuild is due. */
+  rebuildThresholdChars: 24_000,
   /**
    * LAT-1023 ruling R1: a body the owner asked to read keeps its own page bound. The compaction targets
    * composed answers; paging a requested 16,800-char body at the Live budget would double the round trips
@@ -183,6 +193,14 @@ export const RESEARCH = Object.freeze({
    * characters: a quarter of the corpus is longer than the old 1,200 window, and the read is cheap.
    */
   knowledgeBodyChars: 2_000,
+  /**
+   * C-DEPTH item 3 (W10-R7): the second stage. The search answers with summaries; the host then fetches the
+   * full bodies of this many hits, the ones naming the owner's people or documents first, in one batched read
+   * inside the round already dispatched and inside the operation deadline.
+   */
+  knowledgeReadEntries: 3,
+  /** C-DEPTH item 3: the time one stage two read may take, so the operation deadline is never eaten by it. */
+  knowledgeReadMs: 1_500,
   /** R5 (RESCAP-R5): the fewest characters of an evidence line worth keeping when it is clipped to fit. */
   clipFloorChars: 60,
   /** ROUTE-1022 (#526): the search reply carries the body, so no id is opened in a second hop. */
@@ -300,6 +318,56 @@ export interface ConfiguredEndpointStatus {
 }
 
 /** A routed lookup list, parsed defensively: unknown sources and empty queries are dropped. */
+/**
+ * C-DEPTH item 1: the owner asking to go deep is the owner ordering the long answer, and a comparison or a
+ * synthesis across sources is the analytical tier. Everything else is the default tier.
+ */
+const DEEP_TIER_ASK = /\b(?:go deep|in depth|deep dive|in detail|every detail|all the detail|everything|the full (?:entries|bodies|detail)|all of it|thorough|thoroughly)\b/iu;
+const ANALYTICAL_ASK = /\b(?:compare|comparison|versus|vs|difference between|implications|synthes\w*|analyse|analyze|analysis|team implications)\b/iu;
+/** Words that open a sentence or a clause, never a requested person or document. */
+const ENTITY_STOP = new Set(['The', 'What', 'Who', 'When', 'Where', 'Which', 'Why', 'How', 'Does', 'Did', 'Can', 'Could', 'Would', 'Should', 'Tell', 'Show', 'Give', 'Please', 'And', 'But', 'For', 'Any', 'All', 'Is', 'Are', 'Was', 'Were', 'Do', 'Has', 'Have', 'Summarise', 'Summarize', 'Also', 'Then', 'Now']);
+const QUOTED_ENTITY = /"([^"]{2,80})"/gu;
+const CAPITALISED_ENTITY = /\b([A-Z][a-z]{1,}[\w'-]*)\b/gu;
+/** An ask that refers to a past conversation may use her memory even when it names someone. */
+const PAST_CONVERSATION = /\b(?:last time|last we|we said|we discussed|we talked|what did we|did we say|earlier we|remember when)\b/iu;
+
+export function pastConversationAsk(question: string): boolean { return PAST_CONVERSATION.test(question); }
+
+/**
+ * C-DEPTH item 2: the people and documents the owner named, read off the question itself. Deterministic, so
+ * the allocator and the ledger agree without a model call, and a confidence line can never stand in for one.
+ */
+export function requestedEntities(question: string): string[] {
+  const found: string[] = [];
+  const push = (entity: string): void => {
+    const clean = entity.trim();
+    if (clean.length > 1 && !found.includes(clean)) found.push(clean);
+  };
+  for (const quoted of question.matchAll(QUOTED_ENTITY)) push(quoted[1] ?? '');
+  for (const match of question.matchAll(CAPITALISED_ENTITY)) {
+    const at = match.index ?? 0;
+    if (at === 0) continue;
+    if (ENTITY_STOP.has(match[1] ?? '')) continue;
+    if (/[.!?]\s+$/u.test(question.slice(0, at))) continue;
+    push(match[1] ?? '');
+  }
+  return found;
+}
+
+/** C-DEPTH item 1: the tier an owner question asks for, classified before the run reads anything. */
+export function budgetFor(question: string, topic?: string): number {
+  const asked = topic === undefined ? question : `${question} ${topic}`;
+  if (DEEP_TIER_ASK.test(asked)) return RESEARCH.budgets.depth;
+  if (ANALYTICAL_ASK.test(asked)) return RESEARCH.budgets.analytical;
+  if (requestedEntities(question).length > 0) return RESEARCH.budgets.analytical;
+  return RESEARCH.budgets.default;
+}
+
+/** C-DEPTH item 1: classification may raise a budget during retrieval and never lower it. */
+export function raiseBudget(current: number, question: string, topic?: string): number {
+  return Math.max(current, budgetFor(question, topic));
+}
+
 export function normalizeLookups(value: unknown): ResearchLookup[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
@@ -1789,6 +1857,8 @@ export interface RunState {
   deferredSources?: SourceKind[];
   /** #654: this run was opened fresh because an old researchId carried a new source or topic. */
   startedFresh?: boolean;
+  /** C-DEPTH item 3 (W10-R6): the full entry read of this run was cut, so the summaries are what shipped. */
+  knowledgeFetchCut?: boolean;
 }
 
 function invalidateEvidence(run: RunState): void {
@@ -2016,6 +2086,9 @@ export interface ResearchQueryShape { source: Exclude<SourceKind | LookupSource,
 
 export interface ResearchDeps {
   timeZone?: string;
+  /** C-DEPTH item 3: the stage two bound for this run, so a test drives it without a real wait. */
+  knowledgeReadMs?: number | undefined;
+  /** C-DEPTH item 3 (W10-R6): the full entry read was cut, so the summaries are what shipped. */
   /** L11-03: the live call this research runs in. Its own rows are never memory, by identity. */
   liveSessionId?: string | undefined;
   /**
@@ -2501,7 +2574,7 @@ const HEADER_SHARE_OF_CAP = 4;
  * #634: past a quarter of the cap in force the header keeps each source's status word and drops only the
  * counts and the spoken clauses, so no source ever vanishes from it and it never eats the prose.
  */
-export function coverageLine(searched: readonly CoverageSearched[], unsearched: readonly CoverageUnsearched[], limit: number = RESEARCH.replyLimitChars): string {
+export function coverageLine(searched: readonly CoverageSearched[], unsearched: readonly CoverageUnsearched[], limit: number = RESEARCH.budgets.default): string {
   const bound = Math.floor(limit / HEADER_SHARE_OF_CAP);
   const line = (entries: readonly string[]): string => entries.length === 0 ? 'coverage: none' : `coverage: ${entries.join('; ')}`;
   const detailed = line([
@@ -2530,6 +2603,35 @@ const FINDING_META_LINE = /^knowledge: (?:confidence=|nothing matched)/u;
  * #621: the header of a reply with findings, derived from the findings the voice will actually hear, so the
  * counts can never drift from the evidence after a trim.
  */
+/**
+ * C-DEPTH item 4: what the header owes beyond counts. Per source, whether the reader got it all or an
+ * excerpt, so an excerpt is never called full; and which of the people and documents the owner named are
+ * covered by the evidence that is actually in the reply. Deterministic, from the reply text alone.
+ */
+function depthClauseOf(question: string, findings: readonly FindingLike[]): string {
+  const text = findings.map(entry => entry.text ?? '').join('\n');
+  const entities = requestedEntities(question);
+  const covered = entities.filter(name => text.includes(name));
+  const missing = entities.filter(name => !text.includes(name));
+  // W10-R15 P3: a body the connector windowed, or a full entry read the host cut, is an excerpt even when
+  // every hit came back, because what the reply carries is not the whole entry.
+  const windowed = findings.some(entry => KNOWLEDGE_CUT_AT.test(entry.text ?? ''));
+  const shape = findings.filter(entry => typeof entry.text === 'string' && typeof entry.source === 'string').map(entry => {
+    const head = FINDING_HEAD.exec(entry.text ?? '');
+    const shown = head === null ? 0 : Number(head[1]);
+    const total = head === null ? 0 : Number(head[2]);
+    const whole = shown === total && !(entry.source === 'knowledge' && windowed);
+    return `${SOURCE_LABEL[entry.source as SourceKind] ?? entry.source} ${whole ? 'full' : 'excerpt'}`;
+  });
+  const parts: string[] = [];
+  if (shape.length > 0) parts.push(shape.join(', '));
+  if (entities.length > 0) {
+    parts.push(`entities ${covered.length} of ${entities.length} covered`);
+    if (missing.length > 0) parts.push(`missing: ${missing.join(', ')}`);
+  }
+  return parts.length === 0 ? '' : `; ${parts.join('; ')}`;
+}
+
 function coverageTextOf(run: RunState, configured: readonly SourceKind[], findings: readonly FindingLike[], totals: ReadonlyMap<SourceKind, number>, limit: number): string {
   // C-LIVE behaviour 2 / F3: a read that lost a later page never counts as a whole read, whatever the totals say.
   // Mail is the one source whose reads carry their own page-failure flag (see operationCoverage).
@@ -2762,7 +2864,7 @@ function calendarEvents(raw: readonly string[]): CalendarEvent[] {
  * Merge the connector's shaped event lines and lay the whole window out one line per day, never a silent cut:
  * the only bound is the reply budget, and a trimmed block names how many events it left out (E8, U2).
  */
-function shapeCalendarBlock(results: readonly IntentSubResult[], zone: string | undefined): { text: string; source: SourceKind | null; lines: string[]; total: number } {
+function shapeCalendarBlock(results: readonly IntentSubResult[], zone: string | undefined, limit = RESEARCH.budgets.default): { text: string; source: SourceKind | null; lines: string[]; total: number } {
   const merged: RetainedCalendarEvent[] = [];
   const seen = new Set<string>();
   for (const result of results) {
@@ -2779,7 +2881,7 @@ function shapeCalendarBlock(results: readonly IntentSubResult[], zone: string | 
   let kept = merged.length;
   let lines = calendarDayLines(compactCalendarWindow(merged, zone));
   const render = (): string => `calendar: ${kept} of ${merged.length} shown\n${lines.join('\n')}${kept === merged.length ? '' : `\nI left out ${merged.length - kept} calendar ${merged.length - kept === 1 ? 'event' : 'events'} to keep this answer short.`}${notRead ? `\n${notRead}` : ''}`;
-  while (kept > 1 && render().length > RESEARCH.replyLimitChars) {
+  while (kept > 1 && render().length > limit) {
     kept -= 1;
     lines = calendarDayLines(compactCalendarWindow(merged.slice(0, kept), zone));
   }
@@ -3475,6 +3577,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const bodyReply = skipBodies ? undefined : receivedBodyReply(run, configured, bodyLimit);
   if (bodyReply) { if (Array.isArray((bodyReply as JsonObject)['bodySlices'])) run.bodyReplies += 1; return bodyReply; }
   const groups: { source: SourceKind; label: string; lines: string[]; total: number; days?: { day: string; entries: string[] }[]; meta?: string[] }[] = [];
+  const shownLines = new Set<string>();
   for (const entry of run.ledger.values()) {
     if (entry.bodyOnly || !entry.lines || entry.lines.length === 0 || entry.source === null || (entry.source === 'calendar' && run.calendar.size > 0) || (entry.source === 'mail' && run.mail.size > 0)) continue;
     const existing = groups.find(group => group.source === entry.source);
@@ -3484,9 +3587,22 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     const meta = entry.lines.filter(line => FINDING_META_LINE.test(line));
     const items = entry.lines.filter(line => !FINDING_META_LINE.test(line));
     if (meta.length > 0) target.meta = [...new Set([...(target.meta ?? []), ...meta])];
-    target.lines.push(...items);
+    // C-DEPTH item 2: a hit two reads both returned is shown once, and the number of dropped copies is no
+    // new evidence, so the count of what was returned keeps the read's own total.
+    for (const line of items) {
+      const key = line.trim();
+      if (key === '' || shownLines.has(key)) continue;
+      shownLines.add(key);
+      target.lines.push(line);
+    }
     target.total += entry.total === undefined ? items.length : entry.total === entry.lines.length ? items.length : entry.total;
     if (!existing) groups.push(target);
+  }
+  // C-DEPTH item 2: an ask that names a person or a document gives her memory no allocation at all, unless
+  // it refers to a past conversation, so her own notes can never crowd out the evidence she was asked for.
+  if (requestedEntities(run.question ?? '').length > 0 && !pastConversationAsk(run.question ?? '')) {
+    const at = groups.findIndex(group => group.source === 'memory');
+    if (at >= 0) groups.splice(at, 1);
   }
   const calendarEvents = new Map<string, RetainedCalendarEvent>();
   for (const read of run.calendar.values()) for (const [key, event] of read.events) calendarEvents.set(key, event);
@@ -3595,7 +3711,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // `2 of 9 shown` truthfully after the reply is bounded.
   const totals = new Map<SourceKind, number>();
   for (const group of groups) totals.set(group.source, Math.max(group.total, group.lines.length));
-  const coverageOf = (findings: readonly FindingLike[]): string => coverageTextOf(run, configured, findings, totals, limit);
+  // C-DEPTH item 3 (W10-R6): a full entry read that was cut is named in the header, so the reply says the
+  // knowledge it carries is the summaries rather than a silent drop.
+  const coverageOf = (findings: readonly FindingLike[]): string =>
+    `${coverageTextOf(run, configured, findings, totals, limit)}${run.knowledgeFetchCut === true ? '; knowledge entries excerpt' : ''}${depthClauseOf(run.question ?? '', findings)}`;
   const render = (): { findings: ReplyFinding[]; reply: JsonObject } => {
     const calendarShown = shownOf(groups.find(group => group.source === 'calendar') ?? { lines: [] });
     const calendarPending = calendarUpstream || calendarShown < remaining.length;
@@ -3669,11 +3788,17 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   while (guard-- > 0) {
     const rendered = spokenReplySize(render().reply);
     if (rendered <= limit) break;
-    const fillable = groups.filter(group => shownOf(group) > (group.days === undefined ? 1 : 2));
+    // C-DEPTH item 2: a source keeps about its floor of substantive evidence, so one line is not "shown".
+    const charsOf = (group: { lines: string[] }): number => group.lines.reduce((sum, line) => sum + line.length + 1, 0);
+    const fillable = groups.filter(group => shownOf(group) > (group.days === undefined ? 1 : 2)
+      && charsOf(group) > RESEARCH.sourceFloorChars);
     if (fillable.length > 0) {
       const kept = (group: { lines: string[]; total: number }): number => shownOf(group) / Math.max(1, group.total);
       // L11-01: memory the ask did not name yields first, so it can never starve a source that answered beside it.
-      const memory = run.route.has('memory') ? undefined : fillable.find(group => group.source === 'memory');
+      // C-DEPTH item 2: an ask that names a person or a document gives her memory no allocation at all, unless
+      // the ask refers to a past conversation, so her own notes can never crowd out the evidence she was asked for.
+      const names = requestedEntities(run.question ?? '').length > 0 && !pastConversationAsk(run.question ?? '');
+      const memory = names || !run.route.has('memory') ? fillable.find(group => group.source === 'memory') : undefined;
       const trimmed = memory !== undefined && groups.some(group => group.source !== 'memory' && shownOf(group) > 0) ? memory
         : fillable.reduce((worst, group) => (kept(group) > kept(worst) ? group : worst));
       // #4: a calendar day line is a list of whole events, so it loses one event at a time, the count it
@@ -3696,9 +3821,12 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     const last = widest.lines[widest.lines.length - 1]!;
     const room = last.length - (rendered - limit) - 1;
     const clipped = room >= FLOOR_CLIP_CHARS ? sentencePrefix(last, room) || clip(last, room) : '';
-    if (clipped.length >= FLOOR_CLIP_CHARS) { widest.lines[widest.lines.length - 1] = clipped; continue; }
-    // The floor wins: a reply slightly over its prose budget still names every source that answered.
-    if (shownOf(widest) <= 1) break;
+    // C-DEPTH item 2: a shortened line is still a compacted answer, so the receipt records it as one even
+    // though no whole item was dropped: the floor protects short sources and the widest one is cut instead.
+    if (clipped.length >= FLOOR_CLIP_CHARS) { widest.lines[widest.lines.length - 1] = clipped; dropped += 1; continue; }
+    // LAT-1023 B3 under C-DEPTH item 2: the budget is a hard bound, so when the floor can neither shorten the
+    // widest line usefully nor spare a second one, that last line goes whole and the header counts it out.
+    if (shownOf(widest) <= 1) { widest.lines.pop(); dropped += 1; continue; }
     widest.lines.pop(); dropped += 1;
   }
   const compactItems = dropped + droppedEvents;
@@ -4885,9 +5013,67 @@ function continuesRun(run: RunState, call: ResearchCall, question: string): bool
   return question.trim() === '' || sameTopic(question);
 }
 
+/** The mark the connector and the host leave on a body cut to its window. */
+const KNOWLEDGE_CUT_AT = /cut at \d+ chars/u;
+
+/** The hit id one shaped line or one fetched entry names, if it names one. */
+function hitIdOf(line: string): string | undefined {
+  return line.match(/\[id (\d+)\]/u)?.[1] ?? line.match(/^\s*\*\*#(\d+)\*\*/u)?.[1] ?? line.match(/^#{2,3}\s*#(\d+)\b/u)?.[1];
+}
+
+/** C-DEPTH item 3: the ids a summary names, the hits that mention an asked entity first. */
+export function knowledgeReadIds(text: string, asked: readonly string[], limit: number = RESEARCH.knowledgeReadEntries): string[] {
+  const ids: string[] = [];
+  const named: string[] = [];
+  for (const line of text.split('\n')) {
+    const id = hitIdOf(line);
+    if (id === undefined || ids.includes(id) || named.includes(id)) continue;
+    (asked.some(name => line.includes(name)) ? named : ids).push(id);
+  }
+  return [...named, ...ids].slice(0, limit);
+}
+
+/**
+ * C-DEPTH item 3 (W10-R7): the full body replaces the summary of the hit it came from, keyed by that hit's own
+ * id, so the knowledge shaping still sees one block of hits and no other source learns a second keyed read.
+ * An entry that names no hit is left out rather than appended: a fetched entry reaches the reply or was not paid for.
+ */
+async function withFullEntries(
+  execute: (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]>,
+  run: RunState, results: readonly IntentSubResult[], question: string, signal: AbortSignal,
+  boundMs: number = RESEARCH.knowledgeReadMs,
+): Promise<IntentSubResult[]> {
+  const searched = results.find(result => result.name === INTERNAL.knowledgeSearch && result.ok && result.text.trim());
+  if (searched === undefined) return [...results];
+  // The fetch is for the hits that matter: the ask named a person or a document, or asked for depth.
+  const asked = requestedEntities(question);
+  if (asked.length === 0 && budgetFor(question) !== RESEARCH.budgets.depth) return [...results];
+  const ids = knowledgeReadIds(searched.text, asked);
+  if (ids.length === 0) return [...results];
+  run.ops += 1;
+  try {
+    const bounded = AbortSignal.any([signal, AbortSignal.timeout(boundMs)]);
+    const read = await execute([{ key: 'knowledge_entries', name: INTERNAL.knowledgeRead, args: { ids } }], bounded);
+    const bodies = new Map<string, string>();
+    for (const entry of read) {
+      if (!entry.ok || !entry.text.trim()) continue;
+      for (const line of entry.text.split('\n')) {
+        const id = hitIdOf(line);
+        if (id !== undefined && !bodies.has(id)) bodies.set(id, line.trim().slice(0, RESEARCH.knowledgeBodyChars));
+      }
+    }
+    if (bodies.size === 0) { run.knowledgeFetchCut = true; return [...results]; }
+    const enriched = searched.text.split('\n').map(line => {
+      const id = hitIdOf(line);
+      return id === undefined || !bodies.has(id) ? line : bodies.get(id)!;
+    }).join('\n');
+    return results.map(result => (result === searched ? { ...result, text: enriched } : result));
+  } catch { run.knowledgeFetchCut = true; return [...results]; }
+}
+
 /** The loop behind a call: unchanged by the first answer point except for what it reports late. */
 async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: AbortSignal, first: FirstAnswerState): Promise<JsonObject> {
-  let limit = deps.replyLimit ?? RESEARCH.replyLimitChars;
+  let limit = deps.replyLimit ?? budgetFor(call.question ?? '', call.topic ?? undefined);
   // Q5-R1: a read of a named entry widens the reply to the connector's knowledge body cap, so the
   // body the owner asked for is never trimmed away for the length of a search reply.
   const widenFor = (subs: readonly IntentSubCall[]): void => {
@@ -5026,6 +5212,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     let results: IntentSubResult[];
     try {
       results = await executeSource(subs, progressSignal);
+      // C-DEPTH item 3 (W10-R7): this is the one place every read passes through, so the summaries are enriched
+      // with the full bodies of the hits that matter here, batched once, inside the same round.
+      results = await withFullEntries(executeSource, run, results, run.question ?? '', progressSignal, deps.knowledgeReadMs ?? RESEARCH.knowledgeReadMs);
       // #647: the one place every read passes through, so a chat read that matched nothing on every word is
       // broadened here once, before the reply and the progress steps read it.
       if (!dispatchSignal.aborted) results = await broadenedChatRetry(executeSource, subs, results, progressSignal, run.broadenedChat);
@@ -5637,7 +5826,113 @@ export function supersededStub(researchId: string, configured: readonly SourceKi
 }
 
 /** What is known now for a researchId, without waiting on the loop. */
-export function knownReply(ledger: ResearchLedger, researchId: string, configured: readonly SourceKind[], status: 'answered' | 'partial' | 'stopped' | 'unavailable' = 'stopped', limit = RESEARCH.replyLimitChars): JsonObject {
+/**
+ * C-DEPTH item 5 (W10-R2 light C): the state a call keeps about the research payload it holds in the provider
+ * conversation. The host counts what it sent, and a rebuild is due when that count passes the threshold.
+ */
+export interface ResearchRetention {
+  /** Characters of research answer this call has put in the provider conversation since the last rebuild. */
+  retainedChars: number;
+  /** Rebuilds this call has already run, so the counter can be read honestly in a log. */
+  rebuilds: number;
+}
+
+/**
+ * C-DEPTH item 5: whether the retained payload has passed the rebuild threshold. W10-R20: the host may
+ * inject the threshold, so a replay drives a rebuild at a size a call can reach; the shipped constant
+ * stays the default and the only value production uses.
+ */
+export function researchRebuildDue(retention: ResearchRetention, thresholdChars: number = RESEARCH.rebuildThresholdChars): boolean {
+  return retention.retainedChars > thresholdChars;
+}
+
+/** C-DEPTH item 5: what the call retains after one more research answer is sent. */
+export function retainedAfterSend(retention: ResearchRetention, answerChars: number): ResearchRetention {
+  return { ...retention, retainedChars: retention.retainedChars + Math.max(0, answerChars) };
+}
+
+/** C-DEPTH item 5: the call's own facts a rebuild must never interrupt, and the ones it may wait for. */
+export interface ResearchBoundary {
+  /** The assistant is speaking: a rebuild here would cut the answer. */
+  assistantAudioStreaming: boolean;
+  /** A response is pending, so the raw output is still being answered from. */
+  responsePending: boolean;
+  /** The owner barged in: the rebuild is deferred until the new turn settles. */
+  bargeIn: boolean;
+  /** A tool operation is in flight, so its output is not on the wire yet. */
+  toolInFlight: boolean;
+}
+
+/** C-DEPTH item 5: the safe boundary. Nothing is replaced while any of these holds. */
+export function researchRebuildAllowed(boundary: ResearchBoundary): boolean {
+  return !boundary.assistantAudioStreaming && !boundary.responsePending && !boundary.bargeIn && !boundary.toolInFlight;
+}
+
+/**
+ * C-DEPTH item 5 (W10-R15 P2): one rebuild decision. A deferral is a deferral: the count and the seed are
+ * handed back untouched so the next boundary can spend them, and only the branch that really rebuilds resets.
+ */
+export type ResearchRebuildStep =
+  | { action: 'defer'; retention: ResearchRetention; seedChars: number }
+  | { action: 'rebuild'; retention: ResearchRetention; seedChars: number };
+
+export function researchRebuildStep(
+  retention: ResearchRetention, seedChars: number, boundary: ResearchBoundary,
+  remainingMs: number, idleMs: number,
+): ResearchRebuildStep {
+  if (!researchRebuildAllowed(boundary)) return { action: 'defer', retention, seedChars };
+  if (remainingMs <= 0 || idleMs <= 0) return { action: 'defer', retention, seedChars };
+  return { action: 'rebuild', retention: { retainedChars: 0, rebuilds: retention.rebuilds + 1 }, seedChars };
+}
+
+/** C-DEPTH item 5: the ledger a rebuild seeds, built from the run's own evidence and never from a model call. */
+export interface LedgerInput {
+  question: string;
+  findings: readonly { source?: string; text?: string }[];
+  cursors: readonly string[];
+}
+
+/**
+ * C-DEPTH item 5: one rolling extractive ledger, at most `ledgerChars`. It carries the entities the owner
+ * named, a source id line per source with the dates it read, the factual excerpt lines that survived, the
+ * gaps it could not close, and the cursors that recover the original bodies for the rest of the call.
+ */
+export function researchLedgerOf(input: LedgerInput): string {
+  const evidence = input.findings.map(finding => finding.text ?? '').join('\n');
+  const asked = requestedEntities(input.question);
+  const covered = asked.filter(name => evidence.includes(name));
+  const missing = asked.filter(name => !evidence.includes(name));
+  const heldIds = [...new Set(input.findings
+    .flatMap(finding => (finding.text ?? '').split('\n').map(hitIdOf).filter((id): id is string => id !== undefined)))];
+  const perSource = input.findings
+    .filter(finding => typeof finding.source === 'string')
+    .map(finding => {
+      const lines = (finding.text ?? '').split('\n').filter(line => line.trim() !== '');
+      const ids = lines.map(hitIdOf).filter((id): id is string => id !== undefined);
+      const dates = [...new Set(lines.join(' ').match(/\d{4}-\d{2}-\d{2}/gu) ?? [])];
+      return `${finding.source}: ${lines.length} held${ids.length === 0 ? '' : `, ids ${ids.join(',')}`}${dates.length === 0 ? '' : `, dates ${dates.join(',')}`}`;
+    });
+  const excerpts = input.findings
+    .map(finding => (finding.text ?? '').split('\n').find(line => line.trim() !== '' && hitIdOf(line) === undefined && !FINDING_HEAD.test(line)))
+    .filter((line): line is string => line !== undefined && line.trim() !== '')
+    .map(line => line.trim().slice(0, 200));
+  const parts = [
+    `evidence ledger (extractive, ${covered.length} of ${asked.length} asked entities covered)`,
+    asked.length === 0 ? 'entities: none named' : `entities: ${asked.join(', ')}`,
+    // W10-R21: every hit id the run read is in the ledger whatever the finding declares, so a follow-up
+    // can recover that detail through get_insight instead of re-reading from the top.
+    ...(heldIds.length === 0 ? [] : [`ids: ${heldIds.join(', ')}`]),
+    ...perSource,
+    ...excerpts,
+    missing.length === 0 ? '' : `gaps: no evidence for ${missing.join(', ')}`,
+    input.cursors.length === 0 ? '' : `cursors: ${input.cursors.join(', ')}`,
+    'the original bodies stay readable by those cursors for the rest of the call',
+  ].filter(part => part !== '');
+  const text = parts.join('\n');
+  return text.length <= RESEARCH.ledgerChars ? text : `${text.slice(0, RESEARCH.ledgerChars - 1)}\u2026`;
+}
+
+export function knownReply(ledger: ResearchLedger, researchId: string, configured: readonly SourceKind[], status: 'answered' | 'partial' | 'stopped' | 'unavailable' = 'stopped', limit = RESEARCH.budgets.default): JsonObject {
   const run = ledger.find(researchId);
   if (!run) return { researchId, status, findings: [], unchecked: [...configured], canContinue: false };
   return buildReply(run, status, configured, false, limit);

@@ -1,146 +1,27 @@
-# Optional local Lux Knowledge reader
+# Lux Knowledge connector
 
-This slice is an optional, local, read-only **connector** over the accepted HTTP MCP adapter
-([mcp-adapter.md](mcp-adapter.md)). It binds exactly two Lux Knowledge tools,
-`search_knowledge` and `get_insight`, through the existing explicit endpoint/account/resource/
-schema-digest/generation read grant.
+Lux Knowledge is an optional source Naya can search through the canonical host. Its read connector is integrated with the registry, tools and research path; it is not an unconnected prototype or a copy of the knowledge database inside Didi.
 
-It is **not** wired into the host, HTTP service, UI, model, Domain or chat. It declares no model
-tool, makes no model call, writes no durable memory and starts no background fetch. There is no
-second store, no byte cache and no protocol implementation: transport, retention and slicing stay
-in `server/adapters/mcp/`. The host composes this connector explicitly (`server/connectors/lux-knowledge.ts`, wired by `server/connectors/index.ts`); the core service itself imports no connector. What the owner experiences is described in [architecture.md](architecture.md).
+## Read boundary
 
-## Owned seam
+`LUX_KNOWLEDGE_TOOLS` in `server/connectors/lux-knowledge.ts` contains `search_knowledge` and `get_insight`. `createLuxKnowledgeReader` implements `LuxKnowledgeReader` against an approved endpoint, account/resource, schema digest and generation. `LuxKnowledgeResult` distinguishes accepted evidence from refused or unknown outcomes.
 
-The only exported seam is
-`server/connectors/index.ts`, re-exporting `server/connectors/lux-knowledge.ts`. It is SDK-free:
-it imports only types from `../adapters/mcp/port.js` and `../adapters/mcp/registry.js`.
+The `luxKnowledgeDescriptor` entry in `server/connectors/index.ts` publishes the local read contract. `projectLuxResult` in `server/tools/lux-knowledge.ts` produces the model-visible projection. A remote response is not permission to pass arbitrary tool text, private fields or instructions directly to a model.
 
-```ts
-import { createLuxKnowledgeReader } from '../server/connectors/index.js';
-import { createMcpAdapter } from '../server/adapters/mcp/adapter.js';
-import { McpRegistry } from '../server/adapters/mcp/registry.js';
-import { MemoryResultStore } from '../server/adapters/mcp/store.js';
+## Search and source reads
 
-const registry = new McpRegistry();
-registry.register({
-  id: 'lux-knowledge', url: 'http://127.0.0.1:8765/mcp',
-  account: 'local-actor', resource: 'lux-knowledge:lux-knowledge',
-  // credentialRef: 'one-locally-resolved-reference', // optional
-});
-registry.enable('lux-knowledge'); registry.allowEgress('lux-knowledge');
+Use search to find relevant evidence, then retrieve the identified insight when the question needs its body. A weak or empty match is not a confident fact. Preserve source identity and coverage, including when a body is bounded or unavailable.
 
-const adapter = createMcpAdapter({ registry, store: new MemoryResultStore() });
-const discovered = await adapter.discover('lux-knowledge');       // explicit, no auto-connect
-if (discovered.state !== 'discovered') throw new Error(discovered.reason);
-// Explicit trusted-owner approval: binds the reviewed digest, generation and exact read set.
-registry.approve({
-  endpointId: 'lux-knowledge', schemaDigest: discovered.schemaDigest,
-  toolNames: ['search_knowledge', 'get_insight'], effect: 'read',
-  account: 'local-actor', resource: 'lux-knowledge:lux-knowledge', generation: 1,
-});
+Research reads knowledge in two stages. The `search_knowledge` call is the summary stage and keeps its bounded body window. When the ask names a person or a document, or asks for depth, `research` then makes exactly one batched `get_insight` call of at most three hit ids, the hits naming an asked entity first, under its own 1,500 ms bound and inside the operation's deadline. Each returned body is keyed by the hit id it came from and replaces that hit's summary line, so the reply shows the entry rather than its abstract. A plain search makes no second call, and an entry that names no hit in the summary is left out rather than appended.
 
-const reader = createLuxKnowledgeReader({
-  port: adapter, registry,
-  config: {
-    endpointId: 'lux-knowledge', account: 'local-actor', resource: 'lux-knowledge:lux-knowledge',
-    schemaDigest: discovered.schemaDigest, generation: 1,
-    maxSearchLimit: 25, maxGetIds: 8, maxQueryChars: 200,
-  },
-});
-```
+The reader owns accepted argument shapes and budgets. `KNOWLEDGE_BODY_MIN_CHARS`, `KNOWLEDGE_BODY_MAX_CHARS`, `KNOWLEDGE_DEADLINE_MIN_MS` and `KNOWLEDGE_DEADLINE_MAX_MS` are source constants, not a second set of documentation defaults. The source's result envelope and actual capture determine what was received; a local projection is not proof that the entire corpus was searched.
 
-Construction performs no I/O: the connector never calls `discover`, never approves anything,
-never enables egress and never grants a wildcard. It does validate the numeric budgets
-(`generation`, `maxSearchLimit`, `maxGetIds`, `maxQueryChars`) as positive finite safe integers
-and throws `invalid-connector-config` otherwise; they are captured once and never silently
-defaulted or clamped, and later caller mutation of `config` cannot change behavior.
+## Setup and authority
 
-## Two methods, strict input
+Configure the owner's endpoint and account through [mcp-configuration.md](mcp-configuration.md). A reachable knowledge server still needs a valid connection approval and allowed inference route/classes. Missing configuration or sign-in must remain unavailable, not become a successful empty answer.
 
-`search({ query, limit, detail?, maxChars?, deadlineMs? }, signal?)` and `get({ ids }, signal?)` only.
+The read envelope does not authorize remote writes. Dictated and composed Lux notes use separate host-owned write paths with different owner gates; see [tool-owner.md](tool-owner.md) and [privacy-and-authority.md](privacy-and-authority.md). Searching knowledge is not consent to save conversation content back into it.
 
-The three trailing search fields are the lux-knowledge 3r voice contract: `detail` is `snippets`
-(the default shape) or `bodies`, `maxChars` is within the server's 200..6000 body window and
-`deadlineMs` within its 500..30000 call budget. They travel as `detail`, `max_chars` and
-`deadline_ms` only when the caller asks for them, so a snippet search keeps the old wire shape.
-The research path always asks for bounded bodies, so a voice turn reads the text of a hit instead
-of spending a `get_insight` round trip on it, and the reply marks a hit the server cut at that
-window with `cut at 1200 chars`. There is no silent fallback: a server that rejects a field is
-reported as `tool-error` with its own message, never retried in the old shape.
+## Diagnosis and verification
 
-Both accept an optional `AbortSignal`, forwarded unchanged to the existing MCP
-adapter. Input validation and registry preflight still run first. An already
-aborted valid request is refused (`cancelled-before-dispatch`) without calling
-the remote tool. In-flight cancellation remains owned by that adapter; its
-structured `refused`/`unknown` outcome and reason are preserved. If completed
-or error evidence arrives after cancellation, the reader returns `unknown`
-(`cancelled-after-dispatch`) instead of exposing usable evidence. Exceptions
-still propagate. There is no extra transport, detached race or automatic retry.
-
-Inputs are read once as a strict plain-data snapshot; validated primitives are copied into the
-outgoing arguments a single time. There is no getter re-read and no caller iterator use.
-
-- Exactly those own keys; any extra key, including symbol and non-enumerable keys, is refused
-  before any dispatch, as is any accessor property or non-plain prototype.
-- `query` is a non-empty string no longer than `maxQueryChars`; `limit` is a positive finite safe
-  integer within `maxSearchLimit`. `detail`, `maxChars` and `deadlineMs` are optional and each is
-  checked against the range above before any dispatch.
-- `ids` is a dense array of unique positive safe integers within `maxGetIds`; holes, accessor
-  elements, extra own keys, symbols and a custom iterator are refused.
-- The tool name is a literal in the module; the arguments are built exactly as
-  `{ query, limit, include_sensitive: false }` plus the optional `detail`, `max_chars` and
-  `deadline_ms`, and as `{ ids, include_links: false }`. There is no
-  arbitrary tool name, no advanced-argument pass-through and no callback that could authorize a
-  writer.
-
-Before each dispatch the connector re-checks the accepted registry: the endpoint is enabled and
-egress-approved, a current grant exists, its digest matches the reviewed `schemaDigest` (else
-`schema-drift`), its generation matches (`grant-generation-mismatch`), its account/resource match
-(`grant-scope-mismatch`), every visible granted tool is one of the two eligible read tools
-(`ineligible-tool-granted`) and the requested tool is present (`required-definition-absent`).
-Remote tool annotations, including `readOnlyHint`, are never consulted as authority.
-
-## Result
-
-A settled call returns `completed`, an explicit `tool-error`, an explicit `protocol-error`, a
-pre-dispatch `refused` or a post-dispatch `unknown`. It never catches to empty and never retries.
-The `completed`/`tool-error`/`protocol-error` shape carries:
-
-- `classification: 'unknown'`: constant; returned markdown cannot change it.
-- `capability: 'local-only'`: no model/egress capability.
-- `source`: the configured source plus `observedAt` and `response.sha256` (original bytes); this
-  is not proof of a live deployment revision or of classification.
-- `coverage`: `completeCorpus: false`, `basis: 'single-tool-result'`, `remoteSideEffects:
-  'unverified'`.
-- a bounded `projection.text` with `omitted`/character counts, and a scoped `response` handle with
-  `sha256`, `byteLength` and `expiresAt`, or an explicit `unavailable` reason (`capacity`,
-  `oversize`, `store-unavailable`).
-- `requestedIds` on `get` only, the caller's requested IDs, **not** verified returned entities.
-
-Original bytes are retrieved only through `McpPort.readSlice` with full scope/generation/handle
-checks. Expired, revoked or scoped-out handles are refused by the store and are never silently
-refetched. A `completed` remote result does not prove side-effect purity, an empty textual result
-is not fake coverage, and no memory-zeroization claim is made. The connector promises no complete
-corpus.
-
-## Packaging
-
-`server/connectors/**/*.ts` is in `server/tsconfig.json`, so `dist/connectors/` is part of the
-canonical build, and `dist/connectors` is listed in `server/package.json` `files`, so the packed
-tarball includes it. The list is in the manifest, not in a private compiler list.
-
-## Tests
-
-`server/test/knowledge-connector.test.ts` runs against the real accepted adapter, a disposable
-synthetic official MCP HTTP server and the real result store, with real wire capture and no live
-Lux Knowledge call. It proves positive `search`/`get` round trips, exact argument constants,
-malformed/extra-field refusal with zero dispatch, the required grant, writer refusal,
-schema/scope/generation drift refusal, hostile/sensitive-shaped markdown staying
-unknown/local-only with no extra call, per-response hashes, response/handle budgets, exact slice
-reconstruction, expiry/revocation without refetch, honest `tool-error`/`unknown` outcomes, pre-abort with zero remote calls, in-flight
-abort reaching the real adapter, unusable late results for both methods, the 3r bounded-body fields
-on the wire with their range refusals, and an older server that rejects a field failing loudly with
-its own message and no retry. `server/test/research.test.ts` proves the voice lookup's exact
-bounded-body arguments, the `cut at 1200 chars` mark on a cut body, and the metadata-only receipt.
-`scripts/check-knowledge-connector.sh` compiles the canonical source and runs only this file.
+[Diagnostic store](diagnostic-store.md) explains canonical tool executions, captured source results and gated local inspection. Never publish private insight bodies or connection credentials as test fixtures. `scripts/check-knowledge-connector.sh` is the focused producer; use [checks.md](checks.md) for managed routing. Its fake source proves protocol and projection handling, not real account access or retrieval quality.

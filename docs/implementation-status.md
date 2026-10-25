@@ -1,50 +1,30 @@
 # Implementation status
 
-State of the source tree at release 15 (train head 37671efb04b2dee059b3d67c393d99c3d1a3def8, 2026-10-25, the merged train head that has not reached main yet, and this docs commit follows it); release 14 landed on main as aa0eb645af1e12bcc90cf0b0ab886159f065b24b, release 13 as 640605e05c46f6fdcc303087207d9a4f910ad4ed, release 12 as dfe81348 and release 11 as 5fcacc91. It describes the source, not proof that a given installation contains every change: a bundle's `didi-runtime.json` `releaseCommit` names its source. A green build alone proves neither working accounts, voice hardware nor a healthy installed app.
+This page describes the first stable release merged by [PR #683](https://github.com/PEAT-AI/lux-didi/pull/683), commit `a256f5d64d4dba0af9855f0ef512f2a1e88e37f9`. It describes source capabilities, not proof that a particular installed application or account works. Use [releases.md](releases.md) to identify and verify an installed bundle.
 
-## What works today
+## Available now
 
-- **Voice calls with Naya** over OpenAI GPT-Live or Gemini Live, chosen in Settings. Full duplex, interruptible, with mute, reconnect with resumption, a short opening line, voice stop phrases and an idle timeout.
-- **The orb.** Naya starts as the floating orb in the top right. One motion coordinator drives both orbs; her voice moves the body and her state sets the colour.
-- **Research layer** over memory, Lux Knowledge, Gmail, Google Calendar, Mattermost, Mongoose and the web, with triage scans for mail and chat, bounded rounds and a 2,500 character reply cap.
-- **Memory.** Local notes ("Naya, remember that ..."), a private summary of each finished call, imported standing memory, and vault notes to Lux Knowledge.
-- **Text chat and the web UI** (Conversation, Today, Memory, Settings) in the full window.
-- **Build and install** of a self-signed Mac app with bundled Node, which preserves the previous app and the owner's configuration.
-- **Diagnostics.** Content-free `host.log`, the joinable trace tables, `naya-logs`, `didi-timeline`, and Copy diagnostics in the menu.
-
-## Release history
-
-| Release | Date | What it added |
+| Capability | Implementation owner | Start here |
 | --- | --- | --- |
-| 3 series | 2026-10-17 to 10-19 | Right Command single key, the always-there presence model, mini orb, custom voices, Mongoose sign-in, steadier calls on weak connections, research receipts |
-| fix release 2 and retrieval | 2026-10-22 to 10-23 | Right sources and fewer round trips, calls survive blips, instant unmute, connecting ring, connector recovery, meeting notes found, search text holds content words only |
-| 4 | 2026-10-23 | Orb shows live at once, mute frees the microphone, follow-up searches use content words, vault notes by voice |
-| 5 | 2026-10-23 | Naya opens each call with her own short line, research capped in rounds, long mail pages trimmed, lighter calls |
-| 6 | 2026-10-24 | Orb first (start top right, auto-connect only on an interactive launch, window only from the menu), one motion engine, soft connecting and reconnecting sounds, opener from the last session, reply cap 2,500 characters, calendar attendees and weekdays |
-| 7 | 2026-10-24 | Voice stop ("Naya, stop listening"), 5 minute idle timeout, honest mail and chat triage, topic-only searches, confidence as a field, `--install-relaunch` never connects |
-| 8 | 2026-10-24 | Keeps every note, asks about an old open loop, stays quiet after background speech |
-| 9 | 2026-10-24 | The spoken stop matches inside any sentence with a 3 second name grace and a bare "stop listening" ends the call, Mattermost triage and parallel chat searches, mail triage reads human threads first, three-word mail searches with one wider retry, web results never dropped |
-| 10 | 2026-10-24 | A stop stays stopped and a call's state is never guessed, a Dock click shows the orb only, the opener waits for the calendar, Mongoose knowledge, data and crm on three sign-ins, memory recall reads earlier conversations only, every lookup answer opens with what was searched, and no lookup leaves dead air |
-| 11 | 2026-10-25 | A chat read runs only when the ask names chat and a read that runs out of time says it took too long, a mail read that fails speaks the helper's own words while the account stays connected, and the coverage header counts inside the 2,500 character reply cap |
-| 12 | 2026-10-25 | A chat read gets ten seconds so it finishes and an ask about what she said earlier runs no chat read, a memory recall keeps every matching line and puts a summary first at the same match, and a company read reaches the host log instead of being refused |
-| 13 | 2026-10-25 | Sign in to each Mongoose endpoint with its own button in Settings, each connector's row names the next step that actually fits it, and a channel ask finds a channel by the words in its name while an unknown channel gets its own line instead of a guess |
-| 14 | 2026-10-25 | A stop the host announced is recorded as the host's own end, a lookup answers while she reads instead of going quiet, a timed out read says which source failed, a chat ask matches the words in a channel name, a continuation stays on the same question, Settings Save reaches the Live service, Mongoose sign in opens the browser after the settings repaint, and an in flight rebuild no longer ends the call |
-| 15 | 2026-10-25 | A channel named past the first page of the list is found, a web read is cut at twelve seconds so a slow source cannot hold the round, every connect attempt records why it stopped and a spent round is retried, a repeated lookup gets a receipt instead of a loop and a failed web read says what is general knowledge, an answer she already found is spoken even when the call drops, the Settings sheet repaints after Save, a status ask follows the batch it announces, and she says a lookup is running only for a call she just made, calls an earlier call history and labels general knowledge |
+| Voice calls with OpenAI or Gemini | `LiveSessionOwner` in `server/live/index.ts`; `liveVoiceProviders` in `server/adapters/live-voice/types.ts` | [live-call.md](live-call.md) |
+| Text conversation | `ChatService` in `server/chat/index.ts` | [text-chat.md](text-chat.md) |
+| Native microphone, playback and controls | `AudioOwner` in `Sources/LuxDidi/AudioOwner.swift` | [mac-experience.md](mac-experience.md) |
+| Knowledge, Google, Mattermost and Mongoose reads | `CONNECTOR_DESCRIPTORS` in `server/connectors/index.ts` | [connectors.md](connectors.md) |
+| Opening results through native actions | `OPEN_ACTIONS` in `server/tools/open.ts` | [tool-owner.md](tool-owner.md) |
+| Trello board gateway | `server/host/trello.ts` | [mcp-configuration.md](mcp-configuration.md) |
+| Composed Lux notes | `STAGE_NOTE_IDENTITY` in `server/tools/lux-note.ts`; `liveDefinitions` in `server/tools/index.ts` | [privacy-and-authority.md](privacy-and-authority.md) |
 
-Each release is one squash-merged pull request; its body lists the checks run at the head commit and the issues it closes.
+## What the stable-release train changed
 
-## Setup and authority
+- Mongoose sign-in and renewal are handled per endpoint, rather than treating one token as authority for every resource (`server/host/mongoose-login.ts`, `server/host/mongoose-auth.ts`).
+- Open-in-Chrome and Drive lookup paths provide a way to act on a found result. Drive remains a separately configured and consented Google family, not an implied part of Gmail access.
+- Mattermost person and conversation capabilities are used when the child advertises and the connection grants them. Missing capabilities remain visible limitations.
+- Voice recovery includes provider-drop handling in `LiveSessionOwner` (`server/live/index.ts`). Its public `recover()` method instead sweeps interrupted durable sessions at host startup. A release containing recovery code is not a guarantee that a network or provider cannot fail.
+- Trello is a host-owned board gateway, not an unrestricted write connector.
+- Composed Lux notes are optional and require a staged readback and owner confirmation. The staging tool is gated by `composedNotes`; do not describe it as an automatic memory export.
 
-The installer creates no provider or connector configuration and changes no existing configuration files or symlinks. An owner selects a protected directory with `--configure --config-dir` and supplies the voice profile (`live.json`), the connector catalog and credentials. A missing profile or connector is a healthy unconfigured state: local notes and memory still work, and nothing gets authority automatically. Connector access is read-only, per explicit endpoint, account and credential reference.
+## Verification and limits
 
-Live limits come from the validated profile. When it omits them the defaults are a 1 hour provider session, a 5 minute idle limit and a 4 hour call limit (`adapters/live-voice/types.ts`, `live/config.ts`).
+[checks.md](checks.md) names the repository checks; [debugging.md](debugging.md) explains how to inspect a real failure without publishing private content. Synthetic checks do not prove microphone permission, a valid provider key, browser sign-in or a working installed bundle. Follow [user-guide.md](user-guide.md) for the owner steps.
 
-## Known limits
-
-- Local ad-hoc or self-signed signing does not prove acceptance on another Mac. There is no notarization, no clean-machine install test and no Windows or Linux package.
-- Deleting a memory removes it from future reads and future call context. A call already running keeps what it has received until it reconnects, and stored answers may quote a deleted memory.
-- Voice, microphone, Google, Mattermost and Mongoose behaviour is proven by fixtures in checks and by owner use. No check talks to a real provider or account; `scripts/smoke.sh` is the one real-path run, after an install.
-- The orb chord (Control Option Space) and the window chord (Control Option Shift Space) are separate registrations; either can be taken by another app, and the menu then reports the shortcut unavailable. Unverified at runtime.
-- Cloud placement, mobile pairing, harness control and broad computer control are designs only; see the historical [roadmap](roadmap.md) and [cloud-deployment](history/cloud-deployment.md).
-
-See the [user guide](user-guide.md), [Mac installation](macos-install.md), [provider configuration](provider-configuration.md), [MCP configuration](mcp-configuration.md) and [Mac experience](mac-experience.md).
+Deeper research answers ship in the release after PR #683: `server/tools/research.ts` sizes the reply by the tier the owner's question earns, reads knowledge in two stages and rebuilds an oversized call's research context from a host-built ledger. Its behavior is the merged source, not a contract or an unmerged branch. Future work belongs in [roadmap.md](roadmap.md). Historical release-by-release notes are not a second capability contract for the current source.

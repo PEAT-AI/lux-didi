@@ -1,305 +1,50 @@
 # Domain contract
 
-Owner: domain pair. Change only by coordinated root ruling. Read
-`TOPOLOGY-DECISION.md` and `SERVICE-CONTRACT.md` first; the wire shapes are the
-service's, not ours.
+The domain owns local records and their invariants. It does not own HTTP, provider access or a database connection. The host composes it with the runtime through `createDomainPort` in `server/domain/facade.ts`.
 
-## Boundary
+## Source of truth
 
-The service runtime owns `node:sqlite`, the sole-writer lock, migrations and the
-outbox. **The domain never opens a database.** Every operation receives the
-service `Transaction` (`server/contracts/storage.ts`) and runs inside the
-caller's transaction. The domain imports the shared contract types type-only, so
-it adds no second copy of the storage or domain contract.
+| Contract | Read |
+| --- | --- |
+| Port, operations and routing-label types | `server/contracts/domain.ts` |
+| Transaction contract | `server/contracts/storage.ts` |
+| Domain composition and operation dispatch | `server/domain/facade.ts` |
+| Domain migrations | `domainMigrations` in `server/domain/schema.ts` |
+| Sessions, entries and recall | `server/domain/memory.ts` |
+| Commitments, revision guards and daily plans | `server/domain/commitments.ts` |
+| Routing labels and corrections | `server/domain/labels.ts` |
+| Conversation summaries | `server/domain/summaries.ts` |
+| Transport serializers | `server/domain/dto.ts` |
+| Database, transactions and migration application | `Store` in `server/runtime/store.ts` |
 
-- `server/domain/schema.ts` — `domainMigrations` (contiguous owner versions).
-  The runtime applies them; the domain only declares them.
-- `server/domain/memory.ts` — sessions, entries, source references, preferences,
-  deterministic recall.
-- `server/domain/commitments.ts` — commitments, append-only history, revision
-  guard, daily plan.
-- `server/domain/dto.ts` — transport-blind serializers to the SERVICE-CONTRACT
-  wire shapes (ISO8601 UTC strings, UUID ids, positive revision, IANA zone).
-- `server/domain/facade.ts` — `createDomainPort({ outbox })`, the `DomainPort`
-  the service injects. It composes every mutation with its reminder/outbox
-  insert or supersession inside the ONE transaction the service opened.
+Use the migrations for the exact table inventory and the shared contract for the current operation shapes. Do not maintain a second schema or copied TypeScript interface here.
 
-## Schema inventory
+## Transactions and records
 
-The domain declares eight owner versions and the head is version 8; `domainMigrations` in
-`server/domain/schema.ts` is the authority for the exact statements, and the runtime applies them in
-order. No migration rewrites a v1 table and there is no backfill: a column added later reads as null
-on an older row.
+The caller supplies a `Transaction` to the domain port. Domain changes and their reminder outbox changes share that transaction; the domain must not open a second connection to make a mutation appear successful independently of its effects.
 
-| table | created in | later change |
-| --- | --- | --- |
-| `sessions` | v1 | |
-| `entries` | v1 | |
-| `source_references` | v1 | v3 adds the owner index |
-| `preferences` | v1 | |
-| `commitments` | v1 | |
-| `commitment_revisions` | v1 | |
-| `routing_labels` | v2 | |
-| `entry_tombstones` | v4 | |
-| `conversation_summaries` | v5 | v6 adds `open_loop`, `prompt_version` and `skip_reason`; v8 adds `data_class` and `source_revision` |
-| `history_sessions` | v7 | |
-| `history_exclusions` | v7 | |
-| `history_dependencies` | v7 | v8 adds `parent_revision` |
+`createDomainPort` receives the outbox dependency from the host. A committed record is evidence of a local save, not evidence that a remote notification was delivered. [service.md](service.md) owns the transport mapping and [local-runtime.md](local-runtime.md) owns runtime authority.
 
-Twelve tables, no views and no triggers of their own. A query that names a table not in this list is
-reading someone else's database.
+Commitment changes use an expected revision to reject stale writers. Reopening a commitment preserves its identity; creating a different promise requires a new one. Local source references must resolve consistently before a write. Read the validation and transition logic in `server/domain/commitments.ts` before adding a mutation path.
 
-## Operations (`createDomainPort(...).execute(tx, operation, input, context)`)
+## Routing policy is not content detection
 
-Session/entry/memory: `createSession`, `listSessions`, `getSession`,
-`appendEntry`, trusted in-process `appendAssistantEntry`, `recall`. Commitment: `createCommitment`, `listCommitments`,
-`getCommitment`, `updateCommitment`, `transitionCommitment`
-(`complete|cancel|reopen`), `plan`. The domain owns no transport: the service
-maps public operations onto `/api/v1` routes and injects ids/identity, never the body.
-`appendAssistantEntry` and the routing-label methods below are not public HTTP bindings.
+`getRoutingLabel`, `getRoutingLabelHistory` and `correctRoutingLabel` in `server/domain/facade.ts` delegate to the label owner. Label corrections preserve revision history rather than silently changing the provenance of an earlier record.
 
-## Durable routing labels (added in domain migration v2, still current)
+Automatic labels come from trusted in-process context, not a request body or a descriptive source name. An unknown label is not an ordinary-data grant. The host still has to enforce provider route classes and owner consent; domain labels alone do not authorize external disclosure. See [privacy-and-authority.md](privacy-and-authority.md).
 
-Domain owns one append-only `routing_labels` table. Its primary key is
-`(subject_kind, subject_id, revision)`; subject kind, class and writer have SQLite
-CHECK constraints, revisions are positive integers, and writer/class combinations
-also obey the automatic-label policy. Migration v2 is additive: v1 tables and
-rows are unchanged and there is **no legacy backfill**. The domain appends revisions;
-there is no label UPDATE/DELETE path. Store remains the single SQLite database,
-transaction manager and durable owner (`Store.assistantId`); no per-row owner is
-stored. The composition host adds its actual Store owner to routing decisions.
+## Recall, summaries and time
 
-Exact types exported by `server/contracts/domain.ts` (and type-reexported by
-`server/domain/contract.ts`):
+Recall reads stored records through the domain rather than accepting model recollection as a source. Selected prompt context is a separate concern from the long-term store; see [selected-memory.md](selected-memory.md).
 
-```ts
-interface RoutingSubject { kind: 'session' | 'entry' | 'commitment'; id: string }
-type RoutingDataClass = 'ordinary' | 'private' | 'sensitive';
-type TrustedWriteLabel =
-  | { writer: 'capture'; dataClass: 'private' }
-  | { writer: 'model'; dataClass: 'private' | 'sensitive' };
-interface RoutingLabel {
-  subject: RoutingSubject;
-  revision: number;
-  dataClass: RoutingDataClass;
-  writer: 'capture' | 'model' | 'owner_review';
-  recordedAt: string;
-}
-type RoutingLabelLookup = RoutingLabel | {
-  subject: RoutingSubject; revision: 0; dataClass: 'unknown';
-  writer: null; recordedAt: null;
-};
-interface RoutingLabelCorrection {
-  subject: RoutingSubject; expectedRevision: number; dataClass: RoutingDataClass;
-}
-```
+Conversation summaries have their own domain module and migrations. Do not treat an old planning proposal for session summaries as proof that summaries are absent from the current release.
 
-The synchronous in-process port extends the existing generic execute signature:
-
-```ts
-execute<K extends DomainOperation>(
-  tx: Transaction, operation: K, input: DomainOperations[K]['input'],
-  context: DomainContext, writeLabel?: TrustedWriteLabel,
-): DomainOperations[K]['output'];
-getRoutingLabel(tx: Transaction, subject: RoutingSubject): RoutingLabelLookup;
-getRoutingLabelHistory(tx: Transaction, subject: RoutingSubject): RoutingLabel[];
-correctRoutingLabel(
-  tx: Transaction, input: RoutingLabelCorrection, context: DomainContext,
-): RoutingLabel;
-```
-
-- Only `createSession`, `appendEntry`, `appendAssistantEntry` and
-  `createCommitment` accept the fifth argument. New subjects receive revision 1
-  atomically with content and any reminder insert in the caller's Store transaction.
-  Every existing four-argument call remains valid and creates **no label**.
-- Capture can stamp **private only**. Model can stamp private or sensitive, never
-  ordinary. User `appendEntry` requires capture; `appendAssistantEntry` requires
-  model. Session/commitment creation accepts either. Unsupported operations,
-  invalid classes/writers and inconsistent append writers are BAD_REQUEST before
-  any mutation. `owner_review` is not a permitted automatic writer.
-- Public input DTOs and `SourceRef` have no class/writer/owner additions. Body-like
-  extra fields and descriptive source labels never select routing policy. A trusted
-  fifth argument is a composition seam, **not a public authorization boundary**.
-- Lookup and history validate subject kind/id and use owning domain readers to
-  verify existence. Missing subjects throw NOT_FOUND; an existing unlabeled
-  subject returns unknown/revision 0/null writer/null time (history `[]`). Stored
-  labels include their revision, writer and ISO timestamp. History is oldest first.
-  Recall is not a stored subject kind: classify its underlying entry/commitment ids.
-- Correction is explicit trusted owner review. It validates subject and a
-  nonnegative safe-integer `expectedRevision` (0 means no prior label), rejects a
-  stale revision with CONFLICT, and appends prior+1 with writer `owner_review` and
-  `context.now`. It allows raising or lowering to any stored class and retains
-  prior history; it never rewrites content or reminders. Plain commitment updates
-  and transitions never silently relabel.
-- All calls use the caller's `Transaction`. A label-insert failure, later caller
-  persistence failure or correction failure rolls back with the enclosing Store
-  transaction. There is no second connection, implicit transaction or ambient
-  provenance state. Consumer lookup/history goes through Domain, not raw SQL.
-
-Labels are owner-controlled **routing policy**, not semantic sensitivity detection
-or a privacy guarantee. Domain does not enforce external-provider consent, derive
-an output class from model context, contact providers or authorize HTTP callers.
-The trusted host must choose a model label with the required context floor.
-Actual HTTP spoof rejection, connected CHAT consent/dispatch integration and
-live-provider behavior require later integration evidence; these engine tests
-make no such claims.
-
-## Invariants
-
-- Append-only correction history (`commitment_revisions`; no code path issues
-  UPDATE/DELETE, and `(commitment_id, revision)` is the primary key). A
-  storage-level trigger is not usable here: the service runtime admits exactly
-  one SQL statement per migration entry and a trigger body needs an inner `;`.
-- `expectedRevision` guard: a stale writer gets a typed `CONFLICT` carrying
-  `{id, expected, stored}`; nothing else changes.
-- A correction, completion, cancellation or reopen supersedes the pending
-  reminder and (where due) inserts the new one **in the same transaction**, so a
-  rollback leaves neither commitment nor reminder.
-- A genuinely new promise gets a new identity; reopen keeps identity.
-- **Local provenance is validated before any write.** A commitment's
-  `sourceSessionId`/`sourceEntryId` must resolve in the local store, and an
-  entry must belong to the named session; unknown ids are `NOT_FOUND` and a
-  mismatched pair is `BAD_REQUEST`, with zero commitment/history/outbox writes.
-  An external source explicitly recorded as unavailable stays distinct from a
-  resolvable local link.
-- **Complete listing.** The wire `listSessions` exposes no cursor input, so the
-  domain returns the complete deterministic list; it never presents a truncated
-  list as exhausted with `nextCursor:null`. Real pagination is a future
-  continuation contract, not a silent coverage cap.
-- Honest recall: empty/whitespace query ⇒ 0 hits, 0 matches; an unseen term ⇒ 0
-  hits; `totalMatches` counts every match and `truncated` is honest about the
-  `limit`. Matching is case- and diacritic-insensitive and deterministic
-  (keyword score, then recency).
-- An imported source that is absent is recorded `availability: "missing"`, never
-  implied present; the original text is stored locally.
-- Boundaries only: empty required text, `limit <= 0`, an unparsable date or an
-  unknown id are typed `BAD_REQUEST`/`NOT_FOUND` errors, not empty successes.
+`localDayBounds` in `server/domain/util.ts` computes a day's boundaries in the requested time zone. Daily plans must use those boundaries rather than substituting a UTC day. Serialization remains the DTO layer's job.
 
 ## Reminders
 
-A reminder is a pending scheduling need, never an invented success. The host
-injects a target resolver (`createDomainPort({ outbox, resolveTarget })`); the
-resolver is host-owned and never read from a request body, model field or
-browser `clientId`.
+The host supplies `resolveTarget` to the domain composition. With a target, reminder intent is bound to that target's grant; without one, the `native.notify.unbound` grant leaves a scheduling need that cannot be dispatched as if delivery were authorized. `REMINDER_TTL_MS` in `server/domain/facade.ts` owns reminder expiry. A due date and an outbox row are not proof that Naya can call the owner back.
 
-- **Bound target:** the resolver returns an authorized `{deviceId, grant}`, and
-the event's `requiredGrant` is that scoped grant with the `deviceId` in the
-payload, so the runtime `revalidate` can permit exactly that device.
-- **No target:** the intent is registered under `native.notify.unbound`, a grant
-no authorized device holds, so `revalidate` can never permit it and the need
-stays non-dispatchable. It is an explicit scheduling need, not a delivery.
-- **Revocation:** the resolver is consulted on every mutation, so when a target
-is revoked a correction supersedes the bound intent and re-inserts a
-non-dispatchable need.
+## Verification
 
-Every event is bound to `authorityEpoch`, `entityId`, `entityRevision` and an
-`expiresAt` (`REMINDER_TTL_MS` after due). The domain performs no effect itself
-and `supersede`/`insert` share the domain transaction, so there is no second
-queue. The route in the payload is the exact string `native.notify`.
-
-## Time
-
-Instants are stored as UTC epoch milliseconds and serialized as ISO8601 UTC
-strings. `timeZone` is an IANA name. Daily-plan day boundaries are computed in
-the requested zone (`localDayBounds`), not in UTC, so a plan for a local date
-includes exactly that local day and flags items due before the local day start
-as overdue. Completed and cancelled commitments never appear in a plan.
-
-## Reuse from Naya (naya-reuse/MEMORY-REUSE.md, Llama@036a4bc) and gaps
-
-This first slice reuses the verified generic conventions that fit a local
-SQLite domain, and explicitly does not import the Naya service, its PostgreSQL
-schema, its agricultural identity fields or any private rows/personas:
-
-- **Commit-backed receipts, never optimistic.** A mutation and its reminder are
-  one transaction; the domain returns its DTO only from committed state, so the
-  service emits `saved` from the committed result, never from queue admission.
-  In-memory facts never outrun committed facts. (The rollback test proves a
-  failed transaction leaves neither commitment nor reminder.)
-- **Provenance with stable source identity.** A source reference carries
-  `provider`/`accountId`/`externalId`/`sourceTimestamp` and an explicit
-  `availability`; an imported source that is absent is recorded `missing`, never
-  implied present. A **failed lookup stays distinct from a confirmed absence**:
-  both are `availability: "missing"`, and the `note` field records which it was
-  (`lookup_failed` vs an accepted-absent reason). The domain never collapses the
-  two and never invents content for a source it could not read.
-- **Coverage honesty / no completeness cap disguised as retrieval.** Recall
-  reports `totalMatches` and `truncated`; an empty or unseen query returns 0,
-  never a fabricated hit.
-- **No resurrection.** Completed and cancelled commitments never reappear in a
-  plan because an older record mentioned them; reopen is explicit and keeps
-  identity.
-
-Deferred to a separate layered-memory follow-up (deliberately NOT built into
-this slice):
-
-1. `session_gists`: versioned session summaries with pending/complete/failed
-   state, source version/count, bounded retry, claim ownership and closed-session
-   sealing — a background pipeline, not a request path.
-2. A pure `buildPromptMemory` selection with an explicit token/byte budget and
-   coverage metadata, keeping the long-term store separate from the small
-   selected prompt context (a ledger, never an all-history dump).
-3. On-demand `readSource` that resolves an authorized original turn by stable id
-   with unavailable/partial/truncated/complete coverage; FTS search results are
-   leads, the source read grounds a quotation.
-4. `memory_notes`: identity/preference versus time-limited state notes, with
-   provenance, expiry, supersession and active status; corrections retire the
-   previous active fact without losing the audit trail.
-5. Owners/users and cross-owner denial, `recall_audit`, and a forget/reset path
-   with a non-content tombstone and generation fencing so later summary jobs
-   cannot resurrect forgotten memory; separately label remembered-facts reset
-   versus transcript deletion versus all-local-data deletion.
-6. SQLite FTS5 lexical search (cross-script/trigram parity is a separate,
-   explicitly claimed feature).
-
-No Naya database, credential, REST call or provider session is a dependency.
-
-## Status and integration
-
-The runtime (`server/runtime/`) and the wire fixtures come from the service
-pair; the domain test uses the real `Store` and `Outbox` against a temporary
-SQLite database. `fixtures/domain/` is synthetic (generic examples only), never
-private context.
-
-### Wiring the domain into the service
-
-The domain is a sibling package with no database of its own. The service:
-
-```ts
-import { createDomainPort } from './domain/facade.js';
-const domain = createDomainPort({ outbox: Outbox }); // runtime/outbox.js
-const store = new Store(dataDir, domain.migrations); // runtime/store.js
-// routes: store.transaction((tx) => domain.execute(tx, op, input, context))
-```
-
-`domain.migrations` are the contiguous domain owner versions the runtime
-applies. `createDomainPort` closes over the runtime outbox, so a route runs the
-mutation and the reminder insert/supersede in the one transaction the service
-opened. `server/domain/tsconfig.build.json` compiles the domain into
-`server/dist/domain` next to the service's own build output.
-
-### Check-runtime note (integration decision for the service pair / root)
-
-The declared domain check runs a `.ts` file directly, but the service runtime
-cannot be loaded from TypeScript source: `runtime/store.ts` and
-`contracts/errors.ts` use TypeScript parameter properties, which this Node
-build's strip-only mode refuses (`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`), and the
-service's `.js` import specifiers do not resolve to `.ts`. So the domain test
-loads the real runtime and the domain from the compiled output in `server/dist`
-(the service package's own convention, where its tests run from `dist/` after
-`npm run build`).
-
-Reproduce from the repository root:
-
-```sh
-bash scripts/check-domain.sh
-```
-
-This focused check is self-building: it runs the existing service build and
-`domain/tsconfig.build.json` compiler, checks their required outputs, then runs
-all `domain.test.ts` and `provenance.test.ts` cases against the compiled actual
-Store/Domain. It also selects exactly the four compiled HTTP tests that use the
-synthetic DomainPort fixture (pairing/logout, replay/rollback/stale epoch, body
-validation and restart persistence). That fixture's label methods throw if used;
-it supplies no provenance behavior proof. The package-install test does not use
-that fixture and is not selected. This is not the broad service/HTTP test ring.
+`bash scripts/check-domain.sh` is the focused domain check. It uses the repository's compiled runtime and synthetic fixtures, not private account records. Follow [checks.md](checks.md) for check selection and [local-development.md](local-development.md) before running it. This documentation wagon does not claim to have rerun domain tests.

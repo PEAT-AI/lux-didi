@@ -2,14 +2,25 @@
 
 Reader: whoever ships a release, or wants to know what one contains.
 
-A release in this repository is one squash-merged pull request to `main`. There are no tags and no long-lived release branch: the merge commit on `main` is the release, its subject is the release line ("Didi release N: ...") and everything in it landed as one unit. The repository is a sole-owner project, so a release is also the moment the owner installs and uses the build.
+A release in this repository is one squash-merged pull request to `main`. There is no long-lived release branch: the merge commit on `main` is the release, its subject is the release line ("Didi release N: ...") and everything in it landed as one unit. Every push to `main` also gets a CalVer tag and a GitHub release, cut automatically (see [Cutting a release](#cutting-a-release)). The repository is a sole-owner project, so a release is also the moment the owner installs and uses the build.
 
 ## The shape of a release
 
 1. A milestone of issues is closed by one pull request against `main`. The pull request body lists the checks run at its head commit and the issues it closes.
 2. The branch carries the code and the doc that describes the behaviour in the same commits ([CLAUDE.md](../CLAUDE.md): a change updates the doc that describes it).
-3. The head commit passes the twelve-check gate in [checks.md](checks.md). The gate is run at the head, one check at a time, with no rerun on a flake.
+3. The head commit passes the twelve-check gate in [checks.md](checks.md). The gate is run at the head, one check at a time, with no rerun on a flake. Nine of the twelve also run on the pull request itself, plus `check-package`: [.github/workflows/ci.yml](../.github/workflows/ci.yml) runs them on ubuntu through `bash scripts/ci-gauntlet.sh --ci`, and the three that need macOS (see [checks.md](checks.md#what-ci-runs-and-what-stays-local)) are run by hand at the head. The pull request's CI is then the packaging gate too: `check-package` packs, installs and tests the tarball, so a pack list that drops a module the host imports fails the pull request instead of the owner's install.
 4. The pull request is squash-merged. The merge commit's subject becomes the release row.
+
+## Cutting a release
+
+Nothing to run by hand. [.github/workflows/automatic-release.yml](../.github/workflows/automatic-release.yml) runs on every push to `main`:
+
+1. It claims a CalVer tag on the merged commit: `YYYY.MM.DD` for the first release of a day, `YYYY.MM.DD.N` (`N` from 1) for later ones. The claim is a tag push, so two runs on the same day cannot take the same version.
+2. It opens a GitHub release for that tag with generated notes, grouped by pull request label ([.github/release.yml](../.github/release.yml)). Unlabelled changes land under "Other Changes".
+
+The release job does not re-run the checks: the pull request's CI already gated the tree, and a second run would add time without adding evidence. The workflow needs no secret beyond `GITHUB_TOKEN` with `contents: write` on that one job, and it deploys nothing: the app is built and installed from the tree, not downloaded from the release.
+
+The first CalVer release is the first push to `main` after this workflow lands. Release N of the release series (the numbering in the release rows) is unchanged by it, so a row and a tag are two names for the same merge.
 
 ## What the release row records
 
@@ -43,5 +54,5 @@ A release is done when the gate passed at the merged head, the installer put the
 
 ## What a release is not
 
-- It is not a hosted pipeline. There is no CI workflow; every check is a local script.
+- It is not a deploy. The tag and the release notes are a record of the merge, and nothing is published to a package registry, a store or an installer channel.
 - It is not notarized. The app is self-signed with the owner's local identity, and installing on a second Mac is untested.

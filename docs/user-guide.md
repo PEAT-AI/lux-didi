@@ -1,180 +1,151 @@
 # Using Lux Didi
 
-## Starting Naya
+Lux Didi is the Mac application; Naya is the assistant you talk or type to. Start with a local installation and one voice provider. Add connected accounts only when you want their data available. Nothing in the installer signs in to an account or grants new network authority.
 
-Open Lux Didi like any app. Naya appears as a small floating orb in the top right corner of the screen, just below the menu bar clock. Opening the app by hand also starts a call by itself, once. If that start fails (no microphone permission, no voice provider configured) she stays quiet and the menu bar says why; she does not retry in a loop.
+## 1. Install on a Mac
 
-Naya does not connect when macOS starts her at login, when an install relaunches her, or during any check. In those cases you only see the orb, and a tap starts the call.
-
-The full window is separate and optional. It opens only when you ask: **Open Naya app** in the menu bar, **Open Naya app** in the Dock icon's right-click menu (a plain click shows the orb), or a shortcut. The orb and the window can be on screen together. Closing the window never ends a call.
-
-## Talking with her
-
-- **Start, mute, resume.** Tap the orb, or tap the Right Command key (see below). The first tap starts a call, the next one mutes, the next one lets her listen again. While she is muted the orb is purple; she does not hear you and does not speak by herself.
-- **Stop the call.** Say "Naya, stop listening", "Naya, shut down", "Naya stop", "Naya stop now" or "Naya stop, please". The existing call-ending phrases ("end the call", "hang up", "goodbye", "good night", "turn off", "switch off", "Naya aus", "Naya, hör auf zuzuhören") also work with polite fillers. The host checks every speech fragment using the last 10 words: Naya (also recognized as Naja, Nayah, Naia, Nia, Nayla or Nayer) must be within 4 words before or 2 words after the phrase; a name at a fragment edge stays available for 3 seconds. Earlier room speech does not hide the command. The name is optional for "stop listening", "shut down", "stop now" and the German forms when the phrase ends the speech fragment or is followed only by polite fillers or "to me". The bare word "stop" still needs her name directly next to it. Quoted, negated, typed or echoed assistant speech does not stop the call; an object such as "stop listening to podcasts" also does not. The microphone stops, a short goodbye plays, and the call ends; the menu bar **Stop** remains available.
-- **If you say nothing.** An unattended call ends after 5 minutes without conversation. Background noise does not count as conversation. Muting suspends the clock. A single provider session lasts at most an hour by default and a whole call at most four hours. When a provider session has to be replaced and the switch came from background speech with nothing from you since her last words, she stays quiet: no chime and no "I am back". After your own speech she greets you as before.
-- **Her first line.** Every new call opens with one short line of her own, based on the last session. An open loop she has not seen confirmed in the last day reaches you as a question ("is that done?"), never as a fact she states.
-- **Ask for things.** For example: "anything important in mail?" (unread mail from the last 2 days, bulk mail set aside, human threads first), "anything urgent on Mattermost?" (mentions and replies of the last 7 days), "what is on tomorrow?", "what did we decide about X?", "weather in Lisbon". She says plainly when a source returned nothing or is not connected. An empty triage window is voiced with its own words and its own window ("nothing unread in the last two days"), never as "nothing urgent"; a trimmed mail list carries the count of lines left out, so a short list is never mistaken for an empty one. She opens a mail, event, thread, file or app only when you ask her to.
-
-## Shortcuts and the menu
-
-- Right Command, bare tap: start, mute, resume (the single key, below).
-- Control Option Space and Control Option Shift Space: show or hide the full window.
-- Control Option Shift L: start Live. Control Option Shift M: mute.
-- Escape: closes the window if it is open, otherwise hides the orb.
-- Menu bar: Start Live, Mute, Stop, Open at login, Getting started, Open Naya app, Settings, Right Command tap, Show mini orb, Always show Naya, Reveal logs, Copy diagnostics, Quit Naya. The menu shows each shortcut and says if another app already holds it.
-
-Drag the orb to move it. Naya remembers its position and puts it back on a connected screen if a monitor goes away. Clicks beside the orb pass through to the app underneath.
-
-### The single key
-
-Turn on **Right Command tap** in the menu bar menu (on by default). Then the right Command key is the one switch over Naya:
-
-- **Tap** it to start her, tap again to mute, tap once more to resume. After a resume the orb shows the connecting look until she is ready.
-- **Hold** it, or press it together with another key (Cmd, Option, Shift), and nothing happens. Only a bare tap counts, so Cmd+C and friends keep working.
-- Muting never touches your microphone settings, speakers or another app. The right Option key is left alone for dictation apps.
-- The first time, macOS asks for **Input Monitoring** for Naya. Until you allow it the menu says "Right Command is off: allow Input Monitoring for Naya"; choose it, flip the switch, and the key works without a restart. The window shortcuts work with or without it. macOS can drop the grant when the app is replaced; see Stable signing below.
-
-## Remembering and deleting
-
-Say “Naya, remember that ...” during Live to ask Naya to save a memory.
-Each note is kept on its own, so two different notes said in the same stretch
-of talk are both saved; only the same note said twice is refused.
-Check the Memories list to confirm it was saved. Use **Delete memory** on a
-memory you no longer want Didi to use. Deletion removes it from future memory
-reads and future Live session context. The current live conversation keeps
-information it has already received until it reconnects, so stop and restart
-Live to discard that conversation context. Deletion does not erase an external
-source, a transcript, or copies already shared elsewhere.
-
-**Send to Naya** sends your typed text to the conversation. **Save note** in the
-native draft area saves a local note instead; it does not send a chat message.
-
-## What is left to set up
-
-Choose **Getting started** in the menu bar. It opens automatically once after
-this build, then only when you reopen it. It shows microphone and notification
-permissions, Open at login, shortcuts, and connector status. Nothing requests
-permission until you press a setup button. Settings in the full window shows the
-same connector next steps; the connector rows are read-only, while the Live voice provider, voice, accent, speaking pace and theme can be changed there and apply from the next call.
-
-## Stable signing
-
-A Lux Didi install keeps the same code requirement across rebuilds, so macOS
-keeps the Accessibility grant you gave it. An ad-hoc build has no certificate:
-macOS describes it by a `cdhash` that changes on every build, so it discards the
-grant on every install. A local signing identity fixes that once.
-
-Create it, once, on your own machine:
-
-```bash
-scripts/create-signing-identity.sh
-```
-
-That makes a self-signed code-signing certificate named **Lux Didi Local
-Signing** in your login keychain and prints one `security add-trusted-cert`
-command. Run that command and enter your login keychain password; nothing else
-is needed. `scripts/create-signing-identity.sh --dry-run` prints the plan and
-changes nothing. Running it again when the identity exists does nothing.
-
-The build and the install then both report the designated requirement.
-`identifier "ai.peat.lux-didi" and certificate ... = H"..."` is the stable
-shape; a bare `cdhash H"..."` means the identity was not used, and the build
-says so in a warning. With the identity configured, the install refuses an
-ad-hoc build instead of installing one that would drop your grant again.
-
-## Connector setup
-
-Installation does not create provider or connector configuration, install connector
-servers, sign in to accounts, or grant network access. Without configuration,
-local notes and memory remain available; connected chat and Live are unconfigured.
-
-Create an owner-only configuration directory outside the application bundle,
-then select it with the installed executable:
+You need an Apple silicon Mac running macOS 26 or newer, the Xcode Command Line Tools, Node 26 or newer and npm. From a clean, committed checkout:
 
 ```sh
-"$HOME/Applications/Lux Didi.app/Contents/MacOS/LuxDidi" --configure --config-dir /absolute/path/to/your/config-directory
+npm --prefix server ci
+npm --prefix web ci
+bash scripts/build-asset-bundle.sh /tmp/didi-assets
+bash scripts/build-macos-app.sh "/tmp/build/Lux Didi.app" --assets /tmp/didi-assets
+bash scripts/install-macos-app.sh "/tmp/build/Lux Didi.app" --to "$HOME/Applications"
 ```
 
-Replace the example directory with your existing absolute directory. This command
-selects a directory; it does not generate profiles or credentials. See
-[protected operator configuration](macos-install.md#protected-operator-configuration)
-for permissions and validation, [provider configuration](provider-configuration.md)
-for connected chat, [Live configuration](provider-configuration.md#live-profile-livejson-and-the-local-persona-overlay)
-for Live, and [MCP configuration](mcp-configuration.md) for connector endpoints,
-classification and explicit network approval.
+Use new output paths that do not hold unrelated files. The installed app bundles Node. The installer preserves existing data/configuration and keeps a rollback copy of the previous app; it does not install connector helpers.
 
-Mongoose and Trello are the services Lux Didi can sign in to for you. Mongoose is three
-endpoints: knowledge, data and crm. Each one signs in on its own, because each is
-its own OAuth resource and a token for one is refused on another. In Settings,
-every Mongoose endpoint that needs a sign-in has its own button on its own row:
-**Sign in to Mongoose knowledge**, **Sign in to Mongoose data** and
-**Sign in to Mongoose CRM**. One click signs in that one endpoint and no other.
-The endpoint's row then says where the sign-in is: starting, waiting for you in the
-browser, saving, signed in, or, if it stopped, why in one sentence, with the button
-still there to try again. Finish in the browser and the connector reconnects by
-itself; there is no restart.
+For stable local signing across rebuilds, run `bash scripts/create-signing-identity.sh --dry-run`, then review the actual script and run it without `--dry-run`. It creates a local signing identity and prints the owner trust step. Ad-hoc signing can invalidate permission grants after a rebuild. This is local installation, not notarized cross-Mac distribution.
 
-You can also run the sign-in from a terminal with the same configuration directory
-you selected above:
+## 2. Configure a first voice provider
+
+An existing installation may already have protected configuration. Do not overwrite it. For a new installation, choose a private directory outside the app and repository:
+
+```sh
+umask 077
+mkdir -p "$HOME/.config/lux-didi"
+chmod 700 "$HOME/.config/lux-didi"
+```
+
+Use a local editor to create `live.json` there with this minimal first-call example:
+
+```json
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "provider": "openai",
+  "dataClasses": ["ordinary"],
+  "preferences": {
+    "dataClass": "ordinary", "language": "en",
+    "register": "plain", "humor": "off", "verbosity": "brief"
+  }
+}
+```
+
+Then create `openai-primary.json` in the same directory. Replace the key and nonsecret account label locally; never put the real key in a terminal command, chat or issue:
+
+```json
+{
+  "schemaVersion": 2,
+  "keyReference": "openai-primary",
+  "key": "REPLACE_LOCALLY_WITH_YOUR_KEY",
+  "configuredAccount": "my-openai-account",
+  "routeScope": {
+    "provider": "openai", "modelId": "gpt-live-1",
+    "endpoint": "https://api.openai.com/v1", "apiVersion": "v1",
+    "keyReference": "openai-primary", "allowedClasses": ["ordinary"]
+  },
+  "bindingGeneration": "my-first-voice-binding"
+}
+```
+
+These are onboarding examples for the current source, not the complete configuration schema. The voice model/voice defaults come from `providerSlots` in `server/config/index.ts`. The configured model must be available to your key; syntactic acceptance cannot prove availability. The account label is your assertion, not a remote identity check. Start with non-sensitive speech under this ordinary-only route; do not misclassify private material to bypass a refusal.
+
+Protect both files and select the directory:
+
+```sh
+chmod 600 "$HOME/.config/lux-didi/live.json" "$HOME/.config/lux-didi/openai-primary.json"
+"$HOME/Applications/Lux Didi.app/Contents/MacOS/LuxDidi" --configure \
+  --config-dir "$HOME/.config/lux-didi"
+```
+
+The selector validates paths, not the API key's remote validity. Restart the app deliberately after editing files. Text chat uses a separately configured Gemini text profile/key; selecting OpenAI voice does not configure text chat. [Provider configuration](provider-configuration.md) covers the operator CLI, Gemini setup, binding changes and other supported voice choices.
+
+## 3. Make the first call
+
+Open Lux Didi from Finder. An interactive launch attempts one call automatically. Allow microphone access when asked; if configuration or permission is missing, read the visible reason rather than repeatedly reopening the app.
+
+Try a non-sensitive greeting. Confirm that you hear Naya, can mute/resume and can stop the call. This verifies more than a locally accepted profile: it exercises the provider and your actual microphone/playback path. Use Stop or say **"Naya, stop listening"** when finished.
+
+Login and installer relaunches do not automatically connect. In those cases, tap the orb to start. **Getting started** in the menu shows permission and connection next steps. Microphone permission and **Input Monitoring** for Right Command are different macOS grants.
+
+## Everyday controls
+
+| Action | Control |
+| --- | --- |
+| Start, mute, resume | Tap the orb or bare Right Command |
+| End the call | Stop, or "Naya, stop listening" |
+| Open the full window | **Open Naya app** in the menu; Control Option Shift Space |
+| Show/hide the orb | Control Option Space |
+| Start Live / mute by chord | Control Option Shift L / Control Option Shift M |
+| Configure the single key | **Right Command tap** in the menu; allow Input Monitoring if requested |
+| Inspect settings or safe support state | Settings / **Copy diagnostics** |
+
+Only a bare Right Command tap counts; holding it or using a normal Command chord must not steal other apps' shortcuts. Muting Naya does not change system input/output or another application's audio. Closing the full window does not end the call. [Mac experience](mac-experience.md) explains the native ownership.
+
+<a id="connector-setup"></a>
+
+## 4. Add connected accounts
+
+A sign-in requires a configured endpoint/helper, its own account authorization and host approval. Install the appropriate connector server first; Didi does not ship every service's server or a universal account wizard. Keep its private account/token configuration outside this repository. Settings reports what is missing; a visible row alone is not proof of a usable read grant.
+
+### Mongoose
+
+Configure knowledge, data and CRM as separate resources. In Settings, use **Sign in to Mongoose knowledge**, **Sign in to Mongoose data** or **Sign in to Mongoose CRM** on that endpoint's row, then finish in the browser. One button signs in only that resource. The row shows progress and reconnects after successful saving.
+
+For a terminal flow using the installed runtime:
 
 ```sh
 "$HOME/Applications/Lux Didi.app/Contents/MacOS/node" \
   "$HOME/Applications/Lux Didi.app/Contents/Resources/server/node_modules/@lux-didi/service/dist/host/index.js" \
-  --mongoose-login knowledge --config-dir /absolute/path/to/your/config-directory
+  --mongoose-login knowledge --config-dir "$HOME/.config/lux-didi"
 ```
 
-The argument after `--mongoose-login` is one endpoint: `knowledge`, `data` or `crm`.
-Leave it out and every Mongoose endpoint with no session signs in one after
-another, each with its own consent, stopping at the first failure with its one
-line. Your default browser opens that endpoint's Mongoose consent page, where you
-sign in with Google. To keep the current window focused, add
-`--no-browser`; the command prints a sign-in URL for you to open yourself. The
-complete attempt expires five minutes after it starts. After sign-in, the callback
-page confirms receipt and can be closed; no token is ever copied, pasted or
-printed. Each session refreshes itself while you use it.
+Replace `knowledge` with `data` or `crm`. `--no-browser` prints an authorization URL for manual opening. No token needs copying or pasting. Data additionally needs the owner's Lightdash token connected in Mongoose settings; CRM requires the service's team admission. A refusal on one endpoint does not grant or invalidate another. The admin endpoint is not supported.
 
-Trello has one row in Settings with a **Sign in to Trello** button. On Trello's
-consent page, pick the workspace that holds your board and allow Read and Write.
-After that Naya can read your board and change cards on it when you ask: add a
-card to a list, move it, mark it done, set or clear a due date, add a note or a
-checklist item, label or archive it. She works on your one board only and never
-deletes anything. She cannot call you back; ask for a due date instead, and the
-Trello app on your phone reminds you.
+### Trello
 
-Two of the three need one more step from you. Data reads use your own Lightdash
-permissions, so connect a Lightdash personal access token once at
-`https://mongoose.dev.peat-cloud.com/settings/connections`; until you do, Naya
-says your Lightdash token is not connected in Mongoose settings instead of
-answering from data. CRM is open to the Mongoose CRM teams only; if your account
-is not in them, Naya says so in one line and knowledge and data keep working. If a
-session ever goes stale, that endpoint's row in Settings says sign-in needed and
-its own **Sign in** button signs it in again, or run `--mongoose-login` with that
-endpoint name.
+Privately create `trello-board.json` beside the sign-in record, mode `0600`, containing `{"board":"Your board name"}` with your actual board name. Do not publish it. In Settings choose **Sign in to Trello**, select the workspace containing that board and approve the requested access in the browser. No `mcp.json` Trello entry is needed.
 
-Use the connector server's own documented account sign-in procedure for every
-other connector. Lux Didi ships no universal Calendar sign-in command. Endpoint commands, account identities
-and credential references must match the connector you installed. Credential files
-belong in the selected directory with owner-only permissions. Do not paste secrets
-into Didi, chat or diagnostics. Restart Lux Didi after changing configuration.
-Existing owner configuration is preserved during installation, including symlinks;
-configuration loaders still enforce their own stricter validation rules.
+Then ask for the board overview, overdue cards or a named list. Naya can make granted card changes on that board: create/update, comment, checklist, due date, move/done, label and archive. She cannot administer arbitrary boards/lists, change members or permanently delete cards. Ambiguous targets require clarification. A due date is not a promise that Naya will call you back.
 
-A configured connector connects when Live needs it. If a connector fails, use
-**Copy diagnostics** in the menu bar and paste that support snapshot for help.
-It copies safe status information, not credential files or conversation text.
+### Gmail, Calendar and Drive
 
-When the Google connector fails, Naya says which kind of failure it was. A sign-in or
-permission problem (the grant is missing, revoked, unreadable, or without that family's
-read scopes, or the account is not the one you configured) makes her say that a fresh
-sign-in is needed and name the helper's own command, `lux-google-mcp authorize --family
-gmail` or `--family calendar`, which you complete with the token path and account your
-configuration already names; asking again before you run it changes nothing, because
-the helper repeats the same refusal until its credential file changes. A transient
-failure (a refresh that could not reach Google, or a Google API error) is retried on
-your next request, so just ask again. A tool or argument problem on her side is her
-own defect: she stops, says so, and records a content-free line in the diagnostics.
-An error code she does not recognise she reports as one she does not know, offers a
-later retry, and logs only a hashed head of the code, never the helper's message.
+Install and configure the Google helper with the selected account and token path. Use its authorization command for each family: `lux-google-mcp authorize --family gmail`, `--family calendar` or `--family drive`, supplying the additional account/token options shown by that installed helper's `--help`. Use the configured helper executable, not an unrelated copy found on PATH.
 
-If Live cannot start, its message now distinguishes a missing microphone, unavailable audio format, voice-processing failure, or audio-engine startup failure. Check the microphone and output device in System Settings, Sound, then try Live again; the local diagnostic records a numeric audio error when available, not a device label. Voice processing stays enabled, and Live never silently starts without it.
+Drive needs its own read consent and endpoint; Gmail access does not imply Drive access. After changing helper/catalog files, restart Didi deliberately. Ask for a small read first, such as upcoming events or a named document, and verify that the answer identifies what was actually searched. A sign-in-needed result is not an empty mailbox or calendar.
+
+### Mattermost and Lux Knowledge
+
+Use the installed Mattermost archive helper's account flow; a missing session reports `mattermost_login` as the next step. Person/group/channel reads depend on the child's published and approved capabilities. A missing capability must be reported rather than replaced by a guessed person.
+
+Lux Knowledge uses its configured endpoint/account credentials and read approval. Searching it does not grant permission to write notes back. [MCP configuration](mcp-configuration.md) owns catalog schemas, helper environments, source classes and approval modes. If a private source is refused by the first-call ordinary-only route, review the route/source classification explicitly; do not relabel it ordinary to make it work.
+
+## What to try next
+
+- **Read and open:** ask a source-backed question, then ask to open the found email, event or document. Native web destinations prefer Chrome, with the default browser as fallback. A spoken "opened" claim must follow a real open result.
+- **Text:** once the Gemini text profile is configured, start a connected conversation in the full window, review the provider disclosure and send. Partial text is provisional; check the saved final outcome before retrying a failed turn.
+- **Local memory:** say "Naya, remember that ..." and inspect Memory. A local note is not a remote source edit. **Save note** in the native draft saves locally; **Send to Naya** starts conversation work.
+- **Dictated Lux note:** explicitly ask to save the dictated note. Success is a write receipt, not a model's intention.
+- **Composed Lux note:** this optional flow defaults **off** (`features.composedNotes` in `live.json`). If explicitly enabled, ask Naya to compose a note, listen to the host readback and confirm it. Staging is not saving. It creates a note, not arbitrary edits/deletes in Lux Knowledge.
+
+The notes exporter is a separate feature from composed notes and local prompt selection; `features.notesExport` has its own switch. Review [selected-memory.md](selected-memory.md) and [tool-owner.md](tool-owner.md) before changing export policy.
+
+## Deletion, privacy and failures
+
+Deleting a memory excludes that local note from future reads and later rebuilt context. An already open provider connection can still hold it; stop and restart Live to discard that context. Deletion does not erase remote originals, quoted conversation history, backups or provider-held bytes.
+
+Local-first does not mean offline inference: approved providers receive accepted context/audio, and connectors contact their services. Read [privacy-and-authority.md](privacy-and-authority.md) before broadening routes or enabling writes.
+
+If a call or connector fails, preserve its visible reason and use **Copy diagnostics**. Never paste credential files, a database dump or private transcript content into a public issue. A transient service failure may work on a later explicit request; missing consent or credentials need setup, not repeated asks. Do not alter another app's audio routing or delete state to hide the failure. [Debugging](debugging.md) gives the next evidence steps.

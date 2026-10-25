@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, RESEARCH_OPERATION, ResearchLedger, capReply, calendarWindowOf, chatAttentionReason, candidateSubs, chatQuestionWords, fallbackSelection, lookupBound, normalizeLookups, ownerScheduleQuestion, recallQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
+  CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, RESEARCH_OPERATION, ResearchLedger, budgetFor, capReply, calendarWindowOf, chatAttentionReason, candidateSubs, chatQuestionWords, fallbackSelection, lookupBound, normalizeLookups, ownerScheduleQuestion, recallQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
   validateResearch,
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchRoutedLog, type ResearchSubcallLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
@@ -538,7 +538,7 @@ test('P5-R5: a routed read that returns a failure is failed, never empty', async
 // --- Q5-R1: a named entry is read whole, never searched for again ------------------------------
 
 test('Q5-R1: a lookup that names an insight reads it by id and returns the whole body, never a second search', async () => {
-  const body = `${'Deep body sentence. '.repeat(400)}End of the entry.`;
+  const body = `${'Deep body sentence. '.repeat(1100)}End of the entry.`;
   const executed: string[] = [];
   const h = harness({ execute: async (subs: readonly IntentSubCall[]) => {
     for (const call of subs) executed.push(call.name);
@@ -552,7 +552,7 @@ test('Q5-R1: a lookup that names an insight reads it by id and returns the whole
   const findings = reply['findings'] as { text: string }[];
   assert.ok(findings.length > 0, 'the read reaches the reply');
   assert.ok(findings[0]!.text.includes('End of the entry.'), 'the whole body is returned, up to the connector body cap');
-  assert.ok(findings[0]!.text.length > RESEARCH.replyLimitChars, `a read is not trimmed to the search reply budget (${findings[0]!.text.length} chars)`);
+  assert.ok(findings[0]!.text.length > RESEARCH.budgets.default, `a read is not trimmed to the search reply budget (${findings[0]!.text.length} chars)`);
 });
 
 // --- 3r R1: honest empty reads, model-facing progress, metadata-only lookup receipts -------------
@@ -1094,7 +1094,7 @@ test('L11-01: a knowledge read with hits keeps its top hit under a memory-heavy 
 // continuation_unavailable in 1 ms. A reply offers a continuation only when this run can serve one, with the
 // coordinate it hands over, and the continuation it offers is served.
 test('L11-02: a reply that offers a continuation serves it, with or without the cursor it handed over', async () => {
-  const hits = Array.from({ length: 6 }, (_, n) => `### Synthetic profile ${n + 1} (PATTERN | 2026-10-2${n}) [id ${910 + n}]\n${'Synthetic strength profile text. '.repeat(9)}`).join('\n');
+  const hits = Array.from({ length: 6 }, (_, n) => `### Synthetic profile ${n + 1} (PATTERN | 2026-10-2${n}) [id ${910 + n}]\n${'Synthetic strength profile text. '.repeat(400)}`).join('\n');
   const h = harness({
     execute: async subs => subs.map(call => call.name === 'search_knowledge'
       ? ({ ...sub(call.name, hits, true, call.key), knowledgeConfidence: { confidence: 'medium', top: '0.60', candidates: 'yes' } }) as IntentSubResult
@@ -1109,6 +1109,28 @@ test('L11-02: a reply that offers a continuation serves it, with or without the 
     assert.notEqual(next['error'], 'continuation_unavailable', `an offered continuation is served (cursor ${String(cursor)}): ${JSON.stringify(next).slice(0, 400)}`);
     assert.notEqual(next['status'], 'unavailable', 'and never as an unavailable run');
   }
+});
+
+// T2-R3: the tier decides where the cap bites, never whether a capped reply offers the rest.
+test('T2-R3: a reply trimmed at the 12,000 default tier also offers the continuation', async () => {
+  const question = 'what do we know about the team strengths profiles';
+  assert.equal(budgetFor(question), RESEARCH.budgets.default, 'the case is the plain default tier');
+  const hits = Array.from({ length: 6 }, (_, n) => `### Synthetic profile ${n + 1} (PATTERN | 2026-10-2${n}) [id ${910 + n}]\n${'Synthetic strength profile text. '.repeat(500)}`).join('\n');
+  const h = harness({
+    execute: async subs => subs.map(call => call.name === 'search_knowledge'
+      ? ({ ...sub(call.name, hits, true, call.key), knowledgeConfidence: { confidence: 'medium', top: '0.60', candidates: 'yes' } }) as IntentSubResult
+      : sub(call.name, EVIDENCE[call.name] ?? 'evidence', true, call.key)),
+    memory: () => ({ lines: Array.from({ length: 7 }, (_, n) => `Synthetic remembered fragment ${n + 1}: ${'an earlier conversation about other things. '.repeat(5)}`), text: '', total: 70 }),
+  });
+  const first = await runResearch(h.deps, { action: 'start', question,
+    lookups: [{ source: 'memory', query: 'team strengths profiles' }, { source: 'knowledge', query: 'team strengths' }] }, new AbortController().signal);
+  assert.ok(JSON.stringify(first).length > RESEARCH.budgets.default - 2_000, `the reply fills the default tier before it is capped (${JSON.stringify(first).length} chars)`);
+  assert.ok(JSON.stringify(first).length < RESEARCH.budgets.default + 2_000, `and the cap bites at the default tier, not another one (${JSON.stringify(first).length} chars)`);
+  assert.equal(first['canContinue'], true, 'the trimmed reply offers a continuation at the default tier');
+  assert.equal(first['status'], 'partial', 'a capped reply is partial, never complete');
+  assert.ok(String(first['note']).includes(RESEARCH.moreAvailableNote), 'and says the rest is available');
+  const next = await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, new AbortController().signal);
+  assert.notEqual(next['error'], 'continuation_unavailable', 'the offered continuation is served');
 });
 
 // L11-03 (lane 11): memory search returned the live call's own just-spoken question as hit 2 (sessionId of the

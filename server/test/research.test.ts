@@ -7,13 +7,16 @@ import {
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
+import { spokenChannel } from '../tools/chat-intent.js';
 import type { CandidateKind } from '../tools/research.js';
 import { shapeGcalList, shapeGmailList, shapeLuxKnowledge } from '../tools/live-shape.js';
 import { safeEvent } from '../host/log.js';
 import { projectDiagnosticInput } from '../tools/diagnostic-input.js';
-import { spokenChannel } from '../tools/chat-intent.js';
 import './research-shape.test.js';
 import './research-calendar.test.js';
+
+/** A small reply bound for the cap mechanism itself; the product budget is RESEARCH.budgets. */
+const CAP_REPLY_BOUND = 2_500;
 
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat'];
 
@@ -178,7 +181,7 @@ test('a failed follow-up logs its real error code, never a bare failed', async (
 test('the whole serialized reply stays within the character cap', async () => {
   const h = harness({ executeText: 'x'.repeat(9_000) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'anything' }, new AbortController().signal);
-  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(reply).length} chars with the coverage header`);
+  assert.ok(JSON.stringify(reply).length <= RESEARCH.budgets.default, `reply was ${JSON.stringify(reply).length} chars with the coverage header`);
 });
 
 // N4 (#567): memory and knowledge findings of 10 KB each reached Live at 6,125 and 8,543 chars, so the
@@ -195,7 +198,7 @@ test('N4: memory and knowledge findings of 10 KB each still fit the capped reply
   }, new AbortController().signal);
   const size = JSON.stringify(reply).length;
   // #634: the coverage header counts inside the prose envelope.
-  assert.ok(size <= RESEARCH.replyLimitChars, `reply was ${size} chars with the coverage header`);
+  assert.ok(size <= RESEARCH.budgets.default, `reply was ${size} chars with the coverage header`);
 });
 
 // #634: the coverage header counts inside the same cap, so a reply that fills the budget still fits with a
@@ -217,7 +220,7 @@ test('CAPHEADER 1: a reply at the cap carries a long coverage header inside the 
   assert.match(header, /knowledge [a-z_]+ \d+ of \d+ shown/u, 'the searched source keeps its counts');
   assert.match(header, /web not_configured/u, 'the source nobody read is named in the header');
   assert.ok(size >= 2_300, `the reply really fills the cap: ${size} chars`);
-  assert.ok(size <= RESEARCH.replyLimitChars, `reply was ${size} chars with the coverage header at a ${RESEARCH.replyLimitChars} cap`);
+  assert.ok(size <= RESEARCH.budgets.default, `reply was ${size} chars with the coverage header at a ${RESEARCH.budgets.default} cap`);
 });
 
 // N5 (#568): a completed run promised more was available, and the model's continue got
@@ -289,7 +292,7 @@ test('#575: a finding already given in the session becomes a one-line note', asy
 // it offered a continuation.
 test('#567: a reply capped after its note was built advertises the continuation it needs', async () => {
   const ledger = new ResearchLedger();
-  const hits = Array.from({ length: 20 }, (_, index) => ({ snippet: `memory line ${index} ${'m'.repeat(150)}`, role: 'user', date: '2026-09-01T09:00:00.000Z' }));
+  const hits = Array.from({ length: 100 }, (_, index) => ({ snippet: `memory line ${index} ${'m'.repeat(150)}`, role: 'user', date: '2026-09-01T09:00:00.000Z' }));
   const h = harness({
     ledger, configured: ['memory', 'knowledge'], now: () => Date.parse('2026-10-24T12:00:00.000Z'),
     executeText: '### Release scope [id 12] the release ships on Friday',
@@ -304,7 +307,7 @@ test('#567: a reply capped after its note was built advertises the continuation 
   const pages = (second['historyPages'] ?? []) as { hits?: unknown[] }[];
   const kept = pages.reduce((total, page) => total + (page.hits?.length ?? 0), 0);
   assert.ok(kept < hits.length, `the cap trimmed the page hits: ${kept} of ${hits.length} kept`);
-  assert.ok(JSON.stringify(second).length <= RESEARCH.replyLimitChars, 'the trimmed reply stays inside the budget');
+  assert.ok(JSON.stringify(second).length <= RESEARCH.budgets.default, 'the trimmed reply stays inside the budget');
   assert.equal(second['status'], 'partial', 'a reply the cap trimmed is partial');
   assert.equal(second['canContinue'], true, 'and it offers the continuation that would fetch the rest');
   assert.doesNotMatch(String(second['note'] ?? ''), /Nothing more to fetch/u, 'the note never says nothing is left');
@@ -316,8 +319,8 @@ test('#567: capReply hard-bounds a reply and keeps every finding whole', () => {
     researchId: 'r-1', status: 'complete', canContinue: false, note: RESEARCH.completeNote,
     findings: [{ source: 'knowledge', text: `knowledge: 1 of 1 shown\n${'x'.repeat(9_000)}`, chars: 9_000 }],
   };
-  const capped = capReply(reply, RESEARCH.replyLimitChars);
-  assert.ok(JSON.stringify(capped).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(capped).length}`);
+  const capped = capReply(reply, CAP_REPLY_BOUND);
+  assert.ok(JSON.stringify(capped).length <= CAP_REPLY_BOUND, `reply was ${JSON.stringify(capped).length}`);
   assert.equal(capped['status'], 'partial', 'a capped reply is never complete');
   assert.equal(capped['canContinue'], true, 'and it offers the continuation');
   assert.doesNotMatch(String(capped['note'] ?? ''), /Nothing more to fetch/u, 'the note agrees with the continuation');
@@ -340,17 +343,17 @@ test('#567: a reply already inside the budget is returned untouched', () => {
     findings: [{ source: 'knowledge', text: 'knowledge: 1 of 1 shown\none line', chars: 8 }],
   };
   const before = JSON.stringify(reply);
-  assert.equal(JSON.stringify(capReply(reply, RESEARCH.replyLimitChars)), before, 'nothing is flipped when nothing is trimmed');
+  assert.equal(JSON.stringify(capReply(reply, CAP_REPLY_BOUND)), before, 'nothing is flipped when nothing is trimmed');
 });
 
 // RESCAP-R5: a long best knowledge hit emptied the answer, because the trim loop dropped the only line.
 test('#567/R5: a long best knowledge hit is clipped to fit, never dropped', async () => {
   const long = `## Release scope\nthe release ships on Friday ${'x'.repeat(4_000)}`;
-  const h = harness({ executeText: long });
+  const h = harness({ replyLimit: CAP_REPLY_BOUND,  executeText: long });
   const reply = await runResearch(h.deps, {
     action: 'start', question: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }],
   }, new AbortController().signal);
-  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(reply).length} chars with the coverage header`);
+  assert.ok(JSON.stringify(reply).length <= RESEARCH.budgets.default, `reply was ${JSON.stringify(reply).length} chars with the coverage header`);
   const shown = (reply['findings'] as { text: string }[]).map(finding => finding.text).join('\n');
   assert.match(shown, /the release ships on Friday/, 'the head of the best hit survives the cap');
   assert.match(shown, /\u2026/u, 'and the reply marks where it was cut');
@@ -361,8 +364,8 @@ test('#567/R5: capReply clips the only evidence line instead of dropping the fin
     researchId: 'r-5', status: 'partial', canContinue: true,
     findings: [{ source: 'knowledge', text: `knowledge: 1 of 1 shown\n${'A full sentence. '.repeat(250)}`, chars: 4_000 }],
   };
-  const capped = capReply(reply, RESEARCH.replyLimitChars);
-  assert.ok(JSON.stringify(capped).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(capped).length}`);
+  const capped = capReply(reply, CAP_REPLY_BOUND);
+  assert.ok(JSON.stringify(capped).length <= CAP_REPLY_BOUND, `reply was ${JSON.stringify(capped).length}`);
   const findings = capped['findings'] as { text: string }[];
   assert.equal(findings.length, 1, 'the finding survives the cap');
   const lines = findings[0]!.text.split('\n');
@@ -372,8 +375,8 @@ test('#567/R5: capReply clips the only evidence line instead of dropping the fin
 });
 
 test('#567/R5: the knowledge body request is sized to fit the reply budget', () => {
-  assert.ok(RESEARCH.knowledgeBodyChars < RESEARCH.replyLimitChars, `body ${RESEARCH.knowledgeBodyChars} fits the ${RESEARCH.replyLimitChars} char reply`);
-  assert.ok(RESEARCH.knowledgeBodyChars <= RESEARCH.replyLimitChars - 400, 'with room for the envelope and one more source');
+  assert.ok(RESEARCH.knowledgeBodyChars < RESEARCH.budgets.default, `body ${RESEARCH.knowledgeBodyChars} fits the ${RESEARCH.budgets.default} char reply`);
+  assert.ok(RESEARCH.knowledgeBodyChars <= RESEARCH.budgets.default - 400, 'with room for the envelope and one more source');
 });
 
 test('mongoose is never offered while unconfigured', () => {
@@ -685,7 +688,7 @@ test('knowledge shaping carries at least ninety percent of a ledger under the re
   const total = items.reduce((sum, _, i) => sum + `#${i + 1} Insight ${i} | ${body}`.length, 0);
   const carried = lines.reduce((sum, line) => sum + line.length, 0);
   assert.ok(carried / total >= 0.9, `carried ${carried} of ${total} bytes`);
-  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars);
+  assert.ok(JSON.stringify(reply).length <= RESEARCH.budgets.default);
 });
 
 // --- Release 3h: source truth, diagnostics and speed ------------------------------------------
@@ -1872,11 +1875,15 @@ test('release 4: a chat continuation never searches a bare meta direction word',
 const WIDE_HITS = Array.from({ length: 14 }, (_, index) => `**#${index + 1}** [PATTERN] Decision ${index} | ${'decision text '.repeat(60)}`).join('\n');
 
 test('LAT-1023: a wide answer is compacted to the Live budget by dropping whole items', async () => {
-  const h = harness({ execute: async subs => subs.map(call => sub(call.name, WIDE_HITS, true, call.key)) });
+  const h = harness({ replyLimit: CAP_REPLY_BOUND,  execute: async subs => subs.map(call => sub(call.name, WIDE_HITS, true, call.key)) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
   const text = JSON.stringify(reply);
-  assert.ok(RESEARCH.replyLimitChars <= 2_500, `the Live budget is 2,500 chars, not ${RESEARCH.replyLimitChars}`);
-  assert.ok(text.length <= 2_500, `the answer to Live is ${text.length} chars, the coverage header included`);
+  // C-DEPTH item 1: the flat 2,500 char cap is retired for three tiers, and the answer is bounded by the
+  // tier the owner's question earns, which a plain decision question is the default one of.
+  assert.deepEqual(RESEARCH.budgets, { default: 12_000, analytical: 16_000, depth: 20_000 },
+    'the three C-DEPTH tiers, no flat reply cap');
+  assert.ok(text.length <= RESEARCH.budgets.default,
+    `the answer to Live is ${text.length} chars, the coverage header included`);
   const findings = reply['findings'] as { text: string }[];
   const shown = findings.map(finding => finding.text).join('\n');
   const items = shown.split(/\n(?=#\d+ )/u).slice(1);
@@ -1902,7 +1909,7 @@ test('LAT-1023: a short answer is returned unchanged with no compaction token', 
 
 test('LAT-1023 R1: a requested body keeps its 6,000 char page bound while an answer stays at 2,500', async () => {
   const body = 'Body evidence sentence. '.repeat(280);
-  assert.ok(body.length > RESEARCH.replyLimitChars + 1_000, 'the fixture body is wider than the answer budget');
+  assert.ok(body.length > RESEARCH.bodyLimitChars + 500, 'the fixture body is wider than its own page bound');
   const scope = { endpointId: 'local', transport: 'stdio' as const, bindingDigest: 'sha256:body-scope', schemaDigest: 'sha256:schema', toolName: 'gmail_read_message', generation: 1, account: 'owner', resource: 'mail' };
   const evidence = {
     kind: 'remote-body' as const, source: scope, entitySha256: 'e'.repeat(64), bodySha256: 'b'.repeat(64),
@@ -1910,7 +1917,7 @@ test('LAT-1023 R1: a requested body keeps its 6,000 char page bound while an ans
   };
   // The body arrives on the run's own dispatch, exactly as a read the owner asked for does: the reply is
   // the page, sized by the body bound rather than by the answer budget.
-  const h = harness({
+  const h = harness({ replyLimit: CAP_REPLY_BOUND, 
     execute: async subs => subs.map(call => ({
       ...sub(call.name, '', true, call.key),
       binding: { executionId: 'exec-body', name: call.name, contentIndex: 0, partIndex: 0, result: { id: 'body-1', sha256: 'c'.repeat(64) } },
@@ -1922,10 +1929,15 @@ test('LAT-1023 R1: a requested body keeps its 6,000 char page bound while an ans
   }, new AbortController().signal);
   const slices = reply['bodySlices'] as { text: string; offset: number }[] | undefined;
   assert.ok(Array.isArray(slices) && slices.length === 1, 'the requested body comes back as one page');
-  assert.ok(slices![0]!.text.length > RESEARCH.replyLimitChars, `a body page may pass the answer budget (${slices![0]!.text.length} chars)`);
+  // C-DEPTH item 1: the answer budget is a tier now and the widest tier passes a body page, so the invariant
+  // this test owns is the body page's own bound: the page is whole and never clamped by the answer budget.
+  assert.ok(slices![0]!.text.length <= RESEARCH.bodyLimitChars, `a body page keeps its own bound (${slices![0]!.text.length} chars)`);
+  assert.ok(slices![0]!.text.length > RESEARCH.sourceFloorChars, 'a body page is real evidence, not a floor');
   assert.ok(JSON.stringify(reply).length <= RESEARCH.bodyLimitChars, `and stays inside the body bound (${JSON.stringify(reply).length} chars)`);
   assert.equal(RESEARCH.bodyLimitChars, 6_000, 'the body page bound is the page width a requested read had before');
-  assert.equal(RESEARCH.replyLimitChars, 2_500, 'and the composed answer keeps the Live budget');
+  // C-DEPTH item 1: the flat cap this line pinned is retired for the three tiers, so the assertion names them.
+  assert.deepEqual(RESEARCH.budgets, { default: 12_000, analytical: 16_000, depth: 20_000 },
+    'and the composed answer is bounded by a tier, not a flat cap');
 });
 
 test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget is still trimmed to it', async () => {
@@ -1933,7 +1945,7 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
   // beside it holds whole short lines. A trim that keeps one line per source cannot reach the budget.
   const wide = `**#1** [PATTERN] Long body | ${'w'.repeat(2_900)}`;
   const mail = ['- Release notes | from: Ana | date: 2026-10-16 [id m1]', '- Invoice | from: Ana | date: 2026-10-17 [id m2]', '- Plan | from: Ana | date: 2026-10-18 [id m3]'].join('\n');
-  const h = harness({
+  const h = harness({ replyLimit: CAP_REPLY_BOUND, 
     execute: async subs => subs.map(call => sub(call.name, call.name === 'search_knowledge' ? wide : mail, true, call.key)),
   });
   const reply = await runResearch(h.deps, {
@@ -1941,10 +1953,20 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
     lookups: [{ source: 'knowledge', query: 'invoice release plan' }, { source: 'mail', query: 'from:ana' }],
   }, new AbortController().signal);
   const text = JSON.stringify(reply);
-  assert.ok(text.length <= RESEARCH.replyLimitChars, `the answer to Live is ${text.length} chars, the coverage header included`);
+  // W10-R15 P4: this case pins its own bound, so it is measured against the cap it drives.
+  assert.ok(text.length <= CAP_REPLY_BOUND, `the answer to Live is ${text.length} chars against its own ${CAP_REPLY_BOUND} cap`);
   const line = h.logs.at(-1)!;
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
-  assert.ok((line.answerCompacted?.items ?? 0) >= 2, 'whole items were dropped from both sources');
+  // C-DEPTH item 2: the per source floor protects a short source, so the widest one gives up whole items and the
+  // short one keeps its evidence. The budget is met either way, which is what this case owns.
+  // C-DEPTH item 2: the widest line is shortened to the room the floor leaves, and the short source keeps its
+  // evidence, so what was over the budget is what gave way. This case owns the trim, not the drop count.
+  const kept = reply['findings'] as { source: string; text: string }[];
+  const knowledge = kept.find(finding => finding.source === 'knowledge');
+  assert.ok(knowledge !== undefined && knowledge.text.length < 2_900,
+    `the widest line was trimmed to the budget: ${knowledge?.text.length ?? 0} of 2,900`);
+  const keptSources = kept.map(finding => finding.source);
+  assert.ok(keptSources.includes('mail'), `a short source keeps its evidence: ${keptSources.join(', ')}`);
   assert.ok(String(reply['note']).includes(RESEARCH.moreAvailableNote), 'and the reply names what it left out');
 });
 
@@ -2114,7 +2136,7 @@ test('WEB-1024: the final pending envelope remains bounded and preserves the mor
 test('WEB-1024: an early answer with two pending readers keeps its final cap and continuation note', async () => {
   const clock = fakeClock();
   const gate = deferred<void>();
-  const h = harness({
+  const h = harness({ replyLimit: CAP_REPLY_BOUND, 
     now: clock.now, schedule: clock.schedule,
     configured: ['memory', 'knowledge', 'chat'],
     memory: () => ({ lines: ['A complete remembered sentence. '.repeat(120)], text: '', total: 1 }),

@@ -1,0 +1,79 @@
+name: CI
+
+# The gate a pull request into main must pass. It runs the Linux-runnable part of the release
+# gate in docs/checks.md, so a merged tree has been gated by the same checks a release run by
+# hand would run, minus the three that need macOS (Swift, and the browser-lease window check):
+# those stay local and are listed in docs/checks.md with the reason per check.
+#
+# No macOS job: the fleet rule is ubuntu only, and the macOS checks are the ones no runner here
+# can carry.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A superseded push to the same pull request cancels its own run; a run for another ref never
+# touches this one.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # The check scripts export these themselves; the install and cache steps ahead of them need
+  # them too, so CI never blocks on a prompt.
+  CI: "1"
+  OMP_NUM_THREADS: "1"
+  VECLIB_MAXIMUM_THREADS: "1"
+
+jobs:
+  gauntlet:
+    name: Release gate (Linux)
+    runs-on: ubuntu-latest
+    # A gate check past 20 minutes is a defect (docs/checks.md); the target is under 15.
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          # Exact, not the `26` major: a major spec resolves to whatever 26.x is newest on the
+          # day, so the toolchain would move without a commit and a local run could no longer
+          # reproduce a CI result. This is the version the checks are written against (engines
+          # floor 26.0.0 in server/package.json and web/package.json).
+          node-version: '26.8.2'
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            web/package-lock.json
+
+      - name: Fill the offline npm cache
+        # The checks install with `npm ci --offline` and must never reach the network, so the
+        # tarballs the lockfiles name are put in the npm cache first. Online and idempotent; on
+        # a warm cache restored by setup-node it adds nothing.
+        run: bash scripts/warm-npm-cache.sh
+
+      - name: Run the gate
+        run: bash scripts/ci-gauntlet.sh --ci
+
+  # One status a branch protection can require, so a new gate check added to the gauntlet
+  # cannot be green by being new: any failed or cancelled job above fails this one.
+  ci-success:
+    name: ci-success
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [gauntlet]
+    if: always()
+    steps:
+      - name: Check the gate passed
+        run: |
+          if [[ "${{ needs.gauntlet.result }}" != "success" ]]; then
+            echo "The release gate did not pass: ${{ needs.gauntlet.result }}"
+            exit 1
+          fi
+          echo "The release gate passed."

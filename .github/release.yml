@@ -1,0 +1,37 @@
+# Release note categories for `gh release create --generate-notes`: GitHub groups a release's
+# pull requests by their labels, and anything unlabelled lands under "Other Changes".
+changelog:
+  categories:
+    - title: Breaking Changes
+      labels:
+        - breaking
+        - major
+    - title: Features & Capabilities
+      labels:
+        - feat
+        - feature
+    - title: Fixes & Stability
+      labels:
+        - fix
+        - bug
+    - title: Architecture & Refactoring
+      labels:
+        - architecture
+        - arch
+        - refactor
+    - title: Performance
+      labels:
+        - perf
+        - performance
+    - title: Tooling & CI
+      labels:
+        - chore
+        - ci
+        - deps
+    - title: Documentation
+      labels:
+        - docs
+        - documentation
+    - title: Other Changes
+      labels:
+        - "*"

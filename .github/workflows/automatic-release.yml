@@ -1,0 +1,82 @@
+name: Automatic Release
+
+# A non-deploying CalVer release for every push to main. The tree was already gated by the pull
+# request's CI, so a merge only tags and opens the release: the checks are not re-run here (the
+# same rule lux-knowledge, lux-coworker and lux-cli follow). Nothing is published anywhere, and
+# the workflow needs no secret: GITHUB_TOKEN with contents: write on the release job is all.
+#
+# The tag scheme is the fleet's: YYYY.MM.DD for the first release of a day, YYYY.MM.DD.N for
+# later ones (CalVer).
+
+on:
+  push:
+    branches: [main]
+
+# Two merges in a row must both get a release, so a running release is never cancelled; the tag
+# claim below is what keeps the two runs from choosing the same version.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Every tag, so the version claim sees what previous releases took.
+          fetch-depth: 0
+
+      - name: Calculate and claim the CalVer tag
+        id: version
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          DATE="$(date -u +"%Y.%m.%d")"
+          SUFFIX=0
+
+          while true; do
+            git fetch --force --tags origin
+            if [ "$SUFFIX" -eq 0 ]; then
+              VERSION="$DATE"
+            else
+              VERSION="${DATE}.${SUFFIX}"
+            fi
+
+            if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+              SUFFIX=$((SUFFIX + 1))
+              continue
+            fi
+
+            git tag "$VERSION" "$GITHUB_SHA"
+            if git push origin "refs/tags/${VERSION}"; then
+              echo "Claimed release version: ${VERSION}"
+              echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            git tag -d "$VERSION" >/dev/null 2>&1 || true
+            SUFFIX=$((SUFFIX + 1))
+            sleep $((RANDOM % 5 + 1))
+          done
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --verify-tag \
+            --generate-notes \
+            --latest

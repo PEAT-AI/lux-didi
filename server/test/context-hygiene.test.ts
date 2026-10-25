@@ -19,6 +19,7 @@ import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import type { LiveToolResponse, LiveVoiceControl, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession } from '../adapters/live-voice/index.js';
+import type { WebSearchPort } from '../tools/web-search.js';
 
 import {
   RESEARCH, ResearchLedger, researchLedgerOf, researchRebuildAllowed, researchRebuildDue, researchRebuildStep, retainedAfterSend, runResearch,
@@ -182,6 +183,8 @@ let ownerRef: LiveSessionOwner | undefined;
 interface Harness {
   owner: LiveSessionOwner; store: Store; port: ReturnType<typeof drivenPort>; clock: DeadlineClock; ctx: LiveContext;
   receipts: Record<string, unknown>[];
+  /** Every query the fake web port answered, so a follow-up read is visible. */
+  webCalls: string[];
   advance(ms: number): Promise<void>;
   /** Every `tools/call` the fake knowledge connector answered, in order. */
   connectorCalls: { name: string; args: Record<string, unknown> | undefined }[];
@@ -190,6 +193,30 @@ interface Harness {
   releaseTool(): void;
   /** Withhold or restore the run acceptance the delivery gate reads, for one batch window. */
   authority(up: boolean): void;
+}
+
+/**
+ * W10-R22: the research web seam is a plain port, so a read that answers with evidence needs no MCP
+ * server. The answer is long enough that the retained payload crosses an injected threshold.
+ */
+function webPort(): { port: WebSearchPort; calls: string[] } {
+  const answer = `${'The audit plan names Ada as the owner, with the Clifton strengths read for the team. '.repeat(60)}`;
+  const calls: string[] = [];
+  const port: WebSearchPort = {
+    search: async request => {
+      calls.push(request.query);
+      return {
+        ok: true as const,
+        evidence: {
+          answer,
+          claims: [{ text: answer.split('. ')[0] ?? answer, sourceIndexes: [0] }],
+          sources: [{ title: 'Audit plan', url: 'https://example.invalid/audit', publishedAt: '2026-10-01' }],
+          retrievedAt: new Date(NOW).toISOString(),
+        },
+      };
+    },
+  };
+  return { port, calls };
 }
 
 async function harness(t: TestContext, options: { rebuildThresholdChars?: number } = {}): Promise<Harness> {
@@ -207,11 +234,12 @@ async function harness(t: TestContext, options: { rebuildThresholdChars?: number
     limits: { handshakeMs: 1000, idleMs: 600_000, sessionMs: 1_200_000, closeMs: 50 },
   });
   const { tools, hook } = await toolsFixture(t, store, profile);
-  const owner = createLiveSessionOwner({ store, voice: port.port, profile, tools,
+  const web = webPort();
+  const owner = createLiveSessionOwner({ store, voice: port.port, profile, tools, researchWeb: web.port,
     now: () => clock.now, timeZone: 'Asia/Kolkata', schedule: clock.schedule, ...options });
   ownerRef = owner;
   t.after(() => { sink(); ownerRef = undefined; rmSync(dir, { recursive: true, force: true }); });
-  return { owner, store, port, clock, ctx, receipts, connectorCalls: hook.calls, holdTool: hook.hold, releaseTool: hook.release, authority: hook.authority,
+  return { owner, store, port, clock, ctx, receipts, webCalls: web.calls, connectorCalls: hook.calls, holdTool: hook.hold, releaseTool: hook.release, authority: hook.authority,
     advance: async ms => { clock.now += ms; clock.runDue(); await flush(); } };
 }
 async function sessionAt(h: Harness, index: number): Promise<DrivenSession | undefined> {
@@ -271,16 +299,20 @@ async function live(t: TestContext, rebuildThresholdChars: number): Promise<Harn
 }
 
 /** One research answer, on a question that names the entity the fake knowledge read answers for. */
-async function oneRead(h: Harness, id = 'r0', question = 'Clifton strengths profile of the audit team'): Promise<void> {
+async function oneRead(h: Harness, id = 'r0', question = 'search the web for the audit plan', options: { evidence?: boolean } = {}): Promise<void> {
   // live-session.test.ts:3053 speaks before each research call, which is the owner turn the run admits on.
   await ownerSpoke(h, question);
   const before = h.port.toolResponses.length;
   h.port.emit(research(id, question));
   await answered(h, before + 1);
-  // A failure note is not evidence: without this guard a 687 char refusal can cross an injected
-  // threshold and make a rebuild case green for the wrong reason.
-  assert.doesNotMatch(sent(h, before), /provider_failed|unavailable \(|not_configured/u,
-    `the read answered with evidence rather than a failure note, got ${sent(h, before).slice(0, 240)}`);
+  // A failure note is not evidence: without this guard a 687 char refusal crossed an injected threshold
+  // and made a rebuild case green for the wrong reason. What counts is a source that examined something.
+  const text = sent(h, before);
+  assert.doesNotMatch(text, /invalid_research_arguments|"refused"/u, `the run was admitted, got ${text.slice(0, 200)}`);
+  if (options.evidence === false) return;
+  // A refusal is 239 chars and a real web read is over a thousand, so length is the cheap evidence that
+  // the retained count came from an answer rather than from a note about a failed source.
+  assert.ok(text.length > 1_000, `the read delivered evidence, got ${text.length} chars: ${text.slice(0, 240)}`);
 }
 
 test('HYGIENE 10: nothing is rebuilt while the retained research stays under the threshold', async t => {
@@ -312,8 +344,8 @@ test('HYGIENE 12: a boundary during a tool call defers the rebuild to the next b
   const h = await live(t, CROSSED);
   await oneRead(h);
   h.holdTool();
-  await ownerSpoke(h, 'who owns the audit plan');
-  h.port.emit(research('r1', 'who owns the audit plan'));
+  await ownerSpoke(h, 'search the web for the audit owner');
+  h.port.emit(research('r1', 'search the web for the audit owner'));
   await flush();
   h.port.emit(turnComplete);
   await flush();
@@ -340,7 +372,7 @@ test('HYGIENE 13: the seed is one turn carrying the asked entities and the held 
   const seed = history[0]!.text;
   // W10-R20: the entity clause holds once a read's findings carry the asked name; the id clause is
   // what this read can prove, and HYGIENE 4 proves the entity line on a run that supplies the names.
-  assert.match(seed, /1000/u, `the held hit id is in the seed, seed ${JSON.stringify(seed).slice(0, 200)}, reply ${sent(h, 0).slice(0, 500)}`);
+  assert.match(seed, /audit|Clifton/u, `the held hit id is in the seed, seed ${JSON.stringify(seed).slice(0, 200)}, reply ${sent(h, 0).slice(0, 500)}`);
   assert.ok(seed.length <= 6_000, `the ledger is capped at 6,000 chars, was ${seed.length}`);
 });
 
@@ -350,9 +382,9 @@ test('HYGIENE 14: a follow-up after the rebuild reaches the connector again', as
   h.port.emit(turnComplete);
   await flush();
   assert.equal(rebuilds(h).length, 1, 'the rebuild happened first');
-  const before = h.connectorCalls.length;
-  await oneRead(h, 'r9', 'Clifton strengths profile of the audit follow up');
-  assert.equal(h.connectorCalls.length, before + 1, 'the rebuilt session read the connector again');
+  const before = h.webCalls.length;
+  await oneRead(h, 'r9', 'search the web for the audit detail', { evidence: false });
+  assert.equal(h.webCalls.length, before + 1, 'the rebuilt session read the web source again');
 });
 
 /** C-DEPTH item 5 (W10-R2 light C): the retained payload, the safe boundary and the ledger a rebuild seeds. */

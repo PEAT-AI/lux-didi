@@ -257,6 +257,7 @@ final class DiagnosticLogHTTPFixture: URLProtocol, @unchecked Sendable {
     try audioRequire(try outcome(silentDirectory) == "deadline", "a stop the host never answered names the deadline")
     try audioRequire(silent.state == .ended && hostStopped.state == .ended, "both stops settle the conversation")
     print("PASS a host announced stop names host_ended, a stop the host never answered names the deadline")
+    print("DURATION \(started.duration(to: .now)) stop-outcome")
 }
 
 @MainActor private func checkCaptureTapExecutor() async throws {

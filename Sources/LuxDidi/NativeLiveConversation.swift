@@ -447,7 +447,10 @@ enum State: String, CaseIterable {
             state = .ended
         }
         if firstStop {
-            journal.append(["event": "live_stop_outcome", "outcome": confirmed == nil ? "deadline" : "confirmed"])
+            // #657: a host that said voice_stop ended the call itself, so the close has no receipt to give
+            // and the stop is the host's own end, never a deadline it missed.
+            let outcome = confirmed != nil ? "confirmed" : (hostVoiceStop ? "host_ended" : "deadline")
+            journal.append(["event": "live_stop_outcome", "outcome": outcome])
         }
         await captureSummaryTask?.value
         guard generation == token else { return }

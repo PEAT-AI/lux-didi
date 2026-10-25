@@ -18,7 +18,7 @@ Native audio belongs to `AudioOwner` in `Sources/LuxDidi/AudioOwner.swift`. A mu
 
 `Sources/LuxDidi/SingleKeyTrigger.swift` owns the bare Right Command gesture. Holding it or combining it with another key must not steal ordinary Command shortcuts. Input Monitoring is a macOS permission separate from microphone access, and the menu reports when the single-key path cannot run.
 
-`Sources/LuxDidi/NativeShortcuts.swift` owns registered window and Live chords. The current controls include Control Option Space / Control Option Shift Space for the full window, Control Option Shift L for Live, and Control Option Shift M for mute. Keep menu labels and conflict reporting in sync with the registration owner; do not hardcode another shortcut table in a web component.
+`Sources/LuxDidi/NativeShortcuts.swift` owns registered window and Live chords. The current controls include Control Option Space for the orb, Control Option Shift Space for the full window, Control Option Shift L for Live, and Control Option Shift M for mute. Keep menu labels and conflict reporting in sync with the registration owner; do not hardcode another shortcut table in a web component.
 
 ## Native and shared surfaces
 

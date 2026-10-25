@@ -86,7 +86,8 @@ Login and installer relaunches do not automatically connect. In those cases, tap
 | --- | --- |
 | Start, mute, resume | Tap the orb or bare Right Command |
 | End the call | Stop, or "Naya, stop listening" |
-| Open the full window | **Open Naya app** in the menu; Control Option Space or Control Option Shift Space |
+| Open the full window | **Open Naya app** in the menu; Control Option Shift Space |
+| Show/hide the orb | Control Option Space |
 | Start Live / mute by chord | Control Option Shift L / Control Option Shift M |
 | Configure the single key | **Right Command tap** in the menu; allow Input Monitoring if requested |
 | Inspect settings or safe support state | Settings / **Copy diagnostics** |

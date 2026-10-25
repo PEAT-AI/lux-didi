@@ -168,11 +168,16 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         if (route.action === 'revoke') { live.revoke(route.id!); send(res, 200, success({ liveSessionId: route.id!, revoked: true })); return; }
         if (route.action === 'settings') {
           if (!live.saveSelection) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Live settings are not writable here', 503);
+          // The first pass classified the route without a body, exactly as it does for prewarm and
+          // create, so the body is read here and the route resolved again with it. Without this the
+          // owner's Save button always answered the bodyless refusal.
+          const resolved = resolveRoute(method, url, await readBody(req));
+          if (resolved.kind !== 'live' || resolved.action !== 'settings') throw new ServiceError('BAD_REQUEST', 'Invalid settings request');
           let saved;
           try {
-            saved = live.saveSelection({ provider: route.input['provider'],
-              ...(route.input['voice'] !== undefined ? { voice: route.input['voice'] } : {}),
-              ...(route.input['accent'] !== undefined ? { accent: route.input['accent'] } : {}) });
+            saved = live.saveSelection({ provider: resolved.input['provider'],
+              ...(resolved.input['voice'] !== undefined ? { voice: resolved.input['voice'] } : {}),
+              ...(resolved.input['accent'] !== undefined ? { accent: resolved.input['accent'] } : {}) });
           } catch (error) { throw new ServiceError('BAD_REQUEST', error instanceof ConfigError || error instanceof LiveConfigError ? error.code : 'invalid_selection', 400); }
           send(res, 200, success(saved));
           return;

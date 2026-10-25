@@ -1,12 +1,359 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
 import assert_ from 'node:assert/strict';
+import { test } from 'node:test';
+import type { TestContext } from 'node:test';
+import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
+import { chatMigrations } from '../chat/index.js';
+import { domainMigrations } from '../domain/schema.js';
+import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
+import type { LiveToolsComposition } from '../live/types.js';
+import { liveProfileIdentity } from '../live/config.js';
+import { createMcpAdapter } from '../adapters/mcp/adapter.js';
+import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
+import { MemoryResultStore } from '../adapters/mcp/store.js';
+import { createToolsOwner, toolsMigrations } from '../tools/index.js';
+import { Store } from '../runtime/store.js';
+import { attachHostLogSink } from '../tools/host-events.js';
+import type { LiveToolResponse, LiveVoiceControl, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession } from '../adapters/live-voice/index.js';
+
 import {
   RESEARCH, ResearchLedger, researchLedgerOf, researchRebuildAllowed, researchRebuildDue, researchRebuildStep, retainedAfterSend, runResearch,
 } from '../tools/research.js';
 import type { ResearchBoundary, ResearchRetention, ResearchDeps } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
+const NOW = 1_700_000_000_000;
+const MODEL = 'models/live-recovery-test';
+const flush = async (): Promise<void> => { for (let i = 0; i < 8; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
+
+/** A clock the test moves itself: no test sleeps and no timer fires on its own. */
+class DeadlineClock {
+  now = NOW;
+  readonly pending = new Set<{ due: number; callback: () => void }>();
+  schedule = (callback: () => void, delayMs: number) => {
+    const entry = { due: this.now + delayMs, callback };
+    this.pending.add(entry);
+    return { unref: () => {}, cancel: () => { this.pending.delete(entry); } };
+  };
+  runDue(): void {
+    for (;;) {
+      const entry = [...this.pending].find(item => item.due <= this.now);
+      if (!entry) return;
+      this.pending.delete(entry);
+      entry.callback();
+    }
+  }
+}
+
+/** One provider session the test drives: it never becomes ready and dies on its own, or it goes live. */
+interface DrivenSession {
+  live(): void;
+  die(): void;
+}
+
+/** A port whose every open can be made to die before its ready event, which is the failure at issue (#525). */
+function drivenPort() {
+  const sessions: DrivenSession[] = [];
+  const openedAt: number[] = [];
+  const requests: LiveVoiceRequest[] = [];
+  const toolResponses: LiveToolResponse[][] = [];
+  let events: ((event: LiveVoiceEvent) => void) = () => {};
+  let sequence = 0;
+  /** C-LIVE R2: opens the provider refuses synchronously, the way the 2026-10-25 rebuild threw before its socket. */
+  const refusals: Error[] = [];
+  let opens = 0;
+  const port = {
+    capabilities: Object.freeze({ provider: 'gemini', supportsResumption: false, supportsGoAway: false, supportsInterruption: false,
+      supportsServerVadConfig: false, inputRates: Object.freeze([8000]), outputRates: Object.freeze([24000]),
+      outputModalities: Object.freeze(['audio', 'text'] as const), thinking: 'provider_default', supportsToolScheduling: false,
+      toleratesEmptyReadyLifecycle: false }),
+    open(request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession {
+      opens += 1;
+      requests.push(request);
+      const refusal = refusals.shift();
+      if (refusal !== undefined) throw refusal;
+      let resolveReady: () => void = () => {};
+      let rejectReady: (error: unknown) => void = () => {};
+      const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+      let resolveDone: (outcome: LiveVoiceOutcome) => void = () => {};
+      const done = new Promise<LiveVoiceOutcome>(resolve => { resolveDone = resolve; });
+      const pending: LiveVoiceEvent[] = [];
+      let waiter: (() => void) | undefined;
+      let ended = false;
+      const wake = () => { const waiting = waiter; waiter = undefined; waiting?.(); };
+      const end = (): void => { ended = true; wake(); };
+      events = event => { pending.push(event); wake(); };
+      const iterator: AsyncIterable<LiveVoiceEvent> = {
+        async *[Symbol.asyncIterator]() {
+          for (;;) {
+            if (ended) return;
+            if (!pending.length) { await new Promise<void>(resolve => { waiter = resolve; }); continue; }
+            yield pending.shift()!;
+          }
+        },
+      };
+      const session: LiveVoiceSession = {
+        ready, done, events: iterator,
+        sendAudio(): void {}, sendText(): void {}, endAudioStream(): void {},
+        sendToolResponse(input): 'sent' { toolResponses.push([...input.responses]); return 'sent'; },
+        close(): void { if (ended) return; end(); resolveDone({ status: 'cancelled', code: 'cancelled' }); },
+      };
+      control.signal.addEventListener('abort', () => { if (ended) return; end(); resolveDone({ status: 'cancelled', code: 'cancelled' }); }, { once: true });
+      sessions.push({
+        live: () => { events({ sequence: ++sequence, type: 'ready' } as LiveVoiceEvent); resolveReady(); },
+        die: () => { rejectReady(new Error('provider setup refused')); resolveDone({ status: 'failed', code: 'transport_error', recoverable: true }); end(); },
+      });
+      openedAt.push(sessions.length);
+      return session;
+    },
+  } as unknown as LiveVoicePort;
+  return { port, sessions, openedAt, requests, toolResponses, emit: (event: LiveVoiceEvent) => events({ ...event, sequence: ++sequence }),
+    refuse: (...errors: Error[]) => { refusals.push(...errors); }, get opens() { return opens; } };
+}
+
+/** Every `tools/call` the fake knowledge connector answered, in order. */
+type ConnectorHook = { calls: { name: string; args: Record<string, unknown> | undefined }[]; hold(): void; release(): void;
+  /** The run's acceptance the delivery gate reads: `false` refuses the gate for the batches inside the window. */
+  authority(up: boolean): void };
+
+/** One fake knowledge connector, its tool call counted: a dispatch the test can see, never a real endpoint. */
+/** What the fake knowledge connector answers: one case answers small, another huge, so both sides of the 24,000 char threshold are reachable without a second fixture. */
+const answer = { lines: 40, body: 120 };
+function knowledgeFixture(): string {
+  return Array.from({ length: answer.lines }, (_, i) =>
+    `[id ${1000 + i}] Clifton profile ${i}: Achiever, Learner and Input, 2026-10-${String((i % 28) + 1).padStart(2, '0')}, a full sentence of evidence about the audit group and its team implications.`).join('\n');
+}
+function bodyFixture(id: string): string {
+  return `[id ${id}] Clifton profile body ${id}: ${'detail of the full entry. '.repeat(answer.body)}`;
+}
+
+async function toolsFixture(t: TestContext, store: Store, profile: ReturnType<typeof validateLiveProfile>): Promise<{ tools: LiveToolsComposition; hook: ConnectorHook }> {
+  const schemas = [{ name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' }, detail: { type: 'string', enum: ['snippets', 'bodies'] }, max_chars: { type: 'integer' }, deadline_ms: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } }, { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'string' } } }, required: ['ids'], additionalProperties: false } }];
+  const calls: ConnectorHook['calls'] = [];
+  let authorityUp = true;
+  let held: Promise<void> | undefined;
+  let release: (() => void) | undefined;
+  const registry = new McpRegistry();
+  const endpoint = { id: 'lux', url: 'https://fixture.invalid/mcp', account: 'account', resource: 'resource' };
+  registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
+  const sdk = new Server({ name: 'live-recovery-fixture', version: '1' }, { capabilities: { tools: { listChanged: false } } });
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+  sdk.setRequestHandler('tools/list', () => ({ tools: structuredClone(schemas) }) as never);
+  sdk.setRequestHandler('tools/call', async request => {
+    calls.push({ name: request.params.name, args: request.params.arguments });
+    if (held !== undefined) await held;
+    if (request.params.name === 'get_insight') return { content: [{ type: 'text', text: bodyFixture(String((request.params.arguments as { ids?: string[] })?.ids?.[0] ?? '1000')) }] };
+    return { content: [{ type: 'text', text: knowledgeFixture() }] };
+  });
+  await sdk.connect(transport);
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    if (request.method === 'GET') return new Response(null, { status: 405 });
+    return transport.handleRequest(request);
+  });
+  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10_000, maxSliceBytes: 512 }),
+    resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12_000, projectionChars: 10, timeoutMs: 5_000 } });
+  const toolOwner = createToolsOwner({ grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port,
+    lookupAuthority: async runId => authorityUp ? ownerRef?.lookupAuthority(runId) ?? ownerRef?.lookupJobAuthority(runId) ?? null : null });
+  toolOwner.applyConnection({ schemaVersion: 1, ownerId: store.assistantId, connectionId: 'lux', generation: 1, enabled: true, connector: 'lux-knowledge',
+    endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(schemas),
+    sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+    route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 80, maxSearchLimit: 8, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+  assert.equal((await port.discover(endpoint.id)).state, 'discovered');
+  toolOwner.projectConnection('lux');
+  t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });
+  return { tools: { owner: toolOwner, connectionIds: () => ['lux'] },
+    hook: { calls, hold: () => { held = new Promise<void>(resolve => { release = resolve; }); },
+      release: () => { held = undefined; release?.(); release = undefined; }, authority: up => { authorityUp = up; } } };
+}
+
+let ownerRef: LiveSessionOwner | undefined;
+
+interface Harness {
+  owner: LiveSessionOwner; store: Store; port: ReturnType<typeof drivenPort>; clock: DeadlineClock; ctx: LiveContext;
+  receipts: Record<string, unknown>[];
+  advance(ms: number): Promise<void>;
+  /** Every `tools/call` the fake knowledge connector answered, in order. */
+  connectorCalls: { name: string; args: Record<string, unknown> | undefined }[];
+  /** Held while set: the fake connector's next answer waits for `releaseTool`. */
+  holdTool(): void;
+  releaseTool(): void;
+  /** Withhold or restore the run acceptance the delivery gate reads, for one batch window. */
+  authority(up: boolean): void;
+}
+
+async function harness(t: TestContext): Promise<Harness> {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-recovery-'));
+  const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations]);
+  const ctx: LiveContext = { clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch };
+  const clock = new DeadlineClock();
+  const port = drivenPort();
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  const profile = validateLiveProfile({
+    provider: 'gemini', liveModelId: MODEL, voice: 'ExplicitVoice', keyReference: 'test-reference',
+    route: { enabled: true, provider: 'gemini', modelId: MODEL, dataClasses: ['ordinary'] },
+    prompt: { text: 'Synthetic system', dataClass: 'ordinary' },
+    limits: { handshakeMs: 1000, idleMs: 600_000, sessionMs: 1_200_000, closeMs: 50 },
+  });
+  const { tools, hook } = await toolsFixture(t, store, profile);
+  const owner = createLiveSessionOwner({ store, voice: port.port, profile, tools,
+    now: () => clock.now, timeZone: 'Asia/Kolkata', schedule: clock.schedule });
+  ownerRef = owner;
+  t.after(() => { sink(); ownerRef = undefined; rmSync(dir, { recursive: true, force: true }); });
+  return { owner, store, port, clock, ctx, receipts, connectorCalls: hook.calls, holdTool: hook.hold, releaseTool: hook.release, authority: hook.authority,
+    advance: async ms => { clock.now += ms; clock.runDue(); await flush(); } };
+}
+async function sessionAt(h: Harness, index: number): Promise<DrivenSession | undefined> {
+  for (let i = 0; i < 60; i++) { if (h.port.sessions.length > index) return h.port.sessions[index]; await flush(); }
+  for (let round = 0; round < 4; round += 1) {
+    await h.advance(10_000);
+    if (h.port.sessions.length > index) return h.port.sessions[index];
+  }
+  return undefined;
+}
+
+async function answered(h: Harness, count: number): Promise<void> {
+  for (let i = 0; i < 2000 && h.port.toolResponses.length < count; i++) await flush();
+  assert.equal(h.port.toolResponses.length, count, 'the host answered the model');
+}
+
+async function ownerSpoke(h: Harness, text = 'what do we know about the plan'): Promise<void> {
+  h.port.emit({ type: 'inputTranscription', text, finished: true, sequence: 0 } as LiveVoiceEvent);
+  await flush();
+}
+
+/** One lookup question per call, so a repeat never hits the session's answer cache instead of the loop. */
+const research = (id: string, question = 'what do we know about the plan'): LiveVoiceEvent => ({
+  type: 'toolCall', calls: [{ id, name: 'research', args: { action: 'start', question, topic: question } }], sequence: 0,
+}) as LiveVoiceEvent;
+
+/** C-DEPTH item 5 (W10-R15 P1): the rebuild driven through the real live layer and a fake provider. */
+
+const turnComplete = { type: 'turnComplete' } as LiveVoiceEvent;
+const REBUILD = 'research_context_rebuild';
+
+/** The threshold the host applies, restated here so a case fails if the config moves under it. */
+const THRESHOLD = 24_000;
+
+function rebuilds(h: Harness): Record<string, unknown>[] {
+  return h.receipts.filter(entry => entry['event'] === REBUILD);
+}
+
+/** The research text the provider was actually sent, which is what the host counts as retained. */
+function sent(h: Harness, index: number): string {
+  return JSON.stringify(h.port.toolResponses[index] ?? []);
+}
+
+/** A live session on the fake provider, ready and past the owner's first words. */
+async function live(t: TestContext): Promise<Harness> {
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: `hygiene-${randomUUID()}`, inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  const first = (await sessionAt(h, 0))!;
+  first.live();
+  await attachment.ready;
+  await flush();
+  await ownerSpoke(h);
+  return h;
+}
+
+/** Three research answers on distinct questions, which is what carries the retained count past the threshold. */
+async function pastThreshold(h: Harness, count = 3): Promise<void> {
+  for (let i = 0; i < count; i += 1) {
+    h.port.emit(research(`r${i}`, `Clifton strengths profile ${i} of the audit team`));
+    await answered(h, i + 1);
+    h.port.emit(turnComplete);
+    await flush();
+    await ownerSpoke(h, `and the Clifton profile ${i} detail`);
+  }
+}
+
+test('HYGIENE 10: nothing is rebuilt while the retained research stays under the threshold', async t => {
+  answer.lines = 2;
+  const h = await live(t);
+  h.port.emit(research('r0', 'who leads the audit team'));
+  await answered(h, 1);
+  assert.ok(sent(h, 0).length < THRESHOLD, `one small answer is under the threshold, was ${sent(h, 0).length}`);
+  h.port.emit(turnComplete);
+  await flush();
+  assert.deepEqual(rebuilds(h), [], 'no rebuild under the threshold');
+  assert.equal(h.port.openedAt.length, 1, 'and the provider session was not reopened');
+});
+
+test('HYGIENE 11: exactly one rebuild, at the first safe boundary above the threshold', async t => {
+  answer.lines = 400;
+  const h = await live(t);
+  await pastThreshold(h);
+  const sizes = [0, 1, 2].map(index => sent(h, index).length);
+  assert.equal(h.connectorCalls.length, 3, `each ask read the connector, calls ${h.connectorCalls.length}, sent ${sizes.join('/')}`);
+  assert.ok(sizes.reduce((total, size) => total + size, 0) > THRESHOLD,
+    `the answers the host sent pass the threshold together, sent ${sizes.join('/')}`);
+  assert.equal(rebuilds(h).length, 0, 'no rebuild happened inside a response');
+  h.port.emit(turnComplete);
+  await flush();
+  assert.equal(rebuilds(h).length, 1, 'the first boundary past the threshold rebuilds once');
+  assert.equal(h.port.openedAt.length, 2, 'on one fresh provider session');
+  h.port.emit(turnComplete);
+  await flush();
+  assert.equal(rebuilds(h).length, 1, 'and a later boundary does not rebuild again');
+  assert.equal(h.port.openedAt.length, 2);
+});
+
+test('HYGIENE 12: a boundary during a tool call defers the rebuild to the next boundary', async t => {
+  answer.lines = 400;
+  const h = await live(t);
+  await pastThreshold(h);
+  h.holdTool();
+  h.port.emit(research('r3', 'who owns the audit plan'));
+  await flush();
+  h.port.emit(turnComplete);
+  await flush();
+  assert.equal(rebuilds(h).length, 0, 'nothing is rebuilt while a tool call is in flight');
+  assert.equal(h.port.openedAt.length, 1, 'and the session in flight is untouched');
+  h.releaseTool();
+  await answered(h, 4);
+  h.port.emit(turnComplete);
+  await flush();
+  assert.equal(rebuilds(h).length, 1, 'the deferred rebuild happens at the later boundary');
+  assert.equal(h.port.openedAt.length, 2);
+});
+
+test('HYGIENE 13: the seed is one turn carrying the asked entities and the held hit ids', async t => {
+  answer.lines = 400;
+  const h = await live(t);
+  await pastThreshold(h);
+  h.port.emit(turnComplete);
+  await flush();
+  const reopened = h.port.requests[1];
+  assert.ok(reopened !== undefined, 'a fresh provider session was opened');
+  const history = reopened.history ?? [];
+  assert.equal(history.length, 1, 'the ledger seed is exactly one turn');
+  assert.equal(history[0]!.role, 'user');
+  const seed = history[0]!.text;
+  assert.match(seed, /audit team/u, 'the asked entity is in the seed');
+  assert.match(seed, /\[id 1000\]|#1000|1000/u, 'and the held hit ids');
+  assert.ok(seed.length <= 6_000, `the ledger is capped at 6,000 chars, was ${seed.length}`);
+});
+
+test('HYGIENE 14: a follow-up after the rebuild reaches the connector again', async t => {
+  answer.lines = 400;
+  const h = await live(t);
+  await pastThreshold(h);
+  h.port.emit(turnComplete);
+  await flush();
+  assert.equal(rebuilds(h).length, 1, 'the rebuild happened first');
+  const before = h.connectorCalls.length;
+  h.port.emit(research('r9', 'who owns the audit follow up'));
+  await answered(h, 4);
+  assert.equal(h.connectorCalls.length, before + 1, 'the rebuilt session read the connector again');
+  assert.match(String(h.connectorCalls[before]?.args?.['query'] ?? ''), /audit|team|follow/u);
+});
 /** C-DEPTH item 5 (W10-R2 light C): the retained payload, the safe boundary and the ledger a rebuild seeds. */
 
 const EMPTY: ResearchRetention = { retainedChars: 0, rebuilds: 0 };

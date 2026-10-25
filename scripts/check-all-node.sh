@@ -80,7 +80,7 @@ server_extra_compile() {
   # `server/tsconfig.json` names its test files one by one. Same compiler options, same
   # outDir, only a different include: every module they import is still compiled.
   local here="$PWD" cfg="$work/tsconfig.extra.json"
-  { printf '{\n  "extends": "%s/tsconfig.json",\n  "typeRoots": ["%s/node_modules/@types"],\n  "include": [' "$here" "$here"
+  { printf '{\n  "extends": "%s/tsconfig.json",\n  "compilerOptions": { "typeRoots": ["%s/node_modules/@types"] },\n  "include": [' "$here" "$here"
     for file in "${extra[@]}"; do printf '%s\n    "%s/%s"' "$sep" "$here" "$file"; sep=,; done
     printf '\n  ]\n}\n'; } >"$cfg"
   ./node_modules/.bin/tsc -p "$cfg"

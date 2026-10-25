@@ -1539,7 +1539,7 @@ async function broadenedChatRetry(execute: (subs: readonly IntentSubCall[], sign
     if (term === undefined) continue;
     const args: JsonObject = { ...sub.args, query: term };
     try {
-      const [retried] = await execute([{ key: sub.key, name: sub.name, args }], signal);
+      const [retried] = await deps.execute([{ key: sub.key, name: sub.name, args }], signal);
       // The retry ran, so the answer says the match was broadened either way, never that chat held nothing.
       broadened.set(sub.key, term);
       if (retried?.ok === true && !chatSearchFoundNothing(retried.text)) merged = merged.map((entry, at) => (at === index ? retried : entry));
@@ -5218,7 +5218,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const prefetchCut = new AbortController();
           const prefetchTimer = schedule(() => prefetchCut.abort(new DOMException('Source deadline elapsed', 'TimeoutError')), Math.min(RESEARCH.sourceDeadline.knowledge, remainingMs));
           recordShapes(deps, run, knowledgeSubs, now);
-        knowledgePromise = deps.execute(knowledgeSubs, AbortSignal.any([signal, prefetchCut.signal])).then(async (results: IntentSubResult[]) => {
+        knowledgePromise = execute(knowledgeSubs, AbortSignal.any([signal, prefetchCut.signal])).then(async (results: IntentSubResult[]) => {
             // ONE-1023: a past day that matched nothing still asks the topic once, without the day filter.
             await droppedDayFilterRetry(deps, knowledgeSubs, results, AbortSignal.any([signal, prefetchCut.signal]), run.droppedDayFilters);
             knowledgeEndedAt = now();

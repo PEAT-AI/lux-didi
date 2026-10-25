@@ -111,7 +111,14 @@ test('C-CHAT: a newer child is granted its person reads and the filtered channel
   assert.deepEqual([...f.names].sort(), [...MATTERMOST_READ_TOOLS].sort(), 'the seven reads, and the write the child publishes stays out');
   const read = chatRead(await f.reader.chat({ intent: 'channel', channel: 'AI AI AI' }));
   assert.equal(read.read.startsWith('the channel AI AI AI'), true);
-  assert.deepEqual(f.calls().find(call => call.name === 'mattermost_list_channels')?.arguments, { query: 'ai ai ai', types: ['O', 'P'], limit: 10 });
+  assert.deepEqual(f.calls().find(call => call.name === 'mattermost_list_channels')?.arguments, { query: 'AI AI AI', types: ['O', 'P'], limit: 10 });
+});
+
+test('C-CHAT (W2B-R6): the channel query is the name as spoken, and the fold stays local', async t => {
+  const f = await setup(t, 'people');
+  const read = chatRead(await f.reader.chat({ intent: 'channel', channel: 'Builders' }));
+  assert.match(read.read, /the channel Builders/u);
+  assert.deepEqual(f.calls().find(call => call.name === 'mattermost_list_channels')?.arguments, { query: 'Builders', types: ['O', 'P'], limit: 10 }, 'the spoken words, so the child ranks its own exact name');
 });
 
 test('C-CHAT: an approval that predates the person reads keeps every read and names what is missing', async t => {

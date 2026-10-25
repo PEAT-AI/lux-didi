@@ -63,8 +63,8 @@ print_skips() {
 # 79 are never emitted by the build. The three below import the compiled tree themselves,
 # so node runs them from source exactly as scripts/check-domain.sh does; the other 23
 # import source modules by .js specifier, which node cannot resolve from a .ts file, so
-# they get an explicit compile pass here.
-# Test files the build does not emit that import dist themselves.
+# they get an explicit compile pass here. This is the list of files the build does not
+# emit that import dist themselves.
 source_run=(test/domain.test.ts test/memory-search.test.ts test/provenance.test.ts)
 
 server_extra_compile() {
@@ -119,6 +119,7 @@ PARSE
 
 if [ "$phase" = server ] || [ "$phase" = all ]; then
   cd "$root/server"
+  rm -rf dist
   run_phase 'server typecheck' "$work/server-typecheck.log" npm run --silent typecheck || exit 1
   run_phase 'server build' "$work/server-build.log" npm run --silent build || exit 1
   run_phase 'server extra compile' "$work/server-extra.log" server_extra_compile || exit 1
@@ -134,7 +135,8 @@ if [ "$phase" = server ] || [ "$phase" = all ]; then
   printf 'server: %d test files, %d named skips\n' "${#server_files[@]}" "${#skip_server[@]}"
   print_skips "${skip_server[@]}"
   ran_server="${#server_files[@]}"
-  run_phase 'server tests' "$work/server-tests.log" node_test_files --test-timeout=15000 "${server_files[@]}"
+  run_phase 'server tests' "$work/server-tests.log" node_test_files_bounded 600 \
+    --test-timeout=15000 --test-force-exit "${server_files[@]}"
   server_status=$?
   cd "$root"
   [ "$server_status" -eq 0 ] || status=1
@@ -151,7 +153,8 @@ if [ "$phase" = web ] || [ "$phase" = all ]; then
   printf 'web: %d test files, %d named skips\n' "${#web_files[@]}" "${#skip_web[@]}"
   print_skips "${skip_web[@]}"
   ran_web="${#web_files[@]}"
-  run_phase 'web tests' "$work/web-tests.log" node_test_files --test-timeout=15000 "${web_files[@]}"
+  run_phase 'web tests' "$work/web-tests.log" node_test_files_bounded 300 \
+    --test-timeout=15000 --test-force-exit "${web_files[@]}"
   web_status=$?
   cd "$root"
   [ "$web_status" -eq 0 ] || status=1
@@ -165,7 +168,7 @@ if [ "$phase" = browser ] || [ "$phase" = all ]; then
   printf 'browser: %d suites\n' "${#browser_files[@]}"
   ran_browser="${#browser_files[@]}"
   for suite in "${browser_files[@]}"; do
-    run_phase "browser $suite" "$work/browser-$(basename "$suite").log" node "$suite" || status=1
+    run_phase "browser $suite" "$work/browser-$(basename "$suite").log" timeout 150 node "$suite" || status=1
   done
 fi
 

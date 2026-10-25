@@ -260,6 +260,16 @@ line that matters before reading a transcript.
 A gate is a script under `scripts/` that builds first, runs its own compiled suite and refuses to be green on a
 zero test count. Run it before a voice release; it prints its verdict and its own refusals.
 
+What runs where. A wagon pair runs its own gate scripts locally and nothing else. The release train pull request
+(`train/...` into `main`) additionally runs one Linux job, `.github/workflows/train.yml`, which calls
+`bash scripts/check-all-node.sh`: the server and web builds, both type checks, every node test file under
+`server/test` and `web/test` the Linux job can run, and the headless Chromium suites over the built web bundle
+against the fake server in `web/test/fixture.mjs`. Test files that need a Mac, a real credential or the network
+are listed by name with their reason in that script, never filtered by a glob, and the workflow repeats no list
+of its own. The desk still runs the full local gate, `Tests/DidiMacTests/check-mac.sh` and the per-check scripts
+included, because Swift, the real host and the shared renderer never leave the Mac; the Linux job has a 20 minute
+ceiling and is not a substitute for them.
+
 ```sh
 bash scripts/check-live-session.sh    # the host live session, its summaries, journals, adapters and the voice
                                       # fault-replay scenarios (release gate F1)

@@ -12,7 +12,7 @@ import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import type { WebSearchPort } from '../tools/web-search.js';
-import { ADMISSION_BLOCKED, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildAllowed, researchRebuildDue, retainedAfterSend, type ResearchRetention, type ResearchBoundary } from '../tools/research.js';
+import { ADMISSION_BLOCKED, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, retainedAfterSend, type ResearchRetention } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -3350,9 +3350,8 @@ export class LiveSessionOwner {
       }
       // R6: a reply that names sources still reading is the call's first answer point, so the late-findings
       // window and the one late commentary of this call both count from here.
-      if (parsed.call.action === 'start' && typeof parsed.call.question === 'string') {
-        this.#lastResearchQuestion.set(handle.liveSessionId, parsed.call.question);
-      }
+      const asked = call.args?.['question'];
+      if (typeof asked === 'string' && asked.trim() !== '') this.#lastResearchQuestion.set(handle.liveSessionId, asked);
       const pending = response['pending'];
       if (Array.isArray(pending) && pending.length > 0) { handle.researchAnsweredAt = this.#now(); handle.lateCommentaryFor = undefined; }
       return { id: call.id, name: call.name, response };

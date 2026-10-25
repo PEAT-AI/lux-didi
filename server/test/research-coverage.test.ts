@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { MAX_LOOKUPS, RESEARCH, ResearchLedger, broaderQueryOf, clip, coverageLine, parseResearch, runResearch, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
+import { MAX_LOOKUPS, RESEARCH, ResearchLedger, broaderQueryOf, clip, coverageLine, parseResearch, researchDeclaration, runResearch, statusAsk, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 function sub(name: string, text: string, ok = true, key = name): IntentSubResult {
@@ -349,4 +349,69 @@ test('#657 item 2: a status check reads one page of mail, not one message per ca
   const pages = h.executed.filter(call => call.name === 'gmail_search_messages');
   assert.equal(pages.length, 1, 'one mail page, one call');
   assert.equal(Number(pages[0]!.args['maxResults']), RESEARCH.pageResults.mail, 'the page is the connector page, not one message');
+});
+
+
+// --- REVIEWFIX F1: a status ask is about the tools themselves, never an ordinary question ------------
+
+test('#653 review: an ordinary question that mentions a source and a status word is not a status ask', () => {
+  for (const ordinary of ['is there mail from the bank up to Friday', 'are the numbers in the report working out', 'is my inbox up to date']) {
+    assert.equal(statusAsk(ordinary), false, `"${ordinary}" is a real question, not a status ask`);
+  }
+  for (const about of ['are my tools working', 'is my calendar alive today', 'test all tools', 'check the tools', 'is chat connected']) {
+    assert.equal(statusAsk(about), true, `"${about}" asks about the tools`);
+  }
+});
+
+test('#653 review: an ordinary mail question is never answered by a status sweep', async () => {
+  const h = harness({ configured: ['calendar', 'chat', 'mail'] });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'is there mail from the bank up to Friday', topic: 'bank' }, new AbortController().signal);
+  const read = new Set(h.executed.map(call => call.name));
+  assert.ok(read.has('gmail_search_messages'), `the mail question reads mail (${[...read].join(',')})`);
+  assert.equal(read.has('mattermost_search'), false, 'and it is not answered by a chat status read');
+  assert.doesNotMatch(String(reply['note']), /answered|did not answer within/u, 'and no status sentence replaces the answer note');
+});
+
+// --- REVIEWFIX F2: a continuation with no direction is judged on its question and lookups -----------
+
+test('#654 review: a continuation with no direction that names an unread source starts fresh', async () => {
+  const h = harness({ configured: ['knowledge', 'mail', 'chat'] });
+  const first = await runResearch(h.deps, {
+    action: 'start', question: 'the renewal mail from the customer', topic: 'renewal',
+    lookups: [{ source: 'mail', mail: { q: 'renewal' } }],
+  }, new AbortController().signal);
+  const oldId = String(first['researchId']);
+  const fresh = await runResearch(h.deps, {
+    action: 'continue', researchId: oldId, question: 'read the web for the release notes',
+    lookups: [{ source: 'knowledge', query: 'release notes' }],
+  }, new AbortController().signal);
+  assert.notEqual(String(fresh['researchId']), oldId, 'the unread source runs under its own researchId');
+});
+
+test('#654 review: a continuation with no direction on a new topic starts fresh and the same topic continues', async () => {
+  const h = harness({ configured: ['knowledge', 'mail', 'chat'] });
+  const first = await runResearch(h.deps, {
+    action: 'start', question: 'the renewal mail from the customer', topic: 'renewal',
+    lookups: [{ source: 'mail', mail: { q: 'renewal' } }],
+  }, new AbortController().signal);
+  const oldId = String(first['researchId']);
+  const same = await runResearch(h.deps, {
+    action: 'continue', researchId: oldId, question: 'more about the renewal mail from the customer',
+    lookups: [{ source: 'mail', mail: { q: 'renewal' } }],
+  }, new AbortController().signal);
+  assert.equal(String(same['researchId']), oldId, 'the same topic continues the run it names');
+  const fresh = await runResearch(h.deps, {
+    action: 'continue', researchId: oldId, question: 'how did the quarterly forecast end',
+    lookups: [{ source: 'mail', mail: { q: 'forecast' } }],
+  }, new AbortController().signal);
+  assert.notEqual(String(fresh['researchId']), oldId, 'a new topic starts its own run');
+});
+
+// --- REVIEWFIX F3: the declaration states the lookup keys and the limit ------------------------------
+
+test('#657 review: the tool declaration states the lookup limit and the allowed keys', () => {
+  const text = JSON.stringify(researchDeclaration(['knowledge', 'mail', 'chat']));
+  assert.match(text, /at most 4 lookups, each with source/iu, 'the first sentence names the limit and the source key');
+  assert.match(text, /query, mail or history/u, 'and the three other keys a lookup may carry');
+  assert.match(text, /memory, knowledge, company, calendar, mail, chat, replies or web/u, 'and the values the source key takes');
 });

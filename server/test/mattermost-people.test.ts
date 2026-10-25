@@ -445,3 +445,89 @@ test('C-CHAT (AUD-002): "more" reads the next page with the offset, and says whi
   assert.match(String(next['note']), /This is the next page: posts 9 to 11 of 11\./u);
   assert.match(JSON.stringify(next['findings'] ?? []), /ada note 9 about the pilot plan/u);
 });
+// ---- W2B-R1, W2B-R2: the install route and its reverse, measured at a Live session acceptance ---------------
+// The reviewer's W2b probe (B1, B2) lifted as the acceptance test: editing mcp.json alone must move the
+// Mattermost connection, a run must hold only the new connection's tools, and the reverse edit must work.
+import { chmod as probeChmod, mkdir as probeMkdir } from 'node:fs/promises';
+import { writeFileSync as probeWrite } from 'node:fs';
+import { randomUUID as probeUuid } from 'node:crypto';
+import { Server as ProbeMcpServer, WebStandardStreamableHTTPServerTransport as ProbeTransport } from '@modelcontextprotocol/server';
+import { Store as ProbeStore } from '../runtime/store.js';
+import { toolsMigrations as probeMigrations } from '../tools/schema.js';
+import { composeMcpRuntime as probeCompose } from '../host/mcp.js';
+import type { RunAcceptance as ProbeAcceptance } from '../tools/types.js';
+import { configuredSourcesForEndpoints as probeUnreachable } from '../tools/research.js';
+
+test('C-CHAT (W2B-R1, W2B-R2): the mcp.json edit alone moves the connection, and the reverse edit moves it back', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-w2b-move-'));
+  const configDir = join(dir, 'provider-config');
+  await probeMkdir(configDir, { recursive: true, mode: 0o700 });
+  const servers = new Map<string, { sdk: ProbeMcpServer; transport: ProbeTransport }>();
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+    const server = servers.get(path);
+    assert.ok(server, `a fake child answers ${path}`);
+    return server.transport.handleRequest(new Request(input, init));
+  });
+  let store = new ProbeStore(join(dir, 'data'), probeMigrations);
+  let runtime: Awaited<ReturnType<typeof probeCompose>> | undefined;
+  t.after(async () => {
+    await runtime?.close();
+    for (const { sdk, transport } of servers.values()) { await sdk.close(); await transport.close(); }
+    store.close(); rmSync(dir, { recursive: true, force: true });
+  });
+  // One restart: a fresh store over the same data dir, so every durable row survives the edit.
+  const start = async (endpoints: readonly { id: string; path: string; enabled: boolean }[], tools: Record<string, readonly string[]>) => {
+    if (runtime) { await runtime.close(); store.close(); store = new ProbeStore(join(dir, 'data'), probeMigrations); }
+    for (const { sdk, transport } of servers.values()) { await sdk.close(); await transport.close(); }
+    servers.clear();
+    for (const [path, names] of Object.entries(tools)) {
+      const sdk = new ProbeMcpServer({ name: 'synthetic-mattermost', version: '1' }, { capabilities: { tools: {} } });
+      const transport = new ProbeTransport({ sessionIdGenerator: () => probeUuid(), enableJsonResponse: true });
+      sdk.setRequestHandler('tools/list', () => ({ tools: [...names, 'mattermost_post_message'].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: false } })) }) as never);
+      sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: JSON.stringify({ username: 'synthetic-owner', email: 'owner@example.invalid' }) }] }) as never);
+      await sdk.connect(transport);
+      servers.set(path, { sdk, transport });
+    }
+    const config = join(configDir, 'mcp.json');
+    probeWrite(config, JSON.stringify({
+      schemaVersion: 1, grantMode: 'owner-trusted-reads',
+      endpoints: endpoints.map(endpoint => ({ id: endpoint.id, connector: 'mattermost', transport: 'streamable-http', url: `http://127.0.0.1:18766${endpoint.path}`, account: 'mattermost', resource: 'mattermost', credentialRef: null, enabled: endpoint.enabled, allowEgress: true, unknownClass: 'private' })),
+    }));
+    await probeChmod(config, 0o600);
+    runtime = await probeCompose({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+    await runtime.start();
+    return runtime;
+  };
+  const owner = (composition: NonNullable<typeof runtime>) => composition.owner as unknown as { durableConnectionIds(tx: unknown): string[]; snapshotRun(tx: unknown, acceptance: ProbeAcceptance): unknown; liveDefinitions(runId: string, remember: () => { remembered: boolean; code: string }): { name: string }[] };
+  // Exactly what server/live/index.ts #connectionIds computes at session acceptance (live/index.ts:3123-3126).
+  const acceptanceIds = (composition: NonNullable<typeof runtime>): string[] => store.transaction(tx => [...new Set([...composition.connectionIds(), ...owner(composition).durableConnectionIds(tx)])]);
+  const compose = (composition: NonNullable<typeof runtime>, ids: string[]): string[] => {
+    const acceptance: ProbeAcceptance = {
+      ownerId: store.assistantId, actorId: 'synthetic-actor', runId: 'move-run', authorityEpoch: store.authorityEpoch, revision: 1,
+      route: { identity: 'gateway:live-voice', provider: 'gemini', modelId: 'models/synthetic', allowedClasses: ['ordinary', 'private'] },
+      allowedClasses: ['ordinary', 'private'], connectionIds: ids,
+    };
+    store.transaction(tx => owner(composition).snapshotRun(tx, acceptance));
+    return owner(composition).liveDefinitions('move-run', () => ({ remembered: false, code: 'owner_transcript_not_final' })).map(tool => tool.name);
+  };
+  const states = (composition: NonNullable<typeof runtime>): string[] => composition.status().endpoints.map(endpoint => `${endpoint.id}:${endpoint.state}`);
+
+  await start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
+  // The install route: the old entry is deleted from mcp.json and the new id is added in its place.
+  const moved = await start([{ id: 'mattermost-people', path: '/people', enabled: true }], { '/people': MATTERMOST_READ_TOOLS });
+  const movedIds = acceptanceIds(moved);
+  assert.deepEqual(movedIds, ['mattermost-people'], 'the run holds the new connection alone: the deleted entry survives no durable row');
+  const names = compose(moved, movedIds);
+  assert.ok(names.includes('mattermost_chat'), 'the run composes its tools: a second mattermost connection would throw ambiguous_model_tool_name');
+  assert.deepEqual(states(moved), ['mattermost-people:connected'], 'a deleted entry is never a connection report');
+  assert.deepEqual(probeUnreachable(moved.status().endpoints as never), [], 'research never calls the chat source unreachable');
+
+  // The reverse edit: the new entry is deleted and the old one restored, and the same run holds it again.
+  const back = await start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
+  const backIds = acceptanceIds(back);
+  assert.deepEqual(backIds, ['mattermost'], 'a stored row whose id is enabled in the file stays active, and the removed id retires');
+  assert.ok(compose(back, backIds).includes('mattermost_chat'));
+  assert.deepEqual(states(back), ['mattermost:connected']);
+  assert.deepEqual(probeUnreachable(back.status().endpoints as never), []);
+});

@@ -863,10 +863,10 @@ test('#635: a writing ask and a pure recall ask run no chat leg', async () => {
   assert.ok(!h.executed.includes('mattermost_search'), `no chat leg runs for a summarise ask (${h.executed.join(', ')})`);
 });
 
-// #646: the run's own recall branch added the chat leg on `discussionQuestion` alone, so "what did we
-// discuss with the team" (a MEMORY_WORDS recall that names no chat surface) waited 4.5 to 6 s on a chat
-// read it never needed. The recall exception belongs to `chatQuestionWords`, and the run's branch, the
-// route and the fallback all read that one need rule.
+// #646: the run's own recall branch added the chat leg on the discussion forms alone, so "what did we
+// discuss with the team" (a MEMORY_WORDS recall that names no chat surface) waited on a chat read it never
+// needed. The recall exception belongs to `chatQuestionWords`, and the run's branch, the route and the
+// fallback all read that one need rule.
 test('#646: a recall ask that mentions the team runs no chat leg and answers from memory', async () => {
   const recall = 'what did we discuss with the team about the release';
   assert.ok(recallQuestion(recall), 'the ask is a recall ask');

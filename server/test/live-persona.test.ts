@@ -1277,7 +1277,7 @@ test('R7: a full-length digest keeps the composed instruction inside its limits'
 /** Q10, Q4, Q5, Q2: one unconditional rule each, stated once, in the instruction the speaking model reads. */
 const W5_RULES = [
   'Open a fresh call on one current specific, never a generic ready-to-help line',
-  'A short acknowledgement while he is mid-thought is enough and never stands alone: after announcing a check, say what it found before the turn ends.',
+  'after announcing a check, say what it found before the turn ends',
   'Never hand any continuation, research included, back as a permission question',
   'name any failed source in one clause',
 ];
@@ -1285,6 +1285,7 @@ const W5_RULES = [
 const W5_REPLACED = [
   'Open a fresh call from work, the calendar or an open work loop',
   'A short acknowledgement while he is mid-thought is enough. Never fill the silence while a lookup runs.',
+  'A short acknowledgement while he is mid-thought is enough and never stands alone',
   'Never hand ordinary continuation back to the owner as a permission question',
   'Vary how you start replies; never open two replies in a row with the same word.',
   'When you get a fact wrong and he corrects it, fix it in one clause and continue.',
@@ -1294,7 +1295,8 @@ const W5_REPLACED = [
 // #589/#590: the voice surface grows by the ending-the-call line, which states the stop phrases and the
 // one thing she cannot do.
 // #621: the coverage header the voice reads once is the growth this bound carries.
-const W5_VOICE_BEFORE = 9949;
+// #665/#666: the voice surface grows by the five honesty rules and the turn-taking line they replace.
+const W5_VOICE_BEFORE = 10500;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],
@@ -1376,4 +1378,28 @@ test('#589/#590: the voice surface names the stop phrases and promises no silenc
     /\bI(?:'ve| have) (?:stopped|muted|turned off)\b/, /\bI(?:'m| am) (?:not recording|muting|stopping)\b/]) {
     assert.equal(lie.test(NAYA_VOICE_SURFACE), false, `the voice surface never promises ${String(lie)}`);
   }
+});
+
+// --- HONESTY #665 #666: the voice never claims a lookup that is not running, treats an earlier call as
+// history, labels general knowledge, and never talks over the owner. Each rule is one sentence, stated once.
+const HONESTY_RULES = [
+  'Say a lookup is still running only for a call you just made or one the research tool reports running; if unsure, call research and check.',
+  'Do not promise an unsolicited callback, future monitoring or work after this session.',
+  'What a tool did in an earlier call is history: say last time, and never state a tool\'s present health without checking it now.',
+  'After a lookup failed or timed out, whatever you add from yourself is general knowledge, and you say so.',
+  'A pause inside his turn is not your turn: no "Hmm", "Yeah" or "Okay" while he is still speaking',
+];
+/** Text that would contradict a rule above, so the assertion is about the rendered persona and not one string. */
+const HONESTY_CONTRADICTIONS = [
+  'A short acknowledgement while he is mid-thought is enough',
+  'I will let you know',
+  'I\'ll tell you later',
+  'keep looking for you',
+];
+
+test('HONESTY: the rendered voice instruction carries each honesty rule once and no contradictory text', () => {
+  const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],
+    trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT, delegatedBackend: true });
+  for (const rule of HONESTY_RULES) assert.equal(voice.text.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
+  for (const gone of HONESTY_CONTRADICTIONS) assert.equal(voice.text.includes(gone), false, `no rule contradicts it: ${gone}`);
 });

@@ -115,8 +115,6 @@ const OUTPUT_SILENCE_MS = 500;
 const TURN_IDLE_QUIET_MS = 2_000;
 /** Forwarded output PCM is 24 kHz s16 mono, so the modelled native queue drains 48 bytes per millisecond. */
 const OUTPUT_PCM_BYTES_PER_MS = 48;
-/** The level rule lives in audio-level.ts so every live route classifies a frame the same way. */
-export { AUDIBLE_RMS_DBFS, SILENT_RMS_DBFS, pcm16RmsDbfs } from './audio-level.js';
 /** Standing cushion (3o): 400 ms of audio held back at the start of a stretch and again after every drain, so the
  *  native 80 ms jitter buffer never underruns while the server sends at about real time. Measured on the 163
  *  underruns of session 82ab994a: a 400 ms cushion covers 162 of them (300 ms leaves 6). */

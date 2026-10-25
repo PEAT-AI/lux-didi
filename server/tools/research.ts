@@ -25,7 +25,7 @@ export type QuestionClass = 'quick_fact' | 'cross_source' | 'explicit_continue';
 export type SourceKind = 'memory' | 'knowledge' | 'calendar' | 'mail' | 'chat' | 'mongoose' | 'web';
 export type CandidateKind =
   | 'knowledge_search' | 'calendar_window' | 'mail_search' | 'mail_open'
-  | 'chat_search' | 'chat_thread' | 'web_search' | 'brief' | 'stop_answer' | 'stop_insufficient';
+  | 'chat_search' | 'chat_thread' | 'company_search' | 'web_search' | 'brief' | 'stop_answer' | 'stop_insufficient';
 
 /** The closed candidate set. A candidate reads exactly one internal action; nothing is invented. */
 export interface Candidate {
@@ -42,6 +42,8 @@ export const CANDIDATES: readonly Candidate[] = Object.freeze([
   { kind: 'mail_open', source: 'mail', requires: 'mail_search' },
   { kind: 'chat_search', source: 'chat' },
   { kind: 'chat_thread', source: 'chat', requires: 'chat_search' },
+  // #639: the company read is one candidate, so a company ask reads Mongoose in the same loop as the rest.
+  { kind: 'company_search', source: 'mongoose' },
   { kind: 'web_search', source: 'web' },
   { kind: 'brief', source: null },
   { kind: 'stop_answer', source: null },
@@ -94,14 +96,15 @@ export const RESEARCH = Object.freeze({
    * This is the single table every per-source bound reads.
    * N6 (#569): a web read settles in 3.3 to 4.4 s, so a weather or news ask carries the long web budget
    * and every other ask keeps this one; the read and its port are told the same number.
-   * #635: the chat read is its own row, bounded near 5 s instead of the connector's 12 s, because
-   * Mattermost answered in 5 to 11 s in the release-10 eval and a chat ask waited the whole turn. 6 s is
-   * the nearest second above the 5 s the eval measured: a 5 s cut landed exactly on a chat result the
-   * session releases at 4.5 s plus 0.5 s, turning a kept late finding into a dropped one. A read cut here
-   * returns what arrived as a partial timeout, and says so in the header and the voice.
+   * #635: the chat read is its own row instead of the connector's 12 s, and a read cut here returns what
+   * arrived as a partial timeout and says so in the header and the voice.
+   * #645: that row was 6 s, under the 5 to 12 s a real chat read takes on this host (release 10 and 11
+   * evals), so 27 of 30 chat reads were cut at 6 s with nothing arrived. It is 10 s: above the real read,
+   * above the 4.5 s plus 0.5 s the session releases at, and under the 12 s connector timeout, so a cut is
+   * the exception and a late chat finding still lands the way mail's 12 s does.
    */
   sourceDeadline: Object.freeze({
-    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 6_000, mongoose: 12_000, web: 4_000,
+    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 10_000, mongoose: 12_000, web: 4_000,
   } as Record<SourceKind, number>),
   /** P5: a candidate that names no single source (`brief`) never gets less than the local reads. */
   defaultSourceDeadlineMs: 8_000,
@@ -878,6 +881,8 @@ export function fallbackQuery(kind: CandidateKind, question: string, nowMs = Dat
   const keywords = contentKeywords(question);
   const terms = keywords.join(' ');
   if (kind === 'knowledge_search') return terms ? { query: terms } : {};
+  // #639: the company search takes the same short terms the knowledge read takes, never the sentence.
+  if (kind === 'company_search') return terms ? { query: terms } : {};
   if (kind === 'web_search') { const query = broaderWebQuery(question, 120); return query ? { query } : {}; }
   if (kind === 'mail_search') {
     // E6 (#609): the fallback recipe hands the compiler its own window and its own words, so the query
@@ -930,11 +935,6 @@ export function recallQuestion(question: string): boolean {
   return MEMORY_WORDS.test(question.toLowerCase()) || NAMED_DISCUSSION.test(question);
 }
 
-/** E2 (#605): whether the recall ask also names the chat, so the routed read covers both layers. */
-export function discussionQuestion(question: string): boolean {
-  return NAMED_DISCUSSION.test(question) || DISCUSSION_ASK.test(question.toLowerCase());
-}
-
 /** ROUTE-1022: the word classes a spoken question is routed by, shared by the fallback recipe and the router. */
 // E1 (#605): a message is a chat word, never a mail word, so one word no longer pulls two sources.
 const MAIL_WORDS = /\b(mails?|emails?|e-mails?|gmail|inbox(?:es)?|wrote|sent|repl(?:y|ies|ied))\b/u;
@@ -952,9 +952,14 @@ const CALENDAR_TIME_WORDS = /\b(tomorrow|today|week)\b/u;
 const MEMORY_WORDS = /\b(?:did we say|last time we (?:talked|spoke)|you told me|do you remember|remember when|recall when|our (?:last )?conversation|what did we (?:discuss|talk about)|we (?:talked|spoke) about)\b/u;
 /** E2 (#605): two capitalised names and a discussion verb is a recall ask, whatever the names are. */
 const NAMED_DISCUSSION = /\b(?:what did|did)\s+[A-Z][\w'’-]*\s+and\s+[A-Z][\w'’-]*\s+(?:discuss|talk about|say about)\b/u;
-/** E2 (#605): the discussion forms read her own memory. #635: the chat beside it only when the ask names it. */
-const DISCUSSION_ASK = /\b(?:what did we (?:discuss|talk about)|we (?:talked|spoke) about)\b/u;
 const CHAT_WORDS = /\b(chats?|team|channels?|slack|mattermost|messages?|dms?|said|posted|discussed)\b/u;
+/**
+ * #639: the company words. The owner's own organisation lives in Mongoose, so an ask about a customer, a
+ * client, a prospect, a deal, a product or the CRM is a company ask, as is naming Mongoose itself and
+ * asking what the company sells. "do we know <name>" names the company too, never "what do we know", which
+ * is the generic knowledge ask.
+ */
+const COMPANY_WORDS = /\b(?:mongoose|company(?: knowledge)?|customers?|clients?|prospects?|crm|deals?|our (?:products?|offerings?)|what do we sell|(?<!\bwhat )do we know)\b/u;
 /** #635: the writing verbs. A summarise, draft or reply ask has a chat word as its subject, not as a source. */
 const WRITING_WORDS = /\b(?:write|writes|writing|written|wrote|draft|drafts|summari[sz]e|summari[sz]ed|summaries|summary|compose|composes|reply|replies|replying|respond)\b/u;
 /** #635: the pure recall forms. A recall ask reads her own history, and the chat only when the ask names it. */
@@ -969,9 +974,15 @@ const CHAT_SURFACE = /\b(?:chats?|channels?|mattermost|slack|dms?)\b|\b(?:messag
  * #635: which word classes decide a chat read. The chat surface words route the chat on their own; a writing
  * verb or a pure recall phrase means the chat word is only the ask's subject, so without a named surface the
  * ask reads her memory and no chat leg runs.
+ * #646: this one rule decides the chat leg for every path: the run's own recall branch, the router and the
+ * fallback. It reads the whole recall test, not only the recall phrases, because "what did we discuss with
+ * the team" is a recall ask whose chat word (team) is its subject, and the run's branch offered it a chat
+ * read on the discussion forms alone and waited on it.
  */
-export function chatQuestionWords(text: string): boolean {
+export function chatQuestionWords(ask: string): boolean {
+  const text = ask.toLowerCase();
   if (!CHAT_WORDS.test(text)) return false;
+  if (recallQuestion(ask) && !CHAT_SURFACE.test(text)) return false;
   return !(WRITING_WORDS.test(text) || RECALL_WORDS.test(text)) || CHAT_SURFACE.test(text);
 }
 
@@ -1012,15 +1023,17 @@ const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?
  * The source a question is about, in the order the first answer waits for them. The word classes are the one
  * place a route is decided: `words` is the source's own vocabulary, and a route that also carries `needed` is
  * reached only when the ask needs it, which for the chat is the #635 writing and pure recall rule.
+ * #639: the company source sits last, so an ask that also names mail, calendar or chat keeps the two source
+ * cap it had before a company word existed, and only a company ask with room left reads Mongoose.
  */
 const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp; needed?: (text: string) => boolean }[] = [
   { source: 'calendar', words: SCHEDULE_WORDS }, { source: 'mail', words: MAIL_WORDS },
-  { source: 'chat', words: CHAT_WORDS, needed: chatQuestionWords },
+  { source: 'chat', words: CHAT_WORDS, needed: chatQuestionWords }, { source: 'mongoose', words: COMPANY_WORDS },
 ];
 
 /** Whether an ask's words route this source, its own word class and its own need rule together. */
-function routeWanted(route: { words: RegExp; needed?: (text: string) => boolean }, text: string): boolean {
-  return route.words.test(text) && (route.needed?.(text) ?? true);
+function routeWanted(route: { words: RegExp; needed?: (text: string) => boolean }, question: string): boolean {
+  return route.words.test(question.toLowerCase()) && (route.needed?.(question) ?? true);
 }
 
 /**
@@ -1033,9 +1046,9 @@ export function requiredSources(question: string): SourceKind[] {
   // TRIAGE-R3: a recall ask reads her own remembered history, whatever day or word it also carries.
   // E2 (#605): a discussion ask reads the chat beside it, because that is where the exchange was said.
   // #635: the chat beside it only when the ask names the chat surface, because a recall ask about the chat
-  // is the exception, not the rule.
-  if (recallQuestion(question)) return discussionQuestion(question) && CHAT_SURFACE.test(text) ? ['memory', 'chat'] : ['memory'];
-  const named = ROUTE_CLASSES.filter(route => routeWanted(route, text)).slice(0, 2).map(route => route.source);
+  // is the exception, not the rule. #646: the need rule decides it, the same rule the run's recall branch reads.
+  if (recallQuestion(question)) return chatQuestionWords(question) ? ['memory', 'chat'] : ['memory'];
+  const named = ROUTE_CLASSES.filter(route => routeWanted(route, question)).slice(0, 2).map(route => route.source);
   if (named.length > 0) return named;
   // #564/#572: "anything urgent" names no source, and what came in is a mail and a chat read alike.
   if (triageAsk(text)) return [...TRIAGE_SOURCES];
@@ -1054,7 +1067,7 @@ export function routedSelection(question: string, configured: readonly SourceKin
   // TRIAGE-R3: a recall ask is the memory lookup the run builds, so the router claims no candidate for
   // it; without this, the word "said" would turn it into a chat search.
   if (recallQuestion(text)) return undefined;
-  const matched = ROUTE_CLASSES.filter(route => routeWanted(route, text) && configured.includes(route.source));
+  const matched = ROUTE_CLASSES.filter(route => routeWanted(route, question) && configured.includes(route.source));
   if (matched.length > 2) return undefined;
   if (matched.length > 0) {
     const selection = fallbackSelection(question, configured, nowMs);
@@ -1093,9 +1106,11 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   const mailWords = MAIL_WORDS.test(text);
   // #579: a time word alone never replaces the source the ask named with the calendar.
   const calendarWords = CALENDAR_WORDS.test(text) || (!mailWords && !CHAT_WORDS.test(text) && (CALENDAR_DAY_WORDS.test(text) || CALENDAR_TIME_WORDS.test(text)));
-  const chatWords = chatQuestionWords(text);
+  const chatWords = chatQuestionWords(question);
   const triage = triageAsk(text) && !mailWords && !chatWords;
-  const matched = mailWords || calendarWords || chatWords || triage;
+  // #639: a company ask names a source, so it takes the same branch the mail, calendar and chat words take.
+  const companyWords = COMPANY_WORDS.test(text);
+  const matched = mailWords || calendarWords || chatWords || companyWords || triage;
   if (!matched) {
     offer('brief', 0.5, null); offer('knowledge_search', 0.4, 'knowledge');
     if (webWords) offer('web_search', 0.45, 'web');
@@ -1105,6 +1120,9 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   if (mailWords || triage) offer('mail_search', 0.4, 'mail');
   if (calendarWords || triage) offer('calendar_window', 0.4, 'calendar');
   if (chatWords || triage) offer('chat_search', 0.4, 'chat');
+  // #639: the company layer answers a company ask beside the knowledge base, and is offered only when the
+  // ask names it, never as a default read of every question.
+  if (companyWords) offer('company_search', 0.4, 'mongoose');
   if (webWords) offer('web_search', 0.45, 'web');
   return { questionClass: 'cross_source', actions, pUseful };
 }
@@ -1378,6 +1396,14 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     catch { return []; }
     return [search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar }, 'cal0')];
   }
+  if (kind === 'company_search') {
+    // #639: the company read is the typed lookup's own read, on the topic's words and its mode, so the
+    // question-only path answers with the same entity read the model's `company` lookup answers with.
+    const asked = config.query === undefined ? '' : withoutRouteWords(config.query, config.configured).trim();
+    const words = asked !== '' ? asked : (topicText ?? '').trim();
+    if (words === '' || !config.configured.includes('mongoose')) return [];
+    return companySubs(words);
+  }
   if (kind === 'mail_search') {
     // #565: a bare inbox scan stays a scan; a topic or a model query is compiled from the topic.
     // #564: a triage ask is never a bare scan, whatever prose the selector or the model wrote for it.
@@ -1416,7 +1442,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     const subs: IntentSubCall[] = [];
     // ROUTE-1022 K5: a brief reads his own knowledge, and the layers the question itself names. The
     // router's own source words decide, so a question about the business model reads no inbox at all.
-    const named = new Set(ROUTE_CLASSES.filter(route => routeWanted(route, config.question.toLowerCase())).map(route => route.source));
+    const named = new Set(ROUTE_CLASSES.filter(route => routeWanted(route, config.question)).map(route => route.source));
     // A brief reads primary events; calendar names alone are not findings.
     if (config.configured.includes('calendar') && named.has('calendar')) {
       const range = windowRange('today', config.nowMs ?? Date.now(), config.timeZone);
@@ -2956,22 +2982,21 @@ function liveSessionIds(hits: readonly JsonObject[], question: string, history: 
   return ids;
 }
 
+/** #638: memory evidence is ordered by its kind of line as well as its match, never narrowed to one role. */
+const memoryKind = (hit: JsonObject): number => (hit['sourceKind'] === 'summary' ? 0 : hit['sourceKind'] === 'live' ? 2 : 1);
+
 /**
- * #615: an owner line leads her own line at the same match, and her line is evidence only when no owner line
- * matches (#575 keeps it when the owner asks what she said, which is the one ask that wants her own words).
+ * #638: every matching line is evidence, ranked by how many of the question's words it matches, then a summary
+ * before an entry before a live transcript line, then newest, so a single owner line never removes the summaries.
  */
-function rankMemoryEvidence(hits: readonly JsonObject[], tokens: readonly string[], asked: boolean): JsonObject[] {
+function rankMemoryEvidence(hits: readonly JsonObject[], tokens: readonly string[]): JsonObject[] {
   const scored = hits.map(hit => {
     const words = fold(String(hit['snippet'] ?? ''));
     const at = Date.parse(String(hit['date'] ?? ''));
-    return { hit, owner: hit['role'] === 'user', score: tokens.filter(token => words.includes(token)).length, at: Number.isFinite(at) ? at : 0 };
+    return { hit, kind: memoryKind(hit), score: tokens.filter(token => words.includes(token)).length, at: Number.isFinite(at) ? at : 0 };
   });
-  const ownerLeads = !asked && scored.some(entry => entry.owner && entry.score > 0);
-  const evidence = ownerLeads ? scored.filter(entry => entry.owner) : scored;
-  evidence.sort((left, right) => right.score - left.score
-    || (left.owner === right.owner ? 0 : left.owner ? -1 : 1)
-    || right.at - left.at);
-  return evidence.map(entry => entry.hit);
+  scored.sort((left, right) => right.score - left.score || left.kind - right.kind || right.at - left.at);
+  return scored.map(entry => entry.hit);
 }
 
 /**
@@ -2994,7 +3019,7 @@ function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunS
     const at = Date.parse(String(hit['date'] ?? ''));
     return !Number.isFinite(at) || at < history;
   });
-  return rankMemoryEvidence(kept, tokenize(question), asked);
+  return rankMemoryEvidence(kept, tokenize(question));
 }
 
 /** Citation metadata has its own 12,000 character envelope, outside the spoken reply budget. */
@@ -4529,10 +4554,12 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   // TRIAGE-R3: a recall ask reads her own remembered history, so it takes the memory lookup the routed
   // path already serves with its binding, page and continuation, never a knowledge search.
   // E2 (#605): a discussion ask reads the chat beside her memory, because that is where it was said.
+  // #646: the chat leg here read the discussion forms alone, so a recall ask that only mentioned the team
+  // waited on a chat read it never needed. The need rule decides it, as it does for the route and the router.
   if (call.action === 'start' && recallQuestion(question)) {
     const recall = contentKeywords(question, 8).join(' ');
     const lookups: ResearchLookup[] = [{ source: 'memory', query: recall }];
-    if (discussionQuestion(question) && configured.includes('chat')) lookups.push({ source: 'chat', query: recall });
+    if (chatQuestionWords(question) && configured.includes('chat')) lookups.push({ source: 'chat', query: recall });
     return routedResearch(deps, run, question, lookups, configured, unavailable, unavailableReason, signal, now, limit, first);
   }
 

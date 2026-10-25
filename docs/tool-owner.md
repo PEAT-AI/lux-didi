@@ -54,7 +54,7 @@ A successful result is only `{remembered: true, entryId}`; refusals return `{rem
 
 ### What a memory recall reads
 
-A memory lookup reads earlier conversations only: remembered notes, summaries and retained conversation rows from before the call in progress. It never reads the live session's own transcript, her own summary of it, or the owner's current question, so an answer can never be proved by the question that asked it. Within what it reads, an owner line leads a line of hers at the same match, and her line is evidence only when no owner line matches; the one exception is a question about what she said, where her own words are the answer. When nothing from an earlier conversation matches, the source reports itself empty instead of falling back to this turn.
+A memory lookup reads earlier conversations only: remembered notes, summaries and retained conversation rows from before the call in progress. It never reads the live session's own transcript, her own summary of it, or the owner's current question, so an answer can never be proved by the question that asked it. Within what it reads, every matching line is evidence: the line with more matching words leads, and at the same match a summary leads an entry leads a live transcript line, newest first among equals, so a match on an owner line never narrows the recall to her own earlier questions; the one exception is a question about what she said, where her own words are the answer. When nothing from an earlier conversation matches, the source reports itself empty instead of falling back to this turn.
 
 
 ## Text chat consumption
@@ -103,9 +103,9 @@ Public queries use Gemini `gemini-3.8-flash` with `google_search`, low thinking,
 
 Fallback public-fact routing includes prices, versions, public names, dates, population, exchange rates and scores. Questions naming mail, calendar, chat, our, my or we never acquire web from that fallback. Explicit routed web reads are unchanged. Query bounds remove filler words before retaining whole entity, date and place tokens.
 
-## Chat routing and its own read budget (#635)
+## Chat routing and its own read budget (#635, #645, #646)
 
-A chat read runs only when the ask needs it. The chat surface words (`chat`, `channel`, `mattermost`, `slack`, `dm`, and a message from a named person) route it on their own; a writing verb (write, draft, summarise, compose, reply) or a pure recall phrase (what did I say, remind me) leaves a chat word as the ask's subject, so the ask reads her memory and no chat leg runs. The chat read has its own 6 second row in the per-source deadline table, inside the research turn and half the 12 second row every other connector read keeps: a chat read that runs past it returns what arrived, marked `partial_timeout`, or `timed_out` when nothing arrived, and the voice says the read took too long, never that the chat could not be reached.
+A chat read runs only when the ask needs it. The chat surface words (`chat`, `channel`, `mattermost`, `slack`, `dm`, and a message from a named person) route it on their own; a writing verb (write, draft, summarise, compose, reply) or a pure recall ask (what did I say, remind me, what did we discuss) leaves a chat word as the ask's subject, so the ask reads her memory and no chat leg runs. The chat read has its own 10 second row in the per-source deadline table, inside the research turn and under the 12 second connector timeout: above the 5 to 12 seconds a real read takes and above the 4.5 second session release, so a cut is the exception. A chat read that runs past it returns what arrived, marked `partial_timeout`, or `timed_out` when nothing arrived, and the voice says the read took too long, never that the chat could not be reached.
 
 ## Research coverage header and one-turn escalation (#621)
 

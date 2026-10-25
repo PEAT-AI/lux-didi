@@ -4875,7 +4875,7 @@ function continuesRun(run: RunState, call: ResearchCall, question: string): bool
  * C-DEPTH item 3: the ids a search summary names, the ones that mention an asked entity first. A hit whose
  * line carries `[id N]`, `**#N**` or a `## #N` heading is one entry the host can read whole.
  */
-export function knowledgeReadIds(text: string, asked: readonly string[], limit = RESEARCH.knowledgeReadEntries): string[] {
+export function knowledgeReadIds(text: string, asked: readonly string[], limit: number = RESEARCH.knowledgeReadEntries): string[] {
   const ids: string[] = [];
   const named: string[] = [];
   for (const line of text.split('\n')) {

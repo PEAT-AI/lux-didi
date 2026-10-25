@@ -1063,3 +1063,27 @@ test('#639: the company route class names the ask and keeps the two source cap',
   assert.ok(routed !== undefined, 'an unambiguous company ask is routed without spending the selector');
   assert.ok(routed.actions.some(action => String(action.kind) === 'company_search'), `the routed selection reads the company layer (${JSON.stringify(routed.actions.map(action => action.kind))})`);
 });
+
+// L11-01 (lane 11, 10:37Z): both knowledge reads returned six hits, yet the voice got only the confidence line
+// ("knowledge: 1 of 11 shown" over a meta line) while memory filled the budget, and she said she had no profiles.
+// The confidence line is a label, not an item, every read source keeps at least its top hit, and memory the ask
+// did not name never starves a source.
+test('L11-01: a knowledge read with hits keeps its top hit under a memory-heavy budget; the confidence line is no item', async () => {
+  const hits = Array.from({ length: 6 }, (_, n) => `### Synthetic profile ${n + 1} (PATTERN | 2026-10-2${n}) [id ${900 + n}]\n${'Synthetic strength profile text. '.repeat(9)}`).join('\n');
+  const h = harness({
+    execute: async subs => subs.map(call => call.name === 'search_knowledge'
+      ? ({ ...sub(call.name, hits, true, call.key), knowledgeConfidence: { confidence: 'medium', top: '0.60', candidates: 'yes' } }) as IntentSubResult
+      : sub(call.name, EVIDENCE[call.name] ?? 'evidence', true, call.key)),
+    memory: () => ({ lines: Array.from({ length: 7 }, (_, n) => `Synthetic remembered fragment ${n + 1}: ${'an earlier conversation about other things. '.repeat(5)}`), text: '', total: 70 }),
+  });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'which direction are we taking with the team strengths', topic: 'team strengths',
+    lookups: [{ source: 'memory', query: 'team strengths profiles' }, { source: 'knowledge', query: 'team strengths' }] }, new AbortController().signal);
+  const findings = reply['findings'] as { source: string; text: string }[];
+  const knowledge = findings.find(finding => finding.source === 'knowledge');
+  assert.ok(knowledge, `the knowledge source is in the reply: ${JSON.stringify(reply)}`);
+  assert.match(knowledge!.text, /Synthetic profile 1/u, `the top hit survives the budget (${knowledge!.text})`);
+  const shown = Number(/^knowledge: (\d+) of \d+ shown/u.exec(knowledge!.text)?.[1]);
+  const hitLines = knowledge!.text.split('\n').filter(line => /Synthetic profile/u.test(line)).length;
+  assert.equal(shown, hitLines, `the head counts hits, never the confidence line (${knowledge!.text.split('\n')[0]})`);
+  assert.match(knowledge!.text, /confidence=medium/u, 'the confidence label still rides with the finding');
+});

@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, chatQuery, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedChannel, namedInsightIds, newestDatedFirst, offerableCandidates, shapeBlock, windowRange,
+  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, chatQuery, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, newestDatedFirst, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing, parseResearch, researchRepair, topicTerms,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
+import { spokenChannel } from '../tools/chat-intent.js';
 import type { CandidateKind } from '../tools/research.js';
 import { shapeGcalList, shapeGmailList, shapeLuxKnowledge } from '../tools/live-shape.js';
 import { safeEvent } from '../host/log.js';
@@ -533,10 +534,10 @@ test('#664: the fourth research call of one delegation says answer the owner and
 // #664: an owner ask named the channel "an engineering" and "name", because the article and the model's own
 // placeholder were read as the channel.
 test('#664: a spoken channel name loses its article, and a placeholder is never a channel', () => {
-  assert.equal(namedChannel('in an engineering channel'), 'engineering', 'the article is never part of the name');
-  assert.equal(namedChannel('the exact channel name'), undefined, 'a placeholder where a name belongs is no channel');
-  assert.equal(namedChannel('#ops'), 'ops', 'a hash name is the channel');
-  assert.equal(namedChannel('in the AI channel'), 'AI', 'a display name keeps its words, the connector folds the case');
+  assert.equal(spokenChannel('in an engineering channel'), 'engineering', 'the article is never part of the name');
+  assert.equal(spokenChannel('the exact channel name'), undefined, 'a placeholder where a name belongs is no channel');
+  assert.equal(spokenChannel('#ops'), 'ops', 'a hash name is the channel');
+  assert.equal(spokenChannel('in the AI channel'), 'AI', 'a display name keeps its words, the connector folds the case');
 });
 
 test('Z1: a start ignores a model researchId that fails the host log id rule and mints its own', async () => {

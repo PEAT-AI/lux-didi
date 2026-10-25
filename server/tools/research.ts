@@ -104,7 +104,7 @@ export const RESEARCH = Object.freeze({
    * the exception and a late chat finding still lands the way mail's 12 s does.
    */
   sourceDeadline: Object.freeze({
-    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 10_000, mongoose: 12_000, web: WEB_DEADLINE_MS,
+    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 10_000, mongoose: 12_000, web: WEB_DEADLINE_MS, drive: 12_000,
   } as Record<SourceKind, number>),
   /** P5: a candidate that names no single source (`brief`) never gets less than the local reads. */
   defaultSourceDeadlineMs: 8_000,
@@ -240,8 +240,8 @@ export const RESEARCH_SOURCES: readonly SourceKind[] = ['knowledge', 'calendar',
  * K6: the layers a routed start may name. `company` is the Mongoose organisation read and `replies`
  * is the Mattermost attention digest; `memory` is her own remembered conversations, read locally.
  */
-export type LookupSource = 'memory' | 'knowledge' | 'company' | 'calendar' | 'mail' | 'chat' | 'replies' | 'web';
-export const LOOKUP_SOURCES: readonly LookupSource[] = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'web'];
+export type LookupSource = 'memory' | 'knowledge' | 'company' | 'calendar' | 'mail' | 'chat' | 'replies' | 'drive' | 'web';
+export const LOOKUP_SOURCES: readonly LookupSource[] = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'drive', 'web'];
 /** At most four lookups per call; duplicates collapse, so one call is one short, wide read. */
 export const MAX_LOOKUPS = 4;
 
@@ -1549,6 +1549,33 @@ async function broadenedChatRetry(execute: (subs: readonly IntentSubCall[], sign
 }
 
 /** The ISO day a date word names, or nothing when it names none. */
+/**
+ * C-CHAT (from main): what a chat read says beside its posts, kept for the reply: the conversation and window
+ * it read, a capability the child lacks, the question it asks back, and the next page when it matched more
+ * than it returned. The connector writes these as closed lead lines (tools/mattermost.ts `renderChatRead`).
+ */
+function noteChatReads(run: RunState, subs: readonly IntentSubCall[], results: readonly IntentSubResult[]): void {
+  const add = (clause: string): void => { if (!run.chatNotes.includes(clause)) run.chatNotes.push(clause); };
+  subs.forEach((sub, index) => {
+    const result = results[index];
+    if (result === undefined || !result.ok || !sub.name.startsWith('mattermost')) return;
+    const lead = (name: string): string | undefined => new RegExp(`^${name}: (.+)$`, 'mu').exec(result.text)?.[1]?.trim();
+    const read = lead('read');
+    const missing = lead('note');
+    const clarify = lead('clarify');
+    const notFound = lead('not found');
+    if (read !== undefined && clarify === undefined && notFound === undefined) add(`I read ${read}.`);
+    if (missing !== undefined) add(`Say once: ${missing}.`);
+    if (clarify !== undefined) { add(`Ask him: ${clarify}`); run.chatUnresolved = 'needs_clarification'; }
+    if (notFound !== undefined) { add(notFound); run.chatUnresolved ??= 'name_not_found'; }
+    const matched = Number(lead('matched'));
+    const returned = (result.text.match(/^\*\*.+\*\*$/gmu) ?? []).length;
+    const offset = typeof sub.args['offset'] === 'number' ? sub.args['offset'] : 0;
+    if (Number.isSafeInteger(matched) && returned > 0 && offset + returned < matched) run.chatPage = { sub, next: offset + returned, total: matched };
+    else if (Number.isSafeInteger(matched)) delete run.chatPage;
+  });
+}
+
 function isoDay(word: string, nowMs: number, timeZone: string): string | undefined {
   const lower = word.trim().toLowerCase();
   if (/^\d{4}-\d{2}-\d{2}$/u.test(lower)) return lower;
@@ -1809,6 +1836,12 @@ export interface RunState {
   cutShort: Set<SourceKind>;
   /** L8-13: a source whose latest read never dispatched a page, so its label is never a timeout. */
   neverRan?: Set<SourceKind>;
+  /** C-CHAT: what a chat read says beside its posts, kept for the reply. */
+  chatNotes: string[];
+  /** C-CHAT: a chat read that asked back or could not name the channel, so the header says so. */
+  chatUnresolved?: 'needs_clarification' | 'name_not_found';
+  /** C-CHAT: a chat read that matched more than it returned, so a continue reads its next page. */
+  chatPage?: { sub: IntentSubCall; next: number; total: number };
   /** P5: why a source cannot serve a read right now, so the reply names the cause and never guesses. */
   unavailableReasons: Map<SourceKind, string>;
   /** #637: the channel the ask named, kept so an unknown one is said in the owner's own words. */
@@ -1857,7 +1890,7 @@ export class ResearchLedger {
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), chatChannelClosest: [], route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), broadenedChat: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), chatChannelClosest: [], chatNotes: [], route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), broadenedChat: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -1887,7 +1920,7 @@ export class ResearchLedger {
       calendar: new Map([...existing.calendar].map(([key, read]) => [key, { ...read, events: new Map(read.events), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), calendarDelivered: new Set(existing.calendarDelivered),
       ledger: new Map(existing.ledger), evidence: new Map(existing.evidence), readKinds: new Set(existing.readKinds), sourcesDone: new Set(existing.sourcesDone), sourcesFailed: new Set(existing.sourcesFailed), pending: new Set(existing.pending), pendingWaiters: new Set(),
       calls: new Set(existing.calls), emptySearches: new Map(existing.emptySearches), cutShort: new Set(existing.cutShort),
-      unavailableReasons: new Map(existing.unavailableReasons), chatChannelClosest: [], web: [...existing.web], webAttribution: [...existing.webAttribution],
+      unavailableReasons: new Map(existing.unavailableReasons), chatChannelClosest: [], chatNotes: [], web: [...existing.web], webAttribution: [...existing.webAttribution],
     };
     delete run.bodyCursorRequested; delete run.mailDeadlineAt; delete run.mailCursorRequested;
     existing.cancelled = true; existing.progressAbort.abort();
@@ -2619,6 +2652,9 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
     // a searched source with an empty count.
     if (run.neverRan?.has(source) === true && !run.cutShort.has(source)) continue;
     const finding = findings.find(entry => entry.source === source && typeof entry.text === 'string');
+    // C-CHAT (from main): a chat read that asked back read nothing yet, so the header says so instead of an
+    // empty count.
+    if (source === 'chat' && run.chatUnresolved !== undefined && finding === undefined) continue;
     const text = finding?.text ?? '';
     const head = FINDING_HEAD.exec(text);
     const shown = head === null ? 0 : Number(head[1]);
@@ -3617,6 +3653,8 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     ...(trouble !== undefined ? [trouble] : []),
     ...(mailCoverageNote !== undefined ? [mailCoverageNote] : []),
     ...(chatBroadenedNote !== undefined ? [chatBroadenedNote] : []),
+    // C-CHAT (from main): the chat read names who or which channel it read and over which window, or asks which one.
+    ...run.chatNotes,
   ];
   if (run.unavailableReasons.get('calendar') === 'window_unparsed') clauses.push('I could not resolve that calendar date or window. Give a supported weekday, today, tomorrow, week, this week, next week, or an exact valid date.');
   // #637: a channel the ask names and the chat connector does not know is said in the owner's words,
@@ -5141,6 +5179,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       // #647: the one place every read passes through, so a chat read that matched nothing on every word is
       // broadened here once, before the reply and the progress steps read it.
       if (!dispatchSignal.aborted) results = await broadenedChatRetry(executeSource, subs, results, progressSignal, run.broadenedChat);
+      noteChatReads(run, subs, results);
       finish(results, current() ? undefined : 'cancelled');
     }
     catch (error) { finish([], 'failed'); throw error; }
@@ -5174,6 +5213,21 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     const pendingLocal = [...mailMessages(run).keys()].some(key => !run.mailDelivered.has(key));
     if (!pendingLocal) await collectMail(deps, run, signal, Math.min(RESEARCH.sourceDeadline.mail, run.deadlineMs), now);
     if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
+    return buildReply(run, 'answered', configured, false, limit);
+  }
+
+  // C-CHAT (from main): "more" on a chat read that matched more than it returned reads its next page, one
+  // page per call.
+  if (call.action === 'continue' && !freshQuestion && run.chatPage !== undefined && call.lookups === undefined) {
+    const page = run.chatPage;
+    const sub: IntentSubCall = { ...page.sub, key: `${page.sub.key}p${page.next}`, args: { ...page.sub.args, offset: page.next } };
+    const results = await deps.execute([sub], signal);
+    if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
+    const block = shapeBlock('chat_search', results, deps.timeZone);
+    for (const [key, entry] of run.ledger) if (entry.source === 'chat') run.ledger.delete(key);
+    run.ledger.set(`chat_search:page:${page.next}`, { kind: 'chat_search', source: 'chat', summary: block.text, lines: block.lines, total: Math.max(page.total, block.total) });
+    run.chatNotes.push(`This is the next page: posts ${page.next + 1} to ${page.next + block.lines.length} of ${page.total}.`);
+    if (block.lines.length > 0) { run.sourcesDone.add('chat'); run.emptySearches.delete('chat'); }
     return buildReply(run, 'answered', configured, false, limit);
   }
   if (call.action === 'continue' && !freshQuestion && run.calendar.size > 0 && call.lookups === undefined) {

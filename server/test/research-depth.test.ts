@@ -57,9 +57,23 @@ function harness(opts: {
     emit: () => {},
     log: () => {},
     ledger: new ResearchLedger(),
-    ...(opts.memory === undefined ? {} : { memory: opts.memory }),
     ...(opts.replyLimit === undefined ? {} : { replyLimit: opts.replyLimit }),
   };
+  if (opts.memory !== undefined) {
+    const inner = deps.execute;
+    const memory = opts.memory;
+    deps.execute = async (subs: readonly IntentSubCall[], signal: AbortSignal) => {
+      if (!subs.every(call => call.name === 'conversation_history')) return inner(subs, signal);
+      return subs.map(call => {
+        const found = memory(String(call.args['query'] ?? ''));
+        return {
+          key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0,
+          binding: { executionId: call.key } as NonNullable<IntentSubResult['binding']>,
+          historyPage: { status: 'ok', hits: found.lines.map(snippet => ({ snippet })), totalMatches: found.total, nextCursor: null },
+        } as IntentSubResult;
+      });
+    };
+  }
   return { deps, text };
 }
 
@@ -214,7 +228,7 @@ test('COVER 2: an asked for entity that was covered is counted, and an excerpt i
 });
 
 test('DEPTH 1: the depth tier delivers more evidence, not more metadata', async () => {
-  const text = { search_knowledge: knowledgeHits(40), gmail_search_messages: mailRows(40) };
+  const text = { search_knowledge: knowledgeHits(120), gmail_search_messages: mailRows(120) };
   const shallow = harness({ text: { ...text }, replyLimit: RESEARCH.budgets.default });
   const deep = harness({ text: { ...text }, replyLimit: RESEARCH.budgets.depth });
   const ask = {

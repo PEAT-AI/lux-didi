@@ -2533,6 +2533,31 @@ const FINDING_META_LINE = /^knowledge: (?:confidence=|nothing matched)/u;
  * #621: the header of a reply with findings, derived from the findings the voice will actually hear, so the
  * counts can never drift from the evidence after a trim.
  */
+/**
+ * C-DEPTH item 4: what the header owes beyond counts. Per source, whether the reader got it all or an
+ * excerpt, so an excerpt is never called full; and which of the people and documents the owner named are
+ * covered by the evidence that is actually in the reply. Deterministic, from the reply text alone.
+ */
+function depthClauseOf(question: string, findings: readonly FindingLike[]): string {
+  const text = findings.map(entry => entry.text ?? '').join('\n');
+  const entities = requestedEntities(question);
+  const covered = entities.filter(name => text.includes(name));
+  const missing = entities.filter(name => !text.includes(name));
+  const shape = findings.filter(entry => typeof entry.text === 'string' && typeof entry.source === 'string').map(entry => {
+    const head = FINDING_HEAD.exec(entry.text ?? '');
+    const shown = head === null ? 0 : Number(head[1]);
+    const total = head === null ? 0 : Number(head[2]);
+    return `${SOURCE_LABEL[entry.source as SourceKind] ?? entry.source} ${shown === total ? 'full' : 'excerpt'}`;
+  });
+  const parts: string[] = [];
+  if (shape.length > 0) parts.push(shape.join(', '));
+  if (entities.length > 0) {
+    parts.push(`entities ${covered.length} of ${entities.length} covered`);
+    if (missing.length > 0) parts.push(`missing: ${missing.join(', ')}`);
+  }
+  return parts.length === 0 ? '' : `; ${parts.join('; ')}`;
+}
+
 function coverageTextOf(run: RunState, configured: readonly SourceKind[], findings: readonly FindingLike[], totals: ReadonlyMap<SourceKind, number>, limit: number): string {
   const searched: CoverageSearched[] = [];
   for (const source of SOURCE_ORDER) {
@@ -3439,6 +3464,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const bodyReply = skipBodies ? undefined : receivedBodyReply(run, configured, bodyLimit);
   if (bodyReply) { if (Array.isArray((bodyReply as JsonObject)['bodySlices'])) run.bodyReplies += 1; return bodyReply; }
   const groups: { source: SourceKind; label: string; lines: string[]; total: number; days?: { day: string; entries: string[] }[]; meta?: string[] }[] = [];
+  const shownLines = new Set<string>();
   for (const entry of run.ledger.values()) {
     if (entry.bodyOnly || !entry.lines || entry.lines.length === 0 || entry.source === null || (entry.source === 'calendar' && run.calendar.size > 0) || (entry.source === 'mail' && run.mail.size > 0)) continue;
     const existing = groups.find(group => group.source === entry.source);
@@ -3448,7 +3474,14 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     const meta = entry.lines.filter(line => FINDING_META_LINE.test(line));
     const items = entry.lines.filter(line => !FINDING_META_LINE.test(line));
     if (meta.length > 0) target.meta = [...new Set([...(target.meta ?? []), ...meta])];
-    target.lines.push(...items);
+    // C-DEPTH item 2: a hit two reads both returned is shown once, and the number of dropped copies is no
+    // new evidence, so the count of what was returned keeps the read's own total.
+    for (const line of items) {
+      const key = line.trim();
+      if (key === '' || shownLines.has(key)) continue;
+      shownLines.add(key);
+      target.lines.push(line);
+    }
     target.total += entry.total === undefined ? items.length : entry.total === entry.lines.length ? items.length : entry.total;
     if (!existing) groups.push(target);
   }
@@ -3556,7 +3589,8 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // `2 of 9 shown` truthfully after the reply is bounded.
   const totals = new Map<SourceKind, number>();
   for (const group of groups) totals.set(group.source, Math.max(group.total, group.lines.length));
-  const coverageOf = (findings: readonly FindingLike[]): string => coverageTextOf(run, configured, findings, totals, limit);
+  const coverageOf = (findings: readonly FindingLike[]): string =>
+    `${coverageTextOf(run, configured, findings, totals, limit)}${depthClauseOf(run.question ?? '', findings)}`;
   const render = (): { findings: ReplyFinding[]; reply: JsonObject } => {
     const calendarShown = shownOf(groups.find(group => group.source === 'calendar') ?? { lines: [] });
     const calendarPending = calendarUpstream || calendarShown < remaining.length;

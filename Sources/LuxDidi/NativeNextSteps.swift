@@ -20,6 +20,8 @@ enum NativeNextSteps {
         "mongoose-knowledge": "Mongoose knowledge", "mongoose-data": "Mongoose data", "mongoose-crm": "Mongoose CRM",
         "trello": "Trello",
     ]
+    /// W7: the Trello board signs in through its own row, and offers the same next step the web row does.
+    private static let endpointSignInSteps: [String: NativeNextStep] = ["trello": signInStep("Trello")]
     private static let endpointNames: [String: String] = [
         "mongoose-knowledge": "knowledge", "mongoose-data": "data", "mongoose-crm": "crm",
     ]
@@ -62,6 +64,7 @@ enum NativeNextSteps {
     static func lookup(id: String, state: String, reason: String?) -> NativeNextStep {
         if state == "connected" { return NativeNextStep(text: "no action needed", command: nil) }
         if state == "configured" { return NativeNextStep(text: "a Live session connects on demand", command: nil) }
+        if let step = endpointSignInSteps[id], reason == "needs_sign_in" || reason == "not_signed_in" { return step }
         if let label = endpointLabels[id], reason == "needs_sign_in" || reason == "not_signed_in" { return signInStep(label) }
         if let label = endpointLabels[id], reason == "unreachable" { return unreachableStep(label) }
         if state == "missing" || reason == "credential_missing" {

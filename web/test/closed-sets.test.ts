@@ -10,8 +10,13 @@ const catalogue = (JSON.parse(readFileSync(new URL('../../server/test/fixtures/i
   endpoints: { id: string }[];
 }).endpoints;
 
+// W7: the Trello board is the one row the host synthesizes beside the MCP catalogue, from the files alone
+// (server/host/runtime.ts:249 builds `{ id: 'trello', connector: 'trello' }`), so it is not an MCP endpoint and
+// cannot live in the provider-38 mcp.json the catalogue is read from.
+const hostedRows = ['trello'];
+
 test('connectorIDs is exactly the production endpoint catalogue', () => {
-  assert.deepEqual([...connectorIDs].sort(), catalogue.map(endpoint => endpoint.id).sort());
+  assert.deepEqual([...connectorIDs].sort(), [...catalogue.map(endpoint => endpoint.id), ...hostedRows].sort());
 });
 
 /** Every string a return statement in the named function can yield, read from the server source. */

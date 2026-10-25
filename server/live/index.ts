@@ -12,7 +12,7 @@ import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import type { WebSearchPort } from '../tools/web-search.js';
-import { RESEARCH, RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames } from '../tools/research.js';
+import { ADMISSION_BLOCKED, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -221,6 +221,18 @@ export const LIVE_DROPPED_LINE_MARK = 'The line dropped before that answer reach
 const RECOVERY_BUDGET_MS = 60_000;
 const RECOVERY_HEALTHY_MS = 60_000;
 const RECOVERY_BACKOFF_MS = [0, 2_000, 4_000, 8_000] as const;
+/** C-LIVE R2: the short wait before the one fresh open that follows a refused recovery open. */
+const RECOVERY_REFUSED_BACKOFF_MS = 1_000;
+/** C-LIVE R2: an exception's class when it is a bare identifier, never its text. */
+function errorClassOf(error: unknown): string {
+  const name = error instanceof Error ? error.constructor.name : typeof error;
+  return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name) ? name : 'Unknown';
+}
+/** C-LIVE R2: a message that is itself a closed key (snake case) is kept; any other text is `unrecognized`. */
+function messageKeyOf(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  return /^[a-z][a-z0-9_]{0,63}$/.test(message) ? message : 'unrecognized';
+}
 /** The wait before attempt `index` (0-based): 0, 2, 4, 8, then 8 s. */
 function recoveryBackoffMs(index: number): number { return RECOVERY_BACKOFF_MS[Math.min(index, RECOVERY_BACKOFF_MS.length - 1)]!; }
 /** The seeded history is bounded by dropping whole oldest turns until it fits this many characters. */
@@ -244,7 +256,7 @@ export const SPEAKING_HOLD_MS = 1_500;
 const CONSUMER_GONE_MS = 5_000;
 // 3p: a socket that closed and sent no Stop is a call that ended, not a pause. One second is the longest a Stop may
 // take to be felt by the owner; the 5 s rule above stays behind it as the last net.
-const CONSUMER_CLOSED_MS = 1_000;const DEAD_AIR_NUDGE_TEXT = 'Continue.';
+const CONSUMER_CLOSED_MS = 1_000;
 /** S5: the one honest line after a backend turn failed. It owns the failure and offers the retry, and it never
  *  invents a reason the provider did not give. */
 export const TURN_FAILED_LINE = 'I lost the thread there. Say that again, or ask me to try once more?';
@@ -300,12 +312,21 @@ export const IDLE_RESET_CAUSES = ['opened', 'unmuted', 'tool_result', 'turn_fail
 type IdleResetCause = typeof IDLE_RESET_CAUSES[number];
 /** #592: an owner transcript only counts once it closed carrying the text that was spoken. */
 function idleResetCause(handle: ActiveSession, event: LiveVoiceEvent): 'owner_speech' | 'model_audio' | undefined {
-  if (event.type === 'audio') return 'model_audio';
+  // C-LIVE N-2: a provider frame of digital silence (below the adapter's audible level) is not conversation.
+  if (event.type === 'audio') return event.audible === false ? undefined : 'model_audio';
   if (event.type !== 'inputTranscription') return undefined;
   if (event.text.trim() !== '') handle.ownerSpeechPending = true;
   if (event.finished !== true || handle.ownerSpeechPending !== true) return undefined;
   handle.ownerSpeechPending = false;
   return 'owner_speech';
+}
+/** C-LIVE behaviour 1: an owner turn is finalized once its transcript closed carrying the words that were spoken. */
+function ownerTurnFinalized(handle: ActiveSession, event: LiveVoiceEvent): boolean {
+  if (event.type !== 'inputTranscription' || event.finalOrigin === 'typed') return false;
+  if (event.text.trim() !== '') handle.admissionSpeechPending = true;
+  if (event.finished !== true || handle.admissionSpeechPending !== true) return false;
+  handle.admissionSpeechPending = false;
+  return true;
 }
 /** Every job row is written with a one day expiry (server/tools/jobs.ts); past it the row is stale data. */
 const JOB_EXPIRY_MS = 86_400_000;
@@ -329,7 +350,8 @@ export const TOOL_CEILING_MS = 12_000;
  * them; every other call keeps TOOL_CEILING_MS.
  */
 export function callCeilingMs(toolName: string | undefined): number {
-  return toolName === RESEARCH_TOOL_NAME ? RESEARCH.continueDeadlineMs : TOOL_CEILING_MS;
+  // C-LIVE behaviour 4: an admitted research operation owns the silence only to its deadline and the host's grace.
+  return toolName === RESEARCH_TOOL_NAME ? RESEARCH_OPERATION.deadlineMs + RESEARCH_OPERATION.hostGraceMs : TOOL_CEILING_MS;
 }
 /** R6: how recent the model's own audio must be to hold a late line back. */
 const ANSWER_AUDIO_HOLD_MS = 3_000;
@@ -427,6 +449,8 @@ interface ActiveSession {
   dropEpisodeAt?: number | undefined;
   /** A recovery open that threw synchronously: a config or auth refusal, which ends the call at once. */
   recoveryRefused?: boolean | undefined;
+  /** C-LIVE R2: consecutive refused recovery opens; the second one ends the call. */
+  recoveryRefusals?: number | undefined;
   /** One outstanding answer per user request: set when a tool result is sent, cleared only by the answer's
    *  own audible audio or an ended turn. Inaudible fill never clears it (D3, amendment C). */
   awaitingAnswer: boolean; answerAt: number | undefined;
@@ -484,6 +508,12 @@ interface ActiveSession {
   toolCache: LiveToolCache;
   connectorRecovery?: Promise<void> | undefined;
   researchLedger: ResearchLedger;
+  /** C-LIVE behaviour 1: one research operation per finalized owner turn, for the whole session across generations. */
+  researchAdmission: ResearchAdmission;
+  /** C-LIVE: owner words seen since the last finalized owner turn, for admission (independent of the idle clock). */
+  admissionSpeechPending?: boolean;
+  /** C-LIVE N-2: the idle cause last written to host.log, so live_idle_arm is a state change only. */
+  idleArmLogged?: string;
   researchScheduler?: ResearchScheduler | undefined;
   /** #1022 F1: the latest research batch's delivery gate answer. The scheduler reads it, never a captured copy. */
   researchAllowed: boolean;
@@ -1564,6 +1594,7 @@ export class LiveSessionOwner {
       connection,
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
+      researchAdmission: new ResearchAdmission(),
       registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
@@ -1756,8 +1787,9 @@ export class LiveSessionOwner {
     if (this.#settled(handle)) return;
     handle.idleTimer?.cancel();
     handle.idleAt = this.#now() + remainingMs;
-    // #592: one record per arm, so the log testifies when the clock last restarted and by which cause.
-    hostLogEvent({ event: 'live_idle_arm', resetBy, idleMs: remainingMs });
+    // #592 / C-LIVE N-2: one record per change of cause, so the log testifies what restarted the clock without one
+    // line per audio frame.
+    if (handle.idleArmLogged !== resetBy) { handle.idleArmLogged = resetBy; hostLogEvent({ event: 'live_idle_arm', resetBy, idleMs: remainingMs }); }
     handle.idleTimer = this.#schedule(() => {
       // #303: an idle expiry after model audio had streamed, with no turnComplete ever seen, is the shape the
       // 3h-a witness stalled in: the greeting played, then the provider went silent without ending its turn.
@@ -1938,8 +1970,9 @@ export class LiveSessionOwner {
         stalledAt: this.#now(), turnAgeMs, anyAudio: handle.firstAudioAt !== undefined, inaudibleMs: Math.round(handle.inaudibleMs),
       });
     }
+    // C-LIVE behaviour 4: no synthetic "Continue." owner text on any provider; it is a fake owner turn that can
+    // revive research. Gemini waits for the rebuild rung; GPT-Live delivers the unspoken result or recreates.
     if (this.#profile.provider !== 'openai') {
-      try { handle.session.sendText({ text: DEAD_AIR_NUDGE_TEXT }); } catch { return; }
       this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
       return;
     }
@@ -2133,9 +2166,7 @@ export class LiveSessionOwner {
             });
           }
         }
-        // VOICE-R4: on the GPT-Live path dead air stays silent, because the "Continue." user message would be a
-        // fake owner turn. Gemini keeps its nudge unchanged.
-        if (this.#profile.provider !== 'openai') { try { handle.session.sendText({ text: DEAD_AIR_NUDGE_TEXT }); } catch { return; } }
+        // VOICE-R4 / C-LIVE: dead air stays silent on every provider: a "Continue." user message is a fake owner turn.
         handle.watchdogPhase = 'nudged';
         hostLogEvent({ event: 'live_watchdog', phase: 'nudged', turnAgeMs, generation });
         this.#scheduleWatchdog(handle, RESPONSE_WATCHDOG_RECOVERY_MS, generation, 'recover');
@@ -2493,9 +2524,13 @@ export class LiveSessionOwner {
       handle.unspokenDelivered = false;
       this.#observeDiagnostics(handle, handle.session);
       handle.goAwayUntil = undefined;
-    } catch {
-      // A synchronous refusal is configuration, not transport: it ends the call instead of spending the budget.
+    } catch (error) {
+      // C-LIVE R2: a synchronous refusal is never swallowed. Its class and a closed message key are logged with the
+      // mode and the cause, and the caller decides on the one fresh retry.
       handle.recoveryRefused = true;
+      handle.recoveryRefusals = (handle.recoveryRefusals ?? 0) + 1;
+      hostLogEvent({ event: 'live_recovery_failed', liveSessionId: handle.liveSessionId, generation: handle.generation, mode: path,
+        cause: reason ?? 'none', errorClass: errorClassOf(error), messageKey: messageKeyOf(error), attempt: handle.recoveryRefusals });
       return false;
     }
     handle.sessionTimer = this.#schedule(() => this.#sessionWindowEnded(handle), Math.max(1, Math.ceil(remaining)));
@@ -2567,12 +2602,12 @@ export class LiveSessionOwner {
     const reason = reasonOverride ?? outcome?.code ?? null;
     const path: 'resume' | 'fresh_seeded' = reuse ? 'resume' : 'fresh_seeded';
     let opened = await this.#openRecovery(handle, path, path === 'resume' ? savedHandle as string : undefined, remaining, idle, window, seed, reason);
-    if (!opened && handle.recoveryRefused) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
+    if (!opened && handle.recoveryRefused) return this.#retryRefusedOpen(handle, remaining, idle, window, seed, reason, closeCode, path);
     if (!opened && path === 'resume') {
       this.#logRecovery(handle, 'resume', 'open_failed', closeCode, reason, seed);
       handle.recoveries += 1;
       opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, window, seed, reason);
-      if (!opened && handle.recoveryRefused) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
+      if (!opened && handle.recoveryRefused) return this.#retryRefusedOpen(handle, remaining, idle, window, seed, reason, closeCode, 'fresh_seeded');
     }
     if (opened) {
       // A failed resume leaves an unusable handle: clear it so the next drop goes straight to fresh seeded.
@@ -2591,6 +2626,26 @@ export class LiveSessionOwner {
     await this.#delay(recoveryBackoffMs(handle.recoveries));
     if (this.#settled(handle)) return false;
     return this.#recoverFromDrop(handle, outcome, forceFresh, reasonOverride);
+  }
+
+  /**
+   * C-LIVE R2: an open the provider refused gets one fresh seeded open after a short backoff, never a repeat of the
+   * failed resume. If that fails as well, the call ends as `provider_recovery_exhausted`: no audio is attempted, the
+   * client receives the terminal and the next call starts clean. The generation moved on each attempt, so callbacks
+   * of the old provider sessions are already fenced out.
+   */
+  async #retryRefusedOpen(handle: ActiveSession, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null, closeCode: number | null, path: 'resume' | 'fresh_seeded'): Promise<boolean> {
+    const exhausted = (): false => { this.#settle(handle, { state: 'failed', code: 'provider_recovery_exhausted' }, false, 'ended', null); return false; };
+    this.#logRecovery(handle, path, 'open_refused', closeCode, reason, seed);
+    if ((handle.recoveryRefusals ?? 0) > 1) return exhausted();
+    await this.#delay(RECOVERY_REFUSED_BACKOFF_MS);
+    if (this.#settled(handle)) return false;
+    const opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining - RECOVERY_REFUSED_BACKOFF_MS, idle - RECOVERY_REFUSED_BACKOFF_MS, window, seed, reason);
+    if (!opened) { if (this.#settled(handle)) return false; return exhausted(); }
+    handle.recoveryRefusals = 0;
+    this.#logRecovery(handle, 'fresh_seeded', 'opened', closeCode, reason, seed);
+    await this.#deliverUnspoken(handle);
+    return true;
   }
 
   /**
@@ -2623,6 +2678,7 @@ export class LiveSessionOwner {
     const event = { type: 'inputTranscription' as const, sequence: 0, text, finished: true, finalOrigin: 'typed' as const };
     handle.connectorRecovery = this.#tools?.recover?.();
     handle.session.sendText({ text });
+    handle.researchAdmission.ownerTurn();
     // O1b-A: typed text is an owner utterance at the same boundary as a spoken one, so it opens a turn.
     if (handle.connection.turnId === undefined) this.#openTurn(handle);
     // Same rule as provider activity: the owner's mute suspends the idle clock until the unmute.
@@ -2889,6 +2945,7 @@ export class LiveSessionOwner {
           const resetBy = idleResetCause(handle, event);
           if (resetBy !== undefined) this.#armIdle(handle, this.#profile.limits.idleMs, resetBy);
         }
+        if (ownerTurnFinalized(handle, event)) handle.researchAdmission.ownerTurn();
         if (event.type === 'toolCall') {
           handle.toolCalls += event.calls.length;
           // L3: a call in flight is exactly the state the stalled status note denied, so it retires here.
@@ -3257,19 +3314,29 @@ export class LiveSessionOwner {
     handle.researchSchedulerGeneration = handle.generation;
     const responses: { id: string; name: string; response: JsonObject }[] = [];
     const projections: LiveToolProjection[] = [];
-    // F6: every research call in one model message runs concurrently; the adapter bounds each source.
-    const settled = await Promise.all(event.calls.map(async call => {
-      let response: JsonObject;
+    // C-LIVE behaviour 1: admission is decided in call order before anything runs, so a second start in one
+    // message is refused exactly like a second start in one owner turn.
+    const parsedCalls = event.calls.map(call => {
       const parsed = parseResearch(call.args);
+      const verdict = parsed.ok ? handle.researchAdmission.admit(parsed.call.action) : undefined;
+      return { call, parsed, verdict };
+    });
+    // F6: every research call in one model message runs concurrently; the adapter bounds each source.
+    const settled = await Promise.all(parsedCalls.map(async ({ call, parsed, verdict }) => {
+      let response: JsonObject;
       if (!parsed.ok) {
         hostLogEvent({ event: 'research_refused', state: 'refused', sequence: event.sequence, reason: parsed.reason, ...parsed.shape });
         // R9/W0-R1: the refused call leaves its run receipt too, so a refusal is never invisible in the run log.
         hostLogEvent(refusedResearchRunLog());
         response = researchRepair(parsed.reason);
+      } else if (verdict !== undefined && !verdict.admitted) {
+        hostLogEvent({ event: 'research_blocked', liveSessionId: handle.liveSessionId, generation, action: parsed.call.action, reason: verdict.reason });
+        response = { ...ADMISSION_BLOCKED };
       } else {
         try {
-          response = await scheduler.call({ ...parsed.call, callId: call.id }, handle.abort.signal);
+          response = await this.#boundedResearch(handle, scheduler.call({ ...parsed.call, callId: call.id }, handle.abort.signal), parsed.call, configured, generation);
         } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
+        if (response['error'] === undefined && parsed.call.action !== 'stop' && generation === handle.generation) handle.researchAdmission.delivered();
       }
       // R6: a reply that names sources still reading is the call's first answer point, so the late-findings
       // window and the one late commentary of this call both count from here.
@@ -3285,6 +3352,24 @@ export class LiveSessionOwner {
       projections.push({ name: entry.name, status, markdown: entry.name === RESEARCH_TOOL_NAME ? researchProjection(entry.response, status) : `research: ${status}`, sources: [] });
     }
     return { responses, projections };
+  }
+
+  /**
+   * C-LIVE behaviour 4: the host's own bound on an admitted operation. The loop answers by its deadline; if it has
+   * not, `hostGraceMs` later the host answers with what the ledger holds, so the in-flight state clears even when a
+   * downstream cancellation is slow, and the model is asked to answer from that.
+   */
+  async #boundedResearch(handle: ActiveSession, work: Promise<JsonObject>, call: { action: string; researchId?: string | undefined }, configured: readonly ResearchSourceKind[], generation: number): Promise<JsonObject> {
+    if (call.action === 'stop') return work;
+    let timer: { cancel(): void } | undefined;
+    const startedAt = this.#now();
+    const bound = new Promise<'deadline'>(resolve => { timer = this.#schedule(() => resolve('deadline'), RESEARCH_OPERATION.deadlineMs + RESEARCH_OPERATION.hostGraceMs); });
+    const outcome = await Promise.race([work, bound]);
+    timer?.cancel();
+    if (outcome !== 'deadline') return outcome;
+    hostLogEvent({ event: 'research_operation_deadline', liveSessionId: handle.liveSessionId, generation, ms: Math.max(0, this.#now() - startedAt) });
+    const researchId = call.researchId ?? handle.researchLedger.last()?.researchId ?? '';
+    return { ...knownReply(handle.researchLedger, researchId, configured, 'partial'), operationStop: 'deadline' };
   }
 
   /**

@@ -2362,7 +2362,7 @@ test('C-LIVE: dead air after a tool response sends no synthetic Continue user te
   h.f.send({ toolCall: { functionCalls: [{ id: 'n1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   await h.f.frame(h.f.frames.length + 1);
   h.advance(8000); scheduler.runDue();
-  await h.f.frame(h.f.frames.length + 1);
+  for (let i = 0; i < 50; i++) await tick();
   const nudges = h.f.frames.filter(frame => (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text === 'Continue.');
   assert.equal(nudges.length, 0, 'no fake owner turn is written into the conversation');
   const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string });

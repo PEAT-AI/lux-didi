@@ -353,7 +353,7 @@ test('replay 6: results of an old provider generation reach no new session, and 
   assert.equal(h.provider.generations[1]!.toolResponses.flat().some(entry => entry.id === 'g1'), false,
     'the old generation call is never answered into the new session');
   // The rebuilt model reaches for research on its own: nothing the owner said since grants it.
-  await research(h, 'g2', { action: 'continue' });
+  await research(h, 'g2', { action: 'continue', researchId: '00000000-0000-4000-8000-000000000000' });
   assert.deepEqual(await replyFor(h, 'g2'), BLOCKED, 'a rebuild is not an owner turn');
   await research(h, 'g3', start);
   assert.deepEqual(await replyFor(h, 'g3'), BLOCKED, 'and neither is a replayed opener');

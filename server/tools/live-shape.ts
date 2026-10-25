@@ -66,7 +66,7 @@ export interface CalendarEvent { id: string; start: string; line: string; bodyTr
 export interface CalendarPage { upstreamIncomplete?: boolean; events: CalendarEvent[]; received: number; localOmitted: number; unread: number; nextPageToken?: string }
 export interface CalendarScope { received: number; partial: boolean }
 export interface MailMessage { id: string; threadId: string; internalDate: string; line: string; bodyTruncated: boolean; /** E5 (#612): bulk mail, so a triage read can rank it after a person. */ bulk?: boolean; /** E5 (#612): the owner's own message, so its thread needs no cold read. */ sent?: boolean }
-export interface MailPage { messages: MailMessage[]; received: number; invalid: number; localOmitted: number; nextPageToken?: string; upstreamIncomplete?: boolean }
+export interface MailPage { messages: MailMessage[]; received: number; invalid: number; localOmitted: number; nextPageToken?: string; upstreamIncomplete?: boolean; /** C-LIVE: the source's own total for the query, when it reports one (Gmail resultSizeEstimate). */ total?: number }
 /** #6: the ranker's own retrieval metadata, read before the preamble is stripped and carried for research. */
 export interface KnowledgeConfidence { confidence: string; top?: string; candidates?: string }
 export interface ShapedResult {
@@ -348,7 +348,7 @@ export function shapeGmailList(data: Record<string, unknown>): ShapedResult {
   const nextPageToken = str(data['nextPageToken']);
   const invalid = messages.length - normalized.length;
   return { ...capped({ text: `${body.text}${note}`, partial: body.omitted > 0 || upstream || invalid > 0 || normalized.some(message => message.bodyTruncated), originalCharacters: lines.join('\n').length, omittedCharacters: lines.slice(GMAIL_LIST_MESSAGES).join('\n').length, sources }),
-    mailPage: { messages: normalized, received: messages.length, invalid, localOmitted: Math.max(0, normalized.length - GMAIL_LIST_MESSAGES), ...(nextPageToken ? { nextPageToken } : {}), ...(data['sourceIncomplete'] === true && !nextPageToken ? { upstreamIncomplete: true } : {}) } };
+    mailPage: { messages: normalized, received: messages.length, invalid, localOmitted: Math.max(0, normalized.length - GMAIL_LIST_MESSAGES), ...(nextPageToken ? { nextPageToken } : {}), ...(data['sourceIncomplete'] === true && !nextPageToken ? { upstreamIncomplete: true } : {}), ...(Number.isSafeInteger(data['resultSizeEstimate']) && Number(data['resultSizeEstimate']) >= 0 ? { total: Number(data['resultSizeEstimate']) } : {}) } };
 }
 
 // --- Calendar ------------------------------------------------------------------------------

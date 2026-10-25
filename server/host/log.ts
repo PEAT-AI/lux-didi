@@ -1,4 +1,4 @@
-import { CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
+import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
@@ -303,7 +303,33 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'mongoose_catalogue_replaced', endpoints: 3 };
   }
   if (value.event === 'live_attach_rejected' && typeof value.code === 'string' && /^[A-Za-z0-9_]{1,107}$/.test(value.code)) {
-    return { event: value.event, ...(typeof value.liveSessionId === 'string' && /^[0-9a-f-]{36}$/i.test(value.liveSessionId) ? { liveSessionId: value.liveSessionId } : {}), code: value.code };
+    // C-LIVE behaviour 7: the exception class is a bare identifier and the one known detail token, never text.
+    return { event: value.event, ...(typeof value.liveSessionId === 'string' && /^[0-9a-f-]{36}$/i.test(value.liveSessionId) ? { liveSessionId: value.liveSessionId } : {}), code: value.code,
+      ...(typeof value.class === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value.class) ? { class: value.class } : {}),
+      ...(value.detail === 'connection_policy_missing_or_corrupt' ? { detail: value.detail } : {}) };
+  }
+  if (value.event === 'live_recovery_failed') {
+    // C-LIVE R2: a refused recovery open, by class and closed key, with the mode and the cause that started it.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'mode', 'cause', 'errorClass', 'messageKey', 'attempt'])) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId) || !isSafeCount(value.generation) || !isSafeCount(value.attempt)) return;
+    if (!isSafeMember(value.mode, ['resume', 'fresh_seeded']) || !isSafeToken(value.cause)) return;
+    if (typeof value.errorClass !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value.errorClass)) return;
+    if (typeof value.messageKey !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(value.messageKey)) return;
+    return { event: 'live_recovery_failed', liveSessionId: value.liveSessionId, generation: value.generation, mode: value.mode, cause: value.cause,
+      errorClass: value.errorClass, messageKey: value.messageKey, attempt: value.attempt };
+  }
+  if (value.event === 'research_blocked') {
+    // C-LIVE behaviour 1: a research call no owner turn admitted, by action and closed reason.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'action', 'reason'])) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId) || !isSafeCount(value.generation)) return;
+    if (!isSafeMember(value.action, ['start', 'continue', 'stop']) || !isSafeMember(value.reason, [...ADMISSION_BLOCK_REASONS])) return;
+    return { event: 'research_blocked', liveSessionId: value.liveSessionId, generation: value.generation, action: value.action, reason: value.reason };
+  }
+  if (value.event === 'research_operation_deadline') {
+    // C-LIVE behaviour 4: the host answered an operation its loop had not answered by the deadline.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'ms'])) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId) || !isSafeCount(value.generation) || !isSafeCount(value.ms)) return;
+    return { event: 'research_operation_deadline', liveSessionId: value.liveSessionId, generation: value.generation, ms: value.ms };
   }
   if (value.event === 'live_session_diagnostics') {
     const numeric = ['adapterGenerations','ownerAudioCalls','ownerAudioBytes','ownerRebuildingDropCalls','ownerRebuildingDropBytes',

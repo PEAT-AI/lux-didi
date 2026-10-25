@@ -395,7 +395,7 @@ test('C-CHAT (W2B-R4): "what is new in Builders" reads that channel with no chan
   const chat = planned.find(call => call.name === INTERNAL.chatRead)?.args;
   assert.equal(chat?.['intent'], 'channel', 'the ask is a channel read');
   assert.equal(chat?.['channel'], 'Builders', 'the spoken name, not a guess');
-  assert.equal(f.calls().some(call => call.name === 'mattermost_get_channel_history'), true, 'and then the channel read');
+  assert.ok(searches(f.calls()).some(args => args['channel'] === BUILDERS), 'and then the channel read');
   assert.match(JSON.stringify(reply['findings'] ?? []), /pilot moves to Friday/u);
 });
 

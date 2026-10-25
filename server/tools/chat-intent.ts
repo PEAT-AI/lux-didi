@@ -50,6 +50,8 @@ const CHANNEL_HASH = /#([\p{L}\p{N}][\p{L}\p{N}._-]{0,59})/u;
 const CHANNEL_CALLED = /\b(?:channel|team chat|group chat|chat)s? (?:that is |which is )?(?:named|called|is called|is named)\s+(.{1,60}?)(?=$|[?!,]|\.(?:\s|$)|\s(?:about|on|for|from|since|this|last|today|yesterday|lately|recently)\b)/iu;
 const CHANNEL_BEFORE = /\b(?:in|on|from|of|inside|at)\s+(?:the |my |our )?(.{1,60}?)\s+(?:team chat|channel|chat channel|team channel|chat group)s?\b/iu;
 const CHANNEL_AFTER = /\b(?:the )?channel\s+(?!named\b|called\b|is\b)(.{1,60}?)(?=$|[?!,]|\.(?:\s|$)|\s(?:about|on|for|from|since|this|last|today|yesterday|lately|recently)\b)/iu;
+/** "what's new in X" names a channel without the word channel (L4-07, W2B-R4). */
+const CHANNEL_NEW_IN = /\b(?:what'?s?|what is|anything)\s+new\s+(?:in|on|with)\s+(.{1,60}?)(?=$|[?!,]|\.(?:\s|$)|\s(?:this|last|today|yesterday|lately|recently|from|since)\b)/iu;
 
 /** Words that are never a person: pronouns, "anyone", the team. */
 const NOT_A_PERSON = new Set(['i', 'me', 'we', 'us', 'you', 'they', 'them', 'he', 'him', 'she', 'her', 'it', 'anyone', 'anybody', 'someone', 'somebody', 'everyone', 'everybody', 'people', 'team', 'the', 'my', 'our', 'your', 'nobody', 'this', 'that']);
@@ -93,7 +95,7 @@ function cleanChannel(raw: string): string | undefined {
 export function spokenChannel(question: string): string | undefined {
   const hash = CHANNEL_HASH.exec(question)?.[1];
   if (hash !== undefined) return hash;
-  for (const shape of [CHANNEL_CALLED, CHANNEL_BEFORE, CHANNEL_AFTER]) {
+  for (const shape of [CHANNEL_CALLED, CHANNEL_BEFORE, CHANNEL_AFTER, CHANNEL_NEW_IN]) {
     const found = shape.exec(question)?.[1];
     const name = found === undefined ? undefined : cleanChannel(found);
     if (name !== undefined) return name;
@@ -115,7 +117,7 @@ export function chatAsk(question: string): boolean {
     const found = shape.exec(question)?.[1];
     if (found !== undefined && cleanName(found) !== undefined) return true;
   }
-  return CHANNEL_HASH.test(question) || CHANNEL_CALLED.test(question) || CHANNEL_BEFORE.test(question);
+  return CHANNEL_HASH.test(question) || CHANNEL_CALLED.test(question) || CHANNEL_BEFORE.test(question) || CHANNEL_NEW_IN.test(question);
 }
 
 // ---- backwards windows in the owner's zone -------------------------------------------------------

@@ -21,7 +21,9 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { CallResult, CompletedResult, EndpointConfig, McpPort, ResultScope } from '../adapters/mcp/port.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { GOOGLE_FAMILIES, GOOGLE_TOOLS, createGoogleReader, type GoogleConfig, type GoogleEvidence, type GoogleResult } from '../connectors/index.js';
-import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, type GcalListInput } from '../connectors/google.js';
+import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, googleMcpPathUnsafe, type GcalListInput } from '../connectors/google.js';
+import { gmailAccount, noteGmailAccount } from '../tools/open-handles.js';
+import { safeEvent } from '../host/log.js';
 import { GOOGLE_ERROR_TABLE, UNKNOWN_HELPER_OWNER_LINE, UNKNOWN_HELPER_REASON, decodeGoogleEnvelope, googleErrorEntry, googleOwnerLine, googleToolStatus, readGooglePayload, renderGoogleTool } from '../tools/google.js';
 import { GMAIL_LIST_MESSAGES } from '../tools/live-shape.js';
 import { configuredSourcesForEndpoints, plainReason, type ConfiguredEndpointStatus } from '../tools/research.js';
@@ -80,14 +82,16 @@ function adapterOf(evidence: GoogleEvidence): McpPort {
   return port;
 }
 
-test('google envelope is exactly the five read tools and the family split; a decoy write tool is outside it', () => {
-  assert.deepEqual([...GOOGLE_TOOLS], ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message', 'calendar_list_calendars', 'calendar_list_events']);
+test('google envelope is exactly the seven read tools and the family split; a decoy write tool is outside it', () => {
+  assert.deepEqual([...GOOGLE_TOOLS], ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message', 'calendar_list_calendars', 'calendar_list_events', 'drive_search_files', 'drive_get_file']);
   assert.deepEqual([...GOOGLE_FAMILIES.gmail], ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message']);
   assert.deepEqual([...GOOGLE_FAMILIES.calendar], ['calendar_list_calendars', 'calendar_list_events']);
+  assert.deepEqual([...GOOGLE_FAMILIES.drive], ['drive_search_files', 'drive_get_file']);
   assert.equal((GOOGLE_TOOLS as readonly string[]).includes('gmail_send'), false);
 });
 
 test('a granted google endpoint calls the real child with bounded defaults and bounded, partial-marked projections', async () => {
+  noteGmailAccount(undefined);
   const { dir, pidFile } = scratch();
   const registry = new McpRegistry();
   registry.register(config('local-stdio', 'ok', pidFile));
@@ -105,7 +109,7 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     assert.equal(listProjection.partial, false);
     assert.match(listProjection.text, /Synthetic subject line & more \| from: Synthetic Sender \| date: Mon, 1 Jan 2024 00:00:00 \+0000 \| it's <ready> to read/);
     assert.equal(/https?:\/\//.test(listProjection.text), false, 'gmail model text holds no raw url');
-    assert.deepEqual(listProjection.sources, [{ title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#inbox/m1', sourceType: 'gmail' }, { title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#inbox/m2', sourceType: 'gmail' }]);
+    assert.deepEqual(listProjection.sources, [{ title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#all/t1', sourceType: 'gmail' }, { title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#all/t2', sourceType: 'gmail' }]);
 
     const outOfBudget = await gmail.gmailList({ maxResults: 999 });
     assert.equal(outOfBudget.state, 'refused');
@@ -141,7 +145,7 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     const eventProjection = renderGoogleTool('calendar_list_events', (calendarEnvelope['data'] as Record<string, unknown>));
     assert.match(eventProjection.text, /2024-01-01T09:00:00Z, Synthetic standup, Room 1/);
     assert.equal(/https?:\/\//.test(eventProjection.text), false, 'calendar model text holds no raw url');
-    assert.deepEqual(eventProjection.sources, [{ title: 'Calendar: Synthetic standup', url: 'https://calendar.google.com/event?eid=e1', sourceType: 'calendar' }]);
+    assert.deepEqual(eventProjection.sources, [{ title: 'Calendar: Synthetic standup', url: 'https://www.google.com/calendar/event?eid=c3ludGhldGljLWUx', sourceType: 'calendar' }]);
   } finally {
     await adapter.close();
     rmSync(dir, { recursive: true, force: true });
@@ -381,6 +385,7 @@ test('an ungranted tool name is refused before dispatch even when the remote lis
 });
 
 test('the owner composes the google tool table and a Live-shaped gmail_search_messages call reaches the fixture and returns projected Markdown', async () => {
+  noteGmailAccount(undefined);
   const dir = mkdtempSync(join(tmpdir(), 'didi-google-owner-'));
   const { dir: childDir, pidFile } = scratch();
   const store = new Store(join(dir, 'data'), toolsMigrations);
@@ -432,7 +437,7 @@ test('the owner composes the google tool table and a Live-shaped gmail_search_me
     assert.equal(stored.response['tool'], 'gmail_search_messages');
     assert.match(String(stored.response['text']), /Synthetic subject line & more \| from: Synthetic Sender \| date: Mon, 1 Jan 2024/);
     assert.equal(/https?:\/\//.test(String(stored.response['text'])), false, 'gmail model text holds no raw url');
-    assert.deepEqual(stored.response['sources'], [{ title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#inbox/m1', sourceType: 'gmail' }, { title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#inbox/m2', sourceType: 'gmail' }]);
+    assert.deepEqual(stored.response['sources'], [{ title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#all/t1', sourceType: 'gmail' }, { title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#all/t2', sourceType: 'gmail' }]);
   } finally {
     await adapter.close();
     store.close();
@@ -932,4 +937,144 @@ test('#574: one named calendar asks for attendees and organizer too, and an olde
   const old = fakeCalendarPort({ calendars: [{ id: 'a', summary: 'Alpha' }], eventsFor: () => timedEvent });
   await (await calendarReader(old.port)).gcalList({ calendarId: 'a' });
   assert.equal('include' in old.listArgs[0]!, false, 'the old helper refuses any argument it does not declare');
+});
+
+// C-OPEN 2: the Drive family (lux-cli wagon W4, C-DRIVE.md schemas), against the synthetic child only.
+test('C-OPEN 2: a Drive endpoint searches names and reads one file, and its projection mints from webViewLink only', async () => {
+  const { dir, pidFile } = scratch();
+  const registry = new McpRegistry();
+  registry.register(config('local-stdio', 'drive', pidFile));
+  const adapter = adapterFor(registry);
+  try {
+    const digest = await discoverAndApprove(registry, adapter, 'local-stdio', GOOGLE_FAMILIES.drive);
+    const drive = readerFor(adapter, registry, digest, { family: 'drive' });
+    const found = completed(await drive.driveSearch({ query: 'harbour', mime_types: ['application/vnd.google-apps.presentation'], limit: 5 }));
+    payloadPorts.set(found, adapter);
+    const envelope = envelopeOf(found);
+    assert.deepEqual(envelope['received'], { query: 'harbour', mime_types: ['application/vnd.google-apps.presentation'], limit: 5 });
+    const projected = projectGoogleResult(adapter, found);
+    assert.ok(projected.ok);
+    if (!projected.ok) return;
+    assert.ok(projected.projection.text.includes('Harbour review deck (old)'));
+    assert.equal(/^open: /m.test(projected.projection.text), false, 'two matches mint nothing');
+    const one = completed(await drive.driveGet({ file_id: 'SyntheticDeckOld01' }));
+    const read = projectGoogleResult(adapter, one);
+    assert.ok(read.ok);
+    if (!read.ok) return;
+    assert.match(read.projection.text, /^open: L\d+ = Drive: Harbour review deck \(old\)$/m);
+    assert.equal(/https?:\/\//.test(read.projection.text), false);
+    assert.equal((await drive.driveSearch({ query: 'harbour', limit: 11 })).state, 'refused', 'the limit is 1 to 10');
+    assert.equal((await drive.driveSearch({ query: '' })).state, 'refused');
+    assert.equal((await drive.driveGet({ file_id: '../x' })).state, 'refused', 'a file id is an opaque token, never a path');
+    assert.equal((await drive.driveSearch({ query: 'harbour', modified_after: 'yesterday' })).state, 'refused');
+    // The Drive reader never calls a tool of another family, and another family never calls Drive.
+    const gmail = readerFor(adapter, registry, digest, { family: 'gmail' });
+    assert.equal((await gmail.gmailList({})).state, 'refused');
+  } finally {
+    await adapter.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+for (const [code, family, line] of [
+  ['scope_missing', 'drive', 'Drive needs a one-time consent first: run lux-google-mcp authorize --family drive once'],
+  ['not_found', 'drive', 'that Drive file is not there any more, or it is not shared with him'],
+] as const) {
+  test(`C-OPEN 2: the Drive error ${code} is a typed reason with its own line, never a crash`, async () => {
+    const { dir, pidFile } = scratch();
+    const registry = new McpRegistry();
+    registry.register(config('local-stdio', `drive-code:${code}`, pidFile));
+    const adapter = adapterFor(registry);
+    try {
+      const digest = await discoverAndApprove(registry, adapter, 'local-stdio', GOOGLE_FAMILIES.drive);
+      const drive = readerFor(adapter, registry, digest, { family: family });
+      const result = await drive.driveSearch({ query: 'harbour' });
+      assert.equal(result.state, 'tool-error');
+      if (result.state !== 'tool-error') return;
+      const status = googleToolStatus(result);
+      assert.equal(status?.code, code);
+      assert.equal(status?.reason, line);
+      assert.equal(status?.log, undefined, 'a typed Drive refusal is not a Didi defect');
+    } finally {
+      await adapter.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test('C-OPEN 6: a Google helper command or interpreter under the reports folder is unsafe wiring', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-path-'));
+  try {
+    const home = join(dir, 'home');
+    const reports = join(home, '.lux', 'reports', 'lane', '.venv', 'bin');
+    const safe = join(dir, 'opt', 'bin');
+    mkdirSync(reports, { recursive: true }); mkdirSync(safe, { recursive: true });
+    writeFileSync(join(reports, 'python3'), '');
+    writeFileSync(join(reports, 'google-mcp'), `#!${join(reports, 'python3')}\nprint(1)\n`);
+    writeFileSync(join(safe, 'lux-google-mcp'), `#!${join(reports, 'python3')}\nprint(1)\n`);
+    writeFileSync(join(safe, 'clean-google-mcp'), '#!/usr/bin/env python3\nprint(1)\n');
+    assert.equal(googleMcpPathUnsafe(join(reports, 'google-mcp'), home), true, 'the command itself sits under reports');
+    assert.equal(googleMcpPathUnsafe(join(safe, 'lux-google-mcp'), home), true, 'the interpreter it names sits under reports');
+    assert.equal(googleMcpPathUnsafe(join(safe, 'clean-google-mcp'), home), false);
+    assert.equal(googleMcpPathUnsafe(join(safe, 'missing'), home), false, 'a missing file is the connector\'s own failure, not this notice');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('C-OPEN 6: host start logs google_mcp_path_unsafe and the connection row carries the notice', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-guard-'));
+  const { dir: childDir, pidFile } = scratch();
+  const configDir = join(dir, 'provider-config');
+  const home = join(dir, 'home');
+  const reports = join(home, '.lux', 'reports', 'lane');
+  mkdirSync(reports, { recursive: true });
+  const script = join(reports, 'google-mcp');
+  writeFileSync(script, `#!/bin/sh\nexec "${process.execPath}" "$@"\n`, { mode: 0o700 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const env = { HOME: join(tmpdir(), 'didi-google-home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' };
+  const entry = { id: 'gmail', transport: 'stdio', command: script, args: [child, 'gmail-only', pidFile], env, connector: 'google', account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' };
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [entry] }), { mode: 0o600 });
+  const events: unknown[] = [];
+  noteGmailAccount(undefined);
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, home, lookupAuthority: async () => null, lifecycleLog: event => events.push(event) });
+  try {
+    const unsafe = events.filter(event => (event as { event?: string }).event === 'google_mcp_path_unsafe');
+    assert.deepEqual(unsafe, [{ event: 'google_mcp_path_unsafe', endpointId: 'gmail' }]);
+    assert.deepEqual(safeEvent(unsafe[0]), unsafe[0], 'the host log admits the line');
+    const report = runtime.status().endpoints.find(endpoint => endpoint.id === 'gmail');
+    assert.equal(report?.warning, 'google_mcp_path_unsafe');
+    assert.equal(report?.state, 'connected', 'the notice never stops a working connector');
+    assert.equal(gmailAccount(), 'owner@example.invalid', 'the proven Gmail account is what a Gmail link names');
+  } finally {
+    await runtime.close();
+    store.close();
+    noteGmailAccount(undefined);
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(childDir, { recursive: true, force: true });
+  }
+});
+
+test('C-OPEN 2: a Drive endpoint connects with only the Drive pair and its source is drive', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-drive-host-'));
+  const { dir: childDir, pidFile } = scratch();
+  const configDir = join(dir, 'provider-config');
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const env = { HOME: join(tmpdir(), 'didi-google-home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' };
+  const entry = { id: 'drive', transport: 'stdio', command: process.execPath, args: [child, 'drive', pidFile], env, connector: 'google', account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' };
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [entry] }), { mode: 0o600 });
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+  try {
+    const grant = runtime.registry.currentGrant('drive');
+    assert.deepEqual([...(grant?.toolNames ?? [])].sort(), ['drive_get_file', 'drive_search_files']);
+    const report = runtime.status().endpoints.find(endpoint => endpoint.id === 'drive');
+    assert.equal(report?.state, 'connected');
+    assert.equal(report?.warning, undefined);
+    assert.deepEqual(configuredSourcesForEndpoints([{ id: 'drive', connector: 'google', state: 'error', reasonCode: 'credential_missing' }]), [{ source: 'drive', reason: 'credential_missing' }]);
+  } finally {
+    await runtime.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(childDir, { recursive: true, force: true });
+  }
 });

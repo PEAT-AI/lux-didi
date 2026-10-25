@@ -1336,6 +1336,27 @@ test('the open paragraph says what she can open, names open_source, and carries 
   assert.equal(/https?:|\/\/|\.com|\.google/.test(NAYA_OPEN_SURFACE), false, 'the open paragraph carries no url or host');
 });
 
+test('C-OPEN 8: the open paragraph sends a document, deck or sheet to Drive and asks before opening one of several', async () => {
+  const { NAYA_OPEN_SURFACE, NAYA_VOICE_TOOLS } = await import('../prompt/live-persona.js');
+  const { DRIVE_CHOOSE_GUIDANCE } = await import('../tools/live-shape.js');
+  assert.match(NAYA_OPEN_SURFACE, /documents and decks in his Drive/);
+  assert.match(NAYA_OPEN_SURFACE, /for a document, deck or sheet use a drive lookup/);
+  assert.match(NAYA_OPEN_SURFACE, /If a drive lookup lists several files and no handle, ask which one, then look up his pick by its id\./);
+  assert.match(NAYA_OPEN_SURFACE, /Say it opened only after the open tool returned opened\./);
+  assert.match(NAYA_OPEN_SURFACE, /Never read a handle or web address aloud\./);
+  assert.equal(NAYA_VOICE_TOOLS.includes('Search again only when needed.'), false, 'the older open paragraph folded into this one');
+  // The tool result that asks is product text too: it names what to say and never invites reading an id or a link.
+  assert.match(DRIVE_CHOOSE_GUIDANCE, /none is open/);
+  assert.match(DRIVE_CHOOSE_GUIDANCE, /two or three names with their modified dates/);
+  assert.match(DRIVE_CHOOSE_GUIDANCE, /Never read an id aloud\./);
+  assert.equal(/https?:|\/\/|\.com|\.google/.test(DRIVE_CHOOSE_GUIDANCE), false);
+});
+
+test('C-OPEN 8: the shared evidence guide names drive and its reread by id', async () => {
+  const { EVIDENCE_SOURCES_GUIDE } = await import('../prompt/backend-procedure.js');
+  assert.match(EVIDENCE_SOURCES_GUIDE, /drive finds his own documents, decks and sheets by file name; a drive query of id: and a returned file id reads that one file again\./);
+});
+
 test('O-R2: the open paragraph asks for several sources in one research call with its lookups list', async () => {
   const { NAYA_OPEN_SURFACE } = await import('../prompt/live-persona.js');
   assert.match(NAYA_OPEN_SURFACE, /one research call/);

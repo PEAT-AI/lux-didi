@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // Synthetic stdio MCP child for check-google-connector.sh.
 // No real account, network, credential or application file is touched. It exposes the five
-// Gmail/Calendar read tools plus a decoy write tool so a test can prove the write is never granted.
-// argv[2] = mode (ok | credential | flaky | code:<helper code> | first:<helper code> | first-mail:<helper code>),
+// Gmail/Calendar read tools (decoy mode adds the Drive pair) plus a decoy write tool so a test can prove
+// the write is never granted.
+// argv[2] = mode (ok | credential | flaky | gmail-only | drive | drive-code:<helper code> | code:<helper code> |
+// first:<helper code> | first-mail:<helper code>),
 // argv[3] = pid file.
 // flaky fails the first calendar_list_events call with the credential error and succeeds afterwards.
 // code:<helper code> fails every tool call with that one code, so a test maps each published code
@@ -28,8 +30,22 @@ const BASE_TOOLS = [
   { name: 'calendar_list_calendars', description: 'Synthetic calendar list', inputSchema: { type: 'object', properties: { maxResults: { type: 'integer' }, pageToken: { type: 'string' } }, additionalProperties: false } },
   { name: 'calendar_list_events', description: 'Synthetic event list', inputSchema: { type: 'object', properties: { calendarId: { type: 'string' }, maxResults: { type: 'integer' }, pageToken: { type: 'string' } }, additionalProperties: false } },
 ];
+// C-DRIVE schemas (lux-cli drive family): read-only metadata, webViewLink only.
+const DRIVE_TOOLS = [
+  { name: 'drive_search_files', description: 'Synthetic Drive name search', inputSchema: { type: 'object', properties: { query: { type: 'string' }, mime_types: { type: 'array', items: { type: 'string' } }, modified_after: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 10 } }, required: ['query'], additionalProperties: false } },
+  { name: 'drive_get_file', description: 'Synthetic Drive file read', inputSchema: { type: 'object', properties: { file_id: { type: 'string' } }, required: ['file_id'], additionalProperties: false } },
+];
 const DECOY = { name: 'gmail_send', description: 'Decoy write tool that must never be granted', inputSchema: { type: 'object', properties: { to: { type: 'string' } }, additionalProperties: false } };
-const TOOLS = mode === 'decoy' ? [...BASE_TOOLS, DECOY] : BASE_TOOLS;
+// gmail-only publishes the mailbox family alone, drive and drive-code:<code> the Drive family alone, as the
+// installed helper does per endpoint.
+const TOOLS = mode === 'decoy' ? [...BASE_TOOLS, ...DRIVE_TOOLS, DECOY]
+  : mode === 'gmail-only' ? BASE_TOOLS.filter(tool => tool.name.startsWith('gmail_'))
+  : mode === 'drive' || mode.startsWith('drive-code:') ? DRIVE_TOOLS : BASE_TOOLS;
+const DRIVE_OWNERS = [{ displayName: 'Synthetic Owner', emailAddress: 'owner@example.invalid' }];
+const DRIVE_FILES = [
+  { id: 'SyntheticDeckNew01', name: 'Harbour review deck', mimeType: 'application/vnd.google-apps.presentation', modifiedTime: '2026-10-24T08:00:00.000Z', owners: DRIVE_OWNERS, webViewLink: 'https://docs.google.com/presentation/d/SyntheticDeckNew01/edit?usp=drivesdk' },
+  { id: 'SyntheticDeckOld01', name: 'Harbour review deck (old)', mimeType: 'application/vnd.google-apps.presentation', modifiedTime: '2026-09-02T08:00:00.000Z', owners: DRIVE_OWNERS, webViewLink: 'https://docs.google.com/presentation/d/SyntheticDeckOld01/edit?usp=drivesdk' },
+];
 
 const headers = { Subject: 'Synthetic subject line', From: 'Synthetic Sender <sender@example.invalid>', Date: 'Mon, 1 Jan 2024 00:00:00 +0000' };
 // The real child's gmail_search_messages builds each entry from a metadata GET: `headers` is an array of
@@ -54,13 +70,20 @@ function dataFor(name, args) {
   // The real helper's primary calendar id is the account's own address, which is what the connector
   // reads as the Google identity; the synthetic child answers the same shape.
   if (name === 'calendar_list_calendars') return { calendars: [{ id: 'owner@example.invalid', summary: 'Primary', primary: true }, { id: 'work', summary: 'Work' }] };
-  if (name === 'calendar_list_events') return { events: [{ id: 'e1', summary: 'Synthetic standup', location: 'Room 1', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e1' }] };
+  // The real event link shape: host www.google.com, path /calendar/event and an eid (synthetic value).
+  if (name === 'calendar_list_events') return { events: [{ id: 'e1', summary: 'Synthetic standup', location: 'Room 1', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://www.google.com/calendar/event?eid=c3ludGhldGljLWUx' }] };
+  if (name === 'drive_search_files') {
+    const words = String(args.query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+    const files = DRIVE_FILES.filter(file => words.every(word => file.name.toLowerCase().includes(word)));
+    return { files: files.slice(0, Number.isInteger(args.limit) ? args.limit : 5), total_hint: files.length };
+  }
+  if (name === 'drive_get_file') return { ...(DRIVE_FILES.find(file => file.id === args.file_id) ?? DRIVE_FILES[0]), trashed: false };
   return { written: true };
 }
 
 function envelopeFor(name, args) {
   return {
-    family: name.startsWith('gmail') ? 'gmail' : 'calendar',
+    family: name.startsWith('gmail') ? 'gmail' : name.startsWith('drive') ? 'drive' : 'calendar',
     tool: name,
     method: name,
     account: { configured: 'configured', provider: null },
@@ -81,7 +104,7 @@ server.setRequestHandler('tools/call', request => {
   const args = request.params?.arguments ?? {};
   if (pidFile) appendFileSync(`${pidFile}.calls`, `${name}\n`);
   const failsFirstMail = mode.startsWith('first-mail:') && name === 'gmail_search_messages' && mailCalls++ === 0;
-  if (mode.startsWith('code:') || (mode.startsWith('first:') && toolCalls++ === 0) || failsFirstMail) {
+  if (mode.startsWith('code:') || mode.startsWith('drive-code:') || (mode.startsWith('first:') && toolCalls++ === 0) || failsFirstMail) {
     const code = mode.slice(mode.indexOf(':') + 1);
     return { content: [{ type: 'text', text: `${code}: synthetic helper refusal` }], isError: true };
   }

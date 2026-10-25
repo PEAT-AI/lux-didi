@@ -48,7 +48,7 @@ test('the receipt names the scheme or extension and never the URL path or file n
 
 test('the destination policy parses the url, matches an exact host and keeps a viewer path', () => {
   assert.equal(openDestination('https://mail.google.com/mail/u/0/#inbox/19c')?.kind, 'gmail');
-  assert.equal(openDestination('https://calendar.google.com/event?eid=e1')?.kind, 'calendar');
+  assert.equal(openDestination('https://www.google.com/calendar/event?eid=e1')?.kind, 'calendar');
   assert.equal(openDestination('https://docs.google.com/document/d/ABC/edit')?.kind, 'docs');
   assert.equal(openDestination('https://docs.google.com/presentation/d/ABC/edit')?.kind, 'docs');
   assert.equal(openDestination('https://drive.google.com/file/d/ABC/view')?.kind, 'drive');
@@ -68,7 +68,7 @@ test('the destination policy parses the url, matches an exact host and keeps a v
 });
 
 test('a shaped calendar result carries a handle and never a url in the model text', () => {
-  const shaped = shapeGcalList({ events: [{ summary: 'Standup', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e1' }] });
+  const shaped = shapeGcalList({ events: [{ summary: 'Standup', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://www.google.com/calendar/event?eid=e1' }] });
   assert.equal(/https?:\/\//.test(shaped.text), false, 'the model text carries no url');
   const handle = /^open: (L\d+) = Calendar: Standup$/m.exec(shaped.text)?.[1];
   assert.ok(handle, 'the calendar item minted a handle line');
@@ -78,7 +78,7 @@ test('a shaped calendar result carries a handle and never a url in the model tex
   const entry = resolveHandle(handle)!;
   assert.equal(entry.kind, 'calendar');
   assert.equal(entry.provenance, 'structured');
-  assert.deepEqual(openTarget('open_source', { handle }, 'open it'), { target: { action: 'open_url', target: 'https://calendar.google.com/event?eid=e1', detail: 'calendar', kind: 'calendar', title: 'Calendar: Standup' } });
+  assert.deepEqual(openTarget('open_source', { handle }, 'open it'), { target: { action: 'open_url', target: 'https://www.google.com/calendar/event?eid=e1', detail: 'calendar', kind: 'calendar', title: 'Calendar: Standup' } });
 });
 
 test('a gmail list mints one handle per thread and keeps it on that thread line', () => {
@@ -90,7 +90,7 @@ test('a gmail list mints one handle per thread and keeps it on that thread line'
   for (const line of lines) assert.match(line, /^open: L\d+ = Open in Gmail$/, 'a thread with no subject opens as Open in Gmail');
   const handle = /^open: (L\d+) =/m.exec(shaped.text)![1]!;
   exposeHandles(shaped.text);
-  assert.deepEqual(openTarget('open_source', { handle }, 'open it'), { target: { action: 'open_url', target: 'https://mail.google.com/mail/u/0/#inbox/m0', detail: 'gmail', kind: 'gmail', title: 'Open in Gmail' } });
+  assert.deepEqual(openTarget('open_source', { handle }, 'open it'), { target: { action: 'open_url', target: 'https://mail.google.com/mail/u/0/#all/m0', detail: 'gmail', kind: 'gmail', title: 'Open in Gmail' } });
 });
 
 test('a knowledge body link mints a knowledge_body handle and every hostile shape mints none', () => {
@@ -116,7 +116,7 @@ test('an unknown handle is not_found with the sentence she says aloud', () => {
 
 test('a handle minted in one live session is not_found in the next', () => {
   beginHandleSession('run-a');
-  const shaped = shapeGcalList({ events: [{ summary: 'Standup', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e9' }] });
+  const shaped = shapeGcalList({ events: [{ summary: 'Standup', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://www.google.com/calendar/event?eid=e9' }] });
   const handle = /^open: (L\d+) =/m.exec(shaped.text)![1]!;
   exposeHandles(shaped.text);
   assert.ok(resolveHandle(handle));
@@ -185,7 +185,7 @@ test('Open2-1: a handle the model was never shown does not resolve, and the show
 
 test('Open2-2: the opened result names the kind and the safe title, never a url', () => {
   beginHandleSession('live-open2-title');
-  const shaped = shapeGcalList({ events: [{ summary: 'OCP alignment review', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e1' }] });
+  const shaped = shapeGcalList({ events: [{ summary: 'OCP alignment review', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://www.google.com/calendar/event?eid=e1' }] });
   exposeHandles(shaped.text);
   const handle = /^open: (L\d+) =/m.exec(shaped.text)![1]!;
   const resolved = openTarget('open_source', { handle }, 'open it');
@@ -242,9 +242,18 @@ test('Open2-5: a claimed open with no receipt is corrected once, with closed rea
   endHandleSession('live-open2-claim');
 });
 
-test('Open2-3: a mail body link mints a mail_body handle under the same destination policy', () => {
+test('C-OPEN 2: a link inside a mail body never mints a handle; only the message itself opens', () => {
   beginHandleSession('live-open2-mail');
-  const shaped = shapeGmailRead({ id: 'm1', body: 'Here is the deck: https://docs.google.com/presentation/d/ABC/edit and the notes.', bodyCoverage: { complete: true } });
+  const shaped = shapeGmailRead({ id: 'm1', threadId: 't1', body: 'Here is the deck: https://docs.google.com/presentation/d/ABC/edit and the notes.', bodyCoverage: { complete: true } });
+  const handles = [...shaped.text.matchAll(/^open: (L\d+) = (.*)$/gm)];
+  assert.equal(handles.length, 1, shaped.text);
+  assert.match(handles[0]![2]!, /^Gmail: /, 'the one handle is the message, not the deck in its body');
+  exposeHandles(shaped.text);
+  assert.equal(resolveHandle(handles[0]![1]!)!.kind, 'gmail');
+  const hostile = shapeGmailRead({ id: 'm2', body: 'deck: https://docs.google.com.evil.example/presentation/d/ABC/edit', bodyCoverage: { complete: true } });
+  assert.equal([...hostile.text.matchAll(/^open: L\d+ = Slides/gm)].length, 0, 'an off-policy body link mints nothing');
+  endHandleSession('live-open2-mail');
+});
   const line = /^open: (L\d+) = Slides \(from knowledge note\)$/m.exec(shaped.text);
   assert.equal(line, null, 'a mail body is not a knowledge note');
   const handle = /^open: (L\d+) = Slides$/m.exec(shaped.text)?.[1];
@@ -372,7 +381,7 @@ test('OPEN2-R5 F5: a mid-line lookalike in delivered content never exposes a min
 
 test('OPEN2-R5 F5: the calendar handle carried inline on the day line still opens', () => {
   beginHandleSession('live-open2-inline');
-  const shaped = shapeGcalList({ events: [{ summary: 'Standup', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e1' }] });
+  const shaped = shapeGcalList({ events: [{ summary: 'Standup', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://www.google.com/calendar/event?eid=e1' }] });
   const handle = /^open: (L\d+) = Calendar: Standup$/m.exec(shaped.text)![1]!;
   const dayLine = `- Mon 1 Jan: 09:00 Standup ; open: ${handle} = Calendar: Standup`;
   exposeToolResults([{ response: { findings: [{ source: 'calendar', text: dayLine, chars: dayLine.length }] } }]);

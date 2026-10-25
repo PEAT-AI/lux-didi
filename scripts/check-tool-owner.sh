@@ -28,10 +28,16 @@ cp "$root/server/adapters/live-voice/types.ts" "$out/source/adapters/live-voice/
 cp "$root/server/test/tool-owner.test.ts" "$out/source/test/"
 cp "$root/server/test/live-shape.test.ts" "$out/source/test/"
 cp "$root/server/test/redact.test.ts" "$out/source/test/"
+cp "$root/server/test/open-destinations.test.ts" "$out/source/test/"
+# C-OPEN 1: one destination table and both allowlist sources, so the host and native lists stay identical.
+mkdir -p "$out/dist/test/fixtures"
+cp "$root/server/test/fixtures/open-destinations.json" "$root/server/test/fixtures/open-evals.json" "$out/dist/test/fixtures/"
+cp "$root/server/tools/open-handles.ts" "$out/dist/test/fixtures/parity-open-handles.ts"
+cp "$root/Sources/LuxDidi/NativeActions.swift" "$out/dist/test/fixtures/parity-NativeActions.swift"
 printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$deps" "$out/node_modules"
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters \
   --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
-  "$out/source/test/tool-owner.test.ts" "$out/source/test/live-shape.test.ts" "$out/source/test/redact.test.ts"
-node_test_files --test-timeout=15000 "$out/dist/test/tool-owner.test.js" "$out/dist/test/live-shape.test.js" "$out/dist/test/redact.test.js"
+  "$out/source/test/tool-owner.test.ts" "$out/source/test/live-shape.test.ts" "$out/source/test/redact.test.ts" "$out/source/test/open-destinations.test.ts"
+node_test_files --test-timeout=15000 "$out/dist/test/tool-owner.test.js" "$out/dist/test/live-shape.test.js" "$out/dist/test/redact.test.js" "$out/dist/test/open-destinations.test.js"

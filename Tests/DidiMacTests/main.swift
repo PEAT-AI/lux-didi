@@ -656,6 +656,32 @@ expect(miniScreen.contains(halfOff) && halfOff.size == CGSize(width: 220, height
 let goneDisplay = MiniOrbFrameRestore.resolve(CGRect(x: 1600, y: 100, width: 300, height: 300), screens: [miniScreen])
 expect(miniScreen.contains(goneDisplay), "a frame left on a removed display is clamped into the remaining screen")
 
+// C-OPEN 7: the page's window.confirm is a native sheet. OK answers true, Cancel false, and a frame,
+// page or window the policy does not trust answers false without showing anything.
+MainActor.assumeIsolated {
+    let confirmWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+    var shown: [String] = []
+    var answers: [Bool] = []
+    let okThenCancel: ConfirmPanel.Present = { message, window, answer in
+        shown.append(message)
+        expect(window === confirmWindow, "the sheet attaches to the page's own window")
+        answer(true); answer(false)
+    }
+    let cancel: ConfirmPanel.Present = { message, _, answer in shown.append(message); answer(false) }
+    ConfirmPanel.answer(message: "Delete this memory permanently?", fromMainFrame: true, approvedPage: true, window: confirmWindow, present: okThenCancel) { answers.append($0) }
+    expect(answers == [true] && shown == ["Delete this memory permanently?"], "OK answers the page true, exactly once")
+    ConfirmPanel.answer(message: "Delete this memory permanently?", fromMainFrame: true, approvedPage: true, window: confirmWindow, present: cancel) { answers.append($0) }
+    expect(answers == [true, false], "Cancel answers the page false")
+    let before = shown.count
+    ConfirmPanel.answer(message: "subframe", fromMainFrame: false, approvedPage: true, window: confirmWindow, present: okThenCancel) { answers.append($0) }
+    ConfirmPanel.answer(message: "foreign page", fromMainFrame: true, approvedPage: false, window: confirmWindow, present: okThenCancel) { answers.append($0) }
+    ConfirmPanel.answer(message: "no window", fromMainFrame: true, approvedPage: true, window: nil, present: okThenCancel) { answers.append($0) }
+    expect(answers == [true, false, false, false, false] && shown.count == before, "a subframe, a foreign page or a missing window is refused unseen")
+    ConfirmPanel.answer(message: String(repeating: "x", count: 2_000), fromMainFrame: true, approvedPage: true, window: confirmWindow, present: cancel) { _ in }
+    expect(shown.last?.count == ConfirmPanel.messageLimit, "a page message is clipped to the panel limit")
+    confirmWindow.close()
+}
+
 print("MAC-SEAMS PASS duration=\(Date().timeIntervalSince(testStarted))s file=Tests/DidiMacTests/main.swift")
 
 let connectionRows = try JSONDecoder().decode([NativeLiveConnection].self, from: Data("[{\"id\":\"calendar\",\"state\":\"error\",\"reasonCode\":\"credential_missing\"}]".utf8))

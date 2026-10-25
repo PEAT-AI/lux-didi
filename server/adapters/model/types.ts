@@ -78,7 +78,9 @@ export function isMcpFailureStage(value: string): value is McpFailureStage {
 export function isToolFailureCode(value: string): value is ToolFailureCode {
   return (TOOL_FAILURE_CODES as readonly string[]).includes(value);
 }
-export type ToolOutcome = { status: 'completed'; result: ToolResultRef } | { status: 'failed' | 'unknown'; code?: ToolFailureCode };
+export type ToolOutcome = { status: 'completed'; result: ToolResultRef } | { status: 'failed' | 'unknown'; code?: ToolFailureCode;
+  /** #637: the tool's own words for the failure, beside the unchanged closed code. Never a class or a code. */
+  reason?: string };
 export interface ToolCallJournal {
   intent(call: ToolCallIntent, validatedArguments?: unknown): 'fresh' | 'existing';
   refuse(call: ToolCallRefusal, reason: string): ToolResultRef;

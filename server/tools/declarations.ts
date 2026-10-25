@@ -125,7 +125,9 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
           if (!outcome || !['completed', 'failed', 'unknown'].includes(outcome.status)) throw Error('invalid_tool_outcome');
           record.status = outcome.status;
           const code = outcome.status === 'completed' ? undefined : outcome.code;
-          record.reason = code && isToolFailureCode(code) ? code : 'handler_outcome';
+          // #637: a tool that hands its own words for the failure keeps them on the record, so the code
+          // stays closed and the words travel beside it; every tool that names only a code is unchanged.
+          record.reason = (outcome.status === 'completed' ? undefined : outcome.reason) ?? (code && isToolFailureCode(code) ? code : 'handler_outcome');
         }
       } catch (error) {
         record.status = dispatched ? (tool?.effect === 'write' ? 'unknown' : 'failed') : 'refused';

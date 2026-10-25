@@ -313,7 +313,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       return store.transaction(tx => {
         if (exactIntent(tx, call).state !== 'intent') throw Error('terminal_immutable'); validateCallRun(tx, call);
         const code = isToolFailureCode(reason) ? reason : status === 'unknown' ? 'tool_unknown' : 'tool_failed';
-        return persistTerminal(tx, call, status, { response: { status, reason: code }, dataClasses: [] });
+        return persistTerminal(tx, call, status, { response: { status, reason: code, ...(reason === code ? {} : { detail: reason }) }, dataClasses: [] });
       });
     },
   };
@@ -694,7 +694,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                   // Keep the failure cause truthful: a refused connector read names its reason; a child
                   // tool/protocol error is an unusable result. Either way surface a real code.
                   const failureCode = evidence.state === 'refused' ? dispatchedFailureCode(evidence.reason) : 'invalid_result';
-                  return { status: 'failed', code: failureCode };
+                  // #637: a refused connector read keeps its own words beside the unchanged code, so a
+                  // channel the connector does not know can be said in the owner's words downstream.
+                  return { status: 'failed', code: failureCode, ...(evidence.state === 'refused' ? { reason: evidence.reason } : {}) };
                 }
                 // A classified failure is visible: the endpoint flips to configured and the call
                 // returns the plain reason as its projection, never an empty success. A status that

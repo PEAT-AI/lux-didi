@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, candidateSubs, fallbackSelection, lookupBound, normalizeLookups, ownerScheduleQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
+  CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, chatAttentionReason, candidateSubs, fallbackSelection, lookupBound, normalizeLookups, ownerScheduleQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
   validateResearch,
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchRoutedLog, type ResearchSubcallLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
@@ -491,6 +491,10 @@ test('#637: an unknown channel is its own closed reason in the note and the cove
   assert.equal(note.includes('found nothing matching'), false, 'an unknown channel is never voiced as an empty search');
   assert.equal(note.includes('could not reach'), false, 'and never as a chat that could not be reached');
   assert.match(String(reply['coverage']), /chat channel_not_found/u);
+  // F3 (CHANNELS-R2): the chat receipt names the miss instead of clamping it to a bare refused.
+  const miss = { key: 'c0', name: 'mattermost_search', ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'channel-not-found: AI; closest names: AI Team' };
+  assert.equal(chatAttentionReason([miss]), 'channel_not_found');
+  assert.ok(CHAT_RECEIPT_REASONS.includes('channel_not_found'), 'and the closed receipt vocabulary carries the token');
 });
 
 test('P5-R5: a routed read that returns a failure is failed, never empty', async () => {

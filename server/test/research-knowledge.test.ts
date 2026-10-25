@@ -183,7 +183,7 @@ test('ROUTE-1022: a body read is never clipped by the host, and the search windo
   const deepBody = `${'Deep body sentence. '.repeat(400)}End of the entry.`;
   const named = shapeBlock('knowledge_search', [sub('get_insight', `### Release 3p scope [id 412]\n${deepBody}`, true, 'kr0')]);
   assert.ok(named.lines[0]!.includes('End of the entry.'), 'a named-id read is never clipped by the host');
-  assert.ok(named.lines[0]!.length > RESEARCH.replyLimitChars);
+  assert.ok(named.lines[0]!.length > RESEARCH.budgets.default);
   // P5-R1 holds: a search hit is bounded by the server's own window, never cut again in the host.
   const whole = 'x'.repeat(4_000);
   const searched = shapeBlock('knowledge_search', [sub('search_knowledge', `### Long insight (DECISION | 2026-10-19) [id 7]\n${whole}`)]);
@@ -238,7 +238,7 @@ test('ROUTE-1022: a knowledge reply that would overrun the reply budget is trimm
   const reply = await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline', topic: 'retrieval deadline' }, new AbortController().signal);
   const bytes = JSON.stringify(reply).length;
   // #634: the coverage header counts inside the reply cap, so the whole reply keeps the one bound.
-  assert.ok(bytes <= RESEARCH.replyLimitChars, `reply bytes ${bytes} over the ${RESEARCH.replyLimitChars} reply budget`);
+  assert.ok(bytes <= RESEARCH.budgets.default, `reply bytes ${bytes} over the ${RESEARCH.budgets.default} reply budget`);
 });
 
 // --- ONE-1023: notes live in the past, and a day filter never hides them -----------------------

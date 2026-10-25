@@ -513,6 +513,9 @@ interface ActiveSession {
   /** Wall-clock start per model call id, for tool_cancelled ms-in-flight and per-turn latency. */
   callStartedAt: Map<string, number>;
   speaking: boolean;
+  /** L8-11: owner words heard while she was audible this owner turn, and whether the turn's overlap receipt is written. */
+  overlapWords?: number;
+  overlapReceipted?: boolean;
   /** Output audio that arrived below the audible threshold this turn, in playback milliseconds. */
   inaudibleMs: number;
   // E1 interruption telemetry: provider-side facts for the last turn only, never audio or text.
@@ -608,6 +611,8 @@ const NON_LEXICAL_TAG = /\[(?:breath|inhale|exhale|laugh|laughs|sigh|cough|noise
 export function stripNonLexicalTags(text: string): string { return text.replace(NON_LEXICAL_TAG, ''); }
 
 /** R7: the dropped-line opener is cancellable only until its own audio has started. */
+/** L8-11: how many owner words over her audible answer make an overlap worth a receipt. */
+export const OVERLAP_RECEIPT_WORDS = 2;
 export function openerCancelled(dropOpener: boolean, openerSpoken: boolean): boolean { return dropOpener && !openerSpoken; }
 
 function identity(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
@@ -2280,6 +2285,20 @@ export class LiveSessionOwner {
     });
   }
 
+  /** L8-11: one content-free receipt per owner turn when two of his words land over her audible answer. The
+   *  provider owns barge-in and the host never cuts her (lux 90488, ruling W1-R1), so `cut` is false. */
+  #noteOverlap(handle: ActiveSession, text: string): void {
+    if (handle.overlapReceipted === true) return;
+    handle.overlapWords = (handle.overlapWords ?? 0) + text.split(/\s+/u).filter(word => /[\p{L}\p{N}]/u.test(word)).length;
+    if (handle.overlapWords < OVERLAP_RECEIPT_WORDS) return;
+    const turnId = handle.connection.turnId;
+    if (turnId === undefined) return;
+    handle.overlapReceipted = true;
+    const at = this.#now();
+    this.#receipt(handle, 'owner.overlap', { turnId }, { at, words: handle.overlapWords,
+      msSinceAudible: handle.lastModelAudioAt === undefined ? 0 : Math.max(0, at - handle.lastModelAudioAt), cut: false });
+  }
+
   #closeTurn(handle: ActiveSession, closeReason: TurnCloseReason, outcome?: TurnOutcome): void {
     const turnId = handle.connection.turnId;
     if (turnId === undefined) return;
@@ -3007,7 +3026,9 @@ export class LiveSessionOwner {
             ownerTurnOpen = true;
             handle.connectorRecovery = this.#tools?.recover?.();
             this.#openTurn(handle);
+            handle.overlapWords = 0; handle.overlapReceipted = false;
           }
+          if (handle.speaking) this.#noteOverlap(handle, event.text);
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;

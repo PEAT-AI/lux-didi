@@ -4019,6 +4019,39 @@ test('#538: the Gemini path sends its one Continue at 8 s and never closes or re
   attachment.close();
 });
 
+// L8-11/L11-06: the owner said "I understand" three times while she kept speaking, and the store held no
+// receipt of it. gpt-live-1 owns barge-in and the host never cuts her (lux 90488, ruling W1-R1), so the host
+// records the overlap as a content-free receipt: counts only, and whether output was cut (never, here).
+test('L8-11: owner words over her audible answer leave one content-free overlap receipt per owner turn', async t => {
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'overlap-receipt', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(audibleFrame);
+  await settlePort();
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'I', finished: false }));
+  await settlePort();
+  const rows = (): Record<string, unknown>[] => h.store.transaction(tx => tx.all(
+    "SELECT turn_id, detail FROM trace_event WHERE live_session_id=? AND kind='owner.overlap' ORDER BY seq", [session.liveSessionId]));
+  assert.equal(rows().length, 0, 'one word over her is not yet an overlap');
+  fake.emit(audibleFrame);
+  fake.emit(portEvent({ type: 'inputTranscription', text: ' understand, I understand', finished: false }));
+  await settlePort();
+  fake.emit(portEvent({ type: 'inputTranscription', text: ' you', finished: false }));
+  await settlePort();
+  const seen = rows();
+  assert.equal(seen.length, 1, 'two owner words while she is audible write one receipt for the turn');
+  const detail = JSON.parse(String(seen[0]!['detail'])) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(detail).sort(), ['at', 'cut', 'msSinceAudible', 'words'], 'a time, counts and a flag, never text');
+  assert.ok(Number(detail['words']) >= 2, `the receipt counts the words: ${JSON.stringify(detail)}`);
+  assert.equal(detail['cut'], false, 'the host cut nothing (ruling W1-R1)');
+  assert.ok(typeof seen[0]!['turn_id'] === 'string', 'the receipt belongs to the owner turn');
+  assert.equal(JSON.stringify(seen).includes('understand'), false, 'no owner word reaches the metadata row');
+  attachment.close(); await attachment.done.catch(() => undefined);
+});
+
 test('#538: the trace timeline records the debt clock as content-free enums', async t => {
   const fake = fakeLiveVoicePort();
   const scheduler = new DeadlineClock();

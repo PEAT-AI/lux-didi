@@ -69,6 +69,8 @@ export interface TraceDetailMap {
   'live.dead_air_stalled': { stalledAt: number; turnAgeMs: number; anyAudio: boolean; inaudibleMs: number };
   /** #538: one audible debt clock phase change, both fields from their closed sets. */
   'live.debt': { phase: DebtPhase; reason: DebtReason; at: number };
+  /** L8-11: owner words over her audible answer, as counts; `cut` says whether the host cut her (W1-R1: never). */
+  'owner.overlap': { at: number; words: number; msSinceAudible: number; cut: boolean };
 }
 
 export interface TraceWritePort { transaction<T>(body: (tx: Transaction) => T): T }
@@ -102,7 +104,7 @@ const REQUIRED_IDS: Readonly<Record<TraceEventKind, readonly string[]>> = {
   'playback.terminated': ['playbackKey'],
   'progress.commentary': ['turnId'], 'progress.thinking': ['turnId'], 'call.ceiling': ['callKey'], 'command.rejected': ['turnId'],
   'continuation.decided': ['responseKey'], 'live.dead_air_stalled': ['turnId'],
-  'live.debt': [],
+  'live.debt': [], 'owner.overlap': ['turnId'],
 };
 
 const DETAIL_SPECS: Readonly<Record<TraceEventKind, Readonly<Record<string, FieldSpec>>>> = {
@@ -154,6 +156,7 @@ const DETAIL_SPECS: Readonly<Record<TraceEventKind, Readonly<Record<string, Fiel
     stalledAt: { check: isCount }, turnAgeMs: { check: isCount }, anyAudio: { check: isFlag }, inaudibleMs: { check: isCount },
   },
   'live.debt': { phase: { check: oneOf(DEBT_PHASES) }, reason: { check: oneOf(DEBT_REASONS) }, at: { check: isCount } },
+  'owner.overlap': { at: { check: isCount }, words: { check: isCount }, msSinceAudible: { check: isCount }, cut: { check: isFlag } },
 };
 
 function validateEvent(kind: TraceEventKind, ids: TraceEventIds, detail: unknown): void {
@@ -374,7 +377,7 @@ function applySummary(tx: Transaction, kind: TraceEventKind, ids: TraceEventIds,
       assertEpoch(tx, 'trace_response', 'response_key', ids.responseKey!, epoch);
       return;
     }
-    case 'live.debt': return;
+    case 'live.debt': case 'owner.overlap': return;
     case 'live.dead_air_stalled': {
       tx.run("UPDATE trace_turn SET stall_reason=COALESCE(stall_reason, 'no_audible_output') WHERE turn_id=? AND closed_at IS NULL", [ids.turnId!]);
       return;

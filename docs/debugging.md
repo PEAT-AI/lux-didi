@@ -44,7 +44,9 @@ ids and the terminal reason, `call.intent`, `call.executed`, `call.output_prepar
 `deferred`, `failed`) and, when it skipped, why (`awaiting_calls`, `draining`, `epoch_stale`). The
 host adds `turn.opened`, `turn.closed` with its close reason, and `live.dead_air_stalled` with the
 turn's age, whether any audio arrived and the inaudible milliseconds, which is the receipt D12-3 was
-missing. All of it lands under the session's `connection_epoch`; a rebuilt socket gets a new epoch
+missing, and `owner.overlap` once per owner turn when two of his words land while she is audible
+(`words`, `msSinceAudible`, and `cut`, which is always false: the provider owns barge-in and the host
+never cuts her, ruling W1-R1). All of it lands under the session's `connection_epoch`; a rebuilt socket gets a new epoch
 and a late receipt from the one it replaced is refused as `STALE_EPOCH`.
 
 ## The host.log event catalog

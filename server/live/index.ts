@@ -12,7 +12,7 @@ import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import type { WebSearchPort } from '../tools/web-search.js';
-import { RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames } from '../tools/research.js';
+import { RESEARCH, RESEARCH_TOOL_NAME, ResearchLedger, ResearchScheduler, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -1813,17 +1813,25 @@ export class LiveSessionOwner {
    * inside the window keeps its model_unresponsive and uplink_starved classification.
    */
   /**
-   * #656: whether a tool call the model issued still owns the silence. The call's own arrival time is the clock:
-   * TOOL_CEILING_MS is its hard ceiling, so a call older than that has run past the point where it answers, and the
-   * ladder stops waiting for it. Any pending call inside its ceiling holds the silence.
+   * #656: whether a tool call the model issued still owns the silence. The call's own arrival time is the clock and
+   * its own ceiling is the bound, so a call older than that has run past the point where it answers and the ladder
+   * stops waiting for it. Any pending call inside its ceiling holds the silence.
    */
   #toolOwnsSilence(handle: ActiveSession): boolean {
     if (handle.pendingCallIds.size === 0) return false;
     for (const id of handle.pendingCallIds) {
       const started = handle.callStartedAt.get(id);
-      if (started === undefined || this.#now() - started < TOOL_CEILING_MS) return true;
+      if (started === undefined || this.#now() - started < this.#callCeiling(handle, id)) return true;
     }
     return false;
+  }
+
+  /**
+   * #656: the ceiling the ladder waits out for one call. A research run has its own published deadlines in
+   * RESEARCH, so it holds the silence for the longest of them; every other call keeps TOOL_CEILING_MS.
+   */
+  #callCeiling(handle: ActiveSession, callId: string): number {
+    return handle.pendingCalls.get(callId) === RESEARCH_TOOL_NAME ? RESEARCH.continueDeadlineMs : TOOL_CEILING_MS;
   }
 
   async #debtRung(handle: ActiveSession, generation: number, step: 'rung' | 'rebuild'): Promise<void> {
@@ -1833,8 +1841,8 @@ export class LiveSessionOwner {
     const turnAgeMs = Math.max(0, this.#now() - handle.debtSince);
     // #656: a tool call the model issued owns the silence through the dead-air path (#538 speaks progress while a call
     // runs), so the ladder never nudges or rebuilds over it: it stands down and #armDebt re-anchors the clock on that
-    // call's own output. TOOL_CEILING_MS is the call's own hard ceiling, so a call that has run past it no longer owns
-    // the silence and a truly wedged call still recovers.
+    // call's own output. The call's own ceiling (a research run's deadline, else TOOL_CEILING_MS) bounds the wait, so
+    // a call that has run past it no longer owns the silence and a truly wedged call still recovers.
     if (this.#toolOwnsSilence(handle)) {
       handle.debtHeldForTool = true;
       this.#scheduleDebt(handle, AUDIBLE_DEBT_RUNG_MS, 'rung');

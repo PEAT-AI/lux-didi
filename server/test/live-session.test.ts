@@ -56,6 +56,7 @@ import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-liv
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
+import { RESEARCH } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 
 const MODEL = 'models/live-session-test';
@@ -6352,6 +6353,10 @@ test('#656: a model silent after the read settles still rebuilds once, after the
 });
 
 test('#656: owner audio sent during a rebuild is held and delivered to the new session, not dropped', async t => {
+  const diagnosticLines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('live_session_diagnostics')) diagnosticLines.push(args[0]);
+  });
   const scheduler = new DeadlineClock();
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
@@ -6369,6 +6374,47 @@ test('#656: owner audio sent during a rebuild is held and delivered to the new s
   await settlePort();
   const delivered = fake.audioInput.filter(entry => entry.session === 2).map(entry => entry.pcm);
   assert.deepEqual(delivered, frames.slice(1), 'the newest held seconds reach the new session, the oldest is dropped');
+  // Past the cap the oldest frame is the one lost, and the counter the diagnostics carry records exactly that.
+  attachment.close();
+  await attachment.done;
+  let diagnostics: Record<string, number | string> | undefined;
+  for (let attempt = 0; attempt < 20 && diagnostics === undefined; attempt++) {
+    await tick();
+    diagnostics = diagnosticLines.map(line => JSON.parse(line) as Record<string, number | string>)
+      .find(value => value.ownerAudioCalls === frames.length);
+  }
+  assert.ok(diagnostics !== undefined, 'the settle diagnostics name the four owner frames');
+  assert.equal(diagnostics.ownerRebuildingDropCalls, 1, 'one frame past the cap is dropped, not four');
+  assert.equal(diagnostics.ownerRebuildingDropBytes, frames[0]!.byteLength, 'and it is the oldest frame the owner sent');
+});
+
+test('#656: a research run holds the ladder to its own deadline, not the twelve second tool ceiling', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  // The first read returns and arms the debt clock; the research run is the one that runs long.
+  const beforeTool = async () => { calls += 1; if (calls >= 2) await held; };
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler,
+    limits: openaiLimits, beforeTool });
+  await openPort(h, 'research-ceiling-656');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'warm656', name: 'search_knowledge', args: { query: 'warm', limit: 1 } }] });
+  await settlePort();
+  fake.emit({ type: 'toolCall', calls: [{ id: 'run656', name: 'research', args: { action: 'start', question: 'what changed' } }] });
+  await settlePort();
+  // A research run outlives the twelve second tool ceiling: it is still work and the ladder stands down.
+  h.advance(16_000); scheduler.runDue(); await settlePort();
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'a sixteen second research run is still work');
+  assert.equal(fake.sessionsOpened, 1);
+  // Past its own published deadline the run no longer owns the silence, so the ladder recovers it.
+  h.advance(RESEARCH.continueDeadlineMs); scheduler.runDue(); await settlePort();
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'a research run past its deadline still recovers');
+  release();
 });
 
 test('#656: a call past its own ceiling no longer holds the ladder, so a wedged read still recovers', async t => {

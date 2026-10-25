@@ -97,7 +97,7 @@ Warm connectors: one `McpAdapter` is composed per host runtime (`server/host/mcp
 
 ## Public web evidence
 
-Public queries use Gemini `gemini-3.8-flash` with `google_search`, low thinking, one candidate and a 1,100 output-token ceiling. The synthesis is at most 220 words with up to five cited sources. The single total deadline is 6 seconds, or 10 seconds for weather and news. An empty, ungrounded or cap-emptied result gets one broader query retry within that same deadline. No private connector context is sent.
+Public queries use Gemini `gemini-3.8-flash` with `google_search`, low thinking, one candidate and a 1,100 output-token ceiling. The synthesis is at most 220 words with up to five cited sources. The single total deadline is 8 seconds for every web ask, the same number the research source row reads: the web reads that succeeded on this host took 3.3 to 4.4 seconds and the retry shares that budget. A cut read is said as the web taking too long, never as an outage. An empty, ungrounded or cap-emptied result gets one broader query retry within that same deadline. No private connector context is sent.
 
 `web_insufficient` carries the typed reason `empty`, `ungrounded`, `capped` or `reply_budget`. A success must retain at least one supported claim and source after the word cap. Reply compaction retains whole supported sentences and the first source line, and tells the model it may ask for the full result; evidence that cannot fit is insufficient, never a successful empty finding. Citation URLs and attribution have a separate 12,000 character metadata budget outside the 2,500 character spoken reply. Early replies are capped again after the pending envelope is attached and preserve the more-available sentence.
 

@@ -70,7 +70,7 @@ test('the request body carries only the public query, the search tool and low th
   assert.match(query, /council bridge works status/);
   for (const privateText of ['research brief', 'launchpad', 'in:inbox', 'transcript', 'attendee']) assert.equal(JSON.stringify(sent).includes(privateText), false);
   assert.equal(seen[0]!.signal?.aborted, false);
-  assert.equal(WEB_DEADLINE_MS, 6_000);
+  assert.equal(WEB_DEADLINE_MS, 8_000);
 });
 
 test('a question that cannot be separated from private content is reported instead of sent', async () => {
@@ -102,6 +102,84 @@ test('a transport past the deadline yields web_timeout and is cancelled', async 
   assert.ok(Date.now() - started < 2_000);
 });
 
+// --- #655: one web budget above the measured tail, and a cut that lands on it -------------------
+
+/** Let the awaited credential and the transport start settle, so the fake clock owns every timer. */
+const settled = async (): Promise<void> => { await new Promise(resolve => setImmediate(resolve)); };
+
+/** The fake clock's own reading of virtual time, which drives the mocked timers. */
+const fakeClock = (t: { mock: { timers: { tick: (ms: number) => void } } }): { tick: (ms: number) => void; now: () => number } => {
+  let elapsed = 0;
+  return { tick: (ms) => { elapsed += ms; t.mock.timers.tick(ms); }, now: () => elapsed };
+};
+
+test('#655: the research row and the web module read one budget, above the measured tail', () => {
+  // Derived from the host reads that succeeded on 2026-10-22 and 2026-10-24: 3.3 to 4.4 s, with
+  // Gemini free to spend a second grounded attempt inside the same budget. The value sits above
+  // that tail instead of at the low end of the typical range (#645), and under the 12 s connector
+  // timeout and the 20 s answer cap.
+  assert.equal(RESEARCH.sourceDeadline.web, WEB_DEADLINE_MS, 'one number, read from one place');
+  assert.ok(WEB_DEADLINE_MS >= 8_000, `the web budget is ${WEB_DEADLINE_MS} ms, above the 4.4 s tail`);
+  assert.equal(webDeadlineMs('what is the weather in Pune tomorrow'), WEB_DEADLINE_MS, 'a weather ask is not slower than any other');
+});
+
+test('#655: a web read that answers at 5 s is kept', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let answer: (response: Response) => void = () => {};
+  const transport = (async () => new Promise<Response>(resolve => { answer = resolve; })) as unknown as typeof fetch;
+  const port = createWebSearch({ credentials: KEY, transport });
+  const pending = port.search({ query: 'bridge reopening date', signal: new AbortController().signal });
+  await settled();
+  t.mock.timers.tick(5_000);
+  answer(json(body()));
+  const outcome = await pending;
+  assert.equal(outcome.ok, true, 'a read inside the budget is kept, never cut');
+});
+
+test('#655: a web read that answers at 20 s is cut at the budget, not later', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const clock = fakeClock(t);
+  let cutAt: number | undefined;
+  let answeredLate = false;
+  const transport = (async (_url: string, options: RequestInit) => new Promise<Response>((resolve, reject) => {
+    setTimeout(() => { answeredLate = true; resolve(json(body())); }, 20_000);
+    options.signal?.addEventListener('abort', () => { cutAt = clock.now(); reject(new Error('aborted')); });
+  })) as unknown as typeof fetch;
+  const port = createWebSearch({ credentials: KEY, transport });
+  const pending = port.search({ query: 'bridge reopening date', signal: new AbortController().signal });
+  await settled();
+  clock.tick(WEB_DEADLINE_MS);
+  assert.deepEqual(await pending, { ok: false, code: 'web_timeout' });
+  assert.equal(cutAt, WEB_DEADLINE_MS, 'the cut lands on the budget, never after it');
+  assert.equal(answeredLate, false, 'the 20 s answer never lands');
+});
+
+test('#655: a retry after an empty first attempt never extends past the budget', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const clock = fakeClock(t);
+  const bare = body() as { candidates: { groundingMetadata?: unknown }[] };
+  delete bare.candidates[0]!.groundingMetadata;
+  const starts: number[] = [];
+  let cutAt: number | undefined;
+  const transport = (async (_url: string, options: RequestInit) => {
+    starts.push(clock.now());
+    if (starts.length === 1) return json(bare);
+    return new Promise<Response>((_resolve, reject) => {
+      options.signal?.addEventListener('abort', () => { cutAt = clock.now(); reject(new Error('aborted')); });
+    });
+  }) as unknown as typeof fetch;
+  const port = createWebSearch({ credentials: KEY, transport });
+  const pending = port.search({ query: 'bridge reopening date', signal: new AbortController().signal });
+  await settled();
+  clock.tick(1_000);
+  await settled();
+  assert.equal(starts.length, 2, 'an empty first attempt is retried once');
+  clock.tick(WEB_DEADLINE_MS - 1_000);
+  assert.deepEqual(await pending, { ok: false, code: 'web_timeout' });
+  assert.equal(cutAt, WEB_DEADLINE_MS, 'the retry is cut on the first attempt clock, not on a budget of its own');
+});
+
+
 test('rate limiting and an outage are named, never answered as if they were searched', async () => {
   const port = createWebSearch({ credentials: KEY, transport: transportOf([], async () => json({}, 429)) });
   assert.deepEqual(await port.search({ query: 'bridge reopening date', signal: new AbortController().signal }), { ok: false, code: 'web_rate_limited' });
@@ -113,7 +191,7 @@ test('rate limiting and an outage are named, never answered as if they were sear
 
 test('the closed candidate set offers web_search on the web source', () => {
   assert.ok(CANDIDATES.some(candidate => candidate.kind === 'web_search' && candidate.source === 'web'));
-  assert.equal(RESEARCH.sourceDeadline.web, 4_000);
+  assert.equal(RESEARCH.sourceDeadline.web, WEB_DEADLINE_MS);
   const subs = candidateSubs('web_search', { question: 'bridge reopening date', configured: ['web'], evidence: new Map(), query: 'bridge reopening date' });
   assert.deepEqual(subs, [{ key: 'w0', name: WEB_SEARCH_ACTION, args: { query: 'bridge reopening date' } }]);
   assert.deepEqual(candidateSubs('web_search', { question: 'q', configured: [], evidence: new Map(), query: 'q' }), [], 'no configuration, no read');
@@ -221,7 +299,11 @@ test('a web failure names the web part as missing instead of answering as if it 
   assert.match(unavailable, /timeout/, 'the reply carries the timeout reason');
   // N6 (#569): a cut web read reaches the model as timeout, never as an endpoint outage.
   assert.equal((reply['unavailable'] as Record<string, string>)['web'], 'timeout', 'the timeout reason rides the reply');
-  assert.match(String(reply['note']), /I could not reach the web right now\. the web: not read \(timed out after 4 s\)/, 'Naya is told the web part is missing');
+  // #655: a cut web read is spoken as the web taking too long, never as an access or service
+  // problem, and the seconds it names are the budget that actually cut it.
+  assert.match(String(reply['note']), /The web took too long to answer, so that part is missing\./, 'Naya says the web took too long');
+  assert.match(String(reply['note']), new RegExp(`the web: not read \\(timed out after ${Math.round(WEB_DEADLINE_MS / 1_000)} s\\)`), 'the seconds named are the budget that cut it');
+  assert.doesNotMatch(String(reply['note']), /could not reach|unavailable/i, 'a timeout is never spoken as an access or service problem');
   assert.equal(JSON.stringify(reply).includes('bridge reopening date'), false);
 });
 
@@ -319,9 +401,9 @@ test('T-R5: a price question about our own licence is internal, never a web read
 
 // --- N6 (#569): an explicit weather or news ask gets the long web budget ------------------------
 
-test('N6: a weather or news ask takes the 10 s web deadline and every other ask keeps 6 s', () => {
-  assert.equal(webDeadlineMs('what is the weather in Pune tomorrow'), 10_000);
-  assert.equal(webDeadlineMs('latest news on the bridge closure'), 10_000);
+test('#655: every web ask takes the one web budget, since weather measured no slower than the rest', () => {
+  assert.equal(webDeadlineMs('what is the weather in Pune tomorrow'), WEB_DEADLINE_MS);
+  assert.equal(webDeadlineMs('latest news on the bridge closure'), WEB_DEADLINE_MS);
   assert.equal(webDeadlineMs('bridge reopening date'), WEB_DEADLINE_MS);
 });
 
@@ -336,7 +418,7 @@ test('N6: a weather read that settles at 6 s succeeds, and a generic read is nam
   const weatherReply = await runResearch(routedDeps({ configured: ['web'], web: weather, executed: [], dispatched: [] }), {
     action: 'start', question: 'what is the weather in Pune', lookups: [{ source: 'web', query: 'weather in Pune tomorrow' }],
   }, new AbortController().signal);
-  assert.deepEqual(weatherSeen, [10_000], 'the port is told the longer deadline for a weather ask');
+  assert.deepEqual(weatherSeen, [WEB_DEADLINE_MS], 'the port is told the one web budget for a weather ask');
   assert.deepEqual(weatherReply['sources'], { web: 'ok' }, 'a 6 s weather read is no longer cut');
 
   const genericSeen: number[] = [];

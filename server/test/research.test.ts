@@ -348,7 +348,7 @@ test('#567: a reply already inside the budget is returned untouched', () => {
 // RESCAP-R5: a long best knowledge hit emptied the answer, because the trim loop dropped the only line.
 test('#567/R5: a long best knowledge hit is clipped to fit, never dropped', async () => {
   const long = `## Release scope\nthe release ships on Friday ${'x'.repeat(4_000)}`;
-  const h = harness({ executeText: long });
+  const h = harness({ replyLimit: CAP_REPLY_BOUND,  executeText: long });
   const reply = await runResearch(h.deps, {
     action: 'start', question: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }],
   }, new AbortController().signal);
@@ -1877,8 +1877,12 @@ test('LAT-1023: a wide answer is compacted to the Live budget by dropping whole 
   const h = harness({ execute: async subs => subs.map(call => sub(call.name, WIDE_HITS, true, call.key)) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
   const text = JSON.stringify(reply);
-  assert.ok(RESEARCH.budgets.default <= 2_500, `the Live budget is 2,500 chars, not ${RESEARCH.budgets.default}`);
-  assert.ok(text.length <= 2_500, `the answer to Live is ${text.length} chars, the coverage header included`);
+  // C-DEPTH item 1: the flat 2,500 char cap is retired for three tiers, and the answer is bounded by the
+  // tier the owner's question earns, which a plain decision question is the default one of.
+  assert.deepEqual(RESEARCH.budgets, { default: 12_000, analytical: 16_000, depth: 20_000 },
+    'the three C-DEPTH tiers, no flat reply cap');
+  assert.ok(text.length <= RESEARCH.budgets.default,
+    `the answer to Live is ${text.length} chars, the coverage header included`);
   const findings = reply['findings'] as { text: string }[];
   const shown = findings.map(finding => finding.text).join('\n');
   const items = shown.split(/\n(?=#\d+ )/u).slice(1);
@@ -1912,7 +1916,7 @@ test('LAT-1023 R1: a requested body keeps its 6,000 char page bound while an ans
   };
   // The body arrives on the run's own dispatch, exactly as a read the owner asked for does: the reply is
   // the page, sized by the body bound rather than by the answer budget.
-  const h = harness({
+  const h = harness({ replyLimit: CAP_REPLY_BOUND, 
     execute: async subs => subs.map(call => ({
       ...sub(call.name, '', true, call.key),
       binding: { executionId: 'exec-body', name: call.name, contentIndex: 0, partIndex: 0, result: { id: 'body-1', sha256: 'c'.repeat(64) } },
@@ -1935,7 +1939,7 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
   // beside it holds whole short lines. A trim that keeps one line per source cannot reach the budget.
   const wide = `**#1** [PATTERN] Long body | ${'w'.repeat(2_900)}`;
   const mail = ['- Release notes | from: Ana | date: 2026-10-16 [id m1]', '- Invoice | from: Ana | date: 2026-10-17 [id m2]', '- Plan | from: Ana | date: 2026-10-18 [id m3]'].join('\n');
-  const h = harness({
+  const h = harness({ replyLimit: CAP_REPLY_BOUND, 
     execute: async subs => subs.map(call => sub(call.name, call.name === 'search_knowledge' ? wide : mail, true, call.key)),
   });
   const reply = await runResearch(h.deps, {
@@ -2116,7 +2120,7 @@ test('WEB-1024: the final pending envelope remains bounded and preserves the mor
 test('WEB-1024: an early answer with two pending readers keeps its final cap and continuation note', async () => {
   const clock = fakeClock();
   const gate = deferred<void>();
-  const h = harness({
+  const h = harness({ replyLimit: CAP_REPLY_BOUND, 
     now: clock.now, schedule: clock.schedule,
     configured: ['memory', 'knowledge', 'chat'],
     memory: () => ({ lines: ['A complete remembered sentence. '.repeat(120)], text: '', total: 1 }),

@@ -164,8 +164,17 @@ test('the timing waterfall lines keep closed, count-only shapes (#451)', () => {
   assert.deepEqual(safeEvent(first), first);
   const answer = { event: 'live_answer_audio', liveSessionId: LIVE_SESSION_ID, generation: 1, msSinceReady: 700, msSinceOpen: 4_300 };
   assert.deepEqual(safeEvent(answer), answer);
-  const arrived = { event: 'research_call_arrived', liveSessionId: LIVE_SESSION_ID, generation: 1, calls: 2 };
+  const arrived = { event: 'research_call_arrived', liveSessionId: LIVE_SESSION_ID, generation: 1, calls: 2,
+    action: 'start', researchIdPresent: false, questionChars: 42, lookups: 3 };
   assert.deepEqual(safeEvent(arrived), arrived);
+  // #667: the call's shape is a closed set, and the question text itself has no column.
+  assert.equal(safeEvent({ ...arrived, action: 'look' }), undefined, 'an unknown action fails closed');
+  assert.equal(safeEvent({ ...arrived, researchIdPresent: 'yes' }), undefined, 'presence is a boolean, never an id');
+  assert.equal(safeEvent({ ...arrived, question: 'where is the invoice' }), undefined, 'the question text never enters the log');
+  const delivered = { event: 'live_unspoken_delivered', liveSessionId: LIVE_SESSION_ID, generation: 2, results: 2, attempt: 2 };
+  assert.deepEqual(safeEvent(delivered), delivered);
+  assert.equal(safeEvent({ ...delivered, attempt: 3 }), undefined, 'the one retry is the last attempt there is');
+  assert.equal(safeEvent({ ...delivered, results: -1 }), undefined, 'a delivery count is never negative');
   const output = { event: 'tool_output_sent', liveSessionId: LIVE_SESSION_ID, generation: 1, tools: 2, msSinceArrived: 1_400, outcome: 'sent' };
   assert.deepEqual(safeEvent(output), output);
   assert.equal(safeEvent({ ...output, msSinceArrived: -5 }), undefined, 'a negative span is refused');

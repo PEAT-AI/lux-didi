@@ -203,6 +203,75 @@ export function bindSignInButtons(root: { addEventListener(type: 'click', listen
     if (endpoint) send(endpoint);
   });
 }
+
+/** The one element shape the panel binder reads, so a test can supply plain objects. */
+export interface PanelControl { id?: string; value?: string; checked?: boolean; closest(selector: string): PanelControl | null }
+/** What the panel binder hands every control's action. */
+export interface SettingsPanelHandlers {
+  saveSettings(selection: { provider: string; voice: string; accent: string }): void;
+  providerChanged(provider: string): void;
+  historyChanged(historyId: string): void;
+  rememberChanged(remember: boolean): void;
+  appearanceChanged(value: string): void;
+  openMicModePicker(): void;
+  dismissMicModePrompt(): void;
+  revokeStanding(): void;
+  revokeConversation(): void;
+  recoverHistory(): void;
+}
+/** The two things the binder needs from the stable root: a read for the form's values, and listeners. */
+export interface SettingsPanelRoot {
+  querySelector(selector: string): PanelControl | null;
+  addEventListener(type: 'submit' | 'change' | 'click', listener: (event: { target: PanelControl; preventDefault(): void }) => void): void;
+}
+/**
+ * #673: one submit, one change and one click listener for every control inside #settings-summary, and for
+ * the Mic Mode buttons beside it. They sit on the stable root, so the 10 s repaint replaces the nodes
+ * underneath and the next press still reaches its action, the same shape as the #659 sign-in fix. A submit
+ * always calls preventDefault, so a repainted form can never fall through to the browser's native GET
+ * submit that reloaded the page and saved nothing.
+ */
+export function bindSettingsPanel(root: SettingsPanelRoot, handlers: SettingsPanelHandlers): void {
+  const value = (selector: string): string => { const node = root.querySelector(selector); return typeof node?.value === 'string' ? node.value : ''; };
+  root.addEventListener('submit', event => {
+    if (!event.target.closest('#live-settings-form')) return;
+    event.preventDefault();
+    handlers.saveSettings({ provider: value('#live-provider'), voice: value('#live-voice').trim(), accent: value('#live-accent') });
+  });
+  root.addEventListener('change', event => {
+    const control = event.target.closest('#live-provider, #connected-history, #connected-remember, #appearance-theme');
+    if (control?.id === 'live-provider') handlers.providerChanged(control.value ?? '');
+    else if (control?.id === 'connected-history') { const next = control.value ?? ''; if (next) handlers.historyChanged(next); }
+    else if (control?.id === 'connected-remember') handlers.rememberChanged(control.checked === true);
+    else if (control?.id === 'appearance-theme') handlers.appearanceChanged(control.value ?? '');
+  });
+  root.addEventListener('click', event => {
+    const control = event.target.closest('#mic-mode-open, #mic-mode-turn-on, #mic-mode-dismiss, #connected-standing-revoke, #connected-revoke, #connected-recover');
+    switch (control?.id) {
+      case 'mic-mode-open': case 'mic-mode-turn-on': handlers.openMicModePicker(); break;
+      case 'mic-mode-dismiss': handlers.dismissMicModePrompt(); break;
+      case 'connected-standing-revoke': handlers.revokeStanding(); break;
+      case 'connected-revoke': handlers.revokeConversation(); break;
+      case 'connected-recover': handlers.recoverHistory(); break;
+    }
+  });
+}
+
+/** The error and notice banners, one live region each, so a reader hears the words once. */
+export function noticesMarkup(error: string, notice: string): string {
+  return `${error ? `<div class="alert" role="alert" aria-live="assertive">${escapeHtml(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${escapeHtml(notice)}</div>` : ''}`;
+}
+/**
+ * #673: those banners rendered only at the top of the lane row, and the 440 px Settings sheet covers that
+ * row, so a notice raised from Settings showed as a clipped fragment. While a sheet is open the same words
+ * render at the top of the sheet, and the lane row renders none, so there is still one live region.
+ */
+export function sheetBodyMarkup(content: string, error: string, notice: string): string {
+  return `<div class="sheet-body">${noticesMarkup(error, notice)}${content}</div>`;
+}
+export function laneNoticesMarkup(error: string, notice: string, sheetOpen: boolean): string {
+  return sheetOpen ? '' : noticesMarkup(error, notice);
+}
 /** What the Settings notice says when a click starts no sign-in: the closed reasons in plain words. */
 export function signInFailureNotice(reason: string): string {
   if (reason === 'sign-in-in-progress') return 'Finish the sign-in already open in the browser first, then click Sign in again.';

@@ -248,6 +248,32 @@ const CONSUMER_CLOSED_MS = 1_000;const DEAD_AIR_NUDGE_TEXT = 'Continue.';
 /** S5: the one honest line after a backend turn failed. It owns the failure and offers the retry, and it never
  *  invents a reason the provider did not give. */
 export const TURN_FAILED_LINE = 'I lost the thread there. Say that again, or ask me to try once more?';
+/** #660: the bounded one item a fresh session accepts where a retired call's tool output cannot go. */
+const UNSPOKEN_DELIVERY_PREFIX = 'Your lookup already returned this; tell the owner now: ';
+const UNSPOKEN_REPLY_LIMIT = 1_200;
+/** #660: the host's own answer to a status question while nothing runs, paraphrased aloud by the voice model. */
+export const NO_LOOKUP_RUNNING_NOTE = 'No lookup is running and no result is waiting. Say plainly that nothing is searching, and never say you are still looking.';
+/**
+ * #667: the closed facts of a call that just arrived, never the owner's words: the declared action, whether a
+ * research id came with it, how long the question was, and how many lookups the batch carries.
+ */
+const researchCallFacts = (calls: { name: string; args: JsonObject }[]):
+{ action: 'start' | 'continue' | 'stop' | 'other'; researchIdPresent: boolean; questionChars: number; lookups: number } => {
+  const call = calls.find(entry => entry.name === RESEARCH_TOOL_NAME) ?? calls[0];
+  const args = call?.args;
+  const action = args?.['action'];
+  return {
+    action: action === 'start' || action === 'continue' || action === 'stop' ? action : 'other',
+    researchIdPresent: typeof args?.['researchId'] === 'string' && String(args['researchId']).length > 0,
+    questionChars: typeof args?.['question'] === 'string' ? String(args['question']).length : 0,
+    lookups: Array.isArray(args?.['lookups']) ? args['lookups'].length : 0,
+  };
+};
+/** #660: the text of one tool result batch, bounded for the one item a fresh session accepts. */
+const unspokenReply = (outputs: LiveToolResponse[]): string | undefined => {
+  const reply = outputs.map(output => JSON.stringify(output.response)).join('\n').slice(0, UNSPOKEN_REPLY_LIMIT);
+  return reply.length === 0 ? undefined : reply;
+};
 /** S5: how long her own line has to become audible before the turn is settled failed instead of left owing. */
 export const TURN_FAILED_GRACE_MS = 1_000;
 // 3j response watchdog. A healthy socket proves nothing about a model that stopped generating: an owner turn
@@ -309,7 +335,7 @@ export function callCeilingMs(toolName: string | undefined): number {
 const ANSWER_AUDIO_HOLD_MS = 3_000;
 /** S4a: a delegation still open this long after its last call was answered, with no terminal nested event, is
  *  stalled: the receipt names it, and the S2 recovery resumes instead of rebuilding. */
-const DELEGATION_DEADLINE_MS = 25_000;
+export const DELEGATION_DEADLINE_MS = 25_000;
 /** R6 late findings: a source that settles this long after the first answer is still silent context for the
  *  model, but it is no longer spoken, because the owner has moved on. */
 const LATE_WINDOW_MS = 20_000;
@@ -439,7 +465,12 @@ interface ActiveSession {
    *  is the batch a recreate re-queues exactly once. */
   debtSince?: number | undefined; debtTimer?: ReturnType<JobTimer> | undefined;
   debtStep?: 'rung' | 'rebuild' | undefined;
-  debtOutputs?: LiveToolResponse[] | undefined; debtRequeued?: boolean | undefined; debtBargeIn?: boolean | undefined;
+  debtOutputs?: LiveToolResponse[] | undefined; debtBargeIn?: boolean | undefined;
+  /** #660: the reply text of a result that returned but was never said, so a replaced session can still speak it,
+   *  and whether the session now open has already been handed it. */
+  unspoken?: string | undefined; unspokenDelivered?: boolean | undefined; unspokenResults?: number | undefined;
+  /** #660: a stalled delegation with nothing in flight makes the owner's next status answer the host's to give. */
+  hostStatusNote?: boolean | undefined;
   /** #538 R4: the provider has announced a response since the debt started, and that response is still in progress.
    *  The 8 s rung never closes a session that has an answer in flight; it defers until the response ends. */
   responseInProgress?: boolean | undefined; debtDeferred?: boolean | undefined;
@@ -1754,6 +1785,10 @@ export class LiveSessionOwner {
     handle.awaitingAnswer = true;
     handle.answerAt = this.#now();
     this.#armDelegationDeadline(handle);
+    // #660: the result is owed until the model's own audio proves it said it, so its text travels with the debt
+    // and the session that replaces this one can still speak it.
+    const reply = unspokenReply(outputs);
+    if (reply !== undefined) { handle.unspoken = reply; handle.unspokenDelivered = false; handle.unspokenResults = outputs.length; }
     this.#armDebt(handle, outputs, 'tool_output');
     if (outcome === 'failed') void this.#recreateForDeadAir(handle, 'send_failed').catch(() => { /* the recreate names its own failure */ });
   }
@@ -1776,7 +1811,6 @@ export class LiveSessionOwner {
     if (handle.muted) return;
     handle.debtSince = this.#now();
     handle.debtBargeIn = false;
-    handle.debtRequeued = false;
     handle.debtDeferred = false;
     handle.debtHeldForTool = false;
     handle.responseInProgress = false;
@@ -1795,11 +1829,39 @@ export class LiveSessionOwner {
   }
 
   #clearDebt(handle: ActiveSession, reason: 'audible' | 'owner_barge_in' | 'turn_end'): void {
+    // #660: only her own audio proves the result was said, and only an ended turn retires an answer she never gave.
+    if (reason !== 'owner_barge_in') { handle.unspoken = undefined; handle.unspokenDelivered = false; }
     if (handle.debtSince === undefined) return;
     handle.debtTimer?.cancel(); handle.debtTimer = undefined;
     handle.debtSince = undefined; handle.debtStep = undefined; handle.debtOutputs = undefined;
-    handle.debtRequeued = false; handle.debtDeferred = false; handle.debtHeldForTool = false;
+    handle.debtDeferred = false; handle.debtHeldForTool = false;
     this.#noteDebt(handle, 'clear', reason);
+  }
+
+  /**
+   * #660: hand the unspoken result to the session that is open now. A session the host replaced cannot accept the
+   * retired call ids of the one it replaced, so the result travels as the one input a fresh session does accept: a
+   * bounded text item, sent once the session is ready. One retry, then the turn ends with its closed reason.
+   */
+  async #deliverUnspoken(handle: ActiveSession): Promise<boolean> {
+    if (handle.unspoken === undefined || handle.unspokenDelivered === true) return true;
+    const text = `${UNSPOKEN_DELIVERY_PREFIX}${handle.unspoken}`;
+    const session = handle.session;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await session.ready.catch(() => {});
+      if (this.#settled(handle) || handle.session !== session) return false;
+      try {
+        session.sendText({ text });
+        handle.unspokenDelivered = true;
+        // #667: the recreate names how many unspoken results reached the session that replaced the old one.
+        hostLogEvent({ event: 'live_unspoken_delivered', liveSessionId: handle.liveSessionId,
+          generation: handle.generation, results: handle.unspokenResults ?? 1, attempt: attempt + 1 });
+        return true;
+      } catch { /* a refused send is the one retry: the next pass awaits readiness again, then gives up */ }
+    }
+    // #660: a result the host cannot put in front of the model is not swallowed, it ends the turn with its reason.
+    this.#turnFailed(handle, handle.generation, 'send_failed');
+    return false;
   }
 
   /** #538 R4: the held rung fires the moment the response that held it ends without audio. */
@@ -1881,6 +1943,14 @@ export class LiveSessionOwner {
       this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
       return;
     }
+    // #660: the rebuild exists because a wedged response cannot be nudged, not because the result is unsayable. An
+    // unspoken result goes to the live session first and only a model still mute seven seconds later is rebuilt, so
+    // the answer the owner asked for is not made to wait for two provider recreates.
+    if (handle.unspoken !== undefined && handle.unspokenDelivered !== true) {
+      if (!(await this.#deliverUnspoken(handle))) return;
+      this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
+      return;
+    }
     const recreated = await this.#recreateForDeadAir(handle, 'dead_air');
     if (!recreated) return;
   }
@@ -1894,18 +1964,11 @@ export class LiveSessionOwner {
     if (this.#settled(handle) || handle.debtBargeIn) return false;
     if (reason === 'send_failed') this.#noteDebt(handle, 'rung', 'send_failed');
     const outputs = handle.debtOutputs ?? [];
-    const requeue = outputs.length > 0 && handle.debtRequeued !== true;
+    // #660: the recovery hands the unspoken result to the session it opens, as the one input a fresh session
+    // accepts. The retired call ids are never re-sent to a session that never delegated them.
     const opened = await this.#recoverFromDrop(handle, undefined, true, 'model_mute');
     // F3: a recreate that could not open is the speakable failure, whichever rung started the ladder.
     if (!opened || this.#settled(handle)) { this.#turnFailed(handle, handle.generation, 'recreate_failed'); return false; }
-    if (requeue) {
-      handle.debtRequeued = true;
-      // F3: the re-queue's own outcome is read, never dropped. A fresh session has no such pending batch, so a
-      // refusal here is recorded and the seeded answer carries on; it is not a second failure of the same kind.
-      let requeued: LiveToolSendOutcome = 'failed';
-      try { requeued = handle.session.sendToolResponse({ responses: outputs }); } catch { /* the new transport settles itself */ }
-      if (requeued === 'failed') this.#noteDebt(handle, 'rung', 'send_failed');
-    }
     this.#armDebt(handle, outputs, 'recreate');
     this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
     return true;
@@ -1970,8 +2033,13 @@ export class LiveSessionOwner {
     if (this.#settled(handle) || handle.rebuilding || !handle.awaitingAnswer) return;
     // A nested response that finished the answer is a terminal event, so only silence past the answer is a stall.
     if (handle.lastModelAudioAt !== undefined && handle.lastModelAudioAt > (handle.answerAt ?? 0)) return;
-    // S4a-R2 (b): diagnostic only. The receipt is all this deadline writes; escalation stays S2's.
+    // S4a-R2 (b): diagnosis only, escalation stays S2's.
     hostLogEvent({ event: 'gptlive_delegation_stalled', ms: Math.max(0, this.#now() - (handle.answerAt ?? this.#now())) });
+    if (handle.pendingCallIds.size > 0) return;
+    // #660: a stall with no call in flight is a result the model never said, which the host hands it once, or
+    // nothing at all, which makes the owner's next status answer the host's to give rather than the model's belief.
+    if (handle.unspoken !== undefined && handle.unspokenDelivered !== true) { void this.#deliverUnspoken(handle); return; }
+    handle.hostStatusNote = true;
   }
 
   /** S4a: a bounded wait on tool work that resolves to `timeout` instead of running past the host ceiling.
@@ -2096,7 +2164,21 @@ export class LiveSessionOwner {
     // #538: the audible debt clock clears on what the owner heard or did, never on what the model typed.
     if (type === 'audio') this.#clearDebt(handle, 'audible');
     if (type === 'interrupted') { handle.responseInProgress = false; handle.debtBargeIn = true; this.#clearDebt(handle, 'owner_barge_in'); }
-    if (type === 'inputTranscription' && event.finished === true) { handle.debtBargeIn = true; this.#clearDebt(handle, 'owner_barge_in'); }
+    if (type === 'inputTranscription' && event.finished === true) {
+      handle.debtBargeIn = true; this.#clearDebt(handle, 'owner_barge_in');
+      // #660: the owner is asking where it stands and a stalled delegation left nothing running, so the host's own
+      // truth goes in front of the model through the one note channel the voice session already has.
+      if (handle.hostStatusNote === true && handle.pendingCallIds.size === 0) {
+        // A refused note leaves the flag armed, so the owner's next question tries the host's truth again; a
+        // transport with no commentary channel cannot carry it at all, and the flag retires there.
+        let refused = false;
+        try {
+          const note = handle.session.sendCommentary;
+          refused = typeof note === 'function' && note.call(handle.session, { text: NO_LOOKUP_RUNNING_NOTE }) === false;
+        } catch { refused = true; }
+        handle.hostStatusNote = refused;
+      }
+    }
     if (type === 'turnComplete' || type === 'turnFailed') {
       handle.responseInProgress = false;
       // The response ended: an answer that was heard ends the debt, and one that ended without audio fires the rung
@@ -2386,14 +2468,17 @@ export class LiveSessionOwner {
     // epoch and are refused by the store, which is what "a reconnect rejects stale-epoch receipts" means here.
     handle.connection = { seq: handle.connection.seq + 1, epoch: `e${handle.connection.seq + 1}`, turnId: undefined, turnIndex: handle.connection.turnIndex };
     handle.deadlineAt = this.#now() + remaining; handle.deadlineMs = Date.now() + remaining;
+    // #660: a result that returned unspoken is why this window exists, so the new session opens model-first and
+    // speaks as soon as the delivery below lands, instead of waiting for the owner to ask again.
+    const unspokenOpening = handle.unspoken !== undefined;
     const request = path === 'fresh_seeded'
-      ? { ...structuredClone(handle.request), history: seed.turns, ...(handle.quietRebuild
-        ? { opening: 'user_first' as const }
-        : { openingText: LIVE_RECOVERY_PICKUP }) }
+      ? { ...structuredClone(handle.request), history: seed.turns, ...(unspokenOpening
+        ? { opening: 'model_first' as const }
+        : handle.quietRebuild ? { opening: 'user_first' as const } : { openingText: LIVE_RECOVERY_PICKUP }) }
       : { ...structuredClone(handle.request), resumptionHandle: savedHandle as string };
     // #591: a quiet rebuild asks for nothing, so an opener line the call inherited (a silent start after a lost
     // line) is cleared as well as the pickup that was never set.
-    if (handle.quietRebuild) delete request.openingText;
+    if (handle.quietRebuild && !unspokenOpening) delete request.openingText;
     try {
       handle.session = this.#voice.open(request, {
         signal: handle.abort.signal, deadlineMs: handle.deadlineMs, idleResetMs: this.#profile.limits.idleMs,
@@ -2404,6 +2489,8 @@ export class LiveSessionOwner {
       hostLogEvent({ event: 'live_provider_open', liveSessionId: handle.liveSessionId, generation: handle.generation,
         instructionChars: request.system.text.length, seedChars: seed.chars, tools: request.tools?.length ?? 0 });
       void handle.session.ready.catch(() => {}); void handle.session.done.catch(() => {});
+      // #660: this session has not been handed the unspoken result yet; the recovery delivers it once ready.
+      handle.unspokenDelivered = false;
       this.#observeDiagnostics(handle, handle.session);
       handle.goAwayUntil = undefined;
     } catch {
@@ -2491,6 +2578,9 @@ export class LiveSessionOwner {
       // A failed resume leaves an unusable handle: clear it so the next drop goes straight to fresh seeded.
       if (failedResume) this.#store.transaction(tx => tx.run('UPDATE live_sessions SET resumption_handle=NULL WHERE live_session_id=?', [handle.liveSessionId]));
       this.#logRecovery(handle, path, 'opened', closeCode, reason, seed);
+      // #660: the session that replaced the one a result came back on cannot accept its retired call ids, so the
+      // result goes to it as the one input a fresh session accepts. A refused delivery has already ended the turn.
+      await this.#deliverUnspoken(handle);
       return true;
     }
     // A call that ended while an attempt was waiting for its ready event owes no further attempt.
@@ -2801,7 +2891,10 @@ export class LiveSessionOwner {
         }
         if (event.type === 'toolCall') {
           handle.toolCalls += event.calls.length;
-          hostLogEvent({ event: 'research_call_arrived', liveSessionId: handle.liveSessionId, generation, calls: event.calls.length });
+          // L3: a call in flight is exactly the state the stalled status note denied, so it retires here.
+          handle.hostStatusNote = false;
+          hostLogEvent({ event: 'research_call_arrived', liveSessionId: handle.liveSessionId, generation, calls: event.calls.length,
+            ...researchCallFacts(event.calls) });
           handle.turnAfterTool = true;
           handle.thinking = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
@@ -3138,7 +3231,7 @@ export class LiveSessionOwner {
           this.#persist(handle, { type: 'continuity', sequence: 0, text: JSON.stringify(view) }, 'researchProgress');
         }
       },
-      log: entry => hostLogEvent(entry), logJoined: researchId => hostLogEvent({ event: 'research_joined', researchId }), ledger: handle.researchLedger,
+      log: entry => hostLogEvent(entry), logJoined: (researchId, research_branch) => hostLogEvent({ event: 'research_joined', researchId, research_branch }), ledger: handle.researchLedger,
       // #565: one trace row per source call's query shape. A refused write is a diagnostic failure, never
       // the answer: the owner's read has already succeeded by the time this lands.
       queryShape: shape => {

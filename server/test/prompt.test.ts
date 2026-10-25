@@ -358,3 +358,10 @@ test('W5: the compiled Gemini voice instruction carries the four audit rules onc
   ]) assert.equal(instruction.includes(gone), false, `replaced sentence is gone: ${gone}`);
   assert.equal(instruction.split('Never fill the silence while a lookup runs.').length - 1, 1, 'the silence rule is still stated once');
 });
+
+test('#665: the research procedure answers with what it has instead of chasing a page-limit note', () => {
+  const instruction = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en', tools: ['research'] }).text;
+  const rule = 'A page limit or more-available note is not a gap to chase unless the owner asked for everything; answer with what you have.';
+  assert.equal(NAYA_BACKEND_PROCEDURE.split(rule).length - 1, 1, 'the procedure states the page-limit rule once');
+  assert.equal(instruction.split(rule).length - 1, 1, 'and the compiled instruction carries it once');
+});

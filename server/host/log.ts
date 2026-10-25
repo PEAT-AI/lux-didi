@@ -1,4 +1,4 @@
-import { CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_REFUSAL_REASONS } from '../tools/research.js';
+import { CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
@@ -213,22 +213,27 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'connector_failure', connector: value.connector, stage: value.stage, ...(hasReason ? { reason: value.reason } : {}), ...(hasException ? { exceptionCode: value.exceptionCode } : {}), ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasAttempt ? { attempt: value.attempt } : {}) };
   }
   if (value.event === 'connector_identity') {
-    // Closed identity proof only: a connector name and two booleans, never the identity itself. The
-    // endpoint id is optional so one proof names which endpoint of the account it was (#533).
+    // Closed identity proof only: a connector name, two booleans and the proof's own closed code, never
+    // the identity itself. The endpoint id is optional so one proof names which endpoint of the account
+    // it was (#533). #671-R2: the code is what says why an unproven proof was unproven.
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
     const hasEndpoint = Object.prototype.hasOwnProperty.call(value, 'endpointId');
-    const allowed = ['connector', 'event', 'match', 'proven', ...(hasEndpoint ? ['endpointId'] : [])];
+    const hasCode = Object.prototype.hasOwnProperty.call(value, 'code');
+    const allowed = ['connector', 'event', 'match', 'proven', ...(hasEndpoint ? ['endpointId'] : []), ...(hasCode ? ['code'] : [])];
     if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) return;
     if (!token(value.connector) || typeof value.proven !== 'boolean') return;
     if (value.match !== null && typeof value.match !== 'boolean') return;
     if (hasEndpoint && !isSafeId(value.endpointId)) return;
+    if (hasCode && !token(value.code)) return;
     return { event: 'connector_identity', connector: value.connector, proven: value.proven, match: value.match,
-      ...(hasEndpoint ? { endpointId: value.endpointId } : {}) };
+      ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasCode ? { code: value.code } : {}) };
   }
   if (value.event === 'connector_connected' || value.event === 'connector_recovered'
-    || value.event === 'connector_recovery_exhausted' || value.event === 'connector_helper_stderr') {
-    // #533: a connect that landed used to be silent, so silent meant unknown. These four lines are closed
-    // counts and ids only: no url, no account, no helper text.
+    || value.event === 'connector_recovery_exhausted' || value.event === 'connector_unavailable'
+    || value.event === 'connector_helper_stderr') {
+    // #533: a connect that landed used to be silent, so silent meant unknown. #671: the mark that turns a
+    // read into an instant `unavailable` was silent too. These lines are closed counts, ids and codes only:
+    // no url, no account, no helper text.
     const ms = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 900_000;
     const count = (v: unknown, max: number): v is number => Number.isSafeInteger(v) && (v as number) >= 0 && (v as number) <= max;
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
@@ -244,6 +249,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (value.event === 'connector_recovery_exhausted') {
       if (!closedKeys(value, ['attempts', 'endpointId', 'event', 'reason']) || !count(value.attempts, 8) || !token(value.reason)) return;
       return { event: 'connector_recovery_exhausted', endpointId: value.endpointId, attempts: value.attempts, reason: value.reason };
+    }
+    if (value.event === 'connector_unavailable') {
+      if (!closedKeys(value, ['endpointId', 'event', 'reason']) || !token(value.reason)) return;
+      return { event: 'connector_unavailable', endpointId: value.endpointId, reason: value.reason };
     }
     if (!closedKeys(value, ['bytes', 'endpointId', 'event']) || !count(value.bytes, 16_777_216)) return;
     return { event: 'connector_helper_stderr', endpointId: value.endpointId, bytes: value.bytes };
@@ -420,6 +429,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     }
     return { event: 'live_no_pong', lastInboundAgeMs: value.lastInboundAgeMs, missedPongs: value.missedPongs, bufferedAmount: value.bufferedAmount };
   }
+  if (value.event === 'live_unspoken_delivered') {
+    // #660/#667: how many results a replaced session was handed as one text item, and which attempt landed.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'results', 'attempt'])) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
+    if (!isSafeCount(value.generation) || !isSafeCount(value.results) || !isSafeCount(value.attempt)) return;
+    if (Number(value.attempt) < 1 || Number(value.attempt) > 2) return;
+    return { event: 'live_unspoken_delivered', liveSessionId: value.liveSessionId, generation: value.generation,
+      results: value.results, attempt: value.attempt };
+  }
   if (value.event === 'live_recovery') {
     // Closed shape: one metadata-only record per recovery attempt. Never audio, text or a provider payload;
     // seedTurns/seedChars are the rebuilt journal seed's size, path is the transport chosen.
@@ -471,10 +489,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'research_call_arrived' || value.event === 'tool_output_sent') {
     // Closed shape: the frame arrival and the answer write, with the milliseconds between them.
     if (value.event === 'research_call_arrived') {
-      if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'calls'])) return;
+      // #667: the call's own shape, never the owner's words: the declared action, an id present, the question
+      // length and the lookup count. Free text has no column, and the question itself never enters the log.
+      if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'calls', 'action', 'researchIdPresent', 'questionChars', 'lookups'])) return;
       if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
       if (!isSafeCount(value.generation) || !isSafeCount(value.calls)) return;
-      return { event: 'research_call_arrived', liveSessionId: value.liveSessionId, generation: value.generation, calls: value.calls };
+      if (!isSafeMember(value.action, ['start', 'continue', 'stop', 'other'])) return;
+      if (typeof value.researchIdPresent !== 'boolean') return;
+      if (!isSafeCount(value.questionChars) || !isSafeCount(value.lookups)) return;
+      return { event: 'research_call_arrived', liveSessionId: value.liveSessionId, generation: value.generation, calls: value.calls,
+        action: value.action, researchIdPresent: value.researchIdPresent, questionChars: value.questionChars, lookups: value.lookups };
     }
     if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'tools', 'msSinceArrived', 'outcome'])) return;
     if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
@@ -1094,10 +1118,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'responses_validation_failed', param: value.param };
   }
   if (value.event === 'research_joined') {
-    // Metadata only: the run id a second start joined. No question, no result text.
-    if (Object.keys(value).sort().join(',') !== ['event', 'researchId'].sort().join(',')) return;
+    // Metadata only: the run id a research call joined and the scheduler branch that answered it. No question,
+    // no result text. The branch is optional, so a join logged without one still reaches the log.
+    if (!closedKeys(value, ['event', 'researchId']) && !closedKeys(value, ['event', 'researchId', 'research_branch'])) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_joined');
-    return { event: 'research_joined', researchId: value.researchId };
+    const branch = RESEARCH_BRANCHES.includes(value.research_branch as ResearchBranch) ? value.research_branch as ResearchBranch : undefined;
+    if (value.research_branch !== undefined && branch === undefined) return;
+    return { event: 'research_joined', researchId: value.researchId, ...(branch === undefined ? {} : { research_branch: branch }) };
   }
   if (value.event === 'warm_prewarm') {
     // 338: the owner's forced warm refresh. Two ages and whether an assembly replaced the old one:

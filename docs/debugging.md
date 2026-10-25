@@ -95,7 +95,11 @@ Since release 10 the dead-air recovery is legible from `host.log` alone. `tool_o
 the adapter reported for the answer (`outcome`: `sent`, `deferred` or `failed`). `live_debt` records the
 audible debt clock as content-free enums and nothing else: `phase: start` with `reason: tool_output` or
 `recreate`, `phase: clear` with `reason: audible`, `owner_barge_in` or `turn_end`, and `phase: rung` with
-`reason: dead_air` at 8 s, `rebuild` at 15 s, or `send_failed` at once for a write the adapter refused.
+`reason: dead_air` at 8 s, `rebuild` seven seconds later when she is still mute, or `send_failed` at once
+for a write the adapter refused. `research_call_arrived` carries the call's shape and never the owner's
+words: `action`, `researchIdPresent`, `questionChars` and `lookups`. A result that came back and was never
+said is handed to the session that is open as one text item, and `live_unspoken_delivered` names how many
+results it carried and which attempt landed.
 No duration, no text and no provider word is in any of them, which is why model text, a model turn start
 and output transcription can re-arm the response watchdog and still never clear this clock. `turn_failed`
 names its reason from the closed set `provider_error`, `delegation_stalled`, `send_failed`, `recreate_failed`,

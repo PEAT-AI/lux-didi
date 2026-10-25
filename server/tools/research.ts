@@ -113,6 +113,8 @@ export const RESEARCH = Object.freeze({
    * the cap, so a call cannot hang on a source that never answers and cannot outlast what it reads.
    */
   answerSlackMs: 2_000,
+  /** #670: the read's outer cut, this far above a web ask's own budget, so a cut web read says timeout. */
+  webCutSlackMs: 1_000,
   /**
    * P5-R5 (F4): the cap is a guard, not a bound in force: with the largest table row at 12 s the budget
    * tops out at 14 s, and a start call's ledger deadline is the older `startDeadlineMs` 15 s, which the
@@ -199,6 +201,19 @@ export const RESEARCH = Object.freeze({
   /** K6: how many memory lines one routed memory lookup may show. */
   memoryLines: 12,
   mailSnippetChars: 200, chatTextChars: 300, openedBodyChars: 1_500,
+  /**
+   * #663: the receipt a second identical start gets inside the turn window. The model is handed the answer
+   * it already has, never the same findings twice, so a backend loop cannot spend a turn on one lookup.
+   */
+  repeatNote: 'You already have this answer; give it to the owner now.',
+  /**
+   * #664: how many research calls one delegation may make. The backend re-asked one lookup eight times in
+   * 14 seconds, so the fourth call is told to answer from what it holds instead of reading again.
+   */
+  delegationCeiling: 3,
+  ceilingNote: 'Answer the owner with what you have.',
+  /** #663: a web part that failed or timed out leaves the model its own knowledge, and the reply says so. */
+  generalKnowledgeNote: 'Anything you add about it yourself is general knowledge, so say so.',
 });
 
 export const RESEARCH_SOURCES: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'];
@@ -299,6 +314,9 @@ export function normalizeLookups(value: unknown): ResearchLookup[] {
   return lookups;
 }
 
+/** #675: the one inbox scan a status mail check reads, the same bare scan the mail route uses. */
+const STATUS_MAIL_SCAN = 'in:inbox newer_than:2d';
+
 /**
  * #657 item 1: the lookups a status or test-all ask reads, one batch of MAX_LOOKUPS sources at a time.
  * A lookup the model wrote for a source in this batch is kept as it is, the sources it left out are
@@ -318,6 +336,21 @@ function toolBatch(run: RunState, configured: readonly SourceKind[], given: read
   while (batch.length < MAX_LOOKUPS && rest.length > 0) batch.push({ source: lookupSourceOf(rest.shift()!), query: '' });
   run.deferredSources = rest;
   return batch;
+}
+
+/**
+ * #675: the status probe set, used only on a status ask and only for the read shape. A status ask asks
+ * whether a source answers, so each read takes the shape that source's own ask takes: her words for the
+ * text reads, today's window for the calendar, because the routed calendar plan refuses an unnamed
+ * window (routedRead, `window_unparsed`) while the calendar's own read defaults to today (candidateSubs,
+ * calendar_window), and one inbox page for mail, never a topic scan (#657 item 2). The batch and what it
+ * defers stay the host's own, so a probe never reshapes which sources one call reads.
+ */
+function statusProbeOf(lookup: ResearchLookup, question: string): ResearchLookup {
+  const source = (lookup.source === 'company' ? 'mongoose' : lookup.source) as SourceKind;
+  if (source === 'calendar') return { source: lookup.source, query: 'today' };
+  if (source === 'mail') return { source: lookup.source, query: STATUS_MAIL_SCAN, mail: { q: STATUS_MAIL_SCAN } };
+  return { source: lookup.source, query: source === 'memory' ? lookup.query : question };
 }
 
 /** The declared calendar window grammar; the resolver accepts these forms and refuses every other one. */
@@ -1042,10 +1075,16 @@ export function chatQuestionWords(ask: string): boolean {
  * "channel X" and "#x". A display name keeps its words, so the connector can fold case and punctuation.
  */
 const NAMED_CHANNEL = /(?:\bin the |\bin |\bthe )([\w][\w .'-]{0,60}?) channel\b|\bchannel ([\w][\w .'-]{0,60}?)(?=$|[,.?!]|\s(?:about|on|for|with|from)\b)|#([\w.-]{1,60})/iu;
+/** #664: the articles and determiners a spoken channel name opens with, which are never part of the name. */
+const CHANNEL_DETERMINER = /^(?:a|an|the|my|our|this|that)\s+/iu;
+/** #664: the words a model writes where a channel name belongs, so a placeholder is never read as a channel. */
+const CHANNEL_PLACEHOLDER = /^(?:name|channel|exact|string|called)$/iu;
 export function namedChannel(question: string): string | undefined {
   const match = NAMED_CHANNEL.exec(question);
-  const name = (match?.[1] ?? match?.[2] ?? match?.[3] ?? '').trim().replace(/[.!?]+$/u, '');
-  return name === '' ? undefined : name;
+  // #664: "in an engineering channel" named an article and "the exact channel name" named a placeholder.
+  const spoken = (match?.[1] ?? match?.[2] ?? match?.[3] ?? '').trim().replace(/[.!?]+$/u, '');
+  const name = spoken.replace(CHANNEL_DETERMINER, '').trim();
+  return name === '' || CHANNEL_PLACEHOLDER.test(name) ? undefined : name;
 }
 /**
  * #564/#572: a triage ask is "what came in", never a keyword search. The host runs the fixed read below
@@ -1696,6 +1735,8 @@ export interface RunState {
   unavailableReasons: Map<SourceKind, string>;
   /** #637: the channel the ask named, kept so an unknown one is said in the owner's own words. */
   chatChannel?: string;
+  /** #663: the closest channel names the connector's refusal carried, so the reply can voice them. */
+  chatChannelClosest: string[];
   /** #621: the sources this ask routed to, whether or not the session configured them, for the header. */
   route: Set<SourceKind>;
   /** #621: sources that already spent their one broadened retry, so a zero-hit read retries exactly once. */
@@ -1736,7 +1777,7 @@ export class ResearchLedger {
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), broadenedChat: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), chatChannelClosest: [], route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), broadenedChat: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -1766,7 +1807,7 @@ export class ResearchLedger {
       calendar: new Map([...existing.calendar].map(([key, read]) => [key, { ...read, events: new Map(read.events), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), calendarDelivered: new Set(existing.calendarDelivered),
       ledger: new Map(existing.ledger), evidence: new Map(existing.evidence), readKinds: new Set(existing.readKinds), sourcesDone: new Set(existing.sourcesDone), sourcesFailed: new Set(existing.sourcesFailed), pending: new Set(existing.pending), pendingWaiters: new Set(),
       calls: new Set(existing.calls), emptySearches: new Map(existing.emptySearches), cutShort: new Set(existing.cutShort),
-      unavailableReasons: new Map(existing.unavailableReasons), web: [...existing.web], webAttribution: [...existing.webAttribution],
+      unavailableReasons: new Map(existing.unavailableReasons), chatChannelClosest: [], web: [...existing.web], webAttribution: [...existing.webAttribution],
     };
     delete run.bodyCursorRequested; delete run.mailDeadlineAt; delete run.mailCursorRequested;
     existing.cancelled = true; existing.progressAbort.abort();
@@ -1870,6 +1911,14 @@ export function skipReasonOf(rawReason: string | undefined, outcome: LookupOutco
   return 'read_failed';
 }
 
+/**
+ * #663: which branch of the scheduler answered a call, so the host log says why a research call read nothing:
+ * a fresh start, a join of a run in flight, a repeat of an answer already in the turn window, a continuation,
+ * a status or stop answer, or the delegation ceiling.
+ */
+export const RESEARCH_BRANCHES = ['start', 'join', 'recent', 'continue', 'status', 'ceiling'] as const;
+export type ResearchBranch = typeof RESEARCH_BRANCHES[number];
+
 export interface ResearchRunLog {
   event: 'research_run'; researchId: string; questionClass: QuestionClass; rounds: number;
   perRound: { candidates: { kind: CandidateKind; pUseful: number }[]; chosen: CandidateKind[] }[];
@@ -1946,8 +1995,8 @@ export interface ResearchDeps {
   execute(subs: readonly IntentSubCall[], signal: AbortSignal): Promise<IntentSubResult[]>;
   emit(event: ResearchProgress): void;
   log(event: ResearchRunLog): void;
-  /** One metadata-only line when a second `start` joins a run already in flight. */
-  logJoined?: ((researchId: string) => void) | undefined;
+  /** One metadata-only line per research call, naming the branch that answered it. */
+  logJoined?: ((researchId: string, branch: ResearchBranch) => void) | undefined;
   /** Metadata-only per-sub-call log; defaults to the host log sink. Never the query or result text. */
   logSubcall?: ((event: ResearchSubcallLog) => void) | undefined;
 
@@ -2466,6 +2515,17 @@ function unsearchedReasonGiven(run: RunState, configured: readonly SourceKind[],
 }
 
 /**
+ * #675: the closed codes that mean she is signed out of a source, so a status line says that in words
+ * instead of calling a source that never ran a failure. A named set, never a substring match: an
+ * exhausted token budget is not a sign-out.
+ */
+const SIGNED_OUT_CODES = new Set([
+  'not_signed_in', 'signed_out', 'not_connected', 'signin_required', 'login_required',
+  'credential_missing', 'credential-missing', 'credential_refresh_failed', 'credential-refresh-failed',
+  'credential_consent_expired', 'credential-consent-expired', 'credential_revoked', 'data_not_connected',
+]);
+
+/**
  * #653: the status answer names what each source did, in plain words, and a source is called working
  * only when its read answered. It reads the same closed reason set the coverage header uses.
  */
@@ -2475,6 +2535,9 @@ function statusReport(run: RunState, configured: readonly SourceKind[]): string 
     const label = spokenLabelOf(source);
     if (run.sourcesDone.has(source)) return `${label} answered`;
     if (run.emptySearches.has(source)) return `${label} answered, nothing this time`;
+    // #675: a source she is not signed in to is its own status, never a failure and never a timeout.
+    const code = run.unavailableReasons.get(source);
+    if (code !== undefined && SIGNED_OUT_CODES.has(code.toLowerCase())) return `${label} is signed out`;
     return UNSEARCHED_CLAUSE[unsearchedReasonGiven(run, configured, source)](label, source);
   }).join('; ');
 }
@@ -2982,7 +3045,19 @@ export function channelWordsOf(subs: readonly IntentSubCall[]): string | undefin
 export function channelMissCode(results: readonly IntentSubResult[]): string | undefined {
   // #637: the tool layer hands a refused read the one closed code for a channel it does not know, so the
   // words are the ones the ask named, kept on the run by the chat search plan.
-  return results.some(result => !result.ok && result.code === 'channel_not_found') ? 'channel_not_found' : undefined;
+  return results.some(result => !result.ok && result.code !== undefined && result.code.startsWith('channel_not_found'))
+    ? 'channel_not_found'
+    : undefined;
+}
+/**
+ * #663: the closest channel names a refusal carries, at most three, or none when it carries none. The
+ * connector writes them into its own failure detail, so the reply can name the channel the owner meant.
+ */
+export function channelClosestNames(code: string | undefined): string[] {
+  if (code === undefined) return [];
+  const detail = /closest names:\s*([^;]*)/iu.exec(code)?.[1] ?? /^channel_not_found\s*:\s*(.+)$/u.exec(code)?.[1];
+  if (detail === undefined) return [];
+  return detail.split(',').map(name => name.trim()).filter(name => name !== '' && !/^none$/iu.test(name)).slice(0, 3);
 }
 export function plainReason(code: string): string { return REASON_WORDS[code] ?? code.replace(/_/gu, ' '); }
 const TIMED_OUT = new Set(['timeout', 'deadline', 'deadline_exhausted', 'timed_out']);
@@ -3349,6 +3424,9 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     : `The chat search matched nothing on every word, so I broadened it to ${[...new Set(run.broadenedChat.values())].join(' and ')}.`;
   const clauses = [
     ...(webTimedOut ? ['The web took too long to answer, so that part is missing.'] : []),
+    // #663: a web part that never arrived is missing, and whatever the model adds from itself about it is its
+    // own knowledge, not a read, so the reply says which it is.
+    ...(run.sourcesFailed.has('web') ? [RESEARCH.generalKnowledgeNote] : []),
     ...(unreachable.length === 0 ? [] : [`I could not reach ${unreachable.length === 1 ? unreachable[0]! : `${unreachable.slice(0, -1).join(', ')} and ${unreachable[unreachable.length - 1]!}`} right now.`]),
     ...cutShort,
     ...searchedNothing,
@@ -3360,7 +3438,13 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   if (run.unavailableReasons.get('calendar') === 'window_unparsed') clauses.push('I could not resolve that calendar date or window. Give a supported weekday, today, tomorrow, week, this week, next week, or an exact valid date.');
   // #637: a channel the ask names and the chat connector does not know is said in the owner's words,
   // never as a search that found nothing and never as a chat that could not be reached.
-  if (run.unavailableReasons.get('chat') === 'channel_not_found') clauses.push(`I do not know a channel called ${run.chatChannel ?? 'that'}.`);
+  if (run.unavailableReasons.get('chat') === 'channel_not_found') {
+    // #663: the connector's refusal names the closest channels, so the owner hears the one she probably meant.
+    const closest = run.chatChannelClosest;
+    const hint = closest.length === 0 ? ''
+      : ` The closest names I have are ${closest.length === 1 ? closest[0]! : `${closest.slice(0, -1).join(', ')} and ${closest[closest.length - 1]!}`}.`;
+    clauses.push(`I do not know a channel called ${run.chatChannel ?? 'that'}.${hint}`);
+  }
   let note = clauses.length === 0 ? undefined : clauses.join(' ');
   // P5: a source that could not be read names its own reason, so an outage is never read as "nothing
   // found" and never as a timeout.
@@ -4181,6 +4265,8 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     const channelMiss = channelMissCode(own);
     if (channelMiss !== undefined) {
       run.unavailableReasons.set(plan.read.source, channelMiss);
+      // #663: the refusal names the channels closest to the one the ask meant, voiced by the reply.
+      run.chatChannelClosest = channelClosestNames(own.find(result => !result.ok)?.code);
       const words = channelWordsOf(plan.read.subs);
       if (words !== undefined) run.chatChannel ??= words;
     }
@@ -4798,8 +4884,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   // #657 item 1: a status or test-all ask names every source, so the host reads the first batch within
   // the limit and leaves the rest for the next call, instead of refusing the whole ask.
   if (statusAsk(question)) {
-    const batch = toolBatch(run, configured, lookups);
-    if (batch.length > 0) return routedResearch(deps, run, question, batch, configured, unavailable, unavailableReason, signal, now, limit, first);
+    const probes = toolBatch(run, configured, lookups).map(lookup => statusProbeOf(lookup, question));
+    if (probes.length > 0) return routedResearch(deps, run, question, probes, configured, unavailable, unavailableReason, signal, now, limit, first);
   }
   if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, unavailable, unavailableReason, signal, now, limit, first);
   // TRIAGE-R3: a recall ask reads her own remembered history, so it takes the memory lookup the routed
@@ -5069,7 +5155,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           // P5: the cut follows this source's own deadline from the table, never one number for every source.
           const webCall = subs.find(sub => sub.name === WEB_SEARCH_ACTION);
           const askedWebDeadline = webCall === undefined ? undefined : webDeadlineMs(String(webCall.args['query'] ?? ''));
-          const readDeadlineMs = askedWebDeadline === undefined ? sourceDeadlineMs(startSources) : Math.max(sourceDeadlineMs(startSources), askedWebDeadline);
+          // #670: the web module's own timer must be the one that fires, so this read's outer cut sits a
+          // second above the web budget and still under the answer budget (12 s plus its 2 s slack).
+          const readDeadlineMs = askedWebDeadline === undefined ? sourceDeadlineMs(startSources) : Math.max(sourceDeadlineMs(startSources), askedWebDeadline + RESEARCH.webCutSlackMs);
           // #635: the cut is recorded the moment it happens, not when the read settles, so a reply composed
       // while the read is being cut still names it a timeout instead of a source nobody read.
       const cutTimer = schedule(() => {
@@ -5212,6 +5300,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
               const missCode = part.source === 'chat' ? channelMissCode(part.results) : undefined;
               if (missCode !== undefined) {
                 run.unavailableReasons.set('chat', missCode);
+                // #663: the refusal names the channels closest to the one the ask meant, voiced by the reply.
+                run.chatChannelClosest = channelClosestNames(part.results.find(result => !result.ok)?.code);
                 const words = channelWordsOf(served);
                 if (words !== undefined) run.chatChannel ??= words;
               }
@@ -5426,6 +5516,12 @@ export class ResearchScheduler {
   #active = new Map<string, ActiveRun>();
   /** E7: the live turn window: the run each coalesce key last answered, and when. */
   #recent = new Map<string, { id: string; at: number; reply: JsonObject; reachable: string }>();
+  /**
+   * #664: how many research calls each delegation has made in the turn window. A delegation is the owner's
+   * one ask, which the scheduler sees as the same coalesce key: a keyword, a lookup batch or a reworded
+   * question with the same sources is the same delegation, and the window is what ends it.
+   */
+  #delegation = new Map<string, { at: number; calls: number; id?: string }>();
   /** E8: this live session's completed calendar reads and its calendar list, shared by every run it starts. */
   #memo: ResearchMemo = { calendar: new Map() };
   constructor(deps: ResearchDeps) { this.#deps = deps; }
@@ -5439,17 +5535,31 @@ export class ResearchScheduler {
       const inflight = this.#resolveTarget(undefined);
       if (inflight !== undefined && inflight.entry.reachable === reachable
         && (inflight.entry.signature === startSignature(call) || inflight.entry.key === coalesceKey(call) || sameQuestion(inflight.entry, call, this.#deps.now()))) {
-        this.#deps.logJoined?.(inflight.id);
+        this.#deps.logJoined?.(inflight.id, 'join');
         return inflight.entry.awaiter.promise;
       }
       // E7: the same question and sources, answered moments ago in this turn, is the same research.
       const recent = this.#recent.get(coalesceKey(call));
+      // #664: a delegation reads at most three times. The fourth call was the backend re-asking one lookup
+      // eight times in 14 s, so it is told to answer the owner with what it holds and it reads nothing.
+      const key = coalesceKey(call);
+      const at = this.#deps.now();
+      const spent = this.#delegation.get(key);
+      const calls = spent === undefined || at - spent.at > RESEARCH.coalesceWindowMs ? 1 : spent.calls + 1;
+      this.#delegation.set(key, { at, calls });
+      if (calls > RESEARCH.delegationCeiling) {
+        const answered = recent?.id ?? spent?.id ?? '';
+        this.#deps.logJoined?.(answered, 'ceiling');
+        return Promise.resolve({ researchId: answered, status: 'answered', repeat: true, canContinue: false, findings: [], note: RESEARCH.ceilingNote });
+      }
       // Behaviour 3: an answer that named a source unavailable is not reusable, so the key is the one
       // buildReply publishes the reasons under, and a recovered source is read again instead.
       if (recent !== undefined && recent.reachable === reachable && recent.reply['unavailable'] === undefined
         && this.#deps.now() - recent.at <= RESEARCH.coalesceWindowMs) {
-        this.#deps.logJoined?.(recent.id);
-        return Promise.resolve(structuredClone(recent.reply));
+        // #663: the answer is already in the turn window, so the receipt hands it back and sends the model to
+        // the owner instead of handing over the same findings a third time.
+        this.#deps.logJoined?.(recent.id, 'recent');
+        return Promise.resolve({ researchId: recent.id, status: 'answered', repeat: true, canContinue: false, findings: [], note: RESEARCH.repeatNote });
       }
       for (const [id, entry] of this.#active) {
         this.#deps.ledger.stop(id);
@@ -5461,6 +5571,9 @@ export class ResearchScheduler {
       // a model-chosen id that fails the host log's closed id rule takes the run's receipts with it.
       const id = newResearchId();
       for (const [key, entry] of this.#recent) if (this.#deps.now() - entry.at > RESEARCH.coalesceWindowMs) this.#recent.delete(key);
+      for (const [entry, spend] of this.#delegation) if (this.#deps.now() - spend.at > RESEARCH.coalesceWindowMs) this.#delegation.delete(entry);
+      this.#delegation.set(key, { at, calls, id });
+      this.#deps.logJoined?.(id, 'start');
       return this.#drive({ ...call, researchId: id }, signal, id, reachable);
     }
     // An explicit unknown id never selects another run.
@@ -5478,19 +5591,23 @@ export class ResearchScheduler {
         this.#deps.ledger.stop(target.id);
         this.#active.delete(target.id);
         this.#deps.emit({ researchId: target.id, phase: 'stopped', sourcesDone: [], sourcesPending: [], elapsedMs: 0 });
+        this.#deps.logJoined?.(target.id, 'status');
         return Promise.resolve(knownReply(this.#deps.ledger, target.id, this.#deps.configured));
       }
       // continue: stop the old loop, run on with a fresh budget reusing the ledger.
+      this.#deps.logJoined?.(target.id, 'continue');
       return this.#drive({ ...call, action: 'continue', researchId: target.id }, signal, target.id);
     }
     // Zero or several pending runs: current behaviour.
     if (call.action === 'stop') {
       const run = this.#deps.ledger.stop(call.researchId);
       const id = run?.researchId ?? call.researchId ?? '';
+      this.#deps.logJoined?.(id, 'status');
       if (run) this.#deps.emit({ researchId: id, phase: 'stopped', sourcesDone: [...run.sourcesDone], sourcesPending: [], elapsedMs: Math.max(0, this.#deps.now() - run.startedAt) });
       return Promise.resolve(knownReply(this.#deps.ledger, id, this.#deps.configured));
     }
     const id = call.researchId ?? newResearchId();
+    this.#deps.logJoined?.(id, 'continue');
     return this.#drive({ ...call, researchId: id }, signal, id);
   }
 

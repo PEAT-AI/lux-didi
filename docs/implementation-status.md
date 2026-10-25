@@ -1,6 +1,6 @@
 # Implementation status
 
-State of the source tree at release 14 (train head a302f30a03c8cd2fcff49e54108b50efa6e1a43d, 2026-10-25, the merged train head that has not reached main yet, and this docs commit follows it); release 13 landed on main as 640605e05c46f6fdcc303087207d9a4f910ad4ed, release 12 as dfe81348 and release 11 as 5fcacc91. It describes the source, not proof that a given installation contains every change: a bundle's `didi-runtime.json` `releaseCommit` names its source. A green build alone proves neither working accounts, voice hardware nor a healthy installed app.
+State of the source tree at release 15 (train head 37671efb04b2dee059b3d67c393d99c3d1a3def8, 2026-10-25, the merged train head that has not reached main yet, and this docs commit follows it); release 14 landed on main as aa0eb645af1e12bcc90cf0b0ab886159f065b24b, release 13 as 640605e05c46f6fdcc303087207d9a4f910ad4ed, release 12 as dfe81348 and release 11 as 5fcacc91. It describes the source, not proof that a given installation contains every change: a bundle's `didi-runtime.json` `releaseCommit` names its source. A green build alone proves neither working accounts, voice hardware nor a healthy installed app.
 
 ## What works today
 
@@ -29,6 +29,7 @@ State of the source tree at release 14 (train head a302f30a03c8cd2fcff49e54108b5
 | 12 | 2026-10-25 | A chat read gets ten seconds so it finishes and an ask about what she said earlier runs no chat read, a memory recall keeps every matching line and puts a summary first at the same match, and a company read reaches the host log instead of being refused |
 | 13 | 2026-10-25 | Sign in to each Mongoose endpoint with its own button in Settings, each connector's row names the next step that actually fits it, and a channel ask finds a channel by the words in its name while an unknown channel gets its own line instead of a guess |
 | 14 | 2026-10-25 | A stop the host announced is recorded as the host's own end, a lookup answers while she reads instead of going quiet, a timed out read says which source failed, a chat ask matches the words in a channel name, a continuation stays on the same question, Settings Save reaches the Live service, Mongoose sign in opens the browser after the settings repaint, and an in flight rebuild no longer ends the call |
+| 15 | 2026-10-25 | A channel named past the first page of the list is found, a web read is cut at twelve seconds so a slow source cannot hold the round, every connect attempt records why it stopped and a spent round is retried, a repeated lookup gets a receipt instead of a loop and a failed web read says what is general knowledge, an answer she already found is spoken even when the call drops, the Settings sheet repaints after Save, a status ask follows the batch it announces, and she says a lookup is running only for a call she just made, calls an earlier call history and labels general knowledge |
 
 Each release is one squash-merged pull request; its body lists the checks run at the head commit and the issues it closes.
 

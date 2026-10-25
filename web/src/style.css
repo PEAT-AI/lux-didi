@@ -221,6 +221,7 @@
 .sheet{position:fixed;top:56px;left:0;bottom:0;width:min(440px,92vw);z-index:45;background:var(--surface);border-right:1px solid var(--border);overflow-y:auto;padding:18px}
 .sheet-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
 .sheet-body .panel{margin-bottom:16px}
+.sheet-body>.notice,.sheet-body>.alert{position:sticky;top:0;z-index:1;margin-bottom:14px}
 .diagnostics dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;align-items:baseline}
 .diagnostics dt{color:var(--text-secondary);font-size:.82rem}
 .diagnostics dd{margin:0}

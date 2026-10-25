@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -49,6 +49,60 @@ async function approve(adapter: McpPort, registry: McpRegistry, names: readonly 
 
 function reader(adapter: McpPort, registry: McpRegistry, schemaDigest: string) {
   return createMattermostReader({ port: adapter, registry, config: { endpointId: 'mattermost', account: ACCOUNT, resource: RESOURCE, schemaDigest, generation: 1, maxLimit: 60, queryChars: 200 } });
+}
+
+// #661: a fake channel child whose list_channels declares its own page size, and whose paging
+// argument, when declared, is followed. No listening socket: the transport answers a mocked fetch.
+type ChannelRow = { id: string; name: string; displayName: string };
+
+async function channelReader(t: TestContext, options: { channels: ChannelRow[]; paging: 'offset' | 'none'; pageSize: number; failPage?: number }) {
+  const calls: { name: string; arguments: Record<string, unknown> }[] = [];
+  const listSchema = options.paging === 'offset'
+    ? { type: 'object', additionalProperties: false, properties: { limit: { type: 'integer', minimum: 1, maximum: options.pageSize }, offset: { type: 'integer', minimum: 0 } } }
+    : { type: 'object', additionalProperties: false, properties: { limit: { type: 'integer', minimum: 1, maximum: options.pageSize } } };
+  const sdk = new Server({ name: 'synthetic-channels', version: '1' }, { capabilities: { tools: {} } });
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+  sdk.setRequestHandler('tools/list', () => ({ tools: [
+    { name: 'mattermost_list_channels', inputSchema: listSchema },
+    { name: 'mattermost_get_channel_history', inputSchema: { type: 'object', properties: { channel: { type: 'string' }, limit: { type: 'integer', minimum: 1 } } } },
+  ] }) as never);
+  sdk.setRequestHandler('tools/call', request => {
+    const args: Record<string, unknown> = request.params.arguments ?? {};
+    calls.push({ name: request.params.name, arguments: args });
+    if (request.params.name === 'mattermost_list_channels') {
+      const limit = Math.min(Number(args['limit'] ?? 12), options.pageSize);
+      const offset = options.paging === 'offset' ? Number(args['offset'] ?? 0) : 0;
+      if (options.failPage !== undefined && offset / limit === options.failPage) return { content: [{ type: 'text', text: 'page failed' }], isError: true };
+      const channels = options.channels.slice(offset, offset + limit).map(channel => ({ id: channel.id, name: channel.name, display_name: channel.displayName }));
+      return { content: [{ type: 'text', text: JSON.stringify({ count: options.channels.length, channels }) }], isError: false };
+    }
+    return { content: [{ type: 'text', text: JSON.stringify({ total: 0, returned: 0, results: [] }) }], isError: false };
+  });
+  await sdk.connect(transport);
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    return request.method === 'GET' ? new Response(null, { status: 405 }) : transport.handleRequest(request);
+  });
+  const registry = new McpRegistry();
+  registry.register({ id: 'channels', url: 'http://127.0.0.1:18767/mcp', account: 'synthetic', resource: 'synthetic' });
+  registry.enable('channels'); registry.allowEgress('channels');
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore() });
+  t.after(async () => { await adapter.close(); await sdk.close(); });
+  const discovery = await adapter.discover('channels');
+  assert.equal(discovery.state, 'discovered');
+  if (discovery.state !== 'discovered') throw new Error('discovery failed');
+  registry.approve({ endpointId: 'channels', schemaDigest: discovery.schemaDigest, toolNames: ['mattermost_list_channels', 'mattermost_get_channel_history'], effect: 'read', account: 'synthetic', resource: 'synthetic', generation: 1 });
+  const port = createMattermostReader({ port: adapter, registry, config: { endpointId: 'channels', account: 'synthetic', resource: 'synthetic', schemaDigest: discovery.schemaDigest, generation: 1, maxLimit: 60, queryChars: 200 } });
+  return { port, calls };
+}
+
+/** Forty channels, numbered so one sits past the first dozen. */
+function fortyChannels(): ChannelRow[] {
+  return Array.from({ length: 40 }, (_, index) => ({
+    id: `idChannel${String(index + 1).padStart(2, '0')}`,
+    name: `channel-${String(index + 1).padStart(2, '0')}`,
+    displayName: `Channel ${String(index + 1).padStart(2, '0')}`,
+  }));
 }
 
 test('channel history projects Markdown with bounded fields and permalink sources', async t => {
@@ -382,4 +436,64 @@ test('#614: the installed child envelopes reach the model as posts', async t => 
   const thread = await r.getThread({ postId: 'postStandup' });
   const threadText = projectMattermostResult(f.adapter, thread);
   assert.ok(threadText.ok && threadText.projection.text.includes('On it'), 'a root and replies envelope reaches the model');
+});
+
+// #661: the channel index covers the child's whole channel list, so a name past the first bounded
+// page still resolves, and the paging travels in the dispatch log.
+test('#661: a channel name past the first page resolves through the declared paging', async t => {
+  const { port, calls } = await channelReader(t, { channels: fortyChannels(), paging: 'offset', pageSize: 12 });
+  const result = await port.getChannelHistory({ channel: 'channel-31', limit: 5 });
+  assert.equal(result.state, 'completed');
+  const list = calls.filter(call => call.name === 'mattermost_list_channels');
+  assert.deepEqual(list.map(call => call.arguments), [
+    { limit: 12, offset: 0 }, { limit: 12, offset: 12 }, { limit: 12, offset: 24 }, { limit: 12, offset: 36 },
+  ]);
+  const history = calls.filter(call => call.name === 'mattermost_get_channel_history');
+  assert.equal(history.at(-1)?.arguments['channel'], 'idChannel31');
+});
+
+// #661: a child that declares no paging argument is asked once at its declared maximum.
+test('#661: a child without a paging argument is read once at its declared maximum', async t => {
+  const { port, calls } = await channelReader(t, { channels: fortyChannels(), paging: 'none', pageSize: 50 });
+  const result = await port.getChannelHistory({ channel: 'channel-31', limit: 5 });
+  assert.equal(result.state, 'completed');
+  const list = calls.filter(call => call.name === 'mattermost_list_channels');
+  assert.deepEqual(list.map(call => call.arguments), [{ limit: 50 }]);
+  const history = calls.filter(call => call.name === 'mattermost_get_channel_history');
+  assert.equal(history.at(-1)?.arguments['channel'], 'idChannel31');
+});
+
+// #661: a channel created after the index was built is found by one refresh, not a refusal.
+test('#661: a channel created after the index build resolves after one refresh', async t => {
+  const channels = fortyChannels();
+  const { port, calls } = await channelReader(t, { channels, paging: 'offset', pageSize: 12 });
+  assert.equal((await port.getChannelHistory({ channel: 'channel-31', limit: 5 })).state, 'completed');
+  const built = calls.filter(call => call.name === 'mattermost_list_channels').length;
+  channels.push({ id: 'idDogpark', name: 'dogpark', displayName: 'Dogpark' });
+  const result = await port.getChannelHistory({ channel: 'dogpark', limit: 5 });
+  assert.equal(result.state, 'completed');
+  assert.ok(calls.filter(call => call.name === 'mattermost_list_channels').length > built, 'one refresh read the new channel');
+  const history = calls.filter(call => call.name === 'mattermost_get_channel_history');
+  assert.equal(history.at(-1)?.arguments['channel'], 'idDogpark');
+});
+
+// #661: a page that fails is a closed refusal, never a silently short index.
+test('#661: a failed page refuses the whole channel index with a closed code', async t => {
+  const { port } = await channelReader(t, { channels: fortyChannels(), paging: 'offset', pageSize: 12, failPage: 1 });
+  const result = await port.getChannelHistory({ channel: 'channel-31', limit: 5 });
+  assert.equal(result.state, 'refused');
+  assert.match(result.state === 'refused' ? result.reason : '', /^channel-list-[a-z-]+$/);
+});
+
+// #661: the refusal names at most three closest channels, ranked by the word matcher's score.
+test('#661: a refusal carries up to three closest channel names by word score', () => {
+  const channels = [
+    { id: 'idSummit', name: 'singapore-summit', displayName: 'Singapore Summit' },
+    { id: 'idOffice', name: 'singapore-office', displayName: 'Singapore Office' },
+    { id: 'idStandup', name: 'singapore-standup', displayName: 'Singapore Standup' },
+    { id: 'idArchive', name: 'singapore-archive', displayName: 'Singapore Archive' },
+    { id: 'idAlerts', name: 'singapore-alerts', displayName: 'Singapore Alerts' },
+  ];
+  const miss = resolveChannelReference('singapore summit office', channels);
+  assert.equal('error' in miss && miss.error, 'channel-not-found: singapore summit office; closest names: Singapore Summit, Singapore Office, Singapore Standup');
 });

@@ -4514,16 +4514,30 @@ const NAVIGATION_WORDS = new Set(['page', 'pages', 'item', 'items', 'thread', 't
  * model's own direction is judged: a continue's question and topic never reach a source (#565).
  */
 function continuesRun(run: RunState, call: ResearchCall, question: string): boolean {
-  void question;
-  const said = (call.direction ?? '').trim();
-  if (said === '') return true;
   const read = new Set<SourceKind>([...run.route, ...run.sourcesDone, ...run.pending]);
-  for (const match of said.matchAll(SOURCE_WORD)) {
-    const source = SOURCE_WORD_KIND[match[1]!.toLowerCase()];
-    if (source !== undefined && !read.has(source)) return false;
+  // A run's own id continues it only for more of what it already read, judged on the words and lookups
+  // the call brings. A source the run never read, or words about a new topic, is a new ask (review F2).
+  const unread = (text: string): boolean => {
+    for (const match of text.matchAll(SOURCE_WORD)) {
+      const source = SOURCE_WORD_KIND[match[1]!.toLowerCase()];
+      if (source !== undefined && !read.has(source)) return true;
+    }
+    return false;
+  };
+  const sameTopic = (text: string): boolean => {
+    const known = new Set(contentKeywords(`${run.question ?? ''} ${run.topic ?? ''}`, 40, KNOWLEDGE_FILLER));
+    return contentKeywords(text, 12, KNOWLEDGE_FILLER).every(word => known.has(word) || NAVIGATION_WORDS.has(word));
+  };
+  const said = (call.direction ?? '').trim();
+  if (said !== '') return !unread(said) && sameTopic(said);
+  const lookups = normalizeLookups(call.lookups);
+  for (const lookup of lookups) {
+    const source = (lookup.source === 'company' ? 'mongoose' : lookup.source) as SourceKind;
+    if (source !== 'memory' && !read.has(source)) return false;
   }
-  const known = new Set(contentKeywords(`${run.question ?? ''} ${run.topic ?? ''}`, 40));
-  return contentKeywords(said, 12).every(word => known.has(word) || NAVIGATION_WORDS.has(word));
+  if (unread(question)) return false;
+  // A continue that names its own lookups is a new search, so its words must be the run's words.
+  return lookups.length === 0 || sameTopic(question);
 }
 
 /** The loop behind a call: unchanged by the first answer point except for what it reports late. */

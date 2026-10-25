@@ -970,7 +970,10 @@ export function recallQuestion(question: string): boolean {
  * #657 item 1 and #653: a status or test-all ask is about the tools themselves, not about their
  * contents, so the host reads every source and reports what each one actually did.
  */
-const STATUS_ASK = /\b(?:are|is)\b[^?.]{0,30}\b(?:working|alive|connected|up)\b|\b(?:test|check)\s+(?:all\s+|the\s+|every\s+)?(?:tools?|sources?|connectors?)\b|\ball (?:the )?tools\b/iu;
+const STATUS_THING = 'tools?|sources?|connectors?|inbox|mail|emails?|gmail|calendar|chat|mattermost|slack|knowledge|memory|web|mongoose';
+/** A status word answers "is the source working", never "is it up to Friday" or "working out" (review F1). */
+const STATUS_STATE = 'working|alive|connected';
+const STATUS_ASK = new RegExp(`\\b(?:are|is)\\b[^?.]{0,30}\\b(?:${STATUS_THING})\\b[^?.]{0,30}\\b(?:${STATUS_STATE})\\b|\\b(?:${STATUS_THING})\\b[^?.]{0,20}\\b(?:${STATUS_STATE})\\b|\\b(?:test|check)\\s+(?:all\\s+|the\\s+|every\\s+)?(?:tools?|sources?|connectors?)\\b|\\ball (?:the\\s+)?tools\\b`, 'iu');
 export function statusAsk(question: string): boolean {
   return STATUS_ASK.test(question);
 }

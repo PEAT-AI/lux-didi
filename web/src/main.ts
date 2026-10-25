@@ -11,7 +11,7 @@ import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, nativeTransport, type Bridge, type NativeLiveState } from './native-bridge';
 import { connectionsMarkup } from './connector-status';
-import { bindSignInButtons, micModePicker, micModePromptMarkup, micModeState, providerDefaultVoice, providerVoices, settingsMarkup, settingsSaveError } from './settings-view';
+import { bindSignInButtons, micModePicker, micModePromptMarkup, micModeState, providerDefaultVoice, providerVoices, settingsMarkup, settingsSaveError, signInFailureNotice } from './settings-view';
 import { mongooseEndpointLabel } from './next-steps';
 import { answerMarkup } from './markdown';
 import { applyTheme, loadTheme, saveTheme, type Theme } from './theme';
@@ -407,6 +407,14 @@ function findCommitment(id: string) { return [...(plan?.items.map(i=>i.commitmen
 function bindLiveProviderSwitch(){document.getElementById('live-provider')?.addEventListener('change',ev=>{const provider=(ev.target as HTMLSelectElement).value;const field=document.getElementById('live-voice') as HTMLInputElement|null;if(field)field.value=providerDefaultVoice(provider);const list=document.getElementById('live-voices');if(list)list.innerHTML=providerVoices(provider).map(name=>`<option value="${e(name)}"></option>`).join('');});}
 // Attached by every full bind and after the periodic settings-summary re-render, which replaces the select.
 function bindConnectedHistory() { document.getElementById('connected-history')?.addEventListener('change',ev=>{const next=(ev.target as HTMLSelectElement).value;if(next)void connectedView.select(next).catch(err=>{error=failure(err);render();});}); }
+// One listener on the stable root, installed once: a Settings repaint or a full render replaces the buttons
+// underneath it, and a click on the new node still reaches the same sign-in.
+let signInClickBound=false;
+function bindSignIn(){if(signInClickBound)return;signInClickBound=true;bindSignInButtons(root,(endpoint)=>void mutate(async (signal,version)=>{
+  const started=await startMongooseSignIn(endpoint,signal);assertAuthority(version);
+  const label=mongooseEndpointLabel(endpoint);
+  notice=started.status==='started'?`Sign in to ${label} in the browser window. The connector reconnects by itself when you finish.`:signInFailureNotice(started.reason);
+}));}
 function bind() {
   root.querySelectorAll<HTMLElement>('button[data-route]').forEach(el => el.onclick = () => { const route = el.dataset.route as RouteId; layout = openSheet(layout, route); if (route === 'today') { tab = 'Today'; void loadTab(); } else if (route === 'memory') { tab = 'Memory'; } notice = ''; error = ''; render(); });
   document.getElementById('sheet-close')?.addEventListener('click', () => { layout = closeSheet(layout); render(); });
@@ -452,11 +460,7 @@ function bind() {
   document.getElementById('connected-standing-revoke')?.addEventListener('click',()=>void connectedView.revokeStanding());
   document.getElementById('connected-revoke')?.addEventListener('click',()=>void connectedView.revokeConversation());
   document.getElementById('connected-recover')?.addEventListener('click',()=>void connectedView.recoverHistory());
-  bindSignInButtons(root,(endpoint)=>void mutate(async (signal,version)=>{
-    const started=await startMongooseSignIn(endpoint,signal);assertAuthority(version);
-    const label=mongooseEndpointLabel(endpoint);
-    notice=started.status==='started'?`Sign in to ${label} in the browser window. The connector reconnects by itself when you finish.`:'Sign-in did not finish. Use the Sign in button to try again.';
-  }));
+  bindSignIn();
 }
 async function mutate(action: (signal: AbortSignal, version: AbortSignal) => Promise<void>, refused?: (err: unknown) => string | undefined) {
   if(!writable())return;

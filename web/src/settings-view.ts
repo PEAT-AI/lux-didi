@@ -190,17 +190,24 @@ function connectorsSection(connections: unknown, connectionsUnavailable: boolean
   return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.signInEndpoint ? ` <button type="button" class="secondary mongoose-signin" data-signin data-endpoint="${escapeHtml(row.id)}">Sign in to ${escapeHtml(mongooseEndpointLabel(row.signInEndpoint))}</button>` : ''}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}</li>`).join('')}</ul>`;
 }
 
-/** The one element shape the sign-in binder needs, so a test can supply plain objects. */
-export interface SignInButton { getAttribute(name: string): string | null; addEventListener(type: 'click', listener: () => void): void }
+/** The one element shape the sign-in binder reads, so a test can supply plain objects. */
+export interface SignInTarget { closest(selector: string): { getAttribute(name: string): string | null } | null }
 /**
  * One click per endpoint button: the click sends that row's endpoint name to the host, never a shared
- * or guessed one. A button whose data-endpoint is missing or outside the closed set is left unbound.
+ * or guessed one. One listener sits on the stable root, so a Settings repaint or a full render swaps the
+ * buttons underneath it and the next click still arrives. A click off every sign-in button sends nothing.
  */
-export function bindSignInButtons(root: { querySelectorAll(selector: string): ArrayLike<SignInButton> }, send: (endpoint: MongooseEndpointName) => void): void {
-  for (const node of Array.from(root.querySelectorAll('[data-signin]'))) {
-    const endpoint = mongooseEndpoint(node.getAttribute('data-endpoint') ?? '');
-    if (endpoint) node.addEventListener('click', () => send(endpoint));
-  }
+export function bindSignInButtons(root: { addEventListener(type: 'click', listener: (event: { target: SignInTarget }) => void): void }, send: (endpoint: MongooseEndpointName) => void): void {
+  root.addEventListener('click', event => {
+    const endpoint = mongooseEndpoint(event.target.closest('[data-signin]')?.getAttribute('data-endpoint') ?? '');
+    if (endpoint) send(endpoint);
+  });
+}
+/** What the Settings notice says when a click starts no sign-in: the closed reasons in plain words. */
+export function signInFailureNotice(reason: string): string {
+  if (reason === 'sign-in-in-progress') return 'Finish the sign-in already open in the browser first, then click Sign in again.';
+  if (reason === 'browser-unavailable') return 'Your browser could not be opened. The Sign in button tries again.';
+  return 'Sign-in did not finish. Use the Sign in button to try again.';
 }
 
 function connectedSection(connected: SettingsInput['connected']): string {

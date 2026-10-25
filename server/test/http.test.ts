@@ -507,11 +507,11 @@ test('#649: an unknown endpoint name is a closed failure, and one sign-in runs a
     gate = new Promise<void>(resolve => { finish = resolve; });
     const first = signIn('knowledge');
     const second = signIn('data');
-    assert.equal(second, first, 'a second click joins the pending sign-in instead of starting another');
+    assert.deepEqual(await second, { status: 'failed', reason: 'sign-in-in-progress' }, 'a click for another endpoint is told to finish the open one first');
     assert.deepEqual(await first, { status: 'started', url: 'http://127.0.0.1:8768/authorize?state=synthetic' });
     finish();
     await gate;
-    assert.deepEqual(signed, ['knowledge'], 'the joined click never signs a second endpoint');
+    assert.deepEqual(signed, ['knowledge'], 'the second click never signs a second endpoint');
   } finally { rmSync(configDir, { recursive: true, force: true }); }
 });
 
@@ -587,4 +587,77 @@ test('a refused voice is answered with the field named and stores nothing', asyn
     assert.equal(empty.status, 400);
     assert.match(((await empty.json()).error as { message: string }).message, /voice/);
   } finally { await f.cleanup(); live.cleanup(); }
+});
+
+// --- #659: a repeat click reaches the browser again, and another endpoint is told plainly. ---
+
+const AUTHORIZE = 'http://127.0.0.1:8768/authorize?state=synthetic';
+
+test('#659: a second click on the same endpoint opens the browser again at the URL already issued', async () => {
+  const dir = mongooseConfigDir();
+  try {
+    const opened: string[] = [];
+    const signed: string[] = [];
+    let finish: () => void = () => {};
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const signIn = createMongooseSignIn({
+      configDir: dir,
+      recover: async () => {},
+      open: url => { opened.push(url); },
+      login: async options => {
+        signed.push(`${options.endpoint}:${options.reference}`);
+        options.showAuthorizationUrl?.(AUTHORIZE);
+        await gate;
+      },
+    });
+    const first = signIn('knowledge');
+    const again = signIn('knowledge');
+    assert.deepEqual(await again, { status: 'started', url: AUTHORIZE }, 'the repeat click answers started, not silence');
+    assert.deepEqual(await first, { status: 'started', url: AUTHORIZE }, 'and the first click answers the same');
+    assert.deepEqual(opened, [AUTHORIZE, AUTHORIZE], 'the browser is asked twice, at the one URL already issued');
+    assert.deepEqual(signed, ['knowledge:mongoose-knowledge'], 'no second login runs');
+    finish();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('#659: a click for another endpoint while one sign-in is pending says to finish the open one first', async () => {
+  const dir = mongooseConfigDir();
+  try {
+    const opened: string[] = [];
+    const signed: string[] = [];
+    let finish: () => void = () => {};
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const signIn = createMongooseSignIn({
+      configDir: dir,
+      recover: async () => {},
+      open: url => { opened.push(url); },
+      login: async options => {
+        signed.push(options.endpoint);
+        options.showAuthorizationUrl?.(AUTHORIZE);
+        await gate;
+      },
+    });
+    const first = signIn('knowledge');
+    assert.deepEqual(await signIn('data'), { status: 'failed', reason: 'sign-in-in-progress' }, 'the other endpoint is told, not joined');
+    assert.deepEqual(signed, ['knowledge'], 'the second click never runs a second login');
+    assert.deepEqual(opened, [AUTHORIZE], 'and never opens a second sign-in page');
+    assert.deepEqual(await first, { status: 'started', url: AUTHORIZE });
+    finish();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('#659: a browser that cannot open answers the click with browser-unavailable, never an uncaught error', async () => {
+  const dir = mongooseConfigDir();
+  try {
+    const signIn = (open: (url: string) => void | Promise<void>) => createMongooseSignIn({
+      configDir: dir,
+      recover: async () => {},
+      open,
+      login: async options => { options.showAuthorizationUrl?.(AUTHORIZE); },
+    });
+    assert.deepEqual(await signIn(() => { throw new Error('spawn open ENOENT'); })('knowledge'),
+      { status: 'failed', reason: 'browser-unavailable' }, 'a launch that throws reaches the click as a closed code');
+    assert.deepEqual(await signIn(async () => { throw new Error('spawn open ENOENT'); })('knowledge'),
+      { status: 'failed', reason: 'browser-unavailable' }, 'and so does a launch that rejects');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

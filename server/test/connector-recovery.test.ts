@@ -354,9 +354,10 @@ test('671: a start-time identity proof that runs out of time is retried and prov
   assert.equal(identity[identity.length - 1]!.proven, true, 'and the retried proof is the one that stuck');
 });
 
-test('671: a transient transport loss marks the source unavailable on one closed log line', async t => {
-  // The first wire call answers 503: the transient unavailability the owner saw as a 0 ms read.
-  const gmail = await fixture({ tools: GMAIL_TOOLS, unavailableCall: index => index === 1, call: () => ({ payload: { emailAddress: ACCOUNT } }) });
+test('671: a transport loss on a connected endpoint marks the source unavailable on one closed log line', async t => {
+  // The second wire call (the first read after the proof) answers 503: the transient unavailability the
+  // owner saw as a read that came back unavailable at 0 ms.
+  const gmail = await fixture({ tools: GMAIL_TOOLS, unavailableCall: index => index === 2, call: () => ({ payload: { emailAddress: ACCOUNT } }) });
   t.after(() => gmail.close());
   const dir = mkdtempSync(join(tmpdir(), 'didi-google-transport-loss-'));
   const configDir = join(dir, 'provider-config');
@@ -374,8 +375,12 @@ test('671: a transient transport loss marks the source unavailable on one closed
     lifecycleLog: event => { lifecycle.push(event as unknown as { event: string; endpointId?: string; reason?: string }); },
   });
   t.after(() => runtime.close());
-  const first = runtime.status().endpoints[0]!;
-  assert.equal(first.state, 'error', 'the 503 left the source unavailable');
+  const connected = runtime.status().endpoints[0]!;
+  assert.equal(connected.state, 'connected', 'the proof landed and published a read grant');
+  const grant = runtime.registry.currentGrant('gmail')!;
+  const read = await runtime.port.call({ endpointId: 'gmail', toolName: 'gmail_get_profile', arguments: {}, generation: grant.generation, account: grant.account, resource: grant.resource });
+  assert.equal(read.state, 'unknown', 'the 503 is a transport failure, not a protocol answer');
+  assert.equal(runtime.status().endpoints[0]!.state, 'error', 'the 503 left the source unavailable for the next read');
   const unavailable = lifecycle.filter(entry => entry.event === 'connector_unavailable');
   assert.equal(unavailable.length, 1, `one line per mark, not one per read: saw ${JSON.stringify(lifecycle)}`);
   assert.deepEqual(unavailable[0], { event: 'connector_unavailable', endpointId: 'gmail', reason: 'transport_unavailable' });

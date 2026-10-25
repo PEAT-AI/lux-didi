@@ -2050,6 +2050,8 @@ export interface ResearchDeps {
   timeZone?: string;
   /** C-DEPTH item 3: the stage two bound for this run, so a test drives it without a real wait. */
   knowledgeReadMs?: number | undefined;
+  /** C-DEPTH item 3 (W10-R6): the full entry read was cut, so the summaries are what shipped. */
+  knowledgeFetchCut?: boolean;
   /** L11-03: the live call this research runs in. Its own rows are never memory, by identity. */
   liveSessionId?: string | undefined;
   /**
@@ -3605,8 +3607,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // `2 of 9 shown` truthfully after the reply is bounded.
   const totals = new Map<SourceKind, number>();
   for (const group of groups) totals.set(group.source, Math.max(group.total, group.lines.length));
+  // C-DEPTH item 3 (W10-R6): a full entry read that was cut is named in the header, so the reply says the
+  // knowledge it carries is the summaries rather than a silent drop.
   const coverageOf = (findings: readonly FindingLike[]): string =>
-    `${coverageTextOf(run, configured, findings, totals, limit)}${depthClauseOf(run.question ?? '', findings)}`;
+    `${coverageTextOf(run, configured, findings, totals, limit)}${run.knowledgeFetchCut === true ? '; knowledge entries excerpt' : ''}${depthClauseOf(run.question ?? '', findings)}`;
   const render = (): { findings: ReplyFinding[]; reply: JsonObject } => {
     const calendarShown = shownOf(groups.find(group => group.source === 'calendar') ?? { lines: [] });
     const calendarPending = calendarUpstream || calendarShown < remaining.length;
@@ -4918,13 +4922,13 @@ async function withFullEntries(
         if (id !== undefined && !bodies.has(id)) bodies.set(id, line.trim().slice(0, RESEARCH.knowledgeBodyChars));
       }
     }
-    if (bodies.size === 0) return [...results];
+    if (bodies.size === 0) { run.knowledgeFetchCut = true; return [...results]; }
     const enriched = searched.text.split('\n').map(line => {
       const id = hitIdOf(line);
       return id === undefined || !bodies.has(id) ? line : bodies.get(id)!;
     }).join('\n');
     return results.map(result => (result === searched ? { ...result, text: enriched } : result));
-  } catch { return [...results]; }
+  } catch { run.knowledgeFetchCut = true; return [...results]; }
 }
 
 /** The loop behind a call: unchanged by the first answer point except for what it reports late. */

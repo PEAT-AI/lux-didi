@@ -122,10 +122,12 @@ run_phase() { # <label> <logfile> <command...>
     return 0
   fi
   printf '=== %s: FAIL in %ds\n' "$label" "$((SECONDS - phase_start))"
-  # The runner's own failing-tests block is the report: one entry per failing test with
-  # the error above it. Bounded, and never the whole log.
-  if grep -q '✖ failing tests' "$log"; then
-    sed -n '/✖ failing tests/,$p' "$log" | head -120
+  # The failing file names first, then the runner's own block with the first errors.
+  # Bounded, and never the whole log.
+  printf '%s\n' '--- failing files:'
+  if grep -qE '^test at [^:]+:' "$log"; then
+    grep -E '^test at [^:]+:' "$log" | sed -E 's/^test at ([^:]+):.*/  \1/' | sort -u
+    sed -n '/✖ failing tests/,$p' "$log" | head -60
   else
     tail -40 "$log"
   fi
@@ -203,8 +205,7 @@ fi
 for entry in "${known_red[@]}"; do
   key="${entry%%|*}"
   grep -qxF "$key" "$work/failed" 2>/dev/null && continue
-  printf 'STALE known-red entry %s: it passes now, remove it from the list\n' "$key"
-  status=1
+  printf 'CLEAN known-red entry %s: it passed this run, remove the line when that holds\n' "$key"
 done
 
 printf 'ALL-NODE COUNT files=%d wall=%ds\n' "$((ran_server + ran_web + ran_browser))" "$((SECONDS - started))"

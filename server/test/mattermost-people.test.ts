@@ -206,7 +206,12 @@ test('C-CHAT person-overview: an ambiguous name is the child refusal turned into
 test('C-CHAT channel-recent: "Builders and Friends" is the channel "Builder & Friends", read in its window', async t => {
   const f = await setup(t, 'people');
   const read = chatRead(await f.reader.chat({ intent: 'channel', channel: 'Builders and Friends' }));
-  assert.deepEqual(f.calls().find(call => call.name === 'mattermost_list_channels')?.arguments, { query: 'Builders and Friends', types: ['O', 'P'], limit: 10 }, 'the spoken words: the fold to "Builder & Friends" is local (W2B-R6)');
+  // F4: the child folds case and "&", never plurals, so the spoken words rank first and an inflection only
+  // the fold can resolve earns one retry with the folded key.
+  assert.deepEqual(f.calls().filter(call => call.name === 'mattermost_list_channels').map(call => call.arguments), [
+    { query: 'Builders and Friends', types: ['O', 'P'], limit: 10 },
+    { query: 'builder and friend', types: ['O', 'P'], limit: 10 },
+  ], 'the spoken words first, then the folded key on a miss');
   assert.deepEqual(searches(f.calls()), [{ query: '', mode: 'keyword', limit: 8, sort: 'newest', channel: BUILDER_FRIENDS, from_date: daysAgo(30) }]);
   assert.match(read.read, /^the channel Builder & Friends since /u);
   assert.equal(read.total, 2);

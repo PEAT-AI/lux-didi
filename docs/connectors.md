@@ -84,7 +84,7 @@ The Mattermost connector reads the local archive child (`mattermost-mcp`). Every
 | `mattermost_conversation_overview` | everything the owner and one person exchanged: their direct messages, shared group chats and channels where both posted, with counts | both sides of the direct messages only, and the reply says an overview needs the newer chat archive |
 | `attachmentText` on posts | webhook and bot posts whose words live in the attachment | those posts show their header with an empty body |
 
-Each missing capability is named once in the reply, never replaced by a guess. Moving an installed connection to a newer build is a new connection id, see [mcp-configuration.md](mcp-configuration.md).
+Each missing capability is named once in the reply, never replaced by a guess. Moving an installed connection to a newer build is a new connection id: delete the old `mcp.json` entry and add the new one, see [mcp-configuration.md](mcp-configuration.md).
 
 ## The clone list
 

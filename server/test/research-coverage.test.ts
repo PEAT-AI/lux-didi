@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ResearchLedger, broaderQueryOf, clip, runResearch, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
+import { RESEARCH, ResearchLedger, broaderQueryOf, clip, coverageLine, runResearch, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 function sub(name: string, text: string, ok = true, key = name): IntentSubResult {
@@ -24,12 +24,13 @@ interface Harness {
   logs: ResearchRunLog[];
 }
 
-function harness(opts: { execute?: ResearchDeps['execute']; configured?: readonly SourceKind[]; replyLimit?: number } = {}): Harness {
+function harness(opts: { execute?: ResearchDeps['execute']; configured?: readonly SourceKind[]; replyLimit?: number; now?: () => number; schedule?: ResearchDeps['schedule'] } = {}): Harness {
   const executed: { name: string; args: Record<string, unknown> }[] = [];
   const progress: ResearchProgress[] = [];
   const logs: ResearchRunLog[] = [];
   const deps: ResearchDeps = {
-    now: () => 0,
+    now: opts.now ?? (() => 0),
+    ...(opts.schedule === undefined ? {} : { schedule: opts.schedule }),
     configured: opts.configured ?? ['knowledge', 'calendar', 'mail', 'chat'],
     execute: opts.execute ?? (async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name, 'evidence', true, call.key))),
     emit: event => progress.push(event),
@@ -123,7 +124,22 @@ test('COMPOSE 2: every reply opens with the coverage header, and a reply at the 
     assert.ok(findings.some(finding => finding.source === source), `one finding line for ${source}`);
   }
   assert.match(String(reply['note'] ?? ''), /more available/iu, 'the note survives the trim');
-  assert.ok(JSON.stringify(reply).length <= 900 + 1_200, 'the prose envelope keeps its bound and the header rides outside it');
+  assert.doesNotMatch(String(reply['note'] ?? ''), /I did not search/u, 'the header is the one place an unread source is named');
+  assert.ok(JSON.stringify(reply).length <= 900, `the header counts inside the cap: ${JSON.stringify(reply).length} chars`);
+});
+
+test('CAPHEADER 2 (#634): a header over its share of the cap names every source by status word, and drops none', () => {
+  const searched = [{ source: 'knowledge' as const, status: 'truncated_to_budget' as const, shown: 3, total: 9 }, { source: 'mail' as const, status: 'complete' as const, shown: 2, total: 2 }];
+  const unsearched = [{ source: 'calendar' as const, reason: 'skipped_by_route' as const }, { source: 'chat' as const, reason: 'skipped_by_route' as const }, { source: 'web' as const, reason: 'not_configured' as const }];
+  const detailed = coverageLine(searched, unsearched, 2_000);
+  assert.match(detailed, /knowledge truncated_to_budget 3 of 9 shown/u, 'a header with room keeps its counts');
+  const brief = coverageLine(searched, unsearched, 600);
+  assert.ok(brief.length <= 150, `the brief header keeps its quarter of the cap: ${brief.length} of 150`);
+  for (const name of ['knowledge', 'mail', 'calendar', 'chat', 'web']) {
+    assert.match(brief, new RegExp(`(?:^|: |; )${name} \\w+`, 'u'), `the header still names ${name}: ${brief}`);
+  }
+  assert.doesNotMatch(brief, /say: /u, 'the spoken clauses go before a source does');
+  assert.doesNotMatch(brief, /not shown/u, 'nothing is counted out of the header');
 });
 
 test('COMPOSE 3: a source the ask routes to but the session never configured is not_configured, and a failed source is provider_failed', async () => {
@@ -168,4 +184,52 @@ test('COMPOSE 4: the allocator clips at a word boundary and the header counts th
   assert.equal(Number(header[2]), Number(counts[2]), 'and the lines the read matched');
   assert.equal(clip('alpha bravo charlie', 14), 'alpha bravo\u2026', 'a clip ends on a whole word');
   assert.equal(clip('alpha bravo charlie', 30), 'alpha bravo charlie', 'a text inside its room is untouched');
+});
+
+// --- #635: a read still in flight is still reading in the header, the same thing the note says --------
+
+interface FakeClock { now: () => number; schedule: (callback: () => void, delayMs: number) => { unref: () => void; cancel: () => void }; advance: (to: number) => void }
+
+function fakeClock(): FakeClock {
+  let at = 0;
+  const timers: { due: number; callback: () => void; done: boolean }[] = [];
+  return {
+    now: () => at,
+    schedule: (callback, delayMs) => {
+      const entry = { due: at + delayMs, callback, done: false };
+      timers.push(entry);
+      return { unref: () => {}, cancel: () => { entry.done = true; } };
+    },
+    advance: to => {
+      at = to;
+      for (let guard = 0; guard < 20; guard++) {
+        const due = timers.filter(entry => !entry.done && entry.due <= at);
+        if (due.length === 0) return;
+        for (const entry of due) { entry.done = true; entry.callback(); }
+      }
+    },
+  };
+}
+
+test('#635: a chat read still in flight when the reply is composed says still_reading, matching the note', async () => {
+  const clock = fakeClock();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const h = harness({ now: clock.now, schedule: clock.schedule, execute: async (subs: readonly IntentSubCall[]) => {
+    if (subs.some(call => call.name === 'mattermost_search')) await gate;
+    return subs.map(call => sub(call.name, call.name === 'gmail_search_messages' ? mailRows(2) : 'evidence', true, call.key));
+  } });
+
+  const call = runResearch(h.deps, {
+    action: 'start', question: 'what did the team say in chat about the release, and what does my mail say',
+    lookups: [{ source: 'mail', mail: { q: 'release' } }, { source: 'chat', query: 'release' }],
+  }, new AbortController().signal);
+  for (let tick = 0; tick < 20; tick += 1) await Promise.resolve();
+  clock.advance(RESEARCH.firstAnswerMs);
+  const reply = await call;
+  const header = String(reply['coverage']);
+  assert.match(header, /chat still_reading/u, `the header names the read still in flight (${header})`);
+  assert.doesNotMatch(header, /chat skipped_by_route/u, 'a read nobody skipped is never called skipped');
+  assert.match(String(reply['note']), /Still reading: chat/u, 'and the note says the same thing');
+  release();
 });

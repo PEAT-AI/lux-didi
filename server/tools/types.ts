@@ -51,7 +51,7 @@ export interface ToolsOwnerOptions {
   store: StorePort; ownerId: string; registry: McpRegistry; port: McpPort;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
   /** Reports a connector-classified connection status after a call; null clears it (R4). */
-  reportToolStatus?(connectionId: string, status: { state: 'configured'; reason: string } | null): void;
+  reportToolStatus?(connectionId: string, status: { state: 'configured' | 'error'; reason: string } | null): void;
 }
 export interface ConnectionIntent { expectedPolicySha256: string | null; policy: ConnectionPolicy }
 export interface ConnectionApplyResult { state: 'applied' | 'unchanged'; sha256: string }

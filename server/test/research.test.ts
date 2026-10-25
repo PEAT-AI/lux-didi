@@ -175,7 +175,7 @@ test('a failed follow-up logs its real error code, never a bare failed', async (
 test('the whole serialized reply stays within the character cap', async () => {
   const h = harness({ executeText: 'x'.repeat(9_000) });
   const reply = await runResearch(h.deps, { action: 'start', question: 'anything' }, new AbortController().signal);
-  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `reply was ${JSON.stringify(reply).length} chars with the coverage header`);
+  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(reply).length} chars with the coverage header`);
 });
 
 // N4 (#567): memory and knowledge findings of 10 KB each reached Live at 6,125 and 8,543 chars, so the
@@ -191,8 +191,30 @@ test('N4: memory and knowledge findings of 10 KB each still fit the capped reply
     lookups: [{ source: 'memory', history: { query: 'release scope' } }, { source: 'knowledge', query: 'release scope' }],
   }, new AbortController().signal);
   const size = JSON.stringify(reply).length;
-  // #621: the coverage header has its own budget beside the prose envelope.
-  assert.ok(size <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `reply was ${size} chars with the coverage header`);
+  // #634: the coverage header counts inside the prose envelope.
+  assert.ok(size <= RESEARCH.replyLimitChars, `reply was ${size} chars with the coverage header`);
+});
+
+// #634: the coverage header counts inside the same cap, so a reply that fills the budget still fits with a
+// long header, and the header keeps every source it names.
+test('CAPHEADER 1: a reply at the cap carries a long coverage header inside the 2,500 characters', async () => {
+  const h = harness({
+    configured: ['memory', 'knowledge'],
+    executeText: 'k'.repeat(10_000),
+    memory: () => ({ lines: [`he said ${'m'.repeat(10_000)}`], text: 'ignored', total: 1 }),
+  });
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'what is the release scope',
+    lookups: [{ source: 'memory', history: { query: 'release scope' } }, { source: 'knowledge', query: 'release scope' }, { source: 'web', query: 'release scope' }],
+  }, new AbortController().signal);
+  const header = String(reply['coverage']);
+  const size = JSON.stringify(reply).length;
+  assert.ok(header.length >= 100, `the header is long enough to matter: ${header.length} chars`);
+  assert.match(header, /^coverage: /u);
+  assert.match(header, /knowledge [a-z_]+ \d+ of \d+ shown/u, 'the searched source keeps its counts');
+  assert.match(header, /web not_configured/u, 'the source nobody read is named in the header');
+  assert.ok(size >= 2_300, `the reply really fills the cap: ${size} chars`);
+  assert.ok(size <= RESEARCH.replyLimitChars, `reply was ${size} chars with the coverage header at a ${RESEARCH.replyLimitChars} cap`);
 });
 
 // N5 (#568): a completed run promised more was available, and the model's continue got
@@ -204,7 +226,9 @@ test('N5: a reply that cannot serve a continuation never says more is available'
   assert.equal(stopped['canContinue'], false);
   const note = String(stopped['note'] ?? '');
   assert.doesNotMatch(note, /more available/, 'the note never offers a continuation this run cannot serve');
-  assert.match(note, /did not search/, 'and it names the sources this run never searched');
+  assert.doesNotMatch(note, /did not search/, 'the note never repeats what the header already names');
+  const coverage = String(stopped['coverage'] ?? '');
+  assert.match(coverage, /coverage: (?!none)\w+/u, `the header names what this run did and did not search: ${coverage}`);
 });
 
 test('N5: a trimmed reply that can continue still says more is available', async () => {
@@ -323,7 +347,7 @@ test('#567/R5: a long best knowledge hit is clipped to fit, never dropped', asyn
   const reply = await runResearch(h.deps, {
     action: 'start', question: 'what is the release scope', lookups: [{ source: 'knowledge', query: 'release scope' }],
   }, new AbortController().signal);
-  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `reply was ${JSON.stringify(reply).length} chars with the coverage header`);
+  assert.ok(JSON.stringify(reply).length <= RESEARCH.replyLimitChars, `reply was ${JSON.stringify(reply).length} chars with the coverage header`);
   const shown = (reply['findings'] as { text: string }[]).map(finding => finding.text).join('\n');
   assert.match(shown, /the release ships on Friday/, 'the head of the best hit survives the cap');
   assert.match(shown, /\u2026/u, 'and the reply marks where it was cut');
@@ -999,7 +1023,7 @@ test('R9: a normal selector run writes exactly one terminal run line', async () 
 
 // --- P5: one deadline per source, the call budget follows the slowest source it reads ---------------
 
-test('P5: chat answers at 6 s inside its own 12 s deadline, and the call budget follows that source', async () => {
+test('P5: chat answers at 5 s inside its own bounded deadline, and the call budget follows that source', async () => {
   const clock = fakeClock();
   const receipts: ResearchSourceLog[] = [];
   let release!: (results: IntentSubResult[]) => void;
@@ -1014,11 +1038,12 @@ test('P5: chat answers at 6 s inside its own 12 s deadline, and the call budget 
   const deps: ResearchDeps = { ...h.deps, configured: ['chat'], logSource: event => receipts.push(event) };
   const running = runResearch(deps, { action: 'start', question: 'what did the team agree in chat' }, new AbortController().signal);
   await settle();
-  clock.advance(6_000); await settle();
+  // #635: the chat row is bounded near 5 s, so a 5 s chat read still lands and the receipt names that row.
+  clock.advance(5_000); await settle();
   release([sub('mattermost_search', '- release freeze agreed on Friday', true, 'c0')]);
   const reply = await running;
-  assert.equal(reply['status'], 'complete', 'a 6 s chat read inside its 12 s deadline answers');
-  assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['chat', 'ok', 12_000]], 'the receipt names the deadline the chat read really had');
+  assert.equal(reply['status'], 'complete', 'a 5 s chat read inside its own bounded deadline answers');
+  assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['chat', 'ok', RESEARCH.sourceDeadline.chat]], 'the receipt names the deadline the chat read really had');
 });
 
 test('P5: knowledge at 13 s is cut at its own 12 s deadline and reported, never empty', async () => {
@@ -1514,8 +1539,11 @@ test('#1020: a timed-out source is named as timed out, in seconds, beside the so
     action: 'start', question: 'what is waiting on me',
     lookups: [{ source: 'chat', query: 'release freeze' }, { source: 'knowledge', query: 'release' }],
   }, new AbortController().signal);
-  assert.match(String(reply['note']), /team chat: not read \(timed out after 12 s\)/, 'the reason is the timeout and its budget, never a bare unreachable');
-  assert.match(String(reply['note']), /could not reach team chat/, 'and the voiceable clause about it is still there');
+  // #635: a timed-out chat read is voiced as a timeout with its own bounded budget, never as a chat that
+  // could not be reached, and the header's say clause is the sentence the model speaks.
+  assert.match(String(reply['note']), /team chat: not read \(timed out after 6 s\)/, 'the reason is the timeout and its budget, never a bare unreachable');
+  assert.doesNotMatch(String(reply['note']), /could not reach/, 'a timeout is never voiced as a source out of reach');
+  assert.match(String(reply['coverage']), /chat timed_out \(say: team chat took too long\)/, 'and the header carries the clause to say instead');
   assert.ok((reply['findings'] as { source: string }[]).some(finding => finding.source === 'knowledge'), 'the healthy source still answers in the same reply');
 });
 
@@ -1789,7 +1817,7 @@ test('LAT-1023: a wide answer is compacted to the Live budget by dropping whole 
   const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
   const text = JSON.stringify(reply);
   assert.ok(RESEARCH.replyLimitChars <= 2_500, `the Live budget is 2,500 chars, not ${RESEARCH.replyLimitChars}`);
-  assert.ok(text.length <= 2_500 + RESEARCH.coverageLimitChars, `the answer to Live is ${text.length} chars, the prose bound plus the coverage header`);
+  assert.ok(text.length <= 2_500, `the answer to Live is ${text.length} chars, the coverage header included`);
   const findings = reply['findings'] as { text: string }[];
   const shown = findings.map(finding => finding.text).join('\n');
   const items = shown.split(/\n(?=#\d+ )/u).slice(1);
@@ -1854,7 +1882,7 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
     lookups: [{ source: 'knowledge', query: 'invoice release plan' }, { source: 'mail', query: 'from:ana' }],
   }, new AbortController().signal);
   const text = JSON.stringify(reply);
-  assert.ok(text.length <= RESEARCH.replyLimitChars + RESEARCH.coverageLimitChars, `the answer to Live is ${text.length} chars, the prose bound plus the coverage header`);
+  assert.ok(text.length <= RESEARCH.replyLimitChars, `the answer to Live is ${text.length} chars, the coverage header included`);
   const line = h.logs.at(-1)!;
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
   assert.ok((line.answerCompacted?.items ?? 0) >= 2, 'whole items were dropped from both sources');
@@ -2039,8 +2067,8 @@ test('WEB-1024: an early answer with two pending readers keeps its final cap and
   const call = runResearch(h.deps, { action: 'start', question: 'what is remembered and recorded', lookups: [{ source: 'memory', query: 'remembered' }, { source: 'knowledge', query: 'recorded' }, { source: 'chat', query: 'recorded' }] }, new AbortController().signal);
   await tick(); clock.advance(RESEARCH.firstAnswerMs);
   const reply = await call;
-  // #621: the coverage header has its own budget beside the 2,500 char prose envelope.
-  assert.ok(JSON.stringify(reply).length <= 2_500 + RESEARCH.coverageLimitChars, JSON.stringify(reply).length.toString());
+  // #634: the coverage header counts inside the 2,500 char reply envelope.
+  assert.ok(JSON.stringify(reply).length <= 2_500, JSON.stringify(reply).length.toString());
   assert.ok(String(reply['note']).includes(RESEARCH.moreAvailableNote), String(reply['note']));
   assert.deepEqual(reply['pending'], ['knowledge', 'chat']);
   gate.resolve(); await reading;

@@ -260,10 +260,11 @@ export async function composeMcpRuntime(options: {
     failuresReported.add(entry.id);
     options.connectorLog?.(entry.connector, stage, { reason, endpointId: entry.id, attempt, ...(exceptionCode ? { exceptionCode } : {}) });
   };
-  const reportToolStatus = (connectionId: string, status: { state: 'configured'; reason: string } | null): void => {
+  const reportToolStatus = (connectionId: string, status: { state: 'configured' | 'error'; reason: string } | null): void => {
     const previous = reports.get(connectionId);
     if (!previous) return;
-    reports.set(connectionId, status === null
+    // Only a pinned refusal is a dead endpoint; a per-call failure leaves the report connected.
+    reports.set(connectionId, status === null || status.state === 'error'
       ? { id: previous.id, state: 'connected', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt }
       : { id: previous.id, state: 'configured', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt, error: status.reason });
   };

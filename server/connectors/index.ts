@@ -453,12 +453,6 @@ export function composedGrantedNames(connector: string, granted: readonly string
   return (CONNECTOR_COMPOSED_TOOLS[connector] ?? []).filter(tool => tool.requires.every(name => present.has(name))).map(tool => tool.name);
 }
 
-/** One composed tool's declaration, by name; absent for a name the connector does not own. */
-export function composedToolDeclaration(connector: string, name: string): ConnectorToolDeclaration | undefined {
-  const tool = (CONNECTOR_COMPOSED_TOOLS[connector] ?? []).find(candidate => candidate.name === name);
-  return tool === undefined ? undefined : composedDeclaration(tool);
-}
-
 /**
  * #604: the host-computed digest of a composed declaration, so a changed composite is a catalog
  * change the owner approval covers and a later review can compare.
@@ -521,7 +515,10 @@ const mattermostDescriptor: ConnectorDescriptor = {
     ];
   },
   createReader({ port, registry, endpoint, schemaDigest, generation, policy }) {
-    const reader = createMattermostReader({ port, registry, config: { endpointId: endpoint.id, account: endpoint.account, resource: endpoint.resource, schemaDigest, generation, maxLimit: Math.min(MATTERMOST_DEFAULTS.maxLimit, policy.bounds.maxSearchLimit), queryChars: Math.min(200, policy.bounds.maxQueryChars), names: policy.toolNames } });
+    const reader = createMattermostReader({ port, registry, config: { endpointId: endpoint.id, account: endpoint.account, resource: endpoint.resource, schemaDigest, generation, maxLimit: Math.min(MATTERMOST_DEFAULTS.maxLimit, policy.bounds.maxSearchLimit), queryChars: Math.min(200, policy.bounds.maxQueryChars), // TR-R16: a composed read is granted exactly when the base reads it stands on are, the same
+    // derivation the door uses, so the connector's own preflight never demands a name a policy
+    // cannot hold.
+    names: [...policy.toolNames, ...composedGrantedNames('mattermost', policy.toolNames)] } });
     return { async call(tool, args, signal) {
       switch (tool) {
         case 'mattermost_whoami': return reader.whoami(signal);

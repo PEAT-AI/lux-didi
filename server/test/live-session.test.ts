@@ -3425,20 +3425,19 @@ test('W10: a source whose grant publishes after the call started joins the next 
 // #651: a chat read the connector refused for a channel it does not know keeps its own closed code
 // through the live research hop, so the reply names the channel instead of an unreachable source.
 test('TR-R8: a granted composed read reaches the child on the live path', async t => {
-  const scheduler = new DeadlineClock();
-  const h = await harness(t, { tools: true, mattermost: true, scheduler });
+  const h = await harness(t, { tools: true, mattermost: true });
   await attached(h, 'composed-door');
   const question = 'what did they say in the nowhere channel about the deploy';
-  // TR-R11: the same sequence W5's live-path research tests use, the owner turn finalized and the injected
-  // clock advanced around the call, because the research reads are scheduled on that clock.
-  await ownerSpoke(h);
-  const before = toolResponseCount(h);
-  h.f.send({ toolCall: { functionCalls: [{ id: 'r1', name: 'research', args: { action: 'start', question, topic: 'deploy in the nowhere channel' } }] } });
-  await advanceUntil(ms => h.advance(ms), scheduler, () => toolResponseCount(h) > before);
-  // The composed read stands on the base reads the connection already holds, so the door covers it and the
-  // child is asked: a refusal it writes is the child's own answer, never a door refusal standing in for it.
-  assert.ok(h.calls.some(call => call.name === 'mattermost_chat'),
-    `the composed chat read reached the child: ${JSON.stringify(h.calls.map(call => call.name))} reply=${lastToolResponse(h)}`);
+  // TR-R16: the door routes a composed name to the connector's own composed read, so the child only ever
+  // sees base primitives. W5's live-path sequence: the owner turn finalized, then the call, then the answer.
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question, topic: 'deploy in the nowhere channel' });
+  const chatCalls = h.calls.filter(call => String(call.name).startsWith('mattermost_'));
+  assert.ok(chatCalls.length > 0, `the composed chat read reached the connector: ${JSON.stringify(h.calls.map(call => call.name))}`);
+  const composites = chatCalls.filter(call => call.name === 'mattermost_chat' || call.name === 'mattermost_attention');
+  assert.deepEqual(composites.map(call => call.name), [], 'a composed name is never sent to the child');
+  for (const call of chatCalls) assert.ok(MATTERMOST_TOOLS.includes(call.name as never),
+    `the child saw only a base primitive: ${String(call.name)}`);
+  assert.match(lastToolResponse(h), /nowhere/, `the connector's own answer reaches the reply: ${lastToolResponse(h)}`);
 });
 
 test('#651: an unknown channel reaches research as its own closed code', async t => {

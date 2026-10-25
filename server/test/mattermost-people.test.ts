@@ -114,6 +114,16 @@ test('C-CHAT: a newer child is granted its person reads and the filtered channel
   assert.deepEqual(f.calls().find(call => call.name === 'mattermost_list_channels')?.arguments, { query: 'AI AI AI', types: ['O', 'P'], limit: 10 });
 });
 
+// TR-R16: the composed read is granted exactly when the base reads it stands on are, so a grant that
+// drops one child read refuses the composite at the connector's own preflight and never reaches the child.
+test('TR-R16: a composed read whose base read is not granted is refused, and no child read runs', async t => {
+  const f = await setup(t, 'people', names => names.filter(name => name !== 'mattermost_get_thread'));
+  const result = await f.reader.chat({ intent: 'channel', channel: 'AI AI AI' });
+  assert.equal(result.state, 'refused', 'the composite is refused, not served');
+  assert.equal((result as { reason: string }).reason, 'tool-not-granted', 'the refusal names the missing grant');
+  assert.deepEqual(f.calls(), [], 'the child saw no read at all');
+});
+
 test('C-CHAT (W2B-R6): the channel query is the name as spoken, and the fold stays local', async t => {
   const f = await setup(t, 'people');
   const read = chatRead(await f.reader.chat({ intent: 'channel', channel: 'Builders' }));

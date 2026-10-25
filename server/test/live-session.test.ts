@@ -50,7 +50,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -4112,6 +4112,12 @@ function progressPort() {
   let commentaryDelivered = true;
   /** Every text input the host pushed: the OpenAI path must never send the `Continue.` user turn (review F2). */
   const texts: string[] = [];
+  /** #660: every text input tagged with the provider session that received it, and how often one was refused. */
+  const textInputs: { session: number; text: string }[] = [];
+  let textRefusals = 0;
+  let refuseText = 0;
+  /** #660: every request the host asked for, so a test can read the opening the fresh session was given. */
+  const requests: LiveVoiceRequest[] = [];
   const toolResponses: LiveToolResponse[][] = [];
   /** #656: every owner frame the host handed a provider session, tagged with which session received it. */
   const audioInput: { session: number; pcm: Uint8Array }[] = [];
@@ -4125,8 +4131,9 @@ function progressPort() {
   let closes = 0;
   const port: LiveVoicePort = {
     capabilities: { ...fakeLiveVoicePort().port.capabilities, provider: 'openai', supportsResumption: true },
-    open(_request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession {
+    open(request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession {
       sessionsOpened += 1;
+      requests.push(request);
       let closed = false;
       let resolveDone: (value: LiveVoiceOutcome) => void = () => {};
       const done = new Promise<LiveVoiceOutcome>(resolve => { resolveDone = resolve; });
@@ -4140,6 +4147,9 @@ function progressPort() {
         closed = true; wake(); resolveDone({ status: 'cancelled', code: 'cancelled' });
       }, { once: true });
       let readySeen = false;
+      // #660/B2: readiness follows the ready event, so a held gate holds `session.ready` exactly as the adapter does.
+      let readyResolve: () => void = () => {};
+      const ready = new Promise<void>(resolve => { readyResolve = resolve; });
       const events: AsyncIterable<LiveVoiceEvent> = {
         async *[Symbol.asyncIterator]() {
           while (!closed) {
@@ -4148,6 +4158,7 @@ function progressPort() {
               const gate = readyGate;
               if (gate !== undefined) await gate;
               yield { sequence: ++sequence, type: 'ready' };
+              readyResolve();
               continue;
             }
             if (!pending.length) { await new Promise<void>(resolve => { waiter = resolve; }); continue; }
@@ -4156,20 +4167,28 @@ function progressPort() {
         },
       };
       return {
-        ready: Promise.resolve(), events, done,
+        ready, events, done,
         sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome { toolResponses.push(input.responses); return sendOutcome; },
         sendAudio(input: { pcm: Uint8Array }): void { audioInput.push({ session: sessionsOpened, pcm: input.pcm }); },
-        sendText(input: { text: string }): void { texts.push(input.text); }, endAudioStream(): void {},
+        sendText(input: { text: string }): void {
+          // #660: a fresh session answers not_ready before its ready event, exactly as the adapter does.
+          if (refuseText > 0) { refuseText -= 1; textRefusals += 1; throw new Error('not_ready'); }
+          texts.push(input.text); textInputs.push({ session: sessionsOpened, text: input.text });
+        }, endAudioStream(): void {},
         sendCommentary(input: { text: string }): boolean {
           if (!commentaryDelivered) return false;
           commentary.push(input.text);
           return true;
         },
-        close(): void { if (closed) return; closed = true; closes += 1; wake(); resolveDone({ status: 'closed', code: 'closed' }); },
+        close(): void { if (closed) return; closed = true; closes += 1; readyResolve(); wake(); resolveDone({ status: 'closed', code: 'closed' }); },
       };
     },
   };
-  return { port, commentary, thinking, texts, toolResponses, audioInput, emit: (event: unknown) => emit(event),
+  return { port, commentary, thinking, texts, textInputs, requests, toolResponses, audioInput, emit: (event: unknown) => emit(event),
+    /** #660: the next text inputs meet a session that is not ready; one retry is all the host gives. */
+    refuseText: (times = 1) => { refuseText = times; },
+    refuseTextOnce: () => { refuseText = 1; },
+    get textRefusals() { return textRefusals; },
     /** #656: hold the next rebuilt session short of ready; the returned release lets it open. */
     holdNextReady: () => {
       const gate = new Promise<void>(resolve => { releaseReady = resolve; });
@@ -4687,14 +4706,16 @@ test('#538: a tool output whose send outcome is failed opens the recovery at onc
   fake.reportToolSend('failed');
   fake.emit({ type: 'toolCall', calls: [{ id: 'sf1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
-  // F3: the re-queue into the recreated session is read too, and this transport refuses every write, so its own
-  // refusal is recorded rather than dropped.
-  assert.deepEqual(reasons(), ['tool_output', 'send_failed', 'send_failed'], 'the failed write starts the debt and names it in the same tick, and the re-queue names its own refusal');
+  // #660: a fresh session never accepts the retired call ids, so the recovery answers with two receipts and the
+  // result itself travels as the one text item the new session does accept.
+  assert.deepEqual(reasons(), ['tool_output', 'send_failed'], 'the failed write starts the debt and names it in the same tick');
   assert.equal(fake.sessionsOpened, 2, 'the recovery opened one fresh provider session at once, not at 8 s');
   assert.equal(fake.closes, 1, 'the stalled provider session was closed');
+  assert.equal(fake.toolResponses.length, 1, 'the retired call ids are never re-sent to the session that replaced them');
+  assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 1, 'the result reaches the new session as text');
 });
 
-test('#538: model text never slides the audible debt, so the OpenAI path recreates once at 8 s and re-queues once', async t => {
+test('#538: model text never slides the audible debt, so the OpenAI rung hands over the unspoken result and rebuilds once', async t => {
   const scheduler = new DeadlineClock();
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
@@ -4717,12 +4738,16 @@ test('#538: model text never slides the audible debt, so the OpenAI path recreat
   // DEADAIR-R4: the text announced a response, so the 8 s rung holds and the rung returns seven seconds later.
   assert.equal(fake.closes, 0, 'an announced response is never closed under');
   h.advance(7_000); scheduler.runDue(); await settlePort();
-  assert.equal(fake.closes, 1, 'the held rung fires once the provider has had its time');
+  // #660: the held rung hands the model the result it never said, and never re-sends the retired call ids.
+  assert.equal(fake.closes, 0, 'the held rung puts the unspoken result in front of the live session');
+  assert.equal(fake.textInputs.length, 1, 'the result reaches it as one text item');
+  assert.equal(fake.toolResponses.length, 1, 'and the retired call ids are never re-sent');
+  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
+  assert.equal(fake.closes, 1, 'a model still mute seven seconds later is the one replaced');
   assert.equal(fake.sessionsOpened, 2, 'and one fresh session replaces it');
-  assert.equal(fake.toolResponses.length, 2, 'the pending tool outputs are re-queued exactly once');
-  assert.deepEqual(fake.toolResponses[1], fake.toolResponses[0], 'the same answers, not a second batch');
+  assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 1, 'the new session is handed the result once');
   h.advance(4_000); scheduler.runDue(); await settlePort();
-  assert.equal(fake.toolResponses.length, 2, 'the re-queue is never replayed twice');
+  assert.equal(fake.textInputs.length, 2, 'the delivery is never replayed twice');
   // The recreated session answers audibly, which is what the owner hears.
   fake.emit({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
   await settlePort();
@@ -4769,7 +4794,11 @@ test('#538 R4: a response that ends without audio fires the held rung', async t 
   assert.equal(fake.closes, 0, 'still holding at the rung');
   fake.emit({ type: 'turnComplete' });
   await settlePort();
-  assert.equal(fake.closes, 1, 'the response ended without audio, so the rung fires then');
+  // #660: the rung fires on the ended response and hands the model the result it never said, and the session that
+  // is still mute seven seconds later is the one replaced.
+  assert.equal(fake.textInputs.length, 1, 'the response ended without audio, so the rung fires then');
+  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
+  assert.equal(fake.closes, 1, 'the session still mute after the delivery is closed');
   assert.equal(fake.sessionsOpened, 2, 'and one fresh session replaces the stalled one');
   attachment.close();
 });
@@ -4782,7 +4811,12 @@ test('#538 R4: a session with no response announced is closed at the rung, the m
   fake.emit({ type: 'toolCall', calls: [{ id: 'r4c', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   for (let spent = 0; spent < 8_100; spent += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
-  assert.equal(fake.closes, 1, 'nothing was announced, so the rung closes the session');
+  // #660: the rung hands the model the unspoken result first, and the still mute session is replaced seven
+  // seconds later instead of in the same tick.
+  assert.equal(fake.textInputs.length, 1, 'nothing was announced, so the rung offers the result to the session');
+  assert.equal(fake.closes, 0, 'and the session is not closed under a result it was just handed');
+  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
+  assert.equal(fake.closes, 1, 'the session still mute after the delivery is closed');
   assert.equal(fake.sessionsOpened, 2, 'and recreates it once');
   attachment.close();
 });
@@ -6367,8 +6401,12 @@ test('#656: a model silent after the read settles still rebuilds once, after the
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0);
   release();
   await settlePort();
-  // The call settled and the model never spoke: the normal window still recovers the mute.
-  h.advance(AUDIBLE_DEBT_RUNG_MS + 1_000); scheduler.runDue(); await settlePort();
+  // #660: the call settled and the model never spoke, so the rung hands over the result it never said, and the
+  // normal window recovers a model that is still mute after that.
+  h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
+  assert.equal(fake.textInputs.length, 1, 'the settled read is offered to the model at the rung');
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'and the ladder does not rebuild over it');
+  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS + 1_000); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'the mute that outlives the read recovers');
   assert.equal(fake.sessionsOpened, 2);
   // One rebuild per recovery window: the second silence inside it is not a second rebuild.
@@ -6391,8 +6429,10 @@ test('#656: owner audio sent during a rebuild is held and delivered to the new s
   fake.emit({ type: 'toolCall', calls: [{ id: 'hold656', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   const releaseReady = fake.holdNextReady();
+  // #660: the rung hands over the result first, and the mute that outlives that delivery is what rebuilds.
   h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
-  assert.equal(fake.sessionsOpened, 2, 'the mute rebuilds the session');
+  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
+  assert.equal(fake.sessionsOpened, 2, 'the mute that outlives the delivery rebuilds the session');
   // The owner keeps talking into the gap: four seconds of it, against a three second hold.
   const frames = [ownerSecond(1), ownerSecond(2), ownerSecond(3), ownerSecond(4)];
   for (const frame of frames) attachment.sendAudio({ pcm: frame });
@@ -6441,6 +6481,8 @@ test('#656: the ladder waits out each call on that call\'s own ceiling, a resear
   h.advance(TOOL_CEILING_MS - 1_000); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'inside its ceiling the call holds the silence');
   h.advance(TOOL_CEILING_MS); scheduler.runDue(); await settlePort();
+  // #660: the rung offers the unspoken result first, so the rebuild follows a delivery that got no answer.
+  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'past its ceiling the ladder recovers the silence');
   release();
 });test('#656: a call past its own ceiling no longer holds the ladder, so a wedged read still recovers', async t => {
@@ -6466,6 +6508,8 @@ test('#656: the ladder waits out each call on that call\'s own ceiling, a resear
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'the read in flight holds the ladder');
   // TOOL_CEILING_MS is the call's own hard ceiling: past it the call is no longer the owner of the silence.
   h.advance(TOOL_CEILING_MS); scheduler.runDue(); await settlePort();
+  // #660: the rung offers the unspoken result first, so the rebuild follows a delivery that got no answer.
+  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'a wedged call still recovers');
   release();
 });
@@ -6502,8 +6546,146 @@ test('#656: the 03:42 sequence, four serial research calls with two refused, nev
   release();
   await settlePort();
   assert.equal(fake.toolResponses.length, 4, 'every call of the sequence, the long read included, answers the model');
-  // The model stays mute after the call settled, so the ladder recovers the mute once, in the normal window.
-  h.advance(AUDIBLE_DEBT_RUNG_MS + 1_000); scheduler.runDue(); await settlePort();
+  // The model stays mute after the call settled, so the rung offers the unspoken result and the mute that
+  // outlives that delivery is rebuilt once, in the normal window.
+  h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
+  assert.equal(fake.textInputs.length, 1, 'the settled result is offered to the model at the rung');
+  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS + 1_000); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'one rebuild, after the read and not under it');
   assert.equal(fake.sessionsOpened, 2);
+});
+
+test('#660: a result that returned unspoken reaches the session that replaced it, once, after ready', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'unspoken-rebuild-660');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'u660', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the result went to the session that asked for it');
+  // #667: the arrival names the call's shape and never the owner's words.
+  const arrived = receipts.find(entry => entry['event'] === 'research_call_arrived');
+  assert.equal(arrived?.['action'], 'other', 'a connector read declares no research action');
+  assert.equal(arrived?.['researchIdPresent'], false, 'and carries no research id');
+  assert.equal(arrived?.['questionChars'], 0, 'the query length, never the query');
+  assert.equal(arrived?.['lookups'], 0, 'one read, no lookup batch');
+  // The rung puts the unspoken result in front of the mute model instead of rebuilding over it.
+  h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
+  assert.equal(fake.closes, 0, 'the ladder delivers the result before it rebuilds');
+  assert.equal(fake.textInputs.length, 1, 'the result reached the model as one text item');
+  assert.match(fake.textInputs[0]!.text, /already returned/, 'the item names the result as already returned');
+  // The model stays mute, so the rebuild follows and the fresh session is handed the result after its own ready.
+  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS + 1_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.sessionsOpened, 2, 'the rebuild still happens once the delivery did not get her to speak');
+  const second = fake.textInputs.filter(entry => entry.session === 2);
+  assert.equal(second.length, 1, 'the fresh session receives the unspoken result exactly once');
+  assert.equal(fake.requests[1]!.opening, 'model_first', 'the rebuilt session speaks without waiting for the owner');
+  assert.equal(fake.requests[1]!.openingText, undefined, 'and carries no pickup line to answer instead');
+  const refused = receipts.filter(record => record['event'] === 'live_debt' && record['reason'] === 'send_failed');
+  assert.equal(refused.length, 0, 'a fresh session is never sent the retired call ids');
+  // #667: the recreate names how many unspoken results the new session was handed.
+  const delivery = receipts.filter(record => record['event'] === 'live_unspoken_delivered');
+  assert.deepEqual(delivery.map(record => [record['results'], record['attempt']]), [[1, 1], [1, 1]], 'one result each, first attempt');
+  assert.equal(new Set(delivery.map(record => record['generation'])).size, 2, 'the rung and the recreate each name their own');
+  fake.emit(audibleFrame);
+  await settlePort();
+  assert.equal(h.owner.current().state, 'speaking', 'her answer to the delivered result is what the owner hears');
+});
+
+test('#660: the delivery waits for the session to be ready and survives one not_ready', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'unspoken-not-ready-660');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'nr660', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  // The first delivery meets a session that answers not_ready, and the one retry is the delivery that lands.
+  fake.refuseTextOnce();
+  h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
+  assert.equal(fake.textRefusals, 1, 'the first attempt was refused as not ready');
+  assert.equal(fake.sessionsOpened, 1, 'a refused delivery is never a reason to rebuild');
+  assert.equal(fake.textInputs.length, 1, 'the retry is the one delivery, and it carries the result');
+  assert.equal(fake.textInputs[0]!.session, 1);
+  // The result is marked delivered only by the send that succeeded, so the rest of the window delivers nothing.
+  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS - 1_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.textInputs.length, 1, 'a session that already has the result is never handed it twice');
+  // A fresh session is told nothing before its own ready event, and is handed the result once it is ready.
+  const release = fake.holdNextReady();
+  h.advance(1_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.sessionsOpened, 2, 'the mute after the delivery rebuilds the session');
+  assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 0, 'nothing is delivered before ready');
+  release();
+  await settlePort();
+  assert.equal(fake.textInputs.filter(entry => entry.session === 2).length, 1, 'the delivery lands once ready arrives');
+});
+
+test('#660: two refused deliveries end the turn with the closed reason instead of silence', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'unspoken-failed-660');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'fl660', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  // Both the attempt and its one retry are refused: the host fails loud rather than leaving the result unsaid.
+  fake.refuseText(2);
+  h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
+  assert.equal(fake.textRefusals, 2, 'the attempt and the single retry were both refused');
+  assert.equal(fake.textInputs.length, 0, 'nothing reached the model');
+  const failed = receipts.filter(record => record['event'] === 'turn_failed');
+  assert.deepEqual(failed.map(record => record['reason']), ['send_failed'], 'the turn ends with its closed reason');
+  const composed = fake.commentary.filter(text => text === TURN_FAILED_LINE);
+  assert.equal(composed.length, 1, 'and she says the one honest line');
+});
+
+test('#660: a stalled delegation with nothing in flight delivers the unspoken result once', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  const { attachment } = await openPort(h, 'unspoken-stall-660');
+  // The owner mutes the call, so the audible debt clock never starts and the delegation deadline is the only
+  // clock left on the result that returned unspoken.
+  attachment.setInputMuted(true);
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'st660', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the result returned to the session that asked for it');
+  assert.equal(fake.textInputs.length, 0, 'nothing has been delivered yet');
+  h.advance(DELEGATION_DEADLINE_MS + 1_000); scheduler.runDue(); await settlePort();
+  assert.equal(receipts.filter(entry => entry['event'] === 'gptlive_delegation_stalled').length, 1, 'the stall is receipted');
+  assert.equal(fake.sessionsOpened, 1, 'and nothing is rebuilt for it');
+  assert.equal(fake.textInputs.length, 1, 'the stall puts the unspoken result in front of the model once');
+  h.advance(30_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.textInputs.length, 1, 'and never twice');
+});
+
+test('#660: a status question with nothing running is answered from host truth, not the model belief', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'unspoken-status-660');
+  await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'sq660', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
+  await settlePort();
+  // The rung delivers the result and the rebuild hands it to a fresh session, and the model still never speaks.
+  h.advance(AUDIBLE_DEBT_RUNG_MS); scheduler.runDue(); await settlePort();
+  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS + 1_000); scheduler.runDue(); await settlePort();
+  assert.equal(fake.sessionsOpened, 2);
+  assert.equal(fake.commentary.length, 0, 'no host note is written before the deadline');
+  // Nothing is in flight any more and the result has been offered: the stall makes the host own the next answer.
+  h.advance(DELEGATION_DEADLINE_MS); scheduler.runDue(); await settlePort();
+  // The owner asks where it stands.
+  await ownerInput(fake);
+  assert.equal(fake.commentary.filter(text => /no lookup is running/i.test(text)).length, 1, 'the host note says nothing is running');
 });

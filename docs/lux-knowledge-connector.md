@@ -69,6 +69,14 @@ of spending a `get_insight` round trip on it, and the reply marks a hit the serv
 window with `cut at 1200 chars`. There is no silent fallback: a server that rejects a field is
 reported as `tool-error` with its own message, never retried in the old shape.
 
+A research run reads knowledge in two stages (W10-R6, W10-R7). The `search_knowledge` call is
+the summary stage and keeps its bounded body window. When the ask names a person or a document,
+or asks for depth, the research tool then makes exactly one batched `get_insight` call of at most
+three hit ids, the hits naming an asked entity first, under its own 1,500 ms bound and inside the
+operation's deadline. Each returned body is keyed by the hit id it came from and replaces that
+hit's summary line, so the reply shows the entry rather than its abstract. A plain search makes no
+second call, and an entry that names no hit in the summary is left out rather than appended.
+
 Both accept an optional `AbortSignal`, forwarded unchanged to the existing MCP
 adapter. Input validation and registry preflight still run first. An already
 aborted valid request is refused (`cancelled-before-dispatch`) without calling

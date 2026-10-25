@@ -118,7 +118,9 @@ test('C-CHAT (W2B-R6): the channel query is the name as spoken, and the fold sta
   const f = await setup(t, 'people');
   const read = chatRead(await f.reader.chat({ intent: 'channel', channel: 'Builders' }));
   assert.match(read.read, /the channel Builders/u);
-  assert.deepEqual(f.calls().find(call => call.name === 'mattermost_list_channels')?.arguments, { query: 'Builders', types: ['O', 'P'], limit: 10 }, 'the spoken words, so the child ranks its own exact name');
+  assert.deepEqual(f.calls().filter(call => call.name === 'mattermost_list_channels').map(call => call.arguments), [
+    { query: 'Builders', types: ['O', 'P'], limit: 10 },
+  ], 'an exact hit is one read: the spoken words alone, no folded retry (W2B-R8)');
 });
 
 test('C-CHAT: an approval that predates the person reads keeps every read and names what is missing', async t => {

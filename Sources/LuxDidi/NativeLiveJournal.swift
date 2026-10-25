@@ -12,7 +12,10 @@ enum NativeLiveEndReason: String, CaseIterable {
     case appQuit = "app_quit"
     case idleLimit = "idle_limit"
     case sessionLimit = "session_limit"
-    case providerClosed = "provider_closed"
+    /// C-LIVE N-3: the host ended the call with a failure; the app never logs it as the owner's stop.
+    case hostFailed = "host_failed"
+    /// The host closed the socket the app holds (the app never talks to the provider directly).
+    case hostClosed = "host_closed"
     case audioInterruption = "audio_interruption"
     case routeChange = "route_change"
 }
@@ -28,8 +31,29 @@ enum NativeLiveEndDetail {
         if let signal { detail["signal"] = Int(signal) }
         return detail
     }
-    /// `provider_closed` carries the provider's numeric WebSocket close code.
-    static func providerClosed(closeCode: Int) -> [String: Any] { ["closeCode": closeCode] }
+    /// `host_closed` carries the numeric WebSocket close code and, when it is a closed token, the close reason.
+    static func hostClosed(closeCode: Int, reason: String?) -> [String: Any] {
+        var detail: [String: Any] = ["closeCode": closeCode]
+        if let reason, reason.range(of: "^(attach_rejected:)?[a-z][a-z0-9_]{0,63}$", options: .regularExpression) != nil { detail["reason"] = reason }
+        return detail
+    }
+    /// `host_failed` carries the host's closed terminal code.
+    static func hostFailed(code: String?) -> [String: Any] {
+        guard let code, code.range(of: "^[a-z][a-z0-9_]{0,63}$", options: .regularExpression) != nil else { return [:] }
+        return ["code": code]
+    }
+}
+
+/// C-LIVE N-3: which end reason a host terminal is, so a host-initiated end is never recorded as the owner's stop.
+/// nil means the end is recorded elsewhere (the owner's own voice stop goes through `stop`).
+enum NativeLiveEndClassifier {
+    static func terminal(state: String, code: String?) -> NativeLiveEndReason? {
+        switch code {
+        case "session_timeout": return .sessionLimit
+        case "idle_timeout": return .idleLimit
+        default: return state == "failed" ? .hostFailed : nil
+        }
+    }
 }
 
 /// One meter RMS window: numbers only, computed from the per-buffer levels the capture path already holds.

@@ -872,7 +872,7 @@ test('a durable approval row from the previous tool names reconnects under owner
       const row = store.transaction(tx => tx.get(
         "SELECT policy_json, generation FROM tool_connections WHERE connection_id='gmail'"));
       const stored = JSON.parse(String(row?.['policy_json'])) as { toolNames: string[]; generation: number };
-      assert.deepEqual([...stored.toolNames].sort(), ['calendar_list_calendars', 'calendar_list_events', 'gmail_get_profile', 'gmail_read_message', 'gmail_search_messages']);
+      assert.deepEqual([...stored.toolNames].sort(), ['calendar_list_calendars', 'calendar_list_events', 'drive_get_file', 'drive_search_files', 'gmail_get_profile', 'gmail_read_message', 'gmail_search_messages']);
       assert.equal(Number(row?.['generation']), 3, 'the reconciled approval is a new generation');
     } finally { await runtime.close(); }
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }

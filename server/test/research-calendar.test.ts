@@ -158,13 +158,17 @@ test('calendar collection keeps one source deadline across pages and resumes an 
       return { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: [event(19, n)], ...(n < 9 ? { nextPageToken: String(n + 1) } : {}) }) };
     });
     const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
-    assert.equal(tokens.length, deadline ? 3 : 7, 'source deadline is shared; maxOps also includes the scope read');
+    // C-LIVE: a 5 s page cannot be followed by another inside the 6 s operation, so the second page is never
+    // started; its cursor is kept, and the owner's follow-up is a new operation that reads exactly one more page.
+    assert.equal(tokens.length, deadline ? 1 : 7, 'no page starts that cannot finish; maxOps also includes the scope read');
     if (deadline) {
-      assert.equal((first['calendarCoverage'] as Record<string, unknown>)['received'], 2, 'the third page missed the one source deadline');
-      assert.equal((first['calendarCoverage'] as Record<string, unknown>)['failed'], true);
+      assert.equal((first['calendarCoverage'] as Record<string, unknown>)['received'], 1, 'the page that fit is kept');
+      assert.equal((first['calendarCoverage'] as Record<string, unknown>)['failed'], false, 'a page never started is not a failed page');
+      const row = (first['sourceCoverage'] as Record<string, unknown>[]).find(entry => entry['source'] === 'calendar');
+      assert.equal(row?.['stop'], 'deadline'); assert.equal(row?.['more'], 'upstream');
     } else assert.equal(first['canContinue'], true);
     await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, signal());
-    assert.equal(tokens.length, deadline ? 3 : 10);
+    assert.equal(tokens.length, deadline ? 2 : 10);
     assert.equal(new Set(tokens).size, tokens.length, 'each exact page dispatched once, failed pages never retried');
   }
 });
@@ -537,18 +541,31 @@ test('#574: a day read prints the attendee names it was given', async () => {
   const text = JSON.stringify(reply['findings']);
   assert.match(text, /Person 7/);
   assert.doesNotMatch(text, /Person 8/, 'the ninth name is never spoken');
-  assert.match(text, /and 4 others/, 'the four names left out are counted');
-  assert.match(text, /Person 0, Person 1, Person 2, Person 3, Person 4, Person 5, Person 6, Person 7 and 4 others/u, 'every spoken name is whole');
+  assert.match(text, /12 people: /u, 'the true head count is given');
+  assert.match(text, /and 4 more/, 'the four names left out are counted');
+  assert.match(text, /Person 0, Person 1, Person 2, Person 3, Person 4, Person 5, Person 6, Person 7 and 4 more/u, 'every spoken name is whole');
 });
 
-test('#574: a long header shortens the attendee list at a name boundary, never mid-name', () => {
+test('L8-01: a day read carries the organizer and the true head count, never a character marker', async () => {
+  const party = [{ displayName: 'Robin Vale' }, { displayName: 'Ari Andor' }, { email: 'dana.d@example.invalid' }, { email: 'kim.l@example.invalid' }];
+  const h = fixture([{ id: `${'e'.repeat(60)}_${'7'.repeat(79)}`, start: '2026-10-19T09:00:00Z', summary: 'Re: demo / Example', attendees: party,
+    organizer: { displayName: 'Wes Rowan' }, htmlLink: 'https://calendar.google.com/event?eid=e1', description: 'Agenda. '.repeat(40) },
+    { id: 'b2', start: '2026-10-19T11:00:00Z', summary: 'Second meeting', attendees: [{ displayName: 'Robin Vale' }] }]);
+  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
+  const text = JSON.stringify(reply['findings']);
+  assert.match(text, /attendees: 4 people: Robin Vale, Ari Andor, dana\.d@example\.invalid, kim\.l@example\.invalid/u, `every attendee reaches the answer: ${text}`);
+  assert.match(text, /organizer: Wes Rowan/u, `the organizer reaches the answer: ${text}`);
+  assert.equal(/\+\d+ chars/u.test(text), false, `no character count marker: ${text}`);
+});
+
+test('#574: a long header never cuts a name from the attendee list', () => {
   const party = Array.from({ length: 12 }, (_, n) => ({ displayName: `Person ${n}` }));
   const shaped = shapeGcalList({ events: [{ id: 'a1', start: '2026-10-19T09:00:00Z', summary: 'Design review', location: 'L'.repeat(200), attendees: party }] });
   const line = shaped.text.split('\n').find(entry => entry.trimStart().startsWith('attendees: '));
   assert.ok(line !== undefined, 'the attendees line survives the event bound');
-  assert.match(line.trim(), /^attendees: (Person \d+(, Person \d+)* and \d+ others|Person \d+(, Person \d+)*)$/u, `no name is cut: ${line}`);
+  assert.match(line.trim(), /^attendees: 12 people: (Person \d+(, Person \d+)* and \d+ more|Person \d+(, Person \d+)*)$/u, `no name is cut: ${line}`);
   const spoken = line.match(/Person \d+/gu)?.length ?? 0;
-  const others = /and (\d+) others/u.exec(line)?.[1];
+  const others = /and (\d+) more/u.exec(line)?.[1];
   assert.equal(spoken + Number(others ?? 0), 12, `every attendee is either spoken or counted: ${line}`);
   assert.ok(spoken < 12, 'a header this long cannot carry every name');
 });

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  connectorState, limitMinutes, micModeLabel, micModePicker, micModePromptMarkup, micModeRow, micModeState,
+  connectorState, connectorWarning, limitMinutes, micModeLabel, micModePicker, micModePromptMarkup, micModeRow, micModeState,
   settingsMarkup, MIC_MODE_SENTENCE, type MicModeMessage,
 } from '../src/settings-view.ts';
 
@@ -288,4 +288,15 @@ test('P3: the speaking pace is shown read-only from the summary, with no control
   const hostile = settingsMarkup({ status, summary: { ...summary, playbackRate: '<img src=x>' as unknown as number } });
   assert.doesNotMatch(hostile, /<img src=x>/);
   assert.match(hostile, /<strong>Speaking pace<\/strong> unknown/);
+});
+
+test('C-OPEN 6: a Google helper under the reports folder shows a notice that names the fix, beside its row only', () => {
+  const connections = [{ id: 'gmail', state: 'connected', warning: 'google_mcp_path_unsafe' }, { id: 'calendar', state: 'connected' }, { id: 'drive', state: 'connected', warning: 'something-else' }];
+  assert.match(connectorWarning(connections[0]) ?? '', /reports folder/);
+  assert.match(connectorWarning(connections[0]) ?? '', /Fix: run the Lux Didi install again/);
+  assert.equal(connectorWarning(connections[1]), undefined);
+  assert.equal(connectorWarning(connections[2]), undefined, 'only the one closed notice renders');
+  const html = settingsMarkup({ connections });
+  assert.equal(html.split('reports folder').length - 1, 1, 'one notice, on the gmail row');
+  assert.match(html, /<strong>gmail<\/strong>: Connected\.[^<]*<span class="notice" role="status">This Google helper/);
 });

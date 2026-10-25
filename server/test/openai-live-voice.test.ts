@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { describe, test } from 'node:test';
 import { LiveVoiceError, OpenAiLiveVoiceAdapter, OPENAI_DEFAULT_VOICE, OPENAI_DELIVERY_SECTION, OPENAI_TOOLS_SECTION, openAiInstructions } from '../adapters/live-voice/index.js';
-import { AUDIBLE_RMS_DBFS, FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/openai.js';
+import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
+import { AUDIBLE_RMS_DBFS, SILENT_RMS_DBFS, pcm16RmsDbfs } from '../adapters/live-voice/audio-level.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-voice/index.js';
 import { CANARY, collect, control, FakeClock, FakeSocket, fakeReady, fixture, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
 import { Pcm16Upsampler } from '../adapters/live-voice/resample.js';
@@ -256,6 +257,54 @@ describe('openai gpt-live adapter', () => {
     session.close();
   });
 
+  // #677 / L8-05: at 10:24:43 a host line (sendText, the late-findings path) wrote a `response.create` while a
+  // delegated call still owed its output; the provider refused it with function_call_outputs_required and the turn
+  // fell to a dead-air rebuild. A continuation the wire would refuse is never written: the line waits as owed, and
+  // the one continuation follows the owed output.
+  test('#677: a host line while a call owes its output sends no continuation until the output, then exactly one', async t => {
+    const { f, session, captured } = await ready(t);
+    f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_677', response_id: 'resp_677', offset_ms: 0 } });
+    f.send({ type: 'response.event', delegation_id: 'dlg_677', event: { type: 'response.output_item.done',
+      item: { type: 'function_call', call_id: 'call_677', name: 'research', arguments: '{"action":"start"}' } } });
+    f.send({ type: 'response.event', delegation_id: 'dlg_677', event: { type: 'response.done', response: { id: 'resp_677' } } });
+    await until(() => captured.events.some(event => event.type === 'toolCall'));
+    const creates = (): number => f.frames.filter(frame => frame['type'] === 'response.create').length;
+    const before = creates();
+    session.sendText({ text: 'Synthetic late line.' });
+    for (let wait = 0; wait < 20; wait += 1) await tick();
+    assert.equal(creates(), before, `no continuation is written while call_677 owes its output (${JSON.stringify(f.frames.map(frame => frame['event_id'] ?? frame['type']))})`);
+    session.sendToolResponse({ responses: [{ id: 'call_677', name: 'research', response: { ok: true } }] });
+    await until(() => f.frames.some(frame => frame['event_id'] === 'tool_out_call_677'));
+    for (let wait = 0; wait < 50 && creates() === before; wait += 1) await tick();
+    assert.equal(creates() - before, 1, 'exactly one continuation follows the owed output');
+    const outputAt = f.frames.findIndex(frame => frame['event_id'] === 'tool_out_call_677');
+    assert.ok(f.frames.slice(outputAt).some(frame => frame['type'] === 'response.create'), 'and it comes after the output');
+    session.close();
+  });
+
+  test('#677: a cont the provider refuses with function_call_outputs_required stays owed and is sent after the next output', async t => {
+    const logged = hostReceipts(t);
+    const { f, session, captured } = await ready(t);
+    f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_r', response_id: 'resp_r', offset_ms: 0 } });
+    f.send({ type: 'response.event', delegation_id: 'dlg_r', event: { type: 'response.output_item.done',
+      item: { type: 'function_call', call_id: 'call_a', name: 'research', arguments: '{"action":"start"}' } } });
+    f.send({ type: 'response.event', delegation_id: 'dlg_r', event: { type: 'response.done', response: { id: 'resp_r' } } });
+    await until(() => captured.events.some(event => event.type === 'toolCall'));
+    session.sendToolResponse({ responses: [{ id: 'call_a', name: 'research', response: { ok: true } }] });
+    await until(() => f.frames.some(frame => frame['type'] === 'response.create'));
+    const rejected = String(f.frames.filter(frame => frame['type'] === 'response.create').at(-1)!['event_id']);
+    f.send({ type: 'error', event_id: 'event_r', error: { type: 'invalid_request_error', code: 'function_call_outputs_required', param: 'type', message: 'synthetic', client_event_id: rejected } });
+    await until(() => logged().some(entry => entry['event'] === 'command_rejected'));
+    const creates = (): number => f.frames.filter(frame => frame['type'] === 'response.create').length;
+    const before = creates();
+    // The provider's own next terminal event is where an owed continuation resumes.
+    f.send({ type: 'response.event', delegation_id: 'dlg_r', event: { type: 'response.done', response: { id: 'resp_r2' } } });
+    for (let wait = 0; wait < 50 && creates() === before; wait += 1) await tick();
+    assert.equal(creates() - before, 1, 'the refused continuation is sent once more, not dropped');
+    assert.ok(logged().some(entry => entry['event'] === 'command_rejected' && entry['kind'] === 'cont'), 'the rejection is still a receipt');
+    session.close();
+  });
+
   test('S4A-R2 (c): responses_validation_failed is recorded loudly once, naming the field', async t => {
     const logged = hostReceipts(t);
     const { f } = await ready(t);
@@ -388,10 +437,20 @@ describe('openai gpt-live adapter', () => {
     assert.match(FRESH_OPENING, /no greeting formula/);
     assert.match(FRESH_OPENING, /no offer of help/);
     assert.match(FRESH_OPENING, /no tool call before it/);
-    assert.match(FRESH_OPENING, /then stop and listen/);
-    assert.match(FRESH_OPENING, /the last thing you and the owner were on in the earlier conversation above/,
+    assert.match(FRESH_OPENING, /a subject from the earlier conversation above in new words/,
       'the seed history is an allowed subject, so a pending summary still grounds the line');
     assert.doesNotMatch(FRESH_OPENING, /\b(hello|hi|hey|good morning|good evening|how can i help|what can i do)\b/i);
+  });
+
+  test('L8-09/L11-05: the opening directive never asks for the earlier call\'s closing words or a stop line', () => {
+    // The stop-and-listen clause came back as a spoken stop line, and the last-thing clause as the earlier
+    // call's closing line.
+    assert.doesNotMatch(FRESH_OPENING, /stop and listen/u);
+    assert.doesNotMatch(FRESH_OPENING, /the last thing you and the owner were on/u);
+    assert.match(FRESH_OPENING, /never its closing lines/u);
+    assert.match(FRESH_OPENING, /never anything about stopping, ending or listening/u);
+    assert.match(FRESH_OPENING, /when he speaks first, answer his words/u);
+    assert.doesNotMatch(FRESH_OPENING, /[\u2013\u2014]/u);
   });
 
   test('D1: a rebuild seeded with an unanswered owner turn asks for exactly one response once ready', async t => {

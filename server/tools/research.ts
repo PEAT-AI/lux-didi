@@ -7,9 +7,10 @@ import { randomUUID } from 'node:crypto';
 import type { ToolResultBinding, JsonObject } from '../adapters/model/types.js';
 import type { CalendarEvent as RetainedCalendarEvent, CalendarScope, MailMessage } from './live-shape.js';
 import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
+import { chatAsk, chatIntent, chatSubs } from './chat-intent.js';
 import { MAIL_QUERY_OPERATORS } from '../contracts/mail-operators.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
-import { WEB_DEADLINE_MS, WEB_SEARCH_ACTION, broaderWebQuery, clipWebEvidence, sentencePrefix, webAttribution, webDeadlineMs, webEvidenceText, webFooter, webSourceCards, type WebSearchPort } from './web-search.js';
+import { WEB_DEADLINE_MS, WEB_SEARCH_ACTION, broaderWebQuery, clipWebEvidence, sentencePrefix, webAttribution, webDeadlineMs, webEvidenceText, webFooter, webSourceCards, type WebOutcome, type WebSearchPort } from './web-search.js';
 
 /**
  * The one declared Live read tool (#241). The model may answer with no tool at all; when it looks
@@ -22,10 +23,10 @@ export const RESEARCH_TOOL_NAME = 'research';
 
 export type ResearchAction = 'start' | 'continue' | 'stop';
 export type QuestionClass = 'quick_fact' | 'cross_source' | 'explicit_continue';
-export type SourceKind = 'memory' | 'knowledge' | 'calendar' | 'mail' | 'chat' | 'mongoose' | 'web';
+export type SourceKind = 'memory' | 'knowledge' | 'calendar' | 'mail' | 'chat' | 'mongoose' | 'web' | 'drive';
 export type CandidateKind =
   | 'knowledge_search' | 'calendar_window' | 'mail_search' | 'mail_open'
-  | 'chat_search' | 'chat_thread' | 'company_search' | 'web_search' | 'brief' | 'stop_answer' | 'stop_insufficient';
+  | 'chat_search' | 'chat_thread' | 'company_search' | 'web_search' | 'drive_search' | 'brief' | 'stop_answer' | 'stop_insufficient';
 
 /** The closed candidate set. A candidate reads exactly one internal action; nothing is invented. */
 export interface Candidate {
@@ -45,6 +46,8 @@ export const CANDIDATES: readonly Candidate[] = Object.freeze([
   // #639: the company read is one candidate, so a company ask reads Mongoose in the same loop as the rest.
   { kind: 'company_search', source: 'mongoose' },
   { kind: 'web_search', source: 'web' },
+  // C-OPEN 2: the owner's Drive files by name, offered only when a Drive endpoint is configured.
+  { kind: 'drive_search', source: 'drive' },
   { kind: 'brief', source: null },
   { kind: 'stop_answer', source: null },
   { kind: 'stop_insufficient', source: null },
@@ -104,7 +107,7 @@ export const RESEARCH = Object.freeze({
    * the exception and a late chat finding still lands the way mail's 12 s does.
    */
   sourceDeadline: Object.freeze({
-    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 10_000, mongoose: 12_000, web: WEB_DEADLINE_MS,
+    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 10_000, mongoose: 12_000, web: WEB_DEADLINE_MS, drive: 12_000,
   } as Record<SourceKind, number>),
   /** P5: a candidate that names no single source (`brief`) never gets less than the local reads. */
   defaultSourceDeadlineMs: 8_000,
@@ -191,7 +194,7 @@ export const RESEARCH = Object.freeze({
    * LAT-1023: one short clause, so an answer that ran out of rounds or of room never reads as a whole
    * record and never lets the model claim a record does not exist.
    */
-  moreAvailableNote: 'There is more available if you want it.',
+  moreAvailableNote: 'Partial: answer now, offer the rest; read on only if asked.',
   /**
    * Q5-R1: an explicit read by id is answered with the entry's whole body, and the connector's own
    * knowledge body cap is 20,000 chars, so that reply is sized for the body instead of the search
@@ -222,8 +225,8 @@ export const RESEARCH_SOURCES: readonly SourceKind[] = ['knowledge', 'calendar',
  * K6: the layers a routed start may name. `company` is the Mongoose organisation read and `replies`
  * is the Mattermost attention digest; `memory` is her own remembered conversations, read locally.
  */
-export type LookupSource = 'memory' | 'knowledge' | 'company' | 'calendar' | 'mail' | 'chat' | 'replies' | 'web';
-export const LOOKUP_SOURCES: readonly LookupSource[] = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'web'];
+export type LookupSource = 'memory' | 'knowledge' | 'company' | 'calendar' | 'mail' | 'chat' | 'replies' | 'drive' | 'web';
+export const LOOKUP_SOURCES: readonly LookupSource[] = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'drive', 'web'];
 /** At most four lookups per call; duplicates collapse, so one call is one short, wide read. */
 export const MAX_LOOKUPS = 4;
 
@@ -252,6 +255,18 @@ export interface ResearchRoutedLog {
  * was given. Never a query. The deadline travels with the receipt so a cut read can be judged against the
  * time the source was actually allowed.
  */
+/** L8-Q07: the closed reasons a source receipt may give for a read that did not answer. */
+export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading', 'needs_clarification', 'name_not_found'] as const;
+export type ResearchSourceReason = (typeof RESEARCH_SOURCE_REASONS)[number];
+
+function sourceReasonOf(run: RunState, outcome: { source: SourceKind | 'memory'; outcome: LookupOutcome; mail?: MailQueryInfo | undefined }): ResearchSourceReason {
+  if (outcome.mail !== undefined && mailQueryShape(outcome.mail.q).terms === 0) return 'no_query';
+  if (outcome.source !== 'memory' && run.neverRan?.has(outcome.source) === true) return 'never_ran';
+  if (outcome.outcome === 'timeout') return 'timed_out';
+  const code = outcome.source === 'memory' ? undefined : run.unavailableReasons.get(outcome.source);
+  return code === undefined ? 'provider_failed' : unsearchedReasonOf(code);
+}
+
 export interface ResearchSourceLog {
   event: 'research_source'; researchId: string; source: LookupSource; outcome: LookupOutcome; ms: number;
   /** ROUTE-1022 K5: the same plan token, so a per-source receipt shows a knowledge-only brief too. */
@@ -259,6 +274,8 @@ export interface ResearchSourceLog {
   deadlineMs: number;
   /** 3r R1: how many lookups of this call shared the one source execution this receipt describes. */
   coalesced: number;
+  /** L8-Q07: why a read did not answer, a closed token; absent on ok and empty. */
+  reason?: ResearchSourceReason;
   /** 3r K1: the knowledge lookup's bounded-body request, metadata only and never a query. */
   knowledge?: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean; queryTerms: number; dayFilter: DayFilter; chatDateOperator: ChatDateOperator; deduped: number };
   /** #610: the chat read's shape, or R3: the closed reason a refused chat read records. Never a word. */
@@ -858,7 +875,8 @@ export interface ChatReceipt { terms?: number; operators?: string[]; limit?: num
 export function chatReceiptField(served: readonly IntentSubCall[], results: readonly IntentSubResult[]): { chat?: ChatReceipt } {
   const failed = results.find(result => !result.ok);
   if (failed !== undefined) return { chat: { reason: chatAttentionReason(results) } };
-  const shape = chatQueryShape(served.find(call => call.name === INTERNAL.chatSearch));
+  // C-CHAT: the person, group and channel read records the same shape: its topic words, never the name.
+  const shape = chatQueryShape(served.find(call => call.name === INTERNAL.chatSearch || call.name === INTERNAL.chatRead));
   return shape === undefined ? {} : { chat: shape };
 }
 
@@ -953,6 +971,7 @@ export function fallbackQuery(kind: CandidateKind, question: string, nowMs = Dat
   if (kind === 'knowledge_search') return terms ? { query: terms } : {};
   // #639: the company search takes the same short terms the knowledge read takes, never the sentence.
   if (kind === 'company_search') return terms ? { query: terms } : {};
+  if (kind === 'drive_search') return terms ? { query: terms } : {};
   if (kind === 'web_search') { const query = broaderWebQuery(question, 120); return query ? { query } : {}; }
   if (kind === 'mail_search') {
     // E6 (#609): the fallback recipe hands the compiler its own window and its own words, so the query
@@ -1065,27 +1084,14 @@ const CHAT_SURFACE = /\b(?:chats?|channels?|mattermost|slack|dms?)\b|\b(?:messag
  */
 export function chatQuestionWords(ask: string): boolean {
   const text = ask.toLowerCase();
+  // C-CHAT: a person, group or channel chat ask ("what did Ada write me", "what did I discuss with Ada")
+  // names the chat by its shape, whatever writing or recall verb it carries.
+  if (chatAsk(ask)) return true;
   if (!CHAT_WORDS.test(text)) return false;
   if (recallQuestion(ask) && !CHAT_SURFACE.test(text)) return false;
   return !(WRITING_WORDS.test(text) || RECALL_WORDS.test(text)) || CHAT_SURFACE.test(text);
 }
 
-/**
- * #610: the channel a chat question names, in the three shapes the owner uses: "in the X channel",
- * "channel X" and "#x". A display name keeps its words, so the connector can fold case and punctuation.
- */
-const NAMED_CHANNEL = /(?:\bin the |\bin |\bthe )([\w][\w .'-]{0,60}?) channel\b|\bchannel ([\w][\w .'-]{0,60}?)(?=$|[,.?!]|\s(?:about|on|for|with|from)\b)|#([\w.-]{1,60})/iu;
-/** #664: the articles and determiners a spoken channel name opens with, which are never part of the name. */
-const CHANNEL_DETERMINER = /^(?:a|an|the|my|our|this|that)\s+/iu;
-/** #664: the words a model writes where a channel name belongs, so a placeholder is never read as a channel. */
-const CHANNEL_PLACEHOLDER = /^(?:name|channel|exact|string|called)$/iu;
-export function namedChannel(question: string): string | undefined {
-  const match = NAMED_CHANNEL.exec(question);
-  // #664: "in an engineering channel" named an article and "the exact channel name" named a placeholder.
-  const spoken = (match?.[1] ?? match?.[2] ?? match?.[3] ?? '').trim().replace(/[.!?]+$/u, '');
-  const name = spoken.replace(CHANNEL_DETERMINER, '').trim();
-  return name === '' || CHANNEL_PLACEHOLDER.test(name) ? undefined : name;
-}
 /**
  * #564/#572: a triage ask is "what came in", never a keyword search. The host runs the fixed read below
  * instead of the question's prose, so a relevance ranker can never answer it from an old thread.
@@ -1109,6 +1115,9 @@ const CALENDAR_DAY_WORDS = /\b(?:(?:next )?(?:sunday|monday|tuesday|wednesday|th
 const WEB_WORDS = /\b(news|headlines|weather|forecast|opening hours|search the web|on the internet|google it)\b/u;
 const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?|specs?|reminders?|recorded)\b/u;
 
+/** C-OPEN 2: an ask to open or find a deck, doc or sheet, or one that names his Drive; a question about a deck is not one. */
+const DRIVE_ASK = /\b(?:open|show|find|pull up|bring up)\b[^.?!]*\b(?:decks?|slides?|presentations?|spreadsheets?|sheets?|docs?|documents?|pptx?|xlsx?)\b|\b(?:google drive|my drive|in drive|from drive)\b/u;
+
 /**
  * The source a question is about, in the order the first answer waits for them. The word classes are the one
  * place a route is decided: `words` is the source's own vocabulary, and a route that also carries `needed` is
@@ -1116,13 +1125,15 @@ const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?
  * #639: the company source sits last, so an ask that also names mail, calendar or chat keeps the two source
  * cap it had before a company word existed, and only a company ask with room left reads Mongoose.
  */
-const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp; needed?: (text: string) => boolean }[] = [
-  { source: 'calendar', words: SCHEDULE_WORDS }, { source: 'mail', words: MAIL_WORDS },
-  { source: 'chat', words: CHAT_WORDS, needed: chatQuestionWords }, { source: 'mongoose', words: COMPANY_WORDS },
+/** C-CHAT: the chat's own vocabulary is its words plus the person, group and channel ask shapes. */
+const CHAT_ROUTE_WORDS = { test: (text: string): boolean => CHAT_WORDS.test(text) || chatAsk(text) };
+const ROUTE_CLASSES: readonly { source: SourceKind; words: { test(text: string): boolean }; needed?: (text: string) => boolean }[] = [
+  { source: 'calendar', words: SCHEDULE_WORDS }, { source: 'mail', words: MAIL_WORDS }, { source: 'drive', words: DRIVE_ASK },
+  { source: 'chat', words: CHAT_ROUTE_WORDS, needed: chatQuestionWords }, { source: 'mongoose', words: COMPANY_WORDS },
 ];
 
 /** Whether an ask's words route this source, its own word class and its own need rule together. */
-function routeWanted(route: { words: RegExp; needed?: (text: string) => boolean }, question: string): boolean {
+function routeWanted(route: { words: { test(text: string): boolean }; needed?: (text: string) => boolean }, question: string): boolean {
   return route.words.test(question.toLowerCase()) && (route.needed?.(question) ?? true);
 }
 
@@ -1200,7 +1211,8 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   const triage = triageAsk(text) && !mailWords && !chatWords;
   // #639: a company ask names a source, so it takes the same branch the mail, calendar and chat words take.
   const companyWords = COMPANY_WORDS.test(text);
-  const matched = mailWords || calendarWords || chatWords || companyWords || triage;
+  const driveWords = DRIVE_ASK.test(text);
+  const matched = mailWords || calendarWords || chatWords || companyWords || driveWords || triage;
   if (!matched) {
     offer('brief', 0.5, null); offer('knowledge_search', 0.4, 'knowledge');
     if (webWords) offer('web_search', 0.45, 'web');
@@ -1213,6 +1225,7 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   // #639: the company layer answers a company ask beside the knowledge base, and is offered only when the
   // ask names it, never as a default read of every question.
   if (companyWords) offer('company_search', 0.4, 'mongoose');
+  if (driveWords) offer('drive_search', 0.5, 'drive');
   if (webWords) offer('web_search', 0.45, 'web');
   return { questionClass: 'cross_source', actions, pUseful };
 }
@@ -1427,12 +1440,6 @@ export function chatQuery(query: string, nowMs = Date.now(), timeZone = Intl.Dat
     .join(' ');
 }
 
-/** #581: the day a chat ask names, ready for the tool's own window argument instead of an inline `After:`. */
-function chatWindowDay(question: string, nowMs: number, timeZone: string): string | undefined {
-  const word = DATE_WORD.exec(question)?.[0];
-  return word === undefined ? undefined : isoDay(word, nowMs, timeZone);
-}
-
 /** MED-1022/T-R2: the closed token for a chat date operator, so the receipt never carries query text. */
 export type ChatDateOperator = 'compiled' | 'dropped' | 'none';
 
@@ -1478,6 +1485,33 @@ async function broadenedChatRetry(execute: (subs: readonly IntentSubCall[], sign
     } catch { /* keep the empty first answer */ }
   }
   return [...merged];
+}
+
+/**
+ * C-CHAT: what a chat read says beside its posts, kept for the reply: the conversation and window it read,
+ * a capability the child lacks, the question it asks back, and the next page when it matched more than it
+ * returned. The connector writes these as closed lead lines (tools/mattermost.ts `renderChatRead`).
+ */
+function noteChatReads(run: RunState, subs: readonly IntentSubCall[], results: readonly IntentSubResult[]): void {
+  const add = (clause: string): void => { if (!run.chatNotes.includes(clause)) run.chatNotes.push(clause); };
+  subs.forEach((sub, index) => {
+    const result = results[index];
+    if (result === undefined || !result.ok || !sub.name.startsWith('mattermost')) return;
+    const lead = (name: string): string | undefined => new RegExp(`^${name}: (.+)$`, 'mu').exec(result.text)?.[1]?.trim();
+    const read = lead('read');
+    const missing = lead('note');
+    const clarify = lead('clarify');
+    const notFound = lead('not found');
+    if (read !== undefined && clarify === undefined && notFound === undefined) add(`I read ${read}.`);
+    if (missing !== undefined) add(`Say once: ${missing}.`);
+    if (clarify !== undefined) { add(`Ask him: ${clarify}`); run.chatUnresolved = 'needs_clarification'; }
+    if (notFound !== undefined) { add(notFound); run.chatUnresolved ??= 'name_not_found'; }
+    const matched = Number(lead('matched') ?? Number.NaN);
+    const returned = (result.text.match(/^\*\*.+\*\*$/gmu) ?? []).length;
+    const offset = typeof sub.args['offset'] === 'number' ? sub.args['offset'] : 0;
+    if (Number.isSafeInteger(matched) && returned > 0 && offset + returned < matched) run.chatPage = { sub, next: offset + returned, total: matched };
+    else if (Number.isSafeInteger(matched)) delete run.chatPage;
+  });
 }
 
 /** The ISO day a date word names, or nothing when it names none. */
@@ -1539,11 +1573,8 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
   }
   if (kind === 'mail_open') { const id = config.evidence.get('mail_search'); return id ? [search(INTERNAL.mailRead, { id }, 'mo0')] : []; }
   if (kind === 'chat_search') {
-    // ONE-1023: an ISO day is only what the owner's own question names, never a day the direction text
-    // invented; the direction words are filler here as they are for knowledge.
     // DATES-R1 F3 and DATES-R2 F4: with no content term left, the recency window is the only useful thing
     // to send, so an empty query is never dispatched, whoever wrote the query text.
-    const dated = DATE_WORD.test(config.question);
     // #572: a triage ask reads what needs an answer, newest first over its own window, never a search
     // ranked by relevance over the whole archive.
     if (triageAsk(config.question)) return [search(INTERNAL.chatAttention, { days: TRIAGE_DAYS } as JsonObject, 'ca0')];
@@ -1552,17 +1583,14 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     const chatModelQuery = config.query === undefined ? undefined : ownerDigits(config.query, ownerWords);
     const fromTopic = topicText === undefined ? '' : chatQuery(topicText, config.nowMs, config.timeZone);
     const compiled = fromTopic !== '' ? fromTopic : chatQuery(chatModelQuery ?? 'after:yesterday', config.nowMs, config.timeZone);
-    // #581: the day rides the tool's own window argument, so a windowed ask never makes the child rank
-    // the whole archive by relevance before it filters.
-    const day = dated ? chatWindowDay(config.question, config.nowMs ?? Date.now(), config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone) : undefined;
     const terms = compiled.replace(CHAT_DATE_OPERATOR, '').replace(/\s+/gu, ' ').trim();
-    const query = terms !== '' ? terms : chatQuery('after:yesterday', config.nowMs, config.timeZone);
-    // #610: a channel the question names is the connector's own filter, resolved through its channel
-    // list, so the ask reads that channel instead of the whole archive.
-    const channel = namedChannel(config.question);
-    return [search(INTERNAL.chatSearch, { query, limit: RESEARCH.chatLines, ...(day === undefined ? {} : { after: day }), ...(channel === undefined ? {} : { channel }) }, 'c0')];
+    // C-CHAT: the ask's shape picks the read: a person, the overview with a person, a channel, a group chat,
+    // or a plain topic search. The window looks backwards and both of its ends ride the tool's own arguments.
+    const intent = chatIntent(config.question, { terms, nowMs: config.nowMs ?? Date.now(), timeZone: config.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone });
+    return chatSubs(intent, RESEARCH.chatLines, chatQuery('after:yesterday', config.nowMs, config.timeZone));
   }
   if (kind === 'chat_thread') { const id = config.evidence.get('chat_search'); return id ? [search('mattermost_get_thread', { post_id: id }, 'ct0')] : []; }
+  if (kind === 'drive_search') return config.configured.includes('drive') ? driveSubs(config.query ?? topicText ?? '', ownerWords) : [];
   if (kind === 'web_search') return config.configured.includes('web')
     ? [search(WEB_SEARCH_ACTION, { query: config.query === undefined ? (topicText ?? '') : ownerDigits(config.query, ownerWords) }, 'w0')] : [];
   if (kind === 'brief') {
@@ -1635,6 +1663,8 @@ interface MailRead {
   code?: string;
   /** E5: the one broader read a search that matched nothing ran, so the receipt can name both shapes. */
   retry?: MailRead;
+  /** C-LIVE: the last page's own duration, the totals pages reported, and a page the operation bound did not start. */
+  lastPageMs?: number; pageTotals?: number[]; boundStop?: boolean;
 }
 type RemoteBody = Extract<HostEvidenceRef, { kind: 'remote-body' }>;
 interface ReceivedBody { evidence: RemoteBody; binding: ToolResultBinding; source: SourceKind; offset: number }
@@ -1670,8 +1700,14 @@ interface CalendarRead {
   bodyTruncated: boolean; unread: number; upstreamIncomplete?: boolean; inflight?: boolean;
   /** The connector's own failure code, kept so the sub-call log names the real reason. */
   code?: string;
+  /** C-LIVE: the last page's own duration, and a page the operation bound did not start. */
+  lastPageMs?: number; boundStop?: boolean;
 }
 export interface RunState {
+  /** C-LIVE: the moment this operation must have answered by; no page starts that cannot finish before it. */
+  operationDeadlineAt?: number;
+  /** L8-06: the sources this call is reading right now (the first answer's own set, the web read included). */
+  reading?: Set<SourceKind>;
   /** #575: the start of the call before this one, so her own lines from the last two calls stay out of memory evidence. */
   previousCallAt?: number;
   /** #575: finding texts this session already delivered, shared by every run of the session. */
@@ -1731,12 +1767,20 @@ export interface RunState {
   emptySearches: Map<SourceKind, string>;
   /** N3: sources whose read a deadline cut short, so the reply can say so instead of "nothing matched". */
   cutShort: Set<SourceKind>;
+  /** L8-13: a source whose latest read never dispatched a page, so its label is never a timeout. */
+  neverRan?: Set<SourceKind>;
   /** P5: why a source cannot serve a read right now, so the reply names the cause and never guesses. */
   unavailableReasons: Map<SourceKind, string>;
   /** #637: the channel the ask named, kept so an unknown one is said in the owner's own words. */
   chatChannel?: string;
   /** #663: the closest channel names the connector's refusal carried, so the reply can voice them. */
   chatChannelClosest: string[];
+  /** C-CHAT: what each chat read said it read, a capability it lacks, or the question it asks back. Said once. */
+  chatNotes: string[];
+  /** C-CHAT: a chat read asked which person, channel or group was meant, or knew nobody by that name. */
+  chatUnresolved?: 'needs_clarification' | 'name_not_found';
+  /** C-CHAT: the next page of the last chat read that matched more than it returned. */
+  chatPage?: { sub: IntentSubCall; next: number; total: number };
   /** #621: the sources this ask routed to, whether or not the session configured them, for the header. */
   route: Set<SourceKind>;
   /** #621: sources that already spent their one broadened retry, so a zero-hit read retries exactly once. */
@@ -1777,7 +1821,7 @@ export class ResearchLedger {
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), chatChannelClosest: [], route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), broadenedChat: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), chatChannelClosest: [], chatNotes: [], route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), broadenedChat: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -1807,7 +1851,7 @@ export class ResearchLedger {
       calendar: new Map([...existing.calendar].map(([key, read]) => [key, { ...read, events: new Map(read.events), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), calendarDelivered: new Set(existing.calendarDelivered),
       ledger: new Map(existing.ledger), evidence: new Map(existing.evidence), readKinds: new Set(existing.readKinds), sourcesDone: new Set(existing.sourcesDone), sourcesFailed: new Set(existing.sourcesFailed), pending: new Set(existing.pending), pendingWaiters: new Set(),
       calls: new Set(existing.calls), emptySearches: new Map(existing.emptySearches), cutShort: new Set(existing.cutShort),
-      unavailableReasons: new Map(existing.unavailableReasons), chatChannelClosest: [], web: [...existing.web], webAttribution: [...existing.webAttribution],
+      unavailableReasons: new Map(existing.unavailableReasons), chatChannelClosest: [], chatNotes: [], web: [...existing.web], webAttribution: [...existing.webAttribution],
     };
     delete run.bodyCursorRequested; delete run.mailDeadlineAt; delete run.mailCursorRequested;
     existing.cancelled = true; existing.progressAbort.abort();
@@ -1968,15 +2012,19 @@ function cutAfter(ms: number, schedule: ResearchTimer = scheduleTimer): { signal
 }
 
 /** #565: the shape one source call searched with: counts and closed operator tokens, never a word. */
-export interface ResearchQueryShape { source: SourceKind | LookupSource; terms: number; operators: readonly string[]; topicWords: number }
+export interface ResearchQueryShape { source: Exclude<SourceKind | LookupSource, 'drive'>; terms: number; operators: readonly string[]; topicWords: number }
 
 export interface ResearchDeps {
   timeZone?: string;
+  /** L11-03: the live call this research runs in. Its own rows are never memory, by identity. */
+  liveSessionId?: string | undefined;
   /**
    * #565: one row per source call's query shape, so the next forensic review can prove what a search was
    * built from. The Live owner binds it to the trace store; absent means nothing is persisted.
    */
   queryShape?: ((shape: ResearchQueryShape & { researchId: string; at: number }) => void) | undefined;
+  /** L8-Q06: one row per web read, which leaves no canonical dispatch row; the query text stays in the store. */
+  sourceRead?: ((read: ResearchSourceRead) => void) | undefined;
   authorizeEvidence?: (bindings: readonly ToolResultBinding[], signal: AbortSignal) => boolean;
   now(): number;
   /** Defaults to a real timer; a test supplies a fake clock to prove the progress cadence. */
@@ -2161,12 +2209,13 @@ const SOURCE_LABELS: readonly (readonly [SourceKind, string])[] = [
   ['chat', 'team chat'],
   ['knowledge', 'knowledge base'],
   ['mongoose', 'company knowledge'],
+  ['drive', 'Drive files'],
   ['memory', 'memory'],
 ];
 
 /** The connector tool whose presence means a source is configured. Same four names the research loop fans out over. */
 const SOURCE_TOOLS: Readonly<Record<string, SourceKind>> = {
-  conversation_history: 'memory', search_knowledge: 'knowledge', search: 'mongoose', read: 'mongoose', calendar_list_events: 'calendar', gmail_search_messages: 'mail', mattermost_search: 'chat',
+  conversation_history: 'memory', search_knowledge: 'knowledge', search: 'mongoose', read: 'mongoose', calendar_list_events: 'calendar', gmail_search_messages: 'mail', mattermost_search: 'chat', drive_search_files: 'drive',
 };
 
 /** Map the tool names a session actually configured to the research sources they expose, in display order. */
@@ -2214,7 +2263,7 @@ export function researchSourcesFromToolNames(names: Iterable<string>): SourceKin
 }
 
 /** ROUTE-1022: the two Google endpoints the host registry keys, each serving its own source. */
-const ENDPOINT_SOURCES: Readonly<Record<string, readonly SourceKind[]>> = { gmail: ['mail'], calendar: ['calendar'] };
+const ENDPOINT_SOURCES: Readonly<Record<string, readonly SourceKind[]>> = { gmail: ['mail'], calendar: ['calendar'], drive: ['drive'] };
 
 /**
  * ROUTE-1022: availability is per endpoint. gmail and the calendar are two endpoints on one connector,
@@ -2276,7 +2325,7 @@ function sourceListText(sources: readonly SourceKind[]): string {
 
 /** The declaration description names the sources this session actually configured, never a source it lacks. */
 export function researchDescription(sources: readonly SourceKind[]): string {
-  return `One lookup of the owner's ${sourceListText(sources)}: at most ${MAX_LOOKUPS} lookups per call, each with a source (memory, knowledge, company, calendar, mail, chat, replies or web) plus an optional query, mail or history field. Use it when answering needs evidence beyond the conversation. Call start with the question and a topic of names and nouns, at most eight words: only the topic is searched. Its result carries the researchId; continue and stop copy it.`;
+  return `One lookup of the owner's ${sourceListText(sources)}: at most ${MAX_LOOKUPS} lookups per call, each with a source (memory, knowledge, company, calendar, mail, chat, replies, drive or web) plus an optional query, mail or history. Use it when answering needs evidence beyond the conversation. Call start with the question and a topic of names and nouns, at most eight words: only the topic is searched. Its result carries the researchId; continue and stop copy it.`;
 }
 
 export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH_SOURCES): { name: string; description: string; guidance: string; parameters: JsonObject; validate(args: unknown): boolean } {
@@ -2301,7 +2350,7 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
         direction: { type: 'string', description: 'Optional steer for a continue, e.g. "look in mail".' },
         lookups: {
           type: 'array', maxItems: MAX_LOOKUPS,
-          description: 'Optional: ' + LOOKUP_LIMIT_TEXT + '. When present the host skips its own source choice and reads every lookup in parallel; when absent the host selects the sources. memory: retained conversations, remembered notes and imported notes, within the accepted permissions. knowledge: his knowledge base of decisions, project status, technical notes, meeting transcripts and work sessions. company: permissioned company, product and commercial records; this does not guarantee directory coverage. calendar: primary calendar only; query must be today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD. Unknown or contradictory windows are unresolved, never widened. Calendar coverage separates received events, shown events, retained remainder, unread pages and truncated descriptions; continue returns retained remainder before reading more pages. mail: his mail; lookup.mail supports an exact Gmail q/maxResults search or exact id/format read. Search coverage counts received metadata messages, not full bodies or complete threads. Source order is preserved. continue returns retained metadata before requesting another page. An exact full-message read returns bodySlices with immutable UTF16 offsets, received total and separate upstream completeness. Continue nextCursor to consume received body remainder without another source read; quoted history remains included. Metadata format deliberately omits bodies. alreadyDelivered is a model-context receipt, not a claim that the owner heard it. chat: his team chat. replies: what is waiting on him in the team chat.',
+description: 'Optional: ' + LOOKUP_LIMIT_TEXT + '. When present the host skips its own source choice and reads every lookup in parallel; when absent the host selects the sources. memory: retained conversations, remembered notes and imported notes, within the accepted permissions. knowledge: his knowledge base of decisions, project status, technical notes, meeting transcripts and work sessions. company: permissioned company, product and commercial records; this does not guarantee directory coverage. calendar: primary calendar only; query must be today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD. Unknown or contradictory windows are unresolved, never widened. Calendar coverage separates received events, shown events, retained remainder, unread pages and truncated descriptions; continue returns retained remainder before reading more pages. mail: his mail; lookup.mail supports an exact Gmail q/maxResults search or exact id/format read. Search coverage counts received metadata messages, not full bodies or complete threads. Source order is preserved. continue returns retained metadata before requesting another page. An exact full-message read returns bodySlices with immutable UTF16 offsets, received total and separate upstream completeness. Continue nextCursor to consume received body remainder without another source read; quoted history remains included. Metadata format deliberately omits bodies. alreadyDelivered is a model-context receipt, not a claim that the owner heard it. chat: his team chat; keep the person, group or channel in the question as he said it (what a person wrote him, what he discussed with a person, the newest in a named channel, his group chat with some people), because the host resolves the name strictly and its reply names what it read, over which days, or asks which one he means. replies: what is waiting on him in the team chat. drive: his own Drive files by name, for a document, deck or sheet he wants opened; query id: and a returned file id reads that one file again.',
           items: {
             type: 'object', additionalProperties: false, required: ['source'],
             anyOf: [
@@ -2371,11 +2420,11 @@ function queryShapeOf(subs: readonly IntentSubCall[]): string {
 }
 
 const OMITTED_NOTE = /^\[omitted:/u;
-const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'company knowledge', web: 'the web' };
+const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'company knowledge', web: 'the web', drive: 'Drive' };
 /** #635: the name a source is spoken by, so a clause says "team chat" and never the bare id. */
 const spokenLabelOf = (source: SourceKind): string => SOURCE_LABELS.find(([name]) => name === source)?.[1] ?? SOURCE_LABEL[source];
 /** Findings order: her own memory and the owner's knowledge base lead, company sources follow. */
-const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'];
+const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'drive', 'web'];
 /** #621: the smallest room a floor clip may leave, so one source's last line always fits the bound. */
 const FLOOR_CLIP_CHARS = 8;
 const LINE_CAP: Partial<Record<CandidateKind, number>> = {
@@ -2395,11 +2444,21 @@ export function clip(text: string, max: number): string {
   return `${whole.length * 2 >= room.length ? whole : room}\u2026`;
 }
 
-/** #621: the E3 states a reply must keep apart, and the E4 reason a source was never searched. */
-export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry';
-export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found';
+/**
+ * #621: the E3 states a reply must keep apart, and the E4 reason a source was never searched. C-LIVE behaviour 2
+ * (F3): `partial_failed` is a read whose later page failed after one arrived, never `complete`, whatever the
+ * counts add up to, because the header is what the voice repeats aloud.
+ */
+
+export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry' | 'partial_failed';
+export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'needs_clarification' | 'name_not_found' | 'never_ran';
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
+
+/** The status words a searched source says aloud, where the word alone would be read as a whole read. */
+const SEARCHED_CLAUSE: Partial<Record<CoverageStatus, (label: string) => string>> = {
+  partial_failed: label => `${label} stopped after a later page failed`,
+};
 
 /** The one clause the voice can say about a source it could not read, keyed by the closed reason. */
 const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: SourceKind) => string> = {
@@ -2413,6 +2472,11 @@ const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: Source
   still_reading: label => `I am still reading ${label}`,
   // #637: the ask named a channel the chat connector does not know, so nothing was searched.
   channel_not_found: () => 'I do not know that channel',
+  // C-CHAT: the name fits several people, channels or groups, so she asks which one before reading.
+  needs_clarification: () => 'ask which one he means',
+  name_not_found: () => 'I do not know that name',
+  // L8-13: the latest ask ran no new read of this source, so nothing about it took too long.
+  never_ran: label => `I did not run a new ${label} read this time`,
 };
 
 /** A not-searched reason code from the host, narrowed to the closed set the header publishes. */
@@ -2441,7 +2505,10 @@ export function coverageLine(searched: readonly CoverageSearched[], unsearched: 
   const bound = Math.floor(limit / HEADER_SHARE_OF_CAP);
   const line = (entries: readonly string[]): string => entries.length === 0 ? 'coverage: none' : `coverage: ${entries.join('; ')}`;
   const detailed = line([
-    ...searched.map(entry => `${entry.source} ${entry.status} ${entry.shown} of ${entry.total} shown${entry.confidence === undefined ? '' : ` confidence=${entry.confidence}`}`),
+    ...searched.map(entry => {
+      const say = SEARCHED_CLAUSE[entry.status];
+      return `${entry.source} ${entry.status} ${entry.shown} of ${entry.total} shown${entry.confidence === undefined ? '' : ` confidence=${entry.confidence}`}${say === undefined ? '' : ` (say: ${say(spokenLabelOf(entry.source))})`}`;
+    }),
     ...unsearched.map(entry => `${entry.source} ${entry.reason} (say: ${UNSEARCHED_CLAUSE[entry.reason](spokenLabelOf(entry.source), entry.source)})`),
   ]);
   if (detailed.length <= bound) return detailed;
@@ -2456,12 +2523,17 @@ interface FindingLike { source?: string; text?: string }
 
 /** `Source: 3 of 9 shown`, the head every finding line group carries. */
 const FINDING_HEAD = /^\S[^:\n]*: (\d+) of (\d+) shown$/mu;
+/** L11-01: a label line under a finding head (the ranker's confidence, a nothing-matched verdict), never an item. */
+const FINDING_META_LINE = /^knowledge: (?:confidence=|nothing matched)/u;
 
 /**
  * #621: the header of a reply with findings, derived from the findings the voice will actually hear, so the
  * counts can never drift from the evidence after a trim.
  */
 function coverageTextOf(run: RunState, configured: readonly SourceKind[], findings: readonly FindingLike[], totals: ReadonlyMap<SourceKind, number>, limit: number): string {
+  // C-LIVE behaviour 2 / F3: a read that lost a later page never counts as a whole read, whatever the totals say.
+  // Mail is the one source whose reads carry their own page-failure flag (see operationCoverage).
+  const failedPage = (source: SourceKind): boolean => source === 'mail' && [...run.mail.values()].some(read => read.failed);
   const searched: CoverageSearched[] = [];
   for (const source of SOURCE_ORDER) {
     if (!configured.includes(source)) continue;
@@ -2471,21 +2543,28 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
     // #635: a read that was cut with nothing arrived is named by its reason below as timed_out, never as a
     // searched source with an empty count.
     if (!wasSearched) continue;
+    // L8-13: a read that never dispatched this time is named by that outcome below, never as a timeout.
+    if (run.neverRan?.has(source) === true && !run.cutShort.has(source)) continue;
     const finding = findings.find(entry => entry.source === source && typeof entry.text === 'string');
+    // C-CHAT: a chat read that asked back read nothing yet, so the header says so instead of an empty count.
+    if (source === 'chat' && run.chatUnresolved !== undefined && finding === undefined) continue;
     const text = finding?.text ?? '';
     const head = FINDING_HEAD.exec(text);
     const shown = head === null ? 0 : Number(head[1]);
     const total = Math.max(shown, totals.get(source) ?? (head === null ? 0 : Number(head[2])));
     const status: CoverageStatus = run.cutShort.has(source) ? 'partial_timeout'
+      : failedPage(source) && shown > 0 ? 'partial_failed'
       : total > shown ? 'truncated_to_budget' : shown === 0 ? 'empty_after_retry' : 'complete';
     const confidence = source === 'knowledge' && finding !== undefined ? knowledgeConfidenceOf(text.split('\n'))?.confidence : undefined;
     searched.push({ source, status, shown, total, ...(confidence === undefined ? {} : { confidence }) });
   }
   const unsearched: CoverageUnsearched[] = [];
   for (const source of SOURCE_ORDER) {
-    if (!run.route.has(source)) continue;
+    const unresolved = source === 'chat' && !searched.some(entry => entry.source === source) ? run.chatUnresolved : undefined;
+    if (!run.route.has(source) && unresolved === undefined && run.neverRan?.has(source) !== true) continue;
     if (searched.some(entry => entry.source === source)) continue;
-    unsearched.push({ source, reason: unsearchedReasonGiven(run, configured, source) });
+    const neverRan = run.neverRan?.has(source) === true && !run.cutShort.has(source);
+    unsearched.push({ source, reason: unresolved ?? (neverRan ? 'never_ran' : unsearchedReasonGiven(run, configured, source)) });
   }
   return coverageLine(searched, unsearched, limit);
 }
@@ -2503,14 +2582,16 @@ function closedOutcomeOf(run: RunState, source: SourceKind): UnsearchedReason {
   if (code !== undefined) return unsearchedReasonOf(code);
   if (run.stopped || run.cancelled) return 'skipped_by_route';
   // A reader still pending when the run closed used all of its deadline and answered nothing.
-  return run.pending.has(source) ? 'timed_out' : 'skipped_by_route';
+  return run.pending.has(source) || (run.reading?.has(source) === true && !run.sourcesDone.has(source)) ? 'timed_out' : 'skipped_by_route';
 }
 
 function unsearchedReasonGiven(run: RunState, configured: readonly SourceKind[], source: SourceKind): UnsearchedReason {
   if (!configured.includes(source)) return 'not_configured';
   // #635: a read still in flight is neither skipped nor failed, so it says so, the same thing the note says.
   // #653: but a closed run has no read in flight, so the same source is named by its closed outcome.
-  if (run.pending.has(source) && !run.ended && !run.stopped && !run.cancelled) return 'still_reading';
+  // L8-06: a read still running is still reading, whichever path runs it: the web read never passes the
+  // execute wrapper that fills `pending`, so the call's own reading set counts too.
+  if ((run.pending.has(source) || (run.reading?.has(source) === true && !run.sourcesDone.has(source))) && !run.ended && !run.stopped && !run.cancelled) return 'still_reading';
   return closedOutcomeOf(run, source);
 }
 
@@ -2766,6 +2847,13 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
     const lines = ok.flatMap(result => result.text.split('\n').filter(Boolean));
     return { text: ok.map(result => result.text).join('\n'), source: 'web', lines, total: lines.length };
   }
+  if (kind === 'drive_search') {
+    // C-OPEN 3: a file line keeps its own handle line, and a listing of several keeps the question it asks.
+    const raw = results.filter(result => result.ok && result.text.trim()).flatMap(result => withItemOpenLines(itemLines(result.text)));
+    const files = raw.filter(line => line.startsWith('- ')).length;
+    if (files === 0) return { text: '', source: 'drive', lines: [], total: 0 };
+    return { text: `${SOURCE_LABEL.drive}: ${files} ${files === 1 ? 'file' : 'files'}\n${raw.join('\n')}`, source: 'drive', lines: raw, total: files };
+  }
   if (kind === 'calendar_window') {
     const block = shapeCalendarBlock(results, zone);
     const cutLine = cutLineOf(results);
@@ -2829,6 +2917,9 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
       // list as `- name` lines. Keep both; the old `- `-only filter dropped every search post.
       let heading: string | undefined;
       let body: string[] = [];
+      // C-CHAT (AUD-002): the archive's own match count, so the header says "8 of 71", never "8 of 8".
+      const matched = result.name.startsWith('mattermost') ? Number(/^matched: (\d+)$/mu.exec(result.text)?.[1] ?? 0) : 0;
+      const before = total;
       const flush = (): void => {
         if (heading === undefined) { body = []; return; }
         lines.push(clip(`${heading.replace(/\s*\[post [^\]]+\]/g, '').trim()}${body.length ? ` | ${body.join(' ')}` : ''}`, cap));
@@ -2841,6 +2932,7 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
         if (heading !== undefined) body.push(line);
       }
       flush();
+      total = Math.max(total, before + matched);
     }
   }
   // #576: a "last meeting" ask reads the newest notes first, before the relevance order.
@@ -2868,7 +2960,8 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
  */
 function queryShapeOfSubs(call: IntentSubCall, topic: string | undefined): ResearchQueryShape | undefined {
   const source = sourceKindOfKindName(call.name);
-  if (source === null) return undefined;
+  // A Drive read writes no query shape row: the trace table's source set is closed and a name search has no operators.
+  if (source === null || source === 'drive') return undefined;
   const raw = call.args['q'] ?? call.args['query'];
   const text = typeof raw === 'string' ? raw : '';
   const shape = mailQueryShape(text);
@@ -2877,6 +2970,18 @@ function queryShapeOfSubs(call: IntentSubCall, topic: string | undefined): Resea
     operators: shape.operators.filter(operator => (MAIL_QUERY_OPERATORS as readonly string[]).includes(operator)),
     topicWords: (topic ?? '').split(/\s+/u).filter(Boolean).length,
   };
+}
+
+/** L8-Q06: what one in-process read (the web) did: its outcome, time, result count, closed reason and query. */
+export interface ResearchSourceRead { source: 'web'; outcome: 'ok' | 'failed' | 'timeout'; ms: number; results: number; reason?: string; query: string; researchId: string; at: number }
+
+function recordWebRead(deps: ResearchDeps, run: RunState, query: string, outcome: WebOutcome, started: number, now: () => number): void {
+  const write = deps.sourceRead;
+  if (write === undefined) return;
+  try {
+    write({ source: 'web', outcome: outcome.ok ? 'ok' : outcome.code === 'web_timeout' ? 'timeout' : 'failed', ms: Math.max(0, now() - started),
+      results: outcome.ok ? webSourceCards(outcome.evidence).length : 0, ...(outcome.ok ? {} : { reason: outcome.code }), query, researchId: run.researchId, at: now() });
+  } catch { /* the receipt is never the answer */ }
 }
 
 /** #565: one trace row per source call this run dispatched, and a repeated signature is one row. */
@@ -2904,8 +3009,11 @@ function sourceKindOfKindName(name: string): SourceKind | null {
     case INTERNAL.mailRead: return 'mail';
     case HISTORY_IDENTITY.name: return 'memory';
     case INTERNAL.mongooseSearch: return 'mongoose';
+    case INTERNAL.driveSearch:
+    case INTERNAL.driveGet: return 'drive';
     case INTERNAL.chatSearch:
     case INTERNAL.chatAttention:
+    case INTERNAL.chatRead:
     case 'mattermost_get_thread': return 'chat';
     default: return null;
   }
@@ -2978,6 +3086,8 @@ const REASON_WORDS: Record<string, string> = {
   not_configured: 'not configured',
   // ROUTE-1022 K1: the web source the model asked for is not offered in this session.
   web_not_available: 'not available',
+  // C-OPEN 2: no Drive endpoint is configured yet; never a fake empty listing.
+  drive_not_available: 'Drive is not set up for me yet',
   not_signed_in: 'not signed in',
   // #502: a refresh the identity server refused means one thing to the owner: sign in again.
   'credential-refresh-failed': 'sign in again',
@@ -3220,7 +3330,7 @@ function rankMemoryEvidence(hits: readonly JsonObject[], tokens: readonly string
  * of the live session are never its own memory, and a row dated at or after the call before this one is the
  * live conversation, so only older rows survive unless the owner asked what she said.
  */
-function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunState, asked: boolean): JsonObject[] {
+function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunState, asked: boolean, currentSessionId?: string): JsonObject[] {
   const keys = new Set([question, run.question ?? ''].filter(text => text.trim().length > 0).map(memoryWords));
   const history = run.previousCallAt ?? run.startedAt;
   const live = asked ? new Set<string>() : liveSessionIds(hits, question, history);
@@ -3231,7 +3341,8 @@ function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunS
     // conversation itself, and every summary of it, never is.
     if (hit['sourceKind'] === 'entry') return true;
     const id = hit['sessionId'];
-    if (typeof id === 'string' && live.has(id)) return false;
+    // L11-03: the call in progress is excluded by its own id, whatever a row's time says.
+    if (typeof id === 'string' && (live.has(id) || id === currentSessionId)) return false;
     const at = Date.parse(String(hit['date'] ?? ''));
     return !Number.isFinite(at) || at < history;
   });
@@ -3306,6 +3417,10 @@ export function capReply(reply: JsonObject, limit: number, refresh?: () => void)
     const lines = widest?.text?.split('\n') ?? [];
     if (widest === undefined || lines.length <= 1) break;
     const head = lines.shift() ?? '';
+    // L11-01: a label line under the head is part of the head: it is never the last item left standing.
+    const meta: string[] = [];
+    while (lines.length > 0 && FINDING_META_LINE.test(lines[0]!)) meta.push(lines.shift()!);
+    if (lines.length === 0) { reply['findings'] = (reply['findings'] as JsonObject[]).filter(finding => finding !== widest); trimmed = true; continue; }
     if (widest.source === 'web') {
       const kept = clipWebEvidence(widest.text!, widest.text!.length - (size() - limit) - RESEARCH.moreAvailableNote.length - 80);
       if (kept !== undefined) { widest.text = kept; widest.chars = kept.length; }
@@ -3320,14 +3435,20 @@ export function capReply(reply: JsonObject, limit: number, refresh?: () => void)
       // #5: the clipped hit is still shown, so the header it keeps counts it.
       const room = lines[0]!.length - (size() - limit) - 1;
       const kept = sentencePrefix(lines[0]!, room) || clip(lines[0]!, room);
-      if (kept.length >= RESEARCH.clipFloorChars) { widest.text = [head, kept].join('\n'); widest.chars = kept.length; trimmed = true; continue; }
+      if (kept.length >= RESEARCH.clipFloorChars) { widest.text = [head, ...meta, kept].join('\n'); widest.chars = kept.length; trimmed = true; continue; }
     }
     // #5: only a line this pass really removes is counted out of the header, never one it clipped.
     const counted = head.replace(/: (\d+) of (\d+) shown$/u, (_match, shown: string, total: string) => `: ${Math.max(0, Number(shown) - 1)} of ${total} shown`);
+    // L11-03: the coverage header carries the same count, so a trim after it was built never leaves them apart.
+    if (refresh === undefined && typeof reply['coverage'] === 'string' && typeof widest.source === 'string') {
+      const own = /: (\d+) of (\d+) shown$/u.exec(head);
+      if (own) reply['coverage'] = String(reply['coverage']).replace(new RegExp(`\\b${widest.source} (\\S+) ${own[1]} of ${own[2]} shown`, 'u'),
+        (_match, status: string) => `${widest.source} ${status === 'complete' ? 'truncated_to_budget' : status} ${Math.max(0, Number(own[1]) - 1)} of ${own[2]} shown`);
+    }
     lines.pop();
     // F2 (review): a header that claims a count over no evidence line is a lie, so the finding goes whole.
     if (lines.length === 0) reply['findings'] = (reply['findings'] as JsonObject[]).filter(finding => finding !== widest);
-    else { widest.text = [counted, ...lines].join('\n'); widest.chars = lines.join('\n').length; }
+    else { widest.text = [counted, ...meta, ...lines].join('\n'); widest.chars = lines.join('\n').length; }
     trimmed = true;
   }
   // F2 (review): the hard bound. The page envelopes carry the same evidence as the findings, so they go last.
@@ -3353,13 +3474,18 @@ export function capReply(reply: JsonObject, limit: number, refresh?: () => void)
 function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number, sources?: JsonObject, skipBodies = false, bodyLimit = RESEARCH.bodyLimitChars): JsonObject {
   const bodyReply = skipBodies ? undefined : receivedBodyReply(run, configured, bodyLimit);
   if (bodyReply) { if (Array.isArray((bodyReply as JsonObject)['bodySlices'])) run.bodyReplies += 1; return bodyReply; }
-  const groups: { source: SourceKind; label: string; lines: string[]; total: number; days?: { day: string; entries: string[] }[] }[] = [];
+  const groups: { source: SourceKind; label: string; lines: string[]; total: number; days?: { day: string; entries: string[] }[]; meta?: string[] }[] = [];
   for (const entry of run.ledger.values()) {
     if (entry.bodyOnly || !entry.lines || entry.lines.length === 0 || entry.source === null || (entry.source === 'calendar' && run.calendar.size > 0) || (entry.source === 'mail' && run.mail.size > 0)) continue;
     const existing = groups.find(group => group.source === entry.source);
     const target = existing ?? { source: entry.source, label: SOURCE_LABEL[entry.source], lines: [], total: 0 };
-    target.lines.push(...entry.lines);
-    target.total += entry.total ?? entry.lines.length;
+    // L11-01: the ranker's confidence label rides with the finding but is no item, so no trim can leave it
+    // standing in for the hits and no count includes it.
+    const meta = entry.lines.filter(line => FINDING_META_LINE.test(line));
+    const items = entry.lines.filter(line => !FINDING_META_LINE.test(line));
+    if (meta.length > 0) target.meta = [...new Set([...(target.meta ?? []), ...meta])];
+    target.lines.push(...items);
+    target.total += entry.total === undefined ? items.length : entry.total === entry.lines.length ? items.length : entry.total;
     if (!existing) groups.push(target);
   }
   const calendarEvents = new Map<string, RetainedCalendarEvent>();
@@ -3404,7 +3530,8 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     && !(source === 'chat' && (run.unavailableReasons.get('chat') ?? '').startsWith('channel_not_found'))
     // #655: the web's own clause below says it took too long, so it is never also called unreachable.
     && !(webTimedOut && source === 'web')).map(([, label]) => label);
-  const searchedNothing = SOURCE_LABELS.filter(([source]) => run.emptySearches.has(source) && !run.sourcesFailed.has(source))
+  // C-CHAT: a chat read that asked which one was meant, or knew no such name, read nothing by design, never "nothing matching".
+  const searchedNothing = SOURCE_LABELS.filter(([source]) => run.emptySearches.has(source) && !run.sourcesFailed.has(source) && !(source === 'chat' && run.chatUnresolved !== undefined))
     .map(([source, label]) => `I searched your ${label}${run.emptySearches.get(source) ?? ''} and found nothing matching.`);
   // N3: a read cut short is not a read that found nothing, and the reply must not blur the two.
   const cutShort = SOURCE_LABELS.filter(([source]) => run.cutShort.has(source) && !run.sourcesFailed.has(source) && run.sourcesDone.has(source))
@@ -3434,6 +3561,8 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     ...(trouble !== undefined ? [trouble] : []),
     ...(mailCoverageNote !== undefined ? [mailCoverageNote] : []),
     ...(chatBroadenedNote !== undefined ? [chatBroadenedNote] : []),
+    // C-CHAT: the chat read names who or which channel it read and over which window, or asks which one.
+    ...run.chatNotes,
   ];
   if (run.unavailableReasons.get('calendar') === 'window_unparsed') clauses.push('I could not resolve that calendar date or window. Give a supported weekday, today, tomorrow, week, this week, next week, or an exact valid date.');
   // #637: a channel the ask names and the chat connector does not know is said in the owner's words,
@@ -3483,7 +3612,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       .map(group => {
         // N3: the primary-calendar answer says what it did not read, from the list it carried.
         const note = run.calendarNotRead !== undefined && group.source === 'calendar' && !group.lines.includes(run.calendarNotRead) ? `\n${run.calendarNotRead}` : '';
-        const text = `${group.label}: ${shownOf(group)} of ${Math.max(group.total, group.lines.length)} shown\n${group.lines.join('\n')}${note}`;
+        const text = `${group.label}: ${shownOf(group)} of ${Math.max(group.total, group.lines.length)} shown\n${[...(group.meta ?? []), ...group.lines].join('\n')}${note}`;
         // #575: a block this session already gave is one line, never a second copy of the same evidence.
         if (run.deliveredFindings.has(findingKey(text))) return { source: group.source, text: `${group.label}: already given earlier in this session.`, chars: 0 };
         return { source: group.source, text, chars: group.lines.join('\n').length };
@@ -3526,7 +3655,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       const rest = `The rest come next: ${deferred.map(source => SOURCE_LABEL[source]).join(', ')}.`;
       settledNote = settledNote === undefined ? rest : `${settledNote} ${rest}`;
     }
-    return { findings, reply: { coverage: coverageOf(findings), researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
+    return { findings, reply: { coverage: coverageOf(findings), ...coverageRows(operationCoverage(run, findings)), researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, down to a source's last line: the Live budget is a hard bound, so a kept
   // line wider than the budget is dropped whole rather than left to overrun it (LAT-1023 B3). R5 (RESCAP-R5):
@@ -3543,7 +3672,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     const fillable = groups.filter(group => shownOf(group) > (group.days === undefined ? 1 : 2));
     if (fillable.length > 0) {
       const kept = (group: { lines: string[]; total: number }): number => shownOf(group) / Math.max(1, group.total);
-      const trimmed = fillable.reduce((worst, group) => (kept(group) > kept(worst) ? group : worst));
+      // L11-01: memory the ask did not name yields first, so it can never starve a source that answered beside it.
+      const memory = run.route.has('memory') ? undefined : fillable.find(group => group.source === 'memory');
+      const trimmed = memory !== undefined && groups.some(group => group.source !== 'memory' && shownOf(group) > 0) ? memory
+        : fillable.reduce((worst, group) => (kept(group) > kept(worst) ? group : worst));
       // #4: a calendar day line is a list of whole events, so it loses one event at a time, the count it
       // reports is the count of events it really dropped, and it is never clipped: a clip would swallow an
       // event while the header still claimed it. Its last event stays, so the answer keeps the day it read.
@@ -3592,6 +3724,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // the reply is measured with the header it carries.
   const capped = capReply(result, limit, () => {
     if (typeof result['coverage'] === 'string') result['coverage'] = coverageOf(Array.isArray(result['findings']) ? result['findings'] as unknown as FindingLike[] : []);
+    if (typeof result['coverage'] === 'string') {
+      const rows = operationCoverage(run, Array.isArray(result['findings']) ? result['findings'] as unknown as FindingLike[] : []);
+      if (rows.length === 0) delete result['sourceCoverage']; else result['sourceCoverage'] = rows;
+    }
   });
   // #575: what this reply actually carried is what the session must not hand over again.
   for (const finding of (Array.isArray(capped['findings']) ? capped['findings'] as { text?: string }[] : [])) {
@@ -3612,6 +3748,33 @@ export function companyLookupMode(query: string): 'answer' | 'browse' {
  */
 function companySubs(query: string): IntentSubCall[] {
   return [{ key: 'co0', name: INTERNAL.mongooseSearch, args: { query, mode: companyLookupMode(query) } }];
+}
+
+/** C-OPEN 2: the file types each spoken kind noun means, so an ask for the deck never lists a sheet. */
+export const DRIVE_MIME_TYPES: Readonly<Record<'deck' | 'doc' | 'sheet', readonly string[]>> = {
+  deck: ['application/vnd.google-apps.presentation', 'application/vnd.openxmlformats-officedocument.presentationml.presentation', 'application/vnd.ms-powerpoint'],
+  doc: ['application/vnd.google-apps.document', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword'],
+  sheet: ['application/vnd.google-apps.spreadsheet', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel'],
+};
+const DRIVE_KIND_WORDS: readonly { kind: keyof typeof DRIVE_MIME_TYPES; words: RegExp }[] = [
+  { kind: 'deck', words: /\b(?:decks?|slides?|presentations?|pptx?|powerpoints?)\b/u },
+  { kind: 'sheet', words: /\b(?:sheets?|spreadsheets?|xlsx?|excel)\b/u },
+  { kind: 'doc', words: /\b(?:docs?|documents?|docx)\b/u },
+];
+/** The words that name the kind, the app or the act, never the file; what is left is the name searched. */
+const DRIVE_FILLER = /\b(?:the|a|an|my|our|his|open|opening|show|find|pull|bring|up|please|in|on|chrome|browser|google|drive|file|files|decks?|slides?|presentations?|pptx?|powerpoints?|sheets?|spreadsheets?|xlsx?|excel|docs?|documents?|docx|word|link|from|of|for|that|this|it|me|can|you|could|would)\b/gu;
+/** The reread of one file he picked: `id:` and the id a listing carried. */
+const DRIVE_FILE_ID = /^id:\s*([A-Za-z0-9_-]{10,256})$/u;
+
+/** C-OPEN 2 and 3: a name search typed by the kind he named, or the fresh read of one file by its id. */
+function driveSubs(query: string, ownerWords: string): IntentSubCall[] {
+  const id = DRIVE_FILE_ID.exec(query.trim())?.[1];
+  if (id !== undefined) return [{ key: 'dr0', name: INTERNAL.driveGet, args: { file_id: id } }];
+  const text = query.toLowerCase();
+  const kind = (DRIVE_KIND_WORDS.find(entry => entry.words.test(text)) ?? DRIVE_KIND_WORDS.find(entry => entry.words.test(ownerWords.toLowerCase())))?.kind;
+  const name = text.replace(DRIVE_FILLER, ' ').replace(/[^\p{L}\p{N}\s._-]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 120);
+  if (name === '') return [];
+  return [{ key: 'dr0', name: INTERNAL.driveSearch, args: { query: name, ...(kind === undefined ? {} : { mime_types: [...DRIVE_MIME_TYPES[kind]] }), limit: 5 } as JsonObject }];
 }
 
 /**
@@ -3661,6 +3824,7 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
     }
     return plan;
   }
+  if (lookup.source === 'drive') return { source: 'drive', kind: 'drive_search', subs: driveSubs(query, context.ownerWords ?? context.question) };
   // K1: the web is a layer of its own, and a question that asked for it is never answered by chat.
   if (lookup.source === 'web') return { source: 'web', kind: 'web_search', subs: candidateSubs('web_search', subsConfig) };
   if (lookup.source === 'chat') {
@@ -3675,9 +3839,9 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
 
 /** MED-1022: the run remembers what became of its chat date operator, strongest token first. */
 function recordChatDate(run: RunState, original: string | undefined, subs: readonly IntentSubCall[]): void {
-  const sub = subs.find(call => call.name === INTERNAL.chatSearch);
+  const sub = subs.find(call => call.name === INTERNAL.chatSearch || call.name === INTERNAL.chatRead);
   if (sub === undefined) return;
-  const status = chatDateOperator(original, String(sub.args['query'] ?? ''), String(sub.args['after'] ?? ''));
+  const status = chatDateOperator(original, String(sub.args['query'] ?? ''), String(sub.args['after'] ?? sub.args['from_date'] ?? ''));
   if (status === 'compiled' || run.chatDate === undefined) run.chatDate = status;
 }
 
@@ -3877,7 +4041,9 @@ async function collectMailWithRetry(deps: ResearchDeps, run: RunState, reads: re
 async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSignal, remainingMs: number, now: () => number): Promise<void> {
   run.mailDeadlineAt ??= now() + Math.min(RESEARCH.sourceDeadline.mail, remainingMs);
   const left = run.mailDeadlineAt - now();
-  if (left <= 0 || remainingMs <= 0) { run.cutShort.add('mail'); return; }
+  // L8-13: a deadline already spent means no page is dispatched at all, which is not a read that took too long.
+  if (left <= 0 || remainingMs <= 0) { (run.neverRan ??= new Set()).add('mail'); return; }
+  run.neverRan?.delete('mail');
   // RUN-R7: the mail deadline is cut on the run's clock, released when the collector ends.
   const cut = cutAfter(Math.min(left, remainingMs), deps.schedule);
   const signal = AbortSignal.any([parent, cut.signal]);
@@ -3885,8 +4051,10 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
   while (now() < run.mailDeadlineAt && run.ops < RESEARCH.maxOps && evidenceAllowed(deps, run, signal)) {
     // #581: a page answers the read unless the lines this reply shows still need more, so four pages are
     // never spent to show four lines.
-    const reads = [...run.mail.values()].filter(read => !read.exhausted && !read.failed && !read.inflight && read.pages < RESEARCH.mailPageCap && read.messages.size < MAIL_LINES_SHOWN).slice(0, RESEARCH.maxOps - run.ops);
+    const candidates = [...run.mail.values()].filter(read => !read.exhausted && !read.failed && !read.inflight && read.pages < RESEARCH.mailPageCap && read.messages.size < MAIL_LINES_SHOWN);
+    const reads = boundedPages(run, 'mail', candidates, now()).slice(0, RESEARCH.maxOps - run.ops);
     if (reads.length === 0) break;
+    const pageStartedAt = now();
     const calls = reads.map((read, n) => ({ key: `mail${run.ops + n}`, name: INTERNAL.mailList, args: { ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}) } }));
     if (!evidenceAllowed(deps, run, signal)) break;
     for (const read of reads) { read.inflight = true; if (read.nextPageToken) read.tokens.add(read.nextPageToken); }
@@ -3919,6 +4087,7 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
     }
     reads.forEach((read, n) => {
       read.inflight = false;
+      read.lastPageMs = Math.max(0, now() - pageStartedAt);
       const result = results[n];
       if (!result?.ok || deps.authorizeEvidence && !result.binding) { failMailPage(read); if (result?.code !== undefined) read.code = result.code; return; }
       read.pages += 1;
@@ -3941,6 +4110,7 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
       const inWindow = (message: MailMessage): boolean => since === undefined || !(Date.parse(message.internalDate) < since);
       for (const message of page.messages) if (inWindow(message) && !read.messages.has(message.id)) read.messages.set(message.id, message);
       read.received += page.received; read.invalid += page.invalid; read.upstreamIncomplete ||= page.upstreamIncomplete === true;
+      if (typeof page.total === 'number') (read.pageTotals ??= []).push(page.total);
       const next = page.nextPageToken;
       if (next && (next.length > 4096 || read.tokens.has(next))) { failMailPage(read); return; }
       if (next) read.nextPageToken = next;
@@ -4019,9 +4189,10 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
       for (const [eventKey, event] of hit.events) read.events.set(eventKey, event);
       read.exhausted = true;
     }
-    const pending = [...run.calendar.values()].filter(read => !read.exhausted && !read.failed && !read.inflight);
+    const pending = boundedPages(run, 'calendar', [...run.calendar.values()].filter(read => !read.exhausted && !read.failed && !read.inflight), now());
     if (pending.length === 0) break;
     const reads = pending.slice(0, RESEARCH.maxOps - run.ops);
+    const pageStartedAt = now();
     // W2: the connector plans inside this run's remaining source budget, never its own 40 s constant.
     const calls: IntentSubCall[] = [];
     const slots: number[] = [];
@@ -4060,6 +4231,7 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     }
     reads.forEach((read, n) => {
       read.inflight = false;
+      read.lastPageMs = Math.max(0, now() - pageStartedAt);
       const result = results[slots[n]!];      if (!result?.ok || (deps.authorizeEvidence && !result.binding)) { read.failed = true; if (result?.code !== undefined) read.code = result.code; return; }
       // A calendar answer with text but no page envelope is still that source's answer: each tagged
       // line is one event, so the brief fan-out and the reply carry it like any other page.
@@ -4128,7 +4300,9 @@ async function webGroup(deps: ResearchDeps, run: RunState, plans: readonly Route
   const results = await Promise.all(plans.map(async (plan): Promise<{ plan: RoutedPlan; line?: string }> => {
     const call = plan.read.subs[0];
     const query = String(call?.args['query'] ?? plan.lookup.query);
+    const readStarted = now();
     const outcome = await deps.web!.search({ query, signal, deadlineMs: webDeadlineMs(query) });
+    recordWebRead(deps, run, query, outcome, readStarted, now);
     if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return { plan }; }
     run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
     run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));
@@ -4172,7 +4346,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
       // new evidence, so it is dropped unless the owner asked what she said.
       const askedWhatSheSaid = ASKS_WHAT_SHE_SAID.test(context.question);
       const raw = Array.isArray(page['hits']) ? page['hits'].filter(isRecord) : [];
-      const hits = memoryEvidence(raw, context.question, run, askedWhatSheSaid);
+      const hits = memoryEvidence(raw, context.question, run, askedWhatSheSaid, deps.liveSessionId);
       const kept = { ...page, hits };
       for (const hit of hits) if (typeof hit['recordRef'] === 'string') run.historyTokens.add(hit['recordRef']);
       const lines = typeof page['text'] === 'string' ? [page['text']] : hits.map(hit => String(hit['snippet'] ?? ''));
@@ -4196,7 +4370,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     run.unavailableReasons.set(source, reason);
     return [...done, ...all(outcome)];
   };
-  if (!context.configured.includes(source)) return unserved('unavailable', source === 'web' ? 'web_not_available' : 'not_configured');
+  if (!context.configured.includes(source)) return unserved('unavailable', source === 'web' ? 'web_not_available' : source === 'drive' ? 'drive_not_available' : 'not_configured');
   // #351: a connector that cannot serve a read right now settles at once, never spending the batch deadline.
   if (context.unavailable.includes(source)) return unserved('unavailable', context.unavailableReason?.(source) ?? 'connector_unavailable');
   const remainingMs = run.deadlineMs - (context.now() - run.startedAt);
@@ -4393,6 +4567,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines, run.chatDate ?? 'none', outcome.sub, { droppedFilters: run.droppedDayFilters, deduped: outcome.deduped ?? 0 }) } : {}),
         ...mailReceiptField(outcome.mail),
         ...(outcome.partial === undefined ? {} : { partial: outcome.partial.reason, failedPages: outcome.partial.failedPages }),
+        ...(outcome.outcome === 'ok' || outcome.outcome === 'empty' ? {} : { reason: sourceReasonOf(run, outcome) }),
       });
       logSubcall({
         event: 'research_subcall', researchId: run.researchId, ...callKeyOf(run), kind: outcome.kind, tool: outcome.tool,
@@ -4577,7 +4752,8 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
     const live = first.snapshot?.();
     if (live === undefined) return undefined;
     const waiting = [...first.required].some(source => first.reading.has(source) && !live.run.sourcesDone.has(source));
-    const left = first.releaseAt() - deps.now();
+    const operationLeft = live.run.operationDeadlineAt === undefined ? Number.POSITIVE_INFINITY : live.run.operationDeadlineAt - RESEARCH_OPERATION.returnReserveMs - deps.now();
+    const left = Math.min(first.releaseAt() - deps.now(), operationLeft);
     if (!waiting || left <= 0 || first.cut === true) break;
     const woken = new Promise<'woken'>(resolve => { first.wake = () => resolve('woken'); });
     const next = await Promise.race([settled, woken, wait(left)]);
@@ -4588,8 +4764,18 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   const view = first.snapshot?.();
   if (view === undefined) return undefined;
   const found = [...view.run.ledger.values()].flatMap(entry => entry.lines ?? []).concat([...view.run.calendar.values()].flatMap(read => [...read.events.values()].map(event => event.line)), [...mailMessages(view.run).values()].map(message => message.line));
-  // No source has findings yet, so there is no answer to give: the call waits, as today, to its own budget.
-  if (found.length === 0 && !first.historyPages?.some(page => typeof page['text'] === 'string' && page['text'].length > 0 || Array.isArray(page['hits']) && page['hits'].length > 0)) return loop;
+  // No source has findings yet: the call waits for them, but only to the operation deadline (C-LIVE behaviour 2),
+  // where it answers with what it has and the readers still running detach to the late-findings path.
+  if (found.length === 0 && !first.historyPages?.some(page => typeof page['text'] === 'string' && page['text'].length > 0 || Array.isArray(page['hits']) && page['hits'].length > 0)) {
+    const deadlineAt = view.run.operationDeadlineAt;
+    if (deadlineAt === undefined) return loop;
+    const left = deadlineAt - RESEARCH_OPERATION.returnReserveMs - deps.now();
+    if (left > 0) {
+      const next = await Promise.race([settled, wait(left)]);
+      stopTimers();
+      if (next === 'settled') return undefined;
+    }
+  }
   const pending = [...first.reading].filter(source => !view.run.sourcesDone.has(source));
   if (!evidenceAllowed(deps, view.run, new AbortController().signal)) return deniedEvidence(deps, view.run);
   // ROUTE-1022 (#526): an early answer is partial by definition until its readers settle, and it names
@@ -4627,7 +4813,13 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const early = await firstAnswerOf(deps, first, loop);
   if (early === undefined) { const reply = await loop; if (!deps.authorizeEvidence) markCalendarReply(deps.ledger, reply); return reply; }
   // The call answers now. The readers keep going to their own deadlines, so their findings still land.
-  deps.background?.(loop.then(() => undefined, () => undefined));
+  // C-LIVE: the detached loop's own closing reply is never handed to the model, so the findings it marks as
+  // given are unmarked again; an owner follow-up then hears them instead of "already given".
+  const detached = first.snapshot?.().run;
+  const given = detached === undefined ? undefined : new Set(detached.deliveredFindings);
+  const unmark = (): void => { if (detached === undefined || given === undefined) return; for (const key of [...detached.deliveredFindings]) if (!given.has(key)) detached.deliveredFindings.delete(key); };
+  deps.background?.(loop.then(unmark, unmark));
+  if (deps.background === undefined) void loop.then(unmark, unmark);
   if (!deps.authorizeEvidence) markCalendarReply(deps.ledger, early);
   return early;
 }
@@ -4769,6 +4961,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     }
   }
   run.direction = call.direction ?? run.direction;
+  run.operationDeadlineAt = now() + RESEARCH_OPERATION.deadlineMs;
+  run.reading = first.reading;
   // #621: the ask's own route, so a source it names but the session never wired still says why.
   for (const source of requiredSources(run.question ?? question)) run.route.add(source);
   if (deps.timeZone === undefined) delete run.timeZone; else run.timeZone = deps.timeZone;
@@ -4835,6 +5029,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       // #647: the one place every read passes through, so a chat read that matched nothing on every word is
       // broadened here once, before the reply and the progress steps read it.
       if (!dispatchSignal.aborted) results = await broadenedChatRetry(executeSource, subs, results, progressSignal, run.broadenedChat);
+      noteChatReads(run, subs, results);
       finish(results, current() ? undefined : 'cancelled');
     }
     catch (error) { finish([], 'failed'); throw error; }
@@ -4878,6 +5073,19 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     return buildReply(run, 'answered', configured, false, limit);
   }
 
+  // C-CHAT: "more" on a chat read that matched more than it returned reads its next page, one page per call.
+  if (call.action === 'continue' && !freshQuestion && run.chatPage !== undefined && call.lookups === undefined) {
+    const page = run.chatPage;
+    const sub: IntentSubCall = { ...page.sub, key: `${page.sub.key}p${page.next}`, args: { ...page.sub.args, offset: page.next } };
+    const results = await deps.execute([sub], signal);
+    if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
+    const block = shapeBlock('chat_search', results, deps.timeZone);
+    for (const [key, entry] of run.ledger) if (entry.source === 'chat') run.ledger.delete(key);
+    run.ledger.set(`chat_search:page:${page.next}`, { kind: 'chat_search', source: 'chat', summary: block.text, lines: block.lines, total: Math.max(page.total, block.total) });
+    run.chatNotes.push(`This is the next page: posts ${page.next + 1} to ${page.next + block.lines.length} of ${page.total}.`);
+    if (block.lines.length > 0) { run.sourcesDone.add('chat'); run.emptySearches.delete('chat'); }
+    return buildReply(run, 'answered', configured, false, limit);
+  }
   // K6: a routed start names its own layers, so the selector is skipped and every lookup runs at once.
   const lookups = normalizeLookups(call.lookups);
   if (call.action === 'continue' && run.historyTokens.size > 0 && lookups.length === 0) return { researchId: run.researchId, status: 'partial', findings: [], canContinue: true, note: 'Continue local history with a memory lookup containing history.recordRef or history.cursor from historyPages.' };
@@ -5202,7 +5410,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             run.ops -= webCalls.length;
             return Promise.all(webCalls.map(async (call): Promise<IntentSubResult> => {
               const empty = { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0 };
+              const readStarted = now();
               const outcome = await deps.web!.search({ query: String(call.args['query'] ?? ''), signal: readSignal, deadlineMs: webDeadlineMs(String(call.args['query'] ?? '')) });
+              recordWebRead(deps, run, String(call.args['query'] ?? ''), outcome, readStarted, now);
               if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return empty; }
               run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
               run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));
@@ -5261,7 +5471,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             const ids = [...primaryText.matchAll(/\[id ([A-Za-z0-9_-]+)\]/g)].map(match => match[1]!).slice(0, 2);
             ids.forEach((id, index) => second.push({ key: `mo${index}`, name: INTERNAL.mailRead, args: { id } }));
           }
-          if (kind === 'chat_search') {
+          // C-CHAT: a person, group or channel read is already the conversation; only a topic search hops to a thread.
+          if (kind === 'chat_search' && served.some(call => call.name === INTERNAL.chatSearch)) {
             const id = extractId('chat_search', primaryText);
             if (id) second.push({ key: 'ct', name: 'mattermost_get_thread', args: { post_id: id } });
           }
@@ -5639,4 +5850,148 @@ export class ResearchScheduler {
     });
     return awaiter.promise;
   }
+}
+
+// ---- C-LIVE (W5): owner-turn admission, the bounded operation and per-source coverage --------------------------
+
+/**
+ * C-LIVE behaviour 2: one research operation answers by `deadlineMs`. Measured on the installed host.log
+ * (2026-10-12 to 10-25, 723 research_source rows): p50 per source 0.1 to 3.9 s, p90 5.3 to 7.7 s; a whole run
+ * p50 2.2 s, p90 9.8 s. The first answer point (4.5 s) already answers when one source has findings; 6 s is the
+ * bound for a call with nothing yet, and the readers still running detach to the late-findings path. A page
+ * starts only when its estimate (this read's last page, else the per-source p50) finishes `returnReserveMs`
+ * before the deadline; the host settles the call itself `hostGraceMs` after the deadline if the loop has not.
+ */
+export const RESEARCH_OPERATION = Object.freeze({
+  deadlineMs: 6_000,
+  returnReserveMs: 500,
+  hostGraceMs: 1_000,
+  pageEstimateMs: Object.freeze({ mail: 2_000, calendar: 1_400 }),
+});
+
+/** C-LIVE behaviour 1: the reply to a research call no owner turn admitted. It reaches no source. */
+export const ADMISSION_BLOCKED: Readonly<JsonObject> = Object.freeze({
+  status: 'blocked', reason: 'owner_turn_required', directive: 'answer_existing_result', retry_without_new_owner_turn: false,
+});
+export const ADMISSION_BLOCK_REASONS = ['no_owner_turn', 'turn_spent', 'no_turn_since_result'] as const;
+export type AdmissionBlockReason = typeof ADMISSION_BLOCK_REASONS[number];
+export type AdmissionVerdict = { admitted: true } | { admitted: false; reason: AdmissionBlockReason };
+
+/**
+ * C-LIVE behaviour 1: each finalized owner turn grants one research operation. `start` or an admitted `continue`
+ * spends it; `continue` also needs an owner turn after the last delivered result; `stop` is always allowed. Only
+ * the owner's own finalized words call `ownerTurn`: transcripts in progress, her audio, host nudges, rebuilds and
+ * tool results grant nothing. One instance lives for the whole live session, across provider generations.
+ */
+export class ResearchAdmission {
+  #turns = 0;
+  #grant: number | undefined;
+  #deliveredAt: number | undefined;
+  ownerTurn(): void { this.#turns += 1; this.#grant = this.#turns; }
+  admit(action: ResearchAction): AdmissionVerdict {
+    if (action === 'stop') return { admitted: true };
+    if (this.#turns === 0) return { admitted: false, reason: 'no_owner_turn' };
+    if (this.#grant !== this.#turns) return { admitted: false, reason: 'turn_spent' };
+    if (action === 'continue' && this.#deliveredAt !== undefined && this.#turns <= this.#deliveredAt) return { admitted: false, reason: 'no_turn_since_result' };
+    this.#grant = undefined;
+    return { admitted: true };
+  }
+  /** An admitted research result was handed to the model. */
+  delivered(): void { this.#deliveredAt = this.#turns; }
+}
+
+/** C-LIVE behaviour 2: the reads whose next page can still finish before the operation must answer. */
+function boundedPages<T extends { lastPageMs?: number; boundStop?: boolean }>(run: RunState, source: 'mail' | 'calendar', reads: readonly T[], nowMs: number): T[] {
+  if (run.operationDeadlineAt === undefined) return [...reads];
+  const end = run.operationDeadlineAt - RESEARCH_OPERATION.returnReserveMs;
+  return reads.filter(read => {
+    const fits = nowMs + (read.lastPageMs ?? RESEARCH_OPERATION.pageEstimateMs[source]) <= end;
+    if (!fits) read.boundStop = true;
+    return fits;
+  });
+}
+
+type CoverageStop = 'exhausted' | 'deadline' | 'page_failed' | 'failed' | 'page_cap' | 'page_limit' | 'enough_for_answer' | 'reply_budget' | 'cancelled' | 'not_read';
+
+/** The rows ride the reply only when a source has a gap to name. */
+function coverageRows(rows: JsonObject[]): { sourceCoverage?: JsonObject[] } { return rows.length === 0 ? {} : { sourceCoverage: rows }; }
+
+/** How many lines of one source the reply the model hears actually carries. */
+function representedOf(findings: readonly FindingLike[], source: SourceKind): number {
+  const text = findings.find(entry => entry.source === source && typeof entry.text === 'string')?.text ?? '';
+  const head = FINDING_HEAD.exec(text);
+  return head === null ? 0 : Number(head[1]);
+}
+
+/** Totals reported page by page: one value is a known total, disagreeing values are a changing one. */
+function reportedTotal(totals: readonly number[]): number | 'changing' | undefined {
+  const distinct = [...new Set(totals)];
+  return distinct.length === 0 ? undefined : distinct.length === 1 ? distinct[0]! : 'changing';
+}
+
+/**
+ * C-LIVE behaviour 2: what each source of this operation really covered, apart from the prose. `examined` is the
+ * distinct records read, deduplicated across pages; `total` is known only when the source reported it or was read
+ * to its end, `unknown` otherwise, and `changing` when its pages disagreed; `matches` is what matched the query;
+ * `represented` is what this reply carries. Per-page totals are never summed.
+ */
+export function operationCoverage(run: RunState, findings: readonly FindingLike[]): JsonObject[] {
+  const closed = run.cancelled || run.stopped;
+  const touched = new Set<SourceKind>([...run.route, ...run.sourcesDone, ...run.sourcesFailed, ...run.pending, ...(run.reading ?? []), ...run.emptySearches.keys(), ...run.cutShort]);
+  if (run.mail.size > 0) touched.add('mail');
+  if (run.calendar.size > 0) touched.add('calendar');
+  const rows: JsonObject[] = [];
+  for (const source of SOURCE_ORDER) {
+    if (!touched.has(source)) continue;
+    const represented = representedOf(findings, source);
+    let examined = 0;
+    let total: number | 'unknown' | 'changing' = 'unknown';
+    let matches: number | 'unknown' = 'unknown';
+    let readComplete = false;
+    let stop: CoverageStop;
+    let upstream = false;
+    if (source === 'mail' && run.mail.size > 0) {
+      const reads = [...run.mail.values()];
+      examined = mailMessages(run).size;
+      matches = examined;
+      readComplete = reads.every(read => read.exhausted && !read.failed);
+      upstream = reads.some(read => !read.exhausted && !read.failed);
+      const reported = reportedTotal(reads.flatMap(read => read.pageTotals ?? []));
+      total = reported === 'changing' ? 'changing' : readComplete ? examined : reported ?? 'unknown';
+      stop = run.pending.has('mail') || run.cutShort.has('mail') || reads.some(read => read.inflight === true || (read.boundStop === true && !read.exhausted)) ? 'deadline'
+        : reads.some(read => read.failed) ? (examined > 0 ? 'page_failed' : 'failed')
+          : readComplete ? 'exhausted'
+            : reads.some(read => read.pages >= RESEARCH.mailPageCap) ? 'page_cap' : 'enough_for_answer';
+    } else if (source === 'calendar' && run.calendar.size > 0) {
+      const reads = [...run.calendar.values()];
+      examined = new Set(reads.flatMap(read => [...read.events.keys()])).size;
+      matches = examined;
+      readComplete = reads.every(read => read.exhausted && !read.failed && read.unread === 0);
+      upstream = reads.some(read => !read.exhausted && !read.failed);
+      total = readComplete ? examined : 'unknown';
+      stop = run.pending.has('calendar') || run.cutShort.has('calendar') || reads.some(read => read.inflight === true || (read.boundStop === true && !read.exhausted)) ? 'deadline'
+        : reads.some(read => read.failed) ? (examined > 0 ? 'page_failed' : 'failed') : readComplete ? 'exhausted' : 'enough_for_answer';
+    } else {
+      const entries = [...run.ledger.values()].filter(entry => entry.source === source && !entry.bodyOnly);
+      examined = new Set(entries.flatMap(entry => entry.lines ?? [])).size;
+      const reported = reportedTotal(entries.flatMap(entry => typeof entry.total === 'number' ? [entry.total] : []));
+      // Several different queries may overlap, so their totals are never added up.
+      if (typeof reported === 'number') { total = Math.max(reported, examined); matches = total; }
+      else if (run.emptySearches.has(source) && examined === 0) { total = 0; matches = 0; }
+      readComplete = run.sourcesDone.has(source) || run.emptySearches.has(source);
+      stop = run.pending.has(source) || run.cutShort.has(source) || (run.reading?.has(source) === true && !readComplete) ? 'deadline'
+        : run.sourcesFailed.has(source) ? 'failed'
+          : !readComplete ? (closed ? 'cancelled' : 'not_read')
+            : typeof total === 'number' && total > examined ? 'page_limit' : 'exhausted';
+      if (stop === 'page_limit') upstream = true;
+    }
+    if (stop === 'exhausted' && represented < examined) stop = 'reply_budget';
+    const complete = stop === 'exhausted';
+    // A source read whole is said by the header alone ("truncated_to_budget 9 of 38 shown" when the reply cut it);
+    // a row is the measured cost of a gap the header cannot state: a deadline, a failed page, an unknown total.
+    if ((complete || stop === 'reply_budget') && typeof total === 'number') continue;
+    rows.push({ source, examined, total, matches, represented, state: complete ? 'complete' : 'partial', stop,
+      more: upstream || stop === 'deadline' ? 'upstream' : represented < examined ? 'local' : 'none' });
+  }
+  return rows;
 }

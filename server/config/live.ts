@@ -14,7 +14,7 @@ const liveLimit = 16 * 1024;
 const MAX_VOICE_CHARS = 70;
 /** The documented ceiling for the optional voice description; it mirrors one voice prompt. */
 const MAX_VOICE_DESCRIPTION_CHARS = 1_500;
-const liveKeys = ['schemaVersion', 'enabled', 'provider', 'modelId', 'voice', 'accent', 'voiceDescription', 'playbackRate', 'keyReference', 'dataClasses', 'preferences', 'limits'];
+const liveKeys = ['schemaVersion', 'enabled', 'provider', 'modelId', 'voice', 'accent', 'voiceDescription', 'playbackRate', 'keyReference', 'dataClasses', 'preferences', 'limits', 'features'];
 // PV1: the owner's accent selection is its own live.json field, beside provider and voice. It applies from the
 // next session start, so it is kept as a process-current value rather than only inside the frozen profile.
 let currentAccent: LiveAccent = LIVE_DEFAULT_ACCENT;
@@ -236,6 +236,7 @@ export function loadLiveConfig(options: { configDir: string; ownerId: string; ow
       acceptedPrompt: { schemaVersion: 1, ownerProfile, compilerVersion: instruction.promptVersion,
         system: accepted.text, dataClasses: instruction.dataClasses },
       ...(input['limits'] !== undefined ? { limits: input['limits'] } : {}),
+      ...(input['features'] !== undefined ? { features: input['features'] } : {}),
     });
     return { status: 'configured', config: Object.freeze({ ...config, profile }) };
   } catch (error) {

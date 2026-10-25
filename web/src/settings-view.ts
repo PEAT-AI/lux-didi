@@ -1,7 +1,7 @@
 // Read-only projection of the running Didi service settings. Pure mapping and markup only.
 // Every rendered field is whitelisted and escaped by name; no provider, config or route payload is
 // ever interpolated wholesale, so a secret-looking field cannot reach the page.
-import { mongooseEndpoint, mongooseEndpointLabel, nextStep, reasonCodes, type MongooseEndpointName } from './next-steps.ts';
+import { nextStep, reasonCodes, signInLabel, signInTarget, type SignInName } from './next-steps.ts';
 import { escapeHtml } from './markdown.ts';
 import { connectionIdentity } from './connector-status.ts';
 import type { Theme } from './theme.ts';
@@ -112,7 +112,7 @@ export function limitMinutes(value: unknown): string | undefined {
 }
 
 /** Whitelist one connection row: id, state and reasonCode, mapped to a fixed state name and next step. */
-export function connectorState(value: unknown): { id: string; state: string; next: string; identity?: string; guideUrl?: string; signIn?: boolean; signInEndpoint?: 'knowledge' | 'data' | 'crm' } | undefined {
+export function connectorState(value: unknown): { id: string; state: string; next: string; identity?: string; guideUrl?: string; signIn?: boolean; signInEndpoint?: SignInName } | undefined {
   const row = record(value);
   if (!row) return undefined;
   const id = typeof row.id === 'string' && /^[\w.-]{1,128}$/.test(row.id) ? row.id : undefined;
@@ -126,9 +126,15 @@ export function connectorState(value: unknown): { id: string; state: string; nex
   const label = state === 'missing' || reason === 'credential_missing' ? 'Credential missing' : reason === 'needs_sign_in' ? 'Sign-in needed' : 'Failed';
   const step = nextStep(id, state, reason, row.retrying === true);
   const wantsSignIn = reason === 'needs_sign_in' || step.signIn === true;
-  const endpoint = mongooseEndpoint(id);
-  // Only the three Mongoose endpoint rows can start a sign-in, and each carries its own name.
-  return { id, state: label, next: step.text, ...(step.guideUrl ? { guideUrl: step.guideUrl } : {}), ...(wantsSignIn ? { signIn: true } : {}), ...(wantsSignIn && endpoint ? { signInEndpoint: endpoint } : {}) };
+  const endpoint = signInTarget(id);
+  // A live attempt says where it is; a failed one speaks only while the row still needs that sign-in.
+  // A finished attempt never hides the row's own reason, so a later outage reads as an outage.
+  const attempt = record(row.signIn);
+  const speaks = attempt !== undefined && (['running', 'waiting', 'finishing'].includes(String(attempt.phase))
+    || (attempt.phase === 'failed' && ['needs_sign_in', 'not_signed_in', 'credential_missing'].includes(reason)));
+  const progress = endpoint && speaks ? signInAttemptText(signInLabel(endpoint), attempt, endpoint === 'trello' ? 'trello' : 'mongoose') : undefined;
+  // Only the three Mongoose endpoint rows and the Trello row can start a sign-in, and each carries its own name.
+  return { id, state: label, next: progress ?? step.text, ...(step.guideUrl ? { guideUrl: step.guideUrl } : {}), ...(wantsSignIn ? { signIn: true } : {}), ...(wantsSignIn && endpoint ? { signInEndpoint: endpoint } : {}) };
 }
 
 function liveRows(summary: unknown, summaryUnavailable: boolean, saved?: SettingsInput['saved']): string {
@@ -183,11 +189,21 @@ function serviceRows(status: unknown, statusUnavailable: boolean, summaryName?: 
 <dt>Text chat and research model</dt><dd>${escapeHtml(modelLabel)}</dd>`;
 }
 
+/** C-OPEN 6: the closed wiring notice a connection row carries, in words that name the fix. */
+export function connectorWarning(value: unknown): string | undefined {
+  const row = record(value);
+  return row?.warning === 'google_mcp_path_unsafe'
+    ? 'This Google helper runs from a reports folder that may be archived. Fix: run the Lux Didi install again so the connector uses the installed Google helper.'
+    : undefined;
+}
+
 function connectorsSection(connections: unknown, connectionsUnavailable: boolean): string {
   if (connectionsUnavailable) return `<h3>Connectors</h3><p role="status" class="settings-unavailable">Connections unavailable. No connector values are shown while the service cannot be reached.</p>`;
-  const rows = (Array.isArray(connections) ? connections : []).map(connectorState).filter((row): row is NonNullable<ReturnType<typeof connectorState>> => row !== undefined);
+  const list = Array.isArray(connections) ? connections : [];
+  const warnings = new Map(list.map(value => [connectorState(value)?.id, connectorWarning(value)] as const));
+  const rows = list.map(connectorState).filter((row): row is NonNullable<ReturnType<typeof connectorState>> => row !== undefined);
   if (rows.length === 0) return '<h3>Connectors</h3><p class="muted">No connectors configured.</p>';
-  return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.signInEndpoint ? ` <button type="button" class="secondary mongoose-signin" data-signin data-endpoint="${escapeHtml(row.id)}">Sign in to ${escapeHtml(mongooseEndpointLabel(row.signInEndpoint))}</button>` : ''}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}</li>`).join('')}</ul>`;
+return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.signInEndpoint ? ` <button type="button" class="secondary ${row.signInEndpoint === 'trello' ? 'trello-signin' : 'mongoose-signin'}" data-signin data-endpoint="${escapeHtml(row.id)}">Sign in to ${escapeHtml(signInLabel(row.signInEndpoint))}</button>` : ''}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}${warnings.get(row.id) ? ` <span class="notice" role="status">${escapeHtml(warnings.get(row.id)!)}</span>` : ''}</li>`).join('')}</ul>`;
 }
 
 /** The one element shape the sign-in binder reads, so a test can supply plain objects. */
@@ -197,9 +213,9 @@ export interface SignInTarget { closest(selector: string): { getAttribute(name: 
  * or guessed one. One listener sits on the stable root, so a Settings repaint or a full render swaps the
  * buttons underneath it and the next click still arrives. A click off every sign-in button sends nothing.
  */
-export function bindSignInButtons(root: { addEventListener(type: 'click', listener: (event: { target: SignInTarget }) => void): void }, send: (endpoint: MongooseEndpointName) => void): void {
+export function bindSignInButtons(root: { addEventListener(type: 'click', listener: (event: { target: SignInTarget }) => void): void }, send: (endpoint: SignInName) => void): void {
   root.addEventListener('click', event => {
-    const endpoint = mongooseEndpoint(event.target.closest('[data-signin]')?.getAttribute('data-endpoint') ?? '');
+    const endpoint = signInTarget(event.target.closest('[data-signin]')?.getAttribute('data-endpoint') ?? '');
     if (endpoint) send(endpoint);
   });
 }
@@ -275,8 +291,39 @@ export function laneNoticesMarkup(error: string, notice: string, sheetOpen: bool
 /** What the Settings notice says when a click starts no sign-in: the closed reasons in plain words. */
 export function signInFailureNotice(reason: string): string {
   if (reason === 'sign-in-in-progress') return 'Finish the sign-in already open in the browser first, then click Sign in again.';
-  if (reason === 'browser-unavailable') return 'Your browser could not be opened. The Sign in button tries again.';
-  return 'Sign-in did not finish. Use the Sign in button to try again.';
+  if (reason === 'not-configured') return 'This Mongoose endpoint is not in your connector configuration, so there is nothing to sign in to yet.';
+  return 'Sign-in did not start. Use the Sign in button to try again.';
+}
+
+/** One sentence per step and per failure class of a sign-in attempt, from the closed tokens the host sends. */
+const attemptSentences: Record<string, (label: string, server: SignInServer) => string> = {
+  running: label => `Starting the sign-in to ${label}.`,
+  waiting: label => `The ${label} sign-in page was handed to your browser. Finish there, and the connector reconnects by itself.`,
+  finishing: label => `${label} accepted the sign-in in the browser. Saving it now.`,
+  discovery_unreachable: (label, server) => `${server.name} is not reachable right now, so the ${label} sign-in could not start: ${server.check}, then try again.`,
+  discovery_refused: (label, server) => `${server.name} did not confirm this endpoint, so the ${label} sign-in stopped before opening the browser.`,
+  registration_refused: (label, server) => `${server.name} did not accept the sign-in request for ${label}. Try again in a moment.`,
+  port_in_use: (label, server) => `The ${label} sign-in could not wait for the browser because port ${server.port} is busy. Close the other sign-in, then try again.`,
+  browser_unavailable: label => `Your browser could not be opened for the ${label} sign-in. Use the Sign in button to try again.`,
+  callback_failed: label => `The browser's answer was refused or did not match this ${label} sign-in, so nothing was saved. Try again.`,
+  callback_timeout: label => `The ${label} sign-in timed out waiting for the browser. Use the Sign in button to try again.`,
+  token_refused: (label, server) => `${server.name} refused the sign-in at the last step, so nothing was saved for ${label}. Try again.`,
+  store_failed: label => `The ${label} sign-in finished, but it could not be saved on this Mac. Try again.`,
+  did_not_finish: label => `The ${label} sign-in did not finish. Use the Sign in button to try again.`,
+};
+/** Who answers a sign-in, the port its callback waits on, and what the owner checks when it cannot be reached. */
+type SignInServer = { name: string; port: number; check: string };
+const SIGN_IN_SERVERS: Record<'mongoose' | 'trello', SignInServer> = {
+  mongoose: { name: 'Mongoose', port: 8768, check: 'check the VPN' },
+  trello: { name: 'Trello', port: 8769, check: 'check the internet connection' },
+};
+export function signInAttemptText(label: string, value: unknown, server: 'mongoose' | 'trello' = 'mongoose'): string | undefined {
+  const attempt = record(value);
+  if (!attempt || typeof attempt.attemptId !== 'string' || !/^[0-9a-f]{16}$/.test(attempt.attemptId)) return undefined;
+  const steps = ['running', 'waiting', 'finishing'];
+  const key = attempt.phase === 'failed' ? attempt.reason : attempt.phase;
+  if (typeof key !== 'string' || !Object.hasOwn(attemptSentences, key) || steps.includes(key) === (attempt.phase === 'failed')) return undefined;
+  return attemptSentences[key]!(label, SIGN_IN_SERVERS[server]);
 }
 
 function connectedSection(connected: SettingsInput['connected']): string {

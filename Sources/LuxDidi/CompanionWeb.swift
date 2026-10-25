@@ -40,7 +40,11 @@ enum PageRoute {
         guard let url = URL(string: urlString),
               ExternalLinkPolicy.decide(url: url, navigationType: .linkActivated, isMainFrame: true, ownOrigin: descriptor.origin) == .openExternal
         else { return }
-        NSWorkspace.shared.open(url)
+        Self.openInBrowser(url)
+    }
+    /// C-OPEN 5: an external link goes to the same browser the native open action uses: Chrome when installed.
+    private static func openInBrowser(_ url: URL) {
+        Task { _ = await NativeActions.workspaceOpen(url, false) }
     }
     /// Keeps the web view's under-page colour with the window when the web changes theme.
     func applyTheme(_ theme: BridgeTheme) { webView.underPageBackgroundColor = theme.backgroundColor }
@@ -73,10 +77,13 @@ enum PageRoute {
         print("COMPANION-WK \(line)")
         #endif
     }
-    init(descriptor: ServiceDescriptor, bridge: NativeBridge? = nil, route: PageRoute = .full) {
+    /// C-OPEN 7: how the page's window.confirm is shown; a proof injects its own answer.
+    private let confirmPresent: ConfirmPanel.Present
+    init(descriptor: ServiceDescriptor, bridge: NativeBridge? = nil, route: PageRoute = .full, confirm: @escaping ConfirmPanel.Present = ConfirmPanel.sheet) {
         self.descriptor = descriptor
         self.bridge = bridge
         self.route = route
+        self.confirmPresent = confirm
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController = WKUserContentController() // The `didi` handler is added below.
@@ -197,7 +204,7 @@ enum PageRoute {
                 route.approves(descriptor, action.request.url) && !action.shouldPerformDownload
         case .openExternal:
             // Only a user-activated link, never a programmatic navigation, reaches here.
-            if action.sourceFrame.isMainFrame, let url = action.request.url { NSWorkspace.shared.open(url) }
+            if action.sourceFrame.isMainFrame, let url = action.request.url { Self.openInBrowser(url) }
         case .cancel:
             allowed = false
         }
@@ -258,6 +265,12 @@ enum PageRoute {
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         deniedPopups += 1
         return nil
+    }
+    /// C-OPEN 7: without this, WebKit answers every window.confirm false and memory delete never runs.
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping (Bool) -> Void) {
+        ConfirmPanel.answer(message: message, fromMainFrame: frame.isMainFrame, approvedPage: route.approves(descriptor, webView.url),
+                            window: webView.window, present: confirmPresent) { completionHandler($0) }
     }
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo,
                  type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) { decisionHandler(.deny) }

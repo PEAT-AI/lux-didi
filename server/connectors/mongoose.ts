@@ -12,6 +12,7 @@ export type MongooseEndpoint = (typeof MONGOOSE_ENDPOINTS)[number];
 export const MONGOOSE_ENDPOINT_PATHS: Readonly<Record<MongooseEndpoint, string>> = {
   knowledge: '/mcp/knowledge', data: '/mcp/data', crm: '/mcp/crm',
 };
+/** The catalogue's resource label per endpoint (also the audience Mongoose mints); never an OAuth resource on the wire. */
 export const MONGOOSE_ENDPOINT_AUDIENCES: Readonly<Record<MongooseEndpoint, string>> = {
   knowledge: 'mongoose:knowledge', data: 'mongoose:data', crm: 'mongoose:crm',
 };

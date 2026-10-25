@@ -23,9 +23,18 @@ import { createLiveUpgrader, liveServiceError, type LiveService } from './live-u
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('base64url');
 const equal = (a: string, b: string) => timingSafeEqual(Buffer.from(hash(a)), Buffer.from(hash(b)));
-/** Mongoose is the one connector the owner can sign in to, so the sign-in reason is scoped to it. */
+/** Mongoose and Trello are the connectors the owner signs in to, so the sign-in reason is scoped to them. */
 function signInConnector(row: Record<string, unknown>): boolean {
-  return row.connector === 'mongoose';
+  return row.connector === 'mongoose' || row.connector === 'trello';
+}
+
+const SIGN_IN_PHASES = ['running', 'waiting', 'finishing', 'signed_in', 'failed'];
+const SIGN_IN_FAILURES = ['discovery_unreachable', 'discovery_refused', 'registration_refused', 'port_in_use', 'browser_unavailable', 'callback_failed', 'callback_timeout', 'token_refused', 'store_failed', 'did_not_finish'];
+/** One Mongoose row's sign-in attempt as closed tokens and an opaque id, or nothing. */
+function signInAttempt(value: { attemptId: string; phase: string; reason?: string } | undefined): Record<string, string> | undefined {
+  if (!value || !/^[0-9a-f]{16}$/.test(value.attemptId) || !SIGN_IN_PHASES.includes(value.phase)) return undefined;
+  if (value.phase === 'failed') return SIGN_IN_FAILURES.includes(String(value.reason)) ? { attemptId: value.attemptId, phase: value.phase, reason: String(value.reason) } : undefined;
+  return { attemptId: value.attemptId, phase: value.phase };
 }
 
 /**
@@ -39,6 +48,8 @@ export function connectionReasonCode(input: { state: string; error: string; reas
   if (configurationError) return 'configuration_error';
   if (/^credential .* missing or invalid$/.test(error)) return 'credential_missing';
   if (/^not_signed_in$/.test(error)) return signIn ? 'needs_sign_in' : 'not_signed_in';
+  // W7-R2: the Trello board has no configured name, which is the owner's private file, not a fault.
+  if (/^not_configured$/.test(error)) return 'not_configured';
   if (/^credential-refresh-unavailable$/.test(error)) return 'unreachable';
   if (/^credential-(missing|refresh-failed|consent-expired)$/.test(error)) return signIn ? 'needs_sign_in' : 'unknown';
   // An identity probe that ran out of time says nothing about whose account it is, so it is unreachable.
@@ -59,7 +70,7 @@ async function readBody(req: IncomingMessage, limit = 65536): Promise<Record<str
   try { return object(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError('BAD_REQUEST', 'Malformed JSON'); }
 }
 interface Principal { clientId: string; mode: 'bearer' | 'browser'; tokenHash?: string; csrfToken?: string }
-export interface ServiceOptions { ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; live?: LiveService; toolsStatus?: () => { endpoints: unknown[] }; mongooseSignIn?: (endpoint?: string) => Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }> }
+export interface ServiceOptions { ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; live?: LiveService; toolsStatus?: () => { endpoints: unknown[] }; mongooseSignIn?: (endpoint?: string) => Promise<{ status: 'started'; attemptId: string } | { status: 'failed'; reason: string }>; mongooseSignInAttempt?: (endpointId: string, connected: boolean) => { attemptId: string; phase: string; reason?: string } | undefined; trelloSignIn?: () => Promise<{ status: 'started'; attemptId: string } | { status: 'failed'; reason: string }>; trelloRow?: () => Record<string, unknown> }
 export interface EntryDeletionResponse extends EntryTombstone { liveSessionRetainsUntilRebuild: boolean }
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
@@ -198,7 +209,8 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         if (actor.mode !== 'browser' || req.headers.authorization !== undefined || (req.headers['sec-fetch-site'] !== undefined && req.headers['sec-fetch-site'] !== 'same-origin')) throw new ServiceError('FORBIDDEN', 'Page session required', 403);
         res.setHeader('Cache-Control', 'no-store');
         if (route.kind === 'liveConnections') {
-          const endpoints = (options.toolsStatus?.().endpoints ?? []).map(value => {
+          // The Trello board row rides beside the catalogue rows; it carries its own latest sign-in attempt.
+          const endpoints = [...(options.toolsStatus?.().endpoints ?? []), ...(options.trelloRow ? [options.trelloRow()] : [])].map(value => {
             const row = value && typeof value === 'object' ? value as Record<string, unknown> : {};
             const state = ['missing', 'configured', 'connecting', 'connected', 'error'].includes(String(row.state)) ? String(row.state) : 'error';
             // Classify privately; return only closed reason tokens, never the original diagnostic.
@@ -207,6 +219,10 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
             // Only Mongoose has an owner sign-in, so only its rows can carry the sign-in reason.
             const reasonCode = connectionReasonCode({ state, error, reasonCode: typeof row.reasonCode === 'string' ? row.reasonCode : undefined, configurationError, signIn: signInConnector(row) });
             const identity = projectIdentity(row.identity);
+            // The latest sign-in attempt of a Mongoose row: the click answered at once, the row tells the rest.
+            // A connected row settles its finished attempt, so a later failure never carries an old outcome.
+            const signIn = row.connector === 'trello' ? signInAttempt(row.signIn as { attemptId: string; phase: string; reason?: string } | undefined)
+              : signInConnector(row) && typeof row.id === 'string' ? signInAttempt(options.mongooseSignInAttempt?.(row.id, state === 'connected')) : undefined;
             return {
               id: typeof row.id === 'string' && /^[\w.-]{1,128}$/.test(row.id) ? row.id : 'unknown', state,
               tools: typeof row.tools === 'number' && Number.isSafeInteger(row.tools) && row.tools >= 0 ? row.tools : 0,
@@ -216,6 +232,9 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
               retrying: row.retrying === true,
               ...(identity ? { identity } : {}),
               ...(configurationError ? { configurationError } : {}),
+              ...(signIn ? { signIn } : {}),
+              // C-OPEN 6: the one closed wiring notice a row may carry; nothing else of the report passes.
+              ...(row.warning === 'google_mcp_path_unsafe' ? { warning: 'google_mcp_path_unsafe' } : {}),
             };
           });
           send(res, 200, success(endpoints)); return;
@@ -233,13 +252,17 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         send(res, 200, success(options.toolsStatus?.() ?? { endpoints: [] })); return;
       }
       if (route.kind === 'mongooseSignIn') {
-        // One explicit owner click starts the login. Nothing opens a browser at app start, and the
-        // reply carries a closed outcome, never a token, a record or a provider message.
+        // One explicit owner click starts the login and is answered at once with its attempt id or a closed
+        // refusal, never a URL, a token, a record or a provider message. Nothing opens a browser at app start.
         // The click names the one endpoint it signs in; the host validates the name against its catalogue.
         const body = await readBody(req);
         const endpoint = typeof body.endpoint === 'string' ? body.endpoint : undefined;
         const started = options.mongooseSignIn ? await options.mongooseSignIn(endpoint) : { status: 'failed' as const, reason: 'not-configured' };
         send(res, 200, success(started)); return;
+      }
+      if (route.kind === 'trelloSignIn') {
+        // The Trello row's one click: answered at once with its attempt id, never a URL or a token.
+        send(res, 200, success(options.trelloSignIn ? await options.trelloSignIn() : { status: 'failed' as const, reason: 'not-configured' })); return;
       }
       if (route.kind === 'session') { send(res, 200, success({ clientId: actor.clientId, csrfToken: actor.csrfToken ?? null })); return; }
       if (route.kind === 'connected' && ['enroll', 'accept'].includes(route.action) && (!chat || modelStatus.status !== 'configured')) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Model route is not locally configured', 503);

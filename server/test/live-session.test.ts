@@ -56,8 +56,10 @@ import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-liv
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
-import { RESEARCH, RESEARCH_TOOL_NAME } from '../tools/research.js';
+import { RESEARCH_OPERATION, RESEARCH_TOOL_NAME } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
+import { luxNoteMigrations } from '../tools/lux-note.js';
+import { notesExportMigrations } from '../tools/notes-export.js';
 
 const MODEL = 'models/live-session-test';
 const NOW = 1_700_000_000_000;
@@ -70,7 +72,10 @@ async function advanceUntil(advance: (ms: number) => void, scheduler: DeadlineCl
   for (let i = 0; i < 200 && !condition(); i++) { advance(1000); scheduler.runDue(); await new Promise<void>(resolve => setImmediate(resolve)); }
   assert.ok(condition(), 'the expected connection did not open');
 }
-const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } });
+// Model output the host hears: -12 dBFS samples, so the adapter's own level rule counts the frame as audible.
+// A zeroed payload is digital silence under that rule (C-LIVE N-2), which is not what these tests mean.
+const speechPcm = () => Uint8Array.from({ length: 8 }, (_unused, index) => index % 2 === 0 ? 0x40 : 0x1f);
+const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(speechPcm()).toString('base64') } });
 
 /** Wrap a store so one exact SQL write fails, proving the failure path without breaking reads. */
 function writeFailingStore(store: Store, marker: string): Store {
@@ -159,6 +164,7 @@ async function harness(t: TestContext, overrides: {
   onSessionTerminal?: (liveSessionId: string) => void;
   memoryFailure?: boolean;
   failingWrite?: string;
+  researchWeb?: import('../tools/web-search.js').WebSearchPort;
 } = {}): Promise<Harness> {
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-session-'));
@@ -402,7 +408,7 @@ async function harness(t: TestContext, overrides: {
       return { id: record.entryId, text: record.text, dataClass };
     });
   };
-  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), ...(overrides.researchWeb ? { researchWeb: overrides.researchWeb } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), ...(publishCalendar ? { publishCalendar } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
@@ -649,6 +655,22 @@ test('Live transcripts and completion, interruption and terminal events stay jou
   const kinds = h.store.transaction(tx => tx.all('SELECT kind FROM live_journal WHERE live_session_id=?', [session.liveSessionId]).map(row => row['kind']));
   for (const kind of ['inputTranscription', 'outputTranscription', 'turnComplete', 'interrupted', 'terminal']) assert.ok(kinds.includes(kind));
   assert.equal(h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n'])), before);
+});
+
+test('L8-10: the runtime context names web search when the session can search the web, and only then', async t => {
+  const web = { search: async () => { throw new Error('not called at start'); } };
+  const native = composeLiveInstruction({ base: NAYA_LIVE_BASE, language: 'en' }).text;
+  const withWeb = await harness(t, { tools: true, researchWeb: web, system: native });
+  const { attachment: withAttachment } = await attached(withWeb);
+  const connected = /^Connected now: (.*)\.$/mu.exec(withWeb.requests[0]!.system.text)?.[1] ?? '';
+  assert.ok(connected.split(', ').includes('web search'), `the declared web read is named: ${connected}`);
+  assert.ok(connected.split(', ').includes('knowledge base'), `the knowledge read stays named: ${connected}`);
+  withAttachment.close(); await withAttachment.done;
+  const without = await harness(t, { tools: true, system: native });
+  const { attachment } = await attached(without);
+  assert.match(without.requests[0]!.system.text, /^Connected now: /mu, 'the runtime context is composed');
+  assert.equal(/^Connected now: .*web search/mu.test(without.requests[0]!.system.text), false, 'no web read, no web claim');
+  attachment.close(); await attachment.done;
 });
 
 test('a session with a tool declaration carries the tools conduct; without one composes exactly as before', async t => {
@@ -1279,7 +1301,7 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
   assert.ok(frozen.system.length > 4_096 && frozen.system.length <= LIVE_INSTRUCTION_HARD_LIMIT, 'the frozen system is dense but inside the hard limit');
   assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ['knowledge base', 'memory'], unavailable: [] }) }).text);
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ['knowledge base', 'memory'], unavailable: [], vault: { dictation: true, composed: false } }) }).text);
   assert.equal(frozen.system.split(style).length - 1, 1);
   assert.equal(frozen.system.split(lore).length - 1, 1);
   assert.deepEqual(frozen.dataClasses, ['ordinary', 'private', 'sensitive']);
@@ -1480,7 +1502,7 @@ test('live migrations preserve a populated accepted Store byte-for-byte', async 
   });
   const owners = migrated.transaction(tx => tx.all('SELECT owner, MAX(version) AS version FROM runtime_migrations GROUP BY owner ORDER BY owner'));
   assert.deepEqual(owners.map(row => [String(row['owner']), Number(row['version'])]),
-    [chatMigrations, domainMigrations, liveMigrations, traceMigrations].map(migrations => [migrations[0]!.owner, Math.max(...migrations.map(migration => migration.version))]));
+    [chatMigrations, domainMigrations, liveMigrations, luxNoteMigrations, notesExportMigrations, traceMigrations].map(migrations => [migrations[0]!.owner, Math.max(...migrations.map(migration => migration.version))]));
 });
 
 test('U1-R2: the v7 live migration preserves every v6 journal row, its index and its foreign key, and admits a researchProgress row', async t => {
@@ -2118,7 +2140,7 @@ test('Live attach setup carries the composed Naya instruction and the bare langu
   await h.f.frame(1);
   const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
   const expectedWithRuntime = composeLiveSessionInstruction({ text: composed.text, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], unavailable: [] }) }).text;
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], unavailable: [], vault: { dictation: true, composed: false } }) }).text;
   assert.equal(frame.setup.systemInstruction.parts[0].text, expectedWithRuntime);
   assert.equal(frame.setup.generationConfig.speechConfig.languageCode, 'de');
   attachment.close();
@@ -2204,7 +2226,7 @@ test('configured owner system survives CREATE and attach open byte for byte befo
   const created = first.create({ idempotencyKey: 'owner-create', inputClass: 'ordinary' }, context(store));
   const persisted = store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
   const expectedWithRuntime = composeLiveSessionInstruction({ text: expected, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], unavailable: [] }) }).text;
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], unavailable: [], vault: { dictation: true, composed: false } }) }).text;
   assert.equal(persisted.system, expectedWithRuntime); assert.deepEqual(persisted.dataClasses, ['ordinary', 'private']);
   const attachment = first.attach({ liveSessionId: created.liveSessionId }, context(store));
   await f.frame(1);
@@ -2352,7 +2374,7 @@ test('provider usage metadata is decoded and logged per turn, numbers only', asy
   await attachment.done;
 });
 
-test('dead air after a tool response earns one neutral continuation input', async t => {
+test('C-LIVE: dead air after a tool response sends no synthetic Continue user text', async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-nudge-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));
   t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
@@ -2362,9 +2384,9 @@ test('dead air after a tool response earns one neutral continuation input', asyn
   h.f.send({ toolCall: { functionCalls: [{ id: 'n1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   await h.f.frame(h.f.frames.length + 1);
   h.advance(8000); scheduler.runDue();
-  await h.f.frame(h.f.frames.length + 1);
+  for (let i = 0; i < 50; i++) await tick();
   const nudges = h.f.frames.filter(frame => (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text === 'Continue.');
-  assert.equal(nudges.length, 1, 'exactly one neutral continuation input');
+  assert.equal(nudges.length, 0, 'no fake owner turn is written into the conversation');
   const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string });
   assert.equal(lines.filter(line => line.event === 'live_dead_air_nudge').length, 1);
   h.owner.revoke(session.liveSessionId);
@@ -2501,12 +2523,15 @@ test('L19: the first spoken reply of a call is never unjournalled without a rece
   const sink = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
   t.after(() => sink());
   const { session } = await attached(h, 'reply-receipt');
-  // The provider speaks with no output transcript at all, which is exactly the missing-row case.
-  for (let i = 0; i < 40 && !events.some(entry => entry.event === 'live_first_audio'); i++) {
+  // The provider speaks with no output transcript at all, which is exactly the missing-row case. The
+  // opening turn can speak too, so this counts its own reply instead of the first one in the log.
+  const audible = (): number => events.filter(entry => entry.event === 'live_first_audio').length;
+  const before = audible();
+  for (let i = 0; i < 40 && audible() === before; i++) {
     h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
     await tick();
   }
-  assert.ok(events.some(entry => entry.event === 'live_first_audio'), 'the reply was audible');
+  assert.ok(audible() > before, 'the reply was audible');
   h.f.send({ serverContent: { turnComplete: true } });
   await tick(); await tick();
   // The reply is never unjournalled: its own row exists, so no reader has to infer what was said.
@@ -3172,20 +3197,20 @@ test('P1: session start logs the effective regional languageCode', async t => {
 
 test('U1: calendar and Gmail model text carries no raw url and names each source', () => {
   const calendar = shapeGcalList({ events: [
-    { summary: 'Standup', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e1' },
-    { start: { dateTime: '2024-01-02T09:00:00Z' }, htmlLink: 'https://calendar.google.com/event?eid=e2' },
+    { summary: 'Standup', start: { dateTime: '2024-01-01T09:00:00Z' }, htmlLink: 'https://www.google.com/calendar/event?eid=e1' },
+    { start: { dateTime: '2024-01-02T09:00:00Z' }, htmlLink: 'https://www.google.com/calendar/event?eid=e2' },
   ] });
   assert.equal(/https?:\/\//.test(calendar.text), false, 'calendar model text carries no raw url');
   assert.equal(calendar.text.includes('source:'), false);
   assert.deepEqual(calendar.sources, [
-    { title: 'Calendar: Standup', url: 'https://calendar.google.com/event?eid=e1', sourceType: 'calendar' },
-    { title: 'Open in Google Calendar', url: 'https://calendar.google.com/event?eid=e2', sourceType: 'calendar' },
+    { title: 'Calendar: Standup', url: 'https://www.google.com/calendar/event?eid=e1', sourceType: 'calendar' },
+    { title: 'Open in Google Calendar', url: 'https://www.google.com/calendar/event?eid=e2', sourceType: 'calendar' },
   ]);
   const mail = shapeGmailList({ messages: [
     { id: 'm1', snippet: 'hello', labelIds: [], headers: { Subject: 'Budget' } },
   ] });
   assert.equal(/https?:\/\//.test(mail.text), false, 'gmail model text carries no raw url');
-  assert.deepEqual(mail.sources, [{ title: 'Gmail: Budget', url: 'https://mail.google.com/mail/u/0/#inbox/m1', sourceType: 'gmail' }]);
+  assert.deepEqual(mail.sources, [{ title: 'Gmail: Budget', url: 'https://mail.google.com/mail/u/0/#all/m1', sourceType: 'gmail' }]);
   assert.deepEqual(shapeGcalCalendars({ calendars: [{ summary: 'Work' }] }).sources, undefined);
 });
 
@@ -3402,6 +3427,22 @@ test('W10: a source whose grant publishes after the call started joins the next 
 
 // #651: a chat read the connector refused for a channel it does not know keeps its own closed code
 // through the live research hop, so the reply names the channel instead of an unreachable source.
+test('TR-R8: a granted composed read reaches the child on the live path', async t => {
+  const h = await harness(t, { tools: true, mattermost: true });
+  await attached(h, 'composed-door');
+  const question = 'what did they say in the nowhere channel about the deploy';
+  // TR-R16: the door routes a composed name to the connector's own composed read, so the child only ever
+  // sees base primitives. W5's live-path sequence: the owner turn finalized, then the call, then the answer.
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question, topic: 'deploy in the nowhere channel' });
+  const chatCalls = h.calls.filter(call => String(call.name).startsWith('mattermost_'));
+  assert.ok(chatCalls.length > 0, `the composed chat read reached the connector: ${JSON.stringify(h.calls.map(call => call.name))}`);
+  const composites = chatCalls.filter(call => call.name === 'mattermost_chat' || call.name === 'mattermost_attention');
+  assert.deepEqual(composites.map(call => call.name), [], 'a composed name is never sent to the child');
+  for (const call of chatCalls) assert.ok(MATTERMOST_TOOLS.includes(call.name as never),
+    `the child saw only a base primitive: ${String(call.name)}`);
+  assert.match(lastToolResponse(h), /nowhere/, `the connector's own answer reaches the reply: ${lastToolResponse(h)}`);
+});
+
 test('#651: an unknown channel reaches research as its own closed code', async t => {
   const h = await harness(t, { tools: true, mattermost: true });
   await attached(h, 'failreason-channel');
@@ -3770,6 +3811,13 @@ test('Q5-R4: the opener context names at most three earlier openers, one or two 
   assert.ok(!long!.includes('B'), 'an opener that does not fit is dropped whole, never cut mid sentence');
 });
 
+test('L8-09/L11-05: the earlier-openers note names one sentence once, even when two calls opened with it', () => {
+  const note = openersNote(['Morning. The release branch merged cleanly.', 'Morning.  The release branch merged cleanly.', 'Evening. The deck is out.'],
+    ['the release branch merge', 'the release branch merge', 'the deck']);
+  assert.equal(note!.split('Morning. The release branch merged cleanly.').length - 1, 1, `a repeated opener is quoted once: ${note}`);
+  assert.ok(note!.includes('Evening. The deck is out.'), 'a different opener is still named');
+});
+
 test('3u: the anti-repeat note names the topic each earlier opener came from, still under the cap', () => {
   const note = openersNote(['Morning. The release branch merged cleanly.'], ['the release branch merge']);
   assert.ok(note!.includes('"Morning. The release branch merged cleanly."'), 'the sentence is still quoted');
@@ -3976,7 +4024,7 @@ test('D3: one audible frame restarts the deadline from that frame, never from th
   attachment.close();
 });
 
-test('#538: the Gemini path sends its one Continue at 8 s and never closes or recreates the session', async t => {
+test('#538/C-LIVE: the Gemini path sends no Continue at 8 s and never closes or recreates the session there', async t => {
   const fake = fakeLiveVoicePort();
   const scheduler = new DeadlineClock();
   const h = await harness(t, { port: fake.port, scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
@@ -3986,13 +4034,76 @@ test('#538: the Gemini path sends its one Continue at 8 s and never closes or re
   fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'g1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] }));
   await settlePort();
   for (let elapsed = 0; elapsed < 8_500; elapsed += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
-  assert.deepEqual(fake.texts, ['Continue.'], 'the 8 s rung on this path is the one neutral continuation input');
-  assert.equal(fake.closes, 0, 'a Continue rung never closes the provider session');
+  assert.deepEqual(fake.texts, [], 'the 8 s rung writes no synthetic user text');
+  assert.equal(fake.closes, 0, 'the 8 s rung never closes the provider session');
   assert.equal(fake.sessionsOpened, 1, 'and never recreates it');
   for (let elapsed = 0; elapsed < 7_500; elapsed += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
   assert.equal(fake.sessionsOpened, 2, 'the 15 s rung is the one path that opens a fresh session');
   assert.equal(fake.closes, 1, 'and it closes the old one exactly once');
   attachment.close();
+});
+
+// L8-11/L11-06: the owner talked over her answer three times while she kept speaking, and the store held no
+// receipt of it. gpt-live-1 owns barge-in and the host never cuts her (lux 90488, ruling W1-R1), so the host
+// records the overlap as a content-free receipt: counts only, and whether output was cut (never, here).
+test('L8-11: owner words over her audible answer leave one content-free overlap receipt per owner turn', async t => {
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'overlap-receipt', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(audibleFrame);
+  await settlePort();
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'Synthetic', finished: false }));
+  await settlePort();
+  const rows = (): Record<string, unknown>[] => h.store.transaction(tx => tx.all(
+    "SELECT turn_id, detail FROM trace_event WHERE live_session_id=? AND kind='owner.overlap' ORDER BY seq", [session.liveSessionId]));
+  assert.equal(rows().length, 0, 'one word over her is not yet an overlap');
+  fake.emit(audibleFrame);
+  fake.emit(portEvent({ type: 'inputTranscription', text: ' overlap words here', finished: false }));
+  await settlePort();
+  fake.emit(portEvent({ type: 'inputTranscription', text: ' you', finished: false }));
+  await settlePort();
+  const seen = rows();
+  assert.equal(seen.length, 1, 'two owner words while she is audible write one receipt for the turn');
+  const detail = JSON.parse(String(seen[0]!['detail'])) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(detail).sort(), ['at', 'cut', 'msSinceAudible', 'words'], 'a time, counts and a flag, never text');
+  assert.ok(Number(detail['words']) >= 2, `the receipt counts the words: ${JSON.stringify(detail)}`);
+  assert.equal(detail['cut'], false, 'the host cut nothing (ruling W1-R1)');
+  assert.ok(typeof seen[0]!['turn_id'] === 'string', 'the receipt belongs to the owner turn');
+  assert.equal(JSON.stringify(seen).includes('overlap words'), false, 'no owner word reaches the metadata row');
+  attachment.close(); await attachment.done.catch(() => undefined);
+});
+
+// L8-Q01/Q05/Q06: a research call with a web read left trace_call unlinked, its question and run id
+// nowhere, and the web read with no row at all.
+test('L8-Q01/Q05/Q06: a research call is linked to its run and execution, and its web read leaves a row', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const web = { search: async () => ({ ok: true as const, evidence: { answer: 'The synthetic bridge reopens on Monday.', claims: [],
+    sources: [{ title: 'Synthetic source', url: 'https://source.example.invalid/bridge' }], retrievedAt: '2026-10-25T10:00:00Z' } }) };
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, researchWeb: web, scheduler, limits: openaiLimits });
+  const { session, attachment } = await openPort(h, 'research-link');
+  await ownerInput(fake, 'synthetic owner question about the bridge');
+  const epoch = String(h.store.transaction(tx => tx.get('SELECT connection_epoch FROM trace_event WHERE live_session_id=? AND connection_epoch IS NOT NULL LIMIT 1', [session.liveSessionId]))!['connection_epoch']);
+  const callKey = scopedTraceKey(session.liveSessionId, epoch, 'call', 'q1');
+  record(h.store, 'call.intent', { liveSessionId: session.liveSessionId, connectionEpoch: epoch, callKey }, { intentAt: NOW, name: 'research', argsChars: 60, providerCallId: 'q1' });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'q1', name: 'research', args: { action: 'start', question: 'When does the synthetic bridge reopen?', topic: 'synthetic bridge', lookups: [{ source: 'web', query: 'synthetic bridge reopening' }, { source: 'knowledge', query: 'synthetic bridge' }] } }] });
+  const linked = (): Record<string, unknown> | undefined => h.store.transaction(tx => tx.get('SELECT research_id, canonical_run_id, canonical_execution_id FROM trace_call WHERE call_key=?', [callKey]));
+  for (let i = 0; i < 400 && linked()?.['research_id'] == null; i++) { h.advance(50); scheduler.runDue(); await settlePort(); }
+  const row = linked()!;
+  assert.ok(typeof row['research_id'] === 'string' && String(row['research_id']).length > 0, `the call names its research run: ${JSON.stringify(row)}`);
+  assert.equal(row['canonical_run_id'], session.liveSessionId, 'the canonical run is the session run');
+  assert.match(String(row['canonical_execution_id']), new RegExp(`^${session.liveSessionId}:\\d+:0$`, 'u'), 'the first canonical execution of the call');
+  const executions = h.store.transaction(tx => tx.all('SELECT execution_id FROM tool_calls WHERE run_id=?', [session.liveSessionId])).map(entry => String(entry['execution_id']));
+  assert.ok(executions.includes(String(row['canonical_execution_id'])), `the link names a real canonical execution: ${executions.join(', ')}`);
+  const texts = h.store.transaction(tx => tx.all('SELECT kind, text FROM trace_research_text WHERE research_id=? ORDER BY rowid', [String(row['research_id'])])).map(entry => `${String(entry['kind'])}:${String(entry['text'])}`);
+  assert.ok(texts.includes('question:When does the synthetic bridge reopen?'), `the question the model wrote is kept in the store: ${texts.join(' | ')}`);
+  assert.ok(texts.includes('web_query:synthetic bridge reopening'), `and the web query: ${texts.join(' | ')}`);
+  const reads = h.store.transaction(tx => tx.all('SELECT source, outcome, results FROM trace_source_read WHERE research_id=?', [String(row['research_id'])])).map(entry => ({ ...entry }));
+  assert.deepEqual(reads, [{ source: 'web', outcome: 'ok', results: 1 }], 'the web read leaves its own row');
+  attachment.close(); await attachment.done.catch(() => undefined);
 });
 
 test('#538: the trace timeline records the debt clock as content-free enums', async t => {
@@ -4259,7 +4370,7 @@ test('no commentary steps on the owner while a lookup runs', async t => {
 
 // --- W4: no long silence while a call is in flight ------------------------------------------------
 
-test('VOICE-R4: no commentary goes out over three six second beats of one lookup', async t => {
+test('VOICE-R4: no commentary goes out over three beats inside one lookup', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
@@ -4273,8 +4384,9 @@ test('VOICE-R4: no commentary goes out over three six second beats of one lookup
   await ownerInput(fake);
   fake.emit({ type: 'toolCall', calls: [{ id: 'cap1', name: 'research', args: { action: 'start', question: 'Synthetic progress cap', topic: 'Synthetic progress cap', lookups: [{ source: 'chat', query: 'Synthetic progress cap' }] } }] });
   await settlePort();
+  // C-LIVE: the lookup answers by its operation deadline, so its beats are inside that bound.
   for (const beat of [1, 2, 3]) {
-    h.advance(6_000); scheduler.runDue(); await settlePort();
+    h.advance(1_900); scheduler.runDue(); await settlePort();
     assert.deepEqual(fake.commentary, [], `beat ${beat} of the lookup is silent`);
   }
   const sent = receipts.filter(entry => entry['event'] === 'commentary_sent');
@@ -5614,6 +5726,8 @@ for (const source of ['mail', 'calendar'] as const) test(`progress recovery: act
   assert.ok(steps.every(step => step.source === source && step.phase === 'end' && step.ok));
   assert.equal(new Set(steps.map(step => step.stepId)).size, 2);
   const calls = h.calls.length;
+  // C-LIVE: a continuation is the owner's follow-up, so the owner asks for it first.
+  await ownerInput(fake, 'synthetic follow-up');
   fake.emit({ type: 'toolCall', calls: [{ id: 'retained', name: 'research', args: { action: 'continue', researchId: first['researchId'], ...(first['nextCursor'] ? { cursor: first['nextCursor'] } : {}) } }] });
   for (let n = 0; n < 100 && fake.toolResponses.length < 2; n++) await settlePort();
   assert.equal(fake.toolResponses.length, 2);
@@ -5673,6 +5787,8 @@ test('research 469: known stopped run projects error and retained no-wire delive
   await ownerInput(fake);
   const call = async (id: string, args: Record<string, unknown>) => {
     const before = fake.toolResponses.length;
+    // C-LIVE: every call after the first answers an owner follow-up; stop needs none.
+    if (before > 0 && args['action'] !== 'stop') await ownerInput(fake, `synthetic follow-up ${id}`);
     fake.emit({ type: 'toolCall', calls: [{ id, name: 'research', args }] });
     for (let n = 0; n < 100 && fake.toolResponses.length === before; n++) await settlePort();
     assert.equal(fake.toolResponses.length, before + 1);
@@ -6455,11 +6571,12 @@ test('#656: owner audio sent during a rebuild is held and delivered to the new s
 });
 
 test('#656: the ladder waits out each call on that call\'s own ceiling, a research run on its deadline', async t => {
-  // A plain call is bounded by the non-research ceiling; a research run outlives it and is bounded by RESEARCH.
+  // A plain call is bounded by the non-research ceiling; a research operation by its own deadline plus the host's
+  // grace (C-LIVE behaviour 4), which is shorter: an admitted operation never holds the ladder past it.
   assert.equal(callCeilingMs('search_knowledge'), TOOL_CEILING_MS);
-  assert.equal(callCeilingMs(RESEARCH_TOOL_NAME), RESEARCH.continueDeadlineMs);
+  assert.equal(callCeilingMs(RESEARCH_TOOL_NAME), RESEARCH_OPERATION.deadlineMs + RESEARCH_OPERATION.hostGraceMs);
   assert.equal(callCeilingMs(undefined), TOOL_CEILING_MS, 'a call whose name is unknown keeps the plain ceiling');
-  assert.ok(RESEARCH.continueDeadlineMs > TOOL_CEILING_MS, 'the research bound is the longer of the two');
+  assert.ok(callCeilingMs(RESEARCH_TOOL_NAME) < TOOL_CEILING_MS, 'the research operation is bounded tighter than a plain call');
   // And the hold itself ends at the ceiling: a plain call older than TOOL_CEILING_MS no longer owns the silence.
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });

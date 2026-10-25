@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, chatQuery, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedChannel, namedInsightIds, newestDatedFirst, offerableCandidates, shapeBlock, windowRange,
+  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, chatQuery, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, newestDatedFirst, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing, parseResearch, researchRepair, topicTerms,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
@@ -11,6 +11,7 @@ import type { CandidateKind } from '../tools/research.js';
 import { shapeGcalList, shapeGmailList, shapeLuxKnowledge } from '../tools/live-shape.js';
 import { safeEvent } from '../host/log.js';
 import { projectDiagnosticInput } from '../tools/diagnostic-input.js';
+import { spokenChannel } from '../tools/chat-intent.js';
 import './research-shape.test.js';
 import './research-calendar.test.js';
 
@@ -227,7 +228,7 @@ test('N5: a reply that cannot serve a continuation never says more is available'
   const stopped = await runResearch(h.deps, { action: 'stop', researchId: String(first['researchId']) }, new AbortController().signal);
   assert.equal(stopped['canContinue'], false);
   const note = String(stopped['note'] ?? '');
-  assert.doesNotMatch(note, /more available/, 'the note never offers a continuation this run cannot serve');
+  assert.ok(!note.includes(RESEARCH.moreAvailableNote), 'the note never offers a continuation this run cannot serve');
   assert.doesNotMatch(note, /did not search/, 'the note never repeats what the header already names');
   const coverage = String(stopped['coverage'] ?? '');
   assert.match(coverage, /coverage: (?!none)\w+/u, `the header names what this run did and did not search: ${coverage}`);
@@ -238,7 +239,7 @@ test('N5: a trimmed reply that can continue still says more is available', async
   const h = harness({ executeText: wide });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
   assert.equal(reply['canContinue'], true);
-  assert.match(String(reply['note'] ?? ''), /more available/);
+  assert.ok(String(reply['note'] ?? '').includes(RESEARCH.moreAvailableNote));
 });
 
 // #575: a memory hit that is her own earlier voice confirms a past answer instead of finding new
@@ -530,10 +531,10 @@ test('#664: the fourth research call of one delegation says answer the owner and
 // #664: an owner ask named the channel "an engineering" and "name", because the article and the model's own
 // placeholder were read as the channel.
 test('#664: a spoken channel name loses its article, and a placeholder is never a channel', () => {
-  assert.equal(namedChannel('in an engineering channel'), 'engineering', 'the article is never part of the name');
-  assert.equal(namedChannel('the exact channel name'), undefined, 'a placeholder where a name belongs is no channel');
-  assert.equal(namedChannel('#ops'), 'ops', 'a hash name is the channel');
-  assert.equal(namedChannel('in the AI channel'), 'AI', 'a display name keeps its words, the connector folds the case');
+  assert.equal(spokenChannel('in an engineering channel'), 'engineering', 'the article is never part of the name');
+  assert.equal(spokenChannel('the exact channel name'), undefined, 'a placeholder where a name belongs is no channel');
+  assert.equal(spokenChannel('#ops'), 'ops', 'a hash name is the channel');
+  assert.equal(spokenChannel('in the AI channel'), 'AI', 'a display name keeps its words, the connector folds the case');
 });
 
 test('Z1: a start ignores a model researchId that fails the host log id rule and mints its own', async () => {
@@ -1885,7 +1886,7 @@ test('LAT-1023: a wide answer is compacted to the Live budget by dropping whole 
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
   assert.ok((line.answerCompacted?.items ?? 0) > 0, 'with the count of whole items it dropped');
   assert.equal(line.answerCompacted?.chars, text.length, 'and the characters it sent');
-  assert.match(String(reply['note']), /There is more available/u, 'and the reply names what was left out');
+  assert.ok(String(reply['note']).includes(RESEARCH.moreAvailableNote), 'and the reply names what was left out');
   assert.doesNotMatch(shown, /no such|does not exist/iu);
 });
 
@@ -1944,7 +1945,7 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
   const line = h.logs.at(-1)!;
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
   assert.ok((line.answerCompacted?.items ?? 0) >= 2, 'whole items were dropped from both sources');
-  assert.match(String(reply['note']), /There is more available/u, 'and the reply names what it left out');
+  assert.ok(String(reply['note']).includes(RESEARCH.moreAvailableNote), 'and the reply names what it left out');
 });
 
 // --- TOPIC (#565, #576): only the topic's words reach a source, never the instruction text ---

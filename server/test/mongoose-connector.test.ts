@@ -77,7 +77,7 @@ async function fixture(endpoint: MongooseEndpoint, options: FixtureOptions = {})
       const bytes = Buffer.concat(chunks);
       // A refusing endpoint refuses the read call, not the discovery a client needs to get there.
       if (options.status !== undefined && options.status !== 200 && bytes.toString('utf8').includes('"tools/call"')) {
-        res.writeHead(options.status, { 'www-authenticate': `Bearer resource_metadata="${MONGOOSE_ENDPOINT_AUDIENCES[endpoint]}"` }); res.end(); return;
+        res.writeHead(options.status, { 'www-authenticate': `Bearer resource_metadata="http://${req.headers.host}/.well-known/oauth-protected-resource${MONGOOSE_ENDPOINT_PATHS[endpoint]}"` }); res.end(); return;
       }
       const headers = new Headers();
       for (const [key, value] of Object.entries(req.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(',') : value);

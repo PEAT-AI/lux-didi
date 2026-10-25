@@ -122,8 +122,13 @@ export async function fetchLiveSummary(signal?: AbortSignal): Promise<LiveSummar
 
 /** One owner click names the Mongoose endpoint it signs in; the host opens the browser for that endpoint
  * alone and answers with a closed outcome. */
-export async function startMongooseSignIn(endpoint: 'knowledge' | 'data' | 'crm', signal?: AbortSignal): Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }> {
-  return request<{ status: 'started'; url: string } | { status: 'failed'; reason: string }>('/connectors/mongoose/sign-in', { method: 'POST', body: { endpoint }, signal });
+/** The Trello row's one click: the host opens the browser for the board sign-in and answers at once. */
+export async function startTrelloSignIn(signal?: AbortSignal): Promise<{ status: 'started'; attemptId: string } | { status: 'failed'; reason: string }> {
+  return request<{ status: 'started'; attemptId: string } | { status: 'failed'; reason: string }>('/connectors/trello/sign-in', { method: 'POST', body: {}, signal });
+}
+
+export async function startMongooseSignIn(endpoint: 'knowledge' | 'data' | 'crm', signal?: AbortSignal): Promise<{ status: 'started'; attemptId: string } | { status: 'failed'; reason: string }> {
+  return request<{ status: 'started'; attemptId: string } | { status: 'failed'; reason: string }>('/connectors/mongoose/sign-in', { method: 'POST', body: { endpoint }, signal });
 }
 
 /** Fetch SSE uses the same current browser authority; no URL tokens or resend. */

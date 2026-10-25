@@ -137,7 +137,8 @@ The Live path composes its system instruction separately from the text compiler:
 `composeLiveInstruction({base, runtimeContext?, ownerProfile?, overlay?, language?, memory?, tools?})`
 in `server/prompt/live-persona.ts` returns `{text, sha256, sections}`. The order is
 fixed: the shared public Naya character plus the voice surface (`NAYA_LIVE_BASE`, no biography), the host-generated
-runtime context (`server/prompt/runtime-context.ts`, from the Mac clock and timezone),
+runtime context (`server/prompt/runtime-context.ts`, from the Mac clock and timezone; its `Connected now` line names the
+groups this session's declared reads reach, web search included when the session can search the web),
 owner lore, historical memory, the tool conduct, owner style, the optional local overlay
 verbatim, then the terminal LANGUAGE AND VOICE anchor (a LANGUAGE paragraph, exactly one
 ACCENT directive, a language-follows-the-user clause and the final anchor as the absolute
@@ -151,6 +152,17 @@ When a session is attached with at least one declared tool, the trusted middle g
 `tools` section from the same Architect-authored conduct text, placed after memory and
 before owner style; a session with no declarations composes without it. Each section is
 one of the composer's `sections` entries, with its own chars and sha256.
+
+The opening line of a fresh call is asked for by `FRESH_OPENING` (`server/adapters/live-voice/openai.ts`): one
+short line on an opening option or a subject from the earlier conversation in new words, never that
+conversation's closing lines and never anything about stopping, ending or listening, and when the owner speaks
+first she answers his words instead. The `previous-openers` section quotes each earlier opener once, however many
+calls opened with it. The voice surface's "Ending the call" rule has her tell him the stop phrase only when he
+asks to end the call in other words; she never says the phrase, a stop line or a sign-off on her own. The
+surface also says missing evidence as missing ("I found nothing that says so", never a negative fact or a yes to a
+leading question) and never stops at a bare label or a bare yes; the character's "Agree only when the evidence
+agrees" holds for what was said before. The character, voice surface and voice tools together stay under the
+10,400 character cap that `live-persona.test.ts` holds.
 
 ## Verification and remaining gates
 
@@ -197,6 +209,15 @@ Live never defers a tool call: every call is awaited inline until it completes o
 connector deadline fails it, and the result or the typed failure is sent back to the
 model in the same turn. There is no background job path and no callback promise in the
 Live system instruction.
+
+### Partial results (C-LIVE)
+
+The voice conduct and the backend procedure state the owner-turn contract the host enforces: one research
+operation per owner turn, answer at once from a partial result with its coverage in a few words, never call a
+partial result complete, offer the rest in one short plain statement (not a question, not a stock line), and on
+a `blocked` reply answer from the result already held. The removed sentences (automatic continuation within
+bounds, "silence while you look something up is fine", following a next source once) are asserted absent, and
+each new rule is asserted present, by the `partial_result_rules` block in `scripts/check-prompt.sh`.
 
 ### Voice memory writes and frozen prompts
 

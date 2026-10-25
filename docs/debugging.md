@@ -3,7 +3,10 @@
 Every store a debugger can read sits in the host data directory, which is `--data-dir`, else
 `DIDI_STATE_DIR`, else the platform default the host itself uses: `~/Library/Application
 Support/Lux Didi` on macOS, `%LOCALAPPDATA%\Lux Didi` on Windows, and `$XDG_DATA_HOME/lux-didi`
-(or `~/.local/share/lux-didi`) elsewhere. Every reader resolves it the same way.
+(or `~/.local/share/lux-didi`) elsewhere. The installed app passes `~/Library/Application
+Support/ai.peat.lux-didi` as `--data-dir`, and on a Mac the two readers (`naya-logs.mjs` and
+`didi-timeline`) default to that installed directory, since it is the one the owner's calls write;
+for a host started from source, pass its directory with `--data-dir`.
 
 | path | holds | privacy |
 | --- | --- | --- |
@@ -44,7 +47,9 @@ ids and the terminal reason, `call.intent`, `call.executed`, `call.output_prepar
 `deferred`, `failed`) and, when it skipped, why (`awaiting_calls`, `draining`, `epoch_stale`). The
 host adds `turn.opened`, `turn.closed` with its close reason, and `live.dead_air_stalled` with the
 turn's age, whether any audio arrived and the inaudible milliseconds, which is the receipt D12-3 was
-missing. All of it lands under the session's `connection_epoch`; a rebuilt socket gets a new epoch
+missing, and `owner.overlap` once per owner turn when two of his words land while she is audible
+(`words`, `msSinceAudible`, and `cut`, which is always false: the provider owns barge-in and the host
+never cuts her, ruling W1-R1). All of it lands under the session's `connection_epoch`; a rebuilt socket gets a new epoch
 and a late receipt from the one it replaced is refused as `STALE_EPOCH`.
 
 ## The host.log event catalog
@@ -55,7 +60,7 @@ The `event` value of every line in `host.log` is one name from a closed set. The
 | --- | --- | --- |
 | `host` | `host_exit`, `host_resources`, `host_started` | start, exit and a resource sample for the host process itself |
 | `launch` | `launch_kind` | what a start was allowed to do (kind, autoConnects, windowShown) |
-| `live` | `live_answer_audio`, `live_attach_rejected`, `live_context_usage`, `live_dead_air`, `live_dead_air_nudge`, `live_debt`, `live_first_audio`, `live_frame_rejected`, `live_go_away`, `live_handshake`, `live_idle_arm`, `live_instruction_sizes`, `live_interrupted`, `live_mute`, `live_no_pong`, `live_provider_error`, `live_provider_open`, `live_provider_ready`, `live_read_cache`, `live_rebuild`, `live_recovery`, `live_reply_unjournalled`, `live_resumption_fresh`, `live_session_diagnostics`, `live_session_superseded`, `live_stall`, `live_started`, `live_state`, `live_tool_turn`, `live_trace_rejected`, `live_turn_open`, `live_turn_script`, `live_upstream_drop`, `live_upstream_queue`, `live_watchdog` | the call: start, frames, provider open and ready, watchdog, idle arm, state causes, dead air, debt, mute, rebuild, resume, session diagnostics |
+| `live` | `live_answer_audio`, `live_attach_rejected`, `live_context_usage`, `live_dead_air`, `live_dead_air_nudge`, `live_debt`, `live_first_audio`, `live_frame_rejected`, `live_go_away`, `live_handshake`, `live_idle_arm`, `live_instruction_sizes`, `live_interrupted`, `live_mute`, `live_no_pong`, `live_provider_error`, `live_provider_open`, `live_provider_ready`, `live_read_cache`, `live_rebuild`, `live_recovery`, `live_recovery_failed`, `live_reply_unjournalled`, `live_resumption_fresh`, `live_session_diagnostics`, `live_session_superseded`, `live_stall`, `live_started`, `live_state`, `live_tool_turn`, `live_trace_rejected`, `live_turn_open`, `live_turn_script`, `live_upstream_drop`, `live_upstream_queue`, `live_watchdog` | the call: start, frames, provider open and ready, watchdog, idle arm, state causes, dead air, debt, mute, rebuild, resume, session diagnostics |
 | `voice` | `voice_stop`, `voice_stop_candidate` | the stop gate: a matched stop or a rejected near miss |
 | `turn` | `turn_failed` | a turn that failed, with its closed reason |
 | `playback` | `playback_rearm` | the app asked for playback to be re-armed |
@@ -66,12 +71,13 @@ The `event` value of every line in `host.log` is one name from a closed set. The
 | `gptlive` | `gptlive_append_ack`, `gptlive_delegation_stalled`, `gptlive_setup_error`, `gptlive_tool_output`, `gptlive_turn_complete`, `gptlive_unknown_frame` | the GPT-Live wire: setup error, unknown frame, append ack, tool output, turn complete, stalled delegation |
 | `tool` | `tool_arguments_rejected`, `tool_cancelled`, `tool_ceiling_hit`, `tool_ceiling_late`, `tool_diagnostic_capture`, `tool_failure`, `tool_output_sent`, `tool_redaction` | a tool call: refusal, cancellation, ceiling, redaction, failure, send outcome, diagnostic capture |
 | `research` | `research_call_arrived`, `research_first_answer`, `research_joined`, `research_late_findings`, `research_progress`, `research_refused`, `research_routed`, `research_run`, `research_source`, `research_subcall` | a research run: arrival, routing, sub-calls, sources, first answer, late findings, progress, refusal |
-| `connector` | `connector_connected`, `connector_failure`, `connector_helper_stderr`, `connector_identity`, `connector_recovered`, `connector_recovery_exhausted` | a connector connection: connected, identity, failure, recovered, recovery exhausted, helper stderr |
+| `connector` | `connector_connected`, `connector_failure`, `connector_helper_stderr`, `connector_identity`, `connector_recovered`, `connector_recovery_exhausted`, `google_mcp_path_unsafe` | a connector connection: connected, identity, failure, recovered, recovery exhausted, helper stderr, the Google helper runs from under the reports folder (endpoint id only) |
 | `connection` | `connection_quality` | the connection quality sample of the local socket |
 | `calendar` | `calendar_digest`, `calendar_digest_refreshed`, `calendar_digest_timeout` | the calendar digest: published, refreshed, timed out |
 | `chat` | `chat_timing` | one text chat turn: outcome, rounds, timing |
 | `mattermost` | `mattermost_shape` | the shape of a Mattermost answer, no content |
 | `mongoose` | `mongoose_catalogue_replaced` | the catalogue was replaced after a re-sign-in |
+| `signin` | `signin_requested`, `signin_discovery`, `signin_registration`, `signin_browser_handoff`, `signin_callback`, `signin_token`, `signin_stored` | one Mongoose or Trello sign-in hop: the endpoint (`knowledge`, `data`, `crm` or `trello`), an opaque attempt id and a closed outcome (`ok` or why it stopped; a refused token may add its RFC 6749 `oauthError`). `signin_browser_handoff ok` means the URL was handed to the operating system, not that a page showed; the `signin_callback` line proves the browser came back. Never a URL, code, state, verifier, token or registration payload |
 | `memory` | `memory_note` | a memory note was written |
 | `standing` | `standing_memory_selection` | which standing memory was selected for a prompt |
 | `conversation` | `conversation_summary_injection`, `conversation_summary_recovery` | the conversation summary: injected, recovered |
@@ -85,8 +91,9 @@ The `event` value of every line in `host.log` is one name from a closed set. The
 | `consumer` | `consumer_gone_end` | the output consumer went away at the end of a call |
 | `debug` | `debug_journal_removal_failed`, `debug_journal_removed` | the debug journal files were removed, or their removal failed |
 | `native` | `native_action` | a native action was forwarded to the host |
-| `open` | `open_claim_corrected` | an open request was corrected |
+| `open` | `gmail_account_unknown`, `open_claim_corrected` | a Gmail link fell back to account `/u/0` because the mailbox proved no account (once per session); an open claim was corrected |
 | `thinking` | `thinking_sent` | a thinking line was sent |
+| `trello` | `connector_call` with `connector: trello` | one Trello board call phase: Didi's tool and action (`read.due`, `write.move`), the phase `admit`, `dispatch` or `settle`, the outcome `ok`, `refused`, `failed` or `unknown`, and a closed reason; never card text |
 | `uplink` | `uplink_shed` | uplink backpressure shed a frame |
 | `vault` | `vault_write` | a vault note was written |
 | `warm` | `warm_prewarm` | the warm context was prewarmed |
@@ -100,6 +107,16 @@ for a write the adapter refused. `research_call_arrived` carries the call's shap
 words: `action`, `researchIdPresent`, `questionChars` and `lookups`. A result that came back and was never
 said is handed to the session that is open as one text item, and `live_unspoken_delivered` names how many
 results it carried and which attempt landed.
+
+C-LIVE (one research operation per owner turn): `research_blocked` names a research call no finalized owner
+turn admitted (`action`, and `reason` of `no_owner_turn`, `turn_spent` or `no_turn_since_result`); the call
+reached no source and the model was told `owner_turn_required`. `research_operation_deadline` is the host
+answering an operation its loop had not answered by the 6 s deadline plus the 1 s grace. `live_recovery_failed`
+is a recovery open the provider refused: `errorClass` (a bare identifier), `messageKey` (the message only when
+it is itself a snake case key, else `unrecognized`), `mode`, `cause` and `attempt`; a second refusal ends the
+call as `provider_recovery_exhausted`. `live_attach_rejected` keeps the exception `class`. `live_idle_arm` is
+written when the cause changes, never per audio frame, and provider audio below the audible level (digital
+silence) never restarts the idle clock.
 No duration, no text and no provider word is in any of them, which is why model text, a model turn start
 and output transcription can re-arm the response watchdog and still never clear this clock. `turn_failed`
 names its reason from the closed set `provider_error`, `delegation_stalled`, `send_failed`, `recreate_failed`,
@@ -132,7 +149,9 @@ so neither grows without a bound.
 
 Five records answer what a launch and a stop did, all content-free: `launch_kind` (the kind, `autoConnects`, `windowShown`, in `native-live.log` and, through the client diagnostic route, in `host.log`; a Dock reopen is its own kind, `reopen`, with `windowShown` false), `startup_prompt` (`prompt` of `grant_alert` or `getting_started`, and `decision` of `deferred`, `shown` or `skipped`, so a prompt that waits for the owner's first window is visible), `goodbye_tone` (`played`, and a `reason` of `no_buffer` or `output_refused` when nothing sounded), `live_stop_outcome` (`confirmed` when the host closed the wire inside the deadline, `host_ended` when the host announced its own voice stop so there is no close receipt to wait for, `deadline` when it did not) and `live_restart` (`reason`). A `presence_state` move to `cold` with trigger `error` is the uncertain session: the socket closed without a terminal frame and presence went cold with no reconnect.
 
-A display change writes `orb_screen_parameters` (`screens`, the count, and `orbScreen`, `main`, `other` or `none`), so an orb that moved after an unplugged screen is explained without a rectangle.
+A display change writes `orb_screen_parameters` (`screens`, the count, and `orbScreen`, `main`, `other` or `none`) once per change of that pair, never once per notification, so an orb that moved after an unplugged screen is explained without a rectangle.
+
+`live_end` names who ended the call. `user_stop` is the owner's own stop; a terminal the host sent with a failure is `host_failed` (with the host's closed `code`, for example `resume_failed` or `provider_recovery_exhausted`); a socket the host closed without a terminal is `host_closed` (with `closeCode` and the closed reason token when there is one). The app never talks to the provider directly, so no native line says `provider_closed`.
 
 The app forwards its playback receipts (received, enqueued, started, drained, interrupted,
 terminated) to the host over the live socket it already holds. Each is one bounded frame with
@@ -223,10 +242,15 @@ The files hold transcripts, and deleting them is the point.
 
 ## The reader
 
-`scripts/naya-logs.mjs` reads `host.log` and prints aligned plain text, capped at 200 lines per
-command. Every command accepts `--data-dir <path>`, `--json` and `--lines <n>`. `host.log` is
-content-free by contract, so nothing it prints is owner text; for the per-turn record, including
-what was said, read the trace store with `scripts/didi-timeline` (see the SQL timeline above).
+`scripts/naya-logs.mjs` reads `host.log` and the store's metadata and prints aligned plain text, capped at
+200 lines per command. Every command accepts `--data-dir <path>`, `--json` and `--lines <n>`; the installed
+app's data directory is `~/Library/Application Support/ai.peat.lux-didi`, which the default does not name.
+`host.log` drops the session id from `live_tool_turn`, `session_end` and `live_started`, so a live session, its
+owner turns (`trace_turn` origin `owner`) and its tool calls (`trace_call`) are read from `state.sqlite`, and a
+`host.log` record without an id belongs to the live session whose window it falls in. `slow` lists tool calls,
+`research_source` reads, dead air (`live_dead_air`) and chat timings over the threshold. Nothing it prints is
+owner text; for the per-turn record, including what was said, read the trace store with
+`scripts/didi-timeline` (see the SQL timeline above).
 
 ```sh
 node scripts/naya-logs.mjs sessions                      # id, kind, start, duration, provider, turns, tools, terminal
@@ -301,7 +325,7 @@ The timeline includes canonical transcription outside traced turns, including mo
 
 Call and response trace keys are scoped to session and connection epoch; raw provider ids are separate. Event clock domains identify host process or native producer. Historical null domains remain unknown. Execution duration is calculated only from measured start/completion observations in the same non-null domain. Prepared and written events remain distinct; a missing completion is unknown, never zero work. A new host holding the exclusive Store writer lock marks previously in-progress capture unknown/host_terminated. No audio-frame transaction was added.
 
-Always pass `--data-dir` for the installed app: `~/Library/Application Support/ai.peat.lux-didi`. The CLI's older default `Lux Didi` directory is a different runtime. Default timeline and metadata export exclude content. `--content` is protected owner-local inspection and uses current lifecycle/class gating; it is not an external sharing command. The existing trace preview limit and retention do not promise complete durable source results; those require a verified canonical dispatch record.
+On a Mac both readers (`didi-timeline` and `naya-logs.mjs`) default to the installed app's directory, `~/Library/Application Support/ai.peat.lux-didi`; pass `--data-dir` (or set `DIDI_STATE_DIR`) to read a dev host's `Lux Didi` directory or a copy. The timeline also prints `call_failures_at_least=N` with a count per kind (`command.rejected`, `live.dead_air_stalled`, failed responses and calls); the `failures_at_least` on the coverage line stays the count of lost diagnostic writes. `research_source` carries a closed `reason` (`no_query`, `never_ran`, `timed_out`, `provider_failed` and the unsearched reasons) when a read did not answer. Two lookups that shared one execution still write one receipt each with the same `coalesced` count, so two identical lines are one read, by design. `naya-logs.mjs errors` lists `command_rejected`, `live_dead_air_nudge`, a `live_dead_air` of 5 s or more, `live_rebuild` and every `native_action` that did not open, next to the provider and tool failures. Default timeline and metadata export exclude content. `--content` is protected owner-local inspection and uses current lifecycle/class gating; it is not an external sharing command. The existing trace preview limit and retention do not promise complete durable source results; those require a verified canonical dispatch record.
 
 Focused actual-runtime proof: after server compilation, run `node server/test/diagnostic-trace.integration.mjs`. It exercises actual adapter, Store and CLI, new reference resolution, model-first greeting, forced write failure, forgotten/class-denied content, restart unknown state, scoped call/response ids and unlike-clock observations. No provider or audio device is used.
 

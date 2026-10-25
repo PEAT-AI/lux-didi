@@ -792,6 +792,11 @@ test('page Live projection is cookie-only, same-origin, read-only and no-store',
   for (const name of ['liveSessionId', 'args', 'key', 'grants', 'pcm', 'thoughts']) assert.equal(JSON.stringify(body).includes(name), false);
 });
 
+// TR-R10: the model's own turn must be audible to the adapter's level rule. The shared fixture payload is eight
+// zero bytes, which W5 made digital silence, so a spoken turn sent with it can never move presence to speaking.
+// These are the -12 dBFS samples W5-R5 used for the same reason in live-session.test.ts.
+const speechPcm = () => Uint8Array.from({ length: 8 }, (_unused, index) => (index % 2 === 0 ? 0x40 : 0x1f));
+
 test('gateway forwards safe tool-call/result markers and keeps a refused tool batch alive', async t => {
   const h = await harness(t, { config: configJson(true) });
   const created = await createBody(h, 'tool-markers');
@@ -831,7 +836,7 @@ test('gateway forwards safe tool-call/result markers and keeps a refused tool ba
   // Input resumes without requiring an audioStreamEnd turn boundary.
   ws.send(pcm, { binary: true }); await h.f.frame(3);
   const modelAudio = once(ws, 'message');
-  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } }] } } });
+  h.f.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(speechPcm()).toString('base64') } }] } } });
   const [, binary] = await modelAudio; assert.equal(binary, true);
   assert.equal((await json(h.origin, '/api/v1/live/current', { headers })).body.data.state, 'speaking');
   const interruption = once(ws, 'message'); h.f.send({ serverContent: { interrupted: true } });
@@ -1118,4 +1123,23 @@ test('#606 a normal close drains the queued markers before the terminal frame', 
   await pumpOutput(socket as unknown as Parameters<typeof pumpOutput>[0], attachment, () => { assert.fail('not detached'); }, 1_000);
   assert.equal(frames.length, 21, 'twenty queued markers then the terminal frame');
   assert.deepEqual(JSON.parse(String(frames[20])), { type: 'terminal', state: 'closed', code: 'synthetic_code', complete: true });
+});
+
+// C-LIVE R2: an exhausted recovery is the host's own failure, never a policy refusal. The client gets the terminal
+// first, then a non-policy close naming provider_recovery_exhausted, whether or not the session had become ready.
+test('C-LIVE: provider_recovery_exhausted sends its terminal, then closes 1011, never 1008', async () => {
+  for (const ready of [true, false]) {
+    const frames: unknown[] = [];
+    const closes: [number | undefined, string | undefined][] = [];
+    const socket = { readyState: 1, bufferedAmount: 0,
+      send: (frame: unknown) => { frames.push(frame); }, close: (code?: number, reason?: string) => { closes.push([code, reason]); socket.readyState = 3; } };
+    const attachment = {
+      output: (async function* () { /* nothing queued */ })(),
+      done: Promise.resolve({ ready, terminal: { state: 'failed', code: 'provider_recovery_exhausted' }, journal: { complete: true } }),
+      overflow: () => { assert.fail('no backpressure here'); },
+    } as unknown as LiveAttachment;
+    await pumpOutput(socket as unknown as Parameters<typeof pumpOutput>[0], attachment, () => { assert.fail('not detached'); }, 1_000);
+    assert.deepEqual(JSON.parse(String(frames[0])), { type: 'terminal', state: 'failed', code: 'provider_recovery_exhausted', complete: true }, 'the terminal goes first');
+    assert.deepEqual(closes, [[1011, 'provider_recovery_exhausted']], `then the non-policy close (ready=${ready})`);
+  }
 });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { MAX_LOOKUPS, RESEARCH, ResearchLedger, broaderQueryOf, clip, coverageLine, parseResearch, researchDeclaration, runResearch, statusAsk, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
+import { MAX_LOOKUPS, RESEARCH, RESEARCH_OPERATION, ResearchLedger, broaderQueryOf, clip, coverageLine, parseResearch, researchDeclaration, runResearch, statusAsk, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { shapeGcalList } from '../tools/live-shape.js';
 
@@ -126,7 +126,7 @@ test('COMPOSE 2: every reply opens with the coverage header, and a reply at the 
   for (const source of ['knowledge', 'mail']) {
     assert.ok(findings.some(finding => finding.source === source), `one finding line for ${source}`);
   }
-  assert.match(String(reply['note'] ?? ''), /more available/iu, 'the note survives the trim');
+  assert.ok(String(reply['note'] ?? '').includes(RESEARCH.moreAvailableNote), 'the note survives the trim');
   assert.doesNotMatch(String(reply['note'] ?? ''), /I did not search/u, 'the header is the one place an unread source is named');
   assert.ok(JSON.stringify(reply).length <= 900, `the header counts inside the cap: ${JSON.stringify(reply).length} chars`);
 });
@@ -297,8 +297,14 @@ test('#653: a status ask on a closed run names each source by its closed outcome
   });
   const call = runResearch(h.deps, { action: 'start', question: 'are my tools working', topic: 'tools' }, new AbortController().signal);
   for (let tick = 0; tick < 50; tick += 1) await Promise.resolve();
+  // C-LIVE: the operation answers at its deadline while every read still runs, and says so honestly.
+  clock.advance(RESEARCH_OPERATION.deadlineMs);
+  const early = await call;
+  assert.match(String(early['note']), /still reading/iu, `an open run names what it is still reading (${String(early['note'])})`);
+  // Once the run has closed on the source deadlines, a status read of it names each closed outcome.
   clock.advance(RESEARCH.startDeadlineMs + 1);
-  const reply = await call;
+  for (let tick = 0; tick < 50; tick += 1) await Promise.resolve();
+  const reply = await runResearch(h.deps, { action: 'stop', researchId: String(early['researchId']) }, new AbortController().signal);
   const note = String(reply['note']);
   assert.match(note, /team chat did not answer within 10 seconds/u, `chat is named by its closed outcome (${note})`);
   assert.match(note, /mail did not answer within 12 seconds/u, `mail is named by its closed outcome (${note})`);
@@ -415,7 +421,7 @@ test('#657 review: the tool declaration states the lookup limit and the allowed 
   const text = JSON.stringify(researchDeclaration(['knowledge', 'mail', 'chat']));
   assert.match(text, /at most 4 lookups, each with source/iu, 'the first sentence names the limit and the source key');
   assert.match(text, /query, mail or history/u, 'and the three other keys a lookup may carry');
-  assert.match(text, /memory, knowledge, company, calendar, mail, chat, replies or web/u, 'and the values the source key takes');
+  assert.match(text, /memory, knowledge, company, calendar, mail, chat, replies, drive or web/u, 'and the values the source key takes');
 });
 
 // --- REVIEWFIX G1: the second status alternative matched ordinary content questions -------------------
@@ -543,4 +549,66 @@ test('#675: a token budget code is not read as a sign-out', async () => {
   const note = String(reply['note']);
   assert.doesNotMatch(note, /signed out/u, `an exhausted token budget is not a sign-out (${note})`);
   assert.match(note, /company knowledge/u, `the source is still named (${note})`);
+});
+
+// L8-13: a continue whose mail deadline was already spent ran no mail read at all (0 ms, no dispatch), and
+// the header still said `mail partial_timeout` with "My mail read took too long". The label is the outcome.
+test('L8-13: a mail read that never ran is never called a read that took too long', async () => {
+  const { shapeGmailList } = await import('../tools/live-shape.js');
+  let at = 0;
+  const timers: { due: number; callback: () => void; done: boolean }[] = [];
+  const schedule: NonNullable<ResearchDeps['schedule']> = (callback, delayMs) => {
+    const entry = { due: at + delayMs, callback, done: false };
+    timers.push(entry);
+    return { unref: () => {}, cancel: () => { entry.done = true; } };
+  };
+  const advance = (to: number): void => {
+    at = to;
+    for (let guard = 0; guard < 20; guard++) {
+      const due = timers.filter(entry => !entry.done && entry.due <= at);
+      if (due.length === 0) return;
+      for (const entry of due) { entry.done = true; entry.callback(); }
+    }
+  };
+  const flushed = async (): Promise<void> => { for (let tick = 0; tick < 20; tick += 1) await new Promise(resolve => setImmediate(resolve)); };
+  const page = shapeGmailList({ nextPageToken: 'p2', messages: [1, 2, 3].map(n => ({ id: `m${n}`, threadId: `t${n}`, internalDate: '1792900000000', snippet: 'about the demo',
+    payload: { headers: [{ name: 'Subject', value: `Demo ${n}` }, { name: 'From', value: 'Ana <ana@example.invalid>' }] } })) });
+  let mailPages = 0;
+  const h = harness({ now: () => at, schedule, web: { search: () => new Promise(() => {}) },
+    execute: async calls => calls.map(call => {
+      if (call.name.includes('gmail')) { mailPages += 1; return { key: call.key, name: call.name, ok: true, ...page }; }
+      return sub(call.name, knowledgeHits(1), true, call.key);
+    }) });
+  const signal = new AbortController().signal;
+  const started = runResearch(h.deps, { action: 'start', question: 'who is on the demo meeting tomorrow and what do mails say about it',
+    lookups: [{ source: 'mail', query: 'demo meeting attendees' }, { source: 'knowledge', query: 'demo meeting attendees' }, { source: 'web', query: 'example company demo' }] }, signal);
+  await flushed(); advance(1000); await flushed(); advance(RESEARCH.firstAnswerMs + 100); await flushed();
+  const first = await started;
+  const pagesBefore = mailPages;
+  const continued = runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, signal);
+  await flushed(); advance(RESEARCH.answerCapMs * 2); await flushed();
+  const second = await continued;
+  assert.equal(mailPages, pagesBefore, 'the continue ran no mail page, the case this pins');
+  const header = String(second['coverage'] ?? '');
+  assert.doesNotMatch(header, /mail partial_timeout/u, `a read that never ran is not a timeout: ${header}`);
+  assert.doesNotMatch(String(second['note'] ?? ''), /mail read took too long/u, `and the note never says it took too long: ${String(second['note'])}`);
+  assert.match(header, /mail never_ran \(say: [^)]+\)/u, `the header names the real outcome with its clause: ${header}`);
+});
+
+// L8-Q07: a failed read's receipt named no reason. Two lookups that share one execution keep one receipt each,
+// with coalesced naming the share (3r R1), so identical lines there are by design.
+test('L8-Q07: a source receipt names why a read failed', async () => {
+  const sources: Record<string, unknown>[] = [];
+  const failing = harness({ web: { search: async () => ({ ok: false as const, code: 'web_timeout' as const }) } });
+  failing.deps.logSource = event => { sources.push({ ...event }); };
+  await runResearch(failing.deps, { action: 'start', question: 'synthetic bridge reopening', lookups: [{ source: 'web', query: 'synthetic bridge reopening' }] }, new AbortController().signal);
+  const web = sources.filter(entry => entry['source'] === 'web');
+  assert.equal(web.length, 1, `one web receipt: ${JSON.stringify(sources)}`);
+  assert.equal(web[0]!['outcome'], 'failed');
+  assert.equal(web[0]!['reason'], 'timed_out', `the receipt names the closed reason: ${JSON.stringify(web[0])}`);
+  sources.length = 0;
+  const answered = harness({ execute: async calls => calls.map(call => sub(call.name, call.name.includes('gmail') ? mailRows(2) : knowledgeHits(1), true, call.key)) });
+  answered.deps.logSource = event => { sources.push({ ...event }); };
+  await runResearch(answered.deps, { action: 'start', question: 'release notes from Ana', lookups: [{ source: 'mail', query: 'release notes' }] }, new AbortController().signal);
+  assert.ok(sources.length > 0 && sources.every(entry => entry['reason'] === undefined), `an answered read carries no reason: ${JSON.stringify(sources)}`);
 });

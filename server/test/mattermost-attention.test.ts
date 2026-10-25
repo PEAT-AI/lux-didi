@@ -134,7 +134,11 @@ test('the attention digest is composed from child reads, never dispatched as one
   assert.deepEqual(sent, [], 'the digest is composed locally, never dispatched as one child call');
   const search = f.calls().filter(call => call.name === 'mattermost_search');
   assert.ok(search.length > 0);
-  for (const call of search) assert.deepEqual(Object.keys(call.arguments).sort(), ['limit', 'query']);
+  // C-CHAT (L4-11): the owner's own and handle searches read the window newest first; the conversation reads add their channel.
+  for (const call of search) {
+    const expected = typeof call.arguments['channel'] === 'string' ? ['channel', 'from_date', 'limit', 'query', 'sort'] : ['from_date', 'limit', 'query', 'sort'];
+    assert.deepEqual(Object.keys(call.arguments).sort(), expected);
+  }
 });
 
 test('the attention view projects one line per item with its permalink', async t => {
@@ -281,8 +285,9 @@ test('#610: the attention scan reads its independent children concurrently', asy
   // Twelve serial child reads at half a second each is six seconds; three concurrent stages are two.
   assert.ok(elapsed < 4_000, `a concurrent scan finishes inside 4 s, took ${elapsed} ms`);
   const calls = f.calls();
-  const searches = calls.filter(call => call.name === 'mattermost_search').map(call => call.at ?? 0);
-  const firstHistory = calls.find(call => call.name === 'mattermost_get_channel_history')?.at ?? 0;
+  // C-CHAT: the conversation reads are channel searches now, read after the recency list.
+  const searches = calls.filter(call => call.name === 'mattermost_search' && call.arguments['channel'] === undefined).map(call => call.at ?? 0);
+  const firstHistory = calls.find(call => call.name === 'mattermost_search' && call.arguments['channel'] !== undefined)?.at ?? 0;
   assert.equal(searches.length, 2, 'both attention searches ran');
   assert.ok(searches.every(start => start > 0 && firstHistory > 0));
   // A serial scan would still be in its first search when the concurrent one has both in flight.
@@ -295,7 +300,7 @@ test('#610: the attention searches ask for the attention limit', async t => {
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
   const r = reader(f.adapter, f.registry, await approve(f.registry, f.adapter));
   await r.attention({});
-  const limits = f.calls().filter(call => call.name === 'mattermost_search').map(call => Number(call.arguments['limit']));
+  const limits = f.calls().filter(call => call.name === 'mattermost_search' && call.arguments['channel'] === undefined).map(call => Number(call.arguments['limit']));
   assert.deepEqual(limits, [MATTERMOST_ATTENTION.limit, MATTERMOST_ATTENTION.limit]);
 });
 
@@ -322,8 +327,10 @@ test('#610: a question that names a channel searches that channel only', async (
     emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
   };
   await runResearch(deps, { action: 'start', question: 'latest topics in the dogcation channel' }, new AbortController().signal);
-  const search = planned.find(call => call.name === INTERNAL.chatSearch);
-  assert.ok(search, 'the chat read is a search');
+  // C-CHAT: a named channel is the chat read, which resolves the name strictly before it reads that channel.
+  const search = planned.find(call => call.name === INTERNAL.chatRead);
+  assert.ok(search, 'the chat read is the channel read');
+  assert.equal(search.args['intent'], 'channel');
   assert.equal(search.args['channel'], 'dogcation');
   assert.equal(planned.some(call => call.name === INTERNAL.chatAttention), false, 'a channel ask is not the whole-account scan');
 });
@@ -339,7 +346,8 @@ test('#610: the chat research_source line carries the query shape and no query t
     logSource: (event: ResearchSourceLog) => { logged.push(event as unknown as Record<string, unknown>); },
     ledger: new ResearchLedger(),
   };
-  await runResearch(deps, { action: 'start', question: 'latest topics in the dogcation channel' }, new AbortController().signal);
+  // C-CHAT: a channel read searches only the topic the owner named, so the ask names one.
+  await runResearch(deps, { action: 'start', question: 'latest topics about the release freeze in the dogcation channel' }, new AbortController().signal);
   const receipt = logged.find(event => event['event'] === 'research_source' && event['source'] === 'chat');
   assert.ok(receipt, 'the chat read is receipted');
   const shape = receipt['chat'] as { terms: number; operators: string[]; limit: number; sort: string } | undefined;

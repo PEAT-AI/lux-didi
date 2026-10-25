@@ -5,6 +5,7 @@ import type { JsonObject } from '../model/types.js';
 import type { DataClass, LiveSocketFactory, LiveToolCall, LiveToolResponse, LiveToolSendOutcome, LiveVoiceAdapterOptions, LiveVoiceCapabilities, LiveVoiceClock, LiveVoiceControl, LiveVoiceDiagnostics, LiveVoiceErrorCode, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveVoiceUpstreamDrop } from './types.js';
 import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
 import { Pcm16Upsampler } from './resample.js';
+import { AUDIBLE_RMS_DBFS, pcm16RmsDbfs } from './audio-level.js';
 import { redactSecrets } from '../../tools/redact.js';
 import { hostLogEvent } from '../../tools/host-events.js';
 import type { LiveTracePort, TraceDetailMap } from '../../trace/record.js';
@@ -70,7 +71,7 @@ export function openAiInstructions(persona: string): string {
   return `${persona}\n\n${OPENAI_TOOLS_SECTION}\n\n${OPENAI_DELIVERY_SECTION}\n\n${OPENAI_LISTENING_SECTION}`;
 }
 /** Release 4: Naya opens every new call, seeded history or not, with one short dry and edgy line in her own voice. */
-export const FRESH_OPENING = 'Start the call with one short line of your own, twelve words at most, dry and a little edgy and specific to the moment, to the last thing you and the owner were on in the earlier conversation above, or to one of the opening options; no greeting formula, no offer of help, no list of questions, no tool call before it; then stop and listen.';
+export const FRESH_OPENING = 'Start the call with one short line of your own, twelve words at most, dry and a little edgy and specific to the moment: one of the opening options, or a subject from the earlier conversation above in new words, never its closing lines and never anything about stopping, ending or listening; no greeting formula, no offer of help, no list of questions, no tool call before it. After that line, wait; when he speaks first, answer his words instead.';
 /** Documented startup-history ceiling: 128 messages and 8,192 combined tokens (4 characters per token is the cap proxy). */
 const SEED_MESSAGE_LIMIT = 128;
 const SEED_CHAR_LIMIT = 8192 * 4;
@@ -114,27 +115,6 @@ const OUTPUT_SILENCE_MS = 500;
 const TURN_IDLE_QUIET_MS = 2_000;
 /** Forwarded output PCM is 24 kHz s16 mono, so the modelled native queue drains 48 bytes per millisecond. */
 const OUTPUT_PCM_BYTES_PER_MS = 48;
-/** Audible speech, in dBFS RMS against 16-bit full scale. -50 dBFS is a peak amplitude of about 100 counts of
- *  32767, far below any intelligible speech (conversational RMS sits around -35 to -12 dBFS) and far above the
- *  all-zero frames gpt-live-1 streams to fill its continuous output (session 1018 kept 48 kB/s for 98.5% of a
- *  339 s call while the state never left SPEAKING). A frame below it is forwarded and heard as nothing. */
-export const AUDIBLE_RMS_DBFS = -50;
-/** A digital-silent frame measures zero power: -Infinity is clamped here so the level stays a JSON number. */
-export const SILENT_RMS_DBFS = -120;
-
-/** The level of one PCM16 little-endian chunk in dBFS RMS, one pass and no per-sample allocation. */
-export function pcm16RmsDbfs(pcm: Uint8Array): number {
-  const samples = Math.floor(pcm.byteLength / 2);
-  if (samples === 0) return SILENT_RMS_DBFS;
-  const view = new DataView(pcm.buffer, pcm.byteOffset, samples * 2);
-  let sum = 0;
-  for (let index = 0; index < samples; index += 1) {
-    const sample = view.getInt16(index * 2, true) / 32_768;
-    sum += sample * sample;
-  }
-  const power = sum / samples;
-  return power <= 0 ? SILENT_RMS_DBFS : Math.max(SILENT_RMS_DBFS, 10 * Math.log10(power));
-}
 /** Standing cushion (3o): 400 ms of audio held back at the start of a stretch and again after every drain, so the
  *  native 80 ms jitter buffer never underruns while the server sends at about real time. Measured on the 163
  *  underruns of session 82ab994a: a 400 ms cushion covers 162 of them (300 ms leaves 6). */
@@ -1240,6 +1220,9 @@ class Session implements LiveVoiceSession {
     if (disposition === 'command_rejected' && !retry) {
       // The command never became a response, so there is nothing to cut, and a rejection is not a reason to resend.
       hostLogEvent({ event: 'command_rejected', code: errorCode, param, kind: command?.kind ?? 'other' });
+      // #677: a continuation refused because a call still owes its output is still owed: the next output write or
+      // terminal event sends it, so the turn is answered instead of falling to the dead-air rebuild.
+      if (errorCode === 'function_call_outputs_required' && command?.kind === 'cont') this.continuationOwed = true;
       this.touch();
       return;
     }
@@ -1735,6 +1718,13 @@ class Session implements LiveVoiceSession {
     if (!this.isReady) fail('not_ready');
     if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > 4000) fail('invalid_request');
     if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: this.commandId('cont'), item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: input.text }] } }))) fail(this.terminal!.code);
+    // #677: a response the wire would refuse (a call still owes its output) is never written: the line rides the one
+    // continuation that follows the owed output.
+    if (this.pendingCalls.length > 0 || this.delegatedOutstanding) {
+      this.continuationOwed = true;
+      this.continuationReceipt('deferred', 'awaiting_calls');
+      return;
+    }
     this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont') }));
   }
 

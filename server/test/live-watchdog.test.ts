@@ -14,8 +14,8 @@ import { attachHostLogSink } from '../tools/host-events.js';
 import { LIVE_REBUILD_TRIGGERS, safeEvent } from '../host/log.js';
 import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
 import { fakeLiveVoicePort, type FakeLiveVoice, type FakeLiveVoiceEvent } from './fixtures/fake-live-voice.js';
-import type { LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
-import { pcm } from './live-voice-fixture.js';
+import type { LiveVoiceEvent, LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
+import { pcm, ready as providerReady } from './live-voice-fixture.js';
 
 const NOW = 1_700_000_000_000;
 const MODEL = 'models/live-watchdog-test';
@@ -364,4 +364,49 @@ test('#607 unfinished owner fragments before an empty final produce a pickup reb
   assert.deepEqual(rebuildTriggers(live), ['no_output_after_owner']);
   assert.ok(continuityEvents(live).includes('rebuilding'));
   assert.ok(openingText(live), 'the pickup rebuild carries its owner-facing marker');
+});
+
+// C-LIVE N-2: the provider streams digital silence for the whole call. Those frames are not conversation, so the
+// idle clock ignores them, the 300 s idle end fires on a silent session, and the arm receipt is a state change only.
+test('N-2: provider silence frames never reset the idle clock, so a silent session ends at the idle limit', async t => {
+  const live = await openLive(t, { limits: { idleMs: 300_000 } });
+  await live.emit({ type: 'audio', pcm: new Uint8Array(8), rate: 24_000, audible: true, rmsDbfs: -20 });
+  const lastSpeech = live.now();
+  for (let spent = 0; spent < 320_000 && terminalCode(live) === undefined; spent += 2_000) {
+    await live.emit({ type: 'audio', pcm: new Uint8Array(960), rate: 24_000, audible: false, rmsDbfs: -120 });
+    await live.advance(2_000);
+  }
+  assert.equal(terminalCode(live), 'idle_timeout', 'the idle end fires although silence frames kept arriving');
+  assert.ok(live.now() - lastSpeech <= 302_000, `it fired at the idle limit after the last audible frame (${live.now() - lastSpeech} ms)`);
+});
+
+test('N-2: live_idle_arm is written on a change of cause only, never once per audio frame', async t => {
+  const live = await openLive(t, { limits: { idleMs: 300_000 } });
+  for (let frame = 0; frame < 40; frame += 1) await live.emit({ type: 'audio', pcm: new Uint8Array(8), rate: 24_000, audible: true, rmsDbfs: -20 });
+  await live.emit({ type: 'inputTranscription', text: 'synthetic owner words', finished: true });
+  for (let frame = 0; frame < 40; frame += 1) await live.emit({ type: 'audio', pcm: new Uint8Array(8), rate: 24_000, audible: true, rmsDbfs: -20 });
+  const arms = live.receipts.filter(record => record.event === 'live_idle_arm').map(record => record.resetBy);
+  assert.deepEqual(arms, ['opened', 'model_audio', 'owner_speech', 'model_audio'], `one receipt per state change: ${JSON.stringify(arms)}`);
+});
+
+// C-LIVE N-2 on every live route: the frame the host sees is the gemini adapter's own, not a hand-written
+// event, so a broken adapter classification fails here instead of passing on a fixture that already says
+// `audible: false`.
+test('N-2/W5-R1: the gemini adapter classifies digital silence, and a silent gemini session ends at the idle limit', async t => {
+  const { f, captured } = await providerReady(t);
+  f.send({ serverContent: { modelTurn: { role: 'model', parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.alloc(960).toString('base64') } }] } } });
+  const audioOf = (): Extract<LiveVoiceEvent, { type: 'audio' }> | undefined =>
+    captured.events.find((event): event is Extract<LiveVoiceEvent, { type: 'audio' }> => event.type === 'audio');
+  for (let waited = 0; audioOf() === undefined && waited < 100; waited += 1) await new Promise<void>(resolve => setTimeout(resolve, 10));
+  const frame = audioOf();
+  assert.ok(frame, 'the gemini adapter emitted the silent frame');
+  assert.equal((frame as { audible?: boolean }).audible, false, `the gemini adapter classifies a digital-silence frame as inaudible, not ${String((frame as { audible?: boolean }).audible)}`);
+  const live = await openLive(t, { limits: { idleMs: 300_000 } });
+  const lastSpeech = live.now();
+  for (let spent = 0; spent < 320_000 && terminalCode(live) === undefined; spent += 2_000) {
+    await live.emit(frame as FakeLiveVoiceEvent);
+    await live.advance(2_000);
+  }
+  assert.equal(terminalCode(live), 'idle_timeout', 'the idle end fires although the gemini route kept sending silence');
+  assert.ok(live.now() - lastSpeech <= 302_000, `it fired at the idle limit (${live.now() - lastSpeech} ms)`);
 });

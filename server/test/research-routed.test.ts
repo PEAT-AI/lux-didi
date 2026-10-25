@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, chatAttentionReason, candidateSubs, chatQuestionWords, fallbackSelection, lookupBound, normalizeLookups, ownerScheduleQuestion, recallQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
+  CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, RESEARCH_OPERATION, ResearchLedger, capReply, calendarWindowOf, chatAttentionReason, candidateSubs, chatQuestionWords, fallbackSelection, lookupBound, normalizeLookups, ownerScheduleQuestion, recallQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
   validateResearch,
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchRoutedLog, type ResearchSubcallLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
@@ -481,7 +481,8 @@ test('#637: an unknown channel is its own closed reason in the note and the cove
   const h = harness({
     configured: ['chat'],
     execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
-      if (call.name === 'mattermost_search') sent.push(call.args);
+      // C-CHAT: a named channel is the chat read, which refuses an unknown channel with the same closed code.
+      if (call.name === 'mattermost_chat') sent.push(call.args);
       return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'channel_not_found' };
     }),
   });
@@ -934,7 +935,8 @@ test('#646: a recall ask that names a channel still reads the chat', async () =>
   assert.deepEqual(requiredSources(recall), ['memory', 'chat'], 'so the route carries her memory and the chat');
   const h = harness({ memory: () => ({ lines: ['2026-10-14 entry: we agreed the release ships on Friday'], text: '', total: 1 }) });
   await runResearch(h.deps, { action: 'start', question: recall }, new AbortController().signal);
-  assert.ok(h.executed.includes('mattermost_search'), `an ask that names the channel reads it (${h.executed.join(', ')})`);
+  // C-CHAT: a named channel is read by the chat read, which resolves the name strictly first.
+  assert.ok(h.executed.includes('mattermost_chat'), `an ask that names the channel reads it (${h.executed.join(', ')})`);
 });
 
 // #645: the chat read keeps a row of its own inside the turn, so one slow connector never spends the
@@ -963,8 +965,15 @@ test('#645: the chat read is bounded at ten seconds, and a timed out one says ti
     lookups: [{ source: 'chat', query: 'release' }],
   }, new AbortController().signal);
   await flushed();
+  // C-LIVE: the operation answers at its deadline with the chat still reading; the chat's own 10 s cut is what a
+  // later read of the closed run reports.
+  clock.advance(RESEARCH_OPERATION.deadlineMs);
+  const early = await call;
+  assert.match(String(early['coverage']), /chat still_reading/u, `the operation answers on time and says the chat is still reading (${String(early['coverage'])})`);
+  await flushed();
   clock.advance(RESEARCH.sourceDeadline.chat);
-  const reply = await call;
+  await flushed();
+  const reply = await runResearch(h.deps, { action: 'stop', researchId: String(early['researchId']) }, new AbortController().signal);
   const header = String(reply['coverage']);
   assert.match(header, /chat timed_out/u, `a chat read that timed out with nothing arrived says timed_out (${header})`);
   assert.doesNotMatch(header, /chat provider_failed/u, 'a timeout is never voiced as a provider failure');
@@ -993,8 +1002,14 @@ test('#635: a chat read cut by its own budget after it answered is a partial tim
   });
   const call = runResearch(h.deps, { action: 'start', question: 'what did the team say in chat about the release' }, new AbortController().signal);
   await flushed();
+  // C-LIVE: the operation answers at its deadline with what the chat had; the cut is reported once the run closed.
+  clock.advance(RESEARCH_OPERATION.deadlineMs);
+  const early = await call;
+  assert.match(String(early['coverage']), /chat still_reading/u, `the early answer says the chat is still reading (${String(early['coverage'])})`);
+  await flushed();
   clock.advance(RESEARCH.sourceDeadline.chat);
-  const reply = await call;
+  await flushed();
+  const reply = await runResearch(h.deps, { action: 'stop', researchId: String(early['researchId']) }, new AbortController().signal);
   const header = String(reply['coverage']);
   const note = String(reply['note']);
   assert.match(header, /chat partial_timeout 1 of 1 shown/u, `a read that answered and then ran out of its budget keeps what it read and is partial (${header})`);
@@ -1049,4 +1064,85 @@ test('#639: the company route class names the ask and keeps the two source cap',
   const routed = routedSelection('do we know Plantix', CONFIGURED);
   assert.ok(routed !== undefined, 'an unambiguous company ask is routed without spending the selector');
   assert.ok(routed.actions.some(action => String(action.kind) === 'company_search'), `the routed selection reads the company layer (${JSON.stringify(routed.actions.map(action => action.kind))})`);
+});
+
+// L11-01 (lane 11, 10:37Z): both knowledge reads returned six hits, yet the voice got only the confidence line
+// ("knowledge: 1 of 11 shown" over a meta line) while memory filled the budget, and she said she had no profiles.
+// The confidence line is a label, not an item, every read source keeps at least its top hit, and memory the ask
+// did not name never starves a source.
+test('L11-01: a knowledge read with hits keeps its top hit under a memory-heavy budget; the confidence line is no item', async () => {
+  const hits = Array.from({ length: 6 }, (_, n) => `### Synthetic profile ${n + 1} (PATTERN | 2026-10-2${n}) [id ${900 + n}]\n${'Synthetic strength profile text. '.repeat(9)}`).join('\n');
+  const h = harness({
+    execute: async subs => subs.map(call => call.name === 'search_knowledge'
+      ? ({ ...sub(call.name, hits, true, call.key), knowledgeConfidence: { confidence: 'medium', top: '0.60', candidates: 'yes' } }) as IntentSubResult
+      : sub(call.name, EVIDENCE[call.name] ?? 'evidence', true, call.key)),
+    memory: () => ({ lines: Array.from({ length: 7 }, (_, n) => `Synthetic remembered fragment ${n + 1}: ${'an earlier conversation about other things. '.repeat(5)}`), text: '', total: 70 }),
+  });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'which direction are we taking with the team strengths', topic: 'team strengths',
+    lookups: [{ source: 'memory', query: 'team strengths profiles' }, { source: 'knowledge', query: 'team strengths' }] }, new AbortController().signal);
+  const findings = reply['findings'] as { source: string; text: string }[];
+  const knowledge = findings.find(finding => finding.source === 'knowledge');
+  assert.ok(knowledge, `the knowledge source is in the reply: ${JSON.stringify(reply)}`);
+  assert.match(knowledge!.text, /Synthetic profile 1/u, `the top hit survives the budget (${knowledge!.text})`);
+  const shown = Number(/^knowledge: (\d+) of \d+ shown/u.exec(knowledge!.text)?.[1]);
+  const hitLines = knowledge!.text.split('\n').filter(line => /Synthetic profile/u.test(line)).length;
+  assert.equal(shown, hitLines, `the head counts hits, never the confidence line (${knowledge!.text.split('\n')[0]})`);
+  assert.match(knowledge!.text, /confidence=medium/u, 'the confidence label still rides with the finding');
+});
+
+// L11-02 (lane 11): a reply advertised canContinue:true and "more available", and the continue 2.7 s later got
+// continuation_unavailable in 1 ms. A reply offers a continuation only when this run can serve one, with the
+// coordinate it hands over, and the continuation it offers is served.
+test('L11-02: a reply that offers a continuation serves it, with or without the cursor it handed over', async () => {
+  const hits = Array.from({ length: 6 }, (_, n) => `### Synthetic profile ${n + 1} (PATTERN | 2026-10-2${n}) [id ${910 + n}]\n${'Synthetic strength profile text. '.repeat(9)}`).join('\n');
+  const h = harness({
+    execute: async subs => subs.map(call => call.name === 'search_knowledge'
+      ? ({ ...sub(call.name, hits, true, call.key), knowledgeConfidence: { confidence: 'medium', top: '0.60', candidates: 'yes' } }) as IntentSubResult
+      : sub(call.name, EVIDENCE[call.name] ?? 'evidence', true, call.key)),
+    memory: () => ({ lines: Array.from({ length: 7 }, (_, n) => `Synthetic remembered fragment ${n + 1}: ${'an earlier conversation about other things. '.repeat(5)}`), text: '', total: 70 }),
+  });
+  const first = await runResearch(h.deps, { action: 'start', question: 'which direction are we taking with the team strengths', topic: 'team strengths',
+    lookups: [{ source: 'memory', query: 'team strengths profiles' }, { source: 'knowledge', query: 'team strengths' }] }, new AbortController().signal);
+  assert.equal(first['canContinue'], true, 'the trimmed reply offers a continuation');
+  for (const cursor of [undefined, first['nextCursor'], first['cursor']]) {
+    const next = await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']), ...(typeof cursor === 'string' ? { cursor } : {}) }, new AbortController().signal);
+    assert.notEqual(next['error'], 'continuation_unavailable', `an offered continuation is served (cursor ${String(cursor)}): ${JSON.stringify(next).slice(0, 400)}`);
+    assert.notEqual(next['status'], 'unavailable', 'and never as an unavailable run');
+  }
+});
+
+// L11-03 (lane 11): memory search returned the live call's own just-spoken question as hit 2 (sessionId of the
+// current call, dated twelve seconds before the lookup), and the header said "8 of 70 shown" over a finding that
+// said "7 of 70". The current call is never its own memory, by identity, and the header and the finding count
+// from one number.
+test('L11-03: a memory hit from the current live session is excluded by identity, whatever its time', async () => {
+  const current = '0f0f0f0f-1111-4222-8333-944455556666';
+  const h = harness({ now: () => Date.parse('2026-10-25T10:37:49Z') });
+  const deps = { ...h.deps, liveSessionId: current } as unknown as ResearchDeps;
+  const execute = deps.execute;
+  deps.execute = async (calls, signal) => {
+    if (!calls.every(call => call.name === 'conversation_history')) return execute(calls, signal);
+    return calls.map(call => ({ key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0,
+      binding: { executionId: call.key } as NonNullable<IntentSubResult['binding']>,
+      historyPage: { status: 'ok', totalMatches: 2, nextCursor: null, hits: [
+        { snippet: 'Synthetic older talk about team strengths', sessionId: '1a1a1a1a-1111-4222-8333-944455556666', date: '2026-10-20T09:00:00Z', sourceKind: 'live' },
+        { snippet: 'and then the synthetic team and their strengths', sessionId: current, date: '2026-10-25T10:37:37Z', sourceKind: 'live' },
+      ] } }));
+  };
+  const reply = await runResearch(deps, { action: 'start', question: 'which direction are we taking with the team strengths', topic: 'team strengths',
+    lookups: [{ source: 'memory', query: 'team strengths' }] }, new AbortController().signal);
+  const text = JSON.stringify(reply);
+  assert.match(text, /Synthetic older talk/u, 'an earlier conversation is memory');
+  assert.doesNotMatch(text, /and then the synthetic team/u, `the call in progress is never its own memory (${text.slice(0, 500)})`);
+});
+
+test('L11-03: a trim after the header was built keeps the header count equal to the finding count', () => {
+  const lines = Array.from({ length: 3 }, (_, n) => `Synthetic memory line ${n + 1} ${'with enough words to need room. '.repeat(3)}`);
+  const reply = { coverage: 'coverage: memory complete 3 of 9 shown', researchId: 'r-l11', status: 'partial', canContinue: true,
+    findings: [{ source: 'memory', text: `memory: 3 of 9 shown\n${lines.join('\n')}`, chars: lines.join('\n').length }] };
+  const capped = capReply(reply, JSON.stringify(reply).length - 60);
+  const finding = (capped['findings'] as { text: string }[])[0]!;
+  const shown = /^memory: (\d+) of 9 shown/u.exec(finding.text)?.[1];
+  assert.ok(shown !== undefined && Number(shown) < 3, `the cap removed a line (${finding.text.split('\n')[0]})`);
+  assert.match(String(capped['coverage']), new RegExp(`memory \\S+ ${shown} of 9 shown`, 'u'), `the header says the same count (${String(capped['coverage'])})`);
 });

@@ -23,6 +23,8 @@ done
 http_status=0
 node_test_files --test-reporter=tap --test-timeout=15000 server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-stdout.test.js server/dist/test/connector-publication.test.js server/dist/test/host-log.test.js server/dist/test/connector-recovery.test.js | tee "$log" || http_status=$?
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'Zero selected tests' >&2; exit 1; }
+# The CLI sign-in (--mongoose-login) on the built host, against the live discovery shape.
+node server/test/mongoose-login.integration.mjs || http_status=$?
 # Preserve every HTTP failure while still collecting discriminating real-browser proof.
 # Deliberately not the web fixture producer: this drives the shipped UI on the real host.
 browser_status=0

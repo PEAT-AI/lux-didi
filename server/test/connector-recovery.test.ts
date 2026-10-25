@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -116,11 +116,14 @@ function configDirFor(url: string, credentialRef: string): string {
   return configDir;
 }
 
-/** One schemaVersion 2 record, bound to the knowledge endpoint the seeded reference names. */
+/** One schemaVersion 3 record, bound to the knowledge endpoint the catalogue in this directory configures. */
 function oauthRecord(configDir: string, reference: string, fields: { refreshToken: string; expiresAt: number; consentStartedAt: number }): void {
+  const catalogue = JSON.parse(readFileSync(join(configDir, 'mcp.json'), 'utf8')) as { endpoints: { id: string; url: string }[] };
+  const resource = catalogue.endpoints.find(entry => entry.id === 'mongoose-knowledge')!.url;
+  const issuer = new URL(resource).origin;
   writeFileSync(join(configDir, `${reference}.json`), JSON.stringify({
-    schemaVersion: 2, base: 'https://mongoose.example.test', clientId: 'client', redirectPort: 45871,
-    account: ACCOUNT, endpoint: 'knowledge', audience: 'mongoose:knowledge', accessToken: 'current-access',
+    schemaVersion: 3, endpoint: 'knowledge', resource, issuer, tokenEndpoint: `${issuer}/oauth/token`, clientId: 'client', redirectPort: 45871,
+    account: ACCOUNT, accessToken: 'current-access',
     refreshToken: fields.refreshToken, expiresAt: fields.expiresAt, consentStartedAt: fields.consentStartedAt,
   }), { mode: 0o600 });
 }
@@ -510,8 +513,8 @@ test('671-R2: a non-retryable reason never re-arms, however often a read asks', 
 /** The same record the login writer produces, pointed at the fixture's own token route. */
 function oauthRecordAt(configDir: string, base: string): void {
   writeFileSync(join(configDir, 'mongoose-knowledge.json'), JSON.stringify({
-    schemaVersion: 2, base, clientId: 'client', redirectPort: 45871,
-    account: ACCOUNT, endpoint: 'knowledge', audience: 'mongoose:knowledge',
+    schemaVersion: 3, endpoint: 'knowledge', resource: `${base}/mcp/knowledge`, issuer: base, tokenEndpoint: `${base}/oauth/token`,
+    clientId: 'client', redirectPort: 45871, account: ACCOUNT,
     accessToken: 'current-access', refreshToken: 'refresh-token-1', expiresAt: 1, consentStartedAt: Date.now(),
   }), { mode: 0o600 });
 }

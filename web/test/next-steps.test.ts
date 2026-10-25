@@ -95,10 +95,12 @@ test('a changed tool list is approved by name, and a mismatch names the account'
   assert.match(mismatch.text, /different account/);
 });
 
-test('a missing Mongoose credential points at the one sign-in command', () => {
-  for (const [id] of endpointRows) {
+test('a missing Mongoose credential points at the Sign in button, never a command that does not exist', () => {
+  for (const [id, label] of endpointRows) {
     const step = nextStep(id, 'error', 'credential_missing');
-    assert.equal(step.command, 'mongoose-login');
+    assert.equal(step.command, undefined);
+    assert.doesNotMatch(step.text, /mongoose-login|Run /);
+    assert.match(step.text, new RegExp(`${label} has no stored session\\. Use the Sign in button`));
     assert.match(step.guideUrl!, /docs\/user-guide\.md#connector-setup/);
     assert.doesNotMatch(step.text, /token|bearer/i);
   }

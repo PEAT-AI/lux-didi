@@ -40,6 +40,16 @@ enum MiniOrbSurface {
     }
 }
 
+/// C-LIVE L2-09: a receipt that repeats an unchanged state is written once, then again only when the state changes.
+struct ChangeOnlyGate {
+    private var last: String?
+    mutating func changed(_ state: String) -> Bool {
+        guard state != last else { return false }
+        last = state
+        return true
+    }
+}
+
 /// Toggle semantics for the floating mini orb, shared by the global hotkey,
 /// the Escape key and the menu bar. Pure closures, so the behaviour is proven
 /// in Tests/DidiMacTests/main.swift without launching AppKit or the app.

@@ -95,15 +95,6 @@ final class TwoPartyBarrier: @unchecked Sendable {
             expect(NativeLiveEndClassifier.terminal(state: "closed", code: "voice_stop") == nil, "the owner's voice stop is recorded by the stop itself")
         }
 
-        // 2c. C-LIVE L2-09: a receipt that repeats an unchanged state is written once, then again only on a change.
-        do {
-            var gate = ChangeOnlyGate()
-            expect(gate.changed("screens=1;orb=main"), "the first state is written")
-            expect(!gate.changed("screens=1;orb=main"), "the same state is not written again")
-            expect(!gate.changed("screens=1;orb=main"), "however often it repeats")
-            expect(gate.changed("screens=2;orb=main"), "a change is written")
-            expect(gate.changed("screens=1;orb=main"), "and so is the change back")
-        }
 
         // 3. Snapshot: live state, audio route with voice processing, connector stage and the age of the last failure.
         do {

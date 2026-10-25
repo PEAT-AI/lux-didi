@@ -56,16 +56,6 @@ enum NativeLiveEndClassifier {
     }
 }
 
-/// C-LIVE L2-09: a receipt that repeats an unchanged state is written once, then again only when the state changes.
-struct ChangeOnlyGate {
-    private var last: String?
-    mutating func changed(_ state: String) -> Bool {
-        guard state != last else { return false }
-        last = state
-        return true
-    }
-}
-
 /// One meter RMS window: numbers only, computed from the per-buffer levels the capture path already holds.
 struct NativeLiveRms: Sendable {
     let mean: Float

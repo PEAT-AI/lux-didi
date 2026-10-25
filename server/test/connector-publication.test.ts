@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { createServer, type Server } from 'node:http';
+import { chmod } from 'node:fs/promises';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { Server as McpServer, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
+import { toolsMigrations } from '../tools/schema.js';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,8 +13,8 @@ import { once } from 'node:events';
 import { Store } from '../runtime/store.js';
 import { hostMigrations } from '../host/runtime.js';
 import { composeMcpRuntime } from '../host/mcp.js';
-import type { RunAcceptance } from '../tools/types.js';
-import { CONNECTOR_COMPOSED_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS, composedDeclarationDigest, composedGrantedNames, connectorDescriptor } from '../connectors/index.js';
+import type { ConnectionPolicy, RunAcceptance } from '../tools/types.js';
+import { CONNECTOR_COMPOSED_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, composedDeclarationDigest, composedGrantedNames, connectorDescriptor } from '../connectors/index.js';
 import { validatePolicy } from '../tools/index.js';
 
 // Every identity below is synthetic; no real account, address or token appears in this file.
@@ -379,8 +384,9 @@ test('fluency: recovery refuses changed catalog, binding, revocation and late cl
 // read it needs is granted, and never because a server published a name that looks like it.
 test('#604: the composed attention view is granted only when every child read is granted', () => {
   const composed = CONNECTOR_COMPOSED_TOOLS['mattermost'] ?? [];
-  assert.deepEqual(composed.map(entry => entry.name), [MATTERMOST_ATTENTION_TOOL]);
-  assert.deepEqual(composedGrantedNames('mattermost', MATTERMOST_TOOLS), [MATTERMOST_ATTENTION_TOOL]);
+  // C-CHAT: the chat read is the second composite, standing on the same five base reads.
+  assert.deepEqual(composed.map(entry => entry.name), [MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL]);
+  assert.deepEqual(composedGrantedNames('mattermost', MATTERMOST_TOOLS), [MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL]);
   const withoutThread = MATTERMOST_TOOLS.filter(name => name !== 'mattermost_get_thread');
   assert.deepEqual(composedGrantedNames('mattermost', withoutThread), [], 'a missing child read leaves the composite ungranted');
   assert.deepEqual(composedGrantedNames('google', MATTERMOST_TOOLS), [], 'no other connector carries a composite');
@@ -411,4 +417,99 @@ test('#604: a policy may name the composite only beside the children it reads', 
   };
   assert.doesNotThrow(() => validatePolicy({ ...base, toolNames: [...MATTERMOST_TOOLS, MATTERMOST_ATTENTION_TOOL] } as never));
   assert.throws(() => validatePolicy({ ...base, toolNames: [...MATTERMOST_TOOLS.filter(name => name !== 'mattermost_get_thread'), MATTERMOST_ATTENTION_TOOL] } as never), /invalid_read_tools/u);
+});
+
+// C-CHAT: a newer child's person reads are readable names a policy may grant, beside both composites; a
+// child without them keeps the five base reads and both composites, and a write is never a grantable name.
+test('C-CHAT: a policy may grant the person reads and the chat read, never a write', () => {
+  const base = {
+    schemaVersion: 1, bindingMode: 'connection', ownerId: OWNER, connectionId: 'mattermost', generation: 1, enabled: true,
+    connector: 'mattermost',
+    endpoint: { id: 'mattermost', url: 'https://synthetic.invalid/mcp', account: 'local', resource: 'mattermost', credentialRef: null },
+    schemaDigest: 'a'.repeat(64),
+    sourcePolicy: { id: 'mattermost', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
+    route: { identity: 'mattermost', allowedClasses: ['ordinary'] },
+    bounds: { maxQueryChars: 200, maxSearchLimit: 50, maxGetIds: 10, maxEntityBytes: 1024, maxResultBytes: 1024 },
+  };
+  assert.deepEqual([...MATTERMOST_READ_TOOLS], [...MATTERMOST_TOOLS, ...MATTERMOST_PERSON_TOOLS]);
+  assert.doesNotThrow(() => validatePolicy({ ...base, toolNames: [...MATTERMOST_READ_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL] } as never));
+  assert.doesNotThrow(() => validatePolicy({ ...base, toolNames: [...MATTERMOST_TOOLS, MATTERMOST_CHAT_TOOL] } as never), 'the older child keeps the chat read');
+  assert.throws(() => validatePolicy({ ...base, toolNames: [...MATTERMOST_READ_TOOLS, 'mattermost_post_message'] } as never), /invalid_read_tools/u);
+  assert.throws(() => validatePolicy({ ...base, toolNames: [...MATTERMOST_TOOLS.filter(name => name !== 'mattermost_search'), MATTERMOST_CHAT_TOOL] } as never), /invalid_read_tools/u);
+});
+
+// ---- C-CHAT (W2b): moving an installed Didi to a Mattermost child with the person reads ---------------------
+// The same connection may never widen its approved envelope by itself, so the install adds the newer child as a
+// new connection id and disables the old one: the new id settles from the reviewed read envelope, no CLI call.
+
+type Endpoint = { id: string; path: string; enabled: boolean };
+
+/** One synthetic Mattermost child per URL path, each publishing its own tool list (plus a write it never gets). */
+async function mattermostBindingHost(t: TestContext) {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-mattermost-binding-'));
+  const configDir = join(dir, 'provider-config');
+  await mkdir(configDir, { recursive: true, mode: 0o700 });
+  const servers = new Map<string, { sdk: McpServer; transport: WebStandardStreamableHTTPServerTransport }>();
+  const published = new Map<string, readonly string[]>();
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+    const server = servers.get(path);
+    assert.ok(server, `a fake child answers ${path}`);
+    return server.transport.handleRequest(new Request(input, init));
+  });
+  let store = new Store(join(dir, 'data'), toolsMigrations);
+  let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
+  t.after(async () => {
+    await runtime?.close();
+    for (const { sdk, transport } of servers.values()) { await sdk.close(); await transport.close(); }
+    store.close(); rmSync(dir, { recursive: true, force: true });
+  });
+  const start = async (endpoints: readonly Endpoint[], tools: Record<string, readonly string[]>) => {
+    if (runtime) { await runtime.close(); store.close(); store = new Store(join(dir, 'data'), toolsMigrations); }
+    for (const { sdk, transport } of servers.values()) { await sdk.close(); await transport.close(); }
+    servers.clear();
+    for (const [path, names] of Object.entries(tools)) {
+      published.set(path, names);
+      const sdk = new McpServer({ name: 'synthetic-mattermost', version: '1' }, { capabilities: { tools: {} } });
+      const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+      sdk.setRequestHandler('tools/list', () => ({ tools: [...names, 'mattermost_post_message'].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: false } })) }) as never);
+      sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: JSON.stringify({ username: 'synthetic-owner', email: 'owner@example.invalid' }) }] }) as never);
+      await sdk.connect(transport);
+      servers.set(path, { sdk, transport });
+    }
+    writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+      schemaVersion: 1, grantMode: 'owner-trusted-reads',
+      endpoints: endpoints.map(endpoint => ({ id: endpoint.id, connector: 'mattermost', transport: 'streamable-http', url: `http://127.0.0.1:18766${endpoint.path}`, account: 'mattermost', resource: 'mattermost', credentialRef: null, enabled: endpoint.enabled, allowEgress: true, unknownClass: 'private' })),
+    }));
+    await chmod(join(configDir, 'mcp.json'), 0o600);
+    runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+    await runtime.start();
+    return runtime;
+  };
+  const policy = (id: string): ConnectionPolicy | undefined => {
+    const row = store.transaction(tx => tx.get('SELECT policy_json FROM tool_connections WHERE owner_id=? AND connection_id=?', [store.assistantId, id]));
+    return row === undefined ? undefined : JSON.parse(String(row['policy_json'])) as ConnectionPolicy;
+  };
+  return { start, policy };
+}
+
+test('C-CHAT: the same connection serving a child with the person reads needs the owner again, never widens itself', async t => {
+  const h = await mattermostBindingHost(t);
+  await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
+  assert.deepEqual(h.policy('mattermost')?.toolNames, [...MATTERMOST_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL].sort(), 'the older child: five reads and both composites');
+  const widened = await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_READ_TOOLS });
+  assert.deepEqual(widened.connectionIds(), [], 'a published read the stored approval lacks is never granted by itself');
+  assert.equal(widened.status().endpoints.find(endpoint => endpoint.id === 'mattermost')?.error, 'owner-approval-required');
+});
+
+test('C-CHAT: the install route, a new connection id for the newer child beside the disabled old one, settles from the envelope', async t => {
+  const h = await mattermostBindingHost(t);
+  await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
+  const moved = await h.start([{ id: 'mattermost', path: '/old', enabled: false }, { id: 'mattermost-people', path: '/people', enabled: true }], { '/people': MATTERMOST_READ_TOOLS });
+  assert.deepEqual(moved.connectionIds(), ['mattermost-people'], 'only the new connection is accepted');
+  assert.deepEqual(h.policy('mattermost-people')?.toolNames, [...MATTERMOST_READ_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL].sort(), 'seven reads and both composites, never the write');
+  assert.deepEqual([...(moved.registry.currentGrant('mattermost-people')?.toolNames ?? [])].sort(), [...MATTERMOST_READ_TOOLS].sort());
+  let oldGrant: unknown;
+  try { oldGrant = moved.registry.currentGrant('mattermost'); } catch { oldGrant = undefined; }
+  assert.equal(oldGrant, undefined, 'the old connection grants nothing');
 });

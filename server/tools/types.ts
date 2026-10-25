@@ -52,6 +52,11 @@ export interface ToolsOwnerOptions {
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;
   /** Reports a connector-classified connection status after a call; null clears it (R4). */
   reportToolStatus?(connectionId: string, status: { state: 'configured' | 'error'; reason: string } | null): void;
+  /**
+   * W2B-R1: the connection ids the configuration file enables, or undefined when there is no readable
+   * catalog to judge by. A stored row outside that set is retired from new runs.
+   */
+  configuredConnectionIds?(): readonly string[] | undefined;
 }
 export interface ConnectionIntent { expectedPolicySha256: string | null; policy: ConnectionPolicy }
 export interface ConnectionApplyResult { state: 'applied' | 'unchanged'; sha256: string }

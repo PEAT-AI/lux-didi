@@ -536,7 +536,8 @@ for (const releaseNineCatalogue of [true, false]) {
     assert.deepEqual(reports.map(report => [report.id, report.state, report.tools]).sort(), [
       ['lux-knowledge', 'connected', 2], ['gmail', 'connected', 3], ['calendar', 'connected', 2],
       // Each Mongoose connection is granted its own endpoint envelope, so the three publish disjoint reads.
-      ['mattermost', 'connected', 6], ['mongoose-knowledge', releaseNineCatalogue ? 'error' : 'connected', releaseNineCatalogue ? 0 : 4],
+      // C-CHAT: five reads plus the attention and chat composites.
+      ['mattermost', 'connected', 7], ['mongoose-knowledge', releaseNineCatalogue ? 'error' : 'connected', releaseNineCatalogue ? 0 : 4],
       ['mongoose-data', releaseNineCatalogue ? 'error' : 'connected', releaseNineCatalogue ? 0 : 1],
       ['mongoose-crm', releaseNineCatalogue ? 'error' : 'connected', releaseNineCatalogue ? 0 : 1],
     ].sort());

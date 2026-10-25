@@ -220,6 +220,11 @@ export async function composeMcpRuntime(options: {
   const { store, ownerId, configDir } = options; const now = options.now ?? Date.now;
   const registry = new ProbeRegistry();
   const selection = loadMcpEndpoints({ configDir });
+  // W2B-R1: the enabled entries of mcp.json are the connections a run may hold. A readable catalog with
+  // no entry for a stored row retires it; a catalog that is missing retires nothing, because it says nothing.
+  const configuredConnectionIds = selection.state === 'missing'
+    ? undefined
+    : selection.catalog.endpoints.filter(entry => entry.enabled).map(entry => entry.id);
   const expectedIdentities = selection.state === 'configured'
     ? [selection.catalog.ownerIdentity, selection.catalog.ownerChatUsername].filter((value): value is string => typeof value === 'string' && value.length > 0)
     : [];
@@ -282,7 +287,7 @@ export async function composeMcpRuntime(options: {
       ? { id: previous.id, state: 'connected', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt }
       : { id: previous.id, state: 'configured', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt, error: status.reason });
   };
-  const owner = createToolsOwner({ grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, ...(options.log ? { log: options.log } : {}) });
+  const owner = createToolsOwner({ grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, configuredConnectionIds: () => configuredConnectionIds, ...(options.log ? { log: options.log } : {}) });
   const sourcePort = owner.sourcePort;
   if (selection.state === 'missing') {
     const empty: McpRuntimeComposition = { registry, port: sourcePort, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), start: async () => {}, refresh: async () => {}, recover: async () => {}, close: () => port.close() };
@@ -314,9 +319,11 @@ export async function composeMcpRuntime(options: {
         connectors.set(entry.id, entry.connector);
         continue;
       }
+      // W2B-R2: an enabled entry is a connection the owner has; a disabled one is not, so it reports no
+      // state at all. A `connecting` row for an entry nobody connects would name its source unreachable.
+      reports.set(entry.id, { id: entry.id, state: 'connecting', tools: 0, lastHandshakeAt: null });
+      connectors.set(entry.id, entry.connector);
     }
-    reports.set(entry.id, { id: entry.id, state: 'connecting', tools: 0, lastHandshakeAt: null });
-    connectors.set(entry.id, entry.connector);
   }
   const active = endpoints.filter(entry => entry.enabled && entry.allowEgress && !rejected.has(entry.id));
   // C-OPEN 6: a Google helper run from the reports folder works until that folder is archived; say so at

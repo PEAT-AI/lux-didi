@@ -499,9 +499,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       tx.run('INSERT INTO tool_runs VALUES (?,?,?,?)', [ownerId, acceptance.runId, bytes, hash]); return { sha256: hash };
     },
     durableConnectionIds(tx) {
+      // W2B-R1: the configuration file is the single source of truth for connections, so a row whose id is
+      // no longer an enabled entry there is retired: it contributes no id, grant or tool definition to a run.
+      const configured = options.configuredConnectionIds?.();
       return tx.all('SELECT connection_id FROM tool_connections WHERE owner_id=? ORDER BY connection_id', [ownerId])
         .map(row => String(row['connection_id']))
-        .filter(id => { try { return connection(tx, id).policy.enabled; } catch { return false; } });
+        .filter(id => { try { return connection(tx, id).policy.enabled; } catch { return false; } })
+        .filter(id => configured === undefined || configured.includes(id));
     },
     liveRememberApproved() { return options.grantMode === 'owner-trusted-reads'; },
     liveDefinitions(runId, rememberNote, vaultDispatch) {

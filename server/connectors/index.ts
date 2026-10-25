@@ -9,7 +9,7 @@ import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
 import type { DriveGetInput, DriveSearchInput, GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
 import { googleToolStatus, projectGoogleResult } from '../tools/google.js';
 import { createMongooseReader, mongooseEndpointName, MONGOOSE_ENDPOINT_TOOLS, MONGOOSE_READ_TOOLS, type MongooseEndpoint, type SearchInput } from './mongoose.js';
-import { createMattermostReader, MATTERMOST_ATTENTION_TOOL, MATTERMOST_DEFAULTS, MATTERMOST_TOOLS } from './mattermost.js';
+import { createMattermostReader, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT, MATTERMOST_CHAT_TOOL, MATTERMOST_DEFAULTS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, type ChatReadInput } from './mattermost.js';
 import { createHash } from 'node:crypto';
 
 import { projectMongooseResult } from '../tools/mongoose.js';
@@ -30,7 +30,7 @@ export const CONNECTOR_ENVELOPES: Readonly<Record<string, readonly string[]>> = 
   'lux-knowledge': LUX_KNOWLEDGE_TOOLS,
   'google': GOOGLE_TOOLS,
   'mongoose': MONGOOSE_READ_TOOLS,
-  'mattermost': MATTERMOST_TOOLS,
+  'mattermost': MATTERMOST_READ_TOOLS,
 };
 
 /** Transport-neutral evidence handed from a connector reader to its projector. */
@@ -372,7 +372,8 @@ function threadArgs(args: Record<string, unknown>): boolean {
   return Object.keys(args).every(key => key === 'postId' || key === 'post_id') && threadPostId(args) !== '';
 }
 function searchArgs(args: Record<string, unknown>, maxText: number, maxLimit: number): boolean {
-  if (!Object.keys(args).every(key => ['query', 'limit', 'after', 'before', 'channel'].includes(key))) return false;
+  if (!Object.keys(args).every(key => ['query', 'limit', 'after', 'before', 'channel', 'offset'].includes(key))) return false;
+  if (args['offset'] !== undefined && !isCount(args['offset'], 0, MATTERMOST_CHAT.maxOffset)) return false;
   if (args['channel'] !== undefined && !isText(args['channel'], 60)) return false;
   if (!isText(args['query'], maxText)) return false;
   if (args['limit'] !== undefined && !isCount(args['limit'], 1, maxLimit)) return false;
@@ -394,8 +395,44 @@ export const CONNECTOR_COMPOSED_TOOLS: Readonly<Record<string, readonly Connecto
     },
     requires: MATTERMOST_TOOLS,
     validate: args => attentionArgs(args),
+  }, {
+    // C-CHAT: one read per ask for a person, the overview with a person, a channel or a group chat. It stands
+    // on the base reads only; the person reads a newer child adds are used when granted and named when not.
+    name: MATTERMOST_CHAT_TOOL,
+    description: 'Read the team chat for one person, one channel or one group chat: what a person wrote the owner (person, sides theirs or both), everything the owner and a person exchanged across their direct messages, shared group chats and channels (overview), the newest posts of a named channel (channel), or a group chat by its members (group). Names are matched strictly; an ambiguous name returns a question naming the candidates, never a guess. Newest first, with the archive\'s own match count.',
+    parameters: {
+      required: ['intent'],
+      properties: {
+        intent: { type: 'string', enum: ['person', 'overview', 'channel', 'group'] },
+        person: { type: 'string', minLength: 1, maxLength: 80, description: 'The person as the owner said it: a first name, a full name or a username.' },
+        people: { type: 'array', minItems: 2, maxItems: MATTERMOST_CHAT.maxPeople, items: { type: 'string', minLength: 1, maxLength: 80 } },
+        channel: { type: 'string', minLength: 1, maxLength: 80, description: 'The channel name as the owner said it.' },
+        query: { type: 'string', minLength: 1, maxLength: 200, description: 'Topic words, only when the owner named a topic.' },
+        from_date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'First local day of the window; the last 30 days by default.' },
+        to_date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+        sides: { type: 'string', enum: ['theirs', 'both'] },
+        offset: { type: 'integer', minimum: 0, maximum: MATTERMOST_CHAT.maxOffset },
+        limit: { type: 'integer', minimum: 1, maximum: 50 },
+      },
+    },
+    requires: MATTERMOST_TOOLS,
+    validate: args => chatReadArgs(args),
   }],
 };
+
+/** C-CHAT: the chat read's own argument bounds, checked before any child read. */
+function chatReadArgs(args: Record<string, unknown>): boolean {
+  const keys = ['intent', 'person', 'people', 'channel', 'query', 'from_date', 'to_date', 'sides', 'offset', 'limit'];
+  if (!Object.keys(args).every(key => keys.includes(key))) return false;
+  if (!['person', 'overview', 'channel', 'group'].includes(String(args['intent']))) return false;
+  if (['person', 'channel'].some(key => args[key] !== undefined && !isText(args[key], 80))) return false;
+  if (args['query'] !== undefined && !isText(args['query'], 200)) return false;
+  if (args['people'] !== undefined && !(Array.isArray(args['people']) && args['people'].length >= 2 && args['people'].length <= MATTERMOST_CHAT.maxPeople && args['people'].every(name => isText(name, 80)))) return false;
+  if (['from_date', 'to_date'].some(key => args[key] !== undefined && !(typeof args[key] === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(args[key] as string)))) return false;
+  if (args['sides'] !== undefined && args['sides'] !== 'theirs' && args['sides'] !== 'both') return false;
+  if (args['offset'] !== undefined && !isCount(args['offset'], 0, MATTERMOST_CHAT.maxOffset)) return false;
+  return args['limit'] === undefined || isCount(args['limit'], 1, 50);
+}
 
 /**
  * The read names one connection may be granted. Mongoose serves three separate endpoints of one
@@ -466,7 +503,7 @@ function companyProjection(evidence: ConnectorEvidence, policy: ConnectionPolicy
   };
 }
 const mattermostDescriptor: ConnectorDescriptor = {
-  id: 'mattermost', envelope: MATTERMOST_TOOLS,
+  id: 'mattermost', envelope: MATTERMOST_READ_TOOLS,
   declarations(policy) {
     const text = Math.min(200, policy.bounds.maxQueryChars);
     const limit = Math.min(MATTERMOST_DEFAULTS.maxLimit, policy.bounds.maxSearchLimit);
@@ -477,9 +514,10 @@ const mattermostDescriptor: ConnectorDescriptor = {
         { postId: { type: 'string', minLength: 1, maxLength: text }, post_id: { type: 'string', minLength: 1, maxLength: text } }, ['postId'], threadArgs,
         { normalize: args => (isRecord(args) && threadPostId(args) !== '' ? { args: { postId: threadPostId(args) } } : undefined) }),
       mattermostDeclaration('mattermost_search', 'Search bounded Mattermost messages by query, newest first, over the last 90 days unless after names an older start. No channel id needed: search first, no channel list needed. Put filters inside the query: From:<user>, After:<date>, In:<channel>, so "what did X say about Y" or "what happened in channel Z this week" is one call. Results are shaped newest first, at most 8 posts of 250 characters, not whole threads.',
-        { query: { type: 'string', minLength: 1, maxLength: text }, limit: { type: 'integer', minimum: 1, maximum: limit }, after: { type: 'string', minLength: 1, maxLength: 40, description: 'ISO instant the window starts at; 90 days before now by default.' }, before: { type: 'string', minLength: 1, maxLength: 40 }, channel: { type: 'string', minLength: 1, maxLength: 60, description: 'One channel name, display name or id the ask names; resolved through the channel list.' } }, ['query'], args => searchArgs(args, text, limit)),
+        { query: { type: 'string', minLength: 1, maxLength: text }, limit: { type: 'integer', minimum: 1, maximum: limit }, offset: { type: 'integer', minimum: 0, maximum: MATTERMOST_CHAT.maxOffset, description: 'Skip this many matches: the next page of the same search.' }, after: { type: 'string', minLength: 1, maxLength: 40, description: 'ISO instant the window starts at; 90 days before now by default.' }, before: { type: 'string', minLength: 1, maxLength: 40 }, channel: { type: 'string', minLength: 1, maxLength: 60, description: 'One channel name, display name or id the ask names; resolved through the channel list.' } }, ['query'], args => searchArgs(args, text, limit)),
       // #604: the composite's own declaration, so one table feeds the grant and the dispatch.
       composedDeclaration(CONNECTOR_COMPOSED_TOOLS['mattermost']![0]!),
+      composedDeclaration(CONNECTOR_COMPOSED_TOOLS['mattermost']![1]!),
     ];
   },
   createReader({ port, registry, endpoint, schemaDigest, generation, policy }) {
@@ -489,8 +527,9 @@ const mattermostDescriptor: ConnectorDescriptor = {
         case 'mattermost_whoami': return reader.whoami(signal);
         case 'mattermost_get_channel_history': return reader.getChannelHistory(args as { channel: string; limit?: number }, signal);
         case 'mattermost_get_thread': return reader.getThread(args as { postId: string }, signal);
-        case 'mattermost_search': return reader.search(args as { query: string; limit?: number; after?: string; before?: string }, signal);
+        case 'mattermost_search': return reader.search(args as { query: string; limit?: number; after?: string; before?: string; offset?: number }, signal);
         case 'mattermost_attention': return reader.attention(args as { days?: number; limit?: number }, signal);
+        case 'mattermost_chat': return reader.chat(args as unknown as ChatReadInput, signal);
         case 'mattermost_list_channels': return reader.listChannels(args, signal);
         default: throw new ConnectorCompositionError('unknown_connector_tool', endpoint.id, 'mattermost');
       }

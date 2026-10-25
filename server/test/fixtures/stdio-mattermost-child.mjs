@@ -24,7 +24,7 @@ const READ_SCHEMAS = {
   mattermost_whoami: { type: 'object' },
   mattermost_get_channel_history: { type: 'object', additionalProperties: false, required: ['channel'], properties: { channel: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 200 }, format: { type: 'string', enum: ['concise', 'detailed'] } } },
   mattermost_get_thread: { type: 'object', additionalProperties: false, required: ['post_id'], properties: { post_id: { type: 'string' }, format: { type: 'string', enum: ['concise', 'detailed'] } } },
-  mattermost_search: { type: 'object', properties: { query: { type: 'string' }, channel: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 50 }, from_date: { type: 'string' }, to_date: { type: 'string' }, sort: { type: 'string', enum: ['relevance', 'newest'] } } },
+  mattermost_search: { type: 'object', properties: { query: { type: 'string' }, mode: { type: 'string', enum: ['keyword', 'semantic', 'hybrid'] }, channel: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 50 }, from_date: { type: 'string' }, to_date: { type: 'string' }, sort: { type: 'string', enum: ['relevance', 'newest'] } } },
   mattermost_list_channels: { type: 'object' },
 };
 

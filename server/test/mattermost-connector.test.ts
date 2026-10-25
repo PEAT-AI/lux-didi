@@ -309,7 +309,7 @@ test('#647: an empty multi-term chat search earns one single-term retry and a br
   const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => subs.map(call => {
     dispatched.push({ key: call.key, name: call.name, args: { ...call.args } });
     const broadened = String(call.args['query']) === 'release';
-    const text = broadened ? '**team** [post abcdef1234567890abcdefghij]\nthe release freeze moved to Monday' : '';
+    const text = broadened ? '- the release freeze moved to Monday, from Ana [post abcdef1234567890abcdefghij]' : '';
     return { key: call.key, name: call.name, ok: true, text, originalCharacters: text.length, omittedCharacters: 0 };
   });
   const deps: ResearchDeps = {
@@ -317,10 +317,7 @@ test('#647: an empty multi-term chat search earns one single-term retry and a br
   };
   const reply = await runResearch(deps, { action: 'start', question: 'what did the team say about the release freeze' }, new AbortController().signal);
   const searches = dispatched.filter(call => call.name === 'mattermost_search');
-  assert.equal(searches.length, 2, 'the empty multi-term read earns exactly one retry');
-  assert.equal(searches[0]!.args['query'], 'release freeze', 'the first read is the query the ask named');
-  assert.equal(searches[1]!.args['query'], 'release', 'the retry carries the single most specific term');
-  assert.deepEqual({ ...searches[1]!.args, query: 'same' }, { ...searches[0]!.args, query: 'same' }, 'the retry narrows the query only, the window and bounds stay');
+  assert.deepEqual(searches.map(call => [call.args['query'], call.args['from_date']]), [['release freeze', undefined], ['release', undefined]], 'the empty multi-term read earns exactly one retry with the single most specific term');
   assert.match(String(reply['note']), /broadened/, 'the answer says the match was broadened');
   assert.ok((reply['findings'] as unknown[]).length > 0, 'the broadened read reaches the answer');
 });

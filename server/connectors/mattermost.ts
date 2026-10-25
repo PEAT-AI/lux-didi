@@ -432,6 +432,15 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
   }
 
   /**
+   * #647: the child defaults a search to hybrid, which embeds the query on CPU over the whole archive
+   * (#647 measured 48 to 57 s per read, keyword 3 ms warm). Every search asks for keyword mode, sent only
+   * where the child declares `mode`, so a child without it keeps its own default instead of losing the read.
+   */
+  function keywordMode(): Record<string, string> {
+    return declaredSearchArguments().includes('mode') ? { mode: 'keyword' } : {};
+  }
+
+  /**
    * The search window: the last 90 days by default, forwarded only for arguments the child declares.
    * #581: the day travels in the child's own `from_date`/`to_date` arguments, and with it `sort=newest`,
    * so a windowed ask never ranks the whole archive by relevance and filters afterwards.
@@ -604,7 +613,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       // and the closest-names hint behind it both stay visible in the refusal.
       if (resolved !== undefined && 'error' in resolved) return { state: 'refused', reason: resolved.error };
       const filter = resolved === undefined || !declaredChannel ? {} : { channel: (resolved as { channel: string }).channel };
-      return dispatch('mattermost_search', { query, ...bounded, ...window, ...filter }, signal);
+      return dispatch('mattermost_search', { query, ...keywordMode(), ...bounded, ...window, ...filter }, signal);
     },
     async listChannels(input: BoundedInput, signal?: AbortSignal): Promise<MattermostResult> {
       const denied = preflight(registry, settings, 'mattermost_list_channels');

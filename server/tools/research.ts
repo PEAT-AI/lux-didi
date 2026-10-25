@@ -2405,11 +2405,20 @@ export function clip(text: string, max: number): string {
   return `${whole.length * 2 >= room.length ? whole : room}\u2026`;
 }
 
-/** #621: the E3 states a reply must keep apart, and the E4 reason a source was never searched. */
-export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry';
+/**
+ * #621: the E3 states a reply must keep apart, and the E4 reason a source was never searched. C-LIVE behaviour 2
+ * (F3): `partial_failed` is a read whose later page failed after one arrived, never `complete`, whatever the
+ * counts add up to, because the header is what the voice repeats aloud.
+ */
+export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry' | 'partial_failed';
 export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found';
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
+
+/** The status words a searched source says aloud, where the word alone would be read as a whole read. */
+const SEARCHED_CLAUSE: Partial<Record<CoverageStatus, (label: string) => string>> = {
+  partial_failed: label => `${label} stopped after a later page failed`,
+};
 
 /** The one clause the voice can say about a source it could not read, keyed by the closed reason. */
 const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: SourceKind) => string> = {
@@ -2451,7 +2460,10 @@ export function coverageLine(searched: readonly CoverageSearched[], unsearched: 
   const bound = Math.floor(limit / HEADER_SHARE_OF_CAP);
   const line = (entries: readonly string[]): string => entries.length === 0 ? 'coverage: none' : `coverage: ${entries.join('; ')}`;
   const detailed = line([
-    ...searched.map(entry => `${entry.source} ${entry.status} ${entry.shown} of ${entry.total} shown${entry.confidence === undefined ? '' : ` confidence=${entry.confidence}`}`),
+    ...searched.map(entry => {
+      const say = SEARCHED_CLAUSE[entry.status];
+      return `${entry.source} ${entry.status} ${entry.shown} of ${entry.total} shown${entry.confidence === undefined ? '' : ` confidence=${entry.confidence}`}${say === undefined ? '' : ` (say: ${say(spokenLabelOf(entry.source))})`}`;
+    }),
     ...unsearched.map(entry => `${entry.source} ${entry.reason} (say: ${UNSEARCHED_CLAUSE[entry.reason](spokenLabelOf(entry.source), entry.source)})`),
   ]);
   if (detailed.length <= bound) return detailed;
@@ -2474,6 +2486,9 @@ const FINDING_META_LINE = /^knowledge: (?:confidence=|nothing matched)/u;
  * counts can never drift from the evidence after a trim.
  */
 function coverageTextOf(run: RunState, configured: readonly SourceKind[], findings: readonly FindingLike[], totals: ReadonlyMap<SourceKind, number>, limit: number): string {
+  // C-LIVE behaviour 2 / F3: a read that lost a later page never counts as a whole read, whatever the totals say.
+  // Mail is the one source whose reads carry their own page-failure flag (see operationCoverage).
+  const failedPage = (source: SourceKind): boolean => source === 'mail' && [...run.mail.values()].some(read => read.failed);
   const searched: CoverageSearched[] = [];
   for (const source of SOURCE_ORDER) {
     if (!configured.includes(source)) continue;
@@ -2489,6 +2504,7 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
     const shown = head === null ? 0 : Number(head[1]);
     const total = Math.max(shown, totals.get(source) ?? (head === null ? 0 : Number(head[2])));
     const status: CoverageStatus = run.cutShort.has(source) ? 'partial_timeout'
+      : failedPage(source) && shown > 0 ? 'partial_failed'
       : total > shown ? 'truncated_to_budget' : shown === 0 ? 'empty_after_retry' : 'complete';
     const confidence = source === 'knowledge' && finding !== undefined ? knowledgeConfidenceOf(text.split('\n'))?.confidence : undefined;
     searched.push({ source, status, shown, total, ...(confidence === undefined ? {} : { confidence }) });

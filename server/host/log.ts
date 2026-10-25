@@ -213,17 +213,20 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'connector_failure', connector: value.connector, stage: value.stage, ...(hasReason ? { reason: value.reason } : {}), ...(hasException ? { exceptionCode: value.exceptionCode } : {}), ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasAttempt ? { attempt: value.attempt } : {}) };
   }
   if (value.event === 'connector_identity') {
-    // Closed identity proof only: a connector name and two booleans, never the identity itself. The
-    // endpoint id is optional so one proof names which endpoint of the account it was (#533).
+    // Closed identity proof only: a connector name, two booleans and the proof's own closed code, never
+    // the identity itself. The endpoint id is optional so one proof names which endpoint of the account
+    // it was (#533). #671-R2: the code is what says why an unproven proof was unproven.
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
     const hasEndpoint = Object.prototype.hasOwnProperty.call(value, 'endpointId');
-    const allowed = ['connector', 'event', 'match', 'proven', ...(hasEndpoint ? ['endpointId'] : [])];
+    const hasCode = Object.prototype.hasOwnProperty.call(value, 'code');
+    const allowed = ['connector', 'event', 'match', 'proven', ...(hasEndpoint ? ['endpointId'] : []), ...(hasCode ? ['code'] : [])];
     if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) return;
     if (!token(value.connector) || typeof value.proven !== 'boolean') return;
     if (value.match !== null && typeof value.match !== 'boolean') return;
     if (hasEndpoint && !isSafeId(value.endpointId)) return;
+    if (hasCode && !token(value.code)) return;
     return { event: 'connector_identity', connector: value.connector, proven: value.proven, match: value.match,
-      ...(hasEndpoint ? { endpointId: value.endpointId } : {}) };
+      ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasCode ? { code: value.code } : {}) };
   }
   if (value.event === 'connector_connected' || value.event === 'connector_recovered'
     || value.event === 'connector_recovery_exhausted' || value.event === 'connector_unavailable'

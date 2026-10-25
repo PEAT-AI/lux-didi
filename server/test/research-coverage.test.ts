@@ -456,3 +456,18 @@ test('#654 review 2: a lookups-free continuation that points back at the run sti
   const plain = await runResearch(h.deps, { action: 'continue', researchId: oldId }, new AbortController().signal);
   assert.equal(String(plain['researchId']), oldId, 'a bare continue still continues');
 });
+
+// --- RESEARCHFIX-R2: a continuation word is not a new topic ------------------------------------------
+
+test('#654 ruling R2: a finish continuation on the same topic continues the run', async () => {
+  const h = harness({ configured: ['knowledge', 'mail', 'chat'] });
+  const first = await runResearch(h.deps, {
+    action: 'start', question: 'the renewal mail from the customer', topic: 'renewal',
+    lookups: [{ source: 'mail', mail: { q: 'renewal' } }],
+  }, new AbortController().signal);
+  const oldId = String(first['researchId']);
+  const same = await runResearch(h.deps, {
+    action: 'continue', researchId: oldId, question: 'finish the results on the renewal mail from the customer',
+  }, new AbortController().signal);
+  assert.equal(String(same['researchId']), oldId, 'a finish continuation on the same topic continues the run');
+});

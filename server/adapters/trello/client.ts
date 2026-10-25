@@ -78,6 +78,8 @@ export function createTrelloTransport(options: { url?: string; token: TrelloToke
     if (!response.ok && response.status !== 202) return { ok: false, code: 'protocol_error', sent: true };
     const id = response.headers.get('mcp-session-id');
     if (id && /^[\x21-\x7e]{1,256}$/.test(id)) session = id;
+    // A notification carries no id, so there is no reply to attribute; its body is dropped unread.
+    if (!('id' in body)) { await response.body?.cancel().catch(() => undefined); return { ok: true, json: undefined }; }
     let text: string | undefined;
     try { text = await readBounded(response, TRELLO_REPLY_LIMIT); } catch { return { ok: false, code: 'unknown', sent: true }; }
     // F6: no reply over the bound, and none carrying another id, is ever attributed to this request.

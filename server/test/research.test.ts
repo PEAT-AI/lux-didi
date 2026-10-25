@@ -455,7 +455,8 @@ test('an identical start while a run is in flight joins that exact intent', asyn
   const minted = String(a['researchId']);
   assert.match(minted, /^[A-Za-z0-9-]{1,64}$/, 'the first start names the id the host minted');
   assert.equal(String(b['researchId']), minted, 'the second start joins the in-flight run');
-  assert.deepEqual(h.joined, [minted], 'the join is logged as research_joined');
+  assert.deepEqual(h.joined, [minted, minted], 'the start and the join are logged as research_joined');
+  assert.deepEqual(h.branches, ['start', 'join'], 'and the log says which branch answered each call');
 });
 
 // E7: the same intent recurs inside one live turn (5 research calls and 6 chat searches in 90 s in the
@@ -472,7 +473,8 @@ test('E7: three identical research calls in the live turn window read each sourc
   }
   assert.equal(h.executed.filter(call => call.name === 'search_knowledge').length, 1, 'the question was researched once, not three times');
   assert.equal(new Set(replies.map(reply => reply['researchId'])).size, 1, 'every call answers the run the host minted');
-  assert.deepEqual(h.joined, [replies[0]!['researchId'], replies[0]!['researchId']], 'both later calls are logged as joins');
+  assert.deepEqual(h.joined, [replies[0]!['researchId'], replies[0]!['researchId'], replies[0]!['researchId']], 'every call is logged as a research_joined line');
+  assert.deepEqual(h.branches, ['start', 'recent', 'recent'], 'the first start reads and the two repeats answer from the turn window');
   const other = await scheduler.call({ action: 'start', question: 'What did the board decide about hiring?', sources: 'knowledge' }, new AbortController().signal);
   assert.notEqual(String(other['researchId']), String(replies[0]!['researchId']), 'a different question is its own run');
   assert.equal(h.executed.filter(call => call.name === 'search_knowledge').length, 2, 'and it is read');
@@ -513,11 +515,13 @@ test('#664: the fourth research call of one delegation says answer the owner and
   const h = harness({ now: () => clock });
   const scheduler = new ResearchScheduler(h.deps);
   const replies: Record<string, unknown>[] = [];
-  for (let n = 0; n < 4; n += 1) {
-    replies.push(await scheduler.call({ action: 'start', question: 'what mail came in', sources: 'mail' }, new AbortController().signal));
+  replies.push(await scheduler.call({ action: 'start', question: 'what mail came in', sources: 'mail' }, new AbortController().signal));
+  const reads = h.executed.length;
+  for (let n = 0; n < 3; n += 1) {
     clock += 3_000;
+    replies.push(await scheduler.call({ action: 'start', question: 'what mail came in', sources: 'mail' }, new AbortController().signal));
   }
-  assert.equal(h.executed.length, 1, 'the delegation read its mail once');
+  assert.equal(h.executed.length, reads, 'the delegation read its mail once');
   assert.equal(replies[3]!['note'], RESEARCH.ceilingNote, 'the fourth call says answer the owner with what it has');
   assert.deepEqual(replies[3]!['findings'], [], 'the fourth call hands over no findings');
   assert.deepEqual(h.branches, ['start', 'recent', 'recent', 'ceiling'], 'every call names the branch that answered it');
@@ -1765,7 +1769,8 @@ test('ROUTE-1022: a second start for the same owner question attaches instead of
   assert.equal(a['superseded'], undefined, 'the run in flight is never cancelled by a repeated question');
   assert.equal(b['researchId'], a['researchId'], 'both calls read the same run');
   assert.deepEqual(b['findings'], a['findings']);
-  assert.equal(h.joined.length, 1);
+  assert.equal(h.joined.length, 2);
+  assert.deepEqual(h.branches, ['start', 'join'], 'the run in flight answers the second call');
 });
 
 test('ROUTE-1022: a complete reply says nothing more is to fetch, and a cut one names what is still reading', async () => {

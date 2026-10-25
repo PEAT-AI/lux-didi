@@ -1,4 +1,4 @@
-import { CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_REFUSAL_REASONS } from '../tools/research.js';
+import { CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
@@ -1094,10 +1094,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'responses_validation_failed', param: value.param };
   }
   if (value.event === 'research_joined') {
-    // Metadata only: the run id a second start joined. No question, no result text.
-    if (Object.keys(value).sort().join(',') !== ['event', 'researchId'].sort().join(',')) return;
+    // Metadata only: the run id a research call joined and the scheduler branch that answered it. No question,
+    // no result text. The branch is optional, so a join logged without one still reaches the log.
+    if (!closedKeys(value, ['event', 'researchId']) && !closedKeys(value, ['event', 'researchId', 'research_branch'])) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_joined');
-    return { event: 'research_joined', researchId: value.researchId };
+    const branch = RESEARCH_BRANCHES.includes(value.research_branch as ResearchBranch) ? value.research_branch as ResearchBranch : undefined;
+    if (value.research_branch !== undefined && branch === undefined) return;
+    return { event: 'research_joined', researchId: value.researchId, ...(branch === undefined ? {} : { research_branch: branch }) };
   }
   if (value.event === 'warm_prewarm') {
     // 338: the owner's forced warm refresh. Two ages and whether an assembly replaced the old one:

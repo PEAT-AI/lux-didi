@@ -1335,6 +1335,7 @@ private func checkPrimaryChannelConversion() throws {
                 try audioRequire(presentation == (muted ? .muted : .listening), "resumed presentation preserves mute")
             }
             try audioRequire(NativeLivePresentation.ended("resume_failed", limits: nil) == "Naya's connection could not be resumed. Start Live again.", "resume_failed exact typed sentence")
+            try audioRequire(NativeLivePresentation.ended("provider_recovery_exhausted", limits: nil) == "Connection lost. Tap to reconnect.", "an exhausted recovery tells the owner the tap that reconnects")
             let authority = DictationRefusalAuthority()
             let conversation = NativeLiveConversation(authority: (origin, { url, epoch in
                 try authority.request(url, epoch)

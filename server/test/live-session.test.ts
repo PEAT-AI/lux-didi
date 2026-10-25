@@ -2352,7 +2352,7 @@ test('provider usage metadata is decoded and logged per turn, numbers only', asy
   await attachment.done;
 });
 
-test('dead air after a tool response earns one neutral continuation input', async t => {
+test('C-LIVE: dead air after a tool response sends no synthetic Continue user text', async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-nudge-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));
   t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
@@ -2364,7 +2364,7 @@ test('dead air after a tool response earns one neutral continuation input', asyn
   h.advance(8000); scheduler.runDue();
   await h.f.frame(h.f.frames.length + 1);
   const nudges = h.f.frames.filter(frame => (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text === 'Continue.');
-  assert.equal(nudges.length, 1, 'exactly one neutral continuation input');
+  assert.equal(nudges.length, 0, 'no fake owner turn is written into the conversation');
   const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string });
   assert.equal(lines.filter(line => line.event === 'live_dead_air_nudge').length, 1);
   h.owner.revoke(session.liveSessionId);
@@ -3976,7 +3976,7 @@ test('D3: one audible frame restarts the deadline from that frame, never from th
   attachment.close();
 });
 
-test('#538: the Gemini path sends its one Continue at 8 s and never closes or recreates the session', async t => {
+test('#538/C-LIVE: the Gemini path sends no Continue at 8 s and never closes or recreates the session there', async t => {
   const fake = fakeLiveVoicePort();
   const scheduler = new DeadlineClock();
   const h = await harness(t, { port: fake.port, scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
@@ -3986,8 +3986,8 @@ test('#538: the Gemini path sends its one Continue at 8 s and never closes or re
   fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'g1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] }));
   await settlePort();
   for (let elapsed = 0; elapsed < 8_500; elapsed += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
-  assert.deepEqual(fake.texts, ['Continue.'], 'the 8 s rung on this path is the one neutral continuation input');
-  assert.equal(fake.closes, 0, 'a Continue rung never closes the provider session');
+  assert.deepEqual(fake.texts, [], 'the 8 s rung writes no synthetic user text');
+  assert.equal(fake.closes, 0, 'the 8 s rung never closes the provider session');
   assert.equal(fake.sessionsOpened, 1, 'and never recreates it');
   for (let elapsed = 0; elapsed < 7_500; elapsed += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
   assert.equal(fake.sessionsOpened, 2, 'the 15 s rung is the one path that opens a fresh session');

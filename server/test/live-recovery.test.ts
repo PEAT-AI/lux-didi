@@ -55,12 +55,18 @@ function drivenPort() {
   const toolResponses: LiveToolResponse[][] = [];
   let events: ((event: LiveVoiceEvent) => void) = () => {};
   let sequence = 0;
+  /** C-LIVE R2: opens the provider refuses synchronously, the way the 2026-10-25 rebuild threw before its socket. */
+  const refusals: Error[] = [];
+  let opens = 0;
   const port = {
     capabilities: Object.freeze({ provider: 'gemini', supportsResumption: false, supportsGoAway: false, supportsInterruption: false,
       supportsServerVadConfig: false, inputRates: Object.freeze([8000]), outputRates: Object.freeze([24000]),
       outputModalities: Object.freeze(['audio', 'text'] as const), thinking: 'provider_default', supportsToolScheduling: false,
       toleratesEmptyReadyLifecycle: false }),
     open(_request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession {
+      opens += 1;
+      const refusal = refusals.shift();
+      if (refusal !== undefined) throw refusal;
       let resolveReady: () => void = () => {};
       let rejectReady: (error: unknown) => void = () => {};
       const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
@@ -96,7 +102,8 @@ function drivenPort() {
       return session;
     },
   } as unknown as LiveVoicePort;
-  return { port, sessions, openedAt, toolResponses, emit: (event: LiveVoiceEvent) => events({ ...event, sequence: ++sequence }) };
+  return { port, sessions, openedAt, toolResponses, emit: (event: LiveVoiceEvent) => events({ ...event, sequence: ++sequence }),
+    refuse: (...errors: Error[]) => { refusals.push(...errors); }, get opens() { return opens; } };
 }
 
 /** Every `tools/call` the fake knowledge connector answered, in order. */
@@ -410,4 +417,61 @@ test('F1: a lookup the gate denied never withholds the next allowed one', async 
   await answered(h, 2);
   assert.equal(h.connectorCalls.filter(call => call.name === 'search_knowledge').length, 1,
     'the allowed lookup dispatched even though the batch that built the scheduler was denied');
+});
+
+// C-LIVE R2: a recovery open that throws is logged by class and closed key, then gets one fresh open after a short
+// backoff; a second failure ends the call with a terminal the client can read, and the next call starts clean.
+
+test('R2: a recovery open that throws logs its class and tries one fresh open after a short backoff', async t => {
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: 'r2-retry', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  (await sessionAt(h, 0))!.live();
+  await attachment.ready;
+  await flush();
+  h.port.refuse(new TypeError('synthetic_open_refused'));
+  h.port.sessions[0]!.die();
+  await flush();
+  const failure = h.receipts.find(entry => entry['event'] === 'live_recovery_failed');
+  assert.ok(failure, `the thrown open is a receipt, never swallowed: ${JSON.stringify(h.receipts.map(entry => entry['event']))}`);
+  assert.equal(failure!['errorClass'], 'TypeError');
+  assert.equal(failure!['messageKey'], 'synthetic_open_refused');
+  assert.equal(failure!['liveSessionId'], created.liveSessionId, 'the session correlation id rides with it');
+  assert.equal(failure!['cause'], 'transport_error', 'and the cause that started the recovery');
+  assert.ok(['resume', 'fresh_seeded'].includes(String(failure!['mode'])), 'and the recovery mode');
+  assert.equal(h.owner.get(created.liveSessionId).terminal, null, 'one refused open does not end the call');
+  const opensBefore = h.port.opens;
+  await h.advance(2_000);
+  assert.equal(h.port.opens, opensBefore + 1, 'one fresh open follows the short backoff');
+  h.port.sessions.at(-1)!.live();
+  await flush();
+  assert.equal(h.owner.get(created.liveSessionId).terminal, null, 'and the call carries on');
+  h.owner.revoke(created.liveSessionId);
+});
+
+test('R2: when the fresh open fails too, the call ends as provider_recovery_exhausted and the next call starts clean', async t => {
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: 'r2-exhausted', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  (await sessionAt(h, 0))!.live();
+  await attachment.ready;
+  await flush();
+  h.port.refuse(new Error('synthetic open refused with words'), new TypeError('synthetic_open_refused'));
+  h.port.sessions[0]!.die();
+  await flush();
+  await h.advance(2_000);
+  await h.advance(2_000);
+  const end = await ended(t, attachment as never);
+  assert.deepEqual(end.terminal, { state: 'failed', code: 'provider_recovery_exhausted' }, 'the end names the exhausted recovery');
+  assert.equal(end.terminalFrame, true, 'the client hears the terminal before the socket closes');
+  const failures = h.receipts.filter(entry => entry['event'] === 'live_recovery_failed');
+  assert.equal(failures.length, 2, 'both refused opens are receipts');
+  assert.equal(failures[0]!['messageKey'], 'unrecognized', 'a free-text message never reaches the log');
+  assert.equal(h.port.opens, 3, 'the first open, the refused recovery and the one fresh retry: no loop');
+  const next = h.owner.create({ idempotencyKey: 'r2-next', inputClass: 'ordinary' }, h.ctx);
+  const again = h.owner.attach({ liveSessionId: next.liveSessionId }, h.ctx);
+  (await sessionAt(h, 1))!.live();
+  await again.ready;
+  assert.equal(h.owner.get(next.liveSessionId).lifecycle, 'active', 'the next attach starts clean');
+  h.owner.revoke(next.liveSessionId);
 });

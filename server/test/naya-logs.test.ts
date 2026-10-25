@@ -5,6 +5,11 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Store } from '../runtime/store.js';
+import { domainMigrations } from '../domain/schema.js';
+import { chatMigrations } from '../chat/index.js';
+import { liveMigrations } from '../live/index.js';
+import { traceMigrations } from '../trace/schema.js';
 
 // Synthetic fixtures only: every record below is invented for this test and the reader is pointed
 // at a mkdtemp data directory, never at the owner's own host.log.
@@ -13,18 +18,46 @@ import { fileURLToPath } from 'node:url';
 const script = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts', 'naya-logs.mjs');
 const START = '2026-10-17T12:00:00.000Z';
 
+// C-LIVE behaviour 9 (L2-15): the fixture is the CURRENT format. host.log drops the session id from
+// live_tool_turn, session_end and live_started (server/host/log.ts), so a live session, its turns and its tool
+// calls are read from the trace store, and host.log timings are placed in the session window they fall in.
+const LIVE_ID = '0a1b2c3d-1111-4222-8333-944455556666';
+const CHAT_ID = 'chat-synthetic';
+const at = (iso: string): number => Date.parse(iso);
+
 function fixtures(t: { after: (fn: () => void) => void }): string {
   const root = mkdtempSync(join(tmpdir(), 'didi-naya-logs-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, 'logs'), { recursive: true, mode: 0o700 });
+  const store = new Store(root, [...domainMigrations, ...chatMigrations, ...liveMigrations, ...traceMigrations]);
+  store.transaction(tx => {
+    tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
+        client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes,
+        journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,'terminal',1,1,4,100,1,'ended',?,?,?,?)`,
+      [LIVE_ID, store.assistantId, store.authorityEpoch, 'key-1', 'fp-1', 'client', 'audit', 'profile', 'prompt',
+        JSON.stringify({ state: 'failed', code: 'resume_failed' }), at('2026-10-17T12:00:05.000Z'), at(START), at('2026-10-17T12:00:05.000Z')]);
+    for (const [index, origin] of [[0, 'owner'], [1, 'assistant'], [2, 'owner']] as const) {
+      tx.run('INSERT INTO trace_turn (turn_id, live_session_id, turn_index, origin, opened_at, mono_ms) VALUES (?,?,?,?,?,?)',
+        [`turn-${index}`, LIVE_ID, index, origin, at(START) + index * 1_000, index * 1_000]);
+    }
+    tx.run(`INSERT INTO trace_call (call_key, live_session_id, connection_epoch, provider_call_id, name, args_chars, intent_at, outcome, ms)
+      VALUES (?,?,?,?,?,?,?,?,?)`, ['call-1', LIVE_ID, 'e0', 'p-1', 'research', 40, at('2026-10-17T12:00:01.000Z'), 'completed', 900]);
+    tx.run(`INSERT INTO trace_call (call_key, live_session_id, connection_epoch, provider_call_id, name, args_chars, intent_at, outcome, ms)
+      VALUES (?,?,?,?,?,?,?,?,?)`, ['call-2', LIVE_ID, 'e0', 'p-2', 'research', 30, at('2026-10-17T12:00:02.000Z'), 'failed', 120]);
+  });
+  store.close();
   const records = [
-    { timestamp: START, pid: 1, event: 'live_started', liveSessionId: 'live-synthetic', provider: 'gemini', modelId: 'models/live', voice: 'Aoede' },
-    { timestamp: '2026-10-17T12:00:01.000Z', pid: 1, event: 'live_tool_turn', liveSessionId: 'live-synthetic', sequence: 1, toolCallsThisTurn: 2, toolLatencyMs: [120, 900] },
+    { timestamp: START, pid: 1, event: 'live_started', provider: 'gemini', modelId: 'models/live', voice: 'Aoede', voiceKind: 'preset' },
+    { timestamp: '2026-10-17T12:00:01.000Z', pid: 1, event: 'research_call_arrived', liveSessionId: LIVE_ID, generation: 0, calls: 1 },
+    { timestamp: '2026-10-17T12:00:01.900Z', pid: 1, event: 'live_tool_turn', sequence: 1, toolCallsThisTurn: 1, toolLatencyMs: [{ tool: 'research', ms: 900 }], toolResponseWhileGenerating: false },
+    { timestamp: '2026-10-17T12:00:01.950Z', pid: 1, event: 'research_source', researchId: 'r-1', source: 'knowledge', outcome: 'ok', ms: 850, deadlineMs: 12_000 },
     { timestamp: '2026-10-17T12:00:02.500Z', pid: 1, event: 'live_trace_rejected', kind: 'call.intent', code: 'MISSING_FIELD' },
-    { timestamp: '2026-10-17T12:00:02.600Z', pid: 1, event: 'tool_failure', liveSessionId: 'live-synthetic', tool: 'calendar_window', code: 'timeout' },
-    { timestamp: '2026-10-17T12:00:05.000Z', pid: 1, event: 'session_end', liveSessionId: 'live-synthetic', reason: 'ended' },
-    { timestamp: '2026-10-17T12:10:00.000Z', pid: 1, event: 'chat_timing', runId: 'chat-synthetic', outcome: 'failed', rounds: [{ ms: 40 }], tools: [], fenceMs: 700, acquireMs: 5, answerMs: 1_200 },
-    { timestamp: '2026-10-17T12:10:01.000Z', pid: 1, event: 'session_end', runId: 'chat-synthetic', reason: 'failed' },
+    { timestamp: '2026-10-17T12:00:02.600Z', pid: 1, event: 'tool_failure', code: 'timeout', tool: 'calendar_window', connector: 'google', errorClass: 'Error', messageHead: 'timeout' },
+    { timestamp: '2026-10-17T12:00:03.000Z', pid: 1, event: 'live_dead_air', msSinceTool: 15_002, msSinceAudible: 18_510 },
+    { timestamp: '2026-10-17T12:00:05.000Z', pid: 1, event: 'session_end', reason: 'resume_failed', msAfterStop: 0 },
+    { timestamp: '2026-10-17T12:10:00.000Z', pid: 1, event: 'chat_timing', runId: CHAT_ID, outcome: 'failed', rounds: [{ ms: 40 }], tools: [], fenceMs: 700, acquireMs: 5, answerMs: 1_200 },
+    { timestamp: '2026-10-17T12:10:01.000Z', pid: 1, event: 'session_end', runId: CHAT_ID, reason: 'failed' },
     { timestamp: '2026-10-17T12:00:02.500Z', pid: 1, event: 'host_error', class: 'LiveTerminal', code: 'synthetic' },
   ];
   writeFileSync(join(root, 'logs', 'host.log'), records.map(row => `${JSON.stringify(row)}\n`).join(''));
@@ -44,13 +77,14 @@ test('sessions lists one row per session with its identity and terminal reason',
   const root = fixtures(t);
   const out = run(root, ['sessions']);
   assert.match(out, /^SESSION\s+KIND\s+STARTED\s+DURATION\s+PROVIDER\s+TURNS\s+TOOLS\s+TERMINAL/m);
-  assert.match(out, /live-synthetic\s+live\s+2026-10-17 12:00:00\.000\s+5\.0s\s+gemini\s+1\s+3\s+ended/);
+  assert.match(out, /0a1b2c3d-1111-4222-8333-94\s+live\s+2026-10-17 12:00:00\.000\s+5\.0s\s+gemini\s+2\s+2\s+resume_failed/,
+    'the live row reads its owner turns and tool calls from the store, and its end from the terminal outcome');
   assert.match(out, /chat-synthetic\s+chat\s+2026-10-17 12:10:00\.000\s+1\.0s\s+\s+0\s+0\s+failed/);
 });
 
 test('sessions honours --kind and --since', t => {
   const root = fixtures(t);
-  assert.equal(run(root, ['sessions', '--kind', 'chat']).includes('live-synthetic'), false);
+  assert.equal(run(root, ['sessions', '--kind', 'chat']).includes(LIVE_ID.slice(0, 26)), false);
   assert.match(run(root, ['sessions', '--kind', 'chat']), /chat-synthetic/);
   // A window that ends before the fixtures is empty rather than an error.
   assert.match(run(root, ['sessions', '--since', '1m']), /no sessions in/);
@@ -59,18 +93,20 @@ test('sessions honours --kind and --since', t => {
 test('sessions --json carries the summary of every session', t => {
   const root = fixtures(t);
   const sessions = JSON.parse(run(root, ['sessions', '--json']));
-  assert.deepEqual(sessions.map((session: { id: string }) => session.id).sort(), ['chat-synthetic', 'live-synthetic']);
-  const live = sessions.find((session: { id: string }) => session.id === 'live-synthetic');
-  assert.equal(live.tools, 3, 'two delegated calls and one failed tool');
-  assert.equal(live.terminal, 'ended');
+  assert.deepEqual(sessions.map((session: { id: string }) => session.id).sort(), [LIVE_ID, CHAT_ID].sort());
+  const live = sessions.find((session: { id: string }) => session.id === LIVE_ID);
+  assert.equal(live.turns, 2, 'two owner turns in the trace store');
+  assert.equal(live.tools, 2, 'two tool calls in the trace store');
+  assert.equal(live.terminal, 'resume_failed');
 });
 
 test('tools reads the tool receipts host.log keeps, per session', t => {
   const root = fixtures(t);
-  const out = run(root, ['tools', 'live-synthetic']);
+  const out = run(root, ['tools', LIVE_ID]);
   assert.match(out, /^TIME\s+EVENT\s+CALL\s+MS/m);
-  assert.match(out, /live_tool_turn\s+-\s+120/);
-  assert.match(out, /tool_failure\s+calendar_window/);
+  assert.match(out, /research\s+completed\s+900/);
+  assert.match(out, /research\s+failed\s+120/);
+  assert.match(out, /tool_failure\s+calendar_window/, 'and the host.log receipts inside the session window');
   assert.equal(out.includes('chat-synthetic'), false, 'tool receipts are read for the session asked for');
 });
 
@@ -87,7 +123,9 @@ test('errors merges host.log failures, without a journal line to carry them', t 
 test('slow lists the timings over the threshold and nothing else', t => {
   const root = fixtures(t);
   const slow = JSON.parse(run(root, ['slow', '--json', '--over', '500']));
-  assert.deepEqual(slow.map((row: { what: string }) => row.what).sort(), ['chat_answer', 'chat_fence', 'tool']);
+  assert.deepEqual(slow.map((row: { what: string }) => row.what).sort(), ['chat_answer', 'chat_fence', 'silence', 'source:knowledge', 'tool:research']);
+  assert.ok(slow.filter((row: { what: string }) => !row.what.startsWith('chat')).every((row: { session: string }) => row.session === LIVE_ID),
+    'host.log timings without an id land in the session window they fall in');
 });
 
 test('native reads the app subsystem log for the session window', t => {
@@ -99,8 +137,8 @@ test('native reads the app subsystem log for the session window', t => {
     "printf '2026-10-17 12:00:01.000  main  Default  native-actions 77  synthetic native record\\n'",
   ].join('\n'));
   chmodSync(bin, 0o755);
-  const out = run(root, ['native', 'live-synthetic'], { NAYA_LOG_BIN: bin });
-  assert.match(out, /app log for live-synthetic, 2026-10-17T11:59:58\.000Z to 2026-10-17T12:00:07\.000Z/);
+  const out = run(root, ['native', LIVE_ID], { NAYA_LOG_BIN: bin });
+  assert.match(out, /app log for 0a1b2c3d-1111-4222-8333-944455556666, 2026-10-17T11:59:58\.000Z to 2026-10-17T12:00:07\.000Z/);
   assert.match(out, /synthetic native record/);
 });
 
@@ -111,7 +149,7 @@ test('a missing session is reported, never silently empty', t => {
 
 test('the timeline command is gone: its per-turn record lives in the trace store', t => {
   const root = fixtures(t);
-  assert.throws(() => run(root, ['timeline', 'live-synthetic']), /unknown command timeline/);
+  assert.throws(() => run(root, ['timeline', LIVE_ID]), /unknown command timeline/);
 });
 
 test('the reader resolves the host default data dir with no --data-dir', t => {
@@ -120,10 +158,10 @@ test('the reader resolves the host default data dir with no --data-dir', t => {
   const expected = process.platform === 'darwin' ? join(home, 'Library', 'Application Support', 'Lux Didi')
     : process.platform === 'win32' ? join(home, 'AppData', 'Roaming', 'Lux Didi') : join(home, '.local', 'share', 'lux-didi');
   mkdirSync(join(expected, 'logs'), { recursive: true, mode: 0o700 });
-  writeFileSync(join(expected, 'logs', 'host.log'), `${JSON.stringify({ timestamp: START, pid: 1, event: 'live_started', liveSessionId: 'live-default', provider: 'openai', modelId: 'gpt-live-1', voice: 'marin' })}\n`);
+  writeFileSync(join(expected, 'logs', 'host.log'), `${JSON.stringify({ timestamp: START, pid: 1, event: 'chat_timing', runId: 'chat-default', outcome: 'completed', rounds: [], tools: [], fenceMs: 1, acquireMs: 1, answerMs: 1 })}\n`);
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
   delete env.DIDI_STATE_DIR;
   delete env.XDG_DATA_HOME;
   const out = runBare(['sessions'], env);
-  assert.match(out, /live-default\s+live/, `the reader found the session under ${expected}`);
+  assert.match(out, /chat-default\s+chat/, `the reader found the session under ${expected}`);
 });

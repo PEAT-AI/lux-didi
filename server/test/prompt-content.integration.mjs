@@ -9,7 +9,7 @@ const approved=JSON.parse(readFileSync(new URL('./fixtures/prompt-final.json',im
 assert.equal(prompt.NAYA_CHARACTER,approved.NAYA_CHARACTER);
 assert.equal(prompt.NAYA_VOICE_TOOLS,approved.NAYA_VOICE_TOOLS);
 // VOICE-R1: the approved instructions carry the waiting rule once and no host-authored waiting text.
-assert.equal(approved.NAYA_VOICE_TOOLS.split('Silence while you look something up is fine.').length-1,1,'the silence rule appears once');
+assert.equal(approved.NAYA_VOICE_TOOLS.split('Silence while you look something up is fine.').length-1,0,'C-LIVE: the silence-is-fine rule is gone');
 assert.equal(approved.NAYA_VOICE_TOOLS.split('never use a stock waiting line').length-1,1,'and states the stock-line ban once');
 for(const banned of ['never go silent','say one short line','Nothing has been sent or booked','Before an actual lookup']){
   assert.equal((approved.NAYA_CHARACTER+approved.NAYA_VOICE_TOOLS).includes(banned),false,`no waiting cue survives: ${banned}`);

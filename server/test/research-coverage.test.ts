@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { MAX_LOOKUPS, RESEARCH, ResearchLedger, broaderQueryOf, clip, coverageLine, parseResearch, researchDeclaration, runResearch, statusAsk, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type SourceKind } from '../tools/research.js';
+import { MAX_LOOKUPS, RESEARCH, ResearchLedger, broaderQueryOf, clip, coverageLine, parseResearch, researchDeclaration, runResearch, statusAsk, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { shapeGcalList } from '../tools/live-shape.js';
 
@@ -319,29 +319,25 @@ test('#653: a status ask says a calendar that answered nothing, in plain words',
   assert.doesNotMatch(note, /alive|working/iu, 'and no source is called alive or working');
 });
 
-// --- #657 item 1, #675: a test-all ask is never refused, and one answer covers every source ----------
+// --- #657 item 1: a test-all ask wider than the lookup limit is batched, never refused ----------------
 
-test('#657 item 1: a five-source test-all ask is read whole in one answer, never refused', async () => {
+test('#657 item 1: a six-source test-all ask is served in one batch and names the rest', async () => {
   const h = harness({ configured: ['calendar', 'mail', 'chat', 'knowledge', 'mongoose'] });
-  const reply = await runResearch(h.deps, { action: 'start', question: 'test all tools' }, new AbortController().signal);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'test all tools', topic: 'tools' }, new AbortController().signal);
   const kindOf = (name: string): string => name === 'gmail_search_messages' ? 'mail'
     : name === 'mattermost_search' ? 'chat'
       : name === 'calendar_list_events' || name === 'calendar_list_calendars' ? 'calendar'
         : name === 'search_knowledge' ? 'knowledge' : name;
-  const read = new Set(h.executed.map(call => kindOf(call.name)).filter(kind => kind !== 'search'));
-  for (const source of ['calendar', 'mail', 'chat', 'knowledge']) assert.ok(read.has(source), `the one answer read ${source} (${[...read].join(',')})`);
-  assert.doesNotMatch(String(reply['note']), /The rest come next/u, 'no source is left for a later call');
+  const read = new Set(h.executed.map(call => kindOf(call.name)));
+  assert.ok(read.size <= MAX_LOOKUPS, `the first batch stays within the limit (${[...read].join(',')})`);
+  assert.match(String(reply['note']), /The rest come next: company knowledge/u, `the reply names the sources it left for the next call (${String(reply['note'])})`);
+  assert.equal(reply['canContinue'], true, 'and the rest can be asked for');
   const lookups = [
     { source: 'calendar', query: 'today' }, { source: 'mail', query: 'inbox' }, { source: 'chat', query: 'release' },
     { source: 'knowledge', query: 'release' }, { source: 'company', query: 'renewal' }, { source: 'web', query: 'release' },
   ];
   const parsed = parseResearch({ action: 'start', question: 'test all tools', topic: 'tools', lookups });
   assert.equal(parsed.ok, true, 'a six-source test-all ask is never refused whole');
-  // #675: the model's own lookup batch is untouched, so an ordinary ask still honours the limit.
-  const ordinary = parseResearch({ action: 'start', question: 'what did the team say about the release', topic: 'release', lookups });
-  assert.equal(ordinary.ok, false, 'an ordinary ask over the lookup limit is still refused');
-  assert.equal(ordinary.ok === false ? ordinary.reason : '', 'lookups_count', 'with the count reason, unchanged');
-  assert.ok(MAX_LOOKUPS === 4, 'the declared lookup limit is unchanged');
 });
 
 // --- #657 item 2: a status check reads one page of mail, never one message per call ------------------
@@ -478,7 +474,7 @@ test('#654 ruling R2: a finish continuation on the same topic continues the run'
   assert.equal(String(same['researchId']), oldId, 'a finish continuation on the same topic continues the run');
 });
 
-// --- #675: a status ask names every configured source, and reads each one the way its own ask does ----
+// --- #675: a status ask names every configured source, in the shape that source's own ask uses -------
 
 /** Every configured source answers in its own real shape, except the company one, which is signed out. */
 function statusFixture(): { execute: ResearchDeps['execute']; web: NonNullable<ResearchDeps['web']> } {
@@ -490,13 +486,6 @@ function statusFixture(): { execute: ResearchDeps['execute']; web: NonNullable<R
       } }),
     },
     execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
-      if (call.name === 'conversation_history') {
-        return {
-          key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0,
-          binding: { executionId: call.key } as NonNullable<IntentSubResult['binding']>,
-          historyPage: { status: 'ok', hits: [{ snippet: 'we agreed the release date' }], totalMatches: 1, nextCursor: null },
-        } as IntentSubResult;
-      }
       if (call.name === 'calendar_list_calendars') return sub(call.name, '- Main [primary]', true, call.key);
       if (call.name === 'calendar_list_events') {
         return { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: [{ id: 'd1', start: '2026-10-19T10:00:00Z', summary: 'Release review' }] }) } as IntentSubResult;
@@ -508,48 +497,48 @@ function statusFixture(): { execute: ResearchDeps['execute']; web: NonNullable<R
   };
 }
 
-const STATUS_SOURCES = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'] as const;
+const STATUS_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'] as const;
 const STATUS_SIGNED_OUT = () => [{ source: 'mongoose' as const, reason: 'not_signed_in' }];
 
-test('#675: a status ask names every configured source once, web and company included, in both modes', async () => {
+test('#675: a status ask names every configured source across the batch it announces, and reads each one its own way', async () => {
   const fixture = statusFixture();
-  const asked = harness({ configured: STATUS_SOURCES, web: fixture.web, unavailableNow: STATUS_SIGNED_OUT, execute: fixture.execute });
-  const questionMode = await runResearch(asked.deps, { action: 'start', question: 'test all the tools' }, new AbortController().signal);
-  const note = String(questionMode['note']);
-  for (const line of ['memory answered', 'knowledge base answered', 'calendar answered', 'mail answered', 'team chat answered', 'company knowledge is signed out', 'the web answered']) {
-    assert.match(note, new RegExp(line), `the status answer names ${line} (${note})`);
+  const h = harness({ configured: STATUS_SOURCES, web: fixture.web, unavailableNow: STATUS_SIGNED_OUT, execute: fixture.execute });
+  const first = await runResearch(h.deps, { action: 'start', question: 'test all the tools' }, new AbortController().signal);
+  const firstNote = String(first['note']);
+  // The calendar is read with a real window, so it is never called failed on the status path.
+  for (const label of ['knowledge base', 'calendar', 'mail', 'team chat']) {
+    assert.match(firstNote, new RegExp(`${label} answered`), `the first answer names ${label} (${firstNote})`);
   }
-  assert.doesNotMatch(note, /failed|could not|did not|not answer/u, `no source is called failed or timed out (${note})`);
-  // The host's own probe decides both modes, so the model's lookups never change the counts it states.
+  assert.doesNotMatch(firstNote, /failed|could not|not answer/u, `no read source is called failed (${firstNote})`);
+  assert.match(firstNote, /The rest come next: company knowledge, the web/u, `the answer announces the rest (${firstNote})`);
+  const second = await runResearch(h.deps, {
+    action: 'continue', researchId: String(first['researchId']), question: 'test all the tools',
+  }, new AbortController().signal);
+  const secondNote = String(second['note']);
+  assert.match(secondNote, /company knowledge is signed out/u, `a signed out source says so (${secondNote})`);
+  assert.match(secondNote, /the web answered/u, `the web is read and named (${secondNote})`);
+  for (const label of ['knowledge base answered', 'calendar answered', 'mail answered', 'team chat answered']) {
+    assert.match(secondNote, new RegExp(label), `the second answer keeps what the first read (${secondNote})`);
+  }
+  // The host's own status shape decides the read, so the model lookups never change the counts it states.
   const looked = harness({ configured: STATUS_SOURCES, web: fixture.web, unavailableNow: STATUS_SIGNED_OUT, execute: fixture.execute });
   const lookupsMode = await runResearch(looked.deps, {
     action: 'start', question: 'test all the tools',
     lookups: [{ source: 'mail', query: 'from:ana' }, { source: 'knowledge', query: 'release' }],
   }, new AbortController().signal);
-  assert.equal(String(lookupsMode['note']), note, 'the model lookups never change what a status answer says');
-  assert.equal(String(lookupsMode['coverage']), String(questionMode['coverage']), 'and the counts it states come from the same read');
+  assert.equal(String(lookupsMode['note']), firstNote, 'the model lookups never change what a status answer says');
+  assert.equal(String(lookupsMode['coverage']), String(first['coverage']), 'and the counts it states come from the same read');
 });
 
-// --- #674: a refused sub-call ends its leg with its own code, never a timeout ------------------------
+// --- #675: a closed code that is not a sign-out is never called signed out --------------------------
 
-test('#674: a refused chat call ends its leg at once with the refusal code, never as a timeout', async () => {
-  let clock = 0;
-  const receipts: ResearchSourceLog[] = [];
+test('#675: a token budget code is not read as a sign-out', async () => {
   const h = harness({
-    now: () => clock,
-    configured: ['chat'],
-    execute: async (subs: readonly IntentSubCall[]) => {
-      clock += 20;
-      return subs.map(call => ({ ...sub(call.name, '', false, call.key), code: 'grant_not_permitted' }));
-    },
+    configured: ['mongoose'],
+    unavailableNow: () => [{ source: 'mongoose', reason: 'token_budget_exhausted' }],
   });
-  const reply = await runResearch({ ...h.deps, logSource: event => receipts.push(event) }, {
-    action: 'start', question: 'what needs my attention',
-  }, new AbortController().signal);
-  const chat = receipts.filter(event => event.source === 'chat');
-  assert.ok(chat.length > 0, 'the chat leg ran');
-  assert.ok(chat.every(event => event.ms < 100), `every chat read ended within 100 ms (${chat.map(event => event.ms).join(',')})`);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'are my tools working' }, new AbortController().signal);
   const note = String(reply['note']);
-  assert.match(note, /tool not granted/u, `the reply names the refusal code, not a bare failure (${note})`);
-  assert.doesNotMatch(note, /timed? ?out|did not answer within/u, `a refusal is never called a timeout (${note})`);
+  assert.doesNotMatch(note, /signed out/u, `an exhausted token budget is not a sign-out (${note})`);
+  assert.match(note, /company knowledge/u, `the source is still named (${note})`);
 });

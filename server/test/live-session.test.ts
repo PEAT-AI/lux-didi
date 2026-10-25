@@ -6285,10 +6285,15 @@ test('#656: a ten second read is work, so no rebuild fires over it and the answe
   const fake = progressPort();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  // The first read returns and its output creates the debt; the second is the one that runs long.
+  const beforeTool = async () => { calls += 1; if (calls >= 2) await held; };
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler,
-    limits: openaiLimits, beforeTool: () => held });
+    limits: openaiLimits, beforeTool });
   await openPort(h, 'inflight-read-656');
   await ownerInput(fake);
+  fake.emit({ type: 'toolCall', calls: [{ id: 'first656', name: 'search_knowledge', args: { query: 'warm', limit: 1 } }] });
+  await settlePort();
   fake.emit({ type: 'toolCall', calls: [{ id: 'chat656', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   // The 03:42 shape: the read runs its whole ten second budget and the model says nothing in between.
@@ -6298,7 +6303,7 @@ test('#656: a ten second read is work, so no rebuild fires over it and the answe
   assert.equal(fake.closes, 0);
   release();
   await settlePort();
-  assert.equal(fake.toolResponses.length, 1, 'the read returns to the session that asked for it');
+  assert.equal(fake.toolResponses.length, 2, 'the long read returns to the session that asked for it');
   // The model speaks the result, and the ladder stays out of the answer it asked for.
   fake.emit({ type: 'audio', pcm: new Uint8Array([1, 0]), rate: 24_000 });
   h.advance(AUDIBLE_DEBT_RUNG_MS + RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
@@ -6407,11 +6412,15 @@ test('#656: the 03:42 sequence, four serial research calls with two refused, nev
   }
   fake.emit({ type: 'toolCall', calls: [{ id: 'chat4', name: 'search_knowledge', args: { query: 'chat', limit: 1 } }] });
   await settlePort();
-  // He speaks nothing between the calls, and the last read is still running when the ladder would have fired.
-  h.advance(AUDIBLE_DEBT_RUNG_MS + 10_000); scheduler.runDue(); await settlePort();
+  // He speaks nothing between the calls, and the last read runs its whole ten seconds under the ladder.
+  for (let elapsed = 0; elapsed < 10_000; elapsed += 1_000) { h.advance(1_000); scheduler.runDue(); await settlePort(); }
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'no rebuild lands in the middle of the read');
   assert.equal(fake.closes, 0, 'and the session that owns the read is never closed');
   release();
   await settlePort();
   assert.equal(fake.toolResponses.length, 1, 'the read that finished still answers the model');
+  // The model stays mute after the call settled, so the ladder recovers the mute once, in the normal window.
+  h.advance(AUDIBLE_DEBT_RUNG_MS + 1_000); scheduler.runDue(); await settlePort();
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'one rebuild, after the read and not under it');
+  assert.equal(fake.sessionsOpened, 2);
 });

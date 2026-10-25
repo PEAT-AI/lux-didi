@@ -260,6 +260,10 @@ export const RESPONSE_WATCHDOG_WINDOW_MS = 120_000;
  *  whatever text it wrote in between. The rebuild rung is seven seconds later, which is AUDIBLE_DEBT_REBUILD_MS. */
 export const AUDIBLE_DEBT_RUNG_MS = 8_000;
 export const AUDIBLE_DEBT_REBUILD_MS = AUDIBLE_DEBT_RUNG_MS + RESPONSE_WATCHDOG_RECOVERY_MS;
+/** #656: owner audio that arrives while a rebuild is open is held for the new session, newest last. The cap is three
+ *  seconds of the 16 kHz s16 mono uplink (32 bytes per millisecond); past it the oldest held frame is the one dropped. */
+export const REBUILD_AUDIO_HOLD_MS = 3_000;
+export const REBUILD_AUDIO_HOLD_BYTES = REBUILD_AUDIO_HOLD_MS * 32;
 
 /** The write tools the Live model may decline or call, and the resource each one is pinned to. */
 const OWNER_WRITE_RESOURCES = new Map([['remember_note', 'owner-memory'], ['save_to_vault', 'owner-vault']]);
@@ -416,6 +420,10 @@ interface ActiveSession {
   /** 3j response watchdog: the silence clock of the turn that owes a reply, and the last watchdog recovery. */
   watchdogTimer?: ReturnType<JobTimer> | undefined; watchdogSince?: number | undefined;
   watchdogPhase?: 'armed' | 'nudged' | undefined; watchdogRecoveredAt?: number | undefined;
+  /** #656: the rung stood down for a tool call in flight, so the clock re-anchors on that call's own output. */
+  debtHeldForTool?: boolean | undefined;
+  /** #656: owner audio held across a rebuild, oldest first, bounded by REBUILD_AUDIO_HOLD_BYTES. */
+  rebuildAudio: Uint8Array[]; rebuildAudioBytes: number;
   /** #538: the audible debt clock, the debt the owner can hear is unanswered. It is non-sliding: it starts when the
    *  model begins owing audio and only an audible frame, an owner barge-in or the turn's end clears it. `debtOutputs`
    *  is the batch a recreate re-queues exactly once. */
@@ -1519,6 +1527,7 @@ export class LiveSessionOwner {
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
+      rebuildAudio: [], rebuildAudioBytes: 0,
       diagnosticSnapshots: [], ownerAudioCalls: 0, ownerAudioBytes: 0, ownerRebuildingDropCalls: 0, ownerRebuildingDropBytes: 0, terminalOutcome: null,
       diagnosticTerminalCode: 'outcome_unknown', diagnosticsEmitted: false,
       loopDone: deferred<void>(), done: deferred<LiveSessionSnapshot>(), resolveDone: () => {}, persistFailure: undefined,
@@ -1748,13 +1757,18 @@ export class LiveSessionOwner {
   #armDebt(handle: ActiveSession, outputs: LiveToolResponse[], reason: 'tool_output' | 'recreate'): void {
     if (this.#settled(handle)) return;
     handle.debtOutputs = outputs;
-    if (handle.debtSince !== undefined) return;
+    // #656: a clock that stood down for a tool call in flight re-anchors on that call's own output, so the model gets
+    // the same eight seconds to speak its result as any other tool output. Every other output leaves a running clock
+    // exactly where it was (#538: the deadline never slides).
+    if (handle.debtSince !== undefined && (handle.debtHeldForTool !== true || handle.muted)) return;
+    if (handle.debtSince !== undefined) { handle.debtTimer?.cancel(); handle.debtTimer = undefined; }
     // A muted session hears nothing, so nothing is owed to it while the mute holds.
     if (handle.muted) return;
     handle.debtSince = this.#now();
     handle.debtBargeIn = false;
     handle.debtRequeued = false;
     handle.debtDeferred = false;
+    handle.debtHeldForTool = false;
     handle.responseInProgress = false;
     // One silence, one clock: the sliding watchdog stands down for the silence the debt clock now owns.
     this.#cancelWatchdog(handle);
@@ -1774,7 +1788,7 @@ export class LiveSessionOwner {
     if (handle.debtSince === undefined) return;
     handle.debtTimer?.cancel(); handle.debtTimer = undefined;
     handle.debtSince = undefined; handle.debtStep = undefined; handle.debtOutputs = undefined;
-    handle.debtRequeued = false; handle.debtDeferred = false;
+    handle.debtRequeued = false; handle.debtDeferred = false; handle.debtHeldForTool = false;
     this.#noteDebt(handle, 'clear', reason);
   }
 
@@ -1798,11 +1812,34 @@ export class LiveSessionOwner {
    * continuation input. The rebuild rung seven seconds later is the existing fresh-seeded recovery, so a second mute
    * inside the window keeps its model_unresponsive and uplink_starved classification.
    */
+  /**
+   * #656: whether a tool call the model issued still owns the silence. The call's own arrival time is the clock:
+   * TOOL_CEILING_MS is its hard ceiling, so a call older than that has run past the point where it answers, and the
+   * ladder stops waiting for it. Any pending call inside its ceiling holds the silence.
+   */
+  #toolOwnsSilence(handle: ActiveSession): boolean {
+    if (handle.pendingCallIds.size === 0) return false;
+    for (const id of handle.pendingCallIds) {
+      const started = handle.callStartedAt.get(id);
+      if (started === undefined || this.#now() - started < TOOL_CEILING_MS) return true;
+    }
+    return false;
+  }
+
   async #debtRung(handle: ActiveSession, generation: number, step: 'rung' | 'rebuild'): Promise<void> {
     if (this.#settled(handle) || generation !== handle.generation || handle.debtSince === undefined) return;
     handle.debtTimer = undefined;
     if (handle.debtBargeIn) return;
     const turnAgeMs = Math.max(0, this.#now() - handle.debtSince);
+    // #656: a tool call the model issued owns the silence through the dead-air path (#538 speaks progress while a call
+    // runs), so the ladder never nudges or rebuilds over it: it stands down and #armDebt re-anchors the clock on that
+    // call's own output. TOOL_CEILING_MS is the call's own hard ceiling, so a call that has run past it no longer owns
+    // the silence and a truly wedged call still recovers.
+    if (this.#toolOwnsSilence(handle)) {
+      handle.debtHeldForTool = true;
+      this.#scheduleDebt(handle, AUDIBLE_DEBT_RUNG_MS, 'rung');
+      return;
+    }
     // #538 R4: an answer in flight is never the ladder's to lose. A response the provider announced since the debt
     // started holds the 8 s rung until it ends, and the 15 s rung stays armed as its bound.
     if (step === 'rung' && handle.responseInProgress === true && handle.debtDeferred !== true) {
@@ -1840,6 +1877,17 @@ export class LiveSessionOwner {
    */
   async #recreateForDeadAir(handle: ActiveSession, reason: 'send_failed' | 'dead_air'): Promise<boolean> {
     if (this.#settled(handle) || handle.debtBargeIn) return false;
+    // #656: one model-mute rebuild per recovery window, the same watchdogRecoveredAt stamp and RESPONSE_WATCHDOG_WINDOW_MS
+    // the sliding watchdog keeps, so a model still mute under the new session is ended honestly by #watchdogRecover
+    // instead of rebuilt twice inside one research run.
+    if (reason === 'dead_air') {
+      const previous = handle.watchdogRecoveredAt;
+      if (previous !== undefined && this.#now() - previous < RESPONSE_WATCHDOG_WINDOW_MS) {
+        this.#settle(handle, { state: 'failed', code: 'model_unresponsive' }, false, 'ended', null);
+        return false;
+      }
+      handle.watchdogRecoveredAt = this.#now();
+    }
     if (reason === 'send_failed') this.#noteDebt(handle, 'rung', 'send_failed');
     const outputs = handle.debtOutputs ?? [];
     const requeue = outputs.length > 0 && handle.debtRequeued !== true;
@@ -2484,6 +2532,9 @@ export class LiveSessionOwner {
     // A late mic frame after the session settled is dropped and counted, never thrown:
     // throwing here makes the HTTP layer close the socket generic 1002 before the typed terminal frame.
     if (handle.rebuilding || (handle.terminal && !handle.invalidated)) {
+      // #656: a rebuild is a gap in the session, not in the owner's words. His audio is held for the new session up to
+      // REBUILD_AUDIO_HOLD_BYTES; past the cap the oldest held frame is what is dropped, and the counter records it.
+      if (handle.rebuilding && !handle.terminal && this.#holdRebuildAudio(handle, pcm)) return;
       handle.ownerRebuildingDropCalls++; handle.ownerRebuildingDropBytes += pcm.byteLength;
       // The settle diagnostics were already emitted, so a late drop is counted and reported here.
       if (handle.terminal) console.error(JSON.stringify({ event: 'live_late_frame_dropped', liveSessionId: handle.liveSessionId,
@@ -2497,6 +2548,30 @@ export class LiveSessionOwner {
     // The uplink carries zero frames while muted, so a mic that outlives the fence uploads nothing.
     if (handle.muted) return;
     handle.session.sendAudio({ pcm, dataClass: handle.inputClass });
+  }
+
+  /** #656: hold one owner frame across a rebuild. False when the frame cannot be held, so the caller counts the drop. */
+  #holdRebuildAudio(handle: ActiveSession, pcm: Uint8Array): boolean {
+    if (!(pcm instanceof Uint8Array) || !pcm.length || pcm.length % 2 !== 0) return false;
+    while (handle.rebuildAudio.length > 0 && handle.rebuildAudioBytes + pcm.byteLength > REBUILD_AUDIO_HOLD_BYTES) {
+      const dropped = handle.rebuildAudio.shift() as Uint8Array;
+      handle.rebuildAudioBytes -= dropped.byteLength;
+      handle.ownerRebuildingDropCalls++; handle.ownerRebuildingDropBytes += dropped.byteLength;
+    }
+    if (handle.rebuildAudioBytes + pcm.byteLength > REBUILD_AUDIO_HOLD_BYTES) return false;
+    handle.rebuildAudio.push(pcm); handle.rebuildAudioBytes += pcm.byteLength;
+    return true;
+  }
+
+  /** #656: the new session is ready, so the audio the owner sent into the gap is delivered in the order he spoke it. */
+  #flushRebuildAudio(handle: ActiveSession): void {
+    if (handle.rebuildAudio.length === 0) return;
+    const held = handle.rebuildAudio;
+    handle.rebuildAudio = []; handle.rebuildAudioBytes = 0;
+    for (const pcm of held) {
+      countAudio(handle, 'input', pcm.byteLength, this.#now());
+      if (!handle.muted) handle.session.sendAudio({ pcm, dataClass: handle.inputClass });
+    }
   }
 
   #observeDiagnostics(handle: ActiveSession, session: LiveVoiceSession): void {
@@ -2689,7 +2764,7 @@ export class LiveSessionOwner {
           hostLogEvent({ event: 'live_provider_ready', liveSessionId: handle.liveSessionId, generation,
             msSinceOpen: handle.openedAt === undefined ? 0 : Math.max(0, this.#now() - handle.openedAt), closeCode: null });
           this.#noteState(handle, 'ready');
-          if (handle.rebuilding) { handle.rebuilding = false; this.#noteState(handle, 'rebuild'); if (!handle.quietRebuild) this.#continuity(handle, 'resumed'); continue; }
+          if (handle.rebuilding) { handle.rebuilding = false; this.#noteState(handle, 'rebuild'); this.#flushRebuildAudio(handle); if (!handle.quietRebuild) this.#continuity(handle, 'resumed'); continue; }
         }
         // Provider activity restarts the idle clock everywhere except under the owner's mute, which
         // suspends that clock until the unmute re-arms it.

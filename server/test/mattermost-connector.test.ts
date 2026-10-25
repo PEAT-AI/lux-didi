@@ -335,7 +335,7 @@ test('#637: a plain words channel reference resolves its words, and names the ch
 // (invalid-local-read-grant), so this end-to-end test is skipped rather than left red on the branch.
 // CHANNELS-R5: still skipped. Four fixture orders were tried (see the author report); each stops at
 // `invalid-local-read-grant`, so the grant sequence below is not yet the MAILSTATE one.
-test('#637: a refused channel read through the real tool layer is voiced as an unknown channel', { skip: 'the fixture dispatches now but research still receives no code for the refusal; the next session proves the last hop' }, async t => {
+test('#637: a refused channel read through the real tool layer is voiced as an unknown channel', { skip: 'the run snapshot has no mattermost tool bound yet (the record comes back unknown_tool), so the refused read never dispatches; the projection digest is the next step' }, async t => {
   const f = setup('ok');
   const store = new Store(join(f.dir, 'data'), toolsMigrations);
   t.after(async () => { await f.adapter.close(); store.close(); rmSync(f.dir, { recursive: true, force: true }); });
@@ -357,11 +357,18 @@ test('#637: a refused channel read through the real tool layer is voiced as an u
   const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
   live = { ...acceptance, acceptedRunHash: accepted.sha256 };
   const executed: string[] = [];
+  let toolError: string | undefined;
   const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => {
-    const batch = await runToolCalls(owner, subs.map((sub, index) => ({ id: `s${index}`, name: sub.name, args: sub.args })), {
+    let batch;
+    try {
+      batch = await runToolCalls(owner, subs.map((sub, index) => ({ id: `s${index}`, name: sub.name, args: sub.args })), {
       registry: owner.definitions('run'), host: acceptance as never, authority: { isCurrent: async () => true } as never,
-      control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step: 0, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'],
-    });
+        control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step: 0, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'],
+      });
+    } catch (error) {
+      toolError = error instanceof Error ? error.message : String(error);
+      return subs.map((sub, index) => ({ key: `s${index}`, name: sub.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'failed' }));
+    }
     return subs.map((sub, index) => {
       executed.push(sub.name);
       const callId = `s${index}`;
@@ -385,6 +392,7 @@ test('#637: a refused channel read through the real tool layer is voiced as an u
   const question = 'what is new in the nowhere channel';
   const reply = await runResearch(deps, { action: 'start', question, topic: question }, new AbortController().signal);
   const note = String(reply['note'] ?? '');
+  assert.equal(toolError, undefined, `the real tool layer ran for this read (${toolError})`);
   assert.ok(executed.includes('mattermost_search'), 'the ask names a channel, so the chat search is the read');
   assert.match(note, /I do not know a channel called nowhere\./u);
   assert.equal(note.includes('found nothing matching'), false, 'an unknown channel is never voiced as an empty search');

@@ -73,6 +73,19 @@ A connector ships with a script under `scripts/` and a row in [checks.md](checks
 
 The test file lives in `server/test/`, runs under the shared node test runner and uses the fake from step 6. A check joins the release gate in `checks.md` only by an owner decision; adding a connector to the gate is a release decision, not part of adding the connector.
 
+## The Mattermost child build
+
+The Mattermost connector reads the local archive child (`mattermost-mcp`). Every build serves the five base reads (`mattermost_whoami`, `mattermost_get_channel_history`, `mattermost_get_thread`, `mattermost_search`, `mattermost_list_channels`), and the chat read (`mattermost_chat`) works on those alone. A build with the person reads (mattermost-mcp draft PRs #67, #68 and #69, or their merge) adds what makes the person, group and channel reads exact:
+
+| child capability | what Didi uses it for | without it |
+| --- | --- | --- |
+| `mattermost_resolve_person` | a spoken name to one account and its direct message channel; two people with one first name is a question back | the name must be the username, matched on the direct message channel; the reply says person lookups by name need the newer chat archive |
+| `mattermost_list_channels` with `query`, `types`, `member`, `sort` | a channel by its spoken name, a group chat by its members, the conversations that moved for attention | channel names match through the one full channel list; group chats match on their member names and the reply says so; attention skips the direct and group leg and says so |
+| `mattermost_conversation_overview` | everything the owner and one person exchanged: their direct messages, shared group chats and channels where both posted, with counts | both sides of the direct messages only, and the reply says an overview needs the newer chat archive |
+| `attachmentText` on posts | webhook and bot posts whose words live in the attachment | those posts show their header with an empty body |
+
+Each missing capability is named once in the reply, never replaced by a guess. Moving an installed connection to a newer build is a new connection id, see [mcp-configuration.md](mcp-configuration.md).
+
 ## The clone list
 
 | what | where |

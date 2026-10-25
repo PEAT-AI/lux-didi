@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, posix, relative } from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -134,6 +134,34 @@ before(() => {
   extracted = unpack(archive,'original');
 });
 after(() => rmSync(scratch,{recursive:true,force:true}));
+
+// A tarball that drops a module the host imports still installs, and then the owner's Mac dies
+// with ERR_MODULE_NOT_FOUND at the first call that reached it (the release N incident:
+// dist/adapters/trello/client.js). An allowlist of directories cannot be trusted to keep up
+// with the import graph, so walk the built graph from the host entry and require every module
+// in it to be in the packed inventory.
+function runtimeModules(): string[] {
+  const visited = new Set<string>();
+  const queue = ['dist/host/index.js'];
+  while (queue.length > 0) {
+    const path = queue.shift()!;
+    if (visited.has(path)) continue;
+    visited.add(path);
+    assert.ok(existsSync(join(root,path)),`Missing built module: ${path}`);
+    const text = readFileSync(join(root,path),'utf8');
+    for (const match of text.matchAll(/(?:from\s*|import\s*\(\s*)['"](\.[^'"]*)['"]/g)) {
+      queue.push(posix.normalize(posix.join(posix.dirname(path),match[1]!)));
+    }
+  }
+  return [...visited].sort();
+}
+
+test('artifact carries every module the host imports', () => {
+  const inventory = new Set(packed.files.map(file => file.path));
+  const modules = runtimeModules();
+  assert.ok(modules.includes('dist/adapters/trello/client.js'),'The host import graph must reach the Trello adapter');
+  for (const path of modules) assert.ok(inventory.has(path),`The tarball drops a module the host imports: ${path}`);
+});
 
 test('artifact matches locked runtime closure, compiled service, inventory and licenses', () => {
   cleanRuntime(root);

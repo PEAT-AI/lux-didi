@@ -688,3 +688,9 @@ time.
 
 These event semantics do not establish acoustic owner identification or honk rejection. No energy or word-count rule identifies the speaker, and the adapter has no word-count rule to run.
 
+
+## Research context rebuild (C-DEPTH, W10-R13)
+
+A call keeps the research answers it has been given in the provider conversation, which is what made one call grow from 15k to 44k tokens (LAT-1023). The host now counts exactly the research text it hands the provider. Once that count passes `RESEARCH.rebuildThresholdChars` (24,000 chars), the next safe boundary rebuilds the session through the existing `fresh_seeded` recovery with one extractive ledger turn (at most `RESEARCH.ledgerChars`, 6,000 chars) in place of the raw tool items: the entities the owner asked about, per source id and date lines, the excerpt lines that survived, the gaps, and the cursors that still recover the original bodies. The ledger is built by the host, never by a model call.
+
+The rebuild is spent at the response boundary and never from the batch that filled the conversation, and it is deferred rather than dropped: while the assistant is streaming, a response is pending, a barge in is open or a recovery is in flight, the seed waits for the next boundary. Recovery, the connection epoch, barge in and the 6,000 ms operation deadline are unchanged; the rebuild only adds the threshold trigger and the ledger seed. The receipt is content free (`research_context_rebuild`: retained chars, ledger chars, rebuild count).

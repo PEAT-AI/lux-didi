@@ -23,9 +23,11 @@ test('HYGIENE 2: the count is what was sent, and a rebuild starts it again at ze
   let retention = retainedAfterSend(EMPTY, 12_000);
   assert.equal(researchRebuildDue(retention), false, 'one full default answer is still under');
   retention = retainedAfterSend(retention, 12_000);
-  assert.equal(researchRebuildDue(retention), true, 'two full default answers cross the threshold');
+  assert.equal(researchRebuildDue(retention), false, 'two of them sit exactly on the threshold, which is still under it');
+  retention = retainedAfterSend(retention, 1);
+  assert.equal(researchRebuildDue(retention), true, 'the next character sent crosses it');
   assert.deepEqual({ ...retention, retainedChars: 0, rebuilds: retention.rebuilds + 1 },
-    { retainedChars: 0, rebuilds: 1 }, 'the rebuild the host runs resets the count and records itself');
+    { retainedChars: 0, rebuilds: 1, }, 'the rebuild the host runs resets the count and records itself');
   assert.equal(researchRebuildDue({ retainedChars: 0, rebuilds: 1 }), false, 'and the next answer starts over');
 });
 

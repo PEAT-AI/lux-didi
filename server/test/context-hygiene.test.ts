@@ -376,6 +376,24 @@ test('HYGIENE 13: the seed is one turn carrying the asked entities and the held 
   assert.ok(seed.length <= 6_000, `the ledger is capped at 6,000 chars, was ${seed.length}`);
 });
 
+test('HYGIENE 15: a rebuild waits while the assistant is speaking, then runs at the next boundary', async t => {
+  const h = await live(t, CROSSED);
+  await oneRead(h);
+  // W10-R27/Z4: the boundary reads the real speaking fact, so an audible frame defers the rebuild.
+  h.port.emit({ type: 'audio', pcm: new Uint8Array(320), rate: 24_000, audible: true } as LiveVoiceEvent);
+  await flush();
+  h.port.emit(turnComplete);
+  await flush();
+  assert.equal(rebuilds(h).length, 0, 'nothing is rebuilt while assistant audio streams');
+  assert.equal(h.port.openedAt.length, 1, 'and the speaking session is untouched');
+  // The speaking hold clears on the fake clock, so the next boundary is safe.
+  await h.advance(120_000);
+  h.port.emit(turnComplete);
+  await flush();
+  assert.equal(rebuilds(h).length, 1, 'the deferred rebuild runs at the next boundary');
+  assert.equal(h.port.openedAt.length, 2);
+});
+
 test('HYGIENE 14: a follow-up after the rebuild reaches the connector again', async t => {
   const h = await live(t, CROSSED);
   await oneRead(h);

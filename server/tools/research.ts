@@ -1807,6 +1807,8 @@ export interface RunState {
   emptySearches: Map<SourceKind, string>;
   /** N3: sources whose read a deadline cut short, so the reply can say so instead of "nothing matched". */
   cutShort: Set<SourceKind>;
+  /** L8-13: a source whose latest read never dispatched a page, so its label is never a timeout. */
+  neverRan?: Set<SourceKind>;
   /** P5: why a source cannot serve a read right now, so the reply names the cause and never guesses. */
   unavailableReasons: Map<SourceKind, string>;
   /** #637: the channel the ask named, kept so an unknown one is said in the owner's own words. */
@@ -2493,7 +2495,7 @@ export const DRIVE_MIME_TYPES: Readonly<Record<'deck' | 'doc' | 'sheet', readonl
 export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading', 'needs_clarification', 'name_not_found'] as const;
 export type ResearchSourceReason = (typeof RESEARCH_SOURCE_REASONS)[number];
 
-export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found';
+export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'never_ran';
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
 
@@ -2512,6 +2514,8 @@ const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: Source
   // #635, #653: a read that ran out of its budget did not answer, and how long it was given is the reason.
   timed_out: (label, source) => `${label} did not answer within ${Math.round(RESEARCH.sourceDeadline[source] / 1000)} seconds`,
   still_reading: label => `I am still reading ${label}`,
+  // L8-13 (from main): the deadline was already spent, so no page was ever asked for.
+  never_ran: label => `${label} was never read`,
   // #637: the ask named a channel the chat connector does not know, so nothing was searched.
   channel_not_found: () => 'I do not know that channel',
 };
@@ -2611,6 +2615,9 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
     // #635: a read that was cut with nothing arrived is named by its reason below as timed_out, never as a
     // searched source with an empty count.
     if (!wasSearched) continue;
+    // L8-13 (from main): a read that never dispatched this time is named by that outcome below, never as
+    // a searched source with an empty count.
+    if (run.neverRan?.has(source) === true && !run.cutShort.has(source)) continue;
     const finding = findings.find(entry => entry.source === source && typeof entry.text === 'string');
     const text = finding?.text ?? '';
     const head = FINDING_HEAD.exec(text);
@@ -2624,7 +2631,8 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
   }
   const unsearched: CoverageUnsearched[] = [];
   for (const source of SOURCE_ORDER) {
-    if (!run.route.has(source)) continue;
+    // L8-13 (from main): a source the route never reached is still named when its read never dispatched.
+    if (!run.route.has(source) && run.neverRan?.has(source) !== true) continue;
     if (searched.some(entry => entry.source === source)) continue;
     unsearched.push({ source, reason: unsearchedReasonGiven(run, configured, source) });
   }
@@ -2633,6 +2641,8 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
 
 /** #653: what a source that never answered did, once its run is closed, so a closed reply never says still reading. */
 function closedOutcomeOf(run: RunState, source: SourceKind): UnsearchedReason {
+  // L8-13: a read that never dispatched a page is named by that outcome, never as a timeout.
+  if (run.neverRan?.has(source) === true && !run.cutShort.has(source)) return 'never_ran';
   if (run.cutShort.has(source)) return 'timed_out';
   const code = run.unavailableReasons.get(source);
   // #635: a source whose own reason was a timeout is a timeout, never a provider failure.
@@ -4069,7 +4079,10 @@ async function collectMailWithRetry(deps: ResearchDeps, run: RunState, reads: re
 async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSignal, remainingMs: number, now: () => number): Promise<void> {
   run.mailDeadlineAt ??= now() + Math.min(RESEARCH.sourceDeadline.mail, remainingMs);
   const left = run.mailDeadlineAt - now();
-  if (left <= 0 || remainingMs <= 0) { run.cutShort.add('mail'); return; }
+  // L8-13 (from main): a deadline already spent means no page is dispatched at all, which is not a read
+  // that took too long.
+  if (left <= 0 || remainingMs <= 0) { (run.neverRan ??= new Set()).add('mail'); return; }
+  run.neverRan?.delete('mail');
   // RUN-R7: the mail deadline is cut on the run's clock, released when the collector ends.
   const cut = cutAfter(Math.min(left, remainingMs), deps.schedule);
   const signal = AbortSignal.any([parent, cut.signal]);

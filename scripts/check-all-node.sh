@@ -157,7 +157,7 @@ if [ "$phase" = server ] || [ "$phase" = all ]; then
   ran_server="${#server_files[@]}"
   # --test-concurrency=1 matches the desk, which runs one check at a time: these suites share
   # ports, temporary directories and the compiled tree, and they fail when run side by side.
-  run_phase 'server tests' "$work/server-tests.log" node_test_files_bounded 600 \
+  run_phase 'server tests' "$work/server-tests.log" node_test_files_bounded 420 \
     --test-timeout=15000 --test-force-exit --test-concurrency=1 "${server_files[@]}" ||
     collect_failures "$work/server-tests.log"
   cd "$root"
@@ -174,7 +174,7 @@ if [ "$phase" = web ] || [ "$phase" = all ]; then
   printf 'web: %d test files, %d named skips\n' "${#web_files[@]}" "${#skip_web[@]}"
   print_skips "${skip_web[@]}"
   ran_web="${#web_files[@]}"
-  run_phase 'web tests' "$work/web-tests.log" node_test_files_bounded 300 \
+  run_phase 'web tests' "$work/web-tests.log" node_test_files_bounded 150 \
     --test-timeout=15000 --test-force-exit --test-concurrency=1 "${web_files[@]}" ||
     collect_failures "$work/web-tests.log"
   cd "$root"
@@ -188,7 +188,7 @@ if [ "$phase" = browser ] || [ "$phase" = all ]; then
   printf 'browser: %d suites\n' "${#browser_files[@]}"
   ran_browser="${#browser_files[@]}"
   for suite in "${browser_files[@]}"; do
-    run_phase "browser $suite" "$work/browser-$(basename "$suite").log" timeout 150 node "$suite" ||
+    run_phase "browser $suite" "$work/browser-$(basename "$suite").log" timeout 100 node "$suite" ||
       printf '%s\n' "$(basename "$suite")" >>"$work/failed" 
   done
 fi

@@ -308,13 +308,13 @@ interface Session {
   byId: Map<string, string>;
   ledger: Map<string, JsonObject>;
   /** The owner's quick-capture Inbox, as last read; its cards are on no board of the workspace. */
-  inbox?: TrelloCard[];
+  inbox?: TrelloCard[] | undefined;
   inboxHandles: Map<string, string>;
   inboxById: Map<string, string>;
 }
 
 /** One resolved write: the calls in order, an optional follow-up call built from the first reply, its ledger key and its receipt. */
-interface WritePlan { calls: TrelloPlannedCall[]; followUp?: (previous: unknown) => TrelloPlannedCall | undefined; key: string; card?: TrelloCard; describe: (card: TrelloCard | undefined, snapshot: Snapshot) => JsonObject }
+interface WritePlan { calls: TrelloPlannedCall[]; followUp?: (previous: unknown) => TrelloPlannedCall | undefined; key: string; card?: TrelloCard; /** The Inbox card this plan moves onto the board; its handle is spent on success. */ inboxCard?: string; describe: (card: TrelloCard | undefined, snapshot: Snapshot) => JsonObject }
 
 class Refusal extends Error { constructor(readonly code: string, readonly extra: JsonObject = {}) { super(code); } }
 
@@ -724,6 +724,9 @@ export class TrelloBoard {
       last = result.value;
     }
     session.snapshot = undefined;
+    // F13: a note moved onto the board is a board card now, so its Inbox handle is spent rather than a trap
+    // that refuses every later change until the owner asks for the Inbox again.
+    if (plan.inboxCard) session.inbox = session.inbox?.filter(entry => entry.id !== plan.inboxCard);
     let card = trelloCardOf(trelloPayload(last));
     if (!card && plan.card) {
       // The reply carried no card: read it back once to build the receipt; the write is never sent again.
@@ -776,7 +779,8 @@ export class TrelloBoard {
       if (action !== 'move') throw new Refusal('outside_scope');
       const list = this.#list(snapshot, String(args.list));
       const planned = need(planTrelloCall(index, 'trelloWriteCard', [{ action: 'move', cardId: inboxCard.id, listId: list.id }, { action: 'update', cardId: inboxCard.id, listId: list.id }, { action: 'update', cardId: inboxCard.id, idList: list.id }]));
-      return { calls: [planned], key: key({ cardId: inboxCard.id, listId: list.id }), describe: after => ({ ...view(after), change: `moved from the Inbox to ${list.name}` }) };
+      return { calls: [planned], key: key({ cardId: inboxCard.id, listId: list.id }), inboxCard: inboxCard.id,
+        describe: after => ({ ...view(after), change: `moved from the Inbox to ${list.name}` }) };
     }
     const card = await this.#card(session, snapshot, String(args.card), signal);
     const base = { cardId: card.id };

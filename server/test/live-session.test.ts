@@ -56,7 +56,7 @@ import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-liv
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
-import { RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME } from '../tools/research.js';
+import { RESEARCH_OPERATION, RESEARCH_TOOL_NAME } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 
 const MODEL = 'models/live-session-test';

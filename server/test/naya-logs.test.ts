@@ -9,7 +9,6 @@ import { Store } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
 import { chatMigrations } from '../chat/index.js';
 import { liveMigrations } from '../live/index.js';
-import { traceMigrations } from '../trace/schema.js';
 
 // Synthetic fixtures only: every record below is invented for this test and the reader is pointed
 // at a mkdtemp data directory, never at the owner's own host.log.
@@ -29,7 +28,7 @@ function fixtures(t: { after: (fn: () => void) => void }): string {
   const root = mkdtempSync(join(tmpdir(), 'didi-naya-logs-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, 'logs'), { recursive: true, mode: 0o700 });
-  const store = new Store(root, [...domainMigrations, ...chatMigrations, ...liveMigrations, ...traceMigrations]);
+  const store = new Store(root, [...domainMigrations, ...chatMigrations, ...liveMigrations]);
   store.transaction(tx => {
     tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
         client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes,

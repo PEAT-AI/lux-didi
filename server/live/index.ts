@@ -2602,12 +2602,12 @@ export class LiveSessionOwner {
     const reason = reasonOverride ?? outcome?.code ?? null;
     const path: 'resume' | 'fresh_seeded' = reuse ? 'resume' : 'fresh_seeded';
     let opened = await this.#openRecovery(handle, path, path === 'resume' ? savedHandle as string : undefined, remaining, idle, window, seed, reason);
-    if (!opened && handle.recoveryRefused) return this.#retryRefusedOpen(handle, remaining, idle, window, seed, reason, closeCode, path);
+    if (!opened && handle.recoveryRefused) return this.#retryRefusedOpen(handle, remaining, window, seed, reason, closeCode, path);
     if (!opened && path === 'resume') {
       this.#logRecovery(handle, 'resume', 'open_failed', closeCode, reason, seed);
       handle.recoveries += 1;
       opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, window, seed, reason);
-      if (!opened && handle.recoveryRefused) return this.#retryRefusedOpen(handle, remaining, idle, window, seed, reason, closeCode, 'fresh_seeded');
+      if (!opened && handle.recoveryRefused) return this.#retryRefusedOpen(handle, remaining, window, seed, reason, closeCode, 'fresh_seeded');
     }
     if (opened) {
       // A failed resume leaves an unusable handle: clear it so the next drop goes straight to fresh seeded.
@@ -2634,13 +2634,17 @@ export class LiveSessionOwner {
    * client receives the terminal and the next call starts clean. The generation moved on each attempt, so callbacks
    * of the old provider sessions are already fenced out.
    */
-  async #retryRefusedOpen(handle: ActiveSession, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null, closeCode: number | null, path: 'resume' | 'fresh_seeded'): Promise<boolean> {
+  async #retryRefusedOpen(handle: ActiveSession, remaining: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null, closeCode: number | null, path: 'resume' | 'fresh_seeded'): Promise<boolean> {
     const exhausted = (): false => { this.#settle(handle, { state: 'failed', code: 'provider_recovery_exhausted' }, false, 'ended', null); return false; };
     this.#logRecovery(handle, path, 'open_refused', closeCode, reason, seed);
     if ((handle.recoveryRefusals ?? 0) > 1) return exhausted();
     await this.#delay(RECOVERY_REFUSED_BACKOFF_MS);
     if (this.#settled(handle)) return false;
-    const opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining - RECOVERY_REFUSED_BACKOFF_MS, idle - RECOVERY_REFUSED_BACKOFF_MS, window, seed, reason);
+    // The call's own budget still bounds the retry: an exhausted session or idle window is not a provider refusal.
+    const now = this.#now();
+    const left = handle.deadlineAt - now, idleLeft = handle.idleAt - now;
+    if (left <= 0 || idleLeft <= 0 || remaining <= 0) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
+    const opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, left, idleLeft, window, seed, reason);
     if (!opened) { if (this.#settled(handle)) return false; return exhausted(); }
     handle.recoveryRefusals = 0;
     this.#logRecovery(handle, 'fresh_seeded', 'opened', closeCode, reason, seed);

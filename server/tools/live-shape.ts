@@ -26,18 +26,22 @@ export const CALENDAR_EVENT_CHARS = 300;
 /** How many attendee names one event line carries; the rest are counted (#574). */
 export const CALENDAR_ATTENDEE_NAMES = 8;
 
-/** #574: as many whole names as the event's own room holds, then what is left out. The helper's own
- * truncated list never supports a count, so it keeps the unnumbered tail the base shape used. */
-function attendeeNamesLine(names: readonly string[], upstreamOmitted: boolean, room: number): string {
-  const head = '  attendees: ';
+/** L8-01: the room the attendee names get of their own, so a long title or event handle never squeezes them out. */
+export const CALENDAR_ATTENDEE_LINE_CHARS = 200;
+
+/** #574 and L8-01: the true head count first, then as many whole names as the line holds, then the rest
+ * counted. A helper that truncated its own list only supports a lower bound and an unnumbered tail. */
+function attendeeNamesLine(names: readonly string[], upstreamOmitted: boolean): string {
+  const people = (count: number): string => `${count} ${count === 1 ? 'person' : 'people'}`;
+  const head = `  attendees: ${upstreamOmitted ? `at least ${people(names.length)}` : people(names.length)}`;
   const render = (count: number): string => {
     const rest = names.length - count;
-    const tail = upstreamOmitted ? ' and others' : rest > 0 ? ` and ${rest} others` : '';
-    return `${head}${names.slice(0, count).join(', ')}${tail}`;
+    const tail = upstreamOmitted ? ' and others' : rest > 0 ? ` and ${rest} more` : '';
+    return count === 0 ? head : `${head}: ${names.slice(0, count).join(', ')}${tail}`;
   };
   let count = Math.min(names.length, CALENDAR_ATTENDEE_NAMES);
-  while (count > 0 && render(count).length >= room) count -= 1;
-  return count === 0 ? '' : render(count);
+  while (count > 0 && render(count).length > CALENDAR_ATTENDEE_LINE_CHARS) count -= 1;
+  return render(count);
 }
 export const MATTERMOST_MESSAGE_CHARS = 250;
 export const MATTERMOST_MESSAGES = 8;
@@ -141,7 +145,7 @@ function listed(items: string[], limit: number, label: string, followUp?: string
   return { text: shown.join('\n') + suffix, omitted };
 }
 /** The model-only bracket annotations a shaped result appends: the omission/paging note
- * (`[omitted: ...]`), the calendar character cut (`[+N chars]`), and the `[id ...]` handle the model
+ * (`[omitted: ...]`), the retired calendar character cut (`[+N chars]`, still stripped from stored evidence), and the `[id ...]` handle the model
  * needs to re-read one message, event or insight. The owner-facing evidence copy strips them; the
  * model's own copy keeps them. */
 export const MODEL_ONLY_NOTE = /[ \t]*\n*\[(?:omitted: [^\]\n]*|\+\d+ chars|id [^\]\s]*)\]/g;
@@ -376,37 +380,38 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const eventId = str(entry['id']);
     // A merged fan-out tags the event with its calendar name; a single-calendar read does not.
     const calendar = field(entry, 'calendar');
-    const lines = [`- ${start}, ${title}${location ? `, ${location}` : ''}${calendar ? ` | ${calendar}` : ''}${eventId ? ` [id ${eventId}]` : ''}`];
-    // A header longer than the whole per-event bound is no title but a wall of text, and it is cut as
-    // one with the rest so a hostile fixture cannot blow the result budget.
-    const headerLine = lines[0]!;
-    const titleFits = headerLine.length <= CALENDAR_EVENT_CHARS;
-    const budget = titleFits ? Math.max(0, CALENDAR_EVENT_CHARS - headerLine.length - 1) : CALENDAR_EVENT_CHARS;
+    const header = `- ${start}, ${title}${location ? `, ${location}` : ''}${calendar ? ` | ${calendar}` : ''}${eventId ? ` [id ${eventId}]` : ''}`;
+    // A header longer than the whole per-event bound is no title but a wall of text: it alone is cut.
+    const headerCut = header.length <= CALENDAR_EVENT_CHARS ? undefined : cutAtSentence(header, CALENDAR_EVENT_CHARS);
+    const lines = [headerCut === undefined ? header : `${headerCut.text} [omitted: the rest of this line]`];
     const link = field(entry, 'htmlLink');
     if (link) sources.push({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' });
     const openLine = link ? mintOpenLine({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' }) : undefined;
-    if (openLine) lines.splice(1, 0, openLine);
+    if (openLine) lines.push(openLine);
     const attendees = Array.isArray(entry['attendees']) ? entry['attendees'] : [];
     const names = attendees.filter(isRecord).map(a => field(a, 'displayName', 'email')).filter(Boolean);
-    // #574: whole names only, as many as the event's own room holds, and the rest counted, so a long list
-    // is never spoken as complete and no name is ever cut in half.
-    const attendeeRoom = titleFits ? budget - (openLine === undefined ? 0 : openLine.length + 1) : 0;
-    if (names.length) { const attendeeLine = attendeeNamesLine(names, entry['attendeesOmitted'] === true, attendeeRoom); if (attendeeLine) lines.push(attendeeLine); }
+    // L8-01: the people lines are whole, never the part a cut removes, and carry no character count.
+    if (names.length) lines.push(attendeeNamesLine(names, entry['attendeesOmitted'] === true));
     const organizer = isRecord(entry['organizer']) ? field(entry['organizer'], 'displayName', 'email') : '';
     if (organizer) lines.push(`  organizer: ${organizer}`);
     const conference = field(entry, 'hangoutLink') || (isRecord(entry['conferenceData']) ? 'yes' : '');
     if (conference) lines.push('  conference: yes');
+    // Only the description is cut against what is left of the per-event bound.
     const description = stripDialIn(cleanMailBody(field(entry, 'description'))).replace(/\n+/g, ' ');
-    if (description) lines.push(`  ${description}`);
-    // #7: the first line is the event's own identity (time, title, place), so it is never the part a
-    // cut removes: a long company name survives whole and only the body is trimmed against the bound.
-    const bodyLines = titleFits ? lines.slice(1) : lines;
-    const cut = cutAtSentence(bodyLines.join('\n'), budget);
-    if (cut.omitted === 0) { const line = lines.join('\n'); normalized.push({ id: eventId, start, line, bodyTruncated: false }); return line; }
-    const note = (omitted: number): string => ` [+${omitted} chars]`;
-    const recut = cutAtSentence(bodyLines.join('\n'), Math.max(0, budget - note(cut.omitted).length));
-    const line = titleFits ? [headerLine, `${recut.text}${note(recut.omitted)}`].filter(part => part.length > 0).join('\n') : `${recut.text}${note(recut.omitted)}`;
-    normalized.push({ id: eventId, start, line, bodyTruncated: true });
+    let cutDescription = headerCut !== undefined;
+    if (description) {
+      const room = CALENDAR_EVENT_CHARS - lines.join('\n').length - 3;
+      if (description.length <= room) lines.push(`  ${description}`);
+      else {
+        cutDescription = true;
+        const note = ' [omitted: the rest of the description]';
+        const cut = cutAtSentence(description, Math.max(0, room - note.length));
+        if (cut.text) lines.push(`  ${cut.text}${note}`);
+        else lines[lines.length - 1] = `${lines[lines.length - 1]!} [omitted: the description]`;
+      }
+    }
+    const line = lines.join('\n');
+    normalized.push({ id: eventId, start, line, bodyTruncated: cutDescription });
     return line;
   });
   const unread = isRecord(data['partial']) && typeof data['partial']['unread'] === 'number' && data['partial']['unread'] > 0 ? data['partial']['unread'] : 0;

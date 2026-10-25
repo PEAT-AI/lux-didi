@@ -2795,25 +2795,23 @@ test('queued PCM is dropped at the cut and capture during rebuilding is never re
   await continuity(output, 'resumed');
   const resumedAudio = await output.next();
   assert.equal(resumedAudio.value.kind, 'audio');
-  assert.equal(h.f.frames.length, 3, 'no old PCM replay follows setupComplete');
-  // #656: the held frame goes out with the next mic frame, and no owner audio is lost to the gap.
-  attachment.sendAudio({ pcm }); await h.f.frame(4);
-  assert.equal(h.f.frames.length, 5, 'the held capture and the new frame both reach the new session');
+  // #656: the held capture is delivered once, after the new session is ready, and no old PCM is replayed.
+  assert.equal(h.f.frames.length, 4, 'the held capture reaches the new session and nothing is replayed');
   attachment.close(); const finalSnapshot = await attachment.done;
   let matching: Record<string, number | string>[] = [];
   for (let attempt = 0; attempt < 20 && matching.length === 0; attempt++) {
     await tick();
     matching = diagnosticLines.map(line => JSON.parse(line) as Record<string, number | string>)
-      .filter(value => value.ownerAudioCalls === 3 && value.ownerRebuildingDropCalls === 0);
+      .filter(value => value.ownerAudioCalls === 2 && value.ownerRebuildingDropCalls === 0);
   }
   assert.equal(matching.length, 1);
   const diagnostics = matching[0]!;
   const terminalCode = finalSnapshot.terminal && 'code' in finalSnapshot.terminal ? finalSnapshot.terminal.code : finalSnapshot.terminal?.state;
   assert.equal(diagnostics.event, 'live_session_diagnostics'); assert.equal(diagnostics.terminalCode, terminalCode);
   assert.equal(diagnostics.adapterGenerations, 2);
-  assert.equal(diagnostics.ownerAudioCalls, 3); assert.equal(diagnostics.ownerAudioBytes, pcm.byteLength * 3);
+  assert.equal(diagnostics.ownerAudioCalls, 2); assert.equal(diagnostics.ownerAudioBytes, pcm.byteLength * 2);
   assert.equal(diagnostics.ownerRebuildingDropCalls, 0); assert.equal(diagnostics.ownerRebuildingDropBytes, 0);
-  assert.equal(diagnostics.adapterAudioCalls, 3); assert.equal(diagnostics.adapterAudioBytes, pcm.byteLength * 3);
+  assert.equal(diagnostics.adapterAudioCalls, 2); assert.equal(diagnostics.adapterAudioBytes, pcm.byteLength * 2);
   assert.equal(diagnostics.outputAudioFrames, 2); assert.equal(diagnostics.outputAudioPCMBytes, pcm.byteLength * 2);
 });
 

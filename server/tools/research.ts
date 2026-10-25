@@ -2488,6 +2488,11 @@ export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missi
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
 
+/** W5-R2/F3 (from main): the status words a searched source says aloud, where the word alone would be read as a whole read. */
+const SEARCHED_CLAUSE: Partial<Record<CoverageStatus, (label: string) => string>> = {
+  partial_failed: label => `${label} stopped after a later page failed`,
+};
+
 /** The one clause the voice can say about a source it could not read, keyed by the closed reason. */
 const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: SourceKind) => string> = {
   not_connected: label => `${label} is not connected`,
@@ -2528,7 +2533,10 @@ export function coverageLine(searched: readonly CoverageSearched[], unsearched: 
   const bound = Math.floor(limit / HEADER_SHARE_OF_CAP);
   const line = (entries: readonly string[]): string => entries.length === 0 ? 'coverage: none' : `coverage: ${entries.join('; ')}`;
   const detailed = line([
-    ...searched.map(entry => `${entry.source} ${entry.status} ${entry.shown} of ${entry.total} shown${entry.confidence === undefined ? '' : ` confidence=${entry.confidence}`}`),
+    ...searched.map(entry => {
+      const say = SEARCHED_CLAUSE[entry.status];
+      return `${entry.source} ${entry.status} ${entry.shown} of ${entry.total} shown${entry.confidence === undefined ? '' : ` confidence=${entry.confidence}`}${say === undefined ? '' : ` (say: ${say(spokenLabelOf(entry.source))})`}`;
+    }),
     ...unsearched.map(entry => `${entry.source} ${entry.reason} (say: ${UNSEARCHED_CLAUSE[entry.reason](spokenLabelOf(entry.source), entry.source)})`),
   ]);
   if (detailed.length <= bound) return detailed;

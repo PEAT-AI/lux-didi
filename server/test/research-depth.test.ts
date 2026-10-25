@@ -11,6 +11,11 @@ function sub(name: string, text: string, ok = true, key = name): IntentSubResult
   return { key, name, ok, text, originalCharacters: text.length, omittedCharacters: 0 };
 }
 
+/** One run on a signal nothing aborts: the tests assert composition, not cancellation. */
+function research(deps: ResearchDeps, call: Parameters<typeof runResearch>[1]): ReturnType<typeof runResearch> {
+  return runResearch(deps, call, new AbortController().signal);
+}
+
 const BODY = 'detail from the record '.repeat(6);
 
 function knowledgeHits(count: number): string {
@@ -87,7 +92,7 @@ test('BUDGET 2: a classification may raise the budget during retrieval and never
 
 test('BUDGET 3: the default tier delivers more evidence than the old 2,500 char cap', async () => {
   const h = harness({ text: { search_knowledge: knowledgeHits(30) } });
-  const reply = await runResearch(h.deps, {
+  const reply = await research(h.deps, {
     action: 'start', question: 'what do we know about the release plan',
     lookups: [{ source: 'knowledge', query: 'release plan' }],
   });
@@ -103,7 +108,7 @@ test('ALLOC 1 Clifton regression: one hit holding three requested people deliver
     text: { search_knowledge: THREE_PROFILES },
     memory: () => ({ lines: fragments, text: fragments.join('\n'), total: fragments.length }),
   });
-  const reply = await runResearch(h.deps, {
+  const reply = await research(h.deps, {
     action: 'start', question: 'what do we know about Ana, Ben and Cara Clifton',
     lookups: [{ source: 'knowledge', query: 'Clifton' }, { source: 'memory', query: 'Clifton' }],
   });
@@ -118,7 +123,7 @@ test('ALLOC 1 Clifton regression: one hit holding three requested people deliver
 test('ALLOC 2: an ask that names no person may use her memory', async () => {
   const lines = ['- last time we agreed the deposit moves on Monday', '- and the invoice waits for the trust'];
   const h = harness({ memory: () => ({ lines, text: lines.join('\n'), total: lines.length }) });
-  const reply = await runResearch(h.deps, {
+  const reply = await research(h.deps, {
     action: 'start', question: 'what did we say last time about the deposit',
     lookups: [{ source: 'memory', query: 'deposit' }],
   });
@@ -134,7 +139,7 @@ test('ALLOC 3: every non empty source gets substantive evidence, not just its fi
       mattermost_search: chatLines(20),
     },
   });
-  const reply = await runResearch(h.deps, {
+  const reply = await research(h.deps, {
     action: 'start', question: 'what do we know about the release plan and the mail and chat about it',
     lookups: [{ source: 'knowledge', query: 'release plan' }, { source: 'mail', query: 'release' },
       { source: 'chat', query: 'release' }],
@@ -147,7 +152,7 @@ test('ALLOC 3: every non empty source gets substantive evidence, not just its fi
 
 test('ALLOC 4: a repeated hit across two reads is shown once', async () => {
   const h = harness({ text: { search_knowledge: knowledgeHits(6) } });
-  const reply = await runResearch(h.deps, {
+  const reply = await research(h.deps, {
     action: 'start', question: 'what do we know about the release plan',
     lookups: [{ source: 'knowledge', query: 'release plan' }, { source: 'knowledge', query: 'release plan 3' }],
   });
@@ -161,7 +166,7 @@ test('ALLOC 5: conflicting dated evidence survives both dates', async () => {
     '### Release date (decision | 2026-10-01) [id 402] The release moved to 2026-11-02.',
   ].join('\n');
   const h = harness({ text: { search_knowledge: lines } });
-  const reply = await runResearch(h.deps, {
+  const reply = await research(h.deps, {
     action: 'start', question: 'when is the release date',
     lookups: [{ source: 'knowledge', query: 'release date' }],
   });
@@ -173,7 +178,7 @@ test('ALLOC 5: conflicting dated evidence survives both dates', async () => {
 test('ALLOC 6: a requested person with no evidence is named missing and never invented', async () => {
   const twoOnly = THREE_PROFILES.split('\n').slice(0, 2).join('\n');
   const h = harness({ text: { search_knowledge: twoOnly } });
-  const reply = await runResearch(h.deps, {
+  const reply = await research(h.deps, {
     action: 'start', question: 'what do we know about Ana, Ben and Cara Clifton',
     lookups: [{ source: 'knowledge', query: 'Clifton' }],
   });
@@ -186,7 +191,7 @@ test('COVER 1: the header counts per source what was represented, and says full 
   const h = harness({
     text: { search_knowledge: knowledgeHits(30), gmail_search_messages: mailRows(3) },
   });
-  const reply = await runResearch(h.deps, {
+  const reply = await research(h.deps, {
     action: 'start', question: 'what do we know about the release plan and the mail about it',
     lookups: [{ source: 'knowledge', query: 'release plan' }, { source: 'mail', query: 'release' }],
   });
@@ -199,7 +204,7 @@ test('COVER 1: the header counts per source what was represented, and says full 
 
 test('COVER 2: an asked for entity that was covered is counted, and an excerpt is never called full', async () => {
   const h = harness({ text: { search_knowledge: THREE_PROFILES } });
-  const reply = await runResearch(h.deps, {
+  const reply = await research(h.deps, {
     action: 'start', question: 'what do we know about Ana and Ben Clifton',
     lookups: [{ source: 'knowledge', query: 'Clifton' }],
   });
@@ -216,8 +221,8 @@ test('DEPTH 1: the depth tier delivers more evidence, not more metadata', async 
     action: 'start' as const, question: 'what do we know about the release plan and the mail about it',
     lookups: [{ source: 'knowledge' as const, query: 'release plan' }, { source: 'mail' as const, query: 'release' }],
   };
-  const shallowReply = await runResearch(shallow.deps, ask);
-  const deepReply = await runResearch(deep.deps, ask);
+  const shallowReply = await research(shallow.deps, ask);
+  const deepReply = await research(deep.deps, ask);
   const shallowEvidence = allEvidence(shallowReply as Record<string, unknown>).length;
   const deepEvidence = allEvidence(deepReply as Record<string, unknown>).length;
   assert.ok(deepEvidence > shallowEvidence, `depth carries more evidence: ${deepEvidence} over ${shallowEvidence}`);

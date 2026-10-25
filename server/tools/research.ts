@@ -2483,7 +2483,7 @@ export function clip(text: string, max: number): string {
 }
 
 /** #621: the E3 states a reply must keep apart, and the E4 reason a source was never searched. */
-export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry';
+export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry' | 'partial_failed';
 export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found';
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
@@ -2579,6 +2579,11 @@ function depthClauseOf(question: string, findings: readonly FindingLike[]): stri
   return parts.length === 0 ? '' : `; ${parts.join('; ')}`;
 }
 
+/** W5-R2/F3 (from main): a mail read whose later page failed after one arrived, never called complete. */
+function failedPage(run: RunState, source: SourceKind): boolean {
+  return source === 'mail' && [...run.mail.values()].some(read => read.failed);
+}
+
 function coverageTextOf(run: RunState, configured: readonly SourceKind[], findings: readonly FindingLike[], totals: ReadonlyMap<SourceKind, number>, limit: number): string {
   const searched: CoverageSearched[] = [];
   for (const source of SOURCE_ORDER) {
@@ -2595,6 +2600,7 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
     const shown = head === null ? 0 : Number(head[1]);
     const total = Math.max(shown, totals.get(source) ?? (head === null ? 0 : Number(head[2])));
     const status: CoverageStatus = run.cutShort.has(source) ? 'partial_timeout'
+      : failedPage(run, source) && shown > 0 ? 'partial_failed'
       : total > shown ? 'truncated_to_budget' : shown === 0 ? 'empty_after_retry' : 'complete';
     const confidence = source === 'knowledge' && finding !== undefined ? knowledgeConfidenceOf(text.split('\n'))?.confidence : undefined;
     searched.push({ source, status, shown, total, ...(confidence === undefined ? {} : { confidence }) });

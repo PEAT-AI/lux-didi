@@ -178,9 +178,9 @@ export function resolveChannelReference(reference: string, channels: readonly Ma
   if (matches.length === 1) { const only = matches[0]!; return { channel: only.id ?? only.name ?? wanted }; }
   if (matches.length > 1) return { error: `channel-ambiguous: ${wanted} matches ${matches.map(label).join(', ')}` };
   // #637: an owner names a channel by the words he sees, so "ai" finds "AI Team" and "ai-ml", and
-  // "singapore conference" finds "Singapore Conference 2026". Hyphens and underscores break words, and
-  // a channel matches when its own words carry every word of the reference, or all of its words appear
-  // in it, so a plain word reference never lands on a single letter the way a prefix would.
+  // "singapore conference" finds "Singapore Conference 2026". Hyphens and underscores are word breaks,
+  // and a channel matches when its own words carry every reference word, or when the whole reference is
+  // one of its words. Exact equality above stays first, so a word match never overrides it.
   const words = (text: string): string[] => text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(word => word !== '');
   const referenceWords = words(wanted);
   const named = referenceWords.length === 0 ? [] : channels.filter(channel => {

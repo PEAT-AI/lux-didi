@@ -57,8 +57,10 @@ export interface ContractFake {
   origin: string;
   /** The deployment's protected-resource and authorization-server documents, editable per test. */
   documents: Map<string, Json>;
-  /** Paths answered with a redirect off the origin instead of their document. */
+  /** Paths answered with a redirect off the origin instead of their document; `/oauth/token` included. */
   redirectOffOrigin: Set<string>;
+  /** Requests that arrived at a redirect target: a client that followed one would succeed there, so any entry is a leak. */
+  followed: string[];
   /** Hold every discovery GET until release() is called. */
   holdDiscovery(): () => void;
   /** A fetch that reaches this fake for its origin and refuses every other origin, recording it. */
@@ -100,6 +102,8 @@ export async function startContractFake(): Promise<ContractFake> {
   const tokenCalls: TokenCall[] = [];
   const offOrigin: string[] = [];
   let held: Promise<void> | undefined;
+  const followed: string[] = [];
+  let local = '';
   const mint = (prefix: string): string => `${prefix}-${randomBytes(12).toString('hex')}`;
 
   const tokenError = (response: ServerResponse, call: TokenCall, error: string, status = 400): void => {
@@ -120,9 +124,18 @@ export async function startContractFake(): Promise<ContractFake> {
 
   const server: Server = createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', origin);
+    // A redirect target off the configured origin that would answer well: reaching it at all is the failure.
+    if (url.pathname.startsWith('/followed/')) {
+      followed.push(url.pathname);
+      const original = url.pathname.slice('/followed'.length);
+      if (original === '/oauth/token') return send(response, 200, { access_token: mint('followed-access'), token_type: 'Bearer', expires_in: 3600, refresh_token: mint('followed-refresh'), scope: 'mcp' });
+      const document = documents.get(original);
+      if (document) return send(response, 200, document);
+      response.writeHead(404).end(); return;
+    }
     if (request.method === 'GET' && url.pathname.startsWith('/.well-known/')) {
       if (held) await held;
-      if (redirectOffOrigin.has(url.pathname)) { response.writeHead(302, { location: `https://elsewhere.test${url.pathname}` }).end(); return; }
+      if (redirectOffOrigin.has(url.pathname)) { response.writeHead(302, { location: `${local}/followed${url.pathname}` }).end(); return; }
       const document = documents.get(url.pathname);
       if (!document) { response.writeHead(404).end(); return; }
       send(response, 200, document); return;
@@ -162,6 +175,7 @@ export async function startContractFake(): Promise<ContractFake> {
     }
     if (request.method === 'POST' && url.pathname === '/oauth/token') {
       const raw = await body(request);
+      if (redirectOffOrigin.has(url.pathname)) { tokenCalls.push({ form: Object.fromEntries(new URLSearchParams(raw)), status: 307 }); response.writeHead(307, { location: `${local}/followed/oauth/token` }).end(); return; }
       const form = Object.fromEntries(new URLSearchParams(raw));
       const call: TokenCall = { form, status: 200 };
       tokenCalls.push(call);
@@ -208,7 +222,7 @@ export async function startContractFake(): Promise<ContractFake> {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('no port');
-  const local = `http://127.0.0.1:${address.port}`;
+  local = `http://127.0.0.1:${address.port}`;
 
   const routed: typeof fetch = async (input, init) => {
     const target = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
@@ -217,7 +231,7 @@ export async function startContractFake(): Promise<ContractFake> {
   };
 
   return {
-    origin, documents, redirectOffOrigin, fetch: routed, offOrigin, registrations, authorizations, tokenCalls,
+    origin, documents, redirectOffOrigin, followed, fetch: routed, offOrigin, registrations, authorizations, tokenCalls,
     holdDiscovery() { let release: () => void = () => {}; held = new Promise<void>(resolve => { release = () => { held = undefined; resolve(); }; }); return release; },
     async browse(authorizeUrl, options = {}) {
       const consent = await routed(authorizeUrl, { redirect: 'manual' });

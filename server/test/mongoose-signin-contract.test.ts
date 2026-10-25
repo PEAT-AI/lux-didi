@@ -107,6 +107,7 @@ async function refusedAtDiscovery(edit: (fake: ContractFake) => void, outcome: s
     assert.deepEqual(fake.registrations, [], 'no client is registered');
     assert.deepEqual(readdirSync(dir), [], 'nothing is written');
     assert.deepEqual(fake.offOrigin, [], 'no request leaves the configured origin');
+    assert.deepEqual(fake.followed, [], 'no redirect is followed');
   } finally { await fake.close(); cleanup(); }
 }
 
@@ -137,6 +138,34 @@ test('an authorization server endpoint off the configured origin, or not https, 
 
 test('a discovery redirect is never followed off the origin', async () => {
   await refusedAtDiscovery(fake => { fake.redirectOffOrigin.add(DATA_DOC); }, 'redirected');
+});
+
+test('W1-R4: a redirect on the authorization server metadata is refused', async () => {
+  await refusedAtDiscovery(fake => { fake.redirectOffOrigin.add(AS_DOC); }, 'redirected');
+});
+
+test('W1-R4: a redirect on the token endpoint is never followed, at the exchange or at a refresh', async () => {
+  const { dir, cleanup } = configDir();
+  const fake = await startContractFake();
+  try {
+    fake.redirectOffOrigin.add('/oauth/token');
+    const run = login(fake, dir, 'knowledge');
+    await assert.rejects(run.operation, (error: unknown) => error instanceof MongooseLoginError && error.code === 'token-refused');
+    assert.deepEqual(run.hops.at(-1), { hop: 'token', outcome: 'unreachable' });
+    assert.deepEqual(readdirSync(dir), [], 'nothing is written');
+    assert.deepEqual(fake.followed, [], 'the redirect target was never fetched');
+
+    // A good sign-in first, then the refresh meets the same redirect.
+    fake.redirectOffOrigin.delete('/oauth/token');
+    await login(fake, dir, 'knowledge').operation;
+    fake.redirectOffOrigin.add('/oauth/token');
+    const binding = mongooseBinding(`${FAKE_ORIGIN}/mcp/knowledge`, 'knowledge')!;
+    await assert.rejects(mongooseAccessToken(dir, 'mongoose-knowledge', binding, { now: () => NOW + 3_600_000, fetch: fake.fetch }),
+      (error: unknown) => error instanceof MongooseCredentialError && error.code === 'credential-refresh-unavailable');
+    assert.equal(fake.tokenCalls.at(-1)!.status, 307, 'the refresh reached the redirect');
+    assert.deepEqual(fake.followed, [], 'and did not follow it');
+    assert.equal(stored(dir, 'knowledge')['refreshToken'] !== undefined, true, 'the stored session is kept for a later attempt');
+  } finally { await fake.close(); cleanup(); }
 });
 
 test('a token exchange whose resource does not match the code binding is refused by the server and saves nothing', async () => {

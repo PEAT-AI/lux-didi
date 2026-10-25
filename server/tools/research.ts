@@ -131,13 +131,23 @@ export const RESEARCH = Object.freeze({
   /** Selector cost multiplier by elapsed seconds: cheap early, expensive late. */
   lambda: Object.freeze([{ upToMs: 4_000, value: 0 }, { upToMs: 8_000, value: 0.5 }, { upToMs: Number.POSITIVE_INFINITY, value: 1.5 }]),
   /**
-   * LAT-1023: the whole answer a Live model receives, envelope included, is at most this many chars.
-   * Q1-R0 spent 6,000 chars of telegraphic lines on every reply and a call grew from 15k to 44k tokens in
-   * 3.5 minutes. The full bodies stay readable inside the run through their cursors; Live hears the answer.
-   * #634: the coverage header counts inside this same cap, so the prose shrinks by the header's length and
+   * C-DEPTH item 1 (council decision-how-much-retrieved-evidence-a-r-bd8a, owner order 2026-10-25): the whole
+   * answer a Live model receives, envelope included, is at most one of three chars. LAT-1023 caps the answer
+   * because a call grew from 15k to 44k tokens in 3.5 minutes on 6,000 char replies; the owner asked for depth
+   * over tokens, so the tiers replace one flat cap and item 5 rebuilds the session when the sum over a call is
+   * large. The full bodies stay readable inside the run through their cursors; Live hears the answer.
+   * #634: the coverage header counts inside the same cap, so the prose shrinks by the header's length and
    * the whole answer the voice receives stays under one bound.
    */
-  replyLimitChars: 2_500,
+  budgets: Object.freeze({ default: 12_000, analytical: 16_000, depth: 20_000 }),
+  /** C-DEPTH item 2: the header and metadata share of a budget, trimmed before any evidence is. */
+  envelopeShareChars: 1_000,
+  /** C-DEPTH item 2: the substantive evidence one non-empty source keeps before the remainder is shared. */
+  sourceFloorChars: 1_000,
+  /** C-DEPTH item 5: the extractive ledger that replaces the raw tool items on a rebuild, at most this long. */
+  ledgerChars: 6_000,
+  /** C-DEPTH item 5: the retained research payload this call may hold before a rebuild is due. */
+  rebuildThresholdChars: 24_000,
   /**
    * LAT-1023 ruling R1: a body the owner asked to read keeps its own page bound. The compaction targets
    * composed answers; paging a requested 16,800-char body at the Live budget would double the round trips
@@ -283,6 +293,51 @@ export interface ConfiguredEndpointStatus {
 }
 
 /** A routed lookup list, parsed defensively: unknown sources and empty queries are dropped. */
+/**
+ * C-DEPTH item 1: the owner asking to go deep is the owner ordering the long answer, and a comparison or a
+ * synthesis across sources is the analytical tier. Everything else is the default tier.
+ */
+const DEPTH_ASK = /\b(?:go deep|in depth|deep dive|in detail|every detail|all the detail|everything|the full (?:entries|bodies|detail)|all of it|thorough|thoroughly)\b/iu;
+const ANALYTICAL_ASK = /\b(?:compare|comparison|versus|vs|difference between|implications|across|synth\w*|analyse|analyze|analysis|team)\b/iu;
+/** Words that open a sentence or a clause, never a requested person or document. */
+const ENTITY_STOP = new Set(['The', 'What', 'Who', 'When', 'Where', 'Which', 'Why', 'How', 'Does', 'Did', 'Can', 'Could', 'Would', 'Should', 'Tell', 'Show', 'Give', 'Please', 'And', 'But', 'For', 'Any', 'All', 'Is', 'Are', 'Was', 'Were', 'Do', 'Has', 'Have', 'Summarise', 'Summarize', 'Also', 'Then', 'Now']);
+const QUOTED_ENTITY = /"([^"]{2,80})"/gu;
+const CAPITALISED_ENTITY = /\b([A-Z][a-z]{1,}[\w'-]*)\b/gu;
+
+/**
+ * C-DEPTH item 2: the people and documents the owner named, read off the question itself. Deterministic, so
+ * the allocator and the ledger agree without a model call, and a confidence line can never stand in for one.
+ */
+export function requestedEntities(question: string): string[] {
+  const found: string[] = [];
+  const push = (entity: string): void => {
+    const clean = entity.trim();
+    if (clean.length > 1 && !found.includes(clean)) found.push(clean);
+  };
+  for (const quoted of question.matchAll(QUOTED_ENTITY)) push(quoted[1] ?? '');
+  for (const match of question.matchAll(CAPITALISED_ENTITY)) {
+    const at = match.index ?? 0;
+    if (at === 0) continue;
+    if (ENTITY_STOP.has(match[1] ?? '')) continue;
+    if (/[.!?]\s+$/u.test(question.slice(0, at))) continue;
+    push(match[1] ?? '');
+  }
+  return found;
+}
+
+/** C-DEPTH item 1: the tier an owner question asks for, classified before the run reads anything. */
+export function budgetFor(question: string, topic?: string): number {
+  const asked = topic === undefined ? question : `${question} ${topic}`;
+  if (DEPTH_ASK.test(asked)) return RESEARCH.budgets.depth;
+  if (ANALYTICAL_ASK.test(asked)) return RESEARCH.budgets.analytical;
+  return RESEARCH.budgets.default;
+}
+
+/** C-DEPTH item 1: classification may raise a budget during retrieval and never lower it. */
+export function raiseBudget(current: number, question: string, topic?: string): number {
+  return Math.max(current, budgetFor(question, topic));
+}
+
 export function normalizeLookups(value: unknown): ResearchLookup[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
@@ -2695,7 +2750,7 @@ function calendarEvents(raw: readonly string[]): CalendarEvent[] {
  * Merge the connector's shaped event lines and lay the whole window out one line per day, never a silent cut:
  * the only bound is the reply budget, and a trimmed block names how many events it left out (E8, U2).
  */
-function shapeCalendarBlock(results: readonly IntentSubResult[], zone: string | undefined): { text: string; source: SourceKind | null; lines: string[]; total: number } {
+function shapeCalendarBlock(results: readonly IntentSubResult[], zone: string | undefined, limit = RESEARCH.budgets.default): { text: string; source: SourceKind | null; lines: string[]; total: number } {
   const merged: RetainedCalendarEvent[] = [];
   const seen = new Set<string>();
   for (const result of results) {
@@ -2712,7 +2767,7 @@ function shapeCalendarBlock(results: readonly IntentSubResult[], zone: string | 
   let kept = merged.length;
   let lines = calendarDayLines(compactCalendarWindow(merged, zone));
   const render = (): string => `calendar: ${kept} of ${merged.length} shown\n${lines.join('\n')}${kept === merged.length ? '' : `\nI left out ${merged.length - kept} calendar ${merged.length - kept === 1 ? 'event' : 'events'} to keep this answer short.`}${notRead ? `\n${notRead}` : ''}`;
-  while (kept > 1 && render().length > RESEARCH.replyLimitChars) {
+  while (kept > 1 && render().length > limit) {
     kept -= 1;
     lines = calendarDayLines(compactCalendarWindow(merged.slice(0, kept), zone));
   }
@@ -4755,7 +4810,7 @@ function continuesRun(run: RunState, call: ResearchCall, question: string): bool
 
 /** The loop behind a call: unchanged by the first answer point except for what it reports late. */
 async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: AbortSignal, first: FirstAnswerState): Promise<JsonObject> {
-  let limit = deps.replyLimit ?? RESEARCH.replyLimitChars;
+  let limit = deps.replyLimit ?? budgetFor(call.question ?? '', call.topic ?? undefined);
   // Q5-R1: a read of a named entry widens the reply to the connector's knowledge body cap, so the
   // body the owner asked for is never trimmed away for the length of a search reply.
   const widenFor = (subs: readonly IntentSubCall[]): void => {

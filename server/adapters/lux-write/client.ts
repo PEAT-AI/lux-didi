@@ -55,7 +55,7 @@ export interface LuxWriteTransport extends VaultTransport {
 
 const tokensOf = (text: string): Set<string> => new Set(text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim().split(' ').filter(word => word.length > 1));
 /** How much of the shorter text the longer one already holds, which is what a near duplicate is. */
-export function wordOverlap(a: string, b: string): number {
+function wordOverlap(a: string, b: string): number {
   const left = tokensOf(a), right = tokensOf(b);
   if (left.size === 0 || right.size === 0) return 0;
   let shared = 0;

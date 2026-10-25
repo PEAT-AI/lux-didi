@@ -34,10 +34,14 @@ mkdir -p "$out/dist/test/fixtures"
 cp "$root/server/test/fixtures/open-destinations.json" "$root/server/test/fixtures/open-evals.json" "$out/dist/test/fixtures/"
 cp "$root/server/tools/open-handles.ts" "$out/dist/test/fixtures/parity-open-handles.ts"
 cp "$root/Sources/LuxDidi/NativeActions.swift" "$out/dist/test/fixtures/parity-NativeActions.swift"
+# W6: the composed-note machine and the notes exporter are pure modules beside the vault writer,
+# so their suites compile and run with the owner registry that they extend.
+cp "$root/server/test/lux-note.test.ts" "$out/source/test/"
+cp "$root/server/test/notes-export.test.ts" "$out/source/test/"
 printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$deps" "$out/node_modules"
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters \
   --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
-  "$out/source/test/tool-owner.test.ts" "$out/source/test/live-shape.test.ts" "$out/source/test/redact.test.ts" "$out/source/test/open-destinations.test.ts"
-node_test_files --test-timeout=15000 "$out/dist/test/tool-owner.test.js" "$out/dist/test/live-shape.test.js" "$out/dist/test/redact.test.js" "$out/dist/test/open-destinations.test.js"
+  "$out/source/test/tool-owner.test.ts" "$out/source/test/live-shape.test.ts" "$out/source/test/redact.test.ts" "$out/source/test/open-destinations.test.ts" "$out/source/test/lux-note.test.ts" "$out/source/test/notes-export.test.ts"
+node_test_files --test-timeout=15000 "$out/dist/test/tool-owner.test.js" "$out/dist/test/live-shape.test.js" "$out/dist/test/redact.test.js" "$out/dist/test/open-destinations.test.js" "$out/dist/test/lux-note.test.js" "$out/dist/test/notes-export.test.js"

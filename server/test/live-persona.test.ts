@@ -202,6 +202,11 @@ test('the tools conduct names conditional capabilities and preserves source iden
   assert.match(NAYA_VOICE_TOOLS, /The vault and memory are different places\. The vault is lux/);
   assert.match(NAYA_VOICE_TOOLS, /he says the save phrase first, "save to my vault" and then the note/);
   assert.match(NAYA_VOICE_TOOLS, /Say the note is saved only on saved:true/);
+  // W6 item 11: a composed note is staged, read back word for word, and saved only after the owner says yes.
+  assert.match(NAYA_VOICE_TOOLS, /For a note worked out together call stage_lux_note/);
+  assert.match(NAYA_VOICE_TOOLS, /read the frozen title and body back word for word/);
+  assert.match(NAYA_VOICE_TOOLS, /let the host save it only after he says yes/);
+  assert.match(NAYA_VOICE_TOOLS, /An add or change ask is not supported: offer a new note\./);
   assert.match(NAYA_VOICE_TOOLS, /On outcome_unknown say you are not sure it landed and that he can check the vault, and never claim it was saved/);
   assert.doesNotMatch(NAYA_TOOLS, /three to five word|never announce progress|One moment|or call it at once/i);
   assert.doesNotMatch(NAYA_TOOLS, /[\u2013\u2014]/);
@@ -348,10 +353,10 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
 test('the public character, voice surface and tool conduct are the authored verbatim constants', () => {
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '1b188117660fe12204cd542001b585fcce69add4f1cc6d27689720e193cac977');
-  assert.equal(sha(NAYA_VOICE_SURFACE), '1cf4e572cd49ae7d8d7e16ee3c11b53c6dc652dc1511b8b5625d4a8a3bcb0768');
-  assert.equal(sha(NAYA_VOICE_TOOLS), 'a5ef64aa0ea166d64421b6bbba2d4b4568b290c122f78b4121fff847af26225d');
+  assert.equal(sha(NAYA_VOICE_SURFACE), 'a4b4f1f26c023751657f6844c12a870d6d9658552911944487b0ad58a042fcaf');
+  assert.equal(sha(NAYA_VOICE_TOOLS), 'eed837e6ec824fc8cf2f1a8fa256d93838e1bcfa6928effac56963c2840e8c63');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '92c556c1112232a01b24e05964a29e2082c27a8e93b2610f83aa498ba5090669');
-  assert.equal(sha(NAYA_TOOLS), 'a1facd1a9746448bf289e0ffd4dd0047a562ddaf4952915e01a4db19ddee9691');
+  assert.equal(sha(NAYA_TOOLS), '1f10371c7779c6538c4688390a235b84c4fefd694fc5f579c7871b3d75b05a1b');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));

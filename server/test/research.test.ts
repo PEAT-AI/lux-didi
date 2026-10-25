@@ -1955,7 +1955,11 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
   assert.ok(text.length <= RESEARCH.budgets.default, `the answer to Live is ${text.length} chars, the coverage header included`);
   const line = h.logs.at(-1)!;
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
-  assert.ok((line.answerCompacted?.items ?? 0) >= 2, 'whole items were dropped from both sources');
+  // C-DEPTH item 2: the per source floor protects a short source, so the widest one gives up whole items and the
+  // short one keeps its evidence. The budget is met either way, which is what this case owns.
+  assert.ok((line.answerCompacted?.items ?? 0) >= 1, 'the widest source gave up a whole item');
+  const keptSources = (reply['findings'] as { source: string }[]).map(finding => finding.source);
+  assert.ok(keptSources.includes('mail'), `a short source keeps its evidence: ${keptSources.join(', ')}`);
   assert.ok(String(reply['note']).includes(RESEARCH.moreAvailableNote), 'and the reply names what it left out');
 });
 

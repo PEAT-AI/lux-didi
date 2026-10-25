@@ -5662,6 +5662,86 @@ export function supersededStub(researchId: string, configured: readonly SourceKi
 }
 
 /** What is known now for a researchId, without waiting on the loop. */
+/**
+ * C-DEPTH item 5 (W10-R2 light C): the state a call keeps about the research payload it holds in the provider
+ * conversation. The host counts what it sent, and a rebuild is due when that count passes the threshold.
+ */
+export interface ResearchRetention {
+  /** Characters of research answer this call has put in the provider conversation since the last rebuild. */
+  retainedChars: number;
+  /** Rebuilds this call has already run, so the counter can be read honestly in a log. */
+  rebuilds: number;
+}
+
+/** C-DEPTH item 5: whether the retained payload has passed the rebuild threshold. */
+export function researchRebuildDue(retention: ResearchRetention): boolean {
+  return retention.retainedChars > RESEARCH.rebuildThresholdChars;
+}
+
+/** C-DEPTH item 5: what the call retains after one more research answer is sent. */
+export function retainedAfterSend(retention: ResearchRetention, answerChars: number): ResearchRetention {
+  return { ...retention, retainedChars: retention.retainedChars + Math.max(0, answerChars) };
+}
+
+/** C-DEPTH item 5: the call's own facts a rebuild must never interrupt, and the ones it may wait for. */
+export interface ResearchBoundary {
+  /** The assistant is speaking: a rebuild here would cut the answer. */
+  assistantAudioStreaming: boolean;
+  /** A response is pending, so the raw output is still being answered from. */
+  responsePending: boolean;
+  /** The owner barged in: the rebuild is deferred until the new turn settles. */
+  bargeIn: boolean;
+  /** A tool operation is in flight, so its output is not on the wire yet. */
+  toolInFlight: boolean;
+}
+
+/** C-DEPTH item 5: the safe boundary. Nothing is replaced while any of these holds. */
+export function researchRebuildAllowed(boundary: ResearchBoundary): boolean {
+  return !boundary.assistantAudioStreaming && !boundary.responsePending && !boundary.bargeIn && !boundary.toolInFlight;
+}
+
+/** C-DEPTH item 5: the ledger a rebuild seeds, built from the run's own evidence and never from a model call. */
+export interface LedgerInput {
+  question: string;
+  findings: readonly { source?: string; text?: string }[];
+  cursors: readonly string[];
+}
+
+/**
+ * C-DEPTH item 5: one rolling extractive ledger, at most `ledgerChars`. It carries the entities the owner
+ * named, a source id line per source with the dates it read, the factual excerpt lines that survived, the
+ * gaps it could not close, and the cursors that recover the original bodies for the rest of the call.
+ */
+export function researchLedgerOf(input: LedgerInput): string {
+  const evidence = input.findings.map(finding => finding.text ?? '').join('\n');
+  const asked = requestedEntities(input.question);
+  const covered = asked.filter(name => evidence.includes(name));
+  const missing = asked.filter(name => !evidence.includes(name));
+  const perSource = input.findings
+    .filter(finding => typeof finding.source === 'string')
+    .map(finding => {
+      const lines = (finding.text ?? '').split('\n').filter(line => line.trim() !== '');
+      const ids = lines.map(hitIdOf).filter((id): id is string => id !== undefined);
+      const dates = [...new Set(lines.join(' ').match(/\d{4}-\d{2}-\d{2}/gu) ?? [])];
+      return `${finding.source}: ${lines.length} held${ids.length === 0 ? '' : `, ids ${ids.join(',')}`}${dates.length === 0 ? '' : `, dates ${dates.join(',')}`}`;
+    });
+  const excerpts = input.findings
+    .map(finding => (finding.text ?? '').split('\n').find(line => line.trim() !== '' && hitIdOf(line) === undefined && !FINDING_HEAD.test(line)))
+    .filter((line): line is string => line !== undefined && line.trim() !== '')
+    .map(line => line.trim().slice(0, 200));
+  const parts = [
+    `evidence ledger (extractive, ${covered.length} of ${asked.length} asked entities covered)`,
+    asked.length === 0 ? 'entities: none named' : `entities: ${asked.join(', ')}`,
+    ...perSource,
+    ...excerpts,
+    missing.length === 0 ? '' : `gaps: no evidence for ${missing.join(', ')}`,
+    input.cursors.length === 0 ? '' : `cursors: ${input.cursors.join(', ')}`,
+    'the original bodies stay readable by those cursors for the rest of the call',
+  ].filter(part => part !== '');
+  const text = parts.join('\n');
+  return text.length <= RESEARCH.ledgerChars ? text : `${text.slice(0, RESEARCH.ledgerChars - 1)}\u2026`;
+}
+
 export function knownReply(ledger: ResearchLedger, researchId: string, configured: readonly SourceKind[], status: 'answered' | 'partial' | 'stopped' | 'unavailable' = 'stopped', limit = RESEARCH.budgets.default): JsonObject {
   const run = ledger.find(researchId);
   if (!run) return { researchId, status, findings: [], unchecked: [...configured], canContinue: false };

@@ -56,7 +56,7 @@ import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-liv
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
-import { RESEARCH, RESEARCH_TOOL_NAME } from '../tools/research.js';
+import { RESEARCH_OPERATION, RESEARCH_TOOL_NAME } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 
 const MODEL = 'models/live-session-test';
@@ -70,7 +70,10 @@ async function advanceUntil(advance: (ms: number) => void, scheduler: DeadlineCl
   for (let i = 0; i < 200 && !condition(); i++) { advance(1000); scheduler.runDue(); await new Promise<void>(resolve => setImmediate(resolve)); }
   assert.ok(condition(), 'the expected connection did not open');
 }
-const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(pcm).toString('base64') } });
+// Model output the host hears: -12 dBFS samples, so the adapter's own level rule counts the frame as audible.
+// A zeroed payload is digital silence under that rule (C-LIVE N-2), which is not what these tests mean.
+const speechPcm = () => Uint8Array.from({ length: 8 }, (_unused, index) => index % 2 === 0 ? 0x40 : 0x1f);
+const audio = () => ({ inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(speechPcm()).toString('base64') } });
 
 /** Wrap a store so one exact SQL write fails, proving the failure path without breaking reads. */
 function writeFailingStore(store: Store, marker: string): Store {
@@ -2369,7 +2372,7 @@ test('provider usage metadata is decoded and logged per turn, numbers only', asy
   await attachment.done;
 });
 
-test('dead air after a tool response earns one neutral continuation input', async t => {
+test('C-LIVE: dead air after a tool response sends no synthetic Continue user text', async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-nudge-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));
   t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
@@ -2379,9 +2382,9 @@ test('dead air after a tool response earns one neutral continuation input', asyn
   h.f.send({ toolCall: { functionCalls: [{ id: 'n1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] } });
   await h.f.frame(h.f.frames.length + 1);
   h.advance(8000); scheduler.runDue();
-  await h.f.frame(h.f.frames.length + 1);
+  for (let i = 0; i < 50; i++) await tick();
   const nudges = h.f.frames.filter(frame => (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text === 'Continue.');
-  assert.equal(nudges.length, 1, 'exactly one neutral continuation input');
+  assert.equal(nudges.length, 0, 'no fake owner turn is written into the conversation');
   const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string });
   assert.equal(lines.filter(line => line.event === 'live_dead_air_nudge').length, 1);
   h.owner.revoke(session.liveSessionId);
@@ -4000,7 +4003,7 @@ test('D3: one audible frame restarts the deadline from that frame, never from th
   attachment.close();
 });
 
-test('#538: the Gemini path sends its one Continue at 8 s and never closes or recreates the session', async t => {
+test('#538/C-LIVE: the Gemini path sends no Continue at 8 s and never closes or recreates the session there', async t => {
   const fake = fakeLiveVoicePort();
   const scheduler = new DeadlineClock();
   const h = await harness(t, { port: fake.port, scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
@@ -4010,8 +4013,8 @@ test('#538: the Gemini path sends its one Continue at 8 s and never closes or re
   fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'g1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] }));
   await settlePort();
   for (let elapsed = 0; elapsed < 8_500; elapsed += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
-  assert.deepEqual(fake.texts, ['Continue.'], 'the 8 s rung on this path is the one neutral continuation input');
-  assert.equal(fake.closes, 0, 'a Continue rung never closes the provider session');
+  assert.deepEqual(fake.texts, [], 'the 8 s rung writes no synthetic user text');
+  assert.equal(fake.closes, 0, 'the 8 s rung never closes the provider session');
   assert.equal(fake.sessionsOpened, 1, 'and never recreates it');
   for (let elapsed = 0; elapsed < 7_500; elapsed += 100) { h.advance(100); scheduler.runDue(); await settlePort(); }
   assert.equal(fake.sessionsOpened, 2, 'the 15 s rung is the one path that opens a fresh session');
@@ -4346,7 +4349,7 @@ test('no commentary steps on the owner while a lookup runs', async t => {
 
 // --- W4: no long silence while a call is in flight ------------------------------------------------
 
-test('VOICE-R4: no commentary goes out over three six second beats of one lookup', async t => {
+test('VOICE-R4: no commentary goes out over three beats inside one lookup', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
@@ -4360,8 +4363,9 @@ test('VOICE-R4: no commentary goes out over three six second beats of one lookup
   await ownerInput(fake);
   fake.emit({ type: 'toolCall', calls: [{ id: 'cap1', name: 'research', args: { action: 'start', question: 'Synthetic progress cap', topic: 'Synthetic progress cap', lookups: [{ source: 'chat', query: 'Synthetic progress cap' }] } }] });
   await settlePort();
+  // C-LIVE: the lookup answers by its operation deadline, so its beats are inside that bound.
   for (const beat of [1, 2, 3]) {
-    h.advance(6_000); scheduler.runDue(); await settlePort();
+    h.advance(1_900); scheduler.runDue(); await settlePort();
     assert.deepEqual(fake.commentary, [], `beat ${beat} of the lookup is silent`);
   }
   const sent = receipts.filter(entry => entry['event'] === 'commentary_sent');
@@ -5701,6 +5705,8 @@ for (const source of ['mail', 'calendar'] as const) test(`progress recovery: act
   assert.ok(steps.every(step => step.source === source && step.phase === 'end' && step.ok));
   assert.equal(new Set(steps.map(step => step.stepId)).size, 2);
   const calls = h.calls.length;
+  // C-LIVE: a continuation is the owner's follow-up, so the owner asks for it first.
+  await ownerInput(fake, 'synthetic follow-up');
   fake.emit({ type: 'toolCall', calls: [{ id: 'retained', name: 'research', args: { action: 'continue', researchId: first['researchId'], ...(first['nextCursor'] ? { cursor: first['nextCursor'] } : {}) } }] });
   for (let n = 0; n < 100 && fake.toolResponses.length < 2; n++) await settlePort();
   assert.equal(fake.toolResponses.length, 2);
@@ -5760,6 +5766,8 @@ test('research 469: known stopped run projects error and retained no-wire delive
   await ownerInput(fake);
   const call = async (id: string, args: Record<string, unknown>) => {
     const before = fake.toolResponses.length;
+    // C-LIVE: every call after the first answers an owner follow-up; stop needs none.
+    if (before > 0 && args['action'] !== 'stop') await ownerInput(fake, `synthetic follow-up ${id}`);
     fake.emit({ type: 'toolCall', calls: [{ id, name: 'research', args }] });
     for (let n = 0; n < 100 && fake.toolResponses.length === before; n++) await settlePort();
     assert.equal(fake.toolResponses.length, before + 1);
@@ -6542,11 +6550,12 @@ test('#656: owner audio sent during a rebuild is held and delivered to the new s
 });
 
 test('#656: the ladder waits out each call on that call\'s own ceiling, a research run on its deadline', async t => {
-  // A plain call is bounded by the non-research ceiling; a research run outlives it and is bounded by RESEARCH.
+  // A plain call is bounded by the non-research ceiling; a research operation by its own deadline plus the host's
+  // grace (C-LIVE behaviour 4), which is shorter: an admitted operation never holds the ladder past it.
   assert.equal(callCeilingMs('search_knowledge'), TOOL_CEILING_MS);
-  assert.equal(callCeilingMs(RESEARCH_TOOL_NAME), RESEARCH.continueDeadlineMs);
+  assert.equal(callCeilingMs(RESEARCH_TOOL_NAME), RESEARCH_OPERATION.deadlineMs + RESEARCH_OPERATION.hostGraceMs);
   assert.equal(callCeilingMs(undefined), TOOL_CEILING_MS, 'a call whose name is unknown keeps the plain ceiling');
-  assert.ok(RESEARCH.continueDeadlineMs > TOOL_CEILING_MS, 'the research bound is the longer of the two');
+  assert.ok(callCeilingMs(RESEARCH_TOOL_NAME) < TOOL_CEILING_MS, 'the research operation is bounded tighter than a plain call');
   // And the hold itself ends at the ceiling: a plain call older than TOOL_CEILING_MS no longer owns the silence.
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });

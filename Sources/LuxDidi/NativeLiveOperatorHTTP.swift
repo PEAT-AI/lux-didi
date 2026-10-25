@@ -213,6 +213,8 @@ enum NativeLivePresentation {
         switch code {
         case "resume_failed":
             return "Naya's connection could not be resumed. Start Live again."
+        case "provider_recovery_exhausted":
+            return "Connection lost. Tap to reconnect."
         case "session_timeout":
             return "Session limit reached" + (limits.map { " (\(NativeLiveLimits.duration($0.sessionMs)))" } ?? "") + ". Start again to continue."
         case "idle_timeout":

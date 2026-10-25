@@ -65,15 +65,36 @@ final class TwoPartyBarrier: @unchecked Sendable {
             try? FileManager.default.removeItem(at: directory)
         }
 
-        // 2. Closed numeric detail only: byte count for invalid_output, status/signal for child_exit, close code for provider_closed.
+        // 2. Closed numeric detail only: byte count for invalid_output, status/signal for child_exit.
         do {
             expect(NSDictionary(dictionary: NativeLiveEndDetail.invalidOutput(bytes: 42)) == ["bytes": 42], "invalid_output carries bytes")
             let noSignal = NativeLiveEndDetail.childExit(status: 9, signal: nil)
             expect(NSDictionary(dictionary: noSignal) == ["status": 9], "child_exit carries exit status only")
             let signalled = NativeLiveEndDetail.childExit(status: 0, signal: 15)
             expect(NSDictionary(dictionary: signalled) == ["status": 0, "signal": 15], "child_exit carries status and signal")
-            expect(NSDictionary(dictionary: NativeLiveEndDetail.providerClosed(closeCode: 1013)) == ["closeCode": 1013], "provider_closed carries the numeric close code")
         }
+
+        // 2b. C-LIVE N-3: a host-initiated end is its own reason, never user_stop and never provider_closed. The socket
+        // the app holds is the host's, so a close on it is host_closed with the code and a closed reason token.
+        do {
+            let tokens = Set(NativeLiveEndReason.allCases.map(\.rawValue))
+            expect(tokens.contains("host_failed") && tokens.contains("host_closed"), "the host end reasons exist")
+            expect(!tokens.contains("provider_closed"), "no close on the host socket is called a provider close")
+            expect(NSDictionary(dictionary: NativeLiveEndDetail.hostClosed(closeCode: 1011, reason: "provider_recovery_exhausted"))
+                == ["closeCode": 1011, "reason": "provider_recovery_exhausted"], "host_closed carries the code and the closed reason")
+            expect(NSDictionary(dictionary: NativeLiveEndDetail.hostClosed(closeCode: 1008, reason: "attach_rejected:internal"))
+                == ["closeCode": 1008, "reason": "attach_rejected:internal"], "an attach refusal keeps its typed reason")
+            expect(NSDictionary(dictionary: NativeLiveEndDetail.hostClosed(closeCode: 1000, reason: "free text from somewhere"))
+                == ["closeCode": 1000], "a reason outside the closed shape is dropped")
+            expect(NSDictionary(dictionary: NativeLiveEndDetail.hostFailed(code: "resume_failed")) == ["code": "resume_failed"], "host_failed carries the host code")
+            expect(NativeLiveEndDetail.hostFailed(code: "Not A Code").isEmpty, "a code outside the closed shape is dropped")
+            expect(NativeLiveEndClassifier.terminal(state: "failed", code: "resume_failed") == .hostFailed, "a host failure is host_failed")
+            expect(NativeLiveEndClassifier.terminal(state: "failed", code: "provider_recovery_exhausted") == .hostFailed, "an exhausted recovery is host_failed")
+            expect(NativeLiveEndClassifier.terminal(state: "failed", code: "session_timeout") == .sessionLimit, "the session limit keeps its reason")
+            expect(NativeLiveEndClassifier.terminal(state: "failed", code: "idle_timeout") == .idleLimit, "the idle limit keeps its reason")
+            expect(NativeLiveEndClassifier.terminal(state: "closed", code: "voice_stop") == nil, "the owner's voice stop is recorded by the stop itself")
+        }
+
 
         // 3. Snapshot: live state, audio route with voice processing, connector stage and the age of the last failure.
         do {

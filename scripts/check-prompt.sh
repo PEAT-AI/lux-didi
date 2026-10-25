@@ -22,7 +22,7 @@ cp server/adapters/model/*.ts "$out/source/adapters/model/"
 cp server/adapters/live-voice/types.ts "$out/source/adapters/live-voice/"
 # #562: the prompt content test reads the accepted Live instruction through the adapter, so the adapter
 # and the two modules it imports are staged; nothing else of the adapter tree is compiled.
-cp server/adapters/live-voice/openai.ts server/adapters/live-voice/resample.ts "$out/source/adapters/live-voice/"
+cp server/adapters/live-voice/openai.ts server/adapters/live-voice/resample.ts server/adapters/live-voice/audio-level.ts "$out/source/adapters/live-voice/"
 # The adapter types name the host's trace port (O1b-A), so stage the trace kinds and the record door.
 cp server/trace/kinds.ts server/trace/record.ts server/trace/clock.ts "$out/source/trace/"
 cp server/domain/history-reader.ts server/domain/history-lifecycle.ts server/domain/util.ts server/domain/contract.ts "$out/source/domain/"
@@ -66,3 +66,45 @@ mkdir -p "$out/test/fixtures"
 cp server/test/prompt-content.integration.mjs "$out/test/"
 cp server/test/fixtures/prompt-final.json server/test/fixtures/prompt-character-excluded.json "$out/test/fixtures/"
 node "$out/test/prompt-content.integration.mjs"
+# C-LIVE (W5): the partial-result rules, asserted on the compiled text the voice model and its backend receive.
+# The removed phrases made the backend page a partial result silently; each new rule is pinned by its own words.
+node --input-type=module - "$out/dist" <<'NODE'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const dist = process.argv[2];
+const persona = await import(pathToFileURL(`${dist}/prompt/live-persona.js`).href);
+const backend = await import(pathToFileURL(`${dist}/prompt/backend-procedure.js`).href);
+const research = await import(pathToFileURL(`${dist}/tools/research.js`).href);
+const voice = persona.NAYA_VOICE_TOOLS;
+const procedure = backend.NAYA_BACKEND_PROCEDURE;
+const everything = [persona.NAYA_LIVE_BASE, voice, procedure, persona.NAYA_TOOLS, JSON.stringify(research.RESEARCH)].join('\n');
+for (const removed of [
+  'continue the same research automatically',
+  'Silence while you look something up is fine',
+  'Continue a partial result without asking for permission',
+  'There is more available if you want it',
+  'back as a permission question',
+  'follow a plausible next source once',
+]) assert.ok(!everything.includes(removed), `removed rule still present: ${removed}`);
+for (const rule of [
+  'One owner turn allows one research operation',
+  'after a result arrives, never call research again until the owner speaks, except to stop',
+  'Answer at once from a result, even a partial one',
+  'state its coverage honestly in a few words, such as nine of thirty-eight events',
+  'never call a partial result complete',
+  'lead with the answer and the qualification that changes its meaning',
+  'offer it in one short plain statement, not a question and not a stock line',
+  'If research answers blocked, answer from the result you have',
+]) assert.ok(voice.includes(rule), `voice rule missing: ${rule}`);
+for (const rule of [
+  'One owner turn allows one research operation',
+  'Continue a run with its researchId only when the owner asks for more',
+  'If research answers blocked, do not call it again in this turn',
+]) assert.ok(procedure.includes(rule), `backend rule missing: ${rule}`);
+// The no-filler rule and the eight-line reply bound stay as they were.
+assert.ok(persona.NAYA_LIVE_BASE.includes('Never fill the silence while a lookup runs'), 'the no-filler rule is kept');
+assert.ok(voice.includes('never use a stock waiting line'), 'the stock waiting line ban is kept');
+assert.equal(research.RESEARCH.mailLines, 8); assert.equal(research.RESEARCH.chatLines, 8);
+assert.equal(research.RESEARCH.moreAvailableNote, 'Partial: answer now, offer the rest; read on only if asked.');
+console.log(JSON.stringify({ case: 'partial_result_rules', removed: 6, voiceRules: 8, backendRules: 3 }));
+NODE

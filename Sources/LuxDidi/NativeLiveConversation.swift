@@ -207,10 +207,10 @@ enum State: String, CaseIterable {
                     // #589: the host's voice stop is the owner's own sentence, so this end is presented as
                     // her stop. The app closes it through presence.stop(.voice), never as a session ending.
                     if outcome.code == "voice_stop" { self.noteHostVoiceStop() }
-                    switch outcome.code {
-                    case "session_timeout": if !self.endRecorded { self.endRecorded = true; self.journal.append(.sessionLimit) }
-                    case "idle_timeout": if !self.endRecorded { self.endRecorded = true; self.journal.append(.idleLimit) }
-                    default: break
+                    // C-LIVE N-3: a host-initiated end is recorded as the host's, so the later stop is never user_stop.
+                    if !self.endRecorded, let reason = NativeLiveEndClassifier.terminal(state: outcome.state.rawValue, code: outcome.code) {
+                        self.endRecorded = true
+                        self.journal.append(reason, detail: reason == .hostFailed ? NativeLiveEndDetail.hostFailed(code: outcome.code) : [:])
                     }
                     if let sentence = NativeLivePresentation.ended(outcome.code, limits: self.limits) {
                         self.failure = sentence
@@ -237,7 +237,7 @@ enum State: String, CaseIterable {
                             "sequence": rejection.sequence, "previous": rejection.previous, "kind": rejection.kind])
                     }
                     self.stopAudioAndSummarize(); self.state = .outcomeUnknown
-                    if case .socketClosed(let code, _) = reason, !self.endRecorded { self.endRecorded = true; self.journal.append(.providerClosed, detail: NativeLiveEndDetail.providerClosed(closeCode: code)) }
+                    if case .socketClosed(let code, let closeReason) = reason, !self.endRecorded { self.endRecorded = true; self.journal.append(.hostClosed, detail: NativeLiveEndDetail.hostClosed(closeCode: code, reason: closeReason)) }
                     self.failure = reason.errorDescription ?? "Live outcome is unknown. No automatic reconnect."
                 default: break
                 }

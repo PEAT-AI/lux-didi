@@ -1119,3 +1119,22 @@ test('#606 a normal close drains the queued markers before the terminal frame', 
   assert.equal(frames.length, 21, 'twenty queued markers then the terminal frame');
   assert.deepEqual(JSON.parse(String(frames[20])), { type: 'terminal', state: 'closed', code: 'synthetic_code', complete: true });
 });
+
+// C-LIVE R2: an exhausted recovery is the host's own failure, never a policy refusal. The client gets the terminal
+// first, then a non-policy close naming provider_recovery_exhausted, whether or not the session had become ready.
+test('C-LIVE: provider_recovery_exhausted sends its terminal, then closes 1011, never 1008', async () => {
+  for (const ready of [true, false]) {
+    const frames: unknown[] = [];
+    const closes: [number | undefined, string | undefined][] = [];
+    const socket = { readyState: 1, bufferedAmount: 0,
+      send: (frame: unknown) => { frames.push(frame); }, close: (code?: number, reason?: string) => { closes.push([code, reason]); socket.readyState = 3; } };
+    const attachment = {
+      output: (async function* () { /* nothing queued */ })(),
+      done: Promise.resolve({ ready, terminal: { state: 'failed', code: 'provider_recovery_exhausted' }, journal: { complete: true } }),
+      overflow: () => { assert.fail('no backpressure here'); },
+    } as unknown as LiveAttachment;
+    await pumpOutput(socket as unknown as Parameters<typeof pumpOutput>[0], attachment, () => { assert.fail('not detached'); }, 1_000);
+    assert.deepEqual(JSON.parse(String(frames[0])), { type: 'terminal', state: 'failed', code: 'provider_recovery_exhausted', complete: true }, 'the terminal goes first');
+    assert.deepEqual(closes, [[1011, 'provider_recovery_exhausted']], `then the non-policy close (ready=${ready})`);
+  }
+});

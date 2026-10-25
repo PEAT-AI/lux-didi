@@ -40,6 +40,16 @@ enum MiniOrbSurface {
     }
 }
 
+/// C-LIVE L2-09: a receipt that repeats an unchanged state is written once, then again only when the state changes.
+struct ChangeOnlyGate {
+    private var last: String?
+    mutating func changed(_ state: String) -> Bool {
+        guard state != last else { return false }
+        last = state
+        return true
+    }
+}
+
 /// Toggle semantics for the floating mini orb, shared by the global hotkey,
 /// the Escape key and the menu bar. Pure closures, so the behaviour is proven
 /// in Tests/DidiMacTests/main.swift without launching AppKit or the app.
@@ -378,9 +388,13 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         let saved = UserDefaults.standard.string(forKey: frameKey).map(NSRectFromString)
         setFrame(MiniOrbFrameRestore.afterScreenChange(current: frame, saved: saved, screens: screens),
                  display: false)
-        onReceipt?(["event": "orb_screen_parameters", "screens": NSScreen.screens.count,
-                    "orbScreen": orbScreenToken])
+        // C-LIVE L2-09: one receipt per change of the screen state, never one per notification.
+        let state = "\(NSScreen.screens.count);\(orbScreenToken)"
+        if screenReceipt.changed(state) {
+            onReceipt?(["event": "orb_screen_parameters", "screens": NSScreen.screens.count, "orbScreen": orbScreenToken])
+        }
     }
+    private var screenReceipt = ChangeOnlyGate()
     @objc private func activeSpaceChanged() { onReceipt?(["event": "orb_space_changed", "visible": isVisible]) }
     @objc private func didWake() { onReceipt?(["event": "orb_wake", "visible": isVisible, "orbScreen": orbScreenToken]) }
     func windowDidChangeOcclusionState(_ notification: Notification) {

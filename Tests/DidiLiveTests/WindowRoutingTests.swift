@@ -174,6 +174,12 @@ import Foundation
         check(dockMenu.build(muted: true).items.last?.title == "Unmute",
               "the Dock menu's mute item carries the menu bar's own title for the current mute state")
 
+        // C-LIVE L2-09: 242 orb_screen_parameters in 20 s for one unchanged screen; the receipt is a change only.
+        var gate = ChangeOnlyGate()
+        check(gate.changed("1;main"), "the first screen state is written")
+        check(!gate.changed("1;main") && !gate.changed("1;main"), "an unchanged screen state is not written again")
+        check(gate.changed("2;main"), "a change is written")
+        check(gate.changed("1;main"), "and so is the change back")
         print(failures == 0 ? "WINDOW-ROUTING TESTS PASS" : "WINDOW-ROUTING TESTS FAILED \(failures)")
         exit(failures == 0 ? 0 : 1)
     }

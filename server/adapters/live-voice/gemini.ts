@@ -6,6 +6,7 @@ import { LiveVoiceError, liveVoiceTimerDefaults } from './types.js';
 import { geminiDialect } from '../../tools/declarations.js';
 import { effectiveLanguageCode } from '../../prompt/live-persona.js';
 import { FRESH_OPENING } from './openai.js';
+import { AUDIBLE_RMS_DBFS, pcm16RmsDbfs } from './audio-level.js';
 
 // Fixed official v1beta endpoint. Neither destination nor credentials are public events.
 const networkErrors = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'ECONNABORTED', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN']);
@@ -518,7 +519,10 @@ class Session implements LiveVoiceSession {
           if (!pcm.length || pcm.length % 2 || pcm.toString('base64') !== blob.data) fail('protocol_error');
           this.diagnostic.outputAudioFrames++; this.diagnostic.outputAudioPCMBytes += pcm.length;
           if (this.initialTurnComplete) { this.diagnostic.outputAudioAfterInitialTurnFrames++; this.diagnostic.outputAudioAfterInitialTurnPCMBytes += pcm.length; }
-          events.push({ type: 'audio', pcm: new Uint8Array(pcm), rate: 24000 });
+          // C-LIVE N-2: the idle clock reads this classification, so the gemini route states it exactly as the
+          // openai route does: a provider silence frame is forwarded and heard as nothing.
+          const rmsDbfs = pcm16RmsDbfs(pcm);
+          events.push({ type: 'audio', pcm: new Uint8Array(pcm), rate: 24000, audible: rmsDbfs >= AUDIBLE_RMS_DBFS, rmsDbfs });
         }
         if ('text' in part) events.push({ type: 'modelText', text: this.text(part.text), thought: part.thought === true });
       }

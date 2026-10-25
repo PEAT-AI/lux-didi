@@ -160,7 +160,9 @@ export async function pumpOutput(ws: OutputSocket, attachment: LiveAttachment, d
     ws.send(JSON.stringify({ type: 'terminal', state: terminal.state, code: terminal.code ?? null, complete: snapshot.journal.complete }), { binary: false });
   }
   const code = snapshot?.terminal && 'code' in snapshot.terminal ? snapshot.terminal.code : undefined;
-  if (snapshot && !snapshot.ready && code && /^[a-z][a-z0-9_]{0,63}$/.test(code)) ws.close(1008, `attach_rejected:${code}`);
+  // C-LIVE R2: an exhausted recovery is the host's own failure, never a policy refusal, so it closes 1011.
+  if (code === 'provider_recovery_exhausted') ws.close(1011, code);
+  else if (snapshot && !snapshot.ready && code && /^[a-z][a-z0-9_]{0,63}$/.test(code)) ws.close(1008, `attach_rejected:${code}`);
   else ws.close(1000, 'terminal');
 }
 

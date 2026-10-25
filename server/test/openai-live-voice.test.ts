@@ -256,6 +256,54 @@ describe('openai gpt-live adapter', () => {
     session.close();
   });
 
+  // #677 / L8-05: at 10:24:43 a host line (sendText, the late-findings path) wrote a `response.create` while a
+  // delegated call still owed its output; the provider refused it with function_call_outputs_required and the turn
+  // fell to a dead-air rebuild. A continuation the wire would refuse is never written: the line waits as owed, and
+  // the one continuation follows the owed output.
+  test('#677: a host line while a call owes its output sends no continuation until the output, then exactly one', async t => {
+    const { f, session, captured } = await ready(t);
+    f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_677', response_id: 'resp_677', offset_ms: 0 } });
+    f.send({ type: 'response.event', delegation_id: 'dlg_677', event: { type: 'response.output_item.done',
+      item: { type: 'function_call', call_id: 'call_677', name: 'research', arguments: '{"action":"start"}' } } });
+    f.send({ type: 'response.event', delegation_id: 'dlg_677', event: { type: 'response.done', response: { id: 'resp_677' } } });
+    await until(() => captured.events.some(event => event.type === 'toolCall'));
+    const creates = (): number => f.frames.filter(frame => frame['type'] === 'response.create').length;
+    const before = creates();
+    session.sendText({ text: 'Synthetic late line.' });
+    for (let wait = 0; wait < 20; wait += 1) await tick();
+    assert.equal(creates(), before, `no continuation is written while call_677 owes its output (${JSON.stringify(f.frames.map(frame => frame['event_id'] ?? frame['type']))})`);
+    session.sendToolResponse({ responses: [{ id: 'call_677', name: 'research', response: { ok: true } }] });
+    await until(() => f.frames.some(frame => frame['event_id'] === 'tool_out_call_677'));
+    for (let wait = 0; wait < 50 && creates() === before; wait += 1) await tick();
+    assert.equal(creates() - before, 1, 'exactly one continuation follows the owed output');
+    const outputAt = f.frames.findIndex(frame => frame['event_id'] === 'tool_out_call_677');
+    assert.ok(f.frames.slice(outputAt).some(frame => frame['type'] === 'response.create'), 'and it comes after the output');
+    session.close();
+  });
+
+  test('#677: a cont the provider refuses with function_call_outputs_required stays owed and is sent after the next output', async t => {
+    const logged = hostReceipts(t);
+    const { f, session, captured } = await ready(t);
+    f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_r', response_id: 'resp_r', offset_ms: 0 } });
+    f.send({ type: 'response.event', delegation_id: 'dlg_r', event: { type: 'response.output_item.done',
+      item: { type: 'function_call', call_id: 'call_a', name: 'research', arguments: '{"action":"start"}' } } });
+    f.send({ type: 'response.event', delegation_id: 'dlg_r', event: { type: 'response.done', response: { id: 'resp_r' } } });
+    await until(() => captured.events.some(event => event.type === 'toolCall'));
+    session.sendToolResponse({ responses: [{ id: 'call_a', name: 'research', response: { ok: true } }] });
+    await until(() => f.frames.some(frame => frame['type'] === 'response.create'));
+    const rejected = String(f.frames.filter(frame => frame['type'] === 'response.create').at(-1)!['event_id']);
+    f.send({ type: 'error', event_id: 'event_r', error: { type: 'invalid_request_error', code: 'function_call_outputs_required', param: 'type', message: 'synthetic', client_event_id: rejected } });
+    await until(() => logged().some(entry => entry['event'] === 'command_rejected'));
+    const creates = (): number => f.frames.filter(frame => frame['type'] === 'response.create').length;
+    const before = creates();
+    // The provider's own next terminal event is where an owed continuation resumes.
+    f.send({ type: 'response.event', delegation_id: 'dlg_r', event: { type: 'response.done', response: { id: 'resp_r2' } } });
+    for (let wait = 0; wait < 50 && creates() === before; wait += 1) await tick();
+    assert.equal(creates() - before, 1, 'the refused continuation is sent once more, not dropped');
+    assert.ok(logged().some(entry => entry['event'] === 'command_rejected' && entry['kind'] === 'cont'), 'the rejection is still a receipt');
+    session.close();
+  });
+
   test('S4A-R2 (c): responses_validation_failed is recorded loudly once, naming the field', async t => {
     const logged = hostReceipts(t);
     const { f } = await ready(t);

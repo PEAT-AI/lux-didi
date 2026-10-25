@@ -228,7 +228,7 @@ test('N5: a reply that cannot serve a continuation never says more is available'
   const stopped = await runResearch(h.deps, { action: 'stop', researchId: String(first['researchId']) }, new AbortController().signal);
   assert.equal(stopped['canContinue'], false);
   const note = String(stopped['note'] ?? '');
-  assert.doesNotMatch(note, /more available/, 'the note never offers a continuation this run cannot serve');
+  assert.ok(!note.includes(RESEARCH.moreAvailableNote), 'the note never offers a continuation this run cannot serve');
   assert.doesNotMatch(note, /did not search/, 'the note never repeats what the header already names');
   const coverage = String(stopped['coverage'] ?? '');
   assert.match(coverage, /coverage: (?!none)\w+/u, `the header names what this run did and did not search: ${coverage}`);
@@ -239,7 +239,7 @@ test('N5: a trimmed reply that can continue still says more is available', async
   const h = harness({ executeText: wide });
   const reply = await runResearch(h.deps, { action: 'start', question: 'what decisions did we make about the retrieval deadline' }, new AbortController().signal);
   assert.equal(reply['canContinue'], true);
-  assert.match(String(reply['note'] ?? ''), /more available/);
+  assert.ok(String(reply['note'] ?? '').includes(RESEARCH.moreAvailableNote));
 });
 
 // #575: a memory hit that is her own earlier voice confirms a past answer instead of finding new
@@ -1886,7 +1886,7 @@ test('LAT-1023: a wide answer is compacted to the Live budget by dropping whole 
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
   assert.ok((line.answerCompacted?.items ?? 0) > 0, 'with the count of whole items it dropped');
   assert.equal(line.answerCompacted?.chars, text.length, 'and the characters it sent');
-  assert.match(String(reply['note']), /There is more available/u, 'and the reply names what was left out');
+  assert.ok(String(reply['note']).includes(RESEARCH.moreAvailableNote), 'and the reply names what was left out');
   assert.doesNotMatch(shown, /no such|does not exist/iu);
 });
 
@@ -1945,7 +1945,7 @@ test('LAT-1023 B3: a two-source answer whose kept line is wider than the budget 
   const line = h.logs.at(-1)!;
   assert.ok(line.answerCompacted !== undefined, 'the receipt says the answer was compacted');
   assert.ok((line.answerCompacted?.items ?? 0) >= 2, 'whole items were dropped from both sources');
-  assert.match(String(reply['note']), /There is more available/u, 'and the reply names what it left out');
+  assert.ok(String(reply['note']).includes(RESEARCH.moreAvailableNote), 'and the reply names what it left out');
 });
 
 // --- TOPIC (#565, #576): only the topic's words reach a source, never the instruction text ---

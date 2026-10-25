@@ -519,4 +519,22 @@ test('W1: every Mongoose sign-in hop keeps its closed content-free line, and not
   assert.equal(safeEvent({ ...base, endpoint: 'admin' }), undefined, 'admin is never a sign-in endpoint');
   assert.equal(safeEvent({ ...base, attemptId: 'not an id' }), undefined, 'the attempt id is opaque hex');
   assert.equal(safeEvent({ event: 'signin_discovery', endpoint: 'data', attemptId, outcome: 'refused' }), undefined, 'each hop has its own outcomes');
+
+// C-LIVE behaviour 7: the error class of a refused attach and of a failed recovery open survives the writer,
+// content-free, and the new admission and deadline receipts are closed shapes.
+test('C-LIVE: live_attach_rejected keeps its class, and a recovery failure keeps class, key, mode and cause', () => {
+  const id = '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11';
+  assert.deepEqual(safeEvent({ event: 'live_attach_rejected', liveSessionId: id, code: 'internal', class: 'TypeError' }),
+    { event: 'live_attach_rejected', liveSessionId: id, code: 'internal', class: 'TypeError' });
+  assert.deepEqual(safeEvent({ event: 'live_attach_rejected', liveSessionId: id, code: 'internal', class: 'Error', detail: 'connection_policy_missing_or_corrupt' }),
+    { event: 'live_attach_rejected', liveSessionId: id, code: 'internal', class: 'Error', detail: 'connection_policy_missing_or_corrupt' });
+  assert.deepEqual(safeEvent({ event: 'live_attach_rejected', code: 'internal', class: 'not a class name' }), { event: 'live_attach_rejected', code: 'internal' },
+    'a class that is not a bare identifier is dropped');
+  const failure = { event: 'live_recovery_failed', liveSessionId: id, generation: 2, mode: 'fresh_seeded', cause: 'model_mute', errorClass: 'TypeError', messageKey: 'synthetic_open_refused', attempt: 1 };
+  assert.deepEqual(safeEvent(failure), failure);
+  assert.equal(safeEvent({ ...failure, messageKey: 'free text from a provider' }), undefined, 'a free-text message never reaches the log');
+  assert.deepEqual(safeEvent({ event: 'research_blocked', liveSessionId: id, generation: 0, action: 'continue', reason: 'no_turn_since_result' }),
+    { event: 'research_blocked', liveSessionId: id, generation: 0, action: 'continue', reason: 'no_turn_since_result' });
+  assert.deepEqual(safeEvent({ event: 'research_operation_deadline', liveSessionId: id, generation: 0, ms: 7_000 }),
+    { event: 'research_operation_deadline', liveSessionId: id, generation: 0, ms: 7_000 });
 });

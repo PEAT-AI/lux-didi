@@ -258,6 +258,10 @@ Text chat runs in two phases under one run budget (90 s):
 Gathered evidence is never discarded: it is persisted in `chat_runs.trace.toolEvidence` before
 every model request, and the answer phase reads only that frozen copy.
 
+The shared evidence guide the text system carries says to continue through returned coordinates when the
+owner asks for the missing evidence (C-LIVE), the same rule the voice path enforces with its owner-turn
+admission; a partial answer states its gap instead of paging on by itself.
+
 ### Step events
 
 Step events are published on the existing chat subscription, one pair per tool call. They carry a

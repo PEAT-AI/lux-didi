@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { MAX_LOOKUPS, RESEARCH, ResearchLedger, broaderQueryOf, clip, coverageLine, parseResearch, researchDeclaration, runResearch, statusAsk, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
+import { MAX_LOOKUPS, RESEARCH, RESEARCH_OPERATION, ResearchLedger, broaderQueryOf, clip, coverageLine, parseResearch, researchDeclaration, runResearch, statusAsk, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { shapeGcalList } from '../tools/live-shape.js';
 
@@ -126,7 +126,7 @@ test('COMPOSE 2: every reply opens with the coverage header, and a reply at the 
   for (const source of ['knowledge', 'mail']) {
     assert.ok(findings.some(finding => finding.source === source), `one finding line for ${source}`);
   }
-  assert.match(String(reply['note'] ?? ''), /more available/iu, 'the note survives the trim');
+  assert.ok(String(reply['note'] ?? '').includes(RESEARCH.moreAvailableNote), 'the note survives the trim');
   assert.doesNotMatch(String(reply['note'] ?? ''), /I did not search/u, 'the header is the one place an unread source is named');
   assert.ok(JSON.stringify(reply).length <= 900, `the header counts inside the cap: ${JSON.stringify(reply).length} chars`);
 });
@@ -297,8 +297,14 @@ test('#653: a status ask on a closed run names each source by its closed outcome
   });
   const call = runResearch(h.deps, { action: 'start', question: 'are my tools working', topic: 'tools' }, new AbortController().signal);
   for (let tick = 0; tick < 50; tick += 1) await Promise.resolve();
+  // C-LIVE: the operation answers at its deadline while every read still runs, and says so honestly.
+  clock.advance(RESEARCH_OPERATION.deadlineMs);
+  const early = await call;
+  assert.match(String(early['note']), /still reading/iu, `an open run names what it is still reading (${String(early['note'])})`);
+  // Once the run has closed on the source deadlines, a status read of it names each closed outcome.
   clock.advance(RESEARCH.startDeadlineMs + 1);
-  const reply = await call;
+  for (let tick = 0; tick < 50; tick += 1) await Promise.resolve();
+  const reply = await runResearch(h.deps, { action: 'stop', researchId: String(early['researchId']) }, new AbortController().signal);
   const note = String(reply['note']);
   assert.match(note, /team chat did not answer within 10 seconds/u, `chat is named by its closed outcome (${note})`);
   assert.match(note, /mail did not answer within 12 seconds/u, `mail is named by its closed outcome (${note})`);

@@ -194,7 +194,7 @@ export const RESEARCH = Object.freeze({
    * LAT-1023: one short clause, so an answer that ran out of rounds or of room never reads as a whole
    * record and never lets the model claim a record does not exist.
    */
-  moreAvailableNote: 'There is more available if you want it.',
+  moreAvailableNote: 'Partial: answer now, offer the rest; read on only if asked.',
   /**
    * Q5-R1: an explicit read by id is answered with the entry's whole body, and the connector's own
    * knowledge body cap is 20,000 chars, so that reply is sized for the body instead of the search
@@ -1663,6 +1663,8 @@ interface MailRead {
   code?: string;
   /** E5: the one broader read a search that matched nothing ran, so the receipt can name both shapes. */
   retry?: MailRead;
+  /** C-LIVE: the last page's own duration, the totals pages reported, and a page the operation bound did not start. */
+  lastPageMs?: number; pageTotals?: number[]; boundStop?: boolean;
 }
 type RemoteBody = Extract<HostEvidenceRef, { kind: 'remote-body' }>;
 interface ReceivedBody { evidence: RemoteBody; binding: ToolResultBinding; source: SourceKind; offset: number }
@@ -1698,8 +1700,14 @@ interface CalendarRead {
   bodyTruncated: boolean; unread: number; upstreamIncomplete?: boolean; inflight?: boolean;
   /** The connector's own failure code, kept so the sub-call log names the real reason. */
   code?: string;
+  /** C-LIVE: the last page's own duration, and a page the operation bound did not start. */
+  lastPageMs?: number; boundStop?: boolean;
 }
 export interface RunState {
+  /** C-LIVE: the moment this operation must have answered by; no page starts that cannot finish before it. */
+  operationDeadlineAt?: number;
+  /** L8-06: the sources this call is reading right now (the first answer's own set, the web read included). */
+  reading?: Set<SourceKind>;
   /** #575: the start of the call before this one, so her own lines from the last two calls stay out of memory evidence. */
   previousCallAt?: number;
   /** #575: finding texts this session already delivered, shared by every run of the session. */
@@ -2008,6 +2016,8 @@ export interface ResearchQueryShape { source: Exclude<SourceKind | LookupSource,
 
 export interface ResearchDeps {
   timeZone?: string;
+  /** L11-03: the live call this research runs in. Its own rows are never memory, by identity. */
+  liveSessionId?: string | undefined;
   /**
    * #565: one row per source call's query shape, so the next forensic review can prove what a search was
    * built from. The Live owner binds it to the trace store; absent means nothing is persisted.
@@ -2434,11 +2444,21 @@ export function clip(text: string, max: number): string {
   return `${whole.length * 2 >= room.length ? whole : room}\u2026`;
 }
 
-/** #621: the E3 states a reply must keep apart, and the E4 reason a source was never searched. */
-export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry';
+/**
+ * #621: the E3 states a reply must keep apart, and the E4 reason a source was never searched. C-LIVE behaviour 2
+ * (F3): `partial_failed` is a read whose later page failed after one arrived, never `complete`, whatever the
+ * counts add up to, because the header is what the voice repeats aloud.
+ */
+
+export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry' | 'partial_failed';
 export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'needs_clarification' | 'name_not_found' | 'never_ran';
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
+
+/** The status words a searched source says aloud, where the word alone would be read as a whole read. */
+const SEARCHED_CLAUSE: Partial<Record<CoverageStatus, (label: string) => string>> = {
+  partial_failed: label => `${label} stopped after a later page failed`,
+};
 
 /** The one clause the voice can say about a source it could not read, keyed by the closed reason. */
 const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: SourceKind) => string> = {
@@ -2485,7 +2505,10 @@ export function coverageLine(searched: readonly CoverageSearched[], unsearched: 
   const bound = Math.floor(limit / HEADER_SHARE_OF_CAP);
   const line = (entries: readonly string[]): string => entries.length === 0 ? 'coverage: none' : `coverage: ${entries.join('; ')}`;
   const detailed = line([
-    ...searched.map(entry => `${entry.source} ${entry.status} ${entry.shown} of ${entry.total} shown${entry.confidence === undefined ? '' : ` confidence=${entry.confidence}`}`),
+    ...searched.map(entry => {
+      const say = SEARCHED_CLAUSE[entry.status];
+      return `${entry.source} ${entry.status} ${entry.shown} of ${entry.total} shown${entry.confidence === undefined ? '' : ` confidence=${entry.confidence}`}${say === undefined ? '' : ` (say: ${say(spokenLabelOf(entry.source))})`}`;
+    }),
     ...unsearched.map(entry => `${entry.source} ${entry.reason} (say: ${UNSEARCHED_CLAUSE[entry.reason](spokenLabelOf(entry.source), entry.source)})`),
   ]);
   if (detailed.length <= bound) return detailed;
@@ -2500,12 +2523,17 @@ interface FindingLike { source?: string; text?: string }
 
 /** `Source: 3 of 9 shown`, the head every finding line group carries. */
 const FINDING_HEAD = /^\S[^:\n]*: (\d+) of (\d+) shown$/mu;
+/** L11-01: a label line under a finding head (the ranker's confidence, a nothing-matched verdict), never an item. */
+const FINDING_META_LINE = /^knowledge: (?:confidence=|nothing matched)/u;
 
 /**
  * #621: the header of a reply with findings, derived from the findings the voice will actually hear, so the
  * counts can never drift from the evidence after a trim.
  */
 function coverageTextOf(run: RunState, configured: readonly SourceKind[], findings: readonly FindingLike[], totals: ReadonlyMap<SourceKind, number>, limit: number): string {
+  // C-LIVE behaviour 2 / F3: a read that lost a later page never counts as a whole read, whatever the totals say.
+  // Mail is the one source whose reads carry their own page-failure flag (see operationCoverage).
+  const failedPage = (source: SourceKind): boolean => source === 'mail' && [...run.mail.values()].some(read => read.failed);
   const searched: CoverageSearched[] = [];
   for (const source of SOURCE_ORDER) {
     if (!configured.includes(source)) continue;
@@ -2525,6 +2553,7 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
     const shown = head === null ? 0 : Number(head[1]);
     const total = Math.max(shown, totals.get(source) ?? (head === null ? 0 : Number(head[2])));
     const status: CoverageStatus = run.cutShort.has(source) ? 'partial_timeout'
+      : failedPage(source) && shown > 0 ? 'partial_failed'
       : total > shown ? 'truncated_to_budget' : shown === 0 ? 'empty_after_retry' : 'complete';
     const confidence = source === 'knowledge' && finding !== undefined ? knowledgeConfidenceOf(text.split('\n'))?.confidence : undefined;
     searched.push({ source, status, shown, total, ...(confidence === undefined ? {} : { confidence }) });
@@ -2553,14 +2582,16 @@ function closedOutcomeOf(run: RunState, source: SourceKind): UnsearchedReason {
   if (code !== undefined) return unsearchedReasonOf(code);
   if (run.stopped || run.cancelled) return 'skipped_by_route';
   // A reader still pending when the run closed used all of its deadline and answered nothing.
-  return run.pending.has(source) ? 'timed_out' : 'skipped_by_route';
+  return run.pending.has(source) || (run.reading?.has(source) === true && !run.sourcesDone.has(source)) ? 'timed_out' : 'skipped_by_route';
 }
 
 function unsearchedReasonGiven(run: RunState, configured: readonly SourceKind[], source: SourceKind): UnsearchedReason {
   if (!configured.includes(source)) return 'not_configured';
   // #635: a read still in flight is neither skipped nor failed, so it says so, the same thing the note says.
   // #653: but a closed run has no read in flight, so the same source is named by its closed outcome.
-  if (run.pending.has(source) && !run.ended && !run.stopped && !run.cancelled) return 'still_reading';
+  // L8-06: a read still running is still reading, whichever path runs it: the web read never passes the
+  // execute wrapper that fills `pending`, so the call's own reading set counts too.
+  if ((run.pending.has(source) || (run.reading?.has(source) === true && !run.sourcesDone.has(source))) && !run.ended && !run.stopped && !run.cancelled) return 'still_reading';
   return closedOutcomeOf(run, source);
 }
 
@@ -3299,7 +3330,7 @@ function rankMemoryEvidence(hits: readonly JsonObject[], tokens: readonly string
  * of the live session are never its own memory, and a row dated at or after the call before this one is the
  * live conversation, so only older rows survive unless the owner asked what she said.
  */
-function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunState, asked: boolean): JsonObject[] {
+function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunState, asked: boolean, currentSessionId?: string): JsonObject[] {
   const keys = new Set([question, run.question ?? ''].filter(text => text.trim().length > 0).map(memoryWords));
   const history = run.previousCallAt ?? run.startedAt;
   const live = asked ? new Set<string>() : liveSessionIds(hits, question, history);
@@ -3310,7 +3341,8 @@ function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunS
     // conversation itself, and every summary of it, never is.
     if (hit['sourceKind'] === 'entry') return true;
     const id = hit['sessionId'];
-    if (typeof id === 'string' && live.has(id)) return false;
+    // L11-03: the call in progress is excluded by its own id, whatever a row's time says.
+    if (typeof id === 'string' && (live.has(id) || id === currentSessionId)) return false;
     const at = Date.parse(String(hit['date'] ?? ''));
     return !Number.isFinite(at) || at < history;
   });
@@ -3385,6 +3417,10 @@ export function capReply(reply: JsonObject, limit: number, refresh?: () => void)
     const lines = widest?.text?.split('\n') ?? [];
     if (widest === undefined || lines.length <= 1) break;
     const head = lines.shift() ?? '';
+    // L11-01: a label line under the head is part of the head: it is never the last item left standing.
+    const meta: string[] = [];
+    while (lines.length > 0 && FINDING_META_LINE.test(lines[0]!)) meta.push(lines.shift()!);
+    if (lines.length === 0) { reply['findings'] = (reply['findings'] as JsonObject[]).filter(finding => finding !== widest); trimmed = true; continue; }
     if (widest.source === 'web') {
       const kept = clipWebEvidence(widest.text!, widest.text!.length - (size() - limit) - RESEARCH.moreAvailableNote.length - 80);
       if (kept !== undefined) { widest.text = kept; widest.chars = kept.length; }
@@ -3399,14 +3435,20 @@ export function capReply(reply: JsonObject, limit: number, refresh?: () => void)
       // #5: the clipped hit is still shown, so the header it keeps counts it.
       const room = lines[0]!.length - (size() - limit) - 1;
       const kept = sentencePrefix(lines[0]!, room) || clip(lines[0]!, room);
-      if (kept.length >= RESEARCH.clipFloorChars) { widest.text = [head, kept].join('\n'); widest.chars = kept.length; trimmed = true; continue; }
+      if (kept.length >= RESEARCH.clipFloorChars) { widest.text = [head, ...meta, kept].join('\n'); widest.chars = kept.length; trimmed = true; continue; }
     }
     // #5: only a line this pass really removes is counted out of the header, never one it clipped.
     const counted = head.replace(/: (\d+) of (\d+) shown$/u, (_match, shown: string, total: string) => `: ${Math.max(0, Number(shown) - 1)} of ${total} shown`);
+    // L11-03: the coverage header carries the same count, so a trim after it was built never leaves them apart.
+    if (refresh === undefined && typeof reply['coverage'] === 'string' && typeof widest.source === 'string') {
+      const own = /: (\d+) of (\d+) shown$/u.exec(head);
+      if (own) reply['coverage'] = String(reply['coverage']).replace(new RegExp(`\\b${widest.source} (\\S+) ${own[1]} of ${own[2]} shown`, 'u'),
+        (_match, status: string) => `${widest.source} ${status === 'complete' ? 'truncated_to_budget' : status} ${Math.max(0, Number(own[1]) - 1)} of ${own[2]} shown`);
+    }
     lines.pop();
     // F2 (review): a header that claims a count over no evidence line is a lie, so the finding goes whole.
     if (lines.length === 0) reply['findings'] = (reply['findings'] as JsonObject[]).filter(finding => finding !== widest);
-    else { widest.text = [counted, ...lines].join('\n'); widest.chars = lines.join('\n').length; }
+    else { widest.text = [counted, ...meta, ...lines].join('\n'); widest.chars = lines.join('\n').length; }
     trimmed = true;
   }
   // F2 (review): the hard bound. The page envelopes carry the same evidence as the findings, so they go last.
@@ -3432,13 +3474,18 @@ export function capReply(reply: JsonObject, limit: number, refresh?: () => void)
 function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number, sources?: JsonObject, skipBodies = false, bodyLimit = RESEARCH.bodyLimitChars): JsonObject {
   const bodyReply = skipBodies ? undefined : receivedBodyReply(run, configured, bodyLimit);
   if (bodyReply) { if (Array.isArray((bodyReply as JsonObject)['bodySlices'])) run.bodyReplies += 1; return bodyReply; }
-  const groups: { source: SourceKind; label: string; lines: string[]; total: number; days?: { day: string; entries: string[] }[] }[] = [];
+  const groups: { source: SourceKind; label: string; lines: string[]; total: number; days?: { day: string; entries: string[] }[]; meta?: string[] }[] = [];
   for (const entry of run.ledger.values()) {
     if (entry.bodyOnly || !entry.lines || entry.lines.length === 0 || entry.source === null || (entry.source === 'calendar' && run.calendar.size > 0) || (entry.source === 'mail' && run.mail.size > 0)) continue;
     const existing = groups.find(group => group.source === entry.source);
     const target = existing ?? { source: entry.source, label: SOURCE_LABEL[entry.source], lines: [], total: 0 };
-    target.lines.push(...entry.lines);
-    target.total += entry.total ?? entry.lines.length;
+    // L11-01: the ranker's confidence label rides with the finding but is no item, so no trim can leave it
+    // standing in for the hits and no count includes it.
+    const meta = entry.lines.filter(line => FINDING_META_LINE.test(line));
+    const items = entry.lines.filter(line => !FINDING_META_LINE.test(line));
+    if (meta.length > 0) target.meta = [...new Set([...(target.meta ?? []), ...meta])];
+    target.lines.push(...items);
+    target.total += entry.total === undefined ? items.length : entry.total === entry.lines.length ? items.length : entry.total;
     if (!existing) groups.push(target);
   }
   const calendarEvents = new Map<string, RetainedCalendarEvent>();
@@ -3565,7 +3612,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       .map(group => {
         // N3: the primary-calendar answer says what it did not read, from the list it carried.
         const note = run.calendarNotRead !== undefined && group.source === 'calendar' && !group.lines.includes(run.calendarNotRead) ? `\n${run.calendarNotRead}` : '';
-        const text = `${group.label}: ${shownOf(group)} of ${Math.max(group.total, group.lines.length)} shown\n${group.lines.join('\n')}${note}`;
+        const text = `${group.label}: ${shownOf(group)} of ${Math.max(group.total, group.lines.length)} shown\n${[...(group.meta ?? []), ...group.lines].join('\n')}${note}`;
         // #575: a block this session already gave is one line, never a second copy of the same evidence.
         if (run.deliveredFindings.has(findingKey(text))) return { source: group.source, text: `${group.label}: already given earlier in this session.`, chars: 0 };
         return { source: group.source, text, chars: group.lines.join('\n').length };
@@ -3608,7 +3655,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       const rest = `The rest come next: ${deferred.map(source => SOURCE_LABEL[source]).join(', ')}.`;
       settledNote = settledNote === undefined ? rest : `${settledNote} ${rest}`;
     }
-    return { findings, reply: { coverage: coverageOf(findings), researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
+    return { findings, reply: { coverage: coverageOf(findings), ...coverageRows(operationCoverage(run, findings)), researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, down to a source's last line: the Live budget is a hard bound, so a kept
   // line wider than the budget is dropped whole rather than left to overrun it (LAT-1023 B3). R5 (RESCAP-R5):
@@ -3625,7 +3672,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     const fillable = groups.filter(group => shownOf(group) > (group.days === undefined ? 1 : 2));
     if (fillable.length > 0) {
       const kept = (group: { lines: string[]; total: number }): number => shownOf(group) / Math.max(1, group.total);
-      const trimmed = fillable.reduce((worst, group) => (kept(group) > kept(worst) ? group : worst));
+      // L11-01: memory the ask did not name yields first, so it can never starve a source that answered beside it.
+      const memory = run.route.has('memory') ? undefined : fillable.find(group => group.source === 'memory');
+      const trimmed = memory !== undefined && groups.some(group => group.source !== 'memory' && shownOf(group) > 0) ? memory
+        : fillable.reduce((worst, group) => (kept(group) > kept(worst) ? group : worst));
       // #4: a calendar day line is a list of whole events, so it loses one event at a time, the count it
       // reports is the count of events it really dropped, and it is never clipped: a clip would swallow an
       // event while the header still claimed it. Its last event stays, so the answer keeps the day it read.
@@ -3674,6 +3724,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // the reply is measured with the header it carries.
   const capped = capReply(result, limit, () => {
     if (typeof result['coverage'] === 'string') result['coverage'] = coverageOf(Array.isArray(result['findings']) ? result['findings'] as unknown as FindingLike[] : []);
+    if (typeof result['coverage'] === 'string') {
+      const rows = operationCoverage(run, Array.isArray(result['findings']) ? result['findings'] as unknown as FindingLike[] : []);
+      if (rows.length === 0) delete result['sourceCoverage']; else result['sourceCoverage'] = rows;
+    }
   });
   // #575: what this reply actually carried is what the session must not hand over again.
   for (const finding of (Array.isArray(capped['findings']) ? capped['findings'] as { text?: string }[] : [])) {
@@ -3997,8 +4051,10 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
   while (now() < run.mailDeadlineAt && run.ops < RESEARCH.maxOps && evidenceAllowed(deps, run, signal)) {
     // #581: a page answers the read unless the lines this reply shows still need more, so four pages are
     // never spent to show four lines.
-    const reads = [...run.mail.values()].filter(read => !read.exhausted && !read.failed && !read.inflight && read.pages < RESEARCH.mailPageCap && read.messages.size < MAIL_LINES_SHOWN).slice(0, RESEARCH.maxOps - run.ops);
+    const candidates = [...run.mail.values()].filter(read => !read.exhausted && !read.failed && !read.inflight && read.pages < RESEARCH.mailPageCap && read.messages.size < MAIL_LINES_SHOWN);
+    const reads = boundedPages(run, 'mail', candidates, now()).slice(0, RESEARCH.maxOps - run.ops);
     if (reads.length === 0) break;
+    const pageStartedAt = now();
     const calls = reads.map((read, n) => ({ key: `mail${run.ops + n}`, name: INTERNAL.mailList, args: { ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}) } }));
     if (!evidenceAllowed(deps, run, signal)) break;
     for (const read of reads) { read.inflight = true; if (read.nextPageToken) read.tokens.add(read.nextPageToken); }
@@ -4031,6 +4087,7 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
     }
     reads.forEach((read, n) => {
       read.inflight = false;
+      read.lastPageMs = Math.max(0, now() - pageStartedAt);
       const result = results[n];
       if (!result?.ok || deps.authorizeEvidence && !result.binding) { failMailPage(read); if (result?.code !== undefined) read.code = result.code; return; }
       read.pages += 1;
@@ -4053,6 +4110,7 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
       const inWindow = (message: MailMessage): boolean => since === undefined || !(Date.parse(message.internalDate) < since);
       for (const message of page.messages) if (inWindow(message) && !read.messages.has(message.id)) read.messages.set(message.id, message);
       read.received += page.received; read.invalid += page.invalid; read.upstreamIncomplete ||= page.upstreamIncomplete === true;
+      if (typeof page.total === 'number') (read.pageTotals ??= []).push(page.total);
       const next = page.nextPageToken;
       if (next && (next.length > 4096 || read.tokens.has(next))) { failMailPage(read); return; }
       if (next) read.nextPageToken = next;
@@ -4131,9 +4189,10 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
       for (const [eventKey, event] of hit.events) read.events.set(eventKey, event);
       read.exhausted = true;
     }
-    const pending = [...run.calendar.values()].filter(read => !read.exhausted && !read.failed && !read.inflight);
+    const pending = boundedPages(run, 'calendar', [...run.calendar.values()].filter(read => !read.exhausted && !read.failed && !read.inflight), now());
     if (pending.length === 0) break;
     const reads = pending.slice(0, RESEARCH.maxOps - run.ops);
+    const pageStartedAt = now();
     // W2: the connector plans inside this run's remaining source budget, never its own 40 s constant.
     const calls: IntentSubCall[] = [];
     const slots: number[] = [];
@@ -4172,6 +4231,7 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     }
     reads.forEach((read, n) => {
       read.inflight = false;
+      read.lastPageMs = Math.max(0, now() - pageStartedAt);
       const result = results[slots[n]!];      if (!result?.ok || (deps.authorizeEvidence && !result.binding)) { read.failed = true; if (result?.code !== undefined) read.code = result.code; return; }
       // A calendar answer with text but no page envelope is still that source's answer: each tagged
       // line is one event, so the brief fan-out and the reply carry it like any other page.
@@ -4286,7 +4346,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
       // new evidence, so it is dropped unless the owner asked what she said.
       const askedWhatSheSaid = ASKS_WHAT_SHE_SAID.test(context.question);
       const raw = Array.isArray(page['hits']) ? page['hits'].filter(isRecord) : [];
-      const hits = memoryEvidence(raw, context.question, run, askedWhatSheSaid);
+      const hits = memoryEvidence(raw, context.question, run, askedWhatSheSaid, deps.liveSessionId);
       const kept = { ...page, hits };
       for (const hit of hits) if (typeof hit['recordRef'] === 'string') run.historyTokens.add(hit['recordRef']);
       const lines = typeof page['text'] === 'string' ? [page['text']] : hits.map(hit => String(hit['snippet'] ?? ''));
@@ -4692,7 +4752,8 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
     const live = first.snapshot?.();
     if (live === undefined) return undefined;
     const waiting = [...first.required].some(source => first.reading.has(source) && !live.run.sourcesDone.has(source));
-    const left = first.releaseAt() - deps.now();
+    const operationLeft = live.run.operationDeadlineAt === undefined ? Number.POSITIVE_INFINITY : live.run.operationDeadlineAt - RESEARCH_OPERATION.returnReserveMs - deps.now();
+    const left = Math.min(first.releaseAt() - deps.now(), operationLeft);
     if (!waiting || left <= 0 || first.cut === true) break;
     const woken = new Promise<'woken'>(resolve => { first.wake = () => resolve('woken'); });
     const next = await Promise.race([settled, woken, wait(left)]);
@@ -4703,8 +4764,18 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   const view = first.snapshot?.();
   if (view === undefined) return undefined;
   const found = [...view.run.ledger.values()].flatMap(entry => entry.lines ?? []).concat([...view.run.calendar.values()].flatMap(read => [...read.events.values()].map(event => event.line)), [...mailMessages(view.run).values()].map(message => message.line));
-  // No source has findings yet, so there is no answer to give: the call waits, as today, to its own budget.
-  if (found.length === 0 && !first.historyPages?.some(page => typeof page['text'] === 'string' && page['text'].length > 0 || Array.isArray(page['hits']) && page['hits'].length > 0)) return loop;
+  // No source has findings yet: the call waits for them, but only to the operation deadline (C-LIVE behaviour 2),
+  // where it answers with what it has and the readers still running detach to the late-findings path.
+  if (found.length === 0 && !first.historyPages?.some(page => typeof page['text'] === 'string' && page['text'].length > 0 || Array.isArray(page['hits']) && page['hits'].length > 0)) {
+    const deadlineAt = view.run.operationDeadlineAt;
+    if (deadlineAt === undefined) return loop;
+    const left = deadlineAt - RESEARCH_OPERATION.returnReserveMs - deps.now();
+    if (left > 0) {
+      const next = await Promise.race([settled, wait(left)]);
+      stopTimers();
+      if (next === 'settled') return undefined;
+    }
+  }
   const pending = [...first.reading].filter(source => !view.run.sourcesDone.has(source));
   if (!evidenceAllowed(deps, view.run, new AbortController().signal)) return deniedEvidence(deps, view.run);
   // ROUTE-1022 (#526): an early answer is partial by definition until its readers settle, and it names
@@ -4742,7 +4813,13 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const early = await firstAnswerOf(deps, first, loop);
   if (early === undefined) { const reply = await loop; if (!deps.authorizeEvidence) markCalendarReply(deps.ledger, reply); return reply; }
   // The call answers now. The readers keep going to their own deadlines, so their findings still land.
-  deps.background?.(loop.then(() => undefined, () => undefined));
+  // C-LIVE: the detached loop's own closing reply is never handed to the model, so the findings it marks as
+  // given are unmarked again; an owner follow-up then hears them instead of "already given".
+  const detached = first.snapshot?.().run;
+  const given = detached === undefined ? undefined : new Set(detached.deliveredFindings);
+  const unmark = (): void => { if (detached === undefined || given === undefined) return; for (const key of [...detached.deliveredFindings]) if (!given.has(key)) detached.deliveredFindings.delete(key); };
+  deps.background?.(loop.then(unmark, unmark));
+  if (deps.background === undefined) void loop.then(unmark, unmark);
   if (!deps.authorizeEvidence) markCalendarReply(deps.ledger, early);
   return early;
 }
@@ -4884,6 +4961,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     }
   }
   run.direction = call.direction ?? run.direction;
+  run.operationDeadlineAt = now() + RESEARCH_OPERATION.deadlineMs;
+  run.reading = first.reading;
   // #621: the ask's own route, so a source it names but the session never wired still says why.
   for (const source of requiredSources(run.question ?? question)) run.route.add(source);
   if (deps.timeZone === undefined) delete run.timeZone; else run.timeZone = deps.timeZone;
@@ -5771,4 +5850,148 @@ export class ResearchScheduler {
     });
     return awaiter.promise;
   }
+}
+
+// ---- C-LIVE (W5): owner-turn admission, the bounded operation and per-source coverage --------------------------
+
+/**
+ * C-LIVE behaviour 2: one research operation answers by `deadlineMs`. Measured on the installed host.log
+ * (2026-10-12 to 10-25, 723 research_source rows): p50 per source 0.1 to 3.9 s, p90 5.3 to 7.7 s; a whole run
+ * p50 2.2 s, p90 9.8 s. The first answer point (4.5 s) already answers when one source has findings; 6 s is the
+ * bound for a call with nothing yet, and the readers still running detach to the late-findings path. A page
+ * starts only when its estimate (this read's last page, else the per-source p50) finishes `returnReserveMs`
+ * before the deadline; the host settles the call itself `hostGraceMs` after the deadline if the loop has not.
+ */
+export const RESEARCH_OPERATION = Object.freeze({
+  deadlineMs: 6_000,
+  returnReserveMs: 500,
+  hostGraceMs: 1_000,
+  pageEstimateMs: Object.freeze({ mail: 2_000, calendar: 1_400 }),
+});
+
+/** C-LIVE behaviour 1: the reply to a research call no owner turn admitted. It reaches no source. */
+export const ADMISSION_BLOCKED: Readonly<JsonObject> = Object.freeze({
+  status: 'blocked', reason: 'owner_turn_required', directive: 'answer_existing_result', retry_without_new_owner_turn: false,
+});
+export const ADMISSION_BLOCK_REASONS = ['no_owner_turn', 'turn_spent', 'no_turn_since_result'] as const;
+export type AdmissionBlockReason = typeof ADMISSION_BLOCK_REASONS[number];
+export type AdmissionVerdict = { admitted: true } | { admitted: false; reason: AdmissionBlockReason };
+
+/**
+ * C-LIVE behaviour 1: each finalized owner turn grants one research operation. `start` or an admitted `continue`
+ * spends it; `continue` also needs an owner turn after the last delivered result; `stop` is always allowed. Only
+ * the owner's own finalized words call `ownerTurn`: transcripts in progress, her audio, host nudges, rebuilds and
+ * tool results grant nothing. One instance lives for the whole live session, across provider generations.
+ */
+export class ResearchAdmission {
+  #turns = 0;
+  #grant: number | undefined;
+  #deliveredAt: number | undefined;
+  ownerTurn(): void { this.#turns += 1; this.#grant = this.#turns; }
+  admit(action: ResearchAction): AdmissionVerdict {
+    if (action === 'stop') return { admitted: true };
+    if (this.#turns === 0) return { admitted: false, reason: 'no_owner_turn' };
+    if (this.#grant !== this.#turns) return { admitted: false, reason: 'turn_spent' };
+    if (action === 'continue' && this.#deliveredAt !== undefined && this.#turns <= this.#deliveredAt) return { admitted: false, reason: 'no_turn_since_result' };
+    this.#grant = undefined;
+    return { admitted: true };
+  }
+  /** An admitted research result was handed to the model. */
+  delivered(): void { this.#deliveredAt = this.#turns; }
+}
+
+/** C-LIVE behaviour 2: the reads whose next page can still finish before the operation must answer. */
+function boundedPages<T extends { lastPageMs?: number; boundStop?: boolean }>(run: RunState, source: 'mail' | 'calendar', reads: readonly T[], nowMs: number): T[] {
+  if (run.operationDeadlineAt === undefined) return [...reads];
+  const end = run.operationDeadlineAt - RESEARCH_OPERATION.returnReserveMs;
+  return reads.filter(read => {
+    const fits = nowMs + (read.lastPageMs ?? RESEARCH_OPERATION.pageEstimateMs[source]) <= end;
+    if (!fits) read.boundStop = true;
+    return fits;
+  });
+}
+
+type CoverageStop = 'exhausted' | 'deadline' | 'page_failed' | 'failed' | 'page_cap' | 'page_limit' | 'enough_for_answer' | 'reply_budget' | 'cancelled' | 'not_read';
+
+/** The rows ride the reply only when a source has a gap to name. */
+function coverageRows(rows: JsonObject[]): { sourceCoverage?: JsonObject[] } { return rows.length === 0 ? {} : { sourceCoverage: rows }; }
+
+/** How many lines of one source the reply the model hears actually carries. */
+function representedOf(findings: readonly FindingLike[], source: SourceKind): number {
+  const text = findings.find(entry => entry.source === source && typeof entry.text === 'string')?.text ?? '';
+  const head = FINDING_HEAD.exec(text);
+  return head === null ? 0 : Number(head[1]);
+}
+
+/** Totals reported page by page: one value is a known total, disagreeing values are a changing one. */
+function reportedTotal(totals: readonly number[]): number | 'changing' | undefined {
+  const distinct = [...new Set(totals)];
+  return distinct.length === 0 ? undefined : distinct.length === 1 ? distinct[0]! : 'changing';
+}
+
+/**
+ * C-LIVE behaviour 2: what each source of this operation really covered, apart from the prose. `examined` is the
+ * distinct records read, deduplicated across pages; `total` is known only when the source reported it or was read
+ * to its end, `unknown` otherwise, and `changing` when its pages disagreed; `matches` is what matched the query;
+ * `represented` is what this reply carries. Per-page totals are never summed.
+ */
+export function operationCoverage(run: RunState, findings: readonly FindingLike[]): JsonObject[] {
+  const closed = run.cancelled || run.stopped;
+  const touched = new Set<SourceKind>([...run.route, ...run.sourcesDone, ...run.sourcesFailed, ...run.pending, ...(run.reading ?? []), ...run.emptySearches.keys(), ...run.cutShort]);
+  if (run.mail.size > 0) touched.add('mail');
+  if (run.calendar.size > 0) touched.add('calendar');
+  const rows: JsonObject[] = [];
+  for (const source of SOURCE_ORDER) {
+    if (!touched.has(source)) continue;
+    const represented = representedOf(findings, source);
+    let examined = 0;
+    let total: number | 'unknown' | 'changing' = 'unknown';
+    let matches: number | 'unknown' = 'unknown';
+    let readComplete = false;
+    let stop: CoverageStop;
+    let upstream = false;
+    if (source === 'mail' && run.mail.size > 0) {
+      const reads = [...run.mail.values()];
+      examined = mailMessages(run).size;
+      matches = examined;
+      readComplete = reads.every(read => read.exhausted && !read.failed);
+      upstream = reads.some(read => !read.exhausted && !read.failed);
+      const reported = reportedTotal(reads.flatMap(read => read.pageTotals ?? []));
+      total = reported === 'changing' ? 'changing' : readComplete ? examined : reported ?? 'unknown';
+      stop = run.pending.has('mail') || run.cutShort.has('mail') || reads.some(read => read.inflight === true || (read.boundStop === true && !read.exhausted)) ? 'deadline'
+        : reads.some(read => read.failed) ? (examined > 0 ? 'page_failed' : 'failed')
+          : readComplete ? 'exhausted'
+            : reads.some(read => read.pages >= RESEARCH.mailPageCap) ? 'page_cap' : 'enough_for_answer';
+    } else if (source === 'calendar' && run.calendar.size > 0) {
+      const reads = [...run.calendar.values()];
+      examined = new Set(reads.flatMap(read => [...read.events.keys()])).size;
+      matches = examined;
+      readComplete = reads.every(read => read.exhausted && !read.failed && read.unread === 0);
+      upstream = reads.some(read => !read.exhausted && !read.failed);
+      total = readComplete ? examined : 'unknown';
+      stop = run.pending.has('calendar') || run.cutShort.has('calendar') || reads.some(read => read.inflight === true || (read.boundStop === true && !read.exhausted)) ? 'deadline'
+        : reads.some(read => read.failed) ? (examined > 0 ? 'page_failed' : 'failed') : readComplete ? 'exhausted' : 'enough_for_answer';
+    } else {
+      const entries = [...run.ledger.values()].filter(entry => entry.source === source && !entry.bodyOnly);
+      examined = new Set(entries.flatMap(entry => entry.lines ?? [])).size;
+      const reported = reportedTotal(entries.flatMap(entry => typeof entry.total === 'number' ? [entry.total] : []));
+      // Several different queries may overlap, so their totals are never added up.
+      if (typeof reported === 'number') { total = Math.max(reported, examined); matches = total; }
+      else if (run.emptySearches.has(source) && examined === 0) { total = 0; matches = 0; }
+      readComplete = run.sourcesDone.has(source) || run.emptySearches.has(source);
+      stop = run.pending.has(source) || run.cutShort.has(source) || (run.reading?.has(source) === true && !readComplete) ? 'deadline'
+        : run.sourcesFailed.has(source) ? 'failed'
+          : !readComplete ? (closed ? 'cancelled' : 'not_read')
+            : typeof total === 'number' && total > examined ? 'page_limit' : 'exhausted';
+      if (stop === 'page_limit') upstream = true;
+    }
+    if (stop === 'exhausted' && represented < examined) stop = 'reply_budget';
+    const complete = stop === 'exhausted';
+    // A source read whole is said by the header alone ("truncated_to_budget 9 of 38 shown" when the reply cut it);
+    // a row is the measured cost of a gap the header cannot state: a deadline, a failed page, an unknown total.
+    if ((complete || stop === 'reply_budget') && typeof total === 'number') continue;
+    rows.push({ source, examined, total, matches, represented, state: complete ? 'complete' : 'partial', stop,
+      more: upstream || stop === 'deadline' ? 'upstream' : represented < examined ? 'local' : 'none' });
+  }
+  return rows;
 }

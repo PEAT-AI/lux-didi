@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
+import { createLiveSessionOwner, deadlineResearchId, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
 import type { LiveToolsComposition } from '../live/types.js';
 import { liveProfileIdentity } from '../live/config.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
@@ -467,6 +467,16 @@ test('replay 10: no page starts that cannot finish before the deadline', async (
   const mail = coverageOf(reply, 'mail');
   assert.equal(mail?.['stop'], 'deadline');
   assert.equal(mail?.['more'], 'upstream', 'and its cursor is kept for a follow-up');
+});
+
+// W5-R3/F4: the host's own deadline reply reads the ledger, so on a start it may name only a run this call
+// created. The deadline branch is reachable only when the run never registers before the bound, which no fake at
+// the host boundary can stage (the run answers at its first-answer point first), so the decision is pinned here.
+test('replay 11: the host deadline reply for a start names only a run this call created', () => {
+  assert.equal(deadlineResearchId({}, 'run-earlier', 'run-earlier'), '', "another call's run is never named");
+  assert.equal(deadlineResearchId({}, undefined, undefined), '', 'no run at all answers with no run');
+  assert.equal(deadlineResearchId({}, 'run-earlier', 'run-new'), 'run-new', 'the run this call created is named');
+  assert.equal(deadlineResearchId({ researchId: 'run-named' }, 'run-earlier', 'run-other'), 'run-named', 'a continue keeps the run it named');
 });
 
 // L8-06 (verify-8): the web ran 13 of 13 times, yet an early answer said "web skipped_by_route (say: I did not read

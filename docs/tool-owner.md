@@ -52,6 +52,39 @@ Voice remembering writes **ordinary memory only**. An explicit request to classi
 
 A successful result is only `{remembered: true, entryId}`; refusals return `{remembered: false, code}` (duplicate refusals additionally identify the existing entry). Note text is never echoed in the tool result. Naya confirms aloud only after success and otherwise reports the refusal. Saving does not modify the running session's `accepted_prompt_snapshot` or `prompt_identity`: recall occurs at the next session CREATE.
 
+### Host-confirmed composed notes (C-LUXWRITE, W6)
+
+`stage_lux_note` is declared to the live model only while `live.json` carries
+`"features": {"composedNotes": true}`; the shipped default is off. It takes `title` (1 to 120
+characters), `body` (1 to 2000), and one to eight `evidenceRefs`, which must name journal rows the
+session holds. It stages; it never writes.
+
+Authorization is the owner's own finalized microphone turn (`final_origin` not `typed`) and an
+anchored grammar: an imperative save, remember, put, add, write or store verb plus an explicit lux
+destination. A negated, reported, quoted, conditional or hedged form is a clarification; an append,
+update, delete, link, archive or restore ask is answered as unsupported and never becomes a create.
+
+The host freezes the whole `save_insight` payload and its sha256 at stage time. Nothing is truncated:
+an oversized title plus body is refused whole. Confirmation is armed only by the app's own
+`playback.drained` receipt for the read-back segment; `interrupted` or `terminated` invalidates the
+stage. The next finalized owner turn inside 30 seconds decides on an exact affirmative allowlist (at
+most six tokens, closed disqualifier set), and a 1.5 second settle window cancels on any further
+owner fragment, so a VAD-split "yes ... wait, make it fifty" never commits. The commit claims one
+`vault_writes` row keyed by the stage, so a second settlement inserts nothing, and it dispatches once:
+no retry, unknown stays unknown, saved only on `inserted`. `save_to_vault` keeps its dictation span
+check, so a generated summary cannot ride the save phrase.
+
+### Notes exporter (C-LUXWRITE item 12)
+
+At session end the host flushes `remember_note` entries of kind `fact` or `preference` through the
+same lux client: one row per note, project `didi-voice`, `USER_PREFERENCE` for preferences and
+`UNCATEGORIZED` otherwise, provenance in the body, six words of context in no row. Dedupe is a
+normalised key checked locally and against lux (`search_knowledge`, a read); a word overlap above
+0.95 skips the row. Ten rows per flush, twenty per rolling day, never session gists, tasks, imported
+history or the owner profile. The ledger row is written before the call, so a crash leaves an attempt
+with an unknown outcome and never a replay. The switch is `"features": {"notesExport": false}` to turn
+it off; the shipped default is on. The log event carries counts only.
+
 ### What a memory recall reads
 
 A memory lookup reads earlier conversations only: remembered notes, summaries and retained conversation rows from before the call in progress. It never reads the live session's own transcript, her own summary of it, or the owner's current question, so an answer can never be proved by the question that asked it. Within what it reads, every matching line is evidence: the line with more matching words leads, and at the same match a summary leads an entry leads a live transcript line, newest first among equals, so a match on an owner line never narrows the recall to her own earlier questions; the one exception is a question about what she said, where her own words are the answer. When nothing from an earlier conversation matches, the source reports itself empty instead of falling back to this turn.

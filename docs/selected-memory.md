@@ -242,3 +242,11 @@ first, from the existing owner list route (`GET /api/v1/sessions/:id`, which ret
 
 The Memory tab mounts the list from `memory()` in `web/src/main.ts` (ruling WMEM2-R1 grants that file for the mount only): it calls `memoryListMarkup(entries, { filter: memoryFilter, disabled })` and binds the `#memory-filter` input to a client-side re-render. Nothing else in that file changes.
 
+### What the exporter carries (W6)
+
+`remember_note` entries of kind `fact` and `preference` are the only rows the session-end exporter
+selects. Each leaves as one lux insight with its provenance in the body, `USER_PREFERENCE` for a
+preference and `UNCATEGORIZED` otherwise, visible rather than sensitive. The selection, its two
+ceilings and the dedupe key are described under the notes exporter in
+[docs/tool-owner.md](tool-owner.md).
+

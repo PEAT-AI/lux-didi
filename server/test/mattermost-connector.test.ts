@@ -304,7 +304,7 @@ test('#637: an unknown channel name is one closed refusal with no archive search
   t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
   const r = reader(f.adapter, f.registry, await approve(f.adapter, f.registry));
   const result = await r.search({ query: 'latest topics', channel: 'nowhere' });
-  assert.equal(result.state === 'refused' ? result.reason : result.state, 'channel_not_found: nowhere');
+  assert.equal(result.state === 'refused' ? result.reason : result.state, 'channel-not-found: nowhere; closest names: Town Square, Dogcation');
   assert.ok(!f.calls().some(call => call.name === 'mattermost_search'), 'no archive search follows a missing channel');
 });
 

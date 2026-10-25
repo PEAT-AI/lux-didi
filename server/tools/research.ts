@@ -2814,6 +2814,8 @@ export const CHAT_RECEIPT_REASONS: readonly string[] = [
   'tool-not-granted', 'credential-refresh-failed', 'source_not_granted', 'not_signed_in', 'timeout',
   'deadline', 'timed_out', 'schema-drift', 'grant-stale', 'source-unavailable', 'sdk_protocol_rejected',
   'connector_error', 'invalid_result', 'unavailable', 'refused',
+  // F3 (#637): a channel the ask named and the connector does not know is its own receipt reason.
+  'channel_not_found',
 ];
 export function chatAttentionReason(results: readonly IntentSubResult[]): string {
   const failed = results.find(result => !result.ok);
@@ -2822,11 +2824,19 @@ export function chatAttentionReason(results: readonly IntentSubResult[]): string
   if (CHAT_NOT_GRANTED_CODES.includes(code)) return 'tool-not-granted';
   // R4: the emitted reason is clamped to the closed vocabulary the host log admits, so a code this
   // build does not know still produces a receipt instead of being refused there.
+  // F3 (#637): the resolver's hyphenated code is the channel miss, so the receipt names it rather than
+  // collapsing to a bare refused.
+  if (code.startsWith('channel-not-found')) return 'channel_not_found';
   return CHAT_RECEIPT_REASONS.includes(code) ? code : 'refused';
 }
 /** #637: the code a chat read carries when the ask named a channel the connector does not know. */
 export function channelMissCode(results: readonly IntentSubResult[]): string | undefined {
-  return results.find(result => !result.ok && result.code !== undefined && result.code.startsWith('channel_not_found'))?.code;
+  const miss = results.find(result => !result.ok && result.code !== undefined && result.code.startsWith('channel-not-found'));
+  if (miss?.code === undefined) return undefined;
+  // The resolver's code carries the words the owner used and the closest-names hint behind a semicolon;
+  // the closed reason is the token research keys on, with the words after it.
+  const words = miss.code.slice('channel-not-found: '.length).split(';')[0]!.trim();
+  return `channel_not_found: ${words}`;
 }
 // #637: a code that carries its own detail after a colon (channel_not_found: ai) resolves through the
 // code itself, so the row above still gives the plain words.

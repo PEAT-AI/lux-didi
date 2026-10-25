@@ -600,9 +600,9 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       // #637: the name is resolved whether or not the child declares the filter, so a channel the list
       // does not know is one closed reason the reply speaks, never a wide archive read voiced as an empty.
       const resolved = named === undefined ? undefined : await searchChannel(named, signal);
-      if (resolved !== undefined && 'error' in resolved) {
-        return { state: 'refused', reason: resolved.error.startsWith('channel-not-found: ') ? `channel_not_found: ${named ?? ''}` : resolved.error };
-      }
+      // F2 (#637): the resolver's own code travels unchanged, so the closed `channel-not-found` token
+      // and the closest-names hint behind it both stay visible in the refusal.
+      if (resolved !== undefined && 'error' in resolved) return { state: 'refused', reason: resolved.error };
       const filter = resolved === undefined || !declaredChannel ? {} : { channel: (resolved as { channel: string }).channel };
       return dispatch('mattermost_search', { query, ...bounded, ...window, ...filter }, signal);
     },

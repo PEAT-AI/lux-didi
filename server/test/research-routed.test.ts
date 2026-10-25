@@ -480,7 +480,7 @@ test('#637: an unknown channel is its own closed reason in the note and the cove
     configured: ['chat'],
     execute: async (subs: readonly IntentSubCall[]) => subs.map(call => {
       if (call.name === 'mattermost_search') sent.push(call.args);
-      return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'channel_not_found: AI' };
+      return { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0, code: 'channel-not-found: AI; closest names: AI Team' };
     }),
   });
   const question = 'what is new in the AI channel';

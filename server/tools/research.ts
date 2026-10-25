@@ -979,7 +979,9 @@ export function recallQuestion(question: string): boolean {
 const STATUS_THING = 'tools?|sources?|connectors?|inbox|mail|emails?|gmail|calendar|chat|mattermost|slack|knowledge|memory|web|mongoose';
 /** A status word answers "is the source working", never "is it up to Friday" or "working out" (review F1). */
 const STATUS_STATE = 'working|alive|connected';
-const STATUS_ASK = new RegExp(`\\b(?:are|is)\\b[^?.]{0,30}\\b(?:${STATUS_THING})\\b[^?.]{0,30}\\b(?:${STATUS_STATE})\\b|\\b(?:${STATUS_THING})\\b[^?.]{0,20}\\b(?:${STATUS_STATE})\\b|\\b(?:test|check)\\s+(?:all\\s+|the\\s+|every\\s+)?(?:tools?|sources?|connectors?)\\b|\\ball (?:the\\s+)?tools\\b`, 'iu');
+// Review G1: only "is<source> <state>" asks the status, never "<source> ... <state>" as content ("the mail
+// thread we were working on", "the calendar ... the working group").
+const STATUS_ASK = new RegExp(`\\b(?:are|is)\\b[^?.]{0,30}\\b(?:${STATUS_THING})\\b[^?.]{0,30}\\b(?:${STATUS_STATE})\\b|\\b(?:test|check)\\s+(?:all\\s+|the\\s+|every\\s+)?(?:tools?|sources?|connectors?)\\b|\\ball (?:the\\s+)?tools\\b`, 'iu');
 export function statusAsk(question: string): boolean {
   return STATUS_ASK.test(question);
 }

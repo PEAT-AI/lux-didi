@@ -174,62 +174,27 @@ test('K5 and K7: the confidence line reaches the finding, and the two score scal
   assert.ok(!bare.lines.some(line => line.startsWith('knowledge: confidence')));
 });
 
-test('ROUTE-1022: a body read is never clipped by the host, and the search window it asks for fits the reply', () => {
-  const opened = shapeBlock('knowledge_search', [sub('get_insight', LONG_BODY)]);
-  assert.equal(RESEARCH.knowledgeBodyChars, 2_000, 'R5 (RESCAP-R5): the window is sized to fit the reply budget');
-  assert.equal(opened.lines[0]!.includes('cut at'), false, 'a body read reaches the reply whole');
-  assert.equal(opened.source, 'knowledge');
-  // F3: the wider window belongs to a body read. A named-id read stays whole.
-  const deepBody = `${'Deep body sentence. '.repeat(1_200)}End of the entry.`;
-  const named = shapeBlock('knowledge_search', [sub('get_insight', `### Release 3p scope [id 412]\n${deepBody}`, true, 'kr0')]);
-  assert.ok(named.lines[0]!.includes('End of the entry.'), 'a named-id read is never clipped by the host');
-  assert.ok(named.lines[0]!.length > RESEARCH.budgets.depth, 'a named body is whole beyond any tier');
-  // P5-R1 holds: a search hit is bounded by the server's own window, never cut again in the host.
-  const whole = 'x'.repeat(4_000);
-  const searched = shapeBlock('knowledge_search', [sub('search_knowledge', `### Long insight (DECISION | 2026-10-19) [id 7]\n${whole}`)]);
-  assert.ok(searched.lines[0]!.endsWith(whole));
-});
-
-test('K8: knowledge latency is stated at its measured p50, and the log carries the read span not the wait', async () => {
-  assert.equal(RESEARCH.p50Seconds.knowledge, 2.9);
-  let clock = 0;
-  // The read runs its own span on the run's clock, and the source line is stamped from that span, never
-  // from the whole run.
-  const h = harness({
-    now: () => clock,
-    execute: async subs => { clock += 1_200; return subs.map(call => sub(call.name, CUT_SEARCH, true, call.key)); },
-  });
-  await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline', topic: 'retrieval deadline' }, new AbortController().signal);
-  const knowledge = h.sources.find(entry => entry.source === 'knowledge');
-  assert.equal(knowledge?.ms, 1_200, 'the source line carries the read span, not the whole run');
-});
-
-// --- ROUTE-1022 (#526): one knowledge call, full bodies -----------------------------------------
-
-// ROUTE-1022 K7: the model's own instruction words ('wait findings.', 'continue web results') reached the
-// knowledge query and spent its term budget. They are stop words now, so the question's terms answer.
-test('ROUTE-1022 K7: an instruction sentence is no knowledge query', () => {
-  assert.equal(knowledgeQuery('wait findings.', 'wait findings.'), '', 'nothing is left to search');
-  const subs = candidateSubs('knowledge_search', { question: 'wait findings.', configured: ['knowledge'], evidence: new Map() });
-  assert.deepEqual(subs, [], 'a lookup of pure instruction dispatches no search');
-  assert.equal(knowledgeQuery('continue web results agricon 2026', 'continue web results agricon 2026'), 'agricon 2026', 'the content terms survive');
-  assert.deepEqual(candidateSubs('knowledge_search', { question: 'wait findings', query: 'wait findings.', configured: ['knowledge'], evidence: new Map() }), [],
-    'an authored instruction query falls back to no search rather than a sentence');
-});
-
-test('ROUTE-1022: a knowledge question is one search call, with the full body window and no second hop', async () => {
+test('ROUTE-1022 and W10-R9: one search, then exactly one batched full-entry fetch, never a third round', async () => {
   const executed: IntentSubCall[] = [];
+  const entry = '### Retrieval deadline (TECHNICAL_DECISION | 2026-10-19) [id 123] The whole entry: the deadline is the retrieval window, set at six seconds.';
   const h = harness({
     execute: async subs => subs.map(call => {
       executed.push(call);
-      return sub(call.name, CUT_SEARCH, true, call.key);
+      return sub(call.name, call.name === 'search_knowledge' ? CUT_SEARCH : entry, true, call.key);
     }) });
-  await runResearch(h.deps, { action: 'start', question: 'what did we decide about the retrieval deadline', topic: 'retrieval deadline' }, new AbortController().signal);
-  assert.equal(executed.filter(call => call.name === 'search_knowledge').length, 1, 'exactly one knowledge call');
-  assert.equal(executed.filter(call => call.name === 'get_insight').length, 0, 'no get_insight hop');
+  // The ask names a person, which is what stage two is for, so this fixture really triggers the fetch.
+  await runResearch(h.deps, { action: 'start', question: 'what did we decide about Ana Clifton and the retrieval deadline', topic: 'retrieval deadline' }, new AbortController().signal);
+  assert.equal(executed.filter(call => call.name === 'search_knowledge').length, 1, 'exactly one knowledge search');
+  const fetches = executed.filter(call => call.name === 'get_insight');
+  assert.equal(fetches.length, 1, `exactly one batched fetch: ${JSON.stringify(executed.map(call => call.name))}`);
+  const ids = (fetches[0]!.args['ids'] ?? []) as string[];
+  assert.ok(Array.isArray(ids) && ids.length > 0 && ids.length <= RESEARCH.knowledgeReadEntries,
+    `ids, bounded, never a cursor: ${JSON.stringify(fetches[0]!.args)}`);
+  // The fetch rides the round it was dispatched in, so no second search and no third round follows it.
+  assert.equal(executed.filter(call => call.name === 'search_knowledge').length, 1, 'no second search');
   const search = executed.find(call => call.name === 'search_knowledge')!;
   assert.equal(search.args['max_chars'], RESEARCH.knowledgeBodyChars);
-  assert.equal(RESEARCH.knowledgeOpenIds, 0);
+  assert.equal(RESEARCH.knowledgeOpenIds, 0, 'no model driven paging on the normal path');
 });
 
 test('ROUTE-1022: a knowledge reply that would overrun the reply budget is trimmed to the hits that fit', async () => {

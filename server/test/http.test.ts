@@ -549,8 +549,10 @@ test('a settings save reaches the Live service with its body and stores provider
   const live = liveSettings();
   const f = await fixture(undefined, undefined, undefined, live.live);
   try {
-    // The Live routes are operator-bearer only (auth.ts operatorPrincipal): no Cookie, no Origin.
-    const headers = { ...f.auth, 'X-Didi-Authority-Epoch': f.store.authorityEpoch, 'Idempotency-Key': 'settings-one', 'Content-Type': 'application/json' };
+    // The owner's Settings page is a browser: same cookie, CSRF token and authority epoch as any mutation.
+    const browser = await pair(f);
+    const headers = { Cookie: browser.cookie.split(';')[0]!, Origin: f.service.origin, 'X-Didi-CSRF': browser.csrf,
+      'X-Didi-Authority-Epoch': f.store.authorityEpoch, 'Idempotency-Key': 'settings-one', 'Content-Type': 'application/json' };
     const response = await fetch(`${f.service.origin}/api/v1/live/settings`, {
       method: 'POST', headers, body: JSON.stringify({ provider: 'openai', voice: 'marin', accent: 'indian-light' }),
     });
@@ -569,7 +571,9 @@ test('a refused voice is answered with the field named and stores nothing', asyn
   const live = liveSettings();
   const f = await fixture(undefined, undefined, undefined, live.live);
   try {
-    const headers = { ...f.auth, 'X-Didi-Authority-Epoch': f.store.authorityEpoch, 'Idempotency-Key': 'settings-bad', 'Content-Type': 'application/json' };
+    const browser = await pair(f);
+    const headers = { Cookie: browser.cookie.split(';')[0]!, Origin: f.service.origin, 'X-Didi-CSRF': browser.csrf,
+      'X-Didi-Authority-Epoch': f.store.authorityEpoch, 'Idempotency-Key': 'settings-bad', 'Content-Type': 'application/json' };
     const refused = await fetch(`${f.service.origin}/api/v1/live/settings`, {
       method: 'POST', headers, body: JSON.stringify({ provider: 'gemini', voice: 'marin' }),
     });

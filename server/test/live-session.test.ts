@@ -3422,6 +3422,17 @@ test('W10: a source whose grant publishes after the call started joins the next 
 
 // #651: a chat read the connector refused for a channel it does not know keeps its own closed code
 // through the live research hop, so the reply names the channel instead of an unreachable source.
+test('TR-R8: a granted composed read reaches the child on the live path', async t => {
+  const h = await harness(t, { tools: true, mattermost: true });
+  await attached(h, 'composed-door');
+  const question = 'what did they say in the nowhere channel about the deploy';
+  await settleLiveTool(h, 'r1', 'research', { action: 'start', question, topic: 'deploy in the nowhere channel' });
+  // The composed read stands on the base reads the connection already holds, so the door covers it and the
+  // child is asked: a refusal it writes is the child's own answer, never a door refusal standing in for it.
+  assert.ok(h.calls.some(call => call.name === 'mattermost_chat'),
+    `the composed chat read reached the child: ${JSON.stringify(h.calls.map(call => call.name))}`);
+});
+
 test('#651: an unknown channel reaches research as its own closed code', async t => {
   const h = await harness(t, { tools: true, mattermost: true });
   await attached(h, 'failreason-channel');

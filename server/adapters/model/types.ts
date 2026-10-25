@@ -72,7 +72,9 @@ export const MCP_FAILURE_STAGES = ['timeout', 'cancelled', 'child_exited', 'pipe
 export type McpFailureStage = (typeof MCP_FAILURE_STAGES)[number];
 export const TOOL_FAILURE_CODES = [...MCP_FAILURE_STAGES, 'connector_error', 'handler_outcome',
   // #637: the ask named a channel the chat connector does not know, so no read was made.
-  'channel_not_found'] as const;
+  'channel_not_found',
+  // TR-R8: the tool door refused a read the connection does not cover, so no read was dispatched.
+  'not_granted'] as const;
 export type ToolFailureCode = (typeof TOOL_FAILURE_CODES)[number];
 export function isMcpFailureStage(value: string): value is McpFailureStage {
   return (MCP_FAILURE_STAGES as readonly string[]).includes(value);

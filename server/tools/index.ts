@@ -689,11 +689,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               // connector whose current generation is not published and ready never reaches its
               // handler, even when a stale run snapshot still names one of its tools.
               const grant = registry.currentGrant(p.endpoint.id);
-              if (!grant || grant.generation !== p.generation) { return { status: 'failed' }; }
+              if (!grant || grant.generation !== p.generation) { return { status: 'failed', code: 'not_granted' }; }
               // #604: a composite is authorized by the approved policy name; the registry grant keeps
               // the published child names, so a granted composite is never in `grant.toolNames`.
-              const policyComposite = composedNames.includes(name) && p.toolNames.includes(name);
-              if (!grant.toolNames.includes(name) && !policyComposite) { return { status: 'failed' }; }
+              // TR-R8: the door covers a composite exactly when the host's own derivation grants it, that is
+              // when every base read it stands on is granted; the derivation is the one function above, never
+              // a copy, and the composed names are never stored in the registry grant.
+              if (!grant.toolNames.includes(name) && !composedNames.includes(name)) { return { status: 'failed', code: 'not_granted' }; }
               if (!declaration.validate(args)) { return { status: 'failed' }; }
               // Normalize at the boundary; the intent hash below stays over the model's original args.
               const prepared = declaration.normalize === undefined ? undefined : declaration.normalize(args);

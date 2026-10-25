@@ -256,7 +256,7 @@ export interface ResearchRoutedLog {
  * time the source was actually allowed.
  */
 /** L8-Q07: the closed reasons a source receipt may give for a read that did not answer. */
-export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading'] as const;
+export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading', 'needs_clarification', 'name_not_found'] as const;
 export type ResearchSourceReason = (typeof RESEARCH_SOURCE_REASONS)[number];
 
 function sourceReasonOf(run: RunState, outcome: { source: SourceKind | 'memory'; outcome: LookupOutcome; mail?: MailQueryInfo | undefined }): ResearchSourceReason {

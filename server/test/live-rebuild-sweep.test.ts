@@ -46,9 +46,9 @@ interface Step {
 const delegation = (id: string, response: string) => (r: Replay): Promise<void> =>
   r.deliver({ type: 'session.delegation.created', delegation: { id, response_id: response, offset_ms: 0 } });
 const announced = (response: string, id = 'd_1') => (r: Replay): Promise<void> =>
-  r.deliver({ type: 'response.event', delegation_id: id, event: { type: 'response.created', response: { id } } });
+  r.deliver({ type: 'response.event', delegation_id: id, event: { type: 'response.created', response: { id: response } } });
 const completed = (response: string, id = 'd_1') => (r: Replay): Promise<void> =>
-  r.deliver({ type: 'response.event', delegation_id: id, event: { type: 'response.done', response: { id, status: 'completed' } } });
+  r.deliver({ type: 'response.event', delegation_id: id, event: { type: 'response.done', response: { id: response, status: 'completed' } } });
 const spoken = (r: Replay): Promise<void> => r.deliver({ type: 'session.output_audio.delta', delta: audible() });
 const ownerSays = (delta: string, from: number) => (r: Replay): Promise<void> =>
   r.deliver({ type: 'session.input_transcript.delta', delta, start_ms: from, end_ms: from + 50 });
@@ -103,7 +103,7 @@ async function sweep(t: TestContext, boundary: number): Promise<Replay> {
   // #656: the owner keeps talking into the gap, and his words are held for the session that replaces this one.
   await r.speak(OWNER_FRAME_SAMPLES);
   // The rebuild is the host's own move, so the sweep lets the host's clock run until the new session starts.
-  await r.until(() => sessions(r) >= 2 && r.owner.get(r.liveSessionId).lifecycle !== 'rebuilding', REBUILD_BUDGET_MS);
+  await r.until(() => sessions(r) >= 2, REBUILD_BUDGET_MS);
   await run(boundary, SCRIPT.length);
   const last = SCRIPT.at(-1)?.at ?? 0;
   await elapsedBy(r, last + DEADLINE_MS);

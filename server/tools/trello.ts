@@ -11,7 +11,6 @@ export const TRELLO_READ_IDENTITY = { name: 'trello_read', accountId: 'gateway:l
 export const TRELLO_WRITE_IDENTITY = { name: 'trello_write', accountId: 'gateway:live-voice', resourceId: 'owner-trello' } as const;
 export const TRELLO_TOOL_NAMES: ReadonlySet<string> = new Set([TRELLO_READ_IDENTITY.name, TRELLO_WRITE_IDENTITY.name]);
 /** The board Naya may use, by name, unless the owner configures another. */
-export const TRELLO_DEFAULT_BOARD = 'Rob';
 
 export const TRELLO_READ_VIEWS = ['overview', 'list', 'search', 'due', 'card', 'recent', 'inbox'] as const;
 export const TRELLO_DUE_WINDOWS = ['overdue', 'today', 'week'] as const;
@@ -266,6 +265,7 @@ export function trelloCardOf(value: unknown): TrelloCard | undefined {
 
 /** Closed codes the model hears, each with the one clause Naya says. */
 export const TRELLO_GUIDANCE: Readonly<Record<string, string>> = {
+  not_configured: 'His board name is not set yet, so nothing on Trello was touched. Say that the board name goes in trello-board.json in the protected configuration directory first.',
   not_signed_in: 'Trello is not signed in. Tell him to use Sign in to Trello in Settings once.',
   auth_failed: 'Trello refused the stored sign-in. Tell him to sign in to Trello again in Settings.',
   rate_limited: 'Trello asked to slow down. Say so and offer to try again in a moment.',
@@ -314,7 +314,8 @@ export interface TrelloBoardOptions {
   transport: TrelloTransport;
   /** Whether a sign-in record exists; checked without any network before the tools are offered. */
   signedIn: () => boolean;
-  boardName?: string;
+  /** The board name the owner configured; none means the connector reports not_configured and sends nothing. */
+  boardName?: string | undefined;
   /** The owner's time zone for due dates; the host's own zone when absent. */
   timeZone?: string;
   now?: () => number;
@@ -353,7 +354,7 @@ export function trelloDueInstant(value: string, timeZone: string): string | unde
 export class TrelloBoard {
   readonly #transport: TrelloTransport;
   readonly #signedIn: () => boolean;
-  readonly #boardName: string;
+  readonly #boardName: string | undefined;
   readonly #timeZone: string;
   readonly #now: () => number;
   readonly #log: TrelloLog | undefined;
@@ -362,7 +363,7 @@ export class TrelloBoard {
   constructor(options: TrelloBoardOptions) {
     this.#transport = options.transport;
     this.#signedIn = options.signedIn;
-    this.#boardName = options.boardName ?? TRELLO_DEFAULT_BOARD;
+    this.#boardName = options.boardName;
     this.#timeZone = options.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
     this.#now = options.now ?? Date.now;
     this.#log = options.log;
@@ -421,11 +422,13 @@ export class TrelloBoard {
     if (session.board) return session.board;
     const index = await this.#index(session, signal);
     const boards = await this.#pages(index, 'trelloReadBoard', [{ action: 'list' }], signal);
-    const wanted = foldName(this.#boardName);
+    const name = this.#boardName;
+    if (name === undefined) throw new Refusal('not_configured');
+    const wanted = foldName(name);
     const named = boards.items.filter(board => typeof board.name === 'string' && foldName(board.name) === wanted && board.closed !== true && idOf(board.id, BOARD_ARI));
     if (named.length === 0) throw new Refusal(boards.complete ? 'board_not_found' : 'unavailable');
     if (named.length > 1) throw new Refusal('board_ambiguous');
-    session.board = { id: String(named[0]!.id), name: this.#boardName };
+    session.board = { id: String(named[0]!.id), name };
     return session.board;
   }
 
@@ -565,6 +568,7 @@ export class TrelloBoard {
   async read(runId: string, args: Args, signal?: AbortSignal): Promise<JsonObject> {
     const tool = `read.${String(args.view)}`;
     if (!this.available()) return this.#refusal(new Refusal('not_signed_in'), tool, 'admit');
+    if (this.#boardName === undefined) return this.#refusal(new Refusal('not_configured'), tool, 'admit');
     const session = this.#session(runId);
     try {
       const snapshot = await this.#snapshot(session, signal);
@@ -663,6 +667,7 @@ export class TrelloBoard {
     const action = String(args.action) as TrelloWriteAction;
     const tool = `write.${action}`;
     if (!this.available()) return this.#refusal(new Refusal('not_signed_in'), tool, 'admit');
+    if (this.#boardName === undefined) return this.#refusal(new Refusal('not_configured'), tool, 'admit');
     if (!ownerAskedForChange(ownerWords)) return this.#refusal(new Refusal('not_owner_requested'), tool, 'admit');
     const session = this.#session(runId);
     let plan: WritePlan;

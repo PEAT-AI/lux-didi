@@ -1,6 +1,8 @@
 import { OAuthCredentialError, oauthAccessToken, oauthBinding, readOAuthRecord, runOAuthLogin, type OAuthBinding, type OAuthProvider, type OAuthRecord, type OAuthSignInHop } from './oauth-client.js';
 import { createTrelloTransport, TRELLO_MCP_URL, type TrelloTokenSource } from '../adapters/trello/client.js';
-import { TrelloBoard, TRELLO_DEFAULT_BOARD, type TrelloLog } from '../tools/trello.js';
+import { TrelloBoard, type TrelloLog } from '../tools/trello.js';
+import { parseJson, readPrivate } from '../config/files.js';
+import { join } from 'node:path';
 
 /**
  * The Trello board connection: the official remote MCP server, signed in once by the owner through the
@@ -61,10 +63,26 @@ export function runTrelloLogin(options: TrelloLoginOptions): Promise<OAuthRecord
   return runOAuthLogin({ ...options, provider: TRELLO_PROVIDER, reference: TRELLO_REFERENCE, account: 'owner' });
 }
 
+/**
+ * W7-R2: the board name lives in the owner's private configuration, never in this public repository.
+ * `trello-board.json` beside the sign-in record holds `{"board": "<the name he sees in Trello>"}`; with
+ * none, the connector reports not_configured and nothing reaches the server.
+ */
+export const TRELLO_BOARD_FILE = 'trello-board.json';
+const TRELLO_BOARD_LIMIT = 1024;
+
+export function trelloBoardName(configDir: string): string | undefined {
+  try {
+    const parsed = parseJson(readPrivate(join(configDir, TRELLO_BOARD_FILE), TRELLO_BOARD_LIMIT));
+    const board = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as { board?: unknown }).board : undefined;
+    return typeof board === 'string' && board.trim() !== '' ? board.trim() : undefined;
+  } catch { return undefined; }
+}
+
 /** The board service over the official server, bound to the stored sign-in. */
 export function createTrelloBoard(options: { configDir: string; binding?: OAuthBinding | undefined; boardName?: string; timeZone?: string; fetch?: typeof fetch; now?: () => number; log?: TrelloLog }): TrelloBoard {
   const binding = 'binding' in options ? options.binding : trelloBinding();
   const transport = createTrelloTransport({ ...(binding ? { url: binding.resource } : {}), token: trelloTokenSource(options.configDir, binding, { ...(options.fetch ? { fetch: options.fetch } : {}), ...(options.now ? { now: options.now } : {}) }), ...(options.fetch ? { fetch: options.fetch } : {}) });
-  return new TrelloBoard({ transport, signedIn: () => trelloSignedIn(options.configDir, binding), boardName: options.boardName ?? TRELLO_DEFAULT_BOARD,
+  return new TrelloBoard({ transport, signedIn: () => trelloSignedIn(options.configDir, binding), boardName: options.boardName ?? trelloBoardName(options.configDir),
     ...(options.timeZone ? { timeZone: options.timeZone } : {}), ...(options.now ? { now: options.now } : {}), ...(options.log ? { log: options.log } : {}) });
 }

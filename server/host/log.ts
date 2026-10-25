@@ -86,7 +86,7 @@ const SIGNIN_OUTCOMES: Record<string, readonly string[]> = {
 const SIGNIN_OAUTH_ERRORS = ['invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client', 'unsupported_grant_type', 'invalid_scope', 'invalid_target', 'access_denied'];
 /** W7: the Trello board tool actions and the closed reasons a call may name (TRELLO_GUIDANCE in tools/trello.ts). */
 const TRELLO_CALL_TOOL = /^(?:read\.(?:overview|list|search|due|card|recent)|write\.(?:create|update|note|checklist|due|move|done|label|archive))$/;
-const TRELLO_CALL_REASONS = ['not_signed_in', 'auth_failed', 'rate_limited', 'unavailable', 'board_not_found', 'board_ambiguous', 'unsupported', 'result_unrecognized', 'outside_scope',
+const TRELLO_CALL_REASONS = ['not_configured', 'not_signed_in', 'auth_failed', 'rate_limited', 'unavailable', 'board_not_found', 'board_ambiguous', 'unsupported', 'result_unrecognized', 'outside_scope',
   'list_unknown', 'list_ambiguous', 'card_unknown', 'card_ambiguous', 'label_unknown', 'item_unknown', 'invalid_due', 'description_full', 'not_owner_requested', 'no_change', 'write_failed', 'outcome_unknown', 'replayed'];
 /** W11-R3: the Gmail operators a compiled mail query may name, as a closed set, never the words. */
 const MAIL_QUERY_OPERATORS = ['from', 'to', 'cc', 'bcc', 'subject', 'after', 'before', 'newer_than', 'older_than', 'is', 'has', 'label', 'in'];

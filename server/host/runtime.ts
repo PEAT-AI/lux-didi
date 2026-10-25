@@ -25,7 +25,7 @@ import { composeMcpRuntime, type ConnectorLifecycleEvent } from './mcp.js';
 import { spawn } from 'node:child_process';
 import { runMongooseLogin, type MongooseLoginOptions, type MongooseSignInHop } from './mongoose-login.js';
 import { MONGOOSE_ENDPOINTS, mongooseEndpointName } from '../connectors/mongoose.js';
-import { createTrelloBoard, runTrelloLogin, trelloBinding, trelloSignedIn, type TrelloLoginOptions } from './trello.js';
+import { createTrelloBoard, runTrelloLogin, trelloBinding, trelloBoardName, trelloSignedIn, type TrelloLoginOptions } from './trello.js';
 import type { OAuthBinding } from './oauth-client.js';
 import type { McpRuntimeComposition } from './mcp.js';
 import { createGoogleReader, readCalendarDigest, type CalendarDigestRead, type CalendarDigestReadResult } from '../connectors/google.js';
@@ -235,9 +235,12 @@ export function createTrelloSignIn(options: {
   return signIn;
 }
 
-/** The Trello row the Settings poll shows: signed in or not, from the record alone, never a network probe. */
+/** The Trello row the Settings poll shows: signed in and named, from the files alone, never a network probe. */
 export function trelloConnectionRow(configDir: string, binding: OAuthBinding | undefined = trelloBinding()): { id: string; connector: string; state: string; tools: number; error?: string } {
-  return trelloSignedIn(configDir, binding) ? { id: 'trello', connector: 'trello', state: 'configured', tools: 2 } : { id: 'trello', connector: 'trello', state: 'error', tools: 0, error: 'not_signed_in' };
+  const row = { id: 'trello', connector: 'trello' };
+  if (!trelloSignedIn(configDir, binding)) return { ...row, state: 'error', tools: 0, error: 'not_signed_in' };
+  if (trelloBoardName(configDir) === undefined) return { ...row, state: 'error', tools: 0, error: 'not_configured' };
+  return { ...row, state: 'configured', tools: 2 };
 }
 
 /**

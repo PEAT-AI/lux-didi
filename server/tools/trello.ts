@@ -17,6 +17,11 @@ export const TRELLO_DUE_WINDOWS = ['overdue', 'today', 'week'] as const;
 export const TRELLO_WRITE_ACTIONS = ['create', 'update', 'note', 'checklist', 'due', 'move', 'done', 'label', 'archive'] as const;
 export type TrelloReadView = (typeof TRELLO_READ_VIEWS)[number];
 export type TrelloWriteAction = (typeof TRELLO_WRITE_ACTIONS)[number];
+/**
+ * Every call name a connector_call line may carry, one per read view and one per write action. The host's
+ * log keeps exactly this list (F12): a new view cannot be silently dropped from the log again.
+ */
+export const TRELLO_CALL_TOOLS: readonly string[] = [...TRELLO_READ_VIEWS.map(view => `read.${view}`), ...TRELLO_WRITE_ACTIONS.map(action => `write.${action}`)];
 
 export const TRELLO_PAGE_MAX = 25;
 export const TRELLO_NAME_MAX = 512;

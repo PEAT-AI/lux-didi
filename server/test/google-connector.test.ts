@@ -24,6 +24,7 @@ import { GOOGLE_FAMILIES, GOOGLE_TOOLS, createGoogleReader, type GoogleConfig, t
 import { buildCalendarDigest, CALENDAR_DIGEST_CHARS, type GcalListInput } from '../connectors/google.js';
 import { GOOGLE_ERROR_TABLE, UNKNOWN_HELPER_OWNER_LINE, UNKNOWN_HELPER_REASON, decodeGoogleEnvelope, googleErrorEntry, googleOwnerLine, googleToolStatus, readGooglePayload, renderGoogleTool } from '../tools/google.js';
 import { GMAIL_LIST_MESSAGES } from '../tools/live-shape.js';
+import { configuredSourcesForEndpoints, plainReason, type ConfiguredEndpointStatus } from '../tools/research.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const child = join(here, 'fixtures', 'google-mcp-child.mjs');
@@ -265,7 +266,7 @@ for (const row of CONTRACT.codes.filter(entry => entry.emitted)) {
       assert.equal(status?.code, row.code, 'the closed reason is the helper code itself');
       assert.equal(status?.reason, googleOwnerLine(entry, 'gmail'), 'the owner line is the table\'s');
       assert.equal(entry.pinned, row.pinned, 'the table agrees with the published contract on pinning');
-      assert.equal(status?.state, 'configured', 'a typed helper failure never empties the answer');
+      assert.equal(status?.state, row.pinned ? 'configured' : 'error', 'a pinned refusal stops the reads, a per-call failure never does');
     } finally {
       await adapter.close();
       rmSync(dir, { recursive: true, force: true });
@@ -331,7 +332,8 @@ test('an unknown helper code is named and logged content free, never a silent em
     const status = googleToolStatus(result);
     assert.equal(status?.code, UNKNOWN_HELPER_REASON);
     assert.equal(status?.reason, UNKNOWN_HELPER_OWNER_LINE);
-    assert.equal(status?.state, 'configured');
+    // A code the table does not know is never proof that the credential is dead, so it stays a per-call failure.
+    assert.equal(status?.state, 'error');
     // The log line carries the tool name and the hashed head of the code, never the code or its message.
     assert.deepEqual(status?.log, { event: 'tool_failure', code: 'connector_error', tool: 'gmail_search_messages', connector: 'google', errorClass: 'Error', messageHead: sha256('future-helper-code') });
     assert.equal(JSON.stringify(status).includes('future-helper-code'), false);
@@ -498,6 +500,115 @@ test('a credential-failing call flips the calendar endpoint to configured/auth-n
     store.close();
     rmSync(dir, { recursive: true, force: true });
     rmSync(childDir, { recursive: true, force: true });
+  }
+});
+
+/** The real host composition over the fixture child: one google stdio endpoint under a published grant. */
+async function stdioMailRuntime(mode: string): Promise<{ runtime: Awaited<ReturnType<typeof composeMcpRuntime>>; store: Store; close(): Promise<void> }> {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-status-'));
+  const configDir = join(dir, 'provider-config');
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const pidFile = join(dir, 'child.pid');
+  const env = { HOME: join(tmpdir(), 'didi-google-home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' };
+  const command = process.execPath;
+  const args = [child, mode, pidFile];
+  const entry = { id: 'gmail', transport: 'stdio', command, args, env, connector: 'google', account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' };
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [entry] }), { mode: 0o600 });
+  let live: LiveAuthority | null = null;
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => live, recoveryDelaysMs: [60_000, 60_000] });
+  const first = await runtime.port.discover('gmail');
+  if (first.state !== 'discovered') throw new Error('the fixture child did not discover');
+  const policy: ConnectionPolicy = {
+    schemaVersion: 1, ownerId: store.assistantId, connectionId: 'gmail', generation: 2, enabled: true, connector: 'google',
+    endpoint: { id: 'gmail', transport: 'stdio', command, args, env, account: ACCOUNT, resource: RESOURCE, credentialRef: null },
+    toolNames: [...GOOGLE_TOOLS], schemaDigest: first.schemaDigest,
+    sourcePolicy: { id: 'google-read', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
+    route: { identity: 'voice', allowedClasses: ['private'] },
+    bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 },
+  };
+  runtime.owner.applyConnection(policy);
+  const second = await runtime.port.discover('gmail');
+  if (second.state !== 'discovered') throw new Error('the fixture child did not rediscover after the grant');
+  runtime.owner.projectConnection('gmail');
+  const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['gmail'] };
+  const accepted = store.transaction(tx => runtime.owner.snapshotRun(tx, acceptance));
+  live = { ...acceptance, acceptedRunHash: accepted.sha256 };
+  // A fixture child that outlives the transport would hold the test process open, so its pid is reaped here too.
+  const close = async (): Promise<void> => {
+    await runtime.close();
+    store.close();
+    try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* already gone */ }
+    rmSync(dir, { recursive: true, force: true });
+  };
+  return { runtime, store, close };
+}
+
+/** The sources the research layer names as unreachable, read off the live endpoint report. */
+function unreachableIn(runtime: Awaited<ReturnType<typeof composeMcpRuntime>>): readonly { source: string; reason: string }[] {
+  return configuredSourcesForEndpoints(runtime.status().endpoints as unknown as readonly ConfiguredEndpointStatus[], [...GOOGLE_TOOLS]);
+}
+
+/** The line one dispatched call spoke, as the stored tool result carries it. */
+function spokenLine(store: Store, executionId: string): string {
+  const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', [executionId]));
+  return String((JSON.parse(String(row?.['result_json'] ?? '{}')) as { response?: { text?: string } }).response?.text ?? '');
+}
+
+// #636: the seven question-only mail asks of one pass. A helper failure is a per-call failure, so the
+// endpoint stays connected and the asks after it are read instead of being refused at 0 ms.
+test('#636: a transient helper failure on one mail ask never becomes the reason for the asks after it', async () => {
+  const h = await stdioMailRuntime('first-mail:credential-refresh-failed');
+  try {
+    const asks = ['invoice from dana', 'lease renewal', 'standup notes', 'offsite venue', 'flat inspection', 'travel booking', 'contract draft'];
+    const definition = h.runtime.owner.definitions('run').find(candidate => candidate.name === 'gmail_search_messages');
+    assert(definition?.execute);
+    const ownerLine = googleOwnerLine(googleErrorEntry('credential-refresh-failed')!, 'gmail');
+    const served: string[] = [];
+    const rows: string[] = [];
+    for (const [n, q] of asks.entries()) {
+      const refused = unreachableIn(h.runtime).filter(entry => entry.source === 'mail');
+      if (refused.length > 0) {
+        served.push(`unavailable:${refused[0]!.reason}`);
+        rows.push(`ask ${n + 1} "${q}": refused without a read, named reason ${refused[0]!.reason} -> ${plainReason(refused[0]!.reason)}`);
+        continue;
+      }
+      const args0 = { q, maxResults: 10 };
+      const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: h.store.authorityEpoch, revision: 1, executionId: `run:1:${n}`, toolName: 'gmail_search_messages', argumentsHash: sha256(JSON.stringify(args0)), callId: `call-${n}`, accountId: ACCOUNT, resourceId: RESOURCE };
+      assert.equal(h.runtime.owner.journal.intent(intent), 'fresh');
+      const outcome = await definition!.execute!(args0, { ...intent, signal: new AbortController().signal });
+      assert.equal(outcome.status, 'completed');
+      const text = spokenLine(h.store, intent.executionId);
+      served.push(text.includes('Synthetic') ? 'read' : text);
+      rows.push(`ask ${n + 1} "${q}": endpoint ${h.runtime.status().endpoints[0]!.state}, spoke ${JSON.stringify(text.slice(0, 60))}`);
+    }
+    assert.deepEqual(served, [ownerLine, 'read', 'read', 'read', 'read', 'read', 'read'], `the pass, ask by ask:\n${rows.join('\n')}`);
+    assert.equal(h.runtime.status().endpoints[0]!.state, 'connected', 'one failed read never marks the mail endpoint dead');
+  } finally {
+    await h.close();
+  }
+});
+
+// #636: a pinned credential is the one status that stops the reads, and the reason the research layer
+// names is a closed code spoken in words, never the report's state word.
+test('#636: a dead credential names mail in words the owner can act on, never with the state word', async () => {
+  const h = await stdioMailRuntime('code:credential-missing');
+  try {
+    const definition = h.runtime.owner.definitions('run').find(candidate => candidate.name === 'gmail_search_messages');
+    assert(definition?.execute);
+    const deadArgs = { q: 'invoice', maxResults: 10 };
+    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: h.store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'gmail_search_messages', argumentsHash: sha256(JSON.stringify(deadArgs)), callId: 'call-0', accountId: ACCOUNT, resourceId: RESOURCE };
+    assert.equal(h.runtime.owner.journal.intent(intent), 'fresh');
+    await definition!.execute!(deadArgs, { ...intent, signal: new AbortController().signal });
+    assert.equal(spokenLine(h.store, intent.executionId), googleOwnerLine(googleErrorEntry('credential-missing')!, 'gmail'), 'the failing read speaks the helper\'s own line');
+    const endpoint = h.runtime.status().endpoints[0]!;
+    assert.equal(endpoint.state, 'configured', 'a pinned refusal is the one status that stops the reads');
+    const named = unreachableIn(h.runtime);
+    assert.deepEqual(named, [{ source: 'mail', reason: 'not_signed_in' }], 'the named reason is a closed code, never the state word');
+    assert.equal(plainReason(named[0]!.reason), 'not signed in', 'and it is spoken in the owner\'s words');
+    assert.equal(JSON.stringify(named).includes('configured'), false, 'the state word never reaches the reply');
+  } finally {
+    await h.close();
   }
 });
 

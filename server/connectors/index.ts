@@ -73,7 +73,7 @@ export interface ConnectorDescriptor {
   project(evidence: ConnectorEvidence, port: McpPort, policy: ConnectionPolicy): ModelSnapshot;
   /** Connection status for a non-completed result, when the connector can classify it (R4). A classified
    * failure may also carry the one content-free log line the host must write for it. */
-  status?(evidence: ConnectorEvidence): { state: 'configured'; reason: string; log?: ToolFailureEvent } | undefined;
+  status?(evidence: ConnectorEvidence): { state: 'configured' | 'error'; reason: string; log?: ToolFailureEvent } | undefined;
   /** The connector's own-account identity probe for one approved policy, when it has one (release 3f). */
   identity?(policy: ConnectionPolicy): IdentitySource | null;
 }
@@ -277,9 +277,11 @@ function googleProject(evidence: ConnectorEvidence, port: McpPort, policy: Conne
     ...(projection.projection[HOST_EVIDENCE] ? { [HOST_EVIDENCE]: projection.projection[HOST_EVIDENCE] } : {}),
   };
 }
-function googleStatus(evidence: ConnectorEvidence): { state: 'configured'; reason: string; log?: ToolFailureEvent } | undefined {
+function googleStatus(evidence: ConnectorEvidence): { state: 'configured' | 'error'; reason: string; log?: ToolFailureEvent } | undefined {
   const status = googleToolStatus(evidence);
-  return status && status.state === 'configured' ? { state: 'configured', reason: status.reason, ...(status.log ? { log: status.log } : {}) } : undefined;
+  // A failure the helper's vocabulary names speaks its line and says how dead the endpoint is; a bodiless
+  // one stays a plain failed call, so a lost mail page is never mistaken for an answer.
+  return status !== undefined && status.code !== 'no_content' ? { state: status.state, reason: status.reason, ...(status.log ? { log: status.log } : {}) } : undefined;
 }
 const googleDescriptor: ConnectorDescriptor = {
   id: 'google',

@@ -60,8 +60,14 @@ export function createTrelloTransport(options: { url?: string; token: TrelloToke
     return { ok: true, json: parseMessage(text) };
   };
 
-  const ensureSession = async (signal?: AbortSignal): Promise<{ ok: true } | { ok: false; code: TrelloCallCode }> => {
-    if (initialized) return { ok: true };
+  let starting: Promise<{ ok: true } | { ok: false; code: TrelloCallCode }> | undefined;
+  /** One initialize at a time: concurrent reads share it. */
+  const ensureSession = (signal?: AbortSignal): Promise<{ ok: true } | { ok: false; code: TrelloCallCode }> => {
+    if (initialized) return Promise.resolve({ ok: true });
+    starting ??= startSession(signal).finally(() => { starting = undefined; });
+    return starting;
+  };
+  const startSession = async (signal?: AbortSignal): Promise<{ ok: true } | { ok: false; code: TrelloCallCode }> => {
     const init = await post({ jsonrpc: '2.0', id: nextId++, method: 'initialize', params: { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'lux-didi', version: '1' } } }, signal);
     // Nothing was asked of the board yet, so an unanswered initialize is unavailable, never unknown.
     if (!init.ok) return { ok: false, code: init.code === 'unknown' || init.code === 'protocol_error' ? 'unavailable' : init.code };

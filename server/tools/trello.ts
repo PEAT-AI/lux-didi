@@ -439,14 +439,15 @@ export class TrelloBoard {
       labels = page.items.flatMap(label => { const id = idOf(label.id, LABEL_ARI); return id ? [{ id, name: text(label.name), color: text(label.color) }] : []; });
       complete &&= page.complete;
     }
+    // Every list at once: a first read in a call stays well inside the Live tool ceiling.
+    const pages = await Promise.all(lists.map(list => this.#pages(index, 'trelloReadCard', [{ action: 'list_by_list', listId: list.id }], signal)));
     const cards: TrelloCard[] = [];
-    for (const list of lists) {
-      const page = await this.#pages(index, 'trelloReadCard', [{ action: 'list_by_list', listId: list.id }], signal);
+    for (const [position, page] of pages.entries()) {
       complete &&= page.complete;
       for (const item of page.items) {
         const card = trelloCardOf(item);
         if (!card) throw new Refusal('result_unrecognized');
-        if (!card.closed) cards.push({ ...card, listId: list.id });
+        if (!card.closed) cards.push({ ...card, listId: lists[position]!.id });
       }
     }
     session.snapshot = { lists, labels, cards, complete, at: this.#now() };

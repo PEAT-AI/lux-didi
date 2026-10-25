@@ -48,7 +48,7 @@ Before a release, run these twelve at the release head, one at a time, with no r
 | Script | Covers |
 | --- | --- |
 | `check-live-voice.sh` | Provider adapters: `live-voice`, `openai-live-voice`, `resample` tests. |
-| `check-live-session.sh` | The call core: session, mute, continuity, resumption, recovery, watchdog, summary, selection, memory note, warm context, vault write, stop-phrase gate, trace store, voice fault replay, `naya-logs`, and the research suites for continuation, knowledge, steps and web. |
+| `check-live-session.sh` | The call core: session, mute, continuity, resumption, recovery, watchdog, summary, selection, memory note, warm context, vault write, stop-phrase gate, trace store, voice fault replay, `naya-logs`, the research suites for continuation, knowledge, steps and web, and the C-LIVE replay eval `partial-research-turn-contract-replay` (one research operation per owner turn, the bounded operation, coverage rows). |
 | `check-live-gateway.sh` | The loopback Live gateway with chat, host, HTTP, open-actions and prompt regressions. |
 | `check-prompt.sh` | Prompt composition, the Live persona, runtime context and the research suites (`research`, calendar, mail query, routed, shape, web). It also runs `server/test/prompt-content.integration.mjs`, which compares the shipped instruction byte for byte against `server/test/fixtures/prompt-final.json` and pins the accepted character hash. This is where triage, topic, routing and the 2,500 character reply cap are pinned. |
 | `check-tool-owner.sh` | The tool owner, Live tool shape and redaction (`tool-owner`, `live-shape`, `redact` tests). |

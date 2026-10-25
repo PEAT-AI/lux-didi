@@ -3275,7 +3275,7 @@ export class LiveSessionOwner {
     // #1022 F1: the scheduler's closures name one generation, so a rebuilt session builds its own.
     if (handle.researchSchedulerGeneration !== handle.generation) handle.researchScheduler = undefined;
     const scheduler = handle.researchScheduler ??= new ResearchScheduler({
-      now: () => this.#now(), timeZone: handle.timeZone,
+      now: () => this.#now(), timeZone: handle.timeZone, liveSessionId: handle.liveSessionId,
       authorizeEvidence: (bindings, signal) => !signal.aborted && generation === handle.generation && !this.#settled(handle)
         && this.#tools!.owner.authorizeDelivery(host, bindings, [handle.inputClass], this.lookupAuthority(host.runId), signal).state === 'allowed',
       configured, configuredNow: () => this.#researchSources(handle),

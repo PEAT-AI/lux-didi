@@ -1980,6 +1980,8 @@ export interface ResearchQueryShape { source: SourceKind | LookupSource; terms: 
 
 export interface ResearchDeps {
   timeZone?: string;
+  /** L11-03: the live call this research runs in. Its own rows are never memory, by identity. */
+  liveSessionId?: string | undefined;
   /**
    * #565: one row per source call's query shape, so the next forensic review can prove what a search was
    * built from. The Live owner binds it to the trace store; absent means nothing is persisted.
@@ -3232,7 +3234,7 @@ function rankMemoryEvidence(hits: readonly JsonObject[], tokens: readonly string
  * of the live session are never its own memory, and a row dated at or after the call before this one is the
  * live conversation, so only older rows survive unless the owner asked what she said.
  */
-function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunState, asked: boolean): JsonObject[] {
+function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunState, asked: boolean, currentSessionId?: string): JsonObject[] {
   const keys = new Set([question, run.question ?? ''].filter(text => text.trim().length > 0).map(memoryWords));
   const history = run.previousCallAt ?? run.startedAt;
   const live = asked ? new Set<string>() : liveSessionIds(hits, question, history);
@@ -3243,7 +3245,8 @@ function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunS
     // conversation itself, and every summary of it, never is.
     if (hit['sourceKind'] === 'entry') return true;
     const id = hit['sessionId'];
-    if (typeof id === 'string' && live.has(id)) return false;
+    // L11-03: the call in progress is excluded by its own id, whatever a row's time says.
+    if (typeof id === 'string' && (live.has(id) || id === currentSessionId)) return false;
     const at = Date.parse(String(hit['date'] ?? ''));
     return !Number.isFinite(at) || at < history;
   });
@@ -3340,6 +3343,12 @@ export function capReply(reply: JsonObject, limit: number, refresh?: () => void)
     }
     // #5: only a line this pass really removes is counted out of the header, never one it clipped.
     const counted = head.replace(/: (\d+) of (\d+) shown$/u, (_match, shown: string, total: string) => `: ${Math.max(0, Number(shown) - 1)} of ${total} shown`);
+    // L11-03: the coverage header carries the same count, so a trim after it was built never leaves them apart.
+    if (refresh === undefined && typeof reply['coverage'] === 'string' && typeof widest.source === 'string') {
+      const own = /: (\d+) of (\d+) shown$/u.exec(head);
+      if (own) reply['coverage'] = String(reply['coverage']).replace(new RegExp(`\\b${widest.source} (\\S+) ${own[1]} of ${own[2]} shown`, 'u'),
+        (_match, status: string) => `${widest.source} ${status === 'complete' ? 'truncated_to_budget' : status} ${Math.max(0, Number(own[1]) - 1)} of ${own[2]} shown`);
+    }
     lines.pop();
     // F2 (review): a header that claims a count over no evidence line is a lie, so the finding goes whole.
     if (lines.length === 0) reply['findings'] = (reply['findings'] as JsonObject[]).filter(finding => finding !== widest);
@@ -4206,7 +4215,7 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
       // new evidence, so it is dropped unless the owner asked what she said.
       const askedWhatSheSaid = ASKS_WHAT_SHE_SAID.test(context.question);
       const raw = Array.isArray(page['hits']) ? page['hits'].filter(isRecord) : [];
-      const hits = memoryEvidence(raw, context.question, run, askedWhatSheSaid);
+      const hits = memoryEvidence(raw, context.question, run, askedWhatSheSaid, deps.liveSessionId);
       const kept = { ...page, hits };
       for (const hit of hits) if (typeof hit['recordRef'] === 'string') run.historyTokens.add(hit['recordRef']);
       const lines = typeof page['text'] === 'string' ? [page['text']] : hits.map(hit => String(hit['snippet'] ?? ''));

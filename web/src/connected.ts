@@ -4,6 +4,7 @@ import type { ChatStep } from './tool-phrases.ts';
 import { toolConnector, wroteExternally } from './tool-phrases.ts';
 import { composerIntent, draftHeightPx } from './composer.ts';
 import { attachPin } from './autoscroll.ts';
+import { chatModelLabel } from './settings-view.ts';
 import type { Entry, Session, Recall, MemorySelectionSnapshot, ConnectedRouteStatus, Status, ToolEvidence } from './protocol';
 /** The outcomes that mean the run stopped on time, not on an error: the partial family (F4). */
 const TIMEOUT_OUTCOME = /^(?:deadline|timeout|truncated)$/;
@@ -179,8 +180,17 @@ export class ConnectedView {
     // is a defect, not a placeholder (V3-R6 item 2).
     const notesSection = this.#memoryOpen || this.#memorySelected.length ? this.#notesSection() : '';
     const typing = r && !r.finalEntryId && r.state !== 'terminal' && !r.partialText ? '<p class="typing" role="status" aria-label="Naya is typing"><span></span><span></span><span></span></p>' : '';
+    // The lane says what a send will do, and never offers a consent it cannot use: with no text
+    // model there is nothing to allow, so the line names the state and points at Settings.
+    const blocked = this.#status.status === 'unconfigured' ? 'Text chat is not configured. Set the text chat model in Settings.'
+      : this.#status.status === 'disabled' ? 'Text chat is turned off. Turn it on in Settings.'
+      : 'Text chat is not available right now. Check Settings for the text chat model, then try again.';
+    // One line, and only the line the lane can keep: with no text model there is nothing to allow.
+    const disclosureText = available
+      ? `Chat messages go to <strong>${escape(chatModelLabel(provider, model))}</strong> when you send them. <button type="button" id="connected-consent" class="allow-link">Allow</button>`
+      : blocked;
     panel.innerHTML = `<section class="connected-conversation" aria-label="Connected Naya conversation">
-      ${grant || this.#consent ? '' : `<p class="connected-disclosure">Chat messages go to <strong>${escape(provider ?? 'the connected provider')}</strong> when you send them. <button type="button" id="connected-consent" class="allow-link">Allow</button></p>`}
+      ${grant || this.#consent ? '' : `<p class="connected-disclosure">${disclosureText}</p>`}
       <div class="chat-list" id="chat-list">
       <div id="connected-entries" class="connected-entries">${this.#entries.length ? this.#entries.map(entry => entry.id === r?.finalEntryId ? `${stepsMarkup(this.#runSteps(r), true)}${chatEntryMarkup(entry.role === 'assistant' ? 'assistant' : 'user', answerText(entry))}${evidenceMarkup(r.toolEvidence ?? [])}${sourcesMarkup(r.toolEvidence ?? [])}` : chatEntryMarkup(entry.role === 'assistant' ? 'assistant' : 'user', answerText(entry))).join('') + (r && !r.finalEntryId ? stepsMarkup(this.#runSteps(r), false) : '') + (r ? this.#noAnswer(r) : '') + typing : '<p class="connected-empty muted">What can I find for you?</p>'}</div>
       <button type="button" class="jump-pill" id="chat-jump" hidden>Jump to latest</button>

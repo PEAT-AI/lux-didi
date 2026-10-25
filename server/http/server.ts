@@ -132,7 +132,9 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         times.push(received); diagnosticTimes.set(operator.clientId, times);
         res.writeHead(204, { 'Cache-Control': 'no-store' }); res.end(); return;
       }
-      if (route.kind === 'live') {
+      // The live settings write is the one live route a browser reaches; it is handled below, after the
+      // generic mutation resolve, so it gets the cookie, CSRF token and authority epoch every write has.
+      if (route.kind === 'live' && route.action !== 'settings') {
         if (!live) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Live route is not locally configured', 503);
         const principal = operatorPrincipal(req, store, origin);
         const context = authorityContext(req, store, principal);
@@ -166,17 +168,6 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         if (route.action === 'snapshot') { send(res, 200, success(live.snapshot(route.id!))); return; }
         if (route.action === 'journal') { send(res, 200, success(live.journal(route.id!, route.input['cursor'] as number | undefined, route.input['limit'] as number | undefined))); return; }
         if (route.action === 'revoke') { live.revoke(route.id!); send(res, 200, success({ liveSessionId: route.id!, revoked: true })); return; }
-        if (route.action === 'settings') {
-          if (!live.saveSelection) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Live settings are not writable here', 503);
-          let saved;
-          try {
-            saved = live.saveSelection({ provider: route.input['provider'],
-              ...(route.input['voice'] !== undefined ? { voice: route.input['voice'] } : {}),
-              ...(route.input['accent'] !== undefined ? { accent: route.input['accent'] } : {}) });
-          } catch (error) { throw new ServiceError('BAD_REQUEST', error instanceof ConfigError || error instanceof LiveConfigError ? error.code : 'invalid_selection', 400); }
-          send(res, 200, success(saved));
-          return;
-        }
         if (route.action === 'text') { live.text(String(route.input['text'])); send(res, 200, success({ sent: true })); return; }
         throw new ServiceError('METHOD_NOT_ALLOWED', 'Audio requires a WebSocket upgrade', 405);
       }
@@ -253,6 +244,22 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       if (route.kind === 'session') { send(res, 200, success({ clientId: actor.clientId, csrfToken: actor.csrfToken ?? null })); return; }
       if (route.kind === 'connected' && ['enroll', 'accept'].includes(route.action) && (!chat || modelStatus.status !== 'configured')) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Model route is not locally configured', 503);
       if (route.mutation) { const body = await readBody(req); route = resolveRoute(method, url, body); }
+      if (route.kind === 'live' && route.action === 'settings') {
+        // Browser-safe sibling of the bearer-only live session routes, like liveSummary and
+        // liveConnections: the Settings page answers the owner's Save with the same cookie, CSRF token
+        // and authority epoch as any other mutation, and the body was read and validated by the
+        // mutation resolve just above. The choice is written to live.json and touches no session.
+        if (!live) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Live route is not locally configured', 503);
+        if (!live.saveSelection) throw new ServiceError('MODEL_NOT_CONFIGURED', 'Live settings are not writable here', 503);
+        let saved;
+        try {
+          saved = live.saveSelection({ provider: route.input['provider'],
+            ...(route.input['voice'] !== undefined ? { voice: route.input['voice'] } : {}),
+            ...(route.input['accent'] !== undefined ? { accent: route.input['accent'] } : {}) });
+        } catch (error) { throw new ServiceError('BAD_REQUEST', error instanceof ConfigError || error instanceof LiveConfigError ? error.code : 'invalid_selection', 400); }
+        send(res, 200, success(saved));
+        return;
+      }
       if (route.kind === 'pairing') {
         if (actor.mode !== 'bearer') throw new ServiceError('FORBIDDEN', 'Local operator credential required', 403);
         for (const [key, expiry] of pairing) if (expiry <= now()) pairing.delete(key);

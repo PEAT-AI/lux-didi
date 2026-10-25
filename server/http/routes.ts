@@ -51,16 +51,19 @@ export function resolveRoute(method: string, url: URL, body?: Record<string, unk
   if (path === '/api/v1/live/status') { matched(['GET']); query(url, []); return { kind: 'live', action: 'status', id: null, input: {}, mutation: false }; }
   if (path === '/api/v1/live/settings') {
     // The owner's provider and voice choice. A write, so it needs the same CSRF/cookie treatment as any mutation.
+    // The router's first pass carries no body (it only classifies the route), so the field checks run when one
+    // arrives and the handler's second pass is what refuses a bodyless write.
     matched(['POST']); query(url, []);
-    if (!body) bad('Invalid settings request');
-    const input = object(body);
-    // PV1-R3: the accent rides beside provider and voice. Membership of the closed set is the config
-    // layer's check, which answers the typed invalid_accent, so this layer mirrors the voice treatment.
-    fields(input, ['provider', 'voice', 'accent'], ['provider']);
-    if (!isLiveVoiceProvider(input['provider'])) bad('Invalid provider');
-    if (input['voice'] !== undefined && (typeof input['voice'] !== 'string' || !input['voice'].length || input['voice'].length > 64)) bad('Invalid voice');
-    if (input['accent'] !== undefined && (typeof input['accent'] !== 'string' || !input['accent'].length || input['accent'].length > 40)) bad('Invalid accent');
-    return { kind: 'live', action: 'settings', id: null, input, mutation: true };
+    if (body) {
+      const input = object(body);
+      // PV1-R3: the accent rides beside provider and voice. Membership of the closed set is the config
+      // layer's check, which answers the typed invalid_accent, so this layer mirrors the voice treatment.
+      fields(input, ['provider', 'voice', 'accent'], ['provider']);
+      if (!isLiveVoiceProvider(input['provider'])) bad('Invalid provider');
+      if (input['voice'] !== undefined && (typeof input['voice'] !== 'string' || !input['voice'].length || input['voice'].length > 64)) bad('Invalid voice');
+      if (input['accent'] !== undefined && (typeof input['accent'] !== 'string' || !input['accent'].length || input['accent'].length > 40)) bad('Invalid accent');
+    }
+    return { kind: 'live', action: 'settings', id: null, input: body ?? {}, mutation: true };
   }
   if (path === '/api/v1/live/prewarm') {
     // 338: the owner's wake instruction. A mutation with an empty body: it refreshes the warm context

@@ -331,7 +331,7 @@ test('#657 item 1: a six-source test-all ask is served in one batch and names th
   assert.match(String(reply['note']), /The rest come next: company knowledge/u, `the reply names the sources it left for the next call (${String(reply['note'])})`);
   assert.equal(reply['canContinue'], true, 'and the rest can be asked for');
   const lookups = [
-    { source: 'calendar', query: 'today' }, { source: 'mail', query: 'inbox', bogus: 1 }, { source: 'chat', query: 'release' },
+    { source: 'calendar', query: 'today' }, { source: 'mail', query: 'inbox' }, { source: 'chat', query: 'release' },
     { source: 'knowledge', query: 'release' }, { source: 'company', query: 'renewal' }, { source: 'web', query: 'release' },
   ];
   const parsed = parseResearch({ action: 'start', question: 'test all tools', topic: 'tools', lookups });

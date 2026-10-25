@@ -463,3 +463,27 @@ test('replay 10: no page starts that cannot finish before the deadline', async (
   assert.equal(mail?.['stop'], 'deadline');
   assert.equal(mail?.['more'], 'upstream', 'and its cursor is kept for a follow-up');
 });
+
+// L8-06 (verify-8): the web ran 13 of 13 times, yet an early answer said "web skipped_by_route (say: I did not read
+// the web this time)" beside pending:["web"], and she told the owner the web did not run. A source still reading
+// is said as still reading, never as skipped.
+test('L8-06: a web read still running at the first answer is still_reading in the header, never skipped_by_route', async () => {
+  const clock = fakeClock();
+  const deps: ResearchDeps = {
+    now: clock.now, schedule: clock.schedule, configured: ['knowledge'], ledger: new ResearchLedger(),
+    emit() {}, log() {}, step() {}, logSource() {}, logSubcall() {}, logRouted() {}, logFirstAnswer() {}, late() {},
+    web: { search: () => new Promise(() => {}) },
+    execute: async subs => subs.map(call => ({ key: call.key, name: call.name, ok: true, text: '### Synthetic note (DECISION | 2026-10-20) [id 7]\nSynthetic body.', originalCharacters: 40, omittedCharacters: 0 }) as IntentSubResult),
+  };
+  const pending = runResearch(deps, { action: 'start', question: 'what do we know about the synthetic topic', topic: 'synthetic topic',
+    lookups: [{ source: 'knowledge', query: 'synthetic topic' }, { source: 'web', query: 'synthetic topic' }] }, new AbortController().signal);
+  let reply: Record<string, unknown> | undefined;
+  void pending.then(value => { reply = value; });
+  for (let at = 0; at <= OPERATION_DEADLINE_MS && reply === undefined; at += 250) { await ticks(); clock.advance(at); }
+  await ticks();
+  assert.ok(reply, 'the operation answered');
+  assert.deepEqual(reply!['pending'], ['web'], 'the web is named as pending');
+  const header = String(reply!['coverage']);
+  assert.doesNotMatch(header, /web skipped_by_route/u, `a reading source is never told as skipped (${header})`);
+  assert.match(header, /web still_reading/u, `it is told as still reading (${header})`);
+});

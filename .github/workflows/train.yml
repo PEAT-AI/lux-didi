@@ -1,0 +1,52 @@
+# The one hosted CI job: it runs on the train pull request into main and nowhere else.
+#
+# Everything else stays local. The Swift desk gate (Tests/DidiMacTests/check-mac.sh) and
+# the macOS real-host checks need a Mac and a GPU renderer lease, so no macOS runner is
+# used here. Coverage thresholds are deliberately absent: this job answers "did every node
+# test file run and pass", not "how much of the tree is covered".
+#
+# The file list lives in scripts/check-all-node.sh, which this workflow calls. The named
+# skip lists, with a reason each, are in that script; nothing here repeats or filters them.
+name: train
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: train-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    # Head branch prefix is checked here because GitHub cannot filter on it in `on:`.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'train/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Some replay suites read historical blobs with `git show`; a shallow clone
+          # would fail them for a reason that has nothing to do with the change.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            web/package-lock.json
+      - name: Install server
+        run: npm --prefix server ci --no-audit --no-fund
+      - name: Install web
+        run: npm --prefix web ci --no-audit --no-fund
+      - name: Install headless Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Node and browser gate
+        run: bash scripts/check-all-node.sh

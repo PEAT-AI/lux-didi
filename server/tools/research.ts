@@ -4515,6 +4515,12 @@ const SOURCE_WORD_KIND: Readonly<Record<string, SourceKind>> = {
 const SOURCE_WORD = /(?:^|[^a-z])(web|mail|email|gmail|chat|mattermost|slack|calendar|knowledge|memory|company|mongoose)(?:[^a-z]|$)/giu;
 /** Words that page or widen a read already under way, so they never make a continuation a new topic. */
 const NAVIGATION_WORDS = new Set(['page', 'pages', 'item', 'items', 'thread', 'threads', 'message', 'messages', 'everything', 'rest', 'details', 'detail', 'contents', 'content', 'whole', 'full', 'older', 'newer']);
+/**
+ * Words that point back at the run instead of naming a new thing, so "explain the prior discussion and the
+ * relevant blocker" continues the run it names while "how did the Blackwell contract win go" does not.
+ */
+const REFERENTIAL_WORDS = new Set(['prior', 'previous', 'previously', 'earlier', 'above', 'former', 'last', 'discussion', 'conversation', 'thread', 'point', 'points', 'blocker', 'blockers', 'explain', 'identify', 'summarize', 'summarise', 'describe', 'clarify', 'relevant', 'related', 'context', 'topic', 'subject', 'thing', 'things', 'issue', 'issues', 'question', 'answer', 'finding', 'findings', 'said', 'mentioned']);
+const TOPIC_SKIP = new Set([...KNOWLEDGE_FILLER, ...REFERENTIAL_WORDS]);
 
 /**
  * #654: an id continues its run only for more of the same read. A direction that names a source the run
@@ -4533,8 +4539,8 @@ function continuesRun(run: RunState, call: ResearchCall, question: string): bool
     return false;
   };
   const sameTopic = (text: string): boolean => {
-    const known = new Set(contentKeywords(`${run.question ?? ''} ${run.topic ?? ''}`, 40, KNOWLEDGE_FILLER));
-    return contentKeywords(text, 12, KNOWLEDGE_FILLER).every(word => known.has(word) || NAVIGATION_WORDS.has(word));
+    const known = new Set(contentKeywords(`${run.question ?? ''} ${run.topic ?? ''}`, 40, TOPIC_SKIP));
+    return contentKeywords(text, 12, TOPIC_SKIP).every(word => known.has(word) || NAVIGATION_WORDS.has(word));
   };
   const said = (call.direction ?? '').trim();
   if (said !== '') return !unread(said) && sameTopic(said);
@@ -4545,7 +4551,8 @@ function continuesRun(run: RunState, call: ResearchCall, question: string): bool
   }
   if (unread(question)) return false;
   // A continue that names its own lookups is a new search, so its words must be the run's words.
-  return lookups.length === 0 || sameTopic(question);
+  // Review G2: a question with no lookups and no direction is judged too, so a new topic always starts fresh.
+  return question.trim() === '' || sameTopic(question);
 }
 
 /** The loop behind a call: unchanged by the first answer point except for what it reports late. */

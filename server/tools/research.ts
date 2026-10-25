@@ -298,7 +298,7 @@ export interface ConfiguredEndpointStatus {
  * synthesis across sources is the analytical tier. Everything else is the default tier.
  */
 const DEEP_TIER_ASK = /\b(?:go deep|in depth|deep dive|in detail|every detail|all the detail|everything|the full (?:entries|bodies|detail)|all of it|thorough|thoroughly)\b/iu;
-const ANALYTICAL_ASK = /\b(?:compare|comparison|versus|vs|difference between|implications|across|synth\w*|analyse|analyze|analysis|team)\b/iu;
+const ANALYTICAL_ASK = /\b(?:compare|comparison|versus|vs|difference between|implications|synthes\w*|analyse|analyze|analysis|team implications)\b/iu;
 /** Words that open a sentence or a clause, never a requested person or document. */
 const ENTITY_STOP = new Set(['The', 'What', 'Who', 'When', 'Where', 'Which', 'Why', 'How', 'Does', 'Did', 'Can', 'Could', 'Would', 'Should', 'Tell', 'Show', 'Give', 'Please', 'And', 'But', 'For', 'Any', 'All', 'Is', 'Are', 'Was', 'Were', 'Do', 'Has', 'Have', 'Summarise', 'Summarize', 'Also', 'Then', 'Now']);
 const QUOTED_ENTITY = /"([^"]{2,80})"/gu;
@@ -330,6 +330,7 @@ export function budgetFor(question: string, topic?: string): number {
   const asked = topic === undefined ? question : `${question} ${topic}`;
   if (DEEP_TIER_ASK.test(asked)) return RESEARCH.budgets.depth;
   if (ANALYTICAL_ASK.test(asked)) return RESEARCH.budgets.analytical;
+  if (requestedEntities(question).length > 0) return RESEARCH.budgets.analytical;
   return RESEARCH.budgets.default;
 }
 

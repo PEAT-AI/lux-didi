@@ -185,11 +185,12 @@ export class ConnectedView {
     const blocked = this.#status.status === 'unconfigured' ? 'Text chat is not configured. Set the text chat model in Settings.'
       : this.#status.status === 'disabled' ? 'Text chat is turned off. Turn it on in Settings.'
       : 'Text chat is not available right now. Check Settings for the text chat model, then try again.';
-    const disclosure = !available
-      ? `<p class="connected-disclosure" id="chat-unavailable">${blocked}</p>`
-      : grant || this.#consent ? '' : `<p class="connected-disclosure">Chat messages go to <strong>${escape(chatModelLabel(provider, model))}</strong> when you send them. <button type="button" id="connected-consent" class="allow-link">Allow</button></p>`;
+    // One line, and only the line the lane can keep: with no text model there is nothing to allow.
+    const disclosureText = available
+      ? `Chat messages go to <strong>${escape(chatModelLabel(provider, model))}</strong> when you send them. <button type="button" id="connected-consent" class="allow-link">Allow</button>`
+      : blocked;
     panel.innerHTML = `<section class="connected-conversation" aria-label="Connected Naya conversation">
-      ${disclosure}
+      ${grant || this.#consent ? '' : `<p class="connected-disclosure">${disclosureText}</p>`}
       <div class="chat-list" id="chat-list">
       <div id="connected-entries" class="connected-entries">${this.#entries.length ? this.#entries.map(entry => entry.id === r?.finalEntryId ? `${stepsMarkup(this.#runSteps(r), true)}${chatEntryMarkup(entry.role === 'assistant' ? 'assistant' : 'user', answerText(entry))}${evidenceMarkup(r.toolEvidence ?? [])}${sourcesMarkup(r.toolEvidence ?? [])}` : chatEntryMarkup(entry.role === 'assistant' ? 'assistant' : 'user', answerText(entry))).join('') + (r && !r.finalEntryId ? stepsMarkup(this.#runSteps(r), false) : '') + (r ? this.#noAnswer(r) : '') + typing : '<p class="connected-empty muted">What can I find for you?</p>'}</div>
       <button type="button" class="jump-pill" id="chat-jump" hidden>Jump to latest</button>

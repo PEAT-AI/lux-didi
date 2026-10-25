@@ -512,7 +512,7 @@ test('#675: a status ask names every configured source across the batch it annou
   assert.doesNotMatch(firstNote, /failed|could not|not answer/u, `no read source is called failed (${firstNote})`);
   assert.match(firstNote, /The rest come next: company knowledge, the web/u, `the answer announces the rest (${firstNote})`);
   const second = await runResearch(h.deps, {
-    action: 'continue', researchId: String(first['researchId']), question: 'test all the tools',
+    action: 'continue', researchId: String(first['researchId']), question: 'test all the tools', lookups: [],
   }, new AbortController().signal);
   const secondNote = String(second['note']);
   assert.match(secondNote, /company knowledge is signed out/u, `a signed out source says so (${secondNote})`);
@@ -526,8 +526,10 @@ test('#675: a status ask names every configured source across the batch it annou
     action: 'start', question: 'test all the tools',
     lookups: [{ source: 'mail', query: 'from:ana' }, { source: 'knowledge', query: 'release' }],
   }, new AbortController().signal);
-  assert.equal(String(lookupsMode['note']), firstNote, 'the model lookups never change what a status answer says');
-  assert.equal(String(lookupsMode['coverage']), String(first['coverage']), 'and the counts it states come from the same read');
+  // Source order follows how the batch was assembled, so the lines are compared as a set, never by order.
+  const clauseOf = (text: string): string[] => text.split(/;\s*/u).map(line => line.trim()).filter(Boolean).sort();
+  assert.deepEqual(clauseOf(String(lookupsMode['note'])), clauseOf(firstNote), 'the model lookups never change what a status answer says');
+  assert.deepEqual(clauseOf(String(lookupsMode['coverage'] ?? '')), clauseOf(String(first['coverage'] ?? '')), 'and the counts it states come from the same read');
 });
 
 // --- #675: a closed code that is not a sign-out is never called signed out --------------------------

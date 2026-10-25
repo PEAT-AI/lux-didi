@@ -2542,6 +2542,8 @@ export class LiveSessionOwner {
     }
     this.#guardHandle(handle);
     if (!(pcm instanceof Uint8Array) || !pcm.length || pcm.length % 2 !== 0) throw new LiveError('invalid_audio');
+    // #656: audio held across the rebuild goes out first, in the order he spoke it.
+    this.#flushRebuildAudio(handle);
     // 3j: a mic frame is not conversation. Idle measures silence, so frames keep flowing without resetting it.
     countAudio(handle, 'input', pcm.byteLength, this.#now());
     // The uplink carries zero frames while muted, so a mic that outlives the fence uploads nothing.
@@ -2562,14 +2564,18 @@ export class LiveSessionOwner {
     return true;
   }
 
-  /** #656: the new session is ready, so the audio the owner sent into the gap is delivered in the order he spoke it. */
+  /**
+   * #656: deliver the audio the owner sent into the rebuild gap, in the order he spoke it. A socket that answers
+   * not_ready keeps its frames held for the next opportunity, so nothing is lost to a race with the adapter setup.
+   */
   #flushRebuildAudio(handle: ActiveSession): void {
-    if (handle.rebuildAudio.length === 0) return;
-    const held = handle.rebuildAudio;
-    handle.rebuildAudio = []; handle.rebuildAudioBytes = 0;
-    for (const pcm of held) {
+    if (handle.rebuildAudio.length === 0 || handle.muted) return;
+    while (handle.rebuildAudio.length > 0) {
+      const pcm = handle.rebuildAudio[0] as Uint8Array;
+      try { handle.session.sendAudio({ pcm, dataClass: handle.inputClass }); }
+      catch { return; }
+      handle.rebuildAudio.shift(); handle.rebuildAudioBytes -= pcm.byteLength;
       countAudio(handle, 'input', pcm.byteLength, this.#now());
-      if (!handle.muted) handle.session.sendAudio({ pcm, dataClass: handle.inputClass });
     }
   }
 

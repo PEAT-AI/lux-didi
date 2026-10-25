@@ -6415,7 +6415,8 @@ test('#656: a research run past the twelve second ceiling still holds the ladder
   const researchId = typeof opened === 'string' ? undefined : opened?.['researchId'];
   assert.equal(typeof researchId, 'string', 'the start run names the run a continue resumes');
   holdFrom = calls + 1;
-  fake.emit({ type: 'toolCall', calls: [{ id: 'run656', name: 'research', args: { action: 'continue', researchId } }] });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'run656', name: 'research',
+    args: { action: 'continue', researchId, lookups: [{ source: 'calendar', query: 'what is on my calendar' }] } }] });
   await settlePort();
   assert.ok(calls >= holdFrom, 'the continue read a source, so its call is still pending');
   // The run is older than TOOL_CEILING_MS and still work: RESEARCH.continueDeadlineMs is what bounds the wait.

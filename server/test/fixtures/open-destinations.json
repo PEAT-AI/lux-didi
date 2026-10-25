@@ -46,6 +46,8 @@
     { "url": "https://docs.google.com.evil.example/document/d/SyntheticDoc01/edit", "kind": null },
     { "url": "https://www.youtube.com/watch?v=synthetic", "kind": "youtube" },
     { "url": "https://youtu.be/synthetic", "kind": "youtube" },
+    { "url": "https://www.google.com/calendar%2Fevent?eid=c3ludGhldGljLWV2ZW50", "kind": null },
+    { "url": "https://docs.google.com/document%2Fd%2FSyntheticDoc01/edit", "kind": null },
     { "url": "https://example.test/private/plan.pdf", "kind": null }
   ]
 }

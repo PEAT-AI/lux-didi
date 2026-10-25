@@ -83,10 +83,11 @@ public struct OpenDestination: Sendable, Equatable {
     public static func of(_ target: String, mattermostHost: String?) -> OpenDestination? {
         guard let parts = URLComponents(string: target), parts.scheme?.lowercased() == "https",
               parts.user == nil, parts.password == nil, parts.port == nil,
-              let host = parts.host?.lowercased(), !host.isEmpty, !matches(parts.path, rejected),
+              let host = parts.host?.lowercased(), !host.isEmpty, !matches(parts.percentEncodedPath, rejected),
               !(parts.queryItems ?? []).contains(where: { $0.name == "q" || $0.name == "redirect" || $0.name == "export" })
         else { return nil }
-        let path = parts.path
+        // The raw path, as the host reads it: a %2F never becomes a separator here.
+        let path = parts.percentEncodedPath
         let eid = (parts.queryItems ?? []).contains { $0.name == "eid" }
         let video = (parts.queryItems ?? []).first { $0.name == "v" }?.value?.isEmpty == false
         switch host {

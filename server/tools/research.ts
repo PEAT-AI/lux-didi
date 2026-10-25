@@ -1353,6 +1353,43 @@ export function chatDateOperator(original: string | undefined, compiled: string,
   return original !== undefined && /\b(?:after|before|on):/iu.test(original) ? 'dropped' : 'none';
 }
 
+// #647: a keyword search requires every term, so a paraphrased ask can miss where hybrid guessed. One
+// broadened retry carries the single most specific word of the query instead of falling back to an
+// embedding mode the chat budget cannot afford.
+
+/** The longest content word of a chat query, or nothing when one term is all the query holds. */
+function broadestChatTerm(query: string): string | undefined {
+  const content = contentKeywords(query.replace(CHAT_DATE_OPERATOR, ' '), 8);
+  if (content.length < 2) return undefined;
+  return content.reduce((longest, word) => (word.length > longest.length ? word : longest));
+}
+
+/** A chat answer that named no post: the shaper's own closed phrase for a search that matched nothing. */
+function chatSearchFoundNothing(text: string): boolean {
+  const answer = text.trim();
+  return answer === '' || answer === 'No messages matched.';
+}
+
+/** One empty multi-term chat read earns one retry with its single most specific term, and the reply says so. */
+async function broadenedChatRetry(execute: (subs: readonly IntentSubCall[], signal: AbortSignal) => Promise<IntentSubResult[]>, subs: readonly IntentSubCall[], results: readonly IntentSubResult[], signal: AbortSignal, broadened: Map<string, string>): Promise<IntentSubResult[]> {
+  let merged: readonly IntentSubResult[] = results;
+  for (let index = 0; index < subs.length; index++) {
+    const sub = subs[index]!;
+    const result = merged[index];
+    if (sub.name !== INTERNAL.chatSearch || broadened.has(sub.key) || result === undefined || !result.ok || !chatSearchFoundNothing(result.text)) continue;
+    const term = broadestChatTerm(typeof sub.args['query'] === 'string' ? sub.args['query'] : '');
+    if (term === undefined) continue;
+    const args: JsonObject = { ...sub.args, query: term };
+    try {
+      const [retried] = await execute([{ key: sub.key, name: sub.name, args }], signal);
+      // The retry ran, so the answer says the match was broadened either way, never that chat held nothing.
+      broadened.set(sub.key, term);
+      if (retried?.ok === true && !chatSearchFoundNothing(retried.text)) merged = merged.map((entry, at) => (at === index ? retried : entry));
+    } catch { /* keep the empty first answer */ }
+  }
+  return [...merged];
+}
+
 /** The ISO day a date word names, or nothing when it names none. */
 function isoDay(word: string, nowMs: number, timeZone: string): string | undefined {
   const lower = word.trim().toLowerCase();
@@ -1558,6 +1595,8 @@ export interface RunState {
   mailSince: Map<string, number>;
   /** ONE-1023: the day-filtered knowledge reads whose filter was dropped for a retry, by their own args. */
   droppedDayFilters: Set<string>;
+  /** #647: the chat reads a broadened retry answered, by their sub key, with the one term that was sent. */
+  broadenedChat: Map<string, string>;
   calendarScopeAttempted?: boolean;
   /** N3: the counted note the calendar list supports, for the routed answer that carries no raw list. */
   calendarNotRead?: string;
@@ -1642,7 +1681,7 @@ export class ResearchLedger {
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), broadenedChat: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -3225,6 +3264,9 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     : mailReads.some(read => read.failed) ? 'The mail search stopped before the end, so there may be more mail than this.'
     : mailReads.some(read => !read.exhausted) ? 'The mail search stopped at its page limit, so there may be more mail than this.'
     : undefined;
+  // #647: a broadened chat retry matched on one word, so the answer says the match was broadened.
+  const chatBroadenedNote = run.broadenedChat.size === 0 ? undefined
+    : `The chat search matched nothing on every word, so I broadened it to ${[...new Set(run.broadenedChat.values())].join(' and ')}.`;
   const clauses = [
     ...(webTimedOut ? ['The web took too long to answer, so that part is missing.'] : []),
     ...(unreachable.length === 0 ? [] : [`I could not reach ${unreachable.length === 1 ? unreachable[0]! : `${unreachable.slice(0, -1).join(', ')} and ${unreachable[unreachable.length - 1]!}`} right now.`]),
@@ -3233,6 +3275,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     ...(coverage !== undefined ? [coverage] : []),
     ...(trouble !== undefined ? [trouble] : []),
     ...(mailCoverageNote !== undefined ? [mailCoverageNote] : []),
+    ...(chatBroadenedNote !== undefined ? [chatBroadenedNote] : []),
   ];
   if (run.unavailableReasons.get('calendar') === 'window_unparsed') clauses.push('I could not resolve that calendar date or window. Give a supported weekday, today, tomorrow, week, this week, next week, or an exact valid date.');
   // #637: a channel the ask names and the chat connector does not know is said in the owner's words,
@@ -4549,7 +4592,13 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     progressSignal.addEventListener('abort', aborted, { once: true });
     if (progressSignal.aborted) aborted();
     let results: IntentSubResult[];
-    try { results = await executeSource(subs, progressSignal); finish(results, current() ? undefined : 'cancelled'); }
+    try {
+      results = await executeSource(subs, progressSignal);
+      // #647: the one place every read passes through, so a chat read that matched nothing on every word is
+      // broadened here once, before the reply and the progress steps read it.
+      if (!dispatchSignal.aborted) results = await broadenedChatRetry(executeSource, subs, results, progressSignal, run.broadenedChat);
+      finish(results, current() ? undefined : 'cancelled');
+    }
     catch (error) { finish([], 'failed'); throw error; }
     finally { progressSignal.removeEventListener('abort', aborted); }
     const fresh = results.flatMap(result => result.binding ? [result.binding] : []);

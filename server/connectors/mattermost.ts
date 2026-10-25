@@ -910,7 +910,9 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       let rows: MattermostChannel[];
       const filters = listFilters();
       if (filters.query && filters.types) {
-        const listed = await read('mattermost_list_channels', { query: key, types: ['O', 'P'], limit: MATTERMOST_CHAT.channelRows }, signal);
+        // W2B-R6: the child's own exact-name ranking works on the words the owner said, so the fold of
+        // articles, punctuation and plurals stays local (the `strong` filter below).
+        const listed = await read('mattermost_list_channels', { query: spoken, types: ['O', 'P'], limit: MATTERMOST_CHAT.channelRows }, signal);
         if (!listed.ok) return listed.result;
         capture(listed.evidence);
         rows = parseChannelList(listed.evidence.decodedResult) ?? [];

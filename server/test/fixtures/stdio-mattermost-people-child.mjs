@@ -113,6 +113,8 @@ const serialize = (post) => ({
 
 const fold = (text) => text.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
 const words = (text) => fold(text).replace(/&/gu, ' and ').split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+// The real child ranks channel names on the words the owner said, folding plurals on both sides (L1-02, L4-07).
+const singular = (list) => list.map(word => (word.length > 3 && word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word));
 const resolveChannel = (reference) => CHANNELS.find(channel => channel.id === reference || channel.name === reference || fold(channel.display_name) === fold(reference));
 const lastPostAt = (channel) => {
   const own = POSTS.filter(post => post.channelId === channel.id).map(post => post.at);
@@ -171,9 +173,9 @@ function listChannels(args) {
   if (Array.isArray(args.types)) list = list.filter(channel => args.types.includes(channel.type));
   if (typeof args.member === 'string') list = list.filter(channel => (channel.members ?? []).includes(args.member));
   if (typeof args.query === 'string' && args.query.trim() !== '') {
-    const terms = words(args.query);
+    const terms = singular(words(args.query));
     list = list.filter(channel => {
-      const own = words(`${channel.name} ${channel.display_name}`);
+      const own = singular(words(`${channel.name} ${channel.display_name}`));
       return terms.every(term => own.some(word => word.startsWith(term)));
     });
   }

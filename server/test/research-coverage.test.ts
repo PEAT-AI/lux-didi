@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { RESEARCH, ResearchLedger, broaderQueryOf, clip, runResearch, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
+import { RESEARCH, ResearchLedger, broaderQueryOf, clip, coverageLine, runResearch, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 function sub(name: string, text: string, ok = true, key = name): IntentSubResult {
@@ -124,7 +124,22 @@ test('COMPOSE 2: every reply opens with the coverage header, and a reply at the 
     assert.ok(findings.some(finding => finding.source === source), `one finding line for ${source}`);
   }
   assert.match(String(reply['note'] ?? ''), /more available/iu, 'the note survives the trim');
-  assert.ok(JSON.stringify(reply).length <= 900 + 1_200, 'the prose envelope keeps its bound and the header rides outside it');
+  assert.doesNotMatch(String(reply['note'] ?? ''), /I did not search/u, 'the header is the one place an unread source is named');
+  assert.ok(JSON.stringify(reply).length <= 900, `the header counts inside the cap: ${JSON.stringify(reply).length} chars`);
+});
+
+test('CAPHEADER 2 (#634): a header over its share of the cap names every source by status word, and drops none', () => {
+  const searched = [{ source: 'knowledge' as const, status: 'truncated_to_budget' as const, shown: 3, total: 9 }, { source: 'mail' as const, status: 'complete' as const, shown: 2, total: 2 }];
+  const unsearched = [{ source: 'calendar' as const, reason: 'skipped_by_route' as const }, { source: 'chat' as const, reason: 'skipped_by_route' as const }, { source: 'web' as const, reason: 'not_configured' as const }];
+  const detailed = coverageLine(searched, unsearched, 2_000);
+  assert.match(detailed, /knowledge truncated_to_budget 3 of 9 shown/u, 'a header with room keeps its counts');
+  const brief = coverageLine(searched, unsearched, 600);
+  assert.ok(brief.length <= 150, `the brief header keeps its quarter of the cap: ${brief.length} of 150`);
+  for (const name of ['knowledge', 'mail', 'calendar', 'chat', 'web']) {
+    assert.match(brief, new RegExp(`(?:^|: |; )${name} \\w+`, 'u'), `the header still names ${name}: ${brief}`);
+  }
+  assert.doesNotMatch(brief, /say: /u, 'the spoken clauses go before a source does');
+  assert.doesNotMatch(brief, /not shown/u, 'nothing is counted out of the header');
 });
 
 test('COMPOSE 3: a source the ask routes to but the session never configured is not_configured, and a failed source is provider_failed', async () => {

@@ -129,13 +129,10 @@ export const RESEARCH = Object.freeze({
    * LAT-1023: the whole answer a Live model receives, envelope included, is at most this many chars.
    * Q1-R0 spent 6,000 chars of telegraphic lines on every reply and a call grew from 15k to 44k tokens in
    * 3.5 minutes. The full bodies stay readable inside the run through their cursors; Live hears the answer.
+   * #634: the coverage header counts inside this same cap, so the prose shrinks by the header's length and
+   * the whole answer the voice receives stays under one bound.
    */
   replyLimitChars: 2_500,
-  /**
-   * #621: the coverage header rides outside the prose envelope, like the citation metadata, so the trim
-   * that keeps an answer inside its budget can never take away the one line that says what was searched.
-   */
-  coverageLimitChars: 1_200,
   /**
    * LAT-1023 ruling R1: a body the owner asked to read keeps its own page bound. The compaction targets
    * composed answers; paging a requested 16,800-char body at the Live budget would double the round trips
@@ -190,8 +187,6 @@ export const RESEARCH = Object.freeze({
    * record and never lets the model claim a record does not exist.
    */
   moreAvailableNote: 'There is more available if you want it.',
-  /** N5 (#568): the note a reply carries when it cannot serve a continuation, so the promise is never made. */
-  notSearchedNote: 'I did not search ',
   /**
    * Q5-R1: an explicit read by id is answered with the entry's whole body, and the connector's own
    * knowledge body cap is 20,000 chars, so that reply is sized for the body instead of the search
@@ -2256,35 +2251,28 @@ export function unsearchedReasonOf(code: string): UnsearchedReason {
   return 'provider_failed';
 }
 
+/** #634: the header's own share of the reply cap, so it can never eat the prose it rides with. */
+const HEADER_SHARE_OF_CAP = 4;
+
 /**
  * #621: the deterministic header every reply opens with. It names each searched source with its status and
  * the hits it returned over the hits it matched, and each source the route wanted but never read with the
  * reason, so an empty findings list never stands for any of them.
+ * #634: past a quarter of the cap in force the header keeps each source's status word and drops only the
+ * counts and the spoken clauses, so no source ever vanishes from it and it never eats the prose.
  */
-export function coverageLine(searched: readonly CoverageSearched[], unsearched: readonly CoverageUnsearched[]): string {
-  const entries: string[] = [];
-  for (const entry of searched) {
-    const confidence = entry.confidence === undefined ? '' : ` confidence=${entry.confidence}`;
-    entries.push(`${entry.source} ${entry.status} ${entry.shown} of ${entry.total} shown${confidence}`);
-  }
-  for (const entry of unsearched) {
-    entries.push(`${entry.source} ${entry.reason} (say: ${UNSEARCHED_CLAUSE[entry.reason](spokenLabelOf(entry.source))})`);
-  }
-  const kept: string[] = [];
-  let length = 'coverage: '.length;
-  for (const entry of entries) {
-    if (length + entry.length + 2 > RESEARCH.coverageLimitChars) break;
-    kept.push(entry);
-    length += entry.length + 2;
-  }
-  const left = entries.length - kept.length;
-  if (left > 0) kept.push(`+${left} not shown`);
-  return kept.length === 0 ? 'coverage: none' : `coverage: ${kept.join('; ')}`;
-}
-
-/** The header of a reply that carries no findings yet, which is how a stopped or repeated call answers. */
-export function coverageOfRun(run: RunState, configured: readonly SourceKind[]): string {
-  return coverageTextOf(run, configured, [], new Map());
+export function coverageLine(searched: readonly CoverageSearched[], unsearched: readonly CoverageUnsearched[], limit: number = RESEARCH.replyLimitChars): string {
+  const bound = Math.floor(limit / HEADER_SHARE_OF_CAP);
+  const line = (entries: readonly string[]): string => entries.length === 0 ? 'coverage: none' : `coverage: ${entries.join('; ')}`;
+  const detailed = line([
+    ...searched.map(entry => `${entry.source} ${entry.status} ${entry.shown} of ${entry.total} shown${entry.confidence === undefined ? '' : ` confidence=${entry.confidence}`}`),
+    ...unsearched.map(entry => `${entry.source} ${entry.reason} (say: ${UNSEARCHED_CLAUSE[entry.reason](spokenLabelOf(entry.source))})`),
+  ]);
+  if (detailed.length <= bound) return detailed;
+  return line([
+    ...searched.map(entry => `${entry.source} ${entry.status}`),
+    ...unsearched.map(entry => `${entry.source} ${entry.reason}`),
+  ]);
 }
 
 /** The fields the header reads off a finding: which source it came from and the count line it leads with. */
@@ -2297,7 +2285,7 @@ const FINDING_HEAD = /^\S[^:\n]*: (\d+) of (\d+) shown$/mu;
  * #621: the header of a reply with findings, derived from the findings the voice will actually hear, so the
  * counts can never drift from the evidence after a trim.
  */
-function coverageTextOf(run: RunState, configured: readonly SourceKind[], findings: readonly FindingLike[], totals: ReadonlyMap<SourceKind, number>): string {
+function coverageTextOf(run: RunState, configured: readonly SourceKind[], findings: readonly FindingLike[], totals: ReadonlyMap<SourceKind, number>, limit: number): string {
   const searched: CoverageSearched[] = [];
   for (const source of SOURCE_ORDER) {
     if (!configured.includes(source)) continue;
@@ -2323,7 +2311,7 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
     if (searched.some(entry => entry.source === source)) continue;
     unsearched.push({ source, reason: unsearchedReasonGiven(run, configured, source) });
   }
-  return coverageLine(searched, unsearched);
+  return coverageLine(searched, unsearched, limit);
 }
 
 function unsearchedReasonGiven(run: RunState, configured: readonly SourceKind[], source: SourceKind): UnsearchedReason {
@@ -3011,7 +2999,8 @@ function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunS
 
 /** Citation metadata has its own 12,000 character envelope, outside the spoken reply budget. */
 function spokenReplySize(reply: JsonObject): number {
-  const { markdown: _markdown, webSources: _sources, webAttribution: _attribution, coverage: _coverage, ...spoken } = reply;
+  // #634: the coverage header is part of what the voice reads, so it is measured with the prose.
+  const { markdown: _markdown, webSources: _sources, webAttribution: _attribution, ...spoken } = reply;
   return JSON.stringify(spoken).length;
 }
 
@@ -3037,7 +3026,7 @@ function capWebMetadata(reply: JsonObject): void {
  * F1/F2 (RESCAP-R3): a finding is dropped whole rather than left as a header over nothing, the reply is
  * hard-bounded, and the state and the note are derived after the cut so they always agree.
  */
-export function capReply(reply: JsonObject, limit: number): JsonObject {
+export function capReply(reply: JsonObject, limit: number, refresh?: () => void): JsonObject {
   // A requested body read and a record read page at their own 6,000 char room, so neither is held to the
   // search budget.
   if (reply['bodyProjection'] !== undefined) return reply;
@@ -3045,6 +3034,9 @@ export function capReply(reply: JsonObject, limit: number): JsonObject {
   capWebMetadata(reply);
   const rawWebReason = isRecord(reply['unavailable']) ? reply['unavailable']['web'] : undefined;
   if (typeof rawWebReason === 'string' && rawWebReason.startsWith('web_insufficient:')) webInsufficient(reply, rawWebReason.slice('web_insufficient:'.length));
+  // #634: the header counts inside the cap, so a caller that can rebuild it hands over `refresh` and every
+  // pass measures the header it would ship. A status word can lengthen when a trim drops a source's last
+  // line, so the header is never measured once and reused.
   const size = (): number => spokenReplySize(reply);
   const hitsOf = (page: JsonObject): unknown[] => Array.isArray(page['hits']) ? page['hits'] as unknown[] : [];
   let trimmed = false;
@@ -3061,6 +3053,7 @@ export function capReply(reply: JsonObject, limit: number): JsonObject {
   let guard = 4096;
   while (guard-- > 0) {
     settle();
+    refresh?.();
     if (size() <= limit) break;
     const pages = Array.isArray(reply['historyPages']) ? reply['historyPages'] as JsonObject[] : [];
     const widestPage = pages.reduce<JsonObject | undefined>((best, page) => best === undefined || hitsOf(page).length > hitsOf(best).length ? page : best, undefined);
@@ -3209,7 +3202,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // `2 of 9 shown` truthfully after the reply is bounded.
   const totals = new Map<SourceKind, number>();
   for (const group of groups) totals.set(group.source, Math.max(group.total, group.lines.length));
-  const coverageOf = (findings: readonly FindingLike[]): string => coverageTextOf(run, configured, findings, totals);
+  const coverageOf = (findings: readonly FindingLike[]): string => coverageTextOf(run, configured, findings, totals, limit);
   const render = (): { findings: ReplyFinding[]; reply: JsonObject } => {
     const calendarShown = shownOf(groups.find(group => group.source === 'calendar') ?? { lines: [] });
     const calendarPending = calendarUpstream || calendarShown < remaining.length;
@@ -3255,8 +3248,8 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
         : `${note} I left out ${calendarLeftOut} calendar ${calendarLeftOut === 1 ? 'event' : 'events'} to keep this answer short.`;
     const settledNote = complete ? (spokenNote === undefined ? RESEARCH.completeNote : `${spokenNote} ${RESEARCH.completeNote}`)
       : stillReading.length > 0 ? `${RESEARCH.stillReadingNote}${stillReading.map(source => SOURCE_LABEL[source]).join(', ')}`
-        : canRepeat ? (moreAvailable ? (spokenNote === undefined ? RESEARCH.moreAvailableNote : `${spokenNote} ${RESEARCH.moreAvailableNote}`) : spokenNote)
-          : unsearched.length === 0 ? spokenNote : `${spokenNote === undefined ? '' : `${spokenNote} `}${RESEARCH.notSearchedNote}${sourceListText(unsearched)}.`;
+        // #634: an unread source is named once, in the coverage header, never again in the note.
+        : canRepeat && moreAvailable ? (spokenNote === undefined ? RESEARCH.moreAvailableNote : `${spokenNote} ${RESEARCH.moreAvailableNote}`) : spokenNote;
     return { findings, reply: { coverage: coverageOf(findings), researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, down to a source's last line: the Live budget is a hard bound, so a kept
@@ -3319,14 +3312,14 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   if (compactItems > 0) (result as CompactionReply)[compactionDelivery] = { items: compactItems };
   if (calendarReads.length > 0) result[calendarDelivery] = { researchId: run.researchId, runId: run.runId, keys: remaining.slice(0, shownOf(groups.find(group => group.source === 'calendar') ?? { lines: [] })).map(([key]) => key) };
   if (webDropped && !findings.some(finding => finding.source === 'web')) webInsufficient(result, 'reply_budget');
-  const capped = capReply(result, limit);
+  // #634: the header is rebuilt inside every measured pass, so its counts match the evidence that ships and
+  // the reply is measured with the header it carries.
+  const capped = capReply(result, limit, () => {
+    if (typeof result['coverage'] === 'string') result['coverage'] = coverageOf(Array.isArray(result['findings']) ? result['findings'] as unknown as FindingLike[] : []);
+  });
   // #575: what this reply actually carried is what the session must not hand over again.
   for (const finding of (Array.isArray(capped['findings']) ? capped['findings'] as { text?: string }[] : [])) {
     if (typeof finding.text === 'string' && finding.text.length > 0 && !finding.text.includes(ALREADY_GIVEN)) run.deliveredFindings.add(findingKey(finding.text));
-  }
-  // #621: the header is derived after the final trim, so its counts match the evidence the voice hears.
-  if (typeof capped['coverage'] === 'string') {
-    capped['coverage'] = coverageOf(Array.isArray(capped['findings']) ? capped['findings'] as unknown as FindingLike[] : []);
   }
   return capped;
 }

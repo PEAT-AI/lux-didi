@@ -94,9 +94,14 @@ export const RESEARCH = Object.freeze({
    * This is the single table every per-source bound reads.
    * N6 (#569): a web read settles in 3.3 to 4.4 s, so a weather or news ask carries the long web budget
    * and every other ask keeps this one; the read and its port are told the same number.
+   * #635: the chat read is its own row, bounded near 5 s instead of the connector's 12 s, because
+   * Mattermost answered in 5 to 11 s in the release-10 eval and a chat ask waited the whole turn. 6 s is
+   * the nearest second above the 5 s the eval measured: a 5 s cut landed exactly on a chat result the
+   * session releases at 4.5 s plus 0.5 s, turning a kept late finding into a dropped one. A read cut here
+   * returns what arrived as a partial timeout, and says so in the header and the voice.
    */
   sourceDeadline: Object.freeze({
-    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 12_000, mongoose: 12_000, web: 4_000,
+    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 6_000, mongoose: 12_000, web: 4_000,
   } as Record<SourceKind, number>),
   /** P5: a candidate that names no single source (`brief`) never gets less than the local reads. */
   defaultSourceDeadlineMs: 8_000,
@@ -952,9 +957,28 @@ const CALENDAR_TIME_WORDS = /\b(tomorrow|today|week)\b/u;
 const MEMORY_WORDS = /\b(?:did we say|last time we (?:talked|spoke)|you told me|do you remember|remember when|recall when|our (?:last )?conversation|what did we (?:discuss|talk about)|we (?:talked|spoke) about)\b/u;
 /** E2 (#605): two capitalised names and a discussion verb is a recall ask, whatever the names are. */
 const NAMED_DISCUSSION = /\b(?:what did|did)\s+[A-Z][\w'’-]*\s+and\s+[A-Z][\w'’-]*\s+(?:discuss|talk about|say about)\b/u;
-/** E2 (#605): the discussion forms read her own memory and the chat beside it. */
+/** E2 (#605): the discussion forms read her own memory. #635: the chat beside it only when the ask names it. */
 const DISCUSSION_ASK = /\b(?:what did we (?:discuss|talk about)|we (?:talked|spoke) about)\b/u;
 const CHAT_WORDS = /\b(chats?|team|channels?|slack|mattermost|messages?|dms?|said|posted|discussed)\b/u;
+/** #635: the writing verbs. A summarise, draft or reply ask has a chat word as its subject, not as a source. */
+const WRITING_WORDS = /\b(?:write|writes|writing|written|wrote|draft|drafts|summari[sz]e|summari[sz]ed|summaries|summary|compose|composes|reply|replies|replying|respond)\b/u;
+/** #635: the pure recall forms. A recall ask reads her own history, and the chat only when the ask names it. */
+const RECALL_WORDS = /\b(?:what did i (?:say|tell|mention)|remind me|recall|do you remember)\b/u;
+/**
+ * #635: the ask naming the chat surface itself, so a writing or a recall ask about the chat still reads it:
+ * a chat, a channel, Mattermost, Slack, a dm, or a message from a named person.
+ */
+const CHAT_SURFACE = /\b(?:chats?|channels?|mattermost|slack|dms?)\b|\b(?:message|post)s? (?:from|by) \p{L}+|\p{L}+['\u2019]s (?:message|post)\b/u;
+
+/**
+ * #635: which word classes decide a chat read. The chat surface words route the chat on their own; a writing
+ * verb or a pure recall phrase means the chat word is only the ask's subject, so without a named surface the
+ * ask reads her memory and no chat leg runs.
+ */
+export function chatQuestionWords(text: string): boolean {
+  if (!CHAT_WORDS.test(text)) return false;
+  return !(WRITING_WORDS.test(text) || RECALL_WORDS.test(text)) || CHAT_SURFACE.test(text);
+}
 
 /**
  * #610: the channel a chat question names, in the three shapes the owner uses: "in the X channel",
@@ -989,10 +1013,20 @@ const CALENDAR_DAY_WORDS = /\b(?:(?:next )?(?:sunday|monday|tuesday|wednesday|th
 const WEB_WORDS = /\b(news|headlines|weather|forecast|opening hours|search the web|on the internet|google it)\b/u;
 const KNOWLEDGE_WORDS = /\b(knowledge|notes?|decisions?|decided|documents?|docs?|specs?|reminders?|recorded)\b/u;
 
-/** The source a question is about, in the order the first answer waits for them. */
-const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp }[] = [
-  { source: 'calendar', words: SCHEDULE_WORDS }, { source: 'mail', words: MAIL_WORDS }, { source: 'chat', words: CHAT_WORDS },
+/**
+ * The source a question is about, in the order the first answer waits for them. The word classes are the one
+ * place a route is decided: `words` is the source's own vocabulary, and a route that also carries `needed` is
+ * reached only when the ask needs it, which for the chat is the #635 writing and pure recall rule.
+ */
+const ROUTE_CLASSES: readonly { source: SourceKind; words: RegExp; needed?: (text: string) => boolean }[] = [
+  { source: 'calendar', words: SCHEDULE_WORDS }, { source: 'mail', words: MAIL_WORDS },
+  { source: 'chat', words: CHAT_WORDS, needed: chatQuestionWords },
 ];
+
+/** Whether an ask's words route this source, its own word class and its own need rule together. */
+function routeWanted(route: { words: RegExp; needed?: (text: string) => boolean }, text: string): boolean {
+  return route.words.test(text) && (route.needed?.(text) ?? true);
+}
 
 /**
  * ROUTE-1022 (#526): the sources a question is about. The first answer waits for these instead of a
@@ -1003,8 +1037,10 @@ export function requiredSources(question: string): SourceKind[] {
   if (WEB_WORDS.test(text)) return [];
   // TRIAGE-R3: a recall ask reads her own remembered history, whatever day or word it also carries.
   // E2 (#605): a discussion ask reads the chat beside it, because that is where the exchange was said.
-  if (recallQuestion(question)) return discussionQuestion(question) ? ['memory', 'chat'] : ['memory'];
-  const named = ROUTE_CLASSES.filter(route => route.words.test(text)).slice(0, 2).map(route => route.source);
+  // #635: the chat beside it only when the ask names the chat surface, because a recall ask about the chat
+  // is the exception, not the rule.
+  if (recallQuestion(question)) return discussionQuestion(question) && CHAT_SURFACE.test(text) ? ['memory', 'chat'] : ['memory'];
+  const named = ROUTE_CLASSES.filter(route => routeWanted(route, text)).slice(0, 2).map(route => route.source);
   if (named.length > 0) return named;
   // #564/#572: "anything urgent" names no source, and what came in is a mail and a chat read alike.
   if (triageAsk(text)) return [...TRIAGE_SOURCES];
@@ -1023,7 +1059,7 @@ export function routedSelection(question: string, configured: readonly SourceKin
   // TRIAGE-R3: a recall ask is the memory lookup the run builds, so the router claims no candidate for
   // it; without this, the word "said" would turn it into a chat search.
   if (recallQuestion(text)) return undefined;
-  const matched = ROUTE_CLASSES.filter(route => route.words.test(text) && configured.includes(route.source));
+  const matched = ROUTE_CLASSES.filter(route => routeWanted(route, text) && configured.includes(route.source));
   if (matched.length > 2) return undefined;
   if (matched.length > 0) {
     const selection = fallbackSelection(question, configured, nowMs);
@@ -1062,7 +1098,7 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   const mailWords = MAIL_WORDS.test(text);
   // #579: a time word alone never replaces the source the ask named with the calendar.
   const calendarWords = CALENDAR_WORDS.test(text) || (!mailWords && !CHAT_WORDS.test(text) && (CALENDAR_DAY_WORDS.test(text) || CALENDAR_TIME_WORDS.test(text)));
-  const chatWords = CHAT_WORDS.test(text);
+  const chatWords = chatQuestionWords(text);
   const triage = triageAsk(text) && !mailWords && !chatWords;
   const matched = mailWords || calendarWords || chatWords || triage;
   if (!matched) {
@@ -1385,7 +1421,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     const subs: IntentSubCall[] = [];
     // ROUTE-1022 K5: a brief reads his own knowledge, and the layers the question itself names. The
     // router's own source words decide, so a question about the business model reads no inbox at all.
-    const named = new Set(ROUTE_CLASSES.filter(route => route.words.test(config.question.toLowerCase())).map(route => route.source));
+    const named = new Set(ROUTE_CLASSES.filter(route => routeWanted(route, config.question.toLowerCase())).map(route => route.source));
     // A brief reads primary events; calendar names alone are not findings.
     if (config.configured.includes('calendar') && named.has('calendar')) {
       const range = windowRange('today', config.nowMs ?? Date.now(), config.timeZone);
@@ -2167,6 +2203,8 @@ function queryShapeOf(subs: readonly IntentSubCall[]): string {
 
 const OMITTED_NOTE = /^\[omitted:/u;
 const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'company knowledge', web: 'the web' };
+/** #635: the name a source is spoken by, so a clause says "team chat" and never the bare id. */
+const spokenLabelOf = (source: SourceKind): string => SOURCE_LABELS.find(([name]) => name === source)?.[1] ?? SOURCE_LABEL[source];
 /** Findings order: her own memory and the owner's knowledge base lead, company sources follow. */
 const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'];
 /** #621: the smallest room a floor clip may leave, so one source's last line always fits the bound. */
@@ -2190,7 +2228,7 @@ export function clip(text: string, max: number): string {
 
 /** #621: the E3 states a reply must keep apart, and the E4 reason a source was never searched. */
 export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry';
-export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route';
+export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading';
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
 
@@ -2201,6 +2239,9 @@ const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string) => string> = {
   grant_missing: label => `${label} needs permission`,
   provider_failed: label => `${label} failed when I asked`,
   skipped_by_route: label => `I did not read ${label} this time`,
+  // #635: a read that ran out of its budget is a timeout, never a failure to reach the source.
+  timed_out: label => `${label} took too long`,
+  still_reading: label => `I am still reading ${label}`,
 };
 
 /** A not-searched reason code from the host, narrowed to the closed set the header publishes. */
@@ -2209,6 +2250,8 @@ export function unsearchedReasonOf(code: string): UnsearchedReason {
   if (/grant|permission|scope|forbidden|unauthori[sz]ed|not_connected|signin|sign_in|sign-in|login|credential|token/u.test(text)) {
     return /not_connected|signin|sign_in|sign-in|login|credential|token|disconnect/u.test(text) ? 'not_connected' : 'grant_missing';
   }
+  // #635: a timeout says it timed out, whatever the connector called it.
+  if (/timeout|timed_out/u.test(text)) return 'timed_out';
   if (/unparsed|no_query|skipped|deadline|history_reference/u.test(text)) return 'skipped_by_route';
   return 'provider_failed';
 }
@@ -2225,7 +2268,7 @@ export function coverageLine(searched: readonly CoverageSearched[], unsearched: 
     entries.push(`${entry.source} ${entry.status} ${entry.shown} of ${entry.total} shown${confidence}`);
   }
   for (const entry of unsearched) {
-    entries.push(`${entry.source} ${entry.reason} (say: ${UNSEARCHED_CLAUSE[entry.reason](SOURCE_LABEL[entry.source])})`);
+    entries.push(`${entry.source} ${entry.reason} (say: ${UNSEARCHED_CLAUSE[entry.reason](spokenLabelOf(entry.source))})`);
   }
   const kept: string[] = [];
   let length = 'coverage: '.length;
@@ -2260,9 +2303,10 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
     if (!configured.includes(source)) continue;
     // A routed read that matched nothing records the empty search, never sourcesDone, so the header reads
     // the three the same way.
-    const wasSearched = run.sourcesDone.has(source) || run.cutShort.has(source) || run.emptySearches.has(source);
+    const wasSearched = run.sourcesDone.has(source) || run.emptySearches.has(source);
+    // #635: a read that was cut with nothing arrived is named by its reason below as timed_out, never as a
+    // searched source with an empty count.
     if (!wasSearched) continue;
-    if (run.sourcesFailed.has(source)) continue;
     const finding = findings.find(entry => entry.source === source && typeof entry.text === 'string');
     const text = finding?.text ?? '';
     const head = FINDING_HEAD.exec(text);
@@ -2284,8 +2328,13 @@ function coverageTextOf(run: RunState, configured: readonly SourceKind[], findin
 
 function unsearchedReasonGiven(run: RunState, configured: readonly SourceKind[], source: SourceKind): UnsearchedReason {
   if (!configured.includes(source)) return 'not_configured';
-  if (run.sourcesFailed.has(source)) return 'provider_failed';
+  // #635: a read still in flight is neither skipped nor failed, so it says so, the same thing the note says.
+  if (run.pending.has(source)) return 'still_reading';
+  if (run.cutShort.has(source)) return 'timed_out';
   const code = run.unavailableReasons.get(source);
+  // #635: a source whose own reason was a timeout is a timeout, never a provider failure.
+  if (code !== undefined && TIMED_OUT.has(code)) return 'timed_out';
+  if (run.sourcesFailed.has(source)) return 'provider_failed';
   if (code !== undefined) return unsearchedReasonOf(code);
   return 'skipped_by_route';
 }
@@ -3111,12 +3160,15 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   // Outcome 2: name the sources this run could not reach, in one short clause the model can voice,
   // so an outage is never hidden behind a narrow answer. `knowledge` leads the findings.
   groups.sort((a, b) => SOURCE_ORDER.indexOf(a.source) - SOURCE_ORDER.indexOf(b.source));
-  const unreachable = SOURCE_LABELS.filter(([source]) => run.sourcesFailed.has(source)).map(([, label]) => label);
+  // #635: a chat read that failed by timing out is said as a timeout with its budget, never as a chat out of
+  // reach. The web keeps #569's two clauses: its timeout rides its own endpoint reason and names the web part.
+  const chatTimedOut = run.sourcesFailed.has('chat') && TIMED_OUT.has(run.unavailableReasons.get('chat') ?? '');
+  const unreachable = SOURCE_LABELS.filter(([source]) => run.sourcesFailed.has(source) && !(chatTimedOut && source === 'chat')).map(([, label]) => label);
   const searchedNothing = SOURCE_LABELS.filter(([source]) => run.emptySearches.has(source) && !run.sourcesFailed.has(source))
     .map(([source, label]) => `I searched your ${label}${run.emptySearches.get(source) ?? ''} and found nothing matching.`);
   // N3: a read cut short is not a read that found nothing, and the reply must not blur the two.
-  const cutShort = SOURCE_LABELS.filter(([source]) => run.cutShort.has(source) && !run.sourcesFailed.has(source))
-    .map(([, label]) => `My ${label} read was cut short before it finished, so I say what I have and ask one precise follow-up.`);
+  const cutShort = SOURCE_LABELS.filter(([source]) => run.cutShort.has(source) && !run.sourcesFailed.has(source) && run.sourcesDone.has(source))
+    .map(([, label]) => `My ${label} read took too long, so I say what I have and ask one precise follow-up.`);
   // #1020: the coverage line and the named failures ride with the clauses the model voices, so a partial
   // read is never a sentence the model has to infer from a count or from silence.
   const coverage = calendarCoverageLine(run);
@@ -3372,6 +3424,8 @@ interface RoutedOutcome {
   sub?: IntentSubCall;
   /** ONE-1023: identical reads this one dispatch served, so the receipt counts them. */
   deduped?: number;
+  /** #635: the read answered in part and was then cut at its budget, so it is a partial timeout. */
+  cut?: true;
 }
 
 interface RoutedPlan { lookup: ResearchLookup; read: { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } }
@@ -3814,8 +3868,8 @@ async function webGroup(deps: ResearchDeps, run: RunState, plans: readonly Route
 
 async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly RoutedPlan[], context: { question: string; configured: readonly SourceKind[]; unavailable: readonly SourceKind[]; unavailableReason?: ((source: SourceKind) => string) | undefined; signal: AbortSignal; now: () => number }): Promise<RoutedOutcome[]> {
   const at = context.now();
-  const settle = (plan: RoutedPlan, outcome: LookupOutcome, lines: string[] = [], total = 0, deduped = 0): RoutedOutcome =>
-    ({ lookup: plan.lookup, kind: plan.read.kind, tool: plan.read.subs[0]?.name ?? plan.read.kind, source: plan.read.source, outcome, ms: context.now() - at, lines, total, ...(deduped > 0 ? { deduped } : {}), ...(plan.read.subs[0] === undefined ? {} : { sub: plan.read.subs[0] }) });
+  const settle = (plan: RoutedPlan, outcome: LookupOutcome, lines: string[] = [], total = 0, deduped = 0, cut = false): RoutedOutcome =>
+    ({ lookup: plan.lookup, kind: plan.read.kind, tool: plan.read.subs[0]?.name ?? plan.read.kind, source: plan.read.source, outcome, ms: context.now() - at, lines, total, ...(deduped > 0 ? { deduped } : {}), ...(plan.read.subs[0] === undefined ? {} : { sub: plan.read.subs[0] }), ...(cut ? { cut: true as const } : {}) });
   const done: RoutedOutcome[] = [];
   for (const plan of plans.filter(entry => entry.read.source === 'memory')) {
     const args = plan.lookup.history ?? { query: plan.lookup.query };
@@ -3936,7 +3990,9 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     const outcome: LookupOutcome = block.lines.length > 0 ? 'ok' : cutShort ? 'timeout' : missed ? 'failed' : 'empty';
     // #565: a routed read counts as read, so a continuation of this run never dispatches it again.
     if ((outcome === 'ok' || outcome === 'empty') && plan.read.kind !== 'memory_search') run.readKinds.add(plan.read.kind);
-    done.push({ ...settle(plan, outcome, block.lines, block.total, reused[index] ?? 0), ...(own.length > 0 && own.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });
+    // #635: a read that answered in part and then ran out of its budget is a partial timeout, so the header
+    // counts what arrived and still says the read was cut.
+    done.push({ ...settle(plan, outcome, block.lines, block.total, reused[index] ?? 0, cutShort), ...(own.length > 0 && own.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });
   });
   cut.done();
   return done;
@@ -4070,7 +4126,10 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         else if (outcome.outcome !== 'empty') run.sourcesFailed.add('memory');
         continue;
       }
-      if (outcome.outcome === 'ok') { run.sourcesDone.add(outcome.source); run.sourcesFailed.delete(outcome.source); run.emptySearches.delete(outcome.source); run.cutShort.delete(outcome.source); }
+      if (outcome.outcome === 'ok') {
+        run.sourcesDone.add(outcome.source); run.sourcesFailed.delete(outcome.source); run.emptySearches.delete(outcome.source);
+        if (outcome.cut === true) run.cutShort.add(outcome.source); else run.cutShort.delete(outcome.source);
+      }
       else if (outcome.outcome === 'empty') {
         // #572: the attention read names its window, so an empty digest is a window, never a bare no.
         run.emptySearches.set(outcome.source, outcome.tool === INTERNAL.chatAttention
@@ -4740,7 +4799,14 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const webCall = subs.find(sub => sub.name === WEB_SEARCH_ACTION);
           const askedWebDeadline = webCall === undefined ? undefined : webDeadlineMs(String(webCall.args['query'] ?? ''));
           const readDeadlineMs = askedWebDeadline === undefined ? sourceDeadlineMs(startSources) : Math.max(sourceDeadlineMs(startSources), askedWebDeadline);
-          const cutTimer = schedule(() => { if (!latencies.has(kind)) { cutKinds.add(kind); cut.abort(new DOMException('Source deadline elapsed', 'TimeoutError')); } }, Math.max(0, Math.min(readDeadlineMs, batchDeadline - now())));
+          // #635: the cut is recorded the moment it happens, not when the read settles, so a reply composed
+      // while the read is being cut still names it a timeout instead of a source nobody read.
+      const cutTimer = schedule(() => {
+        if (latencies.has(kind)) return;
+        cutKinds.add(kind);
+        for (const source of startSources) run.cutShort.add(source);
+        cut.abort(new DOMException('Source deadline elapsed', 'TimeoutError'));
+      }, Math.max(0, Math.min(readDeadlineMs, batchDeadline - now())));
           // Identical duplicate reads are deduplicated: a read this run already issued is reused, never
           // sent twice, so the connector is asked one question once.
           // DATES-R1 F2b: the knowledge reads this run already issued, so the receipt counts them here too.
@@ -4868,7 +4934,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
                 ? ` in the last ${TRIAGE_DAYS} days`
                 : mailInfo === undefined ? queryShapeOf(served) : mailEmptyPhrase(mailInfo, queryShapeOf(served)));
             } else if (!run.sourcesDone.has(part.source)) {
-              run.sourcesFailed.add(part.source);
+              // #635: a read this turn cut at its own budget is a timeout, never a source that failed.
+              if (cutKinds.has(kind)) run.cutShort.add(part.source); else run.sourcesFailed.add(part.source);
               // F17/R3: a chat triage ask rides the connector's own composite. Its reason is the failure
               // the sub-call really returned: only the two availability codes read as not granted, and a
               // credential, timeout or transport failure keeps its own closed reason.

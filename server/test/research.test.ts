@@ -999,7 +999,7 @@ test('R9: a normal selector run writes exactly one terminal run line', async () 
 
 // --- P5: one deadline per source, the call budget follows the slowest source it reads ---------------
 
-test('P5: chat answers at 6 s inside its own 12 s deadline, and the call budget follows that source', async () => {
+test('P5: chat answers at 5 s inside its own bounded deadline, and the call budget follows that source', async () => {
   const clock = fakeClock();
   const receipts: ResearchSourceLog[] = [];
   let release!: (results: IntentSubResult[]) => void;
@@ -1014,11 +1014,12 @@ test('P5: chat answers at 6 s inside its own 12 s deadline, and the call budget 
   const deps: ResearchDeps = { ...h.deps, configured: ['chat'], logSource: event => receipts.push(event) };
   const running = runResearch(deps, { action: 'start', question: 'what did the team agree in chat' }, new AbortController().signal);
   await settle();
-  clock.advance(6_000); await settle();
+  // #635: the chat row is bounded near 5 s, so a 5 s chat read still lands and the receipt names that row.
+  clock.advance(5_000); await settle();
   release([sub('mattermost_search', '- release freeze agreed on Friday', true, 'c0')]);
   const reply = await running;
-  assert.equal(reply['status'], 'complete', 'a 6 s chat read inside its 12 s deadline answers');
-  assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['chat', 'ok', 12_000]], 'the receipt names the deadline the chat read really had');
+  assert.equal(reply['status'], 'complete', 'a 5 s chat read inside its own bounded deadline answers');
+  assert.deepEqual(receipts.map(event => [event.source, event.outcome, event.deadlineMs]), [['chat', 'ok', RESEARCH.sourceDeadline.chat]], 'the receipt names the deadline the chat read really had');
 });
 
 test('P5: knowledge at 13 s is cut at its own 12 s deadline and reported, never empty', async () => {
@@ -1514,8 +1515,11 @@ test('#1020: a timed-out source is named as timed out, in seconds, beside the so
     action: 'start', question: 'what is waiting on me',
     lookups: [{ source: 'chat', query: 'release freeze' }, { source: 'knowledge', query: 'release' }],
   }, new AbortController().signal);
-  assert.match(String(reply['note']), /team chat: not read \(timed out after 12 s\)/, 'the reason is the timeout and its budget, never a bare unreachable');
-  assert.match(String(reply['note']), /could not reach team chat/, 'and the voiceable clause about it is still there');
+  // #635: a timed-out chat read is voiced as a timeout with its own bounded budget, never as a chat that
+  // could not be reached, and the header's say clause is the sentence the model speaks.
+  assert.match(String(reply['note']), /team chat: not read \(timed out after 6 s\)/, 'the reason is the timeout and its budget, never a bare unreachable');
+  assert.doesNotMatch(String(reply['note']), /could not reach/, 'a timeout is never voiced as a source out of reach');
+  assert.match(String(reply['coverage']), /chat timed_out \(say: team chat took too long\)/, 'and the header carries the clause to say instead');
   assert.ok((reply['findings'] as { source: string }[]).some(finding => finding.source === 'knowledge'), 'the healthy source still answers in the same reply');
 });
 

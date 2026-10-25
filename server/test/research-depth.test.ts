@@ -46,7 +46,7 @@ const THREE_PROFILES = [
   '### Cara Clifton (person | 2026-08-21) [id 303] Chairs the foundation and hosts the October dinner.',
 ].join('\n');
 
-interface Harness { deps: ResearchDeps; text: Record<string, string> }
+interface Harness { deps: ResearchDeps; text: Record<string, string>; executed: { name: string; args: Record<string, unknown> }[] }
 
 function harness(opts: {
   text?: Record<string, string>;
@@ -55,11 +55,14 @@ function harness(opts: {
   replyLimit?: number;
 } = {}): Harness {
   const text: Record<string, string> = opts.text ?? {};
+  const executed: { name: string; args: Record<string, unknown> }[] = [];
   const deps: ResearchDeps = {
     now: () => 0,
     configured: opts.configured ?? (['knowledge', 'mail', 'chat', 'memory'] as const),
-    execute: async (subs: readonly IntentSubCall[]) =>
-      subs.map(call => sub(call.name, text[call.name] ?? '', true, call.key)),
+    execute: async (subs: readonly IntentSubCall[]) => {
+      for (const call of subs) executed.push({ name: call.name, args: call.args });
+      return subs.map(call => sub(call.name, text[call.name] ?? '', true, call.key));
+    },
     emit: () => {},
     log: () => {},
     ledger: new ResearchLedger(),
@@ -80,7 +83,7 @@ function harness(opts: {
       });
     };
   }
-  return { deps, text };
+  return { deps, text, executed };
 }
 
 function evidenceOf(reply: Record<string, unknown>, source: string): string {

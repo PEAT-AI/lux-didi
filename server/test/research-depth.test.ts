@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { RESEARCH, ResearchLedger, budgetFor, raiseBudget, requestedEntities, runResearch } from '../tools/research.js';
+import { RESEARCH, ResearchLedger, budgetFor, knowledgeReadIds, raiseBudget, requestedEntities, runResearch } from '../tools/research.js';
 import type { ResearchDeps } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import type { SourceKind } from '../tools/research.js';
@@ -46,7 +46,7 @@ const THREE_PROFILES = [
   '### Cara Clifton (person | 2026-08-21) [id 303] Chairs the foundation and hosts the October dinner.',
 ].join('\n');
 
-interface Harness { deps: ResearchDeps; text: Record<string, string> }
+interface Harness { deps: ResearchDeps; text: Record<string, string>; executed: { name: string; args: Record<string, unknown> }[] }
 
 function harness(opts: {
   text?: Record<string, string>;
@@ -55,11 +55,14 @@ function harness(opts: {
   replyLimit?: number;
 } = {}): Harness {
   const text: Record<string, string> = opts.text ?? {};
+  const executed: { name: string; args: Record<string, unknown> }[] = [];
   const deps: ResearchDeps = {
     now: () => 0,
     configured: opts.configured ?? (['knowledge', 'mail', 'chat', 'memory'] as const),
-    execute: async (subs: readonly IntentSubCall[]) =>
-      subs.map(call => sub(call.name, text[call.name] ?? '', true, call.key)),
+    execute: async (subs: readonly IntentSubCall[]) => {
+      for (const call of subs) executed.push({ name: call.name, args: call.args });
+      return subs.map(call => sub(call.name, text[call.name] ?? '', true, call.key));
+    },
     emit: () => {},
     log: () => {},
     ledger: new ResearchLedger(),
@@ -80,7 +83,7 @@ function harness(opts: {
       });
     };
   }
-  return { deps, text };
+  return { deps, text, executed };
 }
 
 function evidenceOf(reply: Record<string, unknown>, source: string): string {
@@ -256,4 +259,42 @@ test('ENTITIES 1: the requested people and documents come from the question, not
   assert.deepEqual(requestedEntities('summarise the "vendor review" note'), ['vendor review'],
     'a quoted document is an entity');
   assert.deepEqual(requestedEntities('what is waiting on me'), [], 'an ask naming nobody requests no entity');
+});
+
+test('TWO STAGE 1: the summaries are read whole for the named hits, in the round already paid for', async () => {
+  const h = harness({
+    text: {
+      search_knowledge: THREE_PROFILES,
+      get_insight: '### Ana Clifton (person | 2026-09-14) [id 301] The whole entry: she leads the rollout, owns the vendor review and chairs the board review in November.\nBen and Cara are named in the same entry.',
+    },
+  });
+  const reply = await research(h.deps, {
+    action: 'start', question: 'what do we know about Ana and Ben',
+    lookups: [{ source: 'knowledge', query: 'Clifton' }],
+  });
+  const reads = h.executed.filter(call => call.name === 'get_insight');
+  assert.equal(reads.length, 1, `one stage two read, never a round of them: ${JSON.stringify(h.executed)}`);
+  const ids = (reads[0]!.args['ids'] ?? []) as string[];
+  assert.ok(ids.includes('301'), `the named entry is the one read whole: ${JSON.stringify(ids)}`);
+  assert.match(allEvidence(reply as Record<string, unknown>), /she leads the rollout/u, 'the full entry reaches the reply');
+});
+
+test('TWO STAGE 2: a search with no readable id issues no second read', async () => {
+  const h = harness({ text: { search_knowledge: '### Release plan (decision | 2026-10-17) plain' } });
+  await research(h.deps, {
+    action: 'start', question: 'what do we know about the release plan',
+    lookups: [{ source: 'knowledge', query: 'release plan' }],
+  });
+  assert.deepEqual(h.executed.filter(call => call.name === 'get_insight'), [], 'no id, no read');
+});
+
+test('TWO STAGE 3: the ids put the hits that name an asked person first, and the entry cap holds', () => {
+  const text = [
+    '### Release plan (decision | 2026-10-17) [id 11]',
+    '### Ana Clifton (person | 2026-09-14) [id 12]',
+    '### Ben Clifton (person | 2026-09-02) [id 13]',
+    '### Cara Clifton (person | 2026-08-21) [id 14]',
+  ].join('\n');
+  const ids = knowledgeReadIds(text, ['Cara'], 2);
+  assert.deepEqual(ids, ['14', '11'], `the named hit first, then the ranking: ${JSON.stringify(ids)}`);
 });

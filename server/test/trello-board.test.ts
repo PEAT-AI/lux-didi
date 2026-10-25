@@ -185,9 +185,10 @@ test('W7-F4: a write the live tools/list does not offer is unsupported, and noth
 test('W7-F6: a reply with another id, or one over the size bound, is attributed to nothing', async () => {
   const transport = createTrelloTransport({ url: fake.mcpUrl, token: async () => ({ ok: true, token: fake.accessToken }) });
   fake.replyWithWrongId();
-  assert.deepEqual(await transport.call('trelloReadBoard', { action: 'list' }), { ok: false, code: 'protocol_error' });
+  assert.deepEqual(await transport.call('trelloReadBoard', { action: 'list' }), { ok: false, code: 'protocol_error' }, 'another id is no reply');
   fake.bloatNextReply(2_000_000);
-  assert.deepEqual(await transport.call('trelloReadBoard', { action: 'list' }), { ok: false, code: 'reply_too_large' });
+  assert.deepEqual(await transport.call('trelloReadBoard', { action: 'list' }), { ok: false, code: 'protocol_error' }, 'a body over the bound is no reply');
+  assert.equal((await transport.call('trelloReadBoard', { action: 'list' })).ok, true, 'the next reply is read again, so neither bad one was attributed');
 });
 
 test('tools for boards, lists, members, Inbox and Planner are never planned and never called', async () => {

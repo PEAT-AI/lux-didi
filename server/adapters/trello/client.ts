@@ -9,18 +9,41 @@ export const TRELLO_MCP_URL = 'https://mcp.trello.com/v1';
 const PROTOCOL_VERSION = '2025-06-18';
 const TIMEOUT_MS = 12_000;
 const MAX_TOOL_PAGES = 10;
+/** F6: a reply is read up to this many bytes and no further, so no body is buffered without a bound. */
+const TRELLO_REPLY_LIMIT = 1_048_576;
+
+/** Read the body under a hard byte bound; a reply over it is no reply at all. */
+async function readBounded(response: Response, limit: number): Promise<string | undefined> {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > limit) { await reader.cancel().catch(() => undefined); return undefined; }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
 
 /** The bearer for one request, or the closed reason there is none. Never logged. */
 export type TrelloTokenSource = () => Promise<{ ok: true; token: string } | { ok: false; code: 'not_signed_in' | 'auth_failed' | 'unavailable' }>;
 
-function parseMessage(text: string): unknown {
+/** A message belongs to one request only when it carries that request's id. */
+function attributed(parsed: unknown, id: unknown): boolean {
+  return Boolean(parsed) && typeof parsed === 'object' && (parsed as { id?: unknown }).id === id;
+}
+
+function parseMessage(text: string, id: unknown): unknown {
   const body = text.trim();
   if (!body) return undefined;
-  if (body.startsWith('{')) { try { return JSON.parse(body); } catch { return undefined; } }
+  if (body.startsWith('{')) { try { const parsed: unknown = JSON.parse(body); return attributed(parsed, id) ? parsed : undefined; } catch { return undefined; } }
   let found: unknown;
   for (const line of body.split('\n')) {
     const data = line.startsWith('data:') ? line.slice(5).trim() : '';
-    if (data.startsWith('{')) { try { const parsed: unknown = JSON.parse(data); if (parsed && typeof parsed === 'object' && 'id' in parsed) found = parsed; } catch { return undefined; } }
+    if (data.startsWith('{')) { try { const parsed: unknown = JSON.parse(data); if (attributed(parsed, id)) found = parsed; } catch { return undefined; } }
   }
   return found;
 }
@@ -55,9 +78,13 @@ export function createTrelloTransport(options: { url?: string; token: TrelloToke
     if (!response.ok && response.status !== 202) return { ok: false, code: 'protocol_error', sent: true };
     const id = response.headers.get('mcp-session-id');
     if (id && /^[\x21-\x7e]{1,256}$/.test(id)) session = id;
-    let text: string;
-    try { text = await response.text(); } catch { return { ok: false, code: 'unknown', sent: true }; }
-    return { ok: true, json: parseMessage(text) };
+    let text: string | undefined;
+    try { text = await readBounded(response, TRELLO_REPLY_LIMIT); } catch { return { ok: false, code: 'unknown', sent: true }; }
+    // F6: no reply over the bound, and none carrying another id, is ever attributed to this request.
+    if (text === undefined) return { ok: false, code: 'protocol_error', sent: true };
+    const json = parseMessage(text, body.id);
+    if (json === undefined) return { ok: false, code: 'protocol_error', sent: true };
+    return { ok: true, json };
   };
 
   let starting: Promise<{ ok: true } | { ok: false; code: TrelloCallCode }> | undefined;

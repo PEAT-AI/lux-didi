@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { RESEARCH, ResearchLedger, broaderQueryOf, clip, coverageLine, runResearch, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
+import { MAX_LOOKUPS, RESEARCH, ResearchLedger, broaderQueryOf, clip, coverageLine, parseResearch, runResearch, type ResearchDeps, type ResearchProgress, type ResearchRunLog, type SourceKind } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 
 function sub(name: string, text: string, ok = true, key = name): IntentSubResult {
@@ -252,4 +252,101 @@ test('#639: a question only company ask carries the company source in the header
   assert.match(header, /knowledge complete/u, `and the knowledge base beside it (${header})`);
   const note = String(reply['note'] ?? '');
   assert.match(note, /company knowledge: unavailable \(not signed in\)/u, `the voice says why the company layer is missing (${note})`);
+});
+
+
+// --- #654: an old researchId never carries a new source or a new topic into the run it names ---------
+
+test('#654: an old researchId carrying a new source starts a fresh run and issues no mail call', async () => {
+  const h = harness({ configured: ['knowledge', 'mail', 'chat'] });
+  const signal = new AbortController().signal;
+  const first = await runResearch(h.deps, {
+    action: 'start', question: 'the renewal mail from the customer', topic: 'renewal',
+    lookups: [{ source: 'mail', mail: { q: 'renewal' } }],
+  }, signal);
+  const oldId = String(first['researchId']);
+  assert.ok(h.executed.some(call => call.name === 'gmail_search_messages'), 'the first run reads mail');
+  const more = await runResearch(h.deps, { action: 'continue', researchId: oldId, direction: 'more' }, signal);
+  assert.equal(String(more['researchId']), oldId, 'a request for more continues the run it names');
+  h.executed.length = 0;
+  const fresh = await runResearch(h.deps, {
+    action: 'continue', researchId: oldId, question: 'search the web for the release notes',
+    direction: 'search the web', lookups: [{ source: 'knowledge', query: 'release notes' }],
+  }, signal);
+  assert.notEqual(String(fresh['researchId']), oldId, 'the new source runs under its own researchId');
+  assert.match(String(fresh['note']), /fresh lookup, not a continuation/u, `the reply says it started fresh (${String(fresh['note'])})`);
+  assert.ok(!h.executed.some(call => call.name === 'gmail_search_messages'), 'the web ask issues no mail read');
+});
+
+// --- #653: a status ask names what each source actually did ------------------------------------------
+
+test('#653: a status ask on a closed run names each source by its closed outcome, never still reading', async () => {
+  const clock = fakeClock();
+  const h = harness({
+    now: clock.now, schedule: clock.schedule, configured: ['calendar', 'mail', 'chat'],
+    // A real read is cut by the signal its deadline carries, so the fake waits for that signal.
+    execute: async (subs: readonly IntentSubCall[], signal?: AbortSignal) => {
+      await new Promise<void>((_resolve, reject) => {
+        if (signal?.aborted) return reject(new Error('cut'));
+        signal?.addEventListener('abort', () => reject(new Error('cut')));
+      });
+      return subs.map(call => sub(call.name, '', true, call.key));
+    },
+  });
+  const call = runResearch(h.deps, { action: 'start', question: 'are my tools working', topic: 'tools' }, new AbortController().signal);
+  for (let tick = 0; tick < 50; tick += 1) await Promise.resolve();
+  clock.advance(RESEARCH.startDeadlineMs + 1);
+  const reply = await call;
+  const note = String(reply['note']);
+  assert.match(note, /team chat did not answer within 10 seconds/u, `chat is named by its closed outcome (${note})`);
+  assert.match(note, /mail did not answer within 12 seconds/u, `mail is named by its closed outcome (${note})`);
+  assert.doesNotMatch(note, /alive|working/iu, 'no source is called alive or working');
+  assert.doesNotMatch(note, /Still reading/u, 'a closed run never says still reading');
+});
+
+test('#653: a status ask says a calendar that answered nothing, in plain words', async () => {
+  const h = harness({
+    configured: ['calendar', 'mail'],
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => (call.name.startsWith('calendar_')
+      ? { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0, calendarPage: { events: [], unread: 0, upstreamIncomplete: false } }
+      : sub(call.name, call.name === 'gmail_search_messages' ? mailRows(1) : '', true, call.key)) as IntentSubResult),
+  });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'is my calendar alive today', topic: 'tools' }, new AbortController().signal);
+  const note = String(reply['note']);
+  assert.match(note, /calendar answered, nothing/u, `a source that answered empty says so (${note})`);
+  assert.doesNotMatch(note, /alive|working/iu, 'and no source is called alive or working');
+});
+
+// --- #657 item 1: a test-all ask wider than the lookup limit is batched, never refused ----------------
+
+test('#657 item 1: a six-source test-all ask is served in one batch and names the rest', async () => {
+  const h = harness({ configured: ['calendar', 'mail', 'chat', 'knowledge', 'mongoose'] });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'test all tools', topic: 'tools' }, new AbortController().signal);
+  const kindOf = (name: string): string => name === 'gmail_search_messages' ? 'mail'
+    : name === 'mattermost_search' ? 'chat'
+      : name === 'calendar_list_events' || name === 'calendar_list_calendars' ? 'calendar'
+        : name === 'search_knowledge' ? 'knowledge' : name;
+  const read = new Set(h.executed.map(call => kindOf(call.name)));
+  assert.ok(read.size <= MAX_LOOKUPS, `the first batch stays within the limit (${[...read].join(',')})`);
+  assert.match(String(reply['note']), /The rest come next: company knowledge/u, `the reply names the sources it left for the next call (${String(reply['note'])})`);
+  assert.equal(reply['canContinue'], true, 'and the rest can be asked for');
+  const lookups = [
+    { source: 'calendar', query: 'today' }, { source: 'mail', query: 'inbox', bogus: 1 }, { source: 'chat', query: 'release' },
+    { source: 'knowledge', query: 'release' }, { source: 'company', query: 'renewal' }, { source: 'web', query: 'release' },
+  ];
+  const parsed = parseResearch({ action: 'start', question: 'test all tools', topic: 'tools', lookups });
+  assert.equal(parsed.ok, true, 'a six-source test-all ask is never refused whole');
+});
+
+// --- #657 item 2: a status check reads one page of mail, never one message per call ------------------
+
+test('#657 item 2: a status check reads one page of mail, not one message per call', async () => {
+  const h = harness({ configured: ['mail'] });
+  await runResearch(h.deps, {
+    action: 'start', question: 'are my tools working', topic: 'tools',
+    lookups: [{ source: 'mail', mail: { q: 'in:inbox newer_than:14d', maxResults: 1 } }],
+  }, new AbortController().signal);
+  const pages = h.executed.filter(call => call.name === 'gmail_search_messages');
+  assert.equal(pages.length, 1, 'one mail page, one call');
+  assert.equal(Number(pages[0]!.args['maxResults']), RESEARCH.pageResults.mail, 'the page is the connector page, not one message');
 });

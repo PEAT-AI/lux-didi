@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, newestDatedFirst, offerableCandidates, shapeBlock, windowRange,
+  RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, chatQuery, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, newestDatedFirst, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
   validateResearch, worthContinuing, parseResearch, researchRepair, topicTerms,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
@@ -1543,7 +1543,7 @@ test('#1020: a timed-out source is named as timed out, in seconds, beside the so
   // could not be reached, and the header's say clause is the sentence the model speaks.
   assert.match(String(reply['note']), /team chat: not read \(timed out after 10 s\)/, 'the reason is the timeout and its budget, never a bare unreachable');
   assert.doesNotMatch(String(reply['note']), /could not reach/, 'a timeout is never voiced as a source out of reach');
-  assert.match(String(reply['coverage']), /chat timed_out \(say: team chat took too long\)/, 'and the header carries the clause to say instead');
+  assert.match(String(reply['coverage']), /chat timed_out \(say: team chat did not answer within 10 seconds\)/, 'and the header carries the clause to say instead');
   assert.ok((reply['findings'] as { source: string }[]).some(finding => finding.source === 'knowledge'), 'the healthy source still answers in the same reply');
 });
 
@@ -2072,4 +2072,14 @@ test('WEB-1024: an early answer with two pending readers keeps its final cap and
   assert.ok(String(reply['note']).includes(RESEARCH.moreAvailableNote), String(reply['note']));
   assert.deepEqual(reply['pending'], ['knowledge', 'chat']);
   gate.resolve(); await reading;
+});
+
+
+// --- #654: a continuation or status word is never a mail or chat search term -------------------------
+
+test('#654: a continuation word never becomes a mail or chat search term', () => {
+  const query = compileMailQuery('the release plan', 'in:inbox newer_than:14d finish read results');
+  assert.match(query, /newer_than:14d/u, `the window the model wrote still stands (${query})`);
+  assert.doesNotMatch(query, /finish|read|results/u, `and no continuation word is a mail term (${query})`);
+  assert.equal(chatQuery('finish read remainder status complete', 0, 'UTC').trim(), '', 'and none of them becomes a chat term');
 });

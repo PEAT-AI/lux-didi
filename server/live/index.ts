@@ -1877,17 +1877,6 @@ export class LiveSessionOwner {
    */
   async #recreateForDeadAir(handle: ActiveSession, reason: 'send_failed' | 'dead_air'): Promise<boolean> {
     if (this.#settled(handle) || handle.debtBargeIn) return false;
-    // #656: one model-mute rebuild per recovery window, the same watchdogRecoveredAt stamp and RESPONSE_WATCHDOG_WINDOW_MS
-    // the sliding watchdog keeps, so a model still mute under the new session is ended honestly by #watchdogRecover
-    // instead of rebuilt twice inside one research run.
-    if (reason === 'dead_air') {
-      const previous = handle.watchdogRecoveredAt;
-      if (previous !== undefined && this.#now() - previous < RESPONSE_WATCHDOG_WINDOW_MS) {
-        this.#settle(handle, { state: 'failed', code: 'model_unresponsive' }, false, 'ended', null);
-        return false;
-      }
-      handle.watchdogRecoveredAt = this.#now();
-    }
     if (reason === 'send_failed') this.#noteDebt(handle, 'rung', 'send_failed');
     const outputs = handle.debtOutputs ?? [];
     const requeue = outputs.length > 0 && handle.debtRequeued !== true;
@@ -2128,7 +2117,6 @@ export class LiveSessionOwner {
       this.#settle(handle, { state: 'failed', code: starved ? 'uplink_starved' : 'model_unresponsive' }, false, 'ended', null);
       return;
     }
-    handle.watchdogRecoveredAt = this.#now();
     hostLogEvent({ event: 'live_watchdog', phase: 'recovered', turnAgeMs, generation });
     await this.#recoverFromDrop(handle, undefined, true, 'model_mute');
   }
@@ -2443,6 +2431,17 @@ export class LiveSessionOwner {
    */
   async #recoverFromDrop(handle: ActiveSession, outcome: LiveVoiceOutcome | undefined, forceFresh = false, reasonOverride?: string): Promise<boolean> {
     const now = this.#now();
+    // #656: one model-mute rebuild per recovery window, on the same watchdogRecoveredAt stamp and
+    // RESPONSE_WATCHDOG_WINDOW_MS the sliding watchdog keeps. Every model-mute route passes this door, so a model
+    // still mute under the new session is ended honestly instead of rebuilt a second time inside one research run.
+    if (reasonOverride === 'model_mute') {
+      const previous = handle.watchdogRecoveredAt;
+      if (previous !== undefined && now - previous < RESPONSE_WATCHDOG_WINDOW_MS) {
+        this.#settle(handle, { state: 'failed', code: 'model_unresponsive' }, false, 'ended', null);
+        return false;
+      }
+      handle.watchdogRecoveredAt = now;
+    }
     // #527: the healthy-episode reset is judged once per drop, then the stamp is cleared, so a dead session
     // that follows a healthy one starts its own episode instead of inheriting the reset.
     if (handle.lastHealthyAt !== undefined && now - handle.lastHealthyAt >= RECOVERY_HEALTHY_MS) { handle.recoveries = 0; handle.dropEpisodeAt = undefined; }

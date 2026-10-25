@@ -59,13 +59,20 @@ print_skips() {
 }
 
 # Server tests are compiled: `node --test` runs dist/test/*.js and the .integration.mjs
-# sources import dist. The 26 test files server/tsconfig.json does not name get a second
-# explicit compile pass with the same flags the per-check scripts use, so no suite is
-# unreachable just because the build never emitted it.
+# sources import dist. server/tsconfig.json names its test files one by one, so 26 of the
+# 79 are never emitted by the build. The three below import the compiled tree themselves,
+# so node runs them from source exactly as scripts/check-domain.sh does; the other 23
+# import source modules by .js specifier, which node cannot resolve from a .ts file, so
+# they get an explicit compile pass here.
+# Test files the build does not emit that import dist themselves.
+source_run=(test/domain.test.ts test/memory-search.test.ts test/provenance.test.ts)
+
 server_extra_compile() {
   local -a extra=() file sep=''
   for file in test/*.test.ts; do
-    grep -qF "\"$file\"" tsconfig.json || extra+=("$file")
+    grep -qF "\"$file\"" tsconfig.json && continue
+    case " ${source_run[*]} " in *" $file "*) continue ;; esac
+    extra+=("$file")
   done
   [ "${#extra[@]}" -eq 0 ] && return 0
   printf 'server: compiling %d test files that server/tsconfig.json does not name\n' "${#extra[@]}"
@@ -120,7 +127,7 @@ if [ "$phase" = server ] || [ "$phase" = all ]; then
     name="test/${file#dist/test/}"; name="${name%.js}.ts"
     is_skipped skip_server "${name#test/}" || server_files+=("$file")
   done
-  for file in test/*.integration.mjs; do
+  for file in test/*.integration.mjs "${source_run[@]}"; do
     is_skipped skip_server "${file#test/}" || server_files+=("$file")
   done
   [ "${#server_files[@]}" -gt 0 ] || { printf 'server: no test files matched; refusing a green run\n' >&2; exit 1; }

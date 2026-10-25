@@ -351,7 +351,19 @@ test('a web failure names the web part as missing instead of answering as if it 
   assert.match(String(reply['note']), /The web took too long to answer, so that part is missing\./, 'Naya says the web took too long');
   assert.match(String(reply['note']), new RegExp(`the web: not read \\(timed out after ${Math.round(WEB_DEADLINE_MS / 1_000)} s\\)`), 'the seconds named are the budget that cut it');
   assert.doesNotMatch(String(reply['note']), /could not reach|unavailable/i, 'a timeout is never spoken as an access or service problem');
+  // #663: a web part that never arrived is not a licence to answer as if it had, so the reply says what the
+  // model's own knowledge counts as.
+  assert.match(String(reply['note']), /general knowledge, so say so/, 'a timed out web read asks for the general knowledge label');
   assert.equal(JSON.stringify(reply).includes('bridge reopening date'), false);
+});
+
+// #663: the same label applies when the web read failed outright instead of timing out.
+test('a failed web read asks for the general knowledge label too', async () => {
+  const h = harness({ ok: false, code: 'web_unavailable' });
+  const reply = await new ResearchScheduler(h.deps).call({ action: 'start', question: 'what is the bridge reopening date' }, new AbortController().signal);
+  const note = String(reply['note']);
+  assert.match(note, /I could not reach the web right now\./, 'the failed read is spoken as the web out of reach');
+  assert.match(note, /general knowledge, so say so/, 'and anything the model adds itself is labelled general knowledge');
 });
 
 // --- B2: the grounding attribution is honoured, and B4: the web receipt survives the log gate ---

@@ -499,6 +499,25 @@ test('#637: an unknown channel is its own closed reason in the note and the cove
   assert.ok(CHAT_RECEIPT_REASONS.includes('channel_not_found'), 'and the closed receipt vocabulary carries the token');
 });
 
+// #663: the connector's refusal carries up to three closest channel names, so the reply can voice the
+// channel the owner probably meant instead of only saying the name is unknown.
+test('#663: a channel refusal that carries closest names voices three of them', async () => {
+  const h = harness({
+    configured: ['chat'],
+    execute: async (subs: readonly IntentSubCall[]) => subs.map(call => ({
+      key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0,
+      code: 'channel_not_found: closest names: General, Random, Dev, Town Square',
+    })),
+  });
+  const question = 'what is new in the AI channel';
+  const reply = await runResearch(h.deps, { action: 'start', question, lookups: [{ source: 'chat', query: question }] }, new AbortController().signal);
+  const note = String(reply['note'] ?? '');
+  assert.match(note, /I do not know a channel called AI\./u, 'the channel the ask named is still spoken');
+  assert.match(note, /The closest names I have are General, Random and Dev\./u, 'the three closest names are voiced');
+  assert.equal(note.includes('Town Square'), false, 'never more than three names');
+  assert.deepEqual(reply['unavailable'], { chat: 'channel_not_found' }, 'a refusal that carries names is still the channel reason');
+});
+
 test('P5-R5: a routed read that returns a failure is failed, never empty', async () => {
   const receipts: ResearchSourceLog[] = [];
   const failed = (key: string, name: string): IntentSubResult =>

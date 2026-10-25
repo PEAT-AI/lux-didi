@@ -250,7 +250,7 @@ test('pruneTraceContent is scoped to the two content tables', () => {
     const shapeWriter = (traceRecord as unknown as { recordQueryShape?: (exec: Store, shape: Record<string, unknown>, at: number) => number }).recordQueryShape!;
     shapeWriter(store, { source: 'mail', terms: 1, operators: [], topicWords: 1 }, T0);
     const pruned = store.transaction(tx => pruneTraceContent(tx, T0 + 40 * 86_400_000));
-    assert.deepEqual(pruned, { utterances: 1, callResults: 1, queryShapes: 1, journalText: 0, promptSnapshots: 0 });
+    assert.deepEqual(pruned, { utterances: 1, callResults: 1, queryShapes: 1, researchText: 0, journalText: 0, promptSnapshots: 0 });
     assert.equal(counts(store).trace_turn, 1);
     assert.equal(counts(store).trace_call, 1);
   });
@@ -307,7 +307,7 @@ test('pruneTraceContent clears live text only where the transcript is no longer 
     const pruned = store.transaction(tx => pruneTraceContent(tx, now));
     // Three ended sessions are done with their transcript, and each clears two rows (the transcript
     // and the tool payload); all six ended sessions lose the accepted prompt snapshot.
-    assert.deepEqual(pruned, { utterances: 0, callResults: 0, queryShapes: 0, journalText: 6, promptSnapshots: 6 });
+    assert.deepEqual(pruned, { utterances: 0, callResults: 0, queryShapes: 0, researchText: 0, journalText: 6, promptSnapshots: 6 });
 
     const rows = store.transaction(tx => tx.all("SELECT live_session_id, kind, text, tool_json, payload_bytes FROM live_journal WHERE kind IN ('inputTranscription','toolCall') ORDER BY live_session_id, journal_id"));
     const bySession = new Map<string, Array<Record<string, unknown>>>();
@@ -343,7 +343,7 @@ test('pruneTraceContent clears live text only where the transcript is no longer 
     ]);
 
     const again = store.transaction(tx => pruneTraceContent(tx, now));
-    assert.deepEqual(again, { utterances: 0, callResults: 0, queryShapes: 0, journalText: 0, promptSnapshots: 0 }, 'the second start finds nothing to do');
+    assert.deepEqual(again, { utterances: 0, callResults: 0, queryShapes: 0, researchText: 0, journalText: 0, promptSnapshots: 0 }, 'the second start finds nothing to do');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -368,7 +368,7 @@ test('a prune over a migrated v3 journal clears the tool payload the migration m
         [SESSION, 'inputTranscription', 'owner words', endedAt]);
     });
     // A v2 store has no tool_json to clear, and the pruner must not fail on the column it cannot see.
-    assert.deepEqual(v2.transaction(tx => pruneTraceContent(tx, now)), { utterances: 0, callResults: 0, queryShapes: 0, journalText: 0, promptSnapshots: 0 });
+    assert.deepEqual(v2.transaction(tx => pruneTraceContent(tx, now)), { utterances: 0, callResults: 0, queryShapes: 0, researchText: 0, journalText: 0, promptSnapshots: 0 });
     v2.close();
 
     const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
@@ -382,7 +382,7 @@ test('a prune over a migrated v3 journal clears the tool payload the migration m
           VALUES (?,?,?,?,?,?,?,0,'[]',0,NULL,?,NULL)`, ['sum-migrated', SESSION, 'complete', 'a summary', endedAt, 'm', 11, endedAt]);
       });
       const pruned = store.transaction(tx => pruneTraceContent(tx, now));
-      assert.deepEqual(pruned, { utterances: 0, callResults: 0, queryShapes: 0, journalText: 2, promptSnapshots: 0 }, 'the migrated journal clears its text and its tool payload');
+      assert.deepEqual(pruned, { utterances: 0, callResults: 0, queryShapes: 0, researchText: 0, journalText: 2, promptSnapshots: 0 }, 'the migrated journal clears its text and its tool payload');
       const rows = store.transaction(tx => tx.all("SELECT kind, text, tool_json FROM live_journal WHERE live_session_id=? ORDER BY journal_id", [SESSION]));
       assert.deepEqual(rows.map(row => [row['kind'], row['text'], row['tool_json']]), [['inputTranscription', null, null], ['toolCall', null, null]]);
     } finally { store.close(); }
@@ -918,4 +918,75 @@ test('TOPIC 6 (#565): a query shape row holds the counts, the closed operator to
       'INSERT INTO trace_query_shape(at, source, terms, operators, topic_words) VALUES (?,?,?,?,?)',
       [T0, 'diary', 0, '', 0])), 'a source outside the closed list has no column to land in');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+// --- L8-Q06, L8-Q05, L8-Q01: reads with no dispatch row, the research question and run id, the canonical link ---
+
+type TraceWriters = {
+  recordQueryShape: (exec: Store, shape: Record<string, unknown>, at: number, researchId?: string) => number;
+  recordSourceRead?: (exec: Store, read: Record<string, unknown>, at: number, researchId?: string) => number;
+  recordResearchText?: (exec: Store, entry: Record<string, unknown>, at: number) => void;
+  recordCallLink?: (exec: Store, link: Record<string, unknown>) => number;
+};
+
+test('L8-Q06: a web read leaves a content-free source read row, and a Drive read has a query shape row', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-trace-read-'));
+  const store = new Store(dir, []);
+  try {
+    const writers = traceRecord as unknown as TraceWriters;
+    assert.equal(typeof writers.recordSourceRead, 'function', 'the store has a writer for reads that leave no dispatch row');
+    const id = writers.recordSourceRead!(store, { source: 'web', outcome: 'ok', ms: 7_015, results: 3 }, T0, 'rs-web-1');
+    const row = store.transaction(tx => tx.get('SELECT research_id, source, outcome, ms, results, reason FROM trace_source_read WHERE id=?', [id]))!;
+    assert.deepEqual({ ...row }, { research_id: 'rs-web-1', source: 'web', outcome: 'ok', ms: 7_015, results: 3, reason: null });
+    writers.recordSourceRead!(store, { source: 'web', outcome: 'failed', ms: 0, results: 0, reason: 'web_timeout' }, T0);
+    assert.throws(() => writers.recordSourceRead!(store, { source: 'web', outcome: 'ok', ms: 1, results: 0, reason: 'free text here' }, T0), 'a reason is a closed code, never prose');
+    assert.ok(writers.recordQueryShape(store, { source: 'drive', terms: 2, operators: [], topicWords: 1 }, T0) > 0, 'a Drive read has a shape row');
+    assert.throws(() => store.transaction(tx => tx.run('INSERT INTO trace_source_read(at, source, outcome, ms, results) VALUES (?,?,?,?,?)', [T0, 'diary', 'ok', 1, 0])));
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('L8-Q05/L8-Q01: a research call keeps its run id, its question in the content table and its canonical execution', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-trace-link-'));
+  const store = new Store(dir, []);
+  try {
+    const writers = traceRecord as unknown as TraceWriters;
+    assert.equal(typeof writers.recordCallLink, 'function', 'the store links a model call to its research run and canonical execution');
+    assert.equal(typeof writers.recordResearchText, 'function', 'the question text has a content table');
+    const id = { liveSessionId: SESSION, connectionEpoch: 'e0' };
+    record(store, 'call.intent', { ...id, callKey: 'c1' }, { intentAt: T0, name: 'research', argsChars: 40, providerCallId: 'call_x' });
+    assert.equal(writers.recordCallLink!(store, { callKey: 'c1', researchId: 'rs-1', canonicalRunId: SESSION, canonicalExecutionId: `${SESSION}:4:0` }), 1);
+    assert.equal(writers.recordCallLink!(store, { callKey: 'c1', canonicalRunId: SESSION, canonicalExecutionId: `${SESSION}:5:0` }), 1);
+    const row = store.transaction(tx => tx.get('SELECT research_id, canonical_run_id, canonical_execution_id FROM trace_call WHERE call_key=?', ['c1']))!;
+    assert.deepEqual({ ...row }, { research_id: 'rs-1', canonical_run_id: SESSION, canonical_execution_id: `${SESSION}:4:0` }, 'the first execution of the call is its link');
+    writers.recordResearchText!(store, { researchId: 'rs-1', callKey: 'c1', kind: 'question', text: 'Synthetic question about the release plan' }, T0);
+    writers.recordResearchText!(store, { researchId: 'rs-1', kind: 'web_query', text: 'synthetic release plan' }, T0);
+    const texts = store.transaction(tx => tx.all('SELECT kind, text FROM trace_research_text WHERE research_id=? ORDER BY rowid', ['rs-1'])).map(entry => [entry['kind'], entry['text']]);
+    assert.deepEqual(texts, [['question', 'Synthetic question about the release plan'], ['web_query', 'synthetic release plan']]);
+    const pruned = store.transaction(tx => pruneTraceContent(tx, T0 + 31 * 86_400_000));
+    assert.equal(store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM trace_research_text')!['n'])), 0, `research text is owner content and keeps the 30 day retention: ${JSON.stringify(pruned)}`);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('C-QUALITY Q06: the v6 migration keeps every query shape row and widens the source list to drive', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-trace-v6-'));
+  try {
+    const db = new DatabaseSync(join(dir, 'state.sqlite'));
+    try {
+      db.exec('PRAGMA journal_mode=WAL');
+      db.exec('CREATE TABLE runtime_migrations(owner TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(owner,version))');
+      for (const migration of traceMigrations.filter(entry => entry.version <= 5)) {
+        for (const sql of migration.statements) db.exec(sql);
+        db.prepare("INSERT INTO runtime_migrations VALUES ('trace',?)").run(migration.version);
+      }
+      db.prepare("INSERT INTO trace_query_shape(at, research_id, source, terms, operators, topic_words) VALUES (?,?,?,?,?,?)").run(Date.now(), 'rs-old', 'mail', 2, 'from', 1);
+      assert.throws(() => db.prepare("INSERT INTO trace_query_shape(at, source, terms, operators, topic_words) VALUES (?,?,?,?,?)").run(Date.now(), 'drive', 1, '', 0), 'v5 refuses a Drive row');
+    } finally { db.close(); }
+    const store = new Store(dir, []);
+    try {
+      const rows = store.transaction(tx => tx.all('SELECT research_id, source, terms, operators FROM trace_query_shape')).map(row => ({ ...row }));
+      assert.deepEqual(rows, [{ research_id: 'rs-old', source: 'mail', terms: 2, operators: 'from' }], 'the existing row survives the rebuild');
+      store.transaction(tx => tx.run("INSERT INTO trace_query_shape(at, source, terms, operators, topic_words) VALUES (?,?,?,?,?)", [Date.now(), 'drive', 1, '', 0]));
+      assert.equal(Number(store.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM trace_query_shape WHERE source='drive'")!['n'])), 1, 'a Drive read now has a row');
+    } finally { store.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

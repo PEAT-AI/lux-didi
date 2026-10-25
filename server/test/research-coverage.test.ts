@@ -588,3 +588,24 @@ test('L8-13: a mail read that never ran is never called a read that took too lon
   assert.doesNotMatch(String(second['note'] ?? ''), /mail read took too long/u, `and the note never says it took too long: ${String(second['note'])}`);
   assert.match(header, /mail never_ran \(say: [^)]+\)/u, `the header names the real outcome with its clause: ${header}`);
 });
+
+// L8-Q07: a failed read's receipt named no reason, and two lookups that shared one execution wrote the same
+// receipt line twice.
+test('L8-Q07: a source receipt names why a read failed, and a shared execution is one receipt', async () => {
+  const sources: Record<string, unknown>[] = [];
+  const failing = harness({ web: { search: async () => ({ ok: false as const, code: 'web_timeout' as const }) } });
+  failing.deps.logSource = event => { sources.push({ ...event }); };
+  await runResearch(failing.deps, { action: 'start', question: 'synthetic bridge reopening', lookups: [{ source: 'web', query: 'synthetic bridge reopening' }] }, new AbortController().signal);
+  const web = sources.filter(entry => entry['source'] === 'web');
+  assert.equal(web.length, 1, `one web receipt: ${JSON.stringify(sources)}`);
+  assert.equal(web[0]!['outcome'], 'failed');
+  assert.equal(web[0]!['reason'], 'timed_out', `the receipt names the closed reason: ${JSON.stringify(web[0])}`);
+  sources.length = 0;
+  const shared = harness({ execute: async calls => calls.map(call => sub(call.name, call.name.includes('gmail') ? mailRows(2) : knowledgeHits(1), true, call.key)) });
+  shared.deps.logSource = event => { sources.push({ ...event }); };
+  await runResearch(shared.deps, { action: 'start', question: 'release notes from Ana', lookups: [{ source: 'mail', query: 'release notes' }, { source: 'mail', query: 'release notes' }] }, new AbortController().signal);
+  const mail = sources.filter(entry => entry['source'] === 'mail');
+  const lines = mail.map(entry => JSON.stringify(entry));
+  assert.equal(new Set(lines).size, lines.length, `no receipt line is written twice: ${lines.join(' | ')}`);
+  assert.ok(mail.every(entry => entry['reason'] === undefined), 'an answered read carries no reason');
+});

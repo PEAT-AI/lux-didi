@@ -9,7 +9,7 @@ import type { CalendarEvent as RetainedCalendarEvent, CalendarScope, MailMessage
 import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
 import { MAIL_QUERY_OPERATORS } from '../contracts/mail-operators.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
-import { WEB_DEADLINE_MS, WEB_SEARCH_ACTION, broaderWebQuery, clipWebEvidence, sentencePrefix, webAttribution, webDeadlineMs, webEvidenceText, webFooter, webSourceCards, type WebSearchPort } from './web-search.js';
+import { WEB_DEADLINE_MS, WEB_SEARCH_ACTION, broaderWebQuery, clipWebEvidence, sentencePrefix, webAttribution, webDeadlineMs, webEvidenceText, webFooter, webSourceCards, type WebOutcome, type WebSearchPort } from './web-search.js';
 
 /**
  * The one declared Live read tool (#241). The model may answer with no tool at all; when it looks
@@ -252,6 +252,18 @@ export interface ResearchRoutedLog {
  * was given. Never a query. The deadline travels with the receipt so a cut read can be judged against the
  * time the source was actually allowed.
  */
+/** L8-Q07: the closed reasons a source receipt may give for a read that did not answer. */
+export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading'] as const;
+export type ResearchSourceReason = (typeof RESEARCH_SOURCE_REASONS)[number];
+
+function sourceReasonOf(run: RunState, outcome: { source: SourceKind | 'memory'; outcome: LookupOutcome; mail?: MailQueryInfo | undefined }): ResearchSourceReason {
+  if (outcome.mail !== undefined && mailQueryShape(outcome.mail.q).terms === 0) return 'no_query';
+  if (outcome.source !== 'memory' && run.neverRan?.has(outcome.source) === true) return 'never_ran';
+  if (outcome.outcome === 'timeout') return 'timed_out';
+  const code = outcome.source === 'memory' ? undefined : run.unavailableReasons.get(outcome.source);
+  return code === undefined ? 'provider_failed' : unsearchedReasonOf(code);
+}
+
 export interface ResearchSourceLog {
   event: 'research_source'; researchId: string; source: LookupSource; outcome: LookupOutcome; ms: number;
   /** ROUTE-1022 K5: the same plan token, so a per-source receipt shows a knowledge-only brief too. */
@@ -259,6 +271,8 @@ export interface ResearchSourceLog {
   deadlineMs: number;
   /** 3r R1: how many lookups of this call shared the one source execution this receipt describes. */
   coalesced: number;
+  /** L8-Q07: why a read did not answer, a closed token; absent on ok and empty. */
+  reason?: ResearchSourceReason;
   /** 3r K1: the knowledge lookup's bounded-body request, metadata only and never a query. */
   knowledge?: { detail: string; maxChars: number; deadlineMs: number; truncated: boolean; queryTerms: number; dayFilter: DayFilter; chatDateOperator: ChatDateOperator; deduped: number };
   /** #610: the chat read's shape, or R3: the closed reason a refused chat read records. Never a word. */
@@ -1979,6 +1993,8 @@ export interface ResearchDeps {
    * built from. The Live owner binds it to the trace store; absent means nothing is persisted.
    */
   queryShape?: ((shape: ResearchQueryShape & { researchId: string; at: number }) => void) | undefined;
+  /** L8-Q06: one row per web read, which leaves no canonical dispatch row; the query text stays in the store. */
+  sourceRead?: ((read: ResearchSourceRead) => void) | undefined;
   authorizeEvidence?: (bindings: readonly ToolResultBinding[], signal: AbortSignal) => boolean;
   now(): number;
   /** Defaults to a real timer; a test supplies a fake clock to prove the progress cadence. */
@@ -2883,6 +2899,18 @@ function queryShapeOfSubs(call: IntentSubCall, topic: string | undefined): Resea
     operators: shape.operators.filter(operator => (MAIL_QUERY_OPERATORS as readonly string[]).includes(operator)),
     topicWords: (topic ?? '').split(/\s+/u).filter(Boolean).length,
   };
+}
+
+/** L8-Q06: what one in-process read (the web) did: its outcome, time, result count, closed reason and query. */
+export interface ResearchSourceRead { source: 'web'; outcome: 'ok' | 'failed' | 'timeout'; ms: number; results: number; reason?: string; query: string; researchId: string; at: number }
+
+function recordWebRead(deps: ResearchDeps, run: RunState, query: string, outcome: WebOutcome, started: number, now: () => number): void {
+  const write = deps.sourceRead;
+  if (write === undefined) return;
+  try {
+    write({ source: 'web', outcome: outcome.ok ? 'ok' : outcome.code === 'web_timeout' ? 'timeout' : 'failed', ms: Math.max(0, now() - started),
+      results: outcome.ok ? webSourceCards(outcome.evidence).length : 0, ...(outcome.ok ? {} : { reason: outcome.code }), query, researchId: run.researchId, at: now() });
+  } catch { /* the receipt is never the answer */ }
 }
 
 /** #565: one trace row per source call this run dispatched, and a repeated signature is one row. */
@@ -4136,7 +4164,9 @@ async function webGroup(deps: ResearchDeps, run: RunState, plans: readonly Route
   const results = await Promise.all(plans.map(async (plan): Promise<{ plan: RoutedPlan; line?: string }> => {
     const call = plan.read.subs[0];
     const query = String(call?.args['query'] ?? plan.lookup.query);
+    const readStarted = now();
     const outcome = await deps.web!.search({ query, signal, deadlineMs: webDeadlineMs(query) });
+    recordWebRead(deps, run, query, outcome, readStarted, now);
     if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return { plan }; }
     run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
     run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));
@@ -4393,14 +4423,20 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     // never had. A same-source batch shares one bound, so the count is the group's own size.
     const batchSizes = new Map<SourceKind | 'memory', number>();
     for (const outcome of batch) batchSizes.set(outcome.source, (batchSizes.get(outcome.source) ?? 0) + 1);
+    // L8-Q07: lookups that shared one execution are one receipt, never the same line twice.
+    const logged = new Set<string>();
     for (const outcome of batch) {
-      logLookup({
+      const receiptKey = `${outcome.source}|${outcome.outcome}|${outcome.ms}`;
+      const repeat = (batchSizes.get(outcome.source) ?? 1) > 1 && logged.has(receiptKey);
+      logged.add(receiptKey);
+      if (!repeat) logLookup({
         event: 'research_source', researchId: run.researchId, source: outcome.lookup.source, outcome: outcome.outcome, ms: outcome.ms, ...briefPlanField(run),
         deadlineMs: outcome.source === 'memory' ? RESEARCH.sourceDeadline.memory : lookupBound(outcome.source, batchSizes.get(outcome.source) ?? 1, run.deadlineMs),
         coalesced: batchSizes.get(outcome.source) ?? 1,
         ...(outcome.source === 'knowledge' ? { knowledge: knowledgeReceipt(outcome.lines, run.chatDate ?? 'none', outcome.sub, { droppedFilters: run.droppedDayFilters, deduped: outcome.deduped ?? 0 }) } : {}),
         ...mailReceiptField(outcome.mail),
         ...(outcome.partial === undefined ? {} : { partial: outcome.partial.reason, failedPages: outcome.partial.failedPages }),
+        ...(outcome.outcome === 'ok' || outcome.outcome === 'empty' ? {} : { reason: sourceReasonOf(run, outcome) }),
       });
       logSubcall({
         event: 'research_subcall', researchId: run.researchId, ...callKeyOf(run), kind: outcome.kind, tool: outcome.tool,
@@ -5210,7 +5246,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             run.ops -= webCalls.length;
             return Promise.all(webCalls.map(async (call): Promise<IntentSubResult> => {
               const empty = { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0 };
+              const readStarted = now();
               const outcome = await deps.web!.search({ query: String(call.args['query'] ?? ''), signal: readSignal, deadlineMs: webDeadlineMs(String(call.args['query'] ?? '')) });
+              recordWebRead(deps, run, String(call.args['query'] ?? ''), outcome, readStarted, now);
               if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return empty; }
               run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
               run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));

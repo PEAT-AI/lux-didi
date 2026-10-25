@@ -223,3 +223,25 @@ test('rebuild sweep: a provider rebuild at every boundary of a call loses nothin
     });
   }
 });
+
+// L8-Q03: the go-deeper turn of session 7886de48 kept closed_at null after a rebuild although she spoke in the
+// new session; the connection swap dropped its turn id without a close.
+test('L8-Q03: the turn a rebuild interrupts is closed as recovered, never left open', async t => {
+  const r = await replay(t, { tools: true, scripts: [], callMaxMs: 120_000 });
+  await r.ready();
+  await r.speak(OWNER_FRAME_SAMPLES);
+  await r.endInput();
+  await elapsedBy(r, 950);
+  await ownerSays('synthetic go deeper question', 900)(r);
+  await r.advance(200);
+  const turns = () => r.store.transaction(tx => tx.all('SELECT turn_id, closed_at, close_reason FROM trace_turn WHERE live_session_id=? ORDER BY turn_index', [r.liveSessionId]))
+    .map(row => ({ ...row }));
+  assert.equal(turns().length, 1, 'the owner question opened one turn');
+  assert.equal(turns()[0]!['closed_at'], null, 'and it is open when the session dies');
+  await r.deliver({ type: 'session.closed', session: { id: 'sess_replay', reason: 'synthetic rebuild' } });
+  await r.until(() => starts(r).length >= 2, REBUILD_BUDGET_MS);
+  await r.advance(500);
+  const after = turns();
+  assert.equal(after[0]!['close_reason'], 'recovered', `the interrupted turn is closed by the rebuild: ${JSON.stringify(after)}`);
+  assert.ok(after.every(row => row['closed_at'] !== null), `no turn is left open across the rebuild: ${JSON.stringify(after)}`);
+});

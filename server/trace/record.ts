@@ -417,14 +417,18 @@ export function recordCallResult(port: TraceWritePort, result: { callKey: string
  * A live session is only content-pruned once it has ended before the cutoff, so the reattach window
  * of a session that is still live is never shortened.
  */
-export function pruneTraceContent(exec: TraceExec, now: number): { utterances: number; callResults: number; queryShapes: number; journalText: number; promptSnapshots: number } {
+export function pruneTraceContent(exec: TraceExec, now: number): { utterances: number; callResults: number; queryShapes: number; researchText: number; journalText: number; promptSnapshots: number } {
   const cutoff = now - TRACE_RETENTION_DAYS * TRACE_DAY_MS;
   const utterances = exec.run('DELETE FROM trace_utterance WHERE at < ?', [cutoff]);
   const callResults = exec.run('DELETE FROM trace_call_result WHERE call_key IN (SELECT call_key FROM trace_call WHERE intent_at < ?)', [cutoff]);
   // A query shape is metadata like a call row, and a store migrated before v5 has no table to prune.
   const queryShapes = tableExists(exec, 'trace_query_shape') ? exec.run('DELETE FROM trace_query_shape WHERE at < ?', [cutoff]) : 0;
+  // L8-Q05: the research question and web query text are owner content with the same retention; a source
+  // read row is metadata and goes with them, like a query shape.
+  const researchText = tableExists(exec, 'trace_research_text') ? exec.run('DELETE FROM trace_research_text WHERE at < ?', [cutoff]) : 0;
+  if (tableExists(exec, 'trace_source_read')) exec.run('DELETE FROM trace_source_read WHERE at < ?', [cutoff]);
   // The live and tools tables belong to other migration owners and are absent from a trace-only Store.
-  if (!tableExists(exec, 'live_journal')) return { utterances, callResults, queryShapes, journalText: 0, promptSnapshots: 0 };
+  if (!tableExists(exec, 'live_journal')) return { utterances, callResults, queryShapes, researchText, journalText: 0, promptSnapshots: 0 };
   // A journal is only surplus once its session ended before the cutoff AND the transcript has already
   // been distilled or never will be: a complete summary, a summary that gave up for a reason other
   // than `no_text_model`, or a source excluded from history. `summaries.reconcile()` re-distils any
@@ -451,7 +455,7 @@ export function pruneTraceContent(exec: TraceExec, now: number): { utterances: n
         ? exec.run(`UPDATE live_journal SET tool_json=NULL WHERE tool_json IS NOT NULL AND live_session_id ${prunable}`, [cutoff])
         : 0);
   const promptSnapshots = exec.run(`UPDATE live_sessions SET accepted_prompt_snapshot=NULL WHERE accepted_prompt_snapshot IS NOT NULL AND terminal_at IS NOT NULL AND terminal_at < ?`, [cutoff]);
-  return { utterances, callResults, queryShapes, journalText, promptSnapshots };
+  return { utterances, callResults, queryShapes, researchText, journalText, promptSnapshots };
 }
 
 /** Whether the table's own DDL declares the column. The Store authorizer admits sqlite_master and
@@ -512,7 +516,7 @@ export function liveTracePort(binding: LiveTraceBinding): LiveTracePort {
 }
 
 /** #565: the sources a query shape may name, closed so no other string can reach the row. */
-export const QUERY_SHAPE_SOURCES = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'replies', 'company', 'mongoose', 'web'] as const;
+export const QUERY_SHAPE_SOURCES = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'replies', 'company', 'mongoose', 'web', 'drive'] as const;
 export type QueryShapeSource = (typeof QUERY_SHAPE_SOURCES)[number];
 export interface TraceQueryShape { source: QueryShapeSource; terms: number; operators: readonly string[]; topicWords: number }
 
@@ -535,4 +539,48 @@ export function recordQueryShape(port: TraceWritePort, shape: TraceQueryShape, a
       [at, researchId ?? null, shape.source, shape.terms, shape.operators.join(','), shape.topicWords]);
     return Number(tx.get('SELECT last_insert_rowid() AS id')!['id']);
   });
+}
+
+/** L8-Q06: the sources a source read row may name and the outcomes it may carry, closed like the shape row. */
+export const SOURCE_READ_OUTCOMES = ['ok', 'empty', 'failed', 'timeout'] as const;
+export interface TraceSourceRead { source: QueryShapeSource; outcome: (typeof SOURCE_READ_OUTCOMES)[number]; ms: number; results: number; reason?: string }
+
+/** L8-Q06: the one writer for a read that leaves no canonical dispatch row: outcome, time, result count and a closed reason. */
+export function recordSourceRead(port: TraceWritePort, read: TraceSourceRead, at: number, researchId?: string): number {
+  if (!isOneOf(QUERY_SHAPE_SOURCES, read.source) || !isOneOf(SOURCE_READ_OUTCOMES, read.outcome)) throw new TraceRecordError('INVALID_VALUE', 'source read: source or outcome is outside its allowlist');
+  if (!isCount(read.ms) || !isCount(read.results) || !isCount(at)) throw new TraceRecordError('INVALID_VALUE', 'source read: ms, results or at is not a count');
+  if (read.reason !== undefined && !/^[a-z0-9_:-]{1,64}$/u.test(read.reason)) throw new TraceRecordError('INVALID_VALUE', 'source read: reason is not a closed code');
+  if (researchId !== undefined && !isId(researchId)) throw new TraceRecordError('INVALID_VALUE', 'source read: researchId is not an id');
+  return port.transaction(tx => {
+    tx.run('INSERT INTO trace_source_read(at, research_id, source, outcome, ms, results, reason) VALUES (?,?,?,?,?,?,?)',
+      [at, researchId ?? null, read.source, read.outcome, read.ms, read.results, read.reason ?? null]);
+    return Number(tx.get('SELECT last_insert_rowid() AS id')?.['id'] ?? 0);
+  });
+}
+
+/** L8-Q05: how much of one question or web query the content table keeps. */
+export const TRACE_RESEARCH_TEXT_MAX_CHARS = 2_000;
+
+/** L8-Q05/Q06: the one writer for research text, owner content in the store's third content table. */
+export function recordResearchText(port: TraceWritePort, entry: { researchId: string; callKey?: string; kind: 'question' | 'web_query'; text: string }, at: number): void {
+  if (!isId(entry.researchId) || (entry.callKey !== undefined && !isId(entry.callKey)) || (entry.kind !== 'question' && entry.kind !== 'web_query') || typeof entry.text !== 'string' || !isCount(at)) {
+    throw new TraceRecordError('INVALID_VALUE', 'research text: an id, the kind or the text is outside its allowlist');
+  }
+  port.transaction(tx => {
+    tx.run('INSERT INTO trace_research_text(research_id, call_key, at, kind, text) VALUES (?,?,?,?,?)',
+      [entry.researchId, entry.callKey ?? null, at, entry.kind, entry.text.slice(0, TRACE_RESEARCH_TEXT_MAX_CHARS)]);
+  });
+}
+
+/**
+ * L8-Q01/Q05: a model call's research run and its first canonical execution. The first link wins, so a
+ * call that issued several batches names the one it started with; returns the rows updated.
+ */
+export function recordCallLink(port: TraceWritePort, link: { callKey: string; researchId?: string; canonicalRunId?: string; canonicalExecutionId?: string }): number {
+  for (const value of [link.callKey, link.researchId, link.canonicalRunId, link.canonicalExecutionId]) {
+    if (value !== undefined && !isId(value)) throw new TraceRecordError('INVALID_VALUE', 'call link: a field is not an id');
+  }
+  return port.transaction(tx => tx.run(
+    'UPDATE trace_call SET research_id=COALESCE(research_id,?), canonical_run_id=COALESCE(canonical_run_id,?), canonical_execution_id=COALESCE(canonical_execution_id,?) WHERE call_key=?',
+    [link.researchId ?? null, link.canonicalRunId ?? null, link.canonicalExecutionId ?? null, link.callKey]));
 }

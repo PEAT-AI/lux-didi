@@ -4052,6 +4052,36 @@ test('L8-11: owner words over her audible answer leave one content-free overlap 
   attachment.close(); await attachment.done.catch(() => undefined);
 });
 
+// L8-Q01/Q05/Q06: a research call with a web read left trace_call unlinked, its question and run id
+// nowhere, and the web read with no row at all.
+test('L8-Q01/Q05/Q06: a research call is linked to its run and execution, and its web read leaves a row', async t => {
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const web = { search: async () => ({ ok: true as const, evidence: { answer: 'The synthetic bridge reopens on Monday.', claims: [],
+    sources: [{ title: 'Synthetic source', url: 'https://source.example.invalid/bridge' }], retrievedAt: '2026-10-25T10:00:00Z' } }) };
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, researchWeb: web, scheduler, limits: openaiLimits });
+  const { session, attachment } = await openPort(h, 'research-link');
+  await ownerInput(fake, 'synthetic owner question about the bridge');
+  const epoch = String(h.store.transaction(tx => tx.get('SELECT connection_epoch FROM trace_event WHERE live_session_id=? AND connection_epoch IS NOT NULL LIMIT 1', [session.liveSessionId]))!['connection_epoch']);
+  const callKey = scopedTraceKey(session.liveSessionId, epoch, 'call', 'q1');
+  record(h.store, 'call.intent', { liveSessionId: session.liveSessionId, connectionEpoch: epoch, callKey }, { intentAt: NOW, name: 'research', argsChars: 60, providerCallId: 'q1' });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'q1', name: 'research', args: { action: 'start', question: 'When does the synthetic bridge reopen?', topic: 'synthetic bridge', lookups: [{ source: 'web', query: 'synthetic bridge reopening' }, { source: 'knowledge', query: 'synthetic bridge' }] } }] });
+  const linked = (): Record<string, unknown> | undefined => h.store.transaction(tx => tx.get('SELECT research_id, canonical_run_id, canonical_execution_id FROM trace_call WHERE call_key=?', [callKey]));
+  for (let i = 0; i < 400 && linked()?.['research_id'] == null; i++) { h.advance(50); scheduler.runDue(); await settlePort(); }
+  const row = linked()!;
+  assert.ok(typeof row['research_id'] === 'string' && String(row['research_id']).length > 0, `the call names its research run: ${JSON.stringify(row)}`);
+  assert.equal(row['canonical_run_id'], session.liveSessionId, 'the canonical run is the session run');
+  assert.match(String(row['canonical_execution_id']), new RegExp(`^${session.liveSessionId}:\\d+:0$`, 'u'), 'the first canonical execution of the call');
+  const executions = h.store.transaction(tx => tx.all('SELECT execution_id FROM tool_calls WHERE run_id=?', [session.liveSessionId])).map(entry => String(entry['execution_id']));
+  assert.ok(executions.includes(String(row['canonical_execution_id'])), `the link names a real canonical execution: ${executions.join(', ')}`);
+  const texts = h.store.transaction(tx => tx.all('SELECT kind, text FROM trace_research_text WHERE research_id=? ORDER BY rowid', [String(row['research_id'])])).map(entry => `${String(entry['kind'])}:${String(entry['text'])}`);
+  assert.ok(texts.includes('question:When does the synthetic bridge reopen?'), `the question the model wrote is kept in the store: ${texts.join(' | ')}`);
+  assert.ok(texts.includes('web_query:synthetic bridge reopening'), `and the web query: ${texts.join(' | ')}`);
+  const reads = h.store.transaction(tx => tx.all('SELECT source, outcome, results FROM trace_source_read WHERE research_id=?', [String(row['research_id'])])).map(entry => ({ ...entry }));
+  assert.deepEqual(reads, [{ source: 'web', outcome: 'ok', results: 1 }], 'the web read leaves its own row');
+  attachment.close(); await attachment.done.catch(() => undefined);
+});
+
 test('#538: the trace timeline records the debt clock as content-free enums', async t => {
   const fake = fakeLiveVoicePort();
   const scheduler = new DeadlineClock();

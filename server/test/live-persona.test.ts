@@ -354,9 +354,9 @@ test('the public character, voice surface and tool conduct are the authored verb
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   assert.equal(sha(NAYA_CHARACTER), '1b188117660fe12204cd542001b585fcce69add4f1cc6d27689720e193cac977');
   assert.equal(sha(NAYA_VOICE_SURFACE), '1cf4e572cd49ae7d8d7e16ee3c11b53c6dc652dc1511b8b5625d4a8a3bcb0768');
-  assert.equal(sha(NAYA_VOICE_TOOLS), '428d238b2bea41dd9b66e4c6cb265d1577f344298d7c0f3a6e83af3ae0464e50');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '7eaf8ffa269fcf9343e8162cc40e199e5fe00451fc493ad01e30bdcefb7f3e04');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '92c556c1112232a01b24e05964a29e2082c27a8e93b2610f83aa498ba5090669');
-  assert.equal(sha(NAYA_TOOLS), '208a651c07e13fd81bdb5c26b8a9105ee2ebbad80992982f0af8322391818116');
+  assert.equal(sha(NAYA_TOOLS), 'ee33899337f69d3834124cfe8a17e168034b5ffa2195e707754976ab4195790c');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));
@@ -674,7 +674,8 @@ const WRAPPER_3O_CHARS = 6603;
 // carries the measured wrapper at this sha.
 // #665/#666: the honesty rules and the turn-taking line they replace raise it to the measured wrapper.
 // TR-R5: the owner rule for authored text is re-pin, never trim a reviewed rule, so the bound carries the merged measure.
-const WRAPPER_W5_CHARS = 14_200;
+// TR-R15: restoring W7's "rather than claiming it happened" clause, which W6's rewrite had dropped, measured 14_224.
+const WRAPPER_W5_CHARS = 14_300;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
@@ -699,7 +700,8 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // #589/#590: the honesty line that names the stop phrases is the growth this bound carries.
   // #621: the coverage header adds its own measure. #665/#666: the honesty rules add theirs.
   // TR-R5: a house budget re-pinned to the merged measure; no reviewed rule was trimmed for it.
-  const cap = 7_600;
+  // TR-R15: measured 7_621 once W7's write-honesty clause was restored.
+  const cap = 7_700;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
@@ -1307,7 +1309,8 @@ const W5_REPLACED = [
 // #621: the coverage header the voice reads once is the growth this bound carries.
 // #665/#666: the voice surface grows by the five honesty rules and the turn-taking line they replace.
 // TR-R5: the owner rule for authored text is re-pin, never trim, so the cap carries the merged voice instruction.
-const W5_VOICE_BEFORE = 10_500;
+// TR-R15: measured 10_507 once W7's write-honesty clause was restored.
+const W5_VOICE_BEFORE = 10_600;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],

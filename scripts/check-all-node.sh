@@ -69,7 +69,7 @@ server_extra_compile() {
   done
   [ "${#extra[@]}" -eq 0 ] && return 0
   printf 'server: compiling %d test files that server/tsconfig.json does not name\n' "${#extra[@]}"
-  ./node_modules/.bin/tsc --target ES2023 --module NodeNext --moduleResolution NodeNext \
+  ./node_modules/.bin/tsc --ignoreConfig --target ES2023 --module NodeNext --moduleResolution NodeNext \
     --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals \
     --noUnusedParameters --skipLibCheck --declaration --sourceMap --types node \
     --rootDir . --outDir dist "${extra[@]}"

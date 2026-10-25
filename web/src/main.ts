@@ -409,7 +409,9 @@ let signInClickBound=false;
 function bindSignIn(){if(signInClickBound)return;signInClickBound=true;bindSignInButtons(root,(endpoint)=>void mutate(async (signal,version)=>{
   const started=await startMongooseSignIn(endpoint,signal);assertAuthority(version);
   const label=mongooseEndpointLabel(endpoint);
-  notice=started.status==='started'?`Sign in to ${label} in the browser window. The connector reconnects by itself when you finish.`:signInFailureNotice(started.reason);
+  notice=started.status==='started'?`Starting the sign-in to ${label}. Its row in Settings shows each step.`:signInFailureNotice(started.reason);
+  // The row reads the attempt from the connection poll, so ask for it now instead of at the next tick.
+  if(started.status==='started')setTimeout(()=>void pollConnections(),0);
 }));}
 // One binding pass for the whole Settings panel and the Mic Mode buttons, on the stable root and installed
 // once like the sign-in listener (#659): the 10 s repaint replaces every control underneath it, and each

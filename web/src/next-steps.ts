@@ -29,7 +29,7 @@ const unreachableStep = (label: string): NextStep => ({ text: `${label} is not r
 const unreachableSpentStep = (label: string): NextStep => ({ text: `${label} is not reachable and Naya has stopped retrying. Sign in again in Settings if your stored login has expired, or reconnect from the Lux Didi menu.`, guideUrl: setupGuideUrl, signIn: true });
 const failureStep: NextStep = { text: "Check the connector service, then use Copy diagnostics from the Lux Didi menu." };
 /** Mongoose signs in through the browser; the pasted-token path covers the other connectors only. */
-const mongooseCredentialStep = (label: string): NextStep => ({ text: `${label} has no stored session. Run mongoose-login, or use the Sign in button in Settings once this endpoint is configured.`, command: "mongoose-login", guideUrl: setupGuideUrl });
+const mongooseCredentialStep = (label: string): NextStep => ({ text: `${label} has no stored session. Use the Sign in button on its row in Settings once this endpoint is in your connector configuration.`, guideUrl: setupGuideUrl });
 const credentialSteps: Record<string, NextStep> = {
   "lux-knowledge": { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: setupGuideUrl },
   "gmail": { text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", guideUrl: setupGuideUrl },

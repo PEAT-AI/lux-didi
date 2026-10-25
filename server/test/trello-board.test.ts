@@ -7,7 +7,7 @@ import { createTrelloBoard, runTrelloLogin, trelloBinding, trelloSignedIn, trell
 import { createTrelloTransport } from '../adapters/trello/client.js';
 import { foldName, indexTrelloSchemas, ownerAskedForChange, planTrelloCall, trelloDueInstant, validateTrelloRead, validateTrelloWrite, TRELLO_CALL_TOOLS, TRELLO_SERVER_ALLOW, TRELLO_SERVER_DENY, TRELLO_WRITE_DESCRIPTION, type TrelloBoard } from '../tools/trello.js';
 import { OAuthLoginError, writeOAuthRecord, type OAuthSignInHop } from '../host/oauth-client.js';
-import { fakeToolSchemas, startTrelloFake, type TrelloFake } from './trello-fake.js';
+import { fakeToolSchemas, startTrelloFake, SYNTHETIC_BOARD, type TrelloFake } from './trello-fake.js';
 
 /** Monday 2026-10-26 10:00 UTC; the board's zone is UTC so the windows are exact. */
 const NOW = Date.UTC(2026, 9, 26, 10, 0);
@@ -36,7 +36,7 @@ before(async () => {
   dir = mkdtempSync(join(tmpdir(), 'trello-board-'));
   await signIn(dir, fake);
   // W7-R2: the name is the owner's private configuration, so the fixture writes that file.
-  writeFileSync(join(dir, 'trello-board.json'), JSON.stringify({ board: 'Rob' }), { mode: 0o600 });
+  writeFileSync(join(dir, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD }), { mode: 0o600 });
   board = createTrelloBoard({ configDir: dir, binding: trelloBinding(fake.resource, fake.issuer), timeZone: 'UTC', now, log: event => { events.push(event); } });
 });
 after(async () => { await fake.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -177,7 +177,7 @@ test('W7-F4: a write the live tools/list does not offer is unsupported, and noth
   const configDir = mkdtempSync(join(tmpdir(), 'trello-noschema-'));
   try {
     await signIn(configDir, local);
-    writeFileSync(join(configDir, 'trello-board.json'), JSON.stringify({ board: 'Rob' }), { mode: 0o600 });
+    writeFileSync(join(configDir, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD }), { mode: 0o600 });
     const noCardWrites = createTrelloBoard({ configDir, binding: trelloBinding(local.resource, local.issuer), timeZone: 'UTC', now });
     const before = local.calls.length;
     const refused = await noCardWrites.write(session(), { action: 'archive', card: 'Call the plumber' }, 'archive it');
@@ -421,14 +421,14 @@ test('the configured name is the pin, and no board name is in the code', async (
   const local = await startTrelloFake({ now: NOW });
   try {
     await signIn(configured, local);
-    writeFileSync(join(configured, 'trello-board.json'), JSON.stringify({ board: 'Rob' }), { mode: 0o600 });
+    writeFileSync(join(configured, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD }), { mode: 0o600 });
     const board2 = createTrelloBoard({ configDir: configured, binding: trelloBinding(local.resource, local.issuer), timeZone: 'UTC', now });
     const result = await board2.read(session(), { view: 'overview' });
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.equal(result.board, 'Rob', 'the pin is the name the owner configured');
+    assert.equal(result.board, SYNTHETIC_BOARD, 'the pin is the name the owner configured');
     const module = await import('../tools/trello.js');
     assert.equal(Object.hasOwn(module, 'TRELLO_DEFAULT_BOARD'), false, 'the code carries no default board name');
-    assert.ok(!JSON.stringify(Object.values(module)).includes('Rob'), 'no exported value names the board');
+    assert.ok(!JSON.stringify(Object.values(module)).includes(SYNTHETIC_BOARD), 'no exported value names the board');
   } finally { await local.close(); rmSync(configured, { recursive: true, force: true }); }
 });
 

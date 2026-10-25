@@ -10,6 +10,8 @@ import type { AddressInfo } from 'node:net';
  * a field the action does not use is rejected. Boards, lists, cards and labels are invented.
  */
 export const FAKE_TENANT = 'Tenant0fake';
+/** The board name every fixture pins: no private name belongs in this public repository (W7-R2, F11). */
+export const SYNTHETIC_BOARD = 'Harbour Notes';
 export const FAKE_WORKSPACE = 'w0fake';
 const ari = (entity: string, id: string) => `ari:cloud:trello::${entity}/workspace/${FAKE_WORKSPACE}/${id}`;
 let counter = 0;
@@ -117,7 +119,7 @@ async function listen(server: Server): Promise<number> {
 export async function startTrelloFake(options: TrelloFakeOptions): Promise<TrelloFake> {
   const now = options.now;
   const pageSize = options.pageSize ?? 2;
-  const pin = { id: ari('board', objectId(now - 400 * 86_400_000)), name: options.boardName ?? 'Rob', closed: false };
+  const pin = { id: ari('board', objectId(now - 400 * 86_400_000)), name: options.boardName ?? SYNTHETIC_BOARD, closed: false };
   const other = { id: ari('board', objectId(now - 300 * 86_400_000)), name: 'Team board', closed: false };
   const boards = [pin, other];
   const listNames = ['Sprint', 'Short Term Backlog', 'Long Term Backlog', 'Ideas', 'Waiting for X', 'Done'];

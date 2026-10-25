@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { providerDefaultVoice, providerVoices, settingsMarkup } from '../src/settings-view.ts';
+import { providerDefaultVoice, providerVoices, settingsMarkup, settingsSaveError } from '../src/settings-view.ts';
 
 const status = {
   ownerProfile: { status: 'default', displayName: 'Naya' },
@@ -66,4 +66,13 @@ test('the page offers exactly the provider voice lists the server validates agai
   assert.equal(providerDefaultVoice('gemini'), 'Aoede');
   assert.equal(providerDefaultVoice('openai'), 'marin');
   assert.equal(providerVoices('openai').includes('nira'), true);
+});
+
+test('a refused provider choice names the field that was refused', () => {
+  assert.match(settingsSaveError('invalid_voice', 'invalid_voice'), /voice/i);
+  assert.match(settingsSaveError('invalid_accent', 'invalid_accent'), /accent/i);
+  assert.match(settingsSaveError('invalid_provider', 'invalid_provider'), /provider/i);
+  assert.match(settingsSaveError('invalid_voice', 'Invalid voice'), /voice/i);
+  assert.doesNotMatch(settingsSaveError('invalid_voice', 'invalid_voice'), /invalid_voice/);
+  assert.equal(settingsSaveError('BAD_REQUEST', 'Something else broke'), 'Something else broke');
 });

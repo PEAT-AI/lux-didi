@@ -214,6 +214,11 @@ export async function composeMcpRuntime(options: {
   const { store, ownerId, configDir } = options; const now = options.now ?? Date.now;
   const registry = new ProbeRegistry();
   const selection = loadMcpEndpoints({ configDir });
+  // W2B-R1: the enabled entries of mcp.json are the connections a run may hold. A readable catalog with
+  // no entry for a stored row retires it; a catalog that is missing retires nothing, because it says nothing.
+  const configuredConnectionIds = selection.state === 'missing'
+    ? undefined
+    : selection.catalog.endpoints.filter(entry => entry.enabled).map(entry => entry.id);
   const expectedIdentities = selection.state === 'configured'
     ? [selection.catalog.ownerIdentity, selection.catalog.ownerChatUsername].filter((value): value is string => typeof value === 'string' && value.length > 0)
     : [];
@@ -275,7 +280,7 @@ export async function composeMcpRuntime(options: {
       ? { id: previous.id, state: 'connected', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt }
       : { id: previous.id, state: 'configured', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt, error: status.reason });
   };
-  const owner = createToolsOwner({ grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, ...(options.log ? { log: options.log } : {}) });
+  const owner = createToolsOwner({ grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, configuredConnectionIds: () => configuredConnectionIds, ...(options.log ? { log: options.log } : {}) });
   const sourcePort = owner.sourcePort;
   if (selection.state === 'missing') {
     const empty: McpRuntimeComposition = { registry, port: sourcePort, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), start: async () => {}, refresh: async () => {}, recover: async () => {}, close: () => port.close() };

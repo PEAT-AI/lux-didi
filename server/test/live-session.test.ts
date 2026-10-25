@@ -4112,14 +4112,20 @@ function progressPort() {
       const events: AsyncIterable<LiveVoiceEvent> = {
         async *[Symbol.asyncIterator]() {
           while (!closed) {
-            if (!readySeen) { readySeen = true; yield { sequence: ++sequence, type: 'ready' }; continue; }
+            if (!readySeen) {
+              readySeen = true;
+              const gate = readyGate;
+              if (gate !== undefined) await gate;
+              yield { sequence: ++sequence, type: 'ready' };
+              continue;
+            }
             if (!pending.length) { await new Promise<void>(resolve => { waiter = resolve; }); continue; }
             yield pending.shift()!;
           }
         },
       };
       return {
-        ready: readyGate ?? Promise.resolve(), events, done,
+        ready: Promise.resolve(), events, done,
         sendToolResponse(input: { responses: LiveToolResponse[] }): LiveToolSendOutcome { toolResponses.push(input.responses); return sendOutcome; },
         sendAudio(input: { pcm: Uint8Array }): void { audioInput.push({ session: sessionsOpened, pcm: input.pcm }); },
         sendText(input: { text: string }): void { texts.push(input.text); }, endAudioStream(): void {},

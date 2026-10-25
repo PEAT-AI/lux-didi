@@ -42,9 +42,15 @@ export type AuthoritySource = (runId: string, signal: AbortSignal) => Promise<Li
  * connector reconnects when it lands. An absent or unknown name is a closed failure, never a guess. */
 export type MongooseSignIn = (endpoint?: string) => Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }>;
 
-/** Opens the owner's default browser; the web view never opens one by itself. */
-export function openInDefaultBrowser(url: string): void {
-  spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+/** Opens the owner's default browser; the web view never opens one by itself. A launch that fails
+ * rejects instead of throwing in the host, so the click that asked for it answers with a closed code. */
+export function openInDefaultBrowser(url: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn('open', [url], { detached: true, stdio: 'ignore' });
+    child.once('error', reject);
+    child.once('spawn', () => resolve());
+    child.unref();
+  });
 }
 export interface LiveToolsComposition {
   recover?(): Promise<void>;
@@ -60,14 +66,31 @@ export interface LiveToolsComposition {
 /**
  * The one click path: resolve the configured endpoint the click named, run the same login the CLI flag
  * runs, and reconnect the connector once the record lands. Every failure is a closed code, never free
- * text. One pending sign-in at a time stays the rule, so a second click joins the one in flight.
+ * text. One pending sign-in at a time stays the rule: a second click for the same endpoint asks for its
+ * browser again, and a click for another endpoint is told plainly to finish the open one first.
  */
-export function createMongooseSignIn(options: { configDir: string; recover: () => Promise<void>; open?: (url: string) => void; login?: (options: MongooseLoginOptions) => Promise<void> }): MongooseSignIn {
+export function createMongooseSignIn(options: { configDir: string; recover: () => Promise<void>; open?: (url: string) => void | Promise<void>; login?: (options: MongooseLoginOptions) => Promise<void> }): MongooseSignIn {
   const open = options.open ?? openInDefaultBrowser;
   const login = options.login ?? runMongooseLogin;
-  let pending: Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }> | undefined;
+  type SignInResult = { status: 'started'; url: string } | { status: 'failed'; reason: string };
+  let pending: Promise<SignInResult> | undefined;
+  let pendingEndpoint: (typeof MONGOOSE_ENDPOINTS)[number] | undefined;
+  let issued: string | undefined;
+  /** One launch attempt: a browser that cannot open answers with a closed code, never an uncaught error. */
+  const launch = async (url: string): Promise<SignInResult> => {
+    try { await open(url); return { status: 'started', url }; }
+    catch { return { status: 'failed', reason: 'browser-unavailable' }; }
+  };
   return (requested?: string) => {
-    if (pending) return pending;
+    const wanted = MONGOOSE_ENDPOINTS.find(name => name === requested);
+    if (wanted === undefined) return Promise.resolve<SignInResult>({ status: 'failed', reason: 'not-configured' });
+    if (pending) {
+      if (pendingEndpoint !== wanted) return Promise.resolve<SignInResult>({ status: 'failed', reason: 'sign-in-in-progress' });
+      // The same endpoint asked again: the browser gets its URL back without a second login running.
+      if (issued === undefined) return pending;
+      const again = issued;
+      return launch(again);
+    }
     const selection = loadMcpEndpoints({ configDir: options.configDir });
     const candidates = selection.state === 'configured'
       ? selection.catalog.endpoints.flatMap(candidate => {
@@ -78,21 +101,25 @@ export function createMongooseSignIn(options: { configDir: string; recover: () =
       : [];
     // The three endpoint names are the whole closed set, and a click must name one: a missing or
     // unknown name is a closed failure, never a guess at the first entry in the catalogue.
-    const wanted = MONGOOSE_ENDPOINTS.find(name => name === requested);
-    if (wanted === undefined) return Promise.resolve({ status: 'failed' as const, reason: 'not-configured' });
     const named = candidates.find(candidate => candidate.endpoint === wanted);
     if (!named) return Promise.resolve({ status: 'failed' as const, reason: 'not-configured' });
     const { entry, endpoint } = named;
-    let release: (value: { status: 'started'; url: string } | { status: 'failed'; reason: string }) => void = () => {};
+    let release: (value: SignInResult) => void = () => {};
     let failure: string | undefined;
-    const first = new Promise<{ status: 'started'; url: string } | { status: 'failed'; reason: string }>(resolve => { release = resolve; });
+    const first = new Promise<SignInResult>(resolve => { release = resolve; });
     pending = first;
+    pendingEndpoint = wanted;
+    issued = undefined;
     void login({ configDir: options.configDir, reference: entry.credentialRef!, resourceUrl: entry.url!, endpoint, account: entry.account,
-      showAuthorizationUrl: (url: string) => { open(url); release({ status: 'started', url }); } })
+      showAuthorizationUrl: (url: string) => { issued = url; void launch(url).then(release); } })
       .then(() => options.recover())
       .catch((error: unknown) => { failure = error instanceof MongooseLoginError ? error.code : 'sign-in-did-not-finish'; })
       .finally(() => {
+        // A click that was still pending settles here; one already answered by a later click is left alone.
+        if (pending !== first) return;
         pending = undefined;
+        pendingEndpoint = undefined;
+        issued = undefined;
         // Only a login that never reached the browser settles here unanswered, and it settles named.
         release({ status: 'failed', reason: failure ?? 'sign-in-did-not-finish' });
       });

@@ -1,6 +1,6 @@
 // Fixed instructions only, never provider payloads or credential contents.
-/** The seven connector rows the host can emit (release 11 catalogue, server/test/fixtures/installed-mcp-config.json). */
-export const connectorIDs = ["lux-knowledge", "gmail", "calendar", "mattermost", "mongoose-knowledge", "mongoose-data", "mongoose-crm"] as const;
+/** The eight connector rows the host can emit (release 11 catalogue, server/test/fixtures/installed-mcp-config.json). */
+export const connectorIDs = ["lux-knowledge", "gmail", "calendar", "mattermost", "mongoose-knowledge", "mongoose-data", "mongoose-crm", "trello"] as const;
 /** The nine reason codes the host's connectionReasonCode can return (server/http/server.ts). */
 export const reasonCodes = ["configuration_error", "credential_missing", "needs_sign_in", "not_signed_in", "unreachable", "discovery_failed", "handshake_failed", "identity_mismatch", "unknown"] as const;
 export type ReasonCode = (typeof reasonCodes)[number];
@@ -16,6 +16,10 @@ export function mongooseEndpoint(id: string): MongooseEndpointName | undefined {
   return Object.hasOwn(mongooseNames, id) ? mongooseNames[id] : undefined;
 }
 export function mongooseEndpointLabel(name: MongooseEndpointName): string { return mongooseLabels[name]; }
+/** Every row an owner signs in to from Settings: the three Mongoose endpoints and the Trello board. */
+export type SignInName = MongooseEndpointName | "trello";
+export function signInTarget(id: string): SignInName | undefined { return id === "trello" ? "trello" : mongooseEndpoint(id); }
+export function signInLabel(name: SignInName): string { return name === "trello" ? "Trello" : mongooseEndpointLabel(name); }
 
 export interface NextStep { text: string; guideUrl?: string; command?: string; signIn?: boolean }
 const setupGuideUrl = "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup";
@@ -62,6 +66,8 @@ const reasonSteps: Record<ReasonCode, NextStep> = {
 export function nextStep(id: string, state: string, reason?: string, retrying = false): NextStep {
   if (state === 'connected') return { text: 'no action needed' };
   if (state === 'configured') return { text: 'a Live session connects on demand' };
+  // The Trello board row signs in from Settings like a Mongoose row.
+  if (id === 'trello' && (reason === 'needs_sign_in' || reason === 'not_signed_in')) return signInStep('Trello');
   const endpoint = mongooseEndpoint(id);
   if (endpoint) {
     const label = mongooseEndpointLabel(endpoint);

@@ -14,6 +14,9 @@ import { projectDiagnosticInput } from '../tools/diagnostic-input.js';
 import './research-shape.test.js';
 import './research-calendar.test.js';
 
+/** A small reply bound for the cap mechanism itself; the product budget is RESEARCH.budgets. */
+const CAP_REPLY_BOUND = 2_500;
+
 const CONFIGURED: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat'];
 
 function sub(name: string, text: string, ok = true, key = name): IntentSubResult {
@@ -288,7 +291,7 @@ test('#575: a finding already given in the session becomes a one-line note', asy
 // it offered a continuation.
 test('#567: a reply capped after its note was built advertises the continuation it needs', async () => {
   const ledger = new ResearchLedger();
-  const hits = Array.from({ length: 20 }, (_, index) => ({ snippet: `memory line ${index} ${'m'.repeat(150)}`, role: 'user', date: '2026-09-01T09:00:00.000Z' }));
+  const hits = Array.from({ length: 100 }, (_, index) => ({ snippet: `memory line ${index} ${'m'.repeat(150)}`, role: 'user', date: '2026-09-01T09:00:00.000Z' }));
   const h = harness({
     ledger, configured: ['memory', 'knowledge'], now: () => Date.parse('2026-10-24T12:00:00.000Z'),
     executeText: '### Release scope [id 12] the release ships on Friday',
@@ -315,8 +318,8 @@ test('#567: capReply hard-bounds a reply and keeps every finding whole', () => {
     researchId: 'r-1', status: 'complete', canContinue: false, note: RESEARCH.completeNote,
     findings: [{ source: 'knowledge', text: `knowledge: 1 of 1 shown\n${'x'.repeat(9_000)}`, chars: 9_000 }],
   };
-  const capped = capReply(reply, RESEARCH.budgets.default);
-  assert.ok(JSON.stringify(capped).length <= RESEARCH.budgets.default, `reply was ${JSON.stringify(capped).length}`);
+  const capped = capReply(reply, CAP_REPLY_BOUND);
+  assert.ok(JSON.stringify(capped).length <= CAP_REPLY_BOUND, `reply was ${JSON.stringify(capped).length}`);
   assert.equal(capped['status'], 'partial', 'a capped reply is never complete');
   assert.equal(capped['canContinue'], true, 'and it offers the continuation');
   assert.doesNotMatch(String(capped['note'] ?? ''), /Nothing more to fetch/u, 'the note agrees with the continuation');
@@ -339,7 +342,7 @@ test('#567: a reply already inside the budget is returned untouched', () => {
     findings: [{ source: 'knowledge', text: 'knowledge: 1 of 1 shown\none line', chars: 8 }],
   };
   const before = JSON.stringify(reply);
-  assert.equal(JSON.stringify(capReply(reply, RESEARCH.budgets.default)), before, 'nothing is flipped when nothing is trimmed');
+  assert.equal(JSON.stringify(capReply(reply, CAP_REPLY_BOUND)), before, 'nothing is flipped when nothing is trimmed');
 });
 
 // RESCAP-R5: a long best knowledge hit emptied the answer, because the trim loop dropped the only line.
@@ -360,8 +363,8 @@ test('#567/R5: capReply clips the only evidence line instead of dropping the fin
     researchId: 'r-5', status: 'partial', canContinue: true,
     findings: [{ source: 'knowledge', text: `knowledge: 1 of 1 shown\n${'A full sentence. '.repeat(250)}`, chars: 4_000 }],
   };
-  const capped = capReply(reply, RESEARCH.budgets.default);
-  assert.ok(JSON.stringify(capped).length <= RESEARCH.budgets.default, `reply was ${JSON.stringify(capped).length}`);
+  const capped = capReply(reply, CAP_REPLY_BOUND);
+  assert.ok(JSON.stringify(capped).length <= CAP_REPLY_BOUND, `reply was ${JSON.stringify(capped).length}`);
   const findings = capped['findings'] as { text: string }[];
   assert.equal(findings.length, 1, 'the finding survives the cap');
   const lines = findings[0]!.text.split('\n');
@@ -1901,7 +1904,7 @@ test('LAT-1023: a short answer is returned unchanged with no compaction token', 
 
 test('LAT-1023 R1: a requested body keeps its 6,000 char page bound while an answer stays at 2,500', async () => {
   const body = 'Body evidence sentence. '.repeat(280);
-  assert.ok(body.length > RESEARCH.budgets.default + 1_000, 'the fixture body is wider than the answer budget');
+  assert.ok(body.length > RESEARCH.bodyLimitChars + 500, 'the fixture body is wider than its own page bound');
   const scope = { endpointId: 'local', transport: 'stdio' as const, bindingDigest: 'sha256:body-scope', schemaDigest: 'sha256:schema', toolName: 'gmail_read_message', generation: 1, account: 'owner', resource: 'mail' };
   const evidence = {
     kind: 'remote-body' as const, source: scope, entitySha256: 'e'.repeat(64), bodySha256: 'b'.repeat(64),

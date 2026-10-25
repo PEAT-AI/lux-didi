@@ -1541,7 +1541,7 @@ test('#1020: a timed-out source is named as timed out, in seconds, beside the so
   }, new AbortController().signal);
   // #635: a timed-out chat read is voiced as a timeout with its own bounded budget, never as a chat that
   // could not be reached, and the header's say clause is the sentence the model speaks.
-  assert.match(String(reply['note']), /team chat: not read \(timed out after 6 s\)/, 'the reason is the timeout and its budget, never a bare unreachable');
+  assert.match(String(reply['note']), /team chat: not read \(timed out after 10 s\)/, 'the reason is the timeout and its budget, never a bare unreachable');
   assert.doesNotMatch(String(reply['note']), /could not reach/, 'a timeout is never voiced as a source out of reach');
   assert.match(String(reply['coverage']), /chat timed_out \(say: team chat took too long\)/, 'and the header carries the clause to say instead');
   assert.ok((reply['findings'] as { source: string }[]).some(finding => finding.source === 'knowledge'), 'the healthy source still answers in the same reply');

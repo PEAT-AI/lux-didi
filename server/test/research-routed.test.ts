@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, candidateSubs, fallbackSelection, lookupBound, normalizeLookups, ownerScheduleQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
+  LOOKUP_SOURCES, MAX_LOOKUPS, RESEARCH, ResearchLedger, calendarWindowOf, candidateSubs, chatQuestionWords, fallbackSelection, lookupBound, normalizeLookups, ownerScheduleQuestion, recallQuestion, requiredSources, researchDeclaration, routedSelection, runResearch,
   validateResearch,
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchRoutedLog, type ResearchSubcallLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
@@ -865,11 +865,42 @@ test('#635: a writing ask and a pure recall ask run no chat leg', async () => {
   assert.ok(!h.executed.includes('mattermost_search'), `no chat leg runs for a summarise ask (${h.executed.join(', ')})`);
 });
 
-// #635: the chat read gets its own short budget inside the turn, so one slow connector never spends the
-// ask's whole 12 s. What arrived is used, and a read that timed out says so in the header and the voice.
-test('#635: the chat read is bounded near five seconds, and a timed out one says timed out', async () => {
-  assert.ok(RESEARCH.sourceDeadline.chat <= 6_000, `the chat budget is near five seconds (${RESEARCH.sourceDeadline.chat} ms)`);
-  assert.ok(RESEARCH.sourceDeadline.chat < RESEARCH.sourceDeadline.mail, 'and far below the 12 s the other connectors keep');
+// #646: the run's own recall branch added the chat leg on the discussion forms alone, so "what did we
+// discuss with the team" (a MEMORY_WORDS recall that names no chat surface) waited on a chat read it never
+// needed. The recall exception belongs to `chatQuestionWords`, and the run's branch, the route and the
+// fallback all read that one need rule.
+test('#646: a recall ask that mentions the team runs no chat leg and answers from memory', async () => {
+  const recall = 'what did we discuss with the team about the release';
+  assert.ok(recallQuestion(recall), 'the ask is a recall ask');
+  assert.equal(chatQuestionWords(recall), false, 'and the one need rule reads no chat in it');
+  assert.deepEqual(requiredSources(recall), ['memory'], 'the route is her own memory');
+  const at = Date.parse('2026-10-21T05:30:00Z');
+  assert.equal(routedSelection(recall, CONFIGURED, at), undefined, 'the router claims no candidate for it');
+  assert.equal(fallbackSelection(recall, CONFIGURED, at).actions.some(action => action.kind === 'chat_search'), false, 'and the fallback selector offers no chat read either');
+  const h = harness({ memory: () => ({ lines: ['2026-10-14 entry: we agreed the release ships on Friday'], text: '', total: 1 }) });
+  const reply = await runResearch(h.deps, { action: 'start', question: recall }, new AbortController().signal);
+  assert.ok(!h.executed.includes('mattermost_search'), `no chat leg runs for a recall ask (${h.executed.join(', ')})`);
+  assert.deepEqual(reply['sources'], { memory: 'ok' }, 'and her memory alone answers it');
+});
+
+// #646: a recall ask that names the chat surface still reads it, so the exception stays the exception.
+test('#646: a recall ask that names a channel still reads the chat', async () => {
+  const recall = 'what did we discuss in the release channel about the release';
+  assert.equal(chatQuestionWords(recall), true, 'the ask names the chat surface, so it needs the chat');
+  assert.deepEqual(requiredSources(recall), ['memory', 'chat'], 'so the route carries her memory and the chat');
+  const h = harness({ memory: () => ({ lines: ['2026-10-14 entry: we agreed the release ships on Friday'], text: '', total: 1 }) });
+  await runResearch(h.deps, { action: 'start', question: recall }, new AbortController().signal);
+  assert.ok(h.executed.includes('mattermost_search'), `an ask that names the channel reads it (${h.executed.join(', ')})`);
+});
+
+// #645: the chat read keeps a row of its own inside the turn, so one slow connector never spends the
+// ask's whole 12 s. #635 put it at 6 s, under the 5 to 12 s a real read takes, which cut 27 of 30 chat
+// reads before anything arrived; 10 s is above the real read and under the 12 s connector timeout, so a
+// cut is the exception with the #635 wording. What arrived is used, and a timed out read says so.
+test('#645: the chat read is bounded at ten seconds, and a timed out one says timed out', async () => {
+  assert.equal(RESEARCH.sourceDeadline.chat, 10_000, `the chat budget is ten seconds (${RESEARCH.sourceDeadline.chat} ms)`);
+  assert.ok(RESEARCH.sourceDeadline.chat < RESEARCH.sourceDeadline.mail, 'and under the 12 s the other connectors keep');
+  assert.ok(RESEARCH.sourceDeadline.chat > RESEARCH.firstAnswerMs, 'and above the 4.5 s the session releases at, so a late chat finding still lands');
   assert.equal(lookupBound('chat', 1, RESEARCH.answerCapMs), RESEARCH.sourceDeadline.chat, 'a lone chat lookup is given the chat budget');
   const clock = fakeClock();
   const h = harness({
@@ -895,7 +926,7 @@ test('#635: the chat read is bounded near five seconds, and a timed out one says
   assert.doesNotMatch(header, /chat provider_failed/u, 'a timeout is never voiced as a provider failure');
   assert.match(header, /chat timed_out \(say: team chat took too long\)/u, `and the voiceable clause says it took too long (${header})`);
   const note = String(reply['note']);
-  assert.match(note, /team chat: not read \(timed out after 6 s\)/u, `the note names the timeout and its budget (${note})`);
+  assert.match(note, /team chat: not read \(timed out after 10 s\)/u, `the note names the timeout and its budget (${note})`);
   assert.doesNotMatch(note, /could not reach/u, 'and never that the chat was out of reach');
 });
 

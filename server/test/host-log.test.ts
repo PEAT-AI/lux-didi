@@ -472,3 +472,10 @@ test('launch_kind carries the kind and its two flags, and nothing else', () => {
   assert.equal(safeEvent({ ...launch, windowShown: 1 }), undefined, 'a flag is never a count');
   assert.equal(safeEvent({ ...launch, windowTitle: 'Naya' }), undefined, 'no window text crosses this boundary');
 });
+
+// #639: the company read is a candidate like the others, so the run receipt that names it is kept rather
+// than refused by the closed set.
+test('#639: a research_run row naming the company search candidate is accepted', () => {
+  const run = { event: 'research_run', researchId: 'r1', questionClass: 'cross_source', rounds: 1, perRound: [{ candidates: [{ kind: 'company_search', pUseful: 0.4 }, { kind: 'knowledge_search', pUseful: 0.4 }], chosen: ['knowledge_search', 'company_search'] }], stopReason: 'answered', status: 'answered', ops: 2, sources: [{ kind: 'mongoose', disposition: 'completed', latencyMs: 12 }], elapsedMs: 100, deadAirMs: 0, selectorMs: 0, fallbackUsed: false, replyBytes: 400, unchecked: [], canContinue: false, findingChars: [] };
+  assert.deepEqual(safeEvent(run), run, 'the round names the company read and the receipt keeps it');
+});

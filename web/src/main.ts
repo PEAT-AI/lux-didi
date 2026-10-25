@@ -11,7 +11,7 @@ import { attachPin } from './autoscroll.ts';
 import { dragPanel, isNarrow, loadLayout, openSheet, closeSheet, PANEL_IDS, panelControl, panelLabel, panelOpen, panelWidth, saveLayout, shortcutPanel, togglePanel, withViewport, type LayoutState, type PanelId, type RouteId } from './layout';
 import { installNativeBridge, nativeTransport, type Bridge, type NativeLiveState } from './native-bridge';
 import { connectionsMarkup } from './connector-status';
-import { bindSignInButtons, micModePicker, micModePromptMarkup, micModeState, providerDefaultVoice, providerVoices, settingsMarkup, settingsSaveError, signInFailureNotice } from './settings-view';
+import { bindSettingsPanel, bindSignInButtons, laneNoticesMarkup, micModePicker, micModePromptMarkup, micModeState, noticesMarkup, providerDefaultVoice, providerVoices, settingsMarkup, settingsSaveError, sheetBodyMarkup, signInFailureNotice } from './settings-view';
 import { mongooseEndpointLabel } from './next-steps';
 import { answerMarkup } from './markdown';
 import { applyTheme, loadTheme, saveTheme, type Theme } from './theme';
@@ -236,7 +236,7 @@ function sheetMarkup() {
   if (!layout.sheet) return '';
   const content = { today, memory, settings, diagnostics: diagnosticsMarkup }[layout.sheet]();
   const title = layout.sheet.charAt(0).toUpperCase() + layout.sheet.slice(1);
-  return `<div class="sheet-scrim" data-close-sheet></div><aside class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="${title}"><header class="sheet-head"><h2>${title}</h2><button class="icon-button" id="sheet-close" aria-label="Close ${title}">\u2715</button></header><div class="sheet-body">${content}</div></aside>`;
+  return `<div class="sheet-scrim" data-close-sheet></div><aside class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="${title}"><header class="sheet-head"><h2>${title}</h2><button class="icon-button" id="sheet-close" aria-label="Close ${title}">\u2715</button></header>${sheetBodyMarkup(content, error, notice)}</aside>`;
 }
 // The two always-visible panel controls, one fixed slot per panel in the header, so the same control
 // opens and closes its panel in every state (#282).
@@ -336,7 +336,7 @@ function render() {
   const focus = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
   const focusId = focus?.id; const selection = focus && (focus.tagName === 'TEXTAREA' || ['text','search','password'].includes(focus.type)) ? [focus.selectionStart,focus.selectionEnd] : null;
   orb?.destroy();orb=undefined;transcriptPin?.stop();transcriptPin=undefined;
-  root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell" data-left="${layout.left}" data-right="${layout.right}" data-narrow="${layout.narrow}" data-sheet="${layout.sheet ?? ''}"><header class="app-header">${pairingRequired ? '' : panelControlsMarkup()}<a class="brand-mini" href="/" aria-label="Naya home"><span class="brand-orb" aria-hidden="true"></span><span>naya<span class="brand-dot">.</span></span></a>${livePillMarkup()}${miniModeButtonMarkup(!!nativeBridge&&!nativeFake)}<div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<div class="lane-row">${pairingRequired ? '' : railMarkup()}${pairingRequired ? '' : dividerMarkup('left')}<main id="main" tabindex="-1" class="lanes">${error ? `<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>` : ''}${notice ? `<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>` : ''}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : `${voiceViewMarkup()}${dividerMarkup('right')}${panelMarkup('right','Chat',chatHeadMarkup(),chatLane())}`}</main></div>${sheetMarkup()}${consentPopoverMarkup()}</div>`;
+  root.innerHTML = `<a id="skip-to-content" class="skip" href="#main">Skip to content</a><div class="app-shell" data-left="${layout.left}" data-right="${layout.right}" data-narrow="${layout.narrow}" data-sheet="${layout.sheet ?? ''}"><header class="app-header">${pairingRequired ? '' : panelControlsMarkup()}<a class="brand-mini" href="/" aria-label="Naya home"><span class="brand-orb" aria-hidden="true"></span><span>naya<span class="brand-dot">.</span></span></a>${livePillMarkup()}${miniModeButtonMarkup(!!nativeBridge&&!nativeFake)}<div class="connection"><span class="connection-dot ${connection==='Connected'?'online':''}"></span><span id="connection-state" role="status" aria-live="polite" aria-atomic="true">${e(connection)}</span><button id="reconnect-top" class="quiet" aria-label="Refresh connection">↻</button></div></header>${demoMode || status?.serviceMode==='synthetic-test' ? '<div class="demo-banner"><strong>Demo test mode</strong><span>Isolated synthetic data · not your personal service</span></div>' : ''}<div class="lane-row">${pairingRequired ? '' : railMarkup()}${pairingRequired ? '' : dividerMarkup('left')}<main id="main" tabindex="-1" class="lanes">${laneNoticesMarkup(error, notice, Boolean(layout.sheet))}${readBusy ? '<p class="loading" role="status" aria-live="polite" aria-atomic="true">Loading your records…</p>' : ''}${busy ? '<button id="cancel-request" class="quiet">Stop waiting</button>' : ''}${pairingRequired ? pairing() : `${voiceViewMarkup()}${dividerMarkup('right')}${panelMarkup('right','Chat',chatHeadMarkup(),chatLane())}`}</main></div>${sheetMarkup()}${consentPopoverMarkup()}</div>`;
   // The accepted CSP is style-src 'self', so the panel widths are applied through the CSSOM after the render
   // instead of through an inline style attribute in the markup (TR-R2, #305).
   const shellElement = root.querySelector<HTMLElement>('.app-shell');
@@ -403,10 +403,6 @@ function button(id: string, action: () => void) { document.getElementById(id)?.a
 function form(id: string, action: () => void) { document.getElementById(id)?.addEventListener('submit', ev => { ev.preventDefault(); action(); }); }
 function input(id: string, action: (value: string) => void) { document.getElementById(id)?.addEventListener('input', ev=>action((ev.target as HTMLInputElement).value)); }
 function findCommitment(id: string) { return [...(plan?.items.map(i=>i.commitment) ?? []), ...(plan?.unscheduled ?? []), ...recent].find(c=>c.id===id); }
-// A provider change rewrites the voice field and its list, so a Gemini save can never carry marin.
-function bindLiveProviderSwitch(){document.getElementById('live-provider')?.addEventListener('change',ev=>{const provider=(ev.target as HTMLSelectElement).value;const field=document.getElementById('live-voice') as HTMLInputElement|null;if(field)field.value=providerDefaultVoice(provider);const list=document.getElementById('live-voices');if(list)list.innerHTML=providerVoices(provider).map(name=>`<option value="${e(name)}"></option>`).join('');});}
-// Attached by every full bind and after the periodic settings-summary re-render, which replaces the select.
-function bindConnectedHistory() { document.getElementById('connected-history')?.addEventListener('change',ev=>{const next=(ev.target as HTMLSelectElement).value;if(next)void connectedView.select(next).catch(err=>{error=failure(err);render();});}); }
 // One listener on the stable root, installed once: a Settings repaint or a full render replaces the buttons
 // underneath it, and a click on the new node still reaches the same sign-in.
 let signInClickBound=false;
@@ -415,6 +411,22 @@ function bindSignIn(){if(signInClickBound)return;signInClickBound=true;bindSignI
   const label=mongooseEndpointLabel(endpoint);
   notice=started.status==='started'?`Sign in to ${label} in the browser window. The connector reconnects by itself when you finish.`:signInFailureNotice(started.reason);
 }));}
+// One binding pass for the whole Settings panel and the Mic Mode buttons, on the stable root and installed
+// once like the sign-in listener (#659): the 10 s repaint replaces every control underneath it, and each
+// press still reaches its own action, so no form ever falls through to a native submit (#673).
+let settingsBound=false;
+function bindSettings(){if(settingsBound)return;settingsBound=true;bindSettingsPanel(root,{
+  saveSettings({provider,voice,accent}){const version=authorityVersion();void mutate(async(signal)=>{const saved=await saveLiveSelection({provider,voice,accent},signal);if(version===authorityVersion()){liveSaved=saved;notice='Saved. It applies when Lux Didi next starts.';render();}},err=>err instanceof ApiError?settingsSaveError(err.code,err.message):undefined);},
+  providerChanged(provider){const field=document.getElementById('live-voice') as HTMLInputElement|null;if(field)field.value=providerDefaultVoice(provider);const list=document.getElementById('live-voices');if(list)list.innerHTML=providerVoices(provider).map(name=>`<option value="${e(name)}"></option>`).join('');},
+  historyChanged(next){void connectedView.select(next).catch(err=>{error=failure(err);render();});},
+  rememberChanged(remember){connectedView.setRemember(remember);},
+  appearanceChanged(value){theme=value==='light'?'light':'dark';saveTheme(themeStorage(),theme);applyTheme(document.documentElement,theme);nativeBridge?.send({type:'theme',mode:theme});render();},
+  openMicModePicker(){micModePicker(message=>nativeBridge?.send(message));},
+  dismissMicModePrompt(){micModeDismissed=true;render();},
+  revokeStanding(){void connectedView.revokeStanding();},
+  revokeConversation(){void connectedView.revokeConversation();},
+  recoverHistory(){void connectedView.recoverHistory();},
+});}
 function bind() {
   root.querySelectorAll<HTMLElement>('button[data-route]').forEach(el => el.onclick = () => { const route = el.dataset.route as RouteId; layout = openSheet(layout, route); if (route === 'today') { tab = 'Today'; void loadTab(); } else if (route === 'memory') { tab = 'Memory'; } notice = ''; error = ''; render(); });
   document.getElementById('sheet-close')?.addEventListener('click', () => { layout = closeSheet(layout); render(); });
@@ -435,14 +447,11 @@ function bind() {
   root.querySelectorAll<HTMLElement>('[data-capture]').forEach(el=>el.onclick=()=>{const entry=entries.find(v=>v.id===el.dataset.capture);if(entry)void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:entry.text,notes:'',dueAt:null,timeZone:zone,sourceSessionId:entry.sessionId,sourceEntryId:entry.id},signal});assertAuthority(version);notice='Commitment saved. Find it in Today.';});});
   document.getElementById('conversation-select')?.addEventListener('change',ev=>{const id=(ev.target as HTMLSelectElement).value;if(id)void openSession(id);else{session=undefined;entries=[];render();}});
   root.querySelectorAll<HTMLElement>('[data-mini-mode]').forEach(el=>el.addEventListener('click',()=>nativeBridge?.send({type:'mini'})));
-  const appearance = root.querySelector<HTMLSelectElement>('#appearance-theme');
-  if(appearance) appearance.onchange=()=>{theme=appearance.value==='light'?'light':'dark';saveTheme(themeStorage(),theme);applyTheme(document.documentElement,theme);nativeBridge?.send({type:'theme',mode:theme});render();};
   bindLiveDisclosure();
   input('commitment-title',v=>titleDraft=v);input('recall-query',v=>queryDraft=v);input('edit-title',v=>editTitle=v);input('edit-notes',v=>editNotes=v);input('edit-due',v=>editDue=v);input('memory-filter',v=>{memoryFilter=v;render();});
   form('commitment-form',()=>{if(!titleDraft.trim())return;void mutate(async (signal,version)=>{await request<Commitment>('/commitments',{method:'POST',body:{title:titleDraft.trim(),dueAt:null,timeZone:zone},signal});assertAuthority(version);titleDraft='';await loadPlan();assertAuthority(version);notice='Commitment saved.';});});
   form('edit-form',()=>{if(!editing || !editTitle.trim())return;void changeCommitment(editing,'edit');});
   form('recall-form',()=>void searchRecall());
-  form('live-settings-form',()=>{const provider=(document.getElementById('live-provider') as HTMLSelectElement).value;const voice=(document.getElementById('live-voice') as HTMLInputElement).value.trim();const accent=(document.getElementById('live-accent') as HTMLSelectElement).value;const version=authorityVersion();void mutate(async(signal)=>{const saved=await saveLiveSelection({provider,voice,accent},signal);if(version===authorityVersion()){liveSaved=saved;notice='Saved. It applies when Lux Didi next starts.';render();}},err=>err instanceof ApiError?settingsSaveError(err.code,err.message):undefined);});
   form('pair-form',()=>{const code=(document.getElementById('pair-code') as HTMLInputElement).value;void pairBrowser(code);});
   button('new-conversation',()=>{session=undefined;entries=[];entriesMore=false;historyOpen=true;notice='';render();});
   button('close-edit',()=>{editing=undefined;render();});button('close-history',()=>{detail=undefined;render();});
@@ -452,15 +461,8 @@ function bind() {
   document.getElementById('open-notices')?.addEventListener('click',event=>{if(!nativeTransport(window))return;event.preventDefault();nativeBridge?.send({type:'openExternal',url:new URL('/third-party-notices.txt',location.href).href});});
   button('logout',()=>void mutate(async()=>{await logout();}));
   button('cancel-request',()=>controller?.abort());
-  root.querySelectorAll<HTMLElement>('[data-mic-mode]').forEach(el=>el.onclick=()=>micModePicker(message=>nativeBridge?.send(message)));
-  button('mic-mode-dismiss',()=>{micModeDismissed=true;render();});
-  document.getElementById('connected-remember')?.addEventListener('change',ev=>connectedView.setRemember((ev.target as HTMLInputElement).checked));
-  bindConnectedHistory();
-  bindLiveProviderSwitch();
-  document.getElementById('connected-standing-revoke')?.addEventListener('click',()=>void connectedView.revokeStanding());
-  document.getElementById('connected-revoke')?.addEventListener('click',()=>void connectedView.revokeConversation());
-  document.getElementById('connected-recover')?.addEventListener('click',()=>void connectedView.recoverHistory());
   bindSignIn();
+  bindSettings();
 }
 async function mutate(action: (signal: AbortSignal, version: AbortSignal) => Promise<void>, refused?: (err: unknown) => string | undefined) {
   if(!writable())return;
@@ -586,7 +588,9 @@ function archiveSession(block: EarlierSession | undefined){
   else if(earlierFeed[index]!.html!==block.html)earlierFeed=earlierFeed.map((entry,n)=>n===index?block:entry);
 }
 /** Replace the settings panel in place and re-bind the controls the replacement carries. */
-function repaintLiveSettings(){const panel=document.getElementById('settings-summary');if(!panel)return;panel.outerHTML=settingsMarkup(settingsInput());bindConnectedHistory();bindLiveProviderSwitch();}
+// The panel is rebuilt every 10 s. Its controls need no rebinding: bindSettings installed one delegated
+// owner on the stable root, so the new nodes answer at once (#673).
+function repaintLiveSettings(){const panel=document.getElementById('settings-summary');if(!panel)return;panel.outerHTML=settingsMarkup(settingsInput());}
 /**
  * Read the running Live config from the same route the service renders its own summary through. A failed
  * read says so and drops the old values, so the page never shows a default as if it were the running one.
@@ -620,11 +624,12 @@ function scheduleLive(){
 }
 function paintNotices(){
   // The error and notice banners live at the top of the lane row; patch them in place so a notify
-  // never rebuilds the feed (spec 1.3 cause 2).
-  const lane=document.querySelector<HTMLElement>('main.lanes');if(!lane)return;
-  lane.querySelector(':scope > .alert')?.remove();lane.querySelector(':scope > .notice')?.remove();
-  const markup=`${error?`<div class="alert" role="alert" aria-live="assertive">${e(error)}</div>`:''}${notice?`<div class="notice" role="status" aria-live="polite" aria-atomic="true">${e(notice)}</div>`:''}`;
-  if(markup)lane.insertAdjacentHTML('afterbegin',markup);
+  // never rebuilds the feed (spec 1.3 cause 2). An open sheet covers that row, so while a sheet is open
+  // they render at the top of the sheet instead, still one live region (#673).
+  const host=document.querySelector<HTMLElement>(layout.sheet?'#sheet > .sheet-body':'main.lanes');if(!host)return;
+  host.querySelector(':scope > .alert')?.remove();host.querySelector(':scope > .notice')?.remove();
+  const markup=noticesMarkup(error,notice);
+  if(markup)host.insertAdjacentHTML('afterbegin',markup);
 }
 function paintLive(){
   // Every new Live session opens on a blank voice view (UI3b): the first `starting` frame drops the rows

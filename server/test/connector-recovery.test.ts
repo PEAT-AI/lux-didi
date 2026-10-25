@@ -377,7 +377,7 @@ test('671: a transient transport loss marks the source unavailable on one closed
   const first = runtime.status().endpoints[0]!;
   assert.equal(first.state, 'error', 'the 503 left the source unavailable');
   const unavailable = lifecycle.filter(entry => entry.event === 'connector_unavailable');
-  assert.equal(unavailable.length, 1, 'one line per mark, not one per read');
+  assert.equal(unavailable.length, 1, `one line per mark, not one per read: saw ${JSON.stringify(lifecycle)}`);
   assert.deepEqual(unavailable[0], { event: 'connector_unavailable', endpointId: 'gmail', reason: 'transport_unavailable' });
   // The log admits the new line only with its closed keys, and never free text or a url.
   assert.deepEqual(safeEvent({ event: 'connector_unavailable', endpointId: 'gmail', reason: 'transport_unavailable' }),

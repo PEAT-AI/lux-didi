@@ -368,17 +368,24 @@ export async function composeMcpRuntime(options: {
   const transportState = (event: McpTransportState): void => {
     if (closed || !reports.has(event.endpointId)) return;
     const id = event.endpointId;
+    // #671: the mark below is what makes `unavailableNow` answer a read at 0 ms, and until now nothing on
+    // host.log said which endpoint went unavailable or which closed code did it. One line per mark: only a
+    // mark that changes the report writes one. Codes only, never text.
+    const markUnavailable = (): void => {
+      const previous = reports.get(id)!;
+      if (previous.state === 'error' && previous.error === event.reason) return;
+      options.lifecycleLog?.({ event: 'connector_unavailable', endpointId: id, reason: event.reason });
+    };
     if (event.state === 'unavailable') {
       eligible.delete(id); ready.delete(id);
       bursts.set(id, { session: event.session, token: generations.get(id) });
+      markUnavailable();
       const previous = reports.get(id)!;
       reports.set(id, { ...previous, state: 'error', tools: 0, error: event.reason,
         exception: { class: 'Transport', code: event.reason } });
-      // #671: this is the mark that makes `unavailableNow` answer a read at 0 ms, so it says on host.log
-      // which endpoint went unavailable and which closed transport code did it. Codes only, never text.
-      options.lifecycleLog?.({ event: 'connector_unavailable', endpointId: id, reason: event.reason });
     } else if (event.recoverable && registry.revision(id) === event.revision
         && bursts.get(id)?.session === event.session && bursts.get(id)?.token === generations.get(id)) {
+      markUnavailable();
       eligible.set(id, { session: event.session, revision: event.revision });
       void recoverEndpoint(id);
     }

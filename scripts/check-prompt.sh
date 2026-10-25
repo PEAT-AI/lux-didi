@@ -51,7 +51,9 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
   --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
   "$out"/source/adapters/model/*.ts "$out"/source/adapters/live-voice/openai.ts "$out"/source/prompt/*.ts "$out"/source/tools/*.ts "$out"/source/test/*.ts
 test -f "$out/dist/test/prompt.test.js" # fresh mktemp output; no stale dist accepted
-tests=("$out/dist/test/prompt.test.js" "$out/dist/test/model.test.js" "$out/dist/test/live-persona.test.js" "$out/dist/test/runtime-context.test.js" "$out/dist/test/research.test.js" "$out/dist/test/research-web.test.js" "$out/dist/test/research-routed.test.js" "$out/dist/test/research-shape.test.js" "$out/dist/test/research-coverage.test.js")
+# The calendar suite is staged above and compiled with the rest, so it runs here too: a compiled suite nobody runs
+# hides its failures (#340).
+tests=("$out/dist/test/prompt.test.js" "$out/dist/test/model.test.js" "$out/dist/test/live-persona.test.js" "$out/dist/test/runtime-context.test.js" "$out/dist/test/research.test.js" "$out/dist/test/research-web.test.js" "$out/dist/test/research-routed.test.js" "$out/dist/test/research-shape.test.js" "$out/dist/test/research-coverage.test.js" "$out/dist/test/research-calendar.test.js")
 # W11-R1: server/test/research-mail-query.test.ts lands from fix/w11-mail-queries-1021; stage and run
 # it here whenever this tree carries it, so this check is green on either side of that merge.
 if [[ -f "$out/source/test/research-mail-query.test.ts" ]]; then

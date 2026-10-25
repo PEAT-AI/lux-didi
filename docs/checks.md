@@ -1,6 +1,8 @@
 # Checks
 
-There is no hosted CI workflow. Every check is a script in this repository that you run locally, one at a time (they share one machine and several take the single browser slot). Each script exits non-zero on failure and prints what it ran. Read the header comments of a script for its exact boundary.
+Every check is a script in this repository, and you run the ones that cover your change locally, one at a time (they share one machine and several take the single browser slot). Each script exits non-zero on failure and prints what it ran. Read the header comments of a script for its exact boundary.
+
+CI ([.github/workflows/ci.yml](../.github/workflows/ci.yml)) runs the Linux part of the release gate on every pull request into main, through `scripts/ci-gauntlet.sh --ci`. [What CI runs and what stays local](#what-ci-runs-and-what-stays-local) says which check is which, and why.
 
 Rules that apply to all of them:
 
@@ -24,7 +26,23 @@ binaries run outside the lock: only the compiler is inside it.
 
 ## The release gate
 
-Before a release, run these twelve at the release head, one at a time, with no rerun on a flake: `check-live-voice`, `check-live-session`, `check-prompt`, `check-live-gateway`, `check-tool-owner`, `check-google-connector`, `check-company-connectors`, `check-native-live`, `check-web-unit`, `Tests/DidiMacTests/check-mac.sh`, `check-host`, `check-install-smoke`. After installing the app, run `scripts/smoke.sh` once (it makes at most two real model turns, so never in a loop).
+Before a release, run these twelve at the release head, one at a time, with no rerun on a flake: `check-live-voice`, `check-live-session`, `check-prompt`, `check-live-gateway`, `check-tool-owner`, `check-google-connector`, `check-company-connectors`, `check-native-live`, `check-web-unit`, `Tests/DidiMacTests/check-mac.sh`, `check-host`, `check-install-smoke`. `bash scripts/ci-gauntlet.sh` runs exactly that list, in that order, one at a time; CI runs the same script with `--ci`.
+
+## What CI runs and what stays local
+
+Nine of the twelve need nothing macOS: they install from the npm cache, compile TypeScript, and run node test files. Those nine are the gate CI reproduces, in this order:
+
+`check-live-voice`, `check-live-session`, `check-prompt`, `check-live-gateway`, `check-tool-owner`, `check-google-connector`, `check-company-connectors`, `check-web-unit`, `check-install-smoke`.
+
+The three that stay local, and the reason from the script itself:
+
+| Check | Why it cannot run on an ubuntu runner |
+| --- | --- |
+| `check-native-live` | compiles Swift with `xcrun swiftc` under `scripts/with-compile-lock.sh` and builds the app bundle with `scripts/build-macos-app.sh` |
+| `Tests/DidiMacTests/check-mac.sh` | compiles `Sources/LuxDidi/*.swift` and `Tests/DidiMacTests/main.swift` with `xcrun swiftc`, then runs the binary |
+| `check-host` | takes the `lux-browser-slot` lease on the shared GPU renderer and drives `server/test/host-browser.mjs`; without that lease the check is blocked, not skipped |
+
+A gate check that runs past twenty minutes is a defect; the CI job is under fifteen in practice and fails on the job timeout at twenty. `check-mcp` is not a gate check and CI does not run it: it covers the MCP connector surface and belongs to a change that touches it. After installing the app, run `scripts/smoke.sh` once (it makes at most two real model turns, so never in a loop).
 
 ## Server and host
 
@@ -100,3 +118,4 @@ Before a release, run these twelve at the release head, one at a time, with no r
 - `scripts/probe-gpt-live.mjs`: manual probe of the OpenAI Live socket with a private config path. Uses a real provider; do not run it in a check.
 - `scripts/backlog_validate.py`: validates the historical planning backlog in `planning/`. It does not test the product.
 - `scripts/warm-npm-cache.sh`, `scripts/npm-ci-offline.sh`: fill and use the offline npm cache that several checks need.
+- `scripts/ci-gauntlet.sh [--ci]`: the release gate in one command, in the order listed above, stopping at the first failure. `--ci` is the nine that need no macOS, which is what CI runs.

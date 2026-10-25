@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_PARAMETERS } from '../tools/trello.js';
 import { NAYA_VOICE_TOOLS } from '../prompt/live-persona.js';
 import { safeEvent } from '../host/log.js';
+import { sessionTerminalHooks } from '../host/runtime.js';
 
 // W7: the Trello tool descriptions are voice content. These are the rules the owner asked for, held as text.
 
@@ -33,6 +34,23 @@ test('a note is a dated line in the description, because the server has no comme
 
 test('the read description names the Inbox he jots into, and never a comment tool (W7-R1)', () => {
   assert.match(TRELLO_READ_DESCRIPTION, /inbox/i);
+});
+
+test('every Trello call writes one content-free connector_call line, the Inbox read included (F12)', () => {
+  for (const tool of ['read.overview', 'read.inbox', 'write.move', 'write.note']) {
+    assert.ok(safeEvent({ event: 'connector_call', connector: 'trello', tool, phase: 'settle', outcome: 'ok' }), `host.log keeps ${tool}`);
+  }
+});
+
+test('the Live settle ends the board session and the summary never blocks it (F14)', () => {
+  const order: string[] = [];
+  const terminal = sessionTerminalHooks({ endBoardSession: id => order.push(`end:${id}`), scheduleSummary: id => order.push(`summary:${id}`) });
+  terminal('live-7');
+  assert.deepEqual(order, ['end:live-7', 'summary:live-7'], 'the board session ends with the Live session');
+  const ended: string[] = [];
+  const throwing = sessionTerminalHooks({ endBoardSession: id => ended.push(id), scheduleSummary: () => { throw Error('summary'); } });
+  assert.throws(() => throwing('live-8'));
+  assert.deepEqual(ended, ['live-8'], 'the ledger is cleared even when the summary cannot be scheduled');
 });
 
 test('no contradiction with the persona: she never promises a callback, and a write that did not happen is never claimed', () => {

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTrelloBoard, runTrelloLogin, trelloBinding, trelloSignedIn, trelloTokenSource, TRELLO_REFERENCE, TRELLO_SCOPE } from '../host/trello.js';
 import { createTrelloTransport } from '../adapters/trello/client.js';
-import { foldName, indexTrelloSchemas, ownerAskedForChange, planTrelloCall, trelloDueInstant, validateTrelloRead, validateTrelloWrite, TRELLO_SERVER_ALLOW, TRELLO_SERVER_DENY, TRELLO_WRITE_DESCRIPTION, type TrelloBoard } from '../tools/trello.js';
+import { foldName, indexTrelloSchemas, ownerAskedForChange, planTrelloCall, trelloDueInstant, validateTrelloRead, validateTrelloWrite, TRELLO_CALL_TOOLS, TRELLO_SERVER_ALLOW, TRELLO_SERVER_DENY, TRELLO_WRITE_DESCRIPTION, type TrelloBoard } from '../tools/trello.js';
 import { OAuthLoginError, writeOAuthRecord, type OAuthSignInHop } from '../host/oauth-client.js';
 import { fakeToolSchemas, startTrelloFake, type TrelloFake } from './trello-fake.js';
 
@@ -56,7 +56,11 @@ test('the sign-in runs every hop against a resource and an issuer on different o
     assert.equal(url.searchParams.get('resource'), local.resource);
     assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
     assert.equal(url.searchParams.get('scope'), TRELLO_SCOPE);
-    assert.ok(!/inbox|planner|write:organization/.test(TRELLO_SCOPE), 'the scope never asks for Inbox, Planner or workspace writes');
+    // F10: the Inbox read this connector now performs is granted, and nothing wider is asked for.
+    assert.match(TRELLO_SCOPE, /(?:^| )read:member\.inbox:trello(?: |$)/, 'the Inbox read is granted');
+    assert.match(TRELLO_SCOPE, /(?:^| )write:member\.inbox:trello(?: |$)/, 'the Inbox to board move is granted');
+    assert.match(TRELLO_SCOPE, /(?:^| )write:board:trello(?: |$)/, 'the board writes are granted');
+    assert.ok(!/planner|write:organization/.test(TRELLO_SCOPE), 'the scope never asks for Planner or workspace writes');
     assert.equal(local.registrations[0]?.token_endpoint_auth_method, 'none');
     assert.match(String((local.registrations[0]?.redirect_uris as string[])[0]), /^http:\/\/127\.0\.0\.1:\d+\/callback$/);
     assert.deepEqual(local.tokens, [{ grant: 'authorization_code', resource: local.resource }]);
@@ -364,6 +368,9 @@ test('what he jotted today reads the Inbox and the board cards he added today', 
   const tools = fake.calls.slice(before).map(call => call.tool);
   assert.ok(tools.includes('trelloReadInbox'), 'the Inbox is read through the server');
   assert.ok(tools.every(tool => tool.startsWith('trelloRead')), 'a jot read writes nothing');
+  // F12: an Inbox read is a logged call, under a name the host's closed set keeps.
+  assert.ok(TRELLO_CALL_TOOLS.includes('read.inbox'), 'the host log vocabulary carries the Inbox read');
+  assert.ok(events.some(event => event.tool === 'read.inbox'), 'the Inbox read emits its content-free connector_call line');
 });
 
 test('an Inbox card moves onto a list of the pinned board, and no other Inbox write exists', async () => {
@@ -374,11 +381,6 @@ test('an Inbox card moves onto a list of the pinned board, and no other Inbox wr
   const handle = (read.jotted as { card: string }[])[0]!.card;
   const listId = fake.lists.find(list => list.name === 'Short Term Backlog' && list.boardId === fake.boards[0]!.id)!.id;
   const before = writes().length;
-  const moved = await board.write(run, { action: 'move', card: handle, list: 'Short Term Backlog' }, 'put that note into Short Term Backlog');
-  assert.equal(moved.ok, true, JSON.stringify(moved));
-  assert.equal(moved.change, 'moved from the Inbox to Short Term Backlog');
-  assert.deepEqual(writes().slice(before), [{ tool: 'trelloWriteCard', args: { action: 'move', cardId: inboxCard.id, listId } }]);
-  assert.equal(inboxCard.listId, listId, 'the note is in that list now');
   for (const [args, words] of [
     [{ action: 'archive', card: handle }, 'archive it'],
     [{ action: 'note', card: handle, text: 'a line' }, 'note on the card'],
@@ -387,7 +389,15 @@ test('an Inbox card moves onto a list of the pinned board, and no other Inbox wr
   ] as const) {
     assert.equal((await board.write(run, args, words)).code, 'outside_scope', JSON.stringify(args));
   }
-  assert.equal(writes().length, before + 1, 'the only Inbox write is the move onto the board');
+  const moved = await board.write(run, { action: 'move', card: handle, list: 'Short Term Backlog' }, 'put that note into Short Term Backlog');
+  assert.equal(moved.ok, true, JSON.stringify(moved));
+  assert.equal(moved.change, 'moved from the Inbox to Short Term Backlog');
+  assert.deepEqual(writes().slice(before), [{ tool: 'trelloWriteCard', args: { action: 'move', cardId: inboxCard.id, listId } }], 'the only Inbox write is the move onto the board');
+  assert.equal(inboxCard.listId, listId, 'the note is in that list now');
+  // F13: the moved note is a card of the board now, and its Inbox handle is spent rather than a trap.
+  const noted = await board.write(run, { action: 'note', card: 'Jotted note from the phone', text: 'kept in the backlog' }, 'note on the card');
+  assert.equal(noted.ok, true, JSON.stringify(noted));
+  assert.equal((await board.write(run, { action: 'archive', card: handle }, 'archive it')).code, 'card_unknown', 'the Inbox handle no longer names anything');
 });
 
 // W7-R2: the repository is public, so the board name lives only in the owner's private config.

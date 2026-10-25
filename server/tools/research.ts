@@ -1678,6 +1678,8 @@ interface CalendarRead {
 export interface RunState {
   /** C-LIVE: the moment this operation must have answered by; no page starts that cannot finish before it. */
   operationDeadlineAt?: number;
+  /** L8-06: the sources this call is reading right now (the first answer's own set, the web read included). */
+  reading?: Set<SourceKind>;
   /** #575: the start of the call before this one, so her own lines from the last two calls stay out of memory evidence. */
   previousCallAt?: number;
   /** #575: finding texts this session already delivered, shared by every run of the session. */
@@ -2509,14 +2511,16 @@ function closedOutcomeOf(run: RunState, source: SourceKind): UnsearchedReason {
   if (code !== undefined) return unsearchedReasonOf(code);
   if (run.stopped || run.cancelled) return 'skipped_by_route';
   // A reader still pending when the run closed used all of its deadline and answered nothing.
-  return run.pending.has(source) ? 'timed_out' : 'skipped_by_route';
+  return run.pending.has(source) || (run.reading?.has(source) === true && !run.sourcesDone.has(source)) ? 'timed_out' : 'skipped_by_route';
 }
 
 function unsearchedReasonGiven(run: RunState, configured: readonly SourceKind[], source: SourceKind): UnsearchedReason {
   if (!configured.includes(source)) return 'not_configured';
   // #635: a read still in flight is neither skipped nor failed, so it says so, the same thing the note says.
   // #653: but a closed run has no read in flight, so the same source is named by its closed outcome.
-  if (run.pending.has(source) && !run.ended && !run.stopped && !run.cancelled) return 'still_reading';
+  // L8-06: a read still running is still reading, whichever path runs it: the web read never passes the
+  // execute wrapper that fills `pending`, so the call's own reading set counts too.
+  if ((run.pending.has(source) || (run.reading?.has(source) === true && !run.sourcesDone.has(source))) && !run.ended && !run.stopped && !run.cancelled) return 'still_reading';
   return closedOutcomeOf(run, source);
 }
 
@@ -4803,6 +4807,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   }
   run.direction = call.direction ?? run.direction;
   run.operationDeadlineAt = now() + RESEARCH_OPERATION.deadlineMs;
+  run.reading = first.reading;
   // #621: the ask's own route, so a source it names but the session never wired still says why.
   for (const source of requiredSources(run.question ?? question)) run.route.add(source);
   if (deps.timeZone === undefined) delete run.timeZone; else run.timeZone = deps.timeZone;
@@ -5760,7 +5765,7 @@ function reportedTotal(totals: readonly number[]): number | 'changing' | undefin
  */
 export function operationCoverage(run: RunState, findings: readonly FindingLike[]): JsonObject[] {
   const closed = run.cancelled || run.stopped;
-  const touched = new Set<SourceKind>([...run.route, ...run.sourcesDone, ...run.sourcesFailed, ...run.pending, ...run.emptySearches.keys(), ...run.cutShort]);
+  const touched = new Set<SourceKind>([...run.route, ...run.sourcesDone, ...run.sourcesFailed, ...run.pending, ...(run.reading ?? []), ...run.emptySearches.keys(), ...run.cutShort]);
   if (run.mail.size > 0) touched.add('mail');
   if (run.calendar.size > 0) touched.add('calendar');
   const rows: JsonObject[] = [];
@@ -5802,7 +5807,7 @@ export function operationCoverage(run: RunState, findings: readonly FindingLike[
       if (typeof reported === 'number') { total = Math.max(reported, examined); matches = total; }
       else if (run.emptySearches.has(source) && examined === 0) { total = 0; matches = 0; }
       readComplete = run.sourcesDone.has(source) || run.emptySearches.has(source);
-      stop = run.pending.has(source) || run.cutShort.has(source) ? 'deadline'
+      stop = run.pending.has(source) || run.cutShort.has(source) || (run.reading?.has(source) === true && !readComplete) ? 'deadline'
         : run.sourcesFailed.has(source) ? 'failed'
           : !readComplete ? (closed ? 'cancelled' : 'not_read')
             : typeof total === 'number' && total > examined ? 'page_limit' : 'exhausted';

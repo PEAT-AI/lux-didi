@@ -235,6 +235,15 @@ export function createTrelloSignIn(options: {
   return signIn;
 }
 
+/**
+ * W7-R4 (F14): what the Live settle does when a session ends, in the one order that matters. The board's
+ * session state goes first, because it is a map delete that cannot throw, and the summary follows, so a
+ * summariser failure can never keep a finished run's receipts alive.
+ */
+export function sessionTerminalHooks(hooks: { endBoardSession: (liveSessionId: string) => void; scheduleSummary: (liveSessionId: string) => void }): (liveSessionId: string) => void {
+  return liveSessionId => { hooks.endBoardSession(liveSessionId); hooks.scheduleSummary(liveSessionId); };
+}
+
 /** The Trello row the Settings poll shows: signed in and named, from the files alone, never a network probe. */
 export function trelloConnectionRow(configDir: string, binding: OAuthBinding | undefined = trelloBinding()): { id: string; connector: string; state: string; tools: number; error?: string } {
   const row = { id: 'trello', connector: 'trello' };
@@ -669,7 +678,7 @@ export async function startHost(config: HostConfig) {
       calendarDigest: { forStart: () => calendarDigest.forStart(), refresh: () => { void calendarDigest.refresh(); } },
       // W7-R4: the board's per-session cache and idempotency ledger end with the session, before the
       // summary is scheduled so a summarizer failure cannot keep a finished run's receipts alive.
-      onSessionTerminal: liveSessionId => { trello.end(liveSessionId); summarizer.schedule(liveSessionId); },
+      onSessionTerminal: sessionTerminalHooks({ endBoardSession: liveSessionId => { trello.end(liveSessionId); }, scheduleSummary: liveSessionId => { summarizer.schedule(liveSessionId); } }),
       log: event => log.event(event),
     };
     const { chat, status } = composeChat(store, domain, providerConfigDir, config.modelTesting, config.now, owner.snapshot, liveTools);

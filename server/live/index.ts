@@ -290,7 +290,7 @@ export function journalToolStatus(response: JsonObject): 'completed' | 'error' {
 }
 
 /** S4a ceiling on one non-research tool call: past it the host answers the call itself with a timeout output. */
-const TOOL_CEILING_MS = 12_000;
+export const TOOL_CEILING_MS = 12_000;
 /** R6: how recent the model's own audio must be to hold a late line back. */
 const ANSWER_AUDIO_HOLD_MS = 3_000;
 /** S4a: a delegation still open this long after its last call was answered, with no terminal nested event, is

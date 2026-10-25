@@ -3707,8 +3707,9 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // C-DEPTH item 2: a shortened line is still a compacted answer, so the receipt records it as one even
     // though no whole item was dropped: the floor protects short sources and the widest one is cut instead.
     if (clipped.length >= FLOOR_CLIP_CHARS) { widest.lines[widest.lines.length - 1] = clipped; clippedEvidence = true; continue; }
-    // The floor wins: a reply slightly over its prose budget still names every source that answered.
-    if (shownOf(widest) <= 1) break;
+    // LAT-1023 B3 under C-DEPTH item 2: the budget is a hard bound, so when the floor can neither shorten the
+    // widest line usefully nor spare a second one, that last line goes whole and the header counts it out.
+    if (shownOf(widest) <= 1) { widest.lines.pop(); dropped += 1; continue; }
     widest.lines.pop(); dropped += 1;
   }
   const compactItems = dropped + droppedEvents;

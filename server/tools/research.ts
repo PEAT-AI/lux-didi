@@ -113,6 +113,8 @@ export const RESEARCH = Object.freeze({
    * the cap, so a call cannot hang on a source that never answers and cannot outlast what it reads.
    */
   answerSlackMs: 2_000,
+  /** #670: the read's outer cut, this far above a web ask's own budget, so a cut web read says timeout. */
+  webCutSlackMs: 1_000,
   /**
    * P5-R5 (F4): the cap is a guard, not a bound in force: with the largest table row at 12 s the budget
    * tops out at 14 s, and a start call's ledger deadline is the older `startDeadlineMs` 15 s, which the
@@ -5069,7 +5071,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           // P5: the cut follows this source's own deadline from the table, never one number for every source.
           const webCall = subs.find(sub => sub.name === WEB_SEARCH_ACTION);
           const askedWebDeadline = webCall === undefined ? undefined : webDeadlineMs(String(webCall.args['query'] ?? ''));
-          const readDeadlineMs = askedWebDeadline === undefined ? sourceDeadlineMs(startSources) : Math.max(sourceDeadlineMs(startSources), askedWebDeadline);
+          // #670: the web module's own timer must be the one that fires, so this read's outer cut sits a
+          // second above the web budget and still under the answer budget (12 s plus its 2 s slack).
+          const readDeadlineMs = askedWebDeadline === undefined ? sourceDeadlineMs(startSources) : Math.max(sourceDeadlineMs(startSources), askedWebDeadline + RESEARCH.webCutSlackMs);
           // #635: the cut is recorded the moment it happens, not when the read settles, so a reply composed
       // while the read is being cut still names it a timeout instead of a source nobody read.
       const cutTimer = schedule(() => {

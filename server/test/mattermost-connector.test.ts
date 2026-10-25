@@ -332,23 +332,27 @@ test('#637: a plain words channel reference resolves its words, and names the ch
 // closed code the reply speaks, and no wide archive read is issued for it.
 // CHANNELS-R4 open item: the tools-owner fixture below still refuses to publish the local read grant
 // (invalid-local-read-grant), so this end-to-end test is skipped rather than left red on the branch.
-test('#637: a refused channel read through the real tool layer is voiced as an unknown channel', { skip: 'tools-owner read grant in the test fixture is not published yet (CHANNELS-R4 open item)' }, async t => {
+// CHANNELS-R5: still skipped. Four fixture orders were tried (see the author report); each stops at
+// `invalid-local-read-grant`, so the grant sequence below is not yet the MAILSTATE one.
+test('#637: a refused channel read through the real tool layer is voiced as an unknown channel', { skip: 'CHANNELS-R5: local read grant sequence not yet the MAILSTATE one (invalid-local-read-grant)' }, async t => {
   const f = setup('ok');
   const store = new Store(join(f.dir, 'data'), toolsMigrations);
   t.after(async () => { await f.adapter.close(); store.close(); rmSync(f.dir, { recursive: true, force: true }); });
-  const first = await f.adapter.discover('mattermost');
-  assert.equal(first.state, 'discovered');
-  if (first.state !== 'discovered') throw new Error('not discovered');
+  // The connector's own read grant must be published before the tools owner will dispatch a read.
+  const digest = await approve(f.adapter, f.registry);
   let live: LiveAuthority | null = null;
   const owner = createToolsOwner({ store, ownerId: store.assistantId, registry: f.registry, port: f.adapter, lookupAuthority: async () => live });
   owner.applyConnection({
     schemaVersion: 1, ownerId: store.assistantId, connectionId: 'mattermost', generation: 1, enabled: true, connector: 'mattermost',
     endpoint: { ...config('mattermost', 'ok', f.dir, join(f.dir, 'calls.log')), credentialRef: null },
-    toolNames: [...MATTERMOST_TOOLS], schemaDigest: first.schemaDigest,
+    toolNames: [...MATTERMOST_TOOLS], schemaDigest: digest,
     sourcePolicy: { id: 'mattermost-read', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
     route: { identity: 'voice', allowedClasses: ['ordinary'] },
     bounds: { maxQueryChars: 200, maxSearchLimit: 50, maxGetIds: 10, maxEntityBytes: 20000, maxResultBytes: 200000 },
   } as never);
+  // applyConnection suspends the grant; the owner's rediscovery re-observes the digest, then projects it.
+  const again = await f.adapter.discover('mattermost');
+  assert.equal(again.state, 'discovered');
   owner.projectConnection('mattermost');
   const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1,
     route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['ordinary'] }, allowedClasses: ['ordinary'], connectionIds: ['mattermost'] };

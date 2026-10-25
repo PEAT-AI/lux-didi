@@ -7,16 +7,18 @@ struct NativeNextStep {
     var guideURL: URL? = nil
 }
 enum NativeNextSteps {
-    // The seven connector rows the host can emit and the nine reason codes it can return, matching
-    // web/src/next-steps.ts one for one (web/test/next-steps.test.ts reads these two lines).
-    static let connectorIDs = ["lux-knowledge", "gmail", "calendar", "mattermost", "mongoose-knowledge", "mongoose-data", "mongoose-crm"]
-    static let reasonCodes = ["configuration_error", "credential_missing", "needs_sign_in", "not_signed_in", "unreachable", "discovery_failed", "handshake_failed", "identity_mismatch", "unknown"]
+    // The eight connector rows the host can emit (the catalogue plus the Trello board, W7-R3) and the ten
+    // reason codes it can return, matching web/src/next-steps.ts one for one
+    // (web/test/next-steps.test.ts reads these two lines).
+    static let connectorIDs = ["lux-knowledge", "gmail", "calendar", "mattermost", "mongoose-knowledge", "mongoose-data", "mongoose-crm", "trello"]
+    static let reasonCodes = ["configuration_error", "credential_missing", "needs_sign_in", "not_signed_in", "not_configured", "unreachable", "discovery_failed", "handshake_failed", "identity_mismatch", "unknown"]
     private static let setupGuide = URL(string: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup")
     private static let mcpGuide = URL(string: "https://github.com/PEAT-AI/lux-didi/blob/main/docs/mcp-configuration.md")
     private static let configureStep = NativeNextStep(text: "Configure this connector and its credentials in your explicitly selected protected configuration directory. Use the Setup guide, then restart Lux Didi.", command: nil, guideURL: setupGuide)
     /// The three Mongoose endpoints, each its own OAuth resource with its own browser sign-in.
     private static let endpointLabels: [String: String] = [
         "mongoose-knowledge": "Mongoose knowledge", "mongoose-data": "Mongoose data", "mongoose-crm": "Mongoose CRM",
+        "trello": "Trello",
     ]
     private static let endpointNames: [String: String] = [
         "mongoose-knowledge": "knowledge", "mongoose-data": "data", "mongoose-crm": "crm",
@@ -42,6 +44,7 @@ enum NativeNextSteps {
     private static let reasonSteps: [String: NativeNextStep] = [
         "configuration_error": NativeNextStep(text: "This connector's tool list changed and needs your approval. Approve the new tool list with the approve command the MCP configuration guide describes, then restart Lux Didi.", command: nil, guideURL: mcpGuide),
         "credential_missing": configureStep,
+        "not_configured": NativeNextStep(text: "This connector has no configuration yet. Set it in your protected configuration directory, then reopen Settings. See the MCP configuration guide.", command: nil, guideURL: mcpGuide),
         "needs_sign_in": NativeNextStep(text: "This connector needs a fresh sign-in with its own credentials. Sign in with its own command, then restart Lux Didi.", command: nil, guideURL: setupGuide),
         "not_signed_in": NativeNextStep(text: "This connector has no active session. Sign in again with its own credentials, then restart Lux Didi.", command: nil, guideURL: setupGuide),
         "unreachable": NativeNextStep(text: "The connector service is not reachable right now. Start it, then restart Lux Didi.", command: nil, guideURL: setupGuide),

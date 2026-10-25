@@ -1,8 +1,8 @@
 // Fixed instructions only, never provider payloads or credential contents.
-/** The seven connector rows the host can emit (release 11 catalogue, server/test/fixtures/installed-mcp-config.json). */
-export const connectorIDs = ["lux-knowledge", "gmail", "calendar", "mattermost", "mongoose-knowledge", "mongoose-data", "mongoose-crm"] as const;
-/** The nine reason codes the host's connectionReasonCode can return (server/http/server.ts). */
-export const reasonCodes = ["configuration_error", "credential_missing", "needs_sign_in", "not_signed_in", "unreachable", "discovery_failed", "handshake_failed", "identity_mismatch", "unknown"] as const;
+/** The eight connector rows the host can emit: the release 11 catalogue (server/test/fixtures/installed-mcp-config.json) and the Trello board (W7-R3). */
+export const connectorIDs = ["lux-knowledge", "gmail", "calendar", "mattermost", "mongoose-knowledge", "mongoose-data", "mongoose-crm", "trello"] as const;
+/** The ten reason codes the host's connectionReasonCode can return (server/http/server.ts). */
+export const reasonCodes = ["configuration_error", "credential_missing", "needs_sign_in", "not_signed_in", "not_configured", "unreachable", "discovery_failed", "handshake_failed", "identity_mismatch", "unknown"] as const;
 export type ReasonCode = (typeof reasonCodes)[number];
 
 /** The three Mongoose endpoints, each its own OAuth resource with its own sign-in. */
@@ -36,6 +36,8 @@ const mongooseReasonSteps: Partial<Record<ReasonCode, (label: string) => NextSte
   configuration_error: label => ({ text: `The ${label} entry in your connector configuration needs a fix: a missing data class, or a changed tool list that needs your approval. Follow the MCP configuration guide; Lux Didi reads that file when it starts, so the change applies from its next start.`, guideUrl: mcpGuideUrl }),
   discovery_failed: label => ({ text: `${label} answered, but its tool list could not be read. Use Copy diagnostics from the Lux Didi menu; the connector_failure line in host.log names the cause.` }),
   handshake_failed: label => ({ text: `${label} did not finish connecting. Check that the VPN is on and Mongoose is up; if it stays failed, use Copy diagnostics from the Lux Didi menu.` }),
+  // W7-R2: the board name is the owner's private configuration, so the row says where it goes.
+  not_configured: label => ({ text: `${label} has no board name yet. Write {"board": "<the name you see in Trello>"} to trello-board.json in the protected configuration directory, then reopen Settings.`, guideUrl: mcpGuideUrl }),
   identity_mismatch: label => ({ text: `${label} is signed in as a different account than your configuration names. Use the Sign in button and sign in with the account your configuration names; a refused account is not retried, so the endpoint connects with the new sign-in from Lux Didi's next start.`, guideUrl: setupGuideUrl, signIn: true }),
 };
 const failureStep: NextStep = { text: "Check the connector service, then use Copy diagnostics from the Lux Didi menu." };

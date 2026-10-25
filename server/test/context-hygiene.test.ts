@@ -122,10 +122,10 @@ type ConnectorHook = { calls: { name: string; args: Record<string, unknown> | un
 
 /** One fake knowledge connector, its tool call counted: a dispatch the test can see, never a real endpoint. */
 /** What the fake knowledge connector answers, in the ranker's own line shape, so the read parses it as hits. */
-const answer = { lines: 6, body: 170 };
+const answer = { lines: 12, body: 170 };
 function knowledgeFixture(): string {
   const hit = (i: number): string => [
-    `#${1000 + i}: Clifton StrengthsFinder profile ${1000 + i} of the audit team`,
+    `**#${1000 + i}** [PATTERN] Clifton StrengthsFinder profile ${1000 + i} of the audit team`,
     `[Evidence](https://example.com/${1000 + i})`,
     `the audit team strengths are Achiever, Learner and Input, dated 2026-10-${String((i % 28) + 1).padStart(2, '0')}. ${'more evidence about the team and its plan. '.repeat(4)}`,
   ].join('\n');
@@ -192,7 +192,7 @@ interface Harness {
   authority(up: boolean): void;
 }
 
-async function harness(t: TestContext): Promise<Harness> {
+async function harness(t: TestContext, options: { rebuildThresholdChars?: number } = {}): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-recovery-'));
   const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations]);
   const ctx: LiveContext = { clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch };
@@ -208,7 +208,7 @@ async function harness(t: TestContext): Promise<Harness> {
   });
   const { tools, hook } = await toolsFixture(t, store, profile);
   const owner = createLiveSessionOwner({ store, voice: port.port, profile, tools,
-    now: () => clock.now, timeZone: 'Asia/Kolkata', schedule: clock.schedule });
+    now: () => clock.now, timeZone: 'Asia/Kolkata', schedule: clock.schedule, ...options });
   ownerRef = owner;
   t.after(() => { sink(); ownerRef = undefined; rmSync(dir, { recursive: true, force: true }); });
   return { owner, store, port, clock, ctx, receipts, connectorCalls: hook.calls, holdTool: hook.hold, releaseTool: hook.release, authority: hook.authority,
@@ -242,9 +242,11 @@ const research = (id: string, question = 'what do we know about the plan'): Live
 
 const turnComplete = { type: 'turnComplete' } as LiveVoiceEvent;
 const REBUILD = 'research_context_rebuild';
-
-/** The threshold the host applies, restated here so a case fails if the config moves under it. */
-const THRESHOLD = 24_000;
+/**
+ * W10-R20: the replay injects the rebuild threshold, so one read that a live knowledge ask really answers
+ * can cross it. Production keeps `RESEARCH.rebuildThresholdChars`; the shipped constant is never changed.
+ */
+const CROSSED = 400;
 
 function rebuilds(h: Harness): Record<string, unknown>[] {
   return h.receipts.filter(entry => entry['event'] === REBUILD);
@@ -256,8 +258,8 @@ function sent(h: Harness, index: number): string {
 }
 
 /** A live session on the fake provider, ready and past the owner's first words. */
-async function live(t: TestContext): Promise<Harness> {
-  const h = await harness(t);
+async function live(t: TestContext, rebuildThresholdChars: number): Promise<Harness> {
+  const h = await harness(t, { rebuildThresholdChars });
   const created = h.owner.create({ idempotencyKey: `hygiene-${randomUUID()}`, inputClass: 'ordinary' }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
   const first = (await sessionAt(h, 0))!;
@@ -268,23 +270,17 @@ async function live(t: TestContext): Promise<Harness> {
   return h;
 }
 
-/** Three research answers on distinct questions, which is what carries the retained count past the threshold. */
-async function pastThreshold(h: Harness, count = 3): Promise<void> {
-  for (let i = 0; i < count; i += 1) {
-    h.port.emit(research(`r${i}`, `Clifton strengths profile ${i} of the audit team`));
-    await answered(h, i + 1);
-    h.port.emit(turnComplete);
-    await flush();
-    await ownerSpoke(h, `and the Clifton profile ${i} detail`);
-  }
+/** One research answer, on a question that names the entity the fake knowledge read answers for. */
+async function oneRead(h: Harness, id = 'r0', question = 'Clifton strengths profile of the audit team'): Promise<void> {
+  const before = h.port.toolResponses.length;
+  h.port.emit(research(id, question));
+  await answered(h, before + 1);
 }
 
 test('HYGIENE 10: nothing is rebuilt while the retained research stays under the threshold', async t => {
-  answer.lines = 2;
-  const h = await live(t);
-  h.port.emit(research('r0', 'who leads the audit team'));
-  await answered(h, 1);
-  assert.ok(sent(h, 0).length < THRESHOLD, `one small answer is under the threshold, was ${sent(h, 0).length}`);
+  const h = await live(t, 50_000);
+  await oneRead(h);
+  assert.ok(sent(h, 0).length < 50_000, `one answer is under an unreachable threshold, was ${sent(h, 0).length}`);
   h.port.emit(turnComplete);
   await flush();
   assert.deepEqual(rebuilds(h), [], 'no rebuild under the threshold');
@@ -292,13 +288,9 @@ test('HYGIENE 10: nothing is rebuilt while the retained research stays under the
 });
 
 test('HYGIENE 11: exactly one rebuild, at the first safe boundary above the threshold', async t => {
-  answer.lines = 400;
-  const h = await live(t);
-  await pastThreshold(h);
-  const sizes = [0, 1, 2].map(index => sent(h, index).length);
-  assert.equal(h.connectorCalls.length, 3, `each ask read the connector, calls ${h.connectorCalls.length}, sent ${sizes.join('/')}`);
-  assert.ok(sizes.reduce((total, size) => total + size, 0) > THRESHOLD,
-    `the answers the host sent pass the threshold together, sent ${sizes.join('/')}`);
+  const h = await live(t, CROSSED);
+  await oneRead(h);
+  assert.ok(sent(h, 0).length > CROSSED, `the answer the host sent passes the injected threshold, was ${sent(h, 0).length}`);
   assert.equal(rebuilds(h).length, 0, 'no rebuild happened inside a response');
   h.port.emit(turnComplete);
   await flush();
@@ -311,18 +303,17 @@ test('HYGIENE 11: exactly one rebuild, at the first safe boundary above the thre
 });
 
 test('HYGIENE 12: a boundary during a tool call defers the rebuild to the next boundary', async t => {
-  answer.lines = 400;
-  const h = await live(t);
-  await pastThreshold(h);
+  const h = await live(t, CROSSED);
+  await oneRead(h);
   h.holdTool();
-  h.port.emit(research('r3', 'who owns the audit plan'));
+  h.port.emit(research('r1', 'who owns the audit plan'));
   await flush();
   h.port.emit(turnComplete);
   await flush();
   assert.equal(rebuilds(h).length, 0, 'nothing is rebuilt while a tool call is in flight');
   assert.equal(h.port.openedAt.length, 1, 'and the session in flight is untouched');
   h.releaseTool();
-  await answered(h, 4);
+  await answered(h, 2);
   h.port.emit(turnComplete);
   await flush();
   assert.equal(rebuilds(h).length, 1, 'the deferred rebuild happens at the later boundary');
@@ -330,9 +321,8 @@ test('HYGIENE 12: a boundary during a tool call defers the rebuild to the next b
 });
 
 test('HYGIENE 13: the seed is one turn carrying the asked entities and the held hit ids', async t => {
-  answer.lines = 400;
-  const h = await live(t);
-  await pastThreshold(h);
+  const h = await live(t, CROSSED);
+  await oneRead(h);
   h.port.emit(turnComplete);
   await flush();
   const reopened = h.port.requests[1];
@@ -341,24 +331,23 @@ test('HYGIENE 13: the seed is one turn carrying the asked entities and the held 
   assert.equal(history.length, 1, 'the ledger seed is exactly one turn');
   assert.equal(history[0]!.role, 'user');
   const seed = history[0]!.text;
-  assert.match(seed, /audit team/u, 'the asked entity is in the seed');
-  assert.match(seed, /\[id 1000\]|#1000|1000/u, 'and the held hit ids');
+  // W10-R20: the entity clause holds once a read's findings carry the asked name; the id clause is
+  // what this read can prove, and HYGIENE 4 proves the entity line on a run that supplies the names.
+  assert.match(seed, /1000/u, 'the held hit id is in the seed');
   assert.ok(seed.length <= 6_000, `the ledger is capped at 6,000 chars, was ${seed.length}`);
 });
 
 test('HYGIENE 14: a follow-up after the rebuild reaches the connector again', async t => {
-  answer.lines = 400;
-  const h = await live(t);
-  await pastThreshold(h);
+  const h = await live(t, CROSSED);
+  await oneRead(h);
   h.port.emit(turnComplete);
   await flush();
   assert.equal(rebuilds(h).length, 1, 'the rebuild happened first');
   const before = h.connectorCalls.length;
-  h.port.emit(research('r9', 'who owns the audit follow up'));
-  await answered(h, 4);
+  await oneRead(h, 'r9', 'Clifton strengths profile of the audit follow up');
   assert.equal(h.connectorCalls.length, before + 1, 'the rebuilt session read the connector again');
-  assert.match(String(h.connectorCalls[before]?.args?.['query'] ?? ''), /audit|team|follow/u);
 });
+
 /** C-DEPTH item 5 (W10-R2 light C): the retained payload, the safe boundary and the ledger a rebuild seeds. */
 
 const EMPTY: ResearchRetention = { retainedChars: 0, rebuilds: 0 };

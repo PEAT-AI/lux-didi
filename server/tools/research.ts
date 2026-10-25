@@ -5688,9 +5688,13 @@ export interface ResearchRetention {
   rebuilds: number;
 }
 
-/** C-DEPTH item 5: whether the retained payload has passed the rebuild threshold. */
-export function researchRebuildDue(retention: ResearchRetention): boolean {
-  return retention.retainedChars > RESEARCH.rebuildThresholdChars;
+/**
+ * C-DEPTH item 5: whether the retained payload has passed the rebuild threshold. W10-R20: the host may
+ * inject the threshold, so a replay drives a rebuild at a size a call can reach; the shipped constant
+ * stays the default and the only value production uses.
+ */
+export function researchRebuildDue(retention: ResearchRetention, thresholdChars: number = RESEARCH.rebuildThresholdChars): boolean {
+  return retention.retainedChars > thresholdChars;
 }
 
 /** C-DEPTH item 5: what the call retains after one more research answer is sent. */

@@ -109,6 +109,11 @@ export interface LiveOwnerConfig {
   readonly tools?: LiveToolsComposition;
   /** Optional public web read for the research loop; absent means the web source is not offered. */
   readonly researchWeb?: WebSearchPort;
+  /**
+   * W10-R20: the retained-payload rebuild threshold, defaulting to `RESEARCH.rebuildThresholdChars`.
+   * A replay injects a small value; production never sets it.
+   */
+  readonly rebuildThresholdChars?: number;
   readonly memorySource?: LiveMemorySource;
   readonly store: LiveStorePort;
   readonly voice: LiveVoicePort;

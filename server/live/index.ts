@@ -12,7 +12,7 @@ import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import type { WebSearchPort } from '../tools/web-search.js';
-import { ADMISSION_BLOCKED, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention } from '../tools/research.js';
+import { ADMISSION_BLOCKED, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -1009,6 +1009,8 @@ export class LiveSessionOwner {
   readonly #onSessionTerminal: ((liveSessionId: string) => void) | undefined;
   readonly #summaryLog: ((event: { event: string } & Record<string, unknown>) => void) | undefined;
   readonly #memorySource: LiveOwnerConfig['memorySource'];
+  /** W10-R20: the rebuild threshold, the config value or the shipped constant. */
+  readonly #rebuildThresholdChars: number;
   readonly #store: LiveStorePort;
   readonly #vault: VaultWriter;
   readonly #voice: LiveVoicePort;
@@ -1047,6 +1049,7 @@ export class LiveSessionOwner {
     this.#onSessionTerminal = summaryHooks?.onSessionTerminal;
     this.#summaryLog = summaryHooks?.log;
     this.#memorySource = config.memorySource;
+    this.#rebuildThresholdChars = config.rebuildThresholdChars ?? RESEARCH.rebuildThresholdChars;
     // The digest hook rides the composition seam; a test may also pass it on the config directly.
     this.#calendarDigest = (config as unknown as WarmHooks).calendarDigest ?? (config.tools as unknown as WarmHooks | undefined)?.calendarDigest;
     this.#calendarState = this.#calendarDigest === undefined ? 'unconfigured' : 'empty';
@@ -3401,7 +3404,7 @@ export class LiveSessionOwner {
     // when the call has really retained that much. The ledger is built here too, from this batch's findings.
     const answerChars = responses.reduce((sum, entry) => sum + JSON.stringify(entry.response ?? {}).length, 0);
     handle.researchRetention = retainedAfterSend(handle.researchRetention, answerChars);
-    if (researchRebuildDue(handle.researchRetention) && handle.researchRebuildSeed === undefined) {
+    if (researchRebuildDue(handle.researchRetention, this.#rebuildThresholdChars) && handle.researchRebuildSeed === undefined) {
       const findings = responses.flatMap(entry => Array.isArray((entry.response as JsonObject)?.['findings'])
         ? ((entry.response as JsonObject)['findings'] as { source?: string; text?: string }[]) : []);
       handle.researchRebuildSeed = researchLedgerOf({

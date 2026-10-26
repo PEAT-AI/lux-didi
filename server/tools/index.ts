@@ -1,5 +1,5 @@
 import { diagnosticContentAccess } from '../trace/content.js';
-import { hostLogEvent } from './host-events.js';
+import { hostLogEvent, classifiedFailureEvent } from './host-events.js';
 import { createDispatchOwner, projectDiagnosticInput } from './dispatch.js';
 import { RECEIVED_BODY, RECEIVED_BODY_TOOLS, RECEIVED_BODY_PARAMETERS, receivedBodyArguments, receivedBodyEnd, type ReceivedBodyPage, type RemoteResultLineage } from './received-body.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -762,7 +762,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 return { status: 'unknown', code };
               }
               if (evidence.state !== 'completed') {
-                const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' ? descriptor.status?.(evidence) : undefined;
+                const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' ? descriptor.status?.(evidence, p.endpoint) : undefined;
                 if (!status) {
                   // Keep the failure cause truthful: a refused connector read names its reason; a child
                   // tool/protocol error is an unusable result. Either way surface a real code.
@@ -776,6 +776,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 // names a content-free log line (an unknown helper code, a Didi defect) writes it too.
                 reportToolStatus?.(p.endpoint.id, status);
                 if (status.log) options.log?.(status.log);
+                // LOGS.md L-08: every classified failure is one closed host event, so host.log tells a
+                // failed read from an empty one. The endpoint id, the tool and the classified code only:
+                // no argument, no payload, no helper text. A code that is not one word is not logged.
+                const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code: status.code });
+                if (failure) options.log?.(failure);
                 return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0 }, []) };
               }
               reportToolStatus?.(p.endpoint.id, null);

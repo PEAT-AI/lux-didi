@@ -1,7 +1,7 @@
 import type { ConnectorEvidence, ConnectorResult } from '../connectors/index.js';
 import type { CompletedResult, McpPort, StoredPayload } from '../adapters/mcp/port.js';
 import type { GoogleEvidence, GoogleResult, GoogleTool } from '../connectors/google.js';
-import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
+import { HOST_EVIDENCE, type ConnectionEndpoint, type HostEvidenceRef } from './types.js';
 import { sha256 } from './canonical.js';
 import { shapeDriveFile, shapeDriveSearch, shapeGcalCalendars, shapeGcalList, shapeGmailList, shapeGmailRead, receivedGmailBody, type ShapedResult, type ShapedSource } from './live-shape.js';
 
@@ -89,8 +89,8 @@ export function googleErrorEntry(code: string): GoogleErrorEntry | undefined {
 }
 
 /** The owner line for one row, with the helper's own consent command filled in for this family. */
-export function googleOwnerLine(entry: GoogleErrorEntry, family: string): string {
-  return entry.ownerLine.split(AUTHORIZE).join(authorizeCommandFor(family));
+export function googleOwnerLine(entry: GoogleErrorEntry, family: string, endpoint?: ConnectionEndpoint): string {
+  return entry.ownerLine.split(AUTHORIZE).join(authorizeCommandFor(family, endpoint));
 }
 
 /** A code outside the table is logged by its first 32 characters, hashed, so no helper text travels. */
@@ -159,7 +159,7 @@ function codeOf(text: string): string {
  * marks the endpoint dead. Either way the status names the helper's code and its own line, never a state
  * word and never an empty success.
  */
-export function googleToolStatus(evidence: ConnectorEvidence): GoogleStatus | undefined {
+export function googleToolStatus(evidence: ConnectorEvidence, endpoint?: ConnectionEndpoint): GoogleStatus | undefined {
   if (evidence.state === 'completed') return undefined;
   const content = decodeMcpContentText(evidence.decodedResult);
   if (!content.ok) return { state: 'error', code: 'no_content', reason: 'tool call failed; no content' };
@@ -169,12 +169,28 @@ export function googleToolStatus(evidence: ConnectorEvidence): GoogleStatus | un
     return { state: 'error', code: UNKNOWN_HELPER_REASON, reason: UNKNOWN_HELPER_OWNER_LINE, log: googleUnknownLog(code, evidence.tool) };
   }
   const log = entry.recovery === 'log_defect' ? googleDefectLog(code, evidence.tool) : undefined;
-  return { state: entry.pinned ? 'configured' : 'error', code, reason: googleOwnerLine(entry, googleFamilyOf(evidence)), ...(log ? { log } : {}) };
+  return { state: entry.pinned ? 'configured' : 'error', code, reason: googleOwnerLine(entry, googleFamilyOf(evidence), endpoint), ...(log ? { log } : {}) };
 }
 
-/** The helper's own consent command for this family: a command name only, never a token path. */
-function authorizeCommandFor(family: string): string {
-  return `lux-google-mcp authorize --family ${family}`;
+/** The two variables the helper reads its own binding from (lux-cli google_mcp/binding.py). */
+const HELPER_ACCOUNT_ENV = 'LUX_GOOGLE_MCP_ACCOUNT';
+const HELPER_TOKEN_ENV = 'LUX_GOOGLE_MCP_TOKEN';
+/** One argv word: no space, no quote, no shell metacharacter, so the owner line stays one command. */
+const SAFE_BINDING = /^[A-Za-z0-9._@+/-]{1,512}$/;
+
+/**
+ * The helper's own consent command for this family. With a configured stdio endpoint the command also
+ * names the binding the helper itself reads: the token *path* and the account, never a token value, so
+ * the owner can run it once without looking anything up. A word that is not a plain path or address is
+ * left out, so the line never becomes a second command.
+ */
+function authorizeCommandFor(family: string, endpoint?: ConnectionEndpoint): string {
+  const command = `lux-google-mcp authorize --family ${family}`;
+  if (endpoint === undefined || !('transport' in endpoint)) return command;
+  const account = endpoint.env?.[HELPER_ACCOUNT_ENV];
+  const token = endpoint.env?.[HELPER_TOKEN_ENV];
+  if (account === undefined || token === undefined || !SAFE_BINDING.test(account) || !SAFE_BINDING.test(token)) return command;
+  return `${command} --token ${token} --account ${account}`;
 }
 
 function googleFamilyOf(evidence: ConnectorEvidence): string {

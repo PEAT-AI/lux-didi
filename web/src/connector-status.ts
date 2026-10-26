@@ -33,8 +33,14 @@ export function connectionsMarkup(endpoints: unknown, stale = false): string {
     const state = ['missing', 'configured', 'connected', 'error'].includes(String(row.state)) ? String(row.state) : 'error';
     const tools = typeof row.tools === 'number' && Number.isSafeInteger(row.tools) && row.tools >= 0 ? row.tools : 0;
     const time = typeof row.lastHandshakeAt === 'string' && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(row.lastHandshakeAt) && Number.isFinite(Date.parse(row.lastHandshakeAt)) ? row.lastHandshakeAt : 'Never';
-    const reason = typeof row.reasonCode === 'string' && Object.hasOwn(REASONS, row.reasonCode) ? REASONS[row.reasonCode] : REASONS.unknown;
-    const issue = row.reasonCode !== null || state === 'missing' || state === 'error';
+    // W14 (LOGS.md L-02): the identity proof's own closed code is the more specific reason, so a
+    // refused consent probe says "Needs consent" even when the row's reason code only knows the
+    // generic identity refusal.
+    const proofCode = typeof (row.identity as Record<string, unknown> | undefined)?.['code'] === 'string'
+      ? String((row.identity as Record<string, unknown>)['code']) : undefined;
+    const reasonKey = proofCode !== undefined && Object.hasOwn(REASONS, proofCode) ? proofCode : typeof row.reasonCode === 'string' && Object.hasOwn(REASONS, row.reasonCode) ? row.reasonCode : 'unknown';
+    const reason = REASONS[reasonKey] ?? REASONS.unknown!;
+    const issue = row.reasonCode !== null || state === 'missing' || state === 'error' || proofCode !== undefined;
     const identity = connectionIdentity(row.identity);
     const identityHtml = identity ? ` <span class="connection-identity">${escapeHtml(identity)}</span>` : '';
     return `<li><strong>${escapeHtml(id)}</strong>: ${state}, ${tools} tools <small>Last handshake: ${escapeHtml(time)}</small>${identityHtml}${issue ? `<p>${reason[0]}. ${reason[1]}</p>` : ''}</li>`;

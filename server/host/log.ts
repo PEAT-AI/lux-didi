@@ -235,6 +235,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (hasAttempt && (typeof value.attempt !== 'string' || !attempts.includes(value.attempt))) return;
     return { event: 'connector_failure', connector: value.connector, stage: value.stage, ...(hasReason ? { reason: value.reason } : {}), ...(hasException ? { exceptionCode: value.exceptionCode } : {}), ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasAttempt ? { attempt: value.attempt } : {}) };
   }
+  if (value.event === 'tool_classified_failure') {
+    // W14 (LOGS.md L-08): one row per call the connector itself refused with a typed code, so host.log
+    // tells a failed read from an empty one. The endpoint id, the connector, the tool and the code only:
+    // never an argument, a payload, a query or a line of helper text.
+    if (!closedKeys(value, ['code', 'connector', 'endpointId', 'event', 'tool'])) return;
+    if (!isSafeId(value.endpointId) || !isSafeToken(value.tool) || !isSafeToken(value.connector) || !isSafeToken(value.code)) return;
+    return { event: 'tool_classified_failure', endpointId: value.endpointId, connector: value.connector, tool: value.tool, code: value.code };
+  }
   if (value.event === 'connector_identity') {
     // Closed identity proof only: a connector name, two booleans and the proof's own closed code, never
     // the identity itself. The endpoint id is optional so one proof names which endpoint of the account

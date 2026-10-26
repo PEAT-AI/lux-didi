@@ -23,13 +23,21 @@ export interface IdentitySource {
    * silent unverified read is indistinguishable from an empty mailbox.
    */
   strict?: boolean;
+  /**
+   * What a clean answer proves. `identity` (the default) needs a value the account is known by;
+   * `consent` (LOGS.md L-02, the Drive family) proves that the family may read at all, because the
+   * helper reports no own-account identity for Drive. A typed refusal is unproven either way.
+   */
+  proves?: 'identity' | 'consent';
 }
 
 /**
  * The closed code set a Google helper refuses with (lux-cli E2). Only a code from this set ever
  * reaches a spoken source reason, so neither an address nor a token path can travel with it.
  */
-export const IDENTITY_ERROR_CODES = ['account_mismatch', 'identity_unverified', 'credential_missing', 'identity_timeout', 'credential_refresh_failed', 'credential_revoked'] as const;
+export const IDENTITY_ERROR_CODES = ['account_mismatch', 'identity_unverified', 'credential_missing', 'identity_timeout', 'credential_refresh_failed', 'credential_revoked',
+  // LOGS.md L-02: the Drive family's own refusal -- the read consent was never granted.
+  'scope_missing'] as const;
 export type IdentityErrorCode = (typeof IDENTITY_ERROR_CODES)[number];
 
 function closedCode(token: string | undefined): IdentityErrorCode | undefined {
@@ -139,6 +147,9 @@ export function classifyIdentity(result: ConnectorResult, source: IdentitySource
   }
   const values = source.values((result as ConnectorEvidence).decodedResult);
   const code = helperErrorCode((result as ConnectorEvidence).decodedResult);
+  // A consent probe answers one question: did the family read, or did the helper refuse it? There is
+  // no account value to compare, so a clean answer is the proof and a typed refusal is the reason.
+  if (source.proves === 'consent') return code ? { proven: false, match: null, value: null, code } : { proven: true, match: null, value: null };
   const value = values[0] ?? null;
   if (value === null) return code ? { proven: false, match: null, value: null, code } : { proven: false, match: null, value: null };
   if (expected.length === 0) return { proven: true, match: null, value };

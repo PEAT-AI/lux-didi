@@ -15,7 +15,7 @@ import { ResearchLedger, runResearch, type ResearchDeps, type ResearchSourceLog,
 import { GOOGLE_ERROR_TABLE, googleOwnerLine, googleToolStatus, type GoogleStatus } from '../tools/google.js';
 import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { classifyIdentity, proveIdentity, type IdentityProof } from '../connectors/identity.js';
-import { connectorFailureEvent } from '../tools/host-events.js';
+import { classifiedFailureEvent } from '../tools/host-events.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import type { ConnectorEvidence, ConnectorResult } from '../connectors/index.js';
@@ -47,7 +47,7 @@ function harness(configured: readonly SourceKind[], answer: (call: IntentSubCall
   const calls: IntentSubCall[] = [];
   const sources: ResearchSourceLog[] = [];
   const deps: ResearchDeps = {
-    now: () => 0, configured,
+    now: () => Date.parse('2026-10-19T12:00:00Z'), timeZone: 'UTC', configured,
     execute: async subs => { calls.push(...subs); return subs.map(answer); },
     emit: () => {}, log: () => {}, logRouted: () => {}, logSource: event => sources.push(event), logSubcall: () => {},
     ledger: new ResearchLedger(),
@@ -56,19 +56,25 @@ function harness(configured: readonly SourceKind[], answer: (call: IntentSubCall
 }
 
 /** The families a research lookup can name, one per shaped source path. */
-const FAMILIES: readonly { source: SourceKind; question: string }[] = [
-  { source: 'drive', question: 'find the harbour review deck' },
-  { source: 'mail', question: 'find the harbour review mail' },
-  { source: 'calendar', question: 'find the harbour review meeting' },
-  { source: 'chat', question: 'find the harbour review thread' },
-  { source: 'knowledge', question: 'find the harbour review note' },
+const FAMILIES: readonly { source: SourceKind; question: string; query: string }[] = [
+  { source: 'drive', question: 'find the harbour review deck', query: 'harbour review' },
+  { source: 'mail', question: 'find the harbour review mail', query: 'harbour review' },
+  // A calendar lookup resolves its window first, so it asks with one.
+  { source: 'calendar', question: 'what is on my calendar this week', query: 'this week' },
+  { source: 'chat', question: 'find the harbour review thread', query: 'harbour review' },
+  { source: 'knowledge', question: 'find the harbour review note', query: 'harbour review' },
 ];
+
+/** The calendar scope read answers with the one synthetic calendar; every other sub answers with `text`. */
+function answerFor(text: string): (call: IntentSubCall) => IntentSubResult {
+  return call => subResult(call, call.name === 'calendar_list_calendars' ? '- Main [primary]' : text);
+}
 
 for (const family of FAMILIES) {
   test(`L-01 ${family.source}: a classified connector error is a failed source, never an empty search`, async () => {
     const line = driveConsentLine();
-    const h = harness([family.source], call => subResult(call, line));
-    const reply = await runResearch(h.deps, { action: 'start', question: family.question, topic: 'harbour review', lookups: [{ source: family.source, query: 'harbour review' }] }, new AbortController().signal);
+    const h = harness([family.source], answerFor(line));
+    const reply = await runResearch(h.deps, { action: 'start', question: family.question, topic: 'harbour review', lookups: [{ source: family.source, query: family.query }] }, new AbortController().signal);
     const receipt = h.sources.find(entry => entry.source === family.source);
     assert.ok(receipt, 'the source settled with a receipt');
     assert.equal(receipt.outcome, 'failed', `a classified error is a failed ${family.source} read, not ${receipt.outcome}`);
@@ -77,8 +83,8 @@ for (const family of FAMILIES) {
   });
 
   test(`L-01 ${family.source}: a real empty read still reads as empty`, async () => {
-    const h = harness([family.source], call => subResult(call, ''));
-    const reply = await runResearch(h.deps, { action: 'start', question: family.question, topic: 'harbour review', lookups: [{ source: family.source, query: 'harbour review' }] }, new AbortController().signal);
+    const h = harness([family.source], answerFor(''));
+    const reply = await runResearch(h.deps, { action: 'start', question: family.question, topic: 'harbour review', lookups: [{ source: family.source, query: family.query }] }, new AbortController().signal);
     const receipt = h.sources.find(entry => entry.source === family.source);
     assert.ok(receipt, 'the source settled with a receipt');
     assert.equal(receipt.outcome, 'empty', `a read that returned nothing is empty, not ${receipt.outcome}`);
@@ -92,7 +98,7 @@ test('L-01: the classified owner line names the helper command, the fixture acco
   assert.ok(line.includes(`--account ${ACCOUNT}`), line);
   assert.ok(line.includes(`--token ${TOKEN_PATH}`), line);
   assert.match(line, /one-time/u, 'the owner is told this consent happens once');
-  assert.equal(line.includes('drive needs a one-time consent first'), true, 'the family is named, so it reads as Drive');
+  assert.ok(line.startsWith('Drive needs a one-time consent first'), line);
 });
 
 test('L-01: without a configured binding the owner line still names the family command and no token', () => {
@@ -151,9 +157,9 @@ test('L-02: the Drive consent probe reports needs-consent with the helper code, 
 });
 
 test('L-08: a classified failure writes one closed host event, ids and a code and nothing else', () => {
-  const event = connectorFailureEvent({ endpointId: 'drive', connector: 'google', tool: 'drive_search_files', code: 'scope_missing' });
-  assert.deepEqual(event, { event: 'connector_failure', endpointId: 'drive', connector: 'google', tool: 'drive_search_files', code: 'scope_missing' });
+  const event = classifiedFailureEvent({ endpointId: 'drive', connector: 'google', tool: 'drive_search_files', code: 'scope_missing' });
+  assert.deepEqual(event, { event: 'tool_classified_failure', endpointId: 'drive', connector: 'google', tool: 'drive_search_files', code: 'scope_missing' });
   assert.equal(Object.hasOwn(event, 'args'), false, 'no arguments ride along');
   assert.equal(Object.hasOwn(event, 'text'), false, 'no helper text rides along');
-  assert.equal(connectorFailureEvent({ endpointId: 'drive', connector: 'google', tool: 'drive_search_files', code: 'not a token' }), undefined, 'a code that is not a closed token is refused');
+  assert.equal(classifiedFailureEvent({ endpointId: 'drive', connector: 'google', tool: 'drive_search_files', code: 'not a token' }), undefined, 'a code that is not a closed token is refused');
 });

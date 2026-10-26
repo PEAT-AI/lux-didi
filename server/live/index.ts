@@ -2736,6 +2736,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
   async #openRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', savedHandle: string | undefined, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null, awaitReady = true): Promise<boolean> {
     handle.sessionTimer?.cancel();
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
+    // C-LOG-ENVELOPE F1: the rebuild opens a new provider session inside the same call, so every later
+    // line names the generation it really belongs to instead of the open-time zero.
+    setLogContext({ liveSessionId: handle.liveSessionId, generation: handle.generation });
     handle.recoveryRefused = false;
     // #1022 F1: the scheduler this handle carried answered for the generation that just ended.
     handle.researchScheduler = undefined; handle.researchSchedulerGeneration = undefined;

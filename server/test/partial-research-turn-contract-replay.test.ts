@@ -511,10 +511,7 @@ test('L8-06: a web read still running at the first answer is still_reading in th
 
 /** Every speakable-progress line the voice model was handed, across every provider generation. */
 function commentaries(h: Harness): string[] { return h.provider.generations.flatMap(generation => generation.commentaries); }
-/** Every host-to-model text the voice session was handed (the late-findings channel). */
-function spokenTexts(h: Harness): string[] { return h.provider.generations.flatMap(generation => generation.texts); }
 const stillSearching = (h: Harness): Record<string, unknown>[] => h.receipts.filter(record => record['event'] === 'research_still_searching');
-const lateReceipts = (h: Harness): Record<string, unknown>[] => h.receipts.filter(record => record['event'] === 'research_late_findings');
 
 test('R2: an owner still waiting at 10 s hears one short still-searching line, and never a second one', async t => {
   const h = await harness(t);
@@ -545,41 +542,4 @@ test('R2: a source that settles at 8.7 s earns no still-searching line', async t
   assert.equal(reply['error'], undefined, 'the call answered from the source that returned');
   assert.deepEqual(commentaries(h), [], 'a source that settles before 10 s leaves the owner nothing to hear');
   assert.equal(stillSearching(h).length, 0, 'and no receipt claims a line');
-});
-
-test('R5: a late finding is spoken after a filler sound, and only a real new question parks it', async t => {
-  const held = await harness(t);
-  held.hold();
-  await ownerSays(held);
-  await research(held, 'd1', start);
-  const reply = await replyFor(held, 'd1', OPERATION_DEADLINE_MS + HOST_GRACE_MS);
-  assert.equal(reply['status'], 'partial', 'the call answered with the read still out');
-  const before = spokenTexts(held).length;
-  // The owner's filler sound: one word, the way he said "hm" while the last findings were landing.
-  held.provider.emit({ type: 'inputTranscription', text: 'hm', finished: true });
-  await flush();
-  // The speaking hold is 1.5 s: the owner has gone quiet again, so the block is his silence, not his voice.
-  await held.advance(2_000);
-  held.release();
-  for (let i = 0; i < 20 && spokenTexts(held).length === before; i++) { await flush(); await held.advance(200); }
-  const spoken = spokenTexts(held).length;
-  const diagnostics = JSON.stringify({ late: lateReceipts(held), texts: spoken });
-  assert.ok(spoken > before, `the late finding was spoken, not parked as silent context (${diagnostics})`);
-  assert.ok(held.receipts.some(record => record['event'] === 'late_findings_sent'), 'the receipt says it went out');
-
-  // The control: a real new question still parks the block, so the filler rule never swallows an owner turn.
-  const asked = await harness(t);
-  asked.hold();
-  await ownerSays(asked);
-  await research(asked, 'd1', start);
-  const parked = await replyFor(asked, 'd1', OPERATION_DEADLINE_MS + HOST_GRACE_MS);
-  assert.equal(parked['status'], 'partial');
-  const already = spokenTexts(asked).length;
-  asked.provider.emit({ type: 'inputTranscription', text: 'and what about the other company we discussed in Jakarta', finished: true });
-  await flush();
-  await asked.advance(2_000);
-  asked.release();
-  for (let i = 0; i < 20; i++) { await flush(); await asked.advance(200); }
-  assert.equal(spokenTexts(asked).length, already, 'a new question parks the late block');
-  assert.ok(lateReceipts(asked).some(record => record['reason'] === 'new_question'), 'and the receipt names the reason');
 });

@@ -386,6 +386,29 @@ const FILLER_WORDS = 3;
 /** R6: how much of that block a spoken line carries, so the owner hears one sentence and not a report. */
 const LATE_SPOKEN_CHARS = 280;
 
+/** R5: what the late-commentary rule reads, so the owner's patience is pinned by a test and not by a transport. */
+export interface LateCommentaryState {
+  now: number; answeredAt: number; alreadySpoken: boolean;
+  inputAt?: number | undefined; ownerWords: number; lastModelAudioAt?: number | undefined;
+}
+
+/**
+ * R5 (call 01c4bd89): why a late block stays silent, or null when the turn is quiet enough to say one line aloud.
+ * A filler sound (a couple of words, or speech inside the speaking hold) is not a new question, so the findings
+ * still land; only an owner question begun after the answer parks them, and the owner's own voice and the answer's
+ * audio are separate holds.
+ */
+export function lateCommentarySilence(state: LateCommentaryState): string | null {
+  if (state.alreadySpoken) return 'already_spoken';
+  if (state.now - state.answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
+  const filler = state.ownerWords > 0 && state.ownerWords <= FILLER_WORDS;
+  const immediate = state.inputAt !== undefined && state.inputAt - state.answeredAt < SPEAKING_HOLD_MS;
+  if (state.inputAt !== undefined && state.inputAt > state.answeredAt && !filler && !immediate) return 'new_question';
+  if (state.inputAt !== undefined && state.now - state.inputAt < SPEAKING_HOLD_MS) return 'owner_speaking';
+  if (state.lastModelAudioAt !== undefined && state.now - state.lastModelAudioAt < ANSWER_AUDIO_HOLD_MS) return 'answer_playing';
+  return null;
+}
+
 /** How many tool steps the voice view keeps for the turn: one line per source, no scrollback. */
 const LIVE_STEPS_MAX = 8;
 
@@ -3787,22 +3810,14 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
 
   /** Why a late block stays silent, or null when the turn is quiet enough to say one line aloud. */
   #lateCommentaryReason(handle: ActiveSession, event: ResearchLateFindings): string | null {
-    const now = this.#now();
-    const answeredAt = handle.researchAnsweredAt ?? now;
-    if (handle.lateCommentaryFor === event.researchId) return 'already_spoken';
-    if (now - answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
-    // A question begun after the first answer means the owner moved on: the block stays context only.
-    // R5: a filler sound (a couple of words, or speech within the speaking hold) is not a new question, so the
-    // findings still land instead of being parked because the owner breathed.
-    const filler = handle.ownerLastWords > 0 && handle.ownerLastWords <= FILLER_WORDS;
-    const immediate = handle.inputAt !== undefined && handle.inputAt - answeredAt < SPEAKING_HOLD_MS;
-    if (handle.inputAt !== undefined && handle.inputAt > answeredAt && !filler && !immediate) return 'new_question';
-    // Owner speech: speech that began before the first answer and has
-    // not gone quiet yet is still the owner talking, even though it is not a new question.
-    if (handle.inputAt !== undefined && now - handle.inputAt < SPEAKING_HOLD_MS) return 'owner_speaking';
-    // Answer audio is the model's own output, a different reason from the owner's voice.
-    if (handle.lastModelAudioAt !== undefined && now - handle.lastModelAudioAt < ANSWER_AUDIO_HOLD_MS) return 'answer_playing';
-    return null;
+    return lateCommentarySilence({
+      now: this.#now(),
+      answeredAt: handle.researchAnsweredAt ?? this.#now(),
+      alreadySpoken: handle.lateCommentaryFor === event.researchId,
+      inputAt: handle.inputAt,
+      ownerWords: handle.ownerLastWords,
+      lastModelAudioAt: handle.lastModelAudioAt,
+    });
   }
 
   /** A fresh turn of tool work: the step list restarts and every direct call opens its own line.

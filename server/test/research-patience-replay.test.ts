@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { RESEARCH, RESEARCH_OPERATION, ResearchAdmission, ResearchLedger, runResearch, type ResearchDeps, type ResearchLateFindings } from '../tools/research.js';
 import { WEB_DEADLINE_MS } from '../tools/web-search.js';
+import { lateCommentarySilence, type LateCommentaryState } from '../live/index.js';
 import type { IntentSubResult } from '../tools/intent.js';
 
 const signal = (): AbortSignal => new AbortController().signal;
@@ -140,4 +141,21 @@ test('R6 loop guard: one own-results continue, then a refusal; a new question st
   assert.equal(admission.admit('continue', true).admitted, false, 'a second continue is refused: the loop guard');
   assert.equal(admission.admit('continue').admitted, false, 'a continue for a new question is refused without a new owner turn');
   assert.deepEqual(admission.admit('stop'), { admitted: true }, 'the owner can always stop her');
+});
+
+// --- R5: the late-commentary rule, pinned where the owner's patience is decided ------------------
+
+test('R5: a filler sound never parks a late finding; only a new question does', () => {
+  const answeredAt = 1_000;
+  const quiet = { now: 3_000, answeredAt, alreadySpoken: false, ownerWords: 0 };
+  const fillerWords: LateCommentaryState = { ...quiet, now: 3_000, inputAt: 1_200, ownerWords: 1 };
+  assert.equal(lateCommentarySilence(fillerWords), null, 'one word after the answer is a filler, and the finding lands');
+  assert.equal(lateCommentarySilence({ ...fillerWords, ownerWords: 3 }), null, 'three words are still a filler');
+  assert.equal(lateCommentarySilence({ ...fillerWords, inputAt: 2_000, ownerWords: 4 }), 'new_question', 'a real question parks the block');
+  const immediate: LateCommentaryState = { ...quiet, now: 2_000, inputAt: 1_100, ownerWords: 9 };
+  assert.equal(lateCommentarySilence(immediate), null, 'speech inside the 1.5 s speaking hold is not a new question');
+  assert.equal(lateCommentarySilence({ ...quiet, inputAt: 2_800 }), 'owner_speaking', 'the owner is still talking');
+  assert.equal(lateCommentarySilence({ ...quiet, lastModelAudioAt: 2_000 }), 'answer_playing', 'the answer audio is still playing');
+  assert.equal(lateCommentarySilence({ ...quiet, now: 21_000 }), 'window_elapsed', 'a block that lands too late stays context');
+  assert.equal(lateCommentarySilence({ ...quiet, alreadySpoken: true }), 'already_spoken', 'one late line per call');
 });

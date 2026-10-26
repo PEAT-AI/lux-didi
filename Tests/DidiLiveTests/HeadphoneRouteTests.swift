@@ -9,9 +9,13 @@ import Foundation
 enum HeadphoneRouteTests {
     static func run() async throws {
         try await checkDefaultInputChangeDoesNotPause()
+        print("PASS a default input change to a headset never pauses or reopens capture")
         try await checkOutputChangeRebuildsPlayback()
+        print("PASS an output change rebuilds playback in the same call and journals the switch")
         try await checkNoBuiltInMicFallsBackWithNotice()
+        print("PASS no built-in microphone is an announced fallback, never a silent one")
         try await checkCaptureLossStillPauses()
+        print("PASS a lost capture device still pauses the call and names the new microphone")
     }
 
     private static func format() throws -> AVAudioFormat {

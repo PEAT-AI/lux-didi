@@ -32,6 +32,16 @@ Presence and call state must remain coherent across orb clicks, bare Right Comma
 
 `AudioOwner` is the hardware owner. Do not change system input/output, volume or another app's routing to repair a Naya failure. A mute that changes only presentation is not a mute; capture and playback have real lifecycle consequences.
 
+Capture and playback follow different rules, and that is deliberate (C-HEADPHONES). Capture is chosen
+by device id: the built-in microphone whenever the machine has one, so the system default input moving
+to a headset never pauses, ends or reopens a call. Only the loss of the capture device itself pauses.
+Playback follows the system default output through the existing route-change rebuild, so headphones
+connect and disconnect inside the same call. When no built-in microphone exists the call still runs on
+the default input and the status text says `Using <name> microphone, built-in not available`. `audio.log`
+and `native-live.log` record `audio_input_policy` (built_in or fallback, reason) and
+`audio_output_switched` (from transport, to transport, ms); the host repeats the app's own
+`live_end reason` as `session_end reason`, so a route change is never logged as the owner's stop.
+
 Native device/engine recovery and host provider recovery are different boundaries. An exception during audio rebuild is not evidence that a provider token expired; a provider drop is not permission to recreate unrelated audio devices. [Live call](live-call.md) owns host recovery and accepted authority; [debugging.md](debugging.md) explains the discriminating evidence.
 
 ## The web/native boundary

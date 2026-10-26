@@ -625,6 +625,13 @@ struct NativeLiveInterruptionSample: Sendable {
     private var lastModelAudioAt: Date?
     private let captureInput: AVAudioFormat?
     private let inputDevice: () -> (id: String, name: String)
+    /// C-HEADPHONES 1: the built-in microphone, or nil when the machine has none. Capture follows
+    /// this device by id, never the system default input, so a headset that becomes the default
+    /// input can never move the microphone the call records from.
+    private let builtInInput: () -> (id: String, name: String)?
+    private let outputDevice: () -> (id: String, name: String)
+    /// The transport token of a device id (built_in, bluetooth, usb, ...), one word in the journal.
+    private let transportOf: (String) -> String
     private let owner: AudioOwner
     /// The one audio journal this device writes into: the owner's adopted journal when one exists, so
     /// a second conversation can never open a second writer on audio.log (#477).
@@ -652,6 +659,9 @@ struct NativeLiveInterruptionSample: Sendable {
     private var startOutputID = ""
     private var startInputRate: Double = 0
     private var startOutputRate: Double = 0
+    /// C-HEADPHONES 2 and 5: the output switch a rebuild is carrying, from the transport it left
+    /// and the clock it started, so `audio_output_switched` reports a measured switch.
+    private var pendingOutputSwitch: (from: String, at: Date)?
     private var voiceProcessingFailed = false
     /// The device-busy reading taken at call start, before the connecting ring or the live engine
     /// can start: `kAudioDevicePropertyDeviceIsRunningSomewhere` counts Didi itself (#1022).
@@ -667,18 +677,30 @@ struct NativeLiveInterruptionSample: Sendable {
     var hasConfigurationObserver: Bool { configurationObserver != nil }
     // Receives the actual locked converter/buffer, never a substitute PCM implementation.
     var onCapturePrepared: ((NativeCaptureBuffer) -> Void)?
+    /// C-HEADPHONES 2 and 5: an output-only rebuild that landed, so native-live.log carries the
+    /// same truthful switch record audio.log does.
+    var onOutputSwitched: ((String, String, Int) -> Void)?
     init(captureInput: AVAudioFormat? = nil, defaultInput: (() -> (id: String, name: String))? = nil,
          owner: AudioOwner = .shared, journal: NativeAudioJournal? = nil,
          deviceState: ((Bool) -> Bool)? = nil, now: (() -> Date)? = nil,
          isBuiltInOutput: (() -> Bool)? = nil,
-         outputLevelReading: (() -> (volume: String, mute: String))? = nil) {
+         outputLevelReading: (() -> (volume: String, mute: String))? = nil,
+         builtInInput: (() -> (id: String, name: String)?)? = nil,
+         defaultOutput: (() -> (id: String, name: String))? = nil,
+         transport: ((String) -> String)? = nil) {
         self.captureInput = captureInput
         self.inputDevice = defaultInput ?? { Self.defaultDevice(input: true) }
+        // An injected input resolver stands in for device enumeration entirely: the built-in
+        // lookup is then only what the caller injects, so fixtures never read the host's hardware.
+        self.builtInInput = builtInInput ?? (defaultInput == nil ? { Self.builtInMicrophone() } : { nil })
+        self.outputDevice = defaultOutput ?? { Self.defaultDevice(input: false) }
+        self.transportOf = transport ?? { Self.transportType(ofDeviceID: $0) }
         self.owner = owner
         self.journal = journal
         self.deviceState = deviceState ?? Self.defaultDeviceRunningSomewhere(input:)
         self.now = now ?? { Date() }
-        self.isBuiltInOutput = isBuiltInOutput ?? { Self.isBuiltInSpeakers(outputID: Self.defaultDevice(input: false).id) }
+        self.isBuiltInOutput = isBuiltInOutput
+            ?? { Self.isBuiltInSpeakers(outputID: (defaultOutput ?? { Self.defaultDevice(input: false) })().id) }
         self.outputLevelReading = outputLevelReading ?? { Self.defaultOutputLevel() }
     }
     var hasJournal: Bool { journal != nil }
@@ -727,9 +749,25 @@ struct NativeLiveInterruptionSample: Sendable {
         playbackLevelTask?.cancel(); playbackLevelTask = nil
         playedFrames = 0; playedPeak = 0; playedSumSquares = 0
     }
+    /// C-HEADPHONES 1: the device this call captures from, chosen by id: the built-in microphone
+    /// whenever the machine has one, else the system default input as an announced fallback.
+    private var captureDevice: (id: String, name: String) { builtInInput() ?? inputDevice() }
+    /// C-HEADPHONES 5: the capture policy this call runs under, as the two logs report it.
+    var inputPolicy: String { builtInInput() == nil ? "fallback" : "built_in" }
+    /// The microphone this call records from, so the owner's status text can name it.
+    var captureName: String { captureDevice.name }
+    var inputPolicyDetail: [String: String] {
+        ["policy": inputPolicy, "reason": builtInInput() == nil ? "built_in_missing" : "built_in_available",
+         "device": captureDevice.name]
+    }
+    /// C-HEADPHONES 1: the one status line the owner sees when no built-in microphone exists (lid
+    /// closed, desktop Mac). Never silent: the call says which microphone carries it.
+    static func inputPolicyNotice(_ name: String) -> String {
+        "Using " + name + " microphone, built-in not available"
+    }
     func routeChanged() {
-        let input = inputDevice()
-        let output = Self.defaultDevice(input: false)
+        let input = captureDevice
+        let output = outputDevice()
         route = "Microphone: " + input.name + " · Output: " + output.name
         guard !rebuilding else {
             log("audio_route_change_ignored", ["reason": "busy"]); return
@@ -748,8 +786,22 @@ struct NativeLiveInterruptionSample: Sendable {
             log("audio_route_change_ignored", ["reason": "debounced"]); return
         }
         lastRebuildAt = now()
+        // An output-only change moves playback and leaves capture on its own device (C-HEADPHONES 2).
+        if output.id != startOutputID {
+            pendingOutputSwitch = (from: transportOf(startOutputID), at: now())
+        }
         recovery.changed()
         scheduleResume()
+    }
+    /// C-HEADPHONES 2 and 5: the rebuild landed on the new default output, so the switch is
+    /// recorded with the transports it moved between and how long the rebuild took.
+    private func finishOutputSwitch() {
+        guard let pending = pendingOutputSwitch else { return }
+        pendingOutputSwitch = nil
+        let ms = Int(now().timeIntervalSince(pending.at) * 1000)
+        let from = pending.from, to = transportOf(startOutputID)
+        log("audio_output_switched", ["from": from, "to": to, "ms": String(ms)])
+        onOutputSwitched?(from, to, ms)
     }
     /// R8: a paused route-change auto-resumes on the same input device, time-bound so a paused
     /// Didi never holds the device. The engine and flock are already released by recovery.changed().
@@ -781,15 +833,16 @@ struct NativeLiveInterruptionSample: Sendable {
     private var sendFrame: (@Sendable (Data, UInt64) async throws -> Void)?
     private(set) var captureEpoch: UInt64 = 0
     private lazy var recovery = NativeAudioRouteRecovery(
-        input: { [unowned self] in self.inputDevice().id },
+        input: { [unowned self] in self.captureDevice.id },
         release: { [weak self] in self?.releaseAudio() },
         rebuild: { [weak self] in
             guard let self, !self.muteHoldsMicrophone, let send = self.sendFrame else {
                 throw NativeLiveAudioError.captureNotConfigured
             }
             try self.build(send: send)
+            self.finishOutputSwitch()
         },
-        paused: { [weak self] _ in guard let self else { return }; self.onInputChange?(self.inputDevice().name) },
+        paused: { [weak self] _ in guard let self else { return }; self.onInputChange?(self.captureDevice.name) },
         failed: { [weak self] in
             guard let self else { return }
             self.sendFrame = nil
@@ -818,6 +871,10 @@ struct NativeLiveInterruptionSample: Sendable {
         var transport = UInt32(0)
         size = UInt32(MemoryLayout<UInt32>.size)
         guard AudioObjectGetPropertyData(device, &property, 0, nil, &size, &transport) == noErr else { return "unknown" }
+        return transportLabel(transport)
+    }
+    /// The one transport vocabulary both the route line and the switch record use.
+    private static func transportLabel(_ transport: UInt32) -> String {
         switch transport {
         case kAudioDeviceTransportTypeBuiltIn: return "built-in"
         case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE: return "Bluetooth"
@@ -825,6 +882,66 @@ struct NativeLiveInterruptionSample: Sendable {
         case kAudioDeviceTransportTypePCI, kAudioDeviceTransportTypeFireWire, kAudioDeviceTransportTypeThunderbolt: return "external wired"
         default: return "unknown"
         }
+    }
+    /// C-HEADPHONES 5: the transport token of one device id, so a switch says what it moved to.
+    static func transportType(ofDeviceID id: String) -> String {
+        guard let device = UInt32(id), device != kAudioObjectUnknown else { return "injected" }
+        var property = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var transport = UInt32(0)
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(device, &property, 0, nil, &size, &transport) == noErr else { return "unknown" }
+        return transportLabel(transport)
+    }
+    /// C-HEADPHONES 1: the built-in microphone this Mac has, or nil when it has none (lid closed,
+    /// desktop Mac). Read by id and input scope only: a headset can never answer as built in.
+    static func builtInMicrophone() -> (id: String, name: String)? {
+        for device in deviceList() where deviceTransport(device) == kAudioDeviceTransportTypeBuiltIn
+            && inputChannels(device) > 0 {
+            return (String(device), deviceName(device))
+        }
+        return nil
+    }
+    private static func deviceList() -> [AudioDeviceID] {
+        var property = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var size = UInt32(0)
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &property, 0, nil, &size) == noErr,
+              size > 0 else { return [] }
+        var devices = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &property, 0, nil, &size, &devices) == noErr
+        else { return [] }
+        return devices
+    }
+    private static func deviceTransport(_ device: AudioDeviceID) -> UInt32 {
+        var property = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var transport = UInt32(0)
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(device, &property, 0, nil, &size, &transport) == noErr else { return kAudioObjectUnknown }
+        return transport
+    }
+    private static func inputChannels(_ device: AudioDeviceID) -> Int {
+        var property = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioObjectPropertyScopeInput, mElement: kAudioObjectPropertyElementMain)
+        var size = UInt32(0)
+        guard AudioObjectGetPropertyDataSize(device, &property, 0, nil, &size) == noErr, size > 0 else { return 0 }
+        let list = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { list.deallocate() }
+        guard AudioObjectGetPropertyData(device, &property, 0, nil, &size, list) == noErr else { return 0 }
+        let buffers = UnsafeMutableAudioBufferListPointer(list.assumingMemoryBound(to: AudioBufferList.self))
+        return buffers.reduce(0) { $0 + Int($1.mNumberChannels) }
+    }
+    private static func deviceName(_ device: AudioDeviceID) -> String {
+        var property = AudioObjectPropertyAddress(mSelector: kAudioObjectPropertyName,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var name: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let status = withUnsafeMutablePointer(to: &name) {
+            AudioObjectGetPropertyData(device, &property, 0, nil, &size, $0)
+        }
+        guard status == noErr, let value = name?.takeRetainedValue() else { return "Built-in Microphone" }
+        return value as String
     }
     private static func defaultDevice(input: Bool) -> (id: String, name: String) {
         var property = AudioObjectPropertyAddress(
@@ -1065,12 +1182,14 @@ struct NativeLiveInterruptionSample: Sendable {
         return stretch
     }
     private func build(send: @escaping @Sendable (Data, UInt64) async throws -> Void) throws {
-        let input = inputDevice()
+        let input = captureDevice
         guard !input.id.isEmpty else { throw NativeLiveAudioError.deviceMissing }
         startInputID = input.id
-        startOutputID = Self.defaultDevice(input: false).id
+        startOutputID = outputDevice().id
         startInputRate = Self.nominalSampleRate(input: true)
         startOutputRate = Self.nominalSampleRate(input: false)
+        // C-HEADPHONES 5: one line per build saying which microphone policy this capture runs under.
+        log("audio_input_policy", inputPolicyDetail)
         if let captureInput, engineFactoryForTesting == nil {
             let capture = try NativeCaptureBuffer(converter: NativePCMConverter(input: captureInput))
             capture.setMuted(muted); self.capture = capture
@@ -1109,6 +1228,14 @@ struct NativeLiveInterruptionSample: Sendable {
         }
         var engine = AVAudioEngine(), player = AVAudioPlayerNode()
         var stretch: AVAudioUnitTimePitch?
+        // C-HEADPHONES 1 and 6: capture is pinned to the chosen device by id before any format is
+        // read, so a default-input change can never move the microphone mid-call and the headset
+        // microphone is never opened. A refused pin is journaled, never silent.
+        if engineFactoryForTesting == nil, let device = UInt32(input.id), device != kAudioObjectUnknown,
+           Self.defaultDevice(input: true).id != input.id {
+            do { try engine.inputNode.auAudioUnit.setDeviceID(device) }
+            catch { log("audio_input_device_pin_failed", ["device": input.id]) }
+        }
         var hardware = engine.inputNode.outputFormat(forBus: 0)
         if let factory = engineFactoryForTesting {
             (engine, player, hardware) = factory()

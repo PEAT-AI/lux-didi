@@ -114,9 +114,15 @@ enum State: String, CaseIterable {
         }
         device.onInputChange = { [weak self] name in
             guard let self else { return }
+            // C-HEADPHONES 4: only a genuine loss of the capture device pauses a call; the system
+            // default input moving to a headset never reaches here, because capture is chosen by id.
             self.journal.append(.routeChange)
             self.state = .pausedForInput
             self.failure = "Microphone changed to " + name + ". Resume?"
+        }
+        device.onOutputSwitched = { [weak self] from, to, ms in
+            // C-HEADPHONES 5: the same truthful switch record audio.log carries.
+            self?.journal.appendAudioOutputSwitched(from: from, to: to, ms: ms)
         }
         device.onResume = { [weak self] in
             guard let self, self.state == .pausedForInput else { return }
@@ -261,6 +267,7 @@ enum State: String, CaseIterable {
                         try await coordinator.sendPCM(frame, captureEpoch: epoch, diagnosticOwner: token)
                     }
                 }
+                self?.announceInputPolicy()
                 try Task.checkCancellation()
                 guard let self, self.generation == token else { return }
                 let intent = try await http.beginIntent()
@@ -316,6 +323,14 @@ enum State: String, CaseIterable {
         if let last = lastAutomaticRestartAt, now.timeIntervalSince(last) < 60 { return false }
         lastAutomaticRestartAt = now
         return true
+    }
+    /// C-HEADPHONES 1 and 5: which microphone carries this call, once, in native-live.log and in
+    /// the owner's own status text when no built-in microphone exists. Never silent.
+    private func announceInputPolicy() {
+        journal.appendAudioInputPolicy(device.inputPolicyDetail)
+        if device.inputPolicy == "fallback" {
+            failure = NativeLiveAudioDevice.inputPolicyNotice(device.captureName)
+        }
     }
     /// Z2: the class and code of the failure that released capture, never its message content.
     private func logCaptureInterruption(_ failure: Error?) {

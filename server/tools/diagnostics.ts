@@ -60,13 +60,13 @@ export function readToolDiagnostics(read: DiagnosticContentRead,run: string,opti
     const stored=read.get('SELECT input_json,result_json,result_sha256,content_pruned_at,input_fidelity FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?',[call.owner_id!,run,call.execution_id!]);
     if(typeof stored?.input_json==='string'&&projectionAuthentic(String(stored.input_fidelity),stored.input_json,String(call.input_sha256)))call.input_json=stored.input_json;
     else call.input_json=null;
-    const bodyState=resultBodyState(stored??{},String(call.result_sha256));
+    const body=stored?.result_json, bodyState=resultBodyState(stored??{},String(call.result_sha256));
     if(bodyState==='pruned'){call.result_read_state='pruned';continue;}
-    if(bodyState==='mismatch'){call.result_read_state='unavailable_or_hash_mismatch';continue;}
+    if(bodyState==='mismatch'||typeof body!=='string'){call.result_read_state='unavailable_or_hash_mismatch';continue;}
     try{
-      const value:unknown=JSON.parse(stored.result_json);
+      const value:unknown=JSON.parse(body);
       if(!record(value)||!Array.isArray(value.dataClasses)||!value.dataClasses.every(c=>typeof c==='string'&&options.authority!.allowedClasses.includes(c as 'ordinary'))){call.result_read_state='class_denied';continue;}
-      call.result_json=stored.result_json;call.result_read_state='bounded_model_projection';
+      call.result_json=body;call.result_read_state='bounded_model_projection';
     }catch{call.result_read_state='invalid_stored_projection';}
   }
   return report;

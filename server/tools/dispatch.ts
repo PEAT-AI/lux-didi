@@ -108,7 +108,7 @@ export function createDispatchOwner(options: {
       let body: {json: string; hash: string; bytes: number; entityHash: string; entityBytes: number} | undefined;
       // STATE.md S-07: a connector that refuses a read names why ('cancelled-before-dispatch');
       // the state is our closed token, the reason is theirs, and the row keeps both.
-      let reason = result.state === 'completed' ? 'unsupported_source_result' : (result.reason?.length ? result.reason : result.state);
+      let reason = result.state === 'completed' ? 'unsupported_source_result' : ('reason' in result && result.reason.length > 0 ? result.reason : result.state);
       if ('payload' in result) {
         try { body = extractVerifiedSource(result,request,scope.bound,port); reason = 'captured_complete_v1'; }
         catch (error) { reason = error instanceof SourceCaptureError ? error.message : 'source_verification_failed'; }

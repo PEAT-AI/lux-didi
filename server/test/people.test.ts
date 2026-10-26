@@ -170,7 +170,7 @@ test('people: a 130 person roster renders under its ceiling and the whole instru
     text: '# BASE\n' + 'b'.repeat(5086), tools: ['research', 'mattermost_chat'], records: [], trustedChars: LIVE_INSTRUCTION_HARD_LIMIT,
     ownerProfile: profile, earlierConversations: 'x'.repeat(8957), accentSelection: 'indian-strong',
   });
-  assert.ok(composed.selectedIds.includes('people'), composed.selectedIds.join(','));
+  assert.ok(composed.sections.some(section => section.id === 'people'), composed.sections.map(section => section.id).join(','));
   assert.ok(composed.text.length < LIVE_INSTRUCTION_HARD_LIMIT, `${composed.text.length} over the hard limit`);
   assert.ok(peopleSection() !== undefined);
   installPeople(null);

@@ -29,6 +29,12 @@ export interface IdentitySource {
    * helper reports no own-account identity for Drive. A typed refusal is unproven either way.
    */
   proves?: 'identity' | 'consent';
+  /**
+   * How the account was proven, for the record: `identity` when the connector answered with its own
+   * account, `helper_pin` when the catalog pins the child to the owner email and the helper enforces
+   * that pin itself (the Drive family, D1-R4), `consent` for a read-only consent proof.
+   */
+  proof?: 'identity' | 'helper_pin' | 'consent';
 }
 
 /**

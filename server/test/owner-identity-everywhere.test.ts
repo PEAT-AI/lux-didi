@@ -14,6 +14,7 @@ import {
 import { MONGOOSE_ENDPOINTS, MONGOOSE_ENDPOINT_AUDIENCES, mongooseTokenIdentity as endpointTokenIdentity } from '../connectors/mongoose.js';
 import { runMongooseLogin, type MongooseSignInHop } from '../host/mongoose-login.js';
 import { loadMcpEndpoints } from '../config/mcp.js';
+import { connectorDescriptor } from '../connectors/index.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
@@ -207,6 +208,13 @@ test('a Google child pinned to another account is refused at catalog load, the o
     assert.equal(byId('drive-owner')?.configurationError, undefined, 'the owner pin proves the family');
     assert.equal(byId('drive-other')?.configurationError, 'identity_mismatch', 'another account is refused at load');
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('the Drive family records its account proof as the helper pin, and stays strict', () => {
+  const source = connectorDescriptor('google')?.identity?.({ toolNames: ['drive_search_files', 'drive_get_file'] } as never);
+  assert.equal(source?.proof, 'helper_pin');
+  assert.equal(source?.proves, 'consent');
+  assert.equal(source?.strict, true);
 });
 
 test('a tool call routed to a latched endpoint is refused with its closed code', async () => {

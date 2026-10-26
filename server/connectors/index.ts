@@ -328,7 +328,11 @@ const googleDescriptor: ConnectorDescriptor = {
     // LOGS.md L-02: the Drive family reports no own-account identity, so it probes for the read consent
     // itself -- the cheapest real read the helper offers -- and says so at connect instead of staying
     // silent until the first call fails with scope_missing. Strict, because no consent is no read.
-    if (family === 'drive') return { tool: 'drive_search_files', args: { query: 'consent', limit: 1 }, values: () => [], proves: 'consent', strict: true };
+    // D1-R4: the Drive family's account is proven by the helper's own pin, `helper_pin`: each Google
+    // child must carry LUX_GOOGLE_MCP_ACCOUNT equal to the owner email (refused at catalog load
+    // otherwise), and the helper compares every refreshed id_token against it. The read below is the
+    // strict consent half, and the helper's account_mismatch is its refusal.
+    if (family === 'drive') return { tool: 'drive_search_files', args: { query: 'consent', limit: 1 }, values: () => [], proves: 'consent', proof: 'helper_pin', strict: true };
     return family === 'calendar'
       ? { tool: 'calendar_list_calendars', args: {}, values: calendarIdentityValues, strict: true }
       : { tool: 'gmail_get_profile', args: {}, values: gmailIdentityValues, strict: true };

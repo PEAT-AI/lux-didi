@@ -161,7 +161,7 @@ test('people: a 130 person roster renders under its ceiling and the whole instru
   // 8,957; owner-style 5,745; owner-lore 10,289; the rest about 3,900 below the base and tools text.
   const profile = validateOwnerProfile({
     schemaVersion: 1, kind: 'profile', ownerId: 'owner-1', profileVersion: 'test',
-    displayName: 'Owner Example', dataClass: 'ordinary',
+    displayName: 'Owner Example',
     style: { text: `# Style\n${'s'.repeat(5745)}`, dataClass: 'ordinary' },
     lore: { text: `# Lore\n${'l'.repeat(10289)}`, dataClass: 'ordinary' },
   }, 'owner-1');
@@ -178,12 +178,12 @@ test('people: a 130 person roster renders under its ceiling and the whole instru
 
 test('people: the mail query carries the resolved address, never the spoken text', () => {
   install();
-  const query = compileMailQuery('what did Sandy mail me about the invoice', undefined, Date.parse('2026-10-26T08:00:00Z'));
+  const query = compileMailQuery('what did Sandy email me about the invoice', undefined, Date.parse('2026-10-26T08:00:00Z'));
   assert.ok(query.includes('from:sandeep.example@example.test'), query);
   assert.ok(query.includes('to:sandeep.example@example.test'), query);
   installPeople(null);
   // An unknown spoken name still falls through to the connector's own text path.
-  assert.ok(compileMailQuery('what did Wasim mail me about the invoice', undefined, Date.parse('2026-10-26T08:00:00Z')).includes('from:wasim'));
+  assert.ok(compileMailQuery('what did Wasim email me about the invoice', undefined, Date.parse('2026-10-26T08:00:00Z')).includes('from:wasim'));
 });
 
 test('people: a calendar attendee is named from the roster email', () => {

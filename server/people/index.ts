@@ -261,6 +261,13 @@ export interface PeopleLookupEntry {
   readonly note: string;
 }
 
+export function validatePeopleLookup(args: unknown): args is { name: string } {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+  const value = args as Record<string, unknown>;
+  return Object.keys(value).length === 1 && typeof value['name'] === 'string'
+    && value['name'].length >= 1 && value['name'].length <= 60;
+}
+
 export function peopleLookupResult(args: unknown): { readonly people: readonly PeopleLookupEntry[]; readonly ambiguous: boolean } {
   const value = record(args, 'invalid_arguments');
   closed(value, ['name'], 'invalid_arguments');

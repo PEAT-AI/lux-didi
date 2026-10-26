@@ -352,11 +352,12 @@ test('tool-enabled Live CREATE retains expanded owner bytes and yields memory on
 
 test('the public character, voice surface and tool conduct are the authored verbatim constants', () => {
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
+  // TR3-R1: W15's people rule is the ruled 75-char sentence, so the two blocks carrying it are re-pinned.
   assert.equal(sha(NAYA_CHARACTER), '1b188117660fe12204cd542001b585fcce69add4f1cc6d27689720e193cac977');
   assert.equal(sha(NAYA_VOICE_SURFACE), '1cf4e572cd49ae7d8d7e16ee3c11b53c6dc652dc1511b8b5625d4a8a3bcb0768');
-  assert.equal(sha(NAYA_VOICE_TOOLS), '7eaf8ffa269fcf9343e8162cc40e199e5fe00451fc493ad01e30bdcefb7f3e04');
+  assert.equal(sha(NAYA_VOICE_TOOLS), 'eca76004309a8aab7d57e4f65bc16fe6c397f1d8905953e08f8ca34738461be6');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '92c556c1112232a01b24e05964a29e2082c27a8e93b2610f83aa498ba5090669');
-  assert.equal(sha(NAYA_TOOLS), 'ee33899337f69d3834124cfe8a17e168034b5ffa2195e707754976ab4195790c');
+  assert.equal(sha(NAYA_TOOLS), 'cb2f327001f34e3914467b103d02be7a6cffcfb1623292d81c38b494b31da052');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));

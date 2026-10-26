@@ -70,7 +70,7 @@ test('the request body carries only the public query, the search tool and low th
   assert.match(query, /council bridge works status/);
   for (const privateText of ['research brief', 'launchpad', 'in:inbox', 'transcript', 'attendee']) assert.equal(JSON.stringify(sent).includes(privateText), false);
   assert.equal(seen[0]!.signal?.aborted, false);
-  assert.equal(WEB_DEADLINE_MS, 12_000);
+  assert.equal(WEB_DEADLINE_MS, 14_000);
 });
 
 test('a question that cannot be separated from private content is reported instead of sent', async () => {
@@ -115,10 +115,10 @@ const fakeClock = (t: { mock: { timers: { tick: (ms: number) => void } } }): { t
 
 test('#655: the research row and the web module read one budget, above the measured tail', () => {
   // #670: 78 live grounded reads on 2026-10-25 measured median 5.2 s, p95 7.9 s, p99 10.3 s and max
-  // 11.5 s, so 8 s cut about one read in twenty. 12 s cut none of them and stays under the 14 s answer
-  // budget and the 20 s answer cap.
+  // 11.5 s, so 8 s cut about one read in twenty. R1: 14 s cuts none of them and still fits inside the 15 s
+  // research patience budget, which is the one number `RESEARCH_OPERATION` names.
   assert.equal(RESEARCH.sourceDeadline.web, WEB_DEADLINE_MS, 'one number, read from one place');
-  assert.equal(WEB_DEADLINE_MS, 12_000, 'the web budget is the 12 s that cut none of 78 measured reads');
+  assert.equal(WEB_DEADLINE_MS, 14_000, 'the web budget is the 14 s that cut none of 78 measured reads');
   assert.equal(webDeadlineMs('what is the weather in Pune tomorrow'), WEB_DEADLINE_MS, 'a weather ask is not slower than any other');
 });
 
@@ -176,7 +176,7 @@ test('#670: a web read that answers at 11 s is kept and its findings reach the r
   assert.ok(findings.some(finding => finding.source === 'web' && finding.text.includes('The bridge reopened')), JSON.stringify(findings));
 });
 
-test('#670: a web read still open at 12 s is cut there, and the reply names 12 s', async (t) => {
+test('#670/R1: a web read still open at 14 s is cut there, and the reply names 14 s', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const clock = fakeClock(t);
   let cutAt: number | undefined;
@@ -188,17 +188,17 @@ test('#670: a web read still open at 12 s is cut there, and the reply names 12 s
   const port = createWebSearch({ credentials: KEY, transport });
   const pending = port.search({ query: 'bridge reopening date', signal: new AbortController().signal });
   await settled();
-  clock.tick(11_999);
+  clock.tick(13_999);
   assert.equal(cutAt, undefined, 'the read is never cut before its budget');
   clock.tick(1);
   assert.deepEqual(await pending, { ok: false, code: 'web_timeout' });
-  assert.equal(cutAt, 12_000, 'the cut lands on 12 s exactly');
+  assert.equal(cutAt, 14_000, 'the cut lands on 14 s exactly');
   assert.equal(answeredLate, false, 'the 20 s answer never lands');
   t.mock.timers.reset();
   const h = harness({ ok: false, code: 'web_timeout' });
   const reply = await new ResearchScheduler(h.deps).call({ action: 'start', question: 'what is the bridge reopening date' }, new AbortController().signal);
   assert.equal((reply['unavailable'] as Record<string, string>)['web'], 'timeout', 'the reason code is the web timeout');
-  assert.match(String(reply['note']), /the web: not read \(timed out after 12 s\)/, 'the timeout clause names the 12 s that cut it');
+  assert.match(String(reply['note']), /the web: not read \(timed out after 14 s\)/, 'the timeout clause names the 14 s that cut it');
 });
 
 test('#655: a retry after an empty first attempt never extends past the budget', async (t) => {

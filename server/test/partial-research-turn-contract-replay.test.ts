@@ -15,7 +15,7 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
-import { ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
+import { RESEARCH, RESEARCH_OPERATION, ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -33,10 +33,9 @@ import type { LiveToolResponse, LiveVoiceControl, LiveVoiceEvent, LiveVoiceOutco
  * and a real follow-up from the owner continues the run.
  */
 
-/** The operation deadline measured and proposed in W5 (C-LIVE behaviour 2): the call answers by this. */
-const OPERATION_DEADLINE_MS = 6_000;
-/** What the host waits past the operation deadline before it settles the call itself. */
-const HOST_GRACE_MS = 1_000;
+/** R1: the patience budget and the host grace, read from the one place that names them. */
+const OPERATION_DEADLINE_MS = RESEARCH_OPERATION.deadlineMs;
+const HOST_GRACE_MS = RESEARCH_OPERATION.hostGraceMs;
 const BLOCKED = { status: 'blocked', reason: 'owner_turn_required', directive: 'answer_existing_result', retry_without_new_owner_turn: false };
 
 const NOW = 1_700_000_000_000;
@@ -61,7 +60,7 @@ class DeadlineClock {
 }
 
 /** The fake live voice provider: each open is one provider generation the test drives and can kill. */
-interface Generation { live(): void; die(): void; toolResponses: LiveToolResponse[][]; texts: string[]; request: LiveVoiceRequest }
+interface Generation { live(): void; die(): void; toolResponses: LiveToolResponse[][]; texts: string[]; commentaries: string[]; request: LiveVoiceRequest }
 function providerPort() {
   const generations: Generation[] = [];
   let events: (event: LiveVoiceEvent) => void = () => {};
@@ -85,6 +84,7 @@ function providerPort() {
       events = event => { pending.push(event); wake(); };
       const toolResponses: LiveToolResponse[][] = [];
       const texts: string[] = [];
+      const commentaries: string[] = [];
       const iterator: AsyncIterable<LiveVoiceEvent> = {
         async *[Symbol.asyncIterator]() {
           for (;;) {
@@ -96,13 +96,16 @@ function providerPort() {
       };
       const session: LiveVoiceSession = {
         ready, done, events: iterator,
-        sendAudio(): void {}, sendText(input: { text: string }): void { texts.push(input.text); }, endAudioStream(): void {},
+        sendAudio(): void {}, sendText(input: { text: string }): void { texts.push(input.text); },
+        /** R2: the speakable-progress channel, which is how the owner hears a still-searching line. */
+        sendCommentary(input: { text: string }): boolean { commentaries.push(input.text); return true; },
+        endAudioStream(): void {},
         sendToolResponse(input): 'sent' { toolResponses.push([...input.responses]); return 'sent'; },
         close(): void { if (ended) return; end(); resolveDone({ status: 'cancelled', code: 'cancelled' }); },
       };
       control.signal.addEventListener('abort', () => { if (ended) return; end(); resolveDone({ status: 'cancelled', code: 'cancelled' }); }, { once: true });
       generations.push({
-        request, toolResponses, texts,
+        request, toolResponses, texts, commentaries,
         live: () => { events({ sequence: ++sequence, type: 'ready' } as LiveVoiceEvent); resolveReady(); },
         die: () => { rejectReady(new Error('synthetic transport loss')); resolveDone({ status: 'failed', code: 'transport_error', recoverable: true }); end(); },
       });
@@ -458,8 +461,9 @@ test('replay 9: overlapping pages are deduplicated and a changing total is repor
 test('replay 10: no page starts that cannot finish before the deadline', async () => {
   const clock = fakeClock();
   const h = mailHarness(clock, page => {
-    // The first page alone takes 3.5 s, so a second page of the same size cannot fit before the deadline.
-    if (page === 1) { clock.set(clock.at() + 3_500); return mailPage([1, 2], 'page-2'); }
+    // R1: the first page alone takes 8 s, so a second page of the same size cannot finish inside the 15 s
+    // patience budget, which is what the page-fit rule is about.
+    if (page === 1) { clock.set(clock.at() + 8_000); return mailPage([1, 2], 'page-2'); }
     return mailPage([3, 4]);
   });
   const reply = await runResearch(h.deps, mailAsk, new AbortController().signal);
@@ -501,4 +505,41 @@ test('L8-06: a web read still running at the first answer is still_reading in th
   const header = String(reply!['coverage']);
   assert.doesNotMatch(header, /web skipped_by_route/u, `a reading source is never told as skipped (${header})`);
   assert.match(header, /web still_reading/u, `it is told as still reading (${header})`);
+});
+
+// --- R1 (call 01c4bd89): the patience line, and a late finding that a filler sound cannot park -------------
+
+/** Every speakable-progress line the voice model was handed, across every provider generation. */
+function commentaries(h: Harness): string[] { return h.provider.generations.flatMap(generation => generation.commentaries); }
+const stillSearching = (h: Harness): Record<string, unknown>[] => h.receipts.filter(record => record['event'] === 'research_still_searching');
+
+test('R2: an owner still waiting at 10 s hears one short still-searching line, and never a second one', async t => {
+  const h = await harness(t);
+  h.hold();
+  await ownerSays(h);
+  await research(h, 'd1', start);
+  await h.advance(9_500);
+  assert.deepEqual(commentaries(h), [], 'nothing is said while the wait is under 10 s');
+  await h.advance(1_000);
+  assert.deepEqual(commentaries(h), [RESEARCH.stillSearchingLine], 'one short line, at 10 s');
+  assert.equal(stillSearching(h).length, 1, 'one receipt for the line');
+  assert.equal(stillSearching(h)[0]!['spoken'], true, 'the adapter carried it, so the owner heard it');
+  assert.match(String(stillSearching(h)[0]!['researchId']), /^[0-9a-f-]{36}$/u, 'the line names the research it is about');
+  // The call still runs: the line never ends it, and the wait never earns a second filler.
+  await h.advance(9_000);
+  assert.equal(commentaries(h).length, 1, 'one filler per wait, however long the wait runs');
+  assert.equal(stillSearching(h).length, 1, 'and one receipt');
+});
+
+test('R2: a source that settles at 8.7 s earns no still-searching line', async t => {
+  const h = await harness(t);
+  h.hold();
+  await ownerSays(h);
+  await research(h, 'd1', start);
+  await h.advance(8_700);
+  h.release();
+  const reply = await replyFor(h, 'd1', 2_000);
+  assert.equal(reply['error'], undefined, 'the call answered from the source that returned');
+  assert.deepEqual(commentaries(h), [], 'a source that settles before 10 s leaves the owner nothing to hear');
+  assert.equal(stillSearching(h).length, 0, 'and no receipt claims a line');
 });

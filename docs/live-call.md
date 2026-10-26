@@ -33,9 +33,11 @@ A reconnect must not expand the accepted tool grant. Current revocation and sour
 
 The merged release bounds research by owner-turn admission. `owner_turn_required` in `server/tools/research.ts` refuses a model-driven continuation without a new finalized owner turn. A partial result should be answered honestly from available evidence, not turned into an automatic cascade of more tool calls while the owner hears nothing.
 
+Patience (owner order 2026-10-26, call 01c4bd89): `RESEARCH_OPERATION` in `server/tools/research.ts` names one budget. A call waits for the sources its question needs up to 15 s, and answers early only when they have settled; at 10 s an owner still waiting hears one short "still searching" line through the speakable-progress channel (`research_still_searching` says whether the adapter carried it); at 20 s the call stops whatever is still reading, answers with what it has, and the reply names the source that did not return in time. A source still reading is never called a timeout, and a `continue` refused as `turn_spent` is not a reason to wait silently: the model may collect the pending results of its own research once.
+
 Admitted paging is host-owned and bounded. Partial coverage remains partial; records examined, matches and represented results are different quantities. The model must not call a partial scan complete or treat an unknown total as zero. [Tool owner](tool-owner.md) owns research and coverage details.
 
-`LiveSessionOwner` distinguishes pending tool work from an answer the provider owes after a result. Dead-air recovery must not rebuild over an admitted operation within its deadline, and a stuck operation must not suppress recovery forever. `live_dead_air` receipts describe observed timing; they are not proof that audio was audible on the Mac. Use the trace playback evidence described in [diagnostic-store.md](diagnostic-store.md).
+`LiveSessionOwner` distinguishes pending tool work from an answer the provider owes after a result. Dead-air recovery must not rebuild over an admitted operation within its deadline, and a stuck operation must not suppress recovery forever. `live_heard_silence` now names what owned the silence (`tool`, `provider` or `owner`) instead of a boolean that read `tool` whenever the turn had followed a tool output. `live_dead_air` receipts describe observed timing; they are not proof that audio was audible on the Mac. Use the trace playback evidence described in [diagnostic-store.md](diagnostic-store.md).
 
 ## Recovery is not replay
 

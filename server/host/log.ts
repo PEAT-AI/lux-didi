@@ -709,6 +709,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.deadAirMs)) return;
     return { event: 'live_dead_air', deadAirMs: value.deadAirMs };
   }
+  if (value.event === 'live_heard_silence') {
+    // L-04: the silence the owner heard, from the end of the last audible frame to the next model audio. A duration
+    // and one flag, never turn content.
+    if (Object.keys(value).sort().join(',') !== ['event', 'ms', 'toolPending'].sort().join(',')) return;
+    if (!isSafeCount(value.ms) || typeof value.toolPending !== 'boolean') return;
+    return { event: 'live_heard_silence', ms: value.ms, toolPending: value.toolPending };
+  }
   if (value.event === 'live_turn_open') {
     // #303: the provider streamed model audio and then went quiet without a turnComplete.
     // One duration, never any turn content.

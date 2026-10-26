@@ -48,11 +48,14 @@ const NEGATION_LEAD = /^(?:no|not|never|don(?:'| )?t|do not)\b/u;
 const NEGATION = /(?:don(?:'| )?t|do not|never|not|no)\b/u;
 const ASK_WORD = /\b(?:save|remember|put|add|write|store)\b/u;
 const HEDGE = /\b(?:maybe|perhaps|probably|might|could|i think|i guess|possibly)\b/u;
+/** A composed note about the conversation itself names its source where a dictation names a store. */
+const NOTE_SOURCE = /\b(?:note|summary)\b[^\p{L}\p{N}]+(?:about|from|of)\b[^\p{L}\p{N}]+(?:this|that|what we(?: just)? (?:discussed|talked about)|our (?:conversation|call|discussion))\b/u;
 
 /**
- * Only an imperative save ask with an explicit lux destination authorizes a composed note. A negation,
- * a report of someone else's words, a quoted phrase, a condition or a hedge is a clarification instead,
- * and an append or edit ask is answered as unsupported so it can never become a create.
+ * Only an imperative save ask authorizes a composed note: an explicit lux destination, or a note about
+ * this conversation. A negation, a report of someone else's words, a quoted phrase, a condition or a
+ * hedge is a clarification instead, and an append or edit ask is answered as unsupported so it can
+ * never become a create.
  */
 export function composedAsk(text: string): ComposedAsk {
   const value = text.normalize('NFKC').replace(/\s+/g, ' ').trim();
@@ -74,7 +77,13 @@ export function composedAsk(text: string): ComposedAsk {
   const negation = key.slice(verb).search(NEGATION);
   if (negation >= 0 && negation < destination) return { decision: 'clarify', reason: 'negated' };
   if (HEDGE.test(key) || /\b(?:or|either|and maybe)\b/u.test(key.slice(destination))) return { decision: 'clarify', reason: 'ambiguous' };
-  if (destination < 0) return { decision: 'none' };
+  if (destination < 0) {
+    // A note about this conversation names its source instead of a store. Staging is still not saving:
+    // the frozen read-back and his own confirmation are what authorize the write.
+    if (!NOTE_SOURCE.test(key)) return { decision: 'none' };
+    if (negation >= 0) return { decision: 'clarify', reason: 'negated' };
+    return HEDGE.test(key) ? { decision: 'clarify', reason: 'ambiguous' } : { decision: 'grant' };
+  }
   return { decision: 'grant' };
 }
 

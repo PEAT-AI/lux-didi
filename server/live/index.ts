@@ -843,6 +843,17 @@ function finishedOwnerTurn(tx: Transaction, liveSessionId: string): string {
   return finishedUtterance(tx, liveSessionId, 'inputTranscription');
 }
 
+/** The closed owner turn before the current one, which a bare "save this to lux" refers to. */
+function previousOwnerTurn(tx: Transaction, liveSessionId: string): string {
+  const rows = tx.all("SELECT text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id", [liveSessionId]);
+  let pending = '', last = '', before = '';
+  for (const row of rows) {
+    pending += String(row['text'] ?? '');
+    if (Number(row['finished']) === 1) { before = last; last = pending.trim(); pending = ''; }
+  }
+  return before;
+}
+
 const MEMORY_AFFIRM = new Set(['love', 'loves', 'like', 'likes', 'prefer', 'prefers', 'preferred', 'enjoy', 'enjoys',
   'want', 'wants', 'need', 'needs', 'keen', 'best', 'favorite', 'favourite']);
 const MEMORY_DENY = new Set(['not', 'never', 'no', 'none', 'nothing', 'cannot', 'cant', 'dont', 'doesnt', 'didnt', 'isnt', 'arent',
@@ -4183,7 +4194,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         const ownerTurn = finishedOwnerTurn(tx, handle.liveSessionId);
         // #573: the open tools are checked against the words of the turn they answer.
         if (ownerTurn) noteOwnerWords(handle.liveSessionId, ownerTurn);
-        if (ownerTurn && transcription?.finalOrigin !== 'typed') this.#vault.observe(tx, handle.liveSessionId, String(journalId), ownerTurn);
+        if (ownerTurn && transcription?.finalOrigin !== 'typed') this.#vault.observe(tx, handle.liveSessionId, String(journalId), ownerTurn, previousOwnerTurn(tx, handle.liveSessionId));
         // W6 item 6: the composed note listens to the same finalized owner turn, and to nothing else.
         if (ownerTurn && transcription?.finalOrigin !== 'typed') pendingOwnerText = ownerTurn;
       }

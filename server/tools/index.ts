@@ -19,7 +19,7 @@ import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
 import { STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, validateStageNote } from './lux-note.js';
-import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
+import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
 import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, ownerWords, validateOpen, type NativeActionCode } from './open.js';
@@ -639,6 +639,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             return { call: call as ToolCallIntent, claim: claimVaultWrite(tx, { liveSessionId: runId, content: args.content }) };
           });
           const receipt: VaultReceipt = staged.claim.state !== 'dispatch' ? staged.claim.receipt : vaultDispatch ? await vaultDispatch(staged.claim) : { saved: false, code: 'write_failed', guidance: 'the vault did not take the note, say it again' };
+          // C-LUX-SAVE: a refused attempt is still an attempt, so it gets its one line and the closed code.
+          if (staged.claim.state !== 'dispatch') hostLogEvent(vaultAttemptEvent(receipt, 0));
           const result = store.transaction(tx => complete(staged.call, vaultReceiptJson(receipt), ['ordinary'], tx));
           return { status: 'completed', result };
         },

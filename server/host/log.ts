@@ -464,14 +464,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'connector_call', connector: 'trello', tool: value.tool, phase: value.phase, outcome: value.outcome, ...(hasReason ? { reason: value.reason } : {}) };
   }
   if (value.event === 'vault_write') {
-    // Closed shape: the operation state token, the vault's own insight id on a confirmed save, and the wire latency. Never text.
+    // Closed shape: the attempt outcome, the closed failure code, the vault's own insight id on a confirmed save, and the wire latency. Never text.
     const hasInsight = value.insightId !== undefined;
-    if (!closedKeys(value, ['event', 'state', ...(hasInsight ? ['insightId'] : []), 'latencyMs'])) return;
-    if (typeof value.state !== 'string' || !['confirmed', 'failed', 'uncertain'].includes(value.state)) return;
+    const hasCode = value.code !== undefined;
+    if (!closedKeys(value, ['event', 'state', ...(hasCode ? ['code'] : []), ...(hasInsight ? ['insightId'] : []), 'latencyMs'])) return;
+    if (typeof value.state !== 'string' || !['confirmed', 'failed', 'uncertain', 'unavailable'].includes(value.state)) return;
+    if (hasCode && !['not_owner_requested', 'write_failed', 'outcome_unknown', 'vault_unavailable'].includes(String(value.code))) return;
     if ((value.state === 'confirmed') !== hasInsight) return;
     if (hasInsight && !isSafeToken(value.insightId)) return;
     if (!Number.isSafeInteger(value.latencyMs) || Number(value.latencyMs) < 0) return;
-    return { event: 'vault_write', state: value.state, ...(hasInsight ? { insightId: value.insightId } : {}), latencyMs: value.latencyMs };
+    return { event: 'vault_write', state: value.state, ...(hasCode ? { code: value.code } : {}), ...(hasInsight ? { insightId: value.insightId } : {}), latencyMs: value.latencyMs };
   }
   if (value.event === 'memory_note') {
     // Closed shape: whether the note was saved, its code, the note's content word count, how many of

@@ -30,6 +30,13 @@ test('an imperative with an explicit lux destination is the only form that autho
   for (const text of ['save that to lux', 'remember in lux knowledge that Lisbon is booked', 'put this in my vault', 'add that to the knowledge base']) {
     assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
   }
+  // C-LUX-SAVE: the owner asks for a note about the conversation itself, which names its source instead of a store.
+  for (const text of ['save a note about what we just discussed', 'remember a note from our conversation', 'save a note of this call']) {
+    assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
+  }
+  for (const text of ['do not save a note about what we just discussed', 'he said save a note about our conversation']) {
+    assert.notDeepEqual(composedAsk(text), { decision: 'grant' }, text);
+  }
 });
 
 test('negated, reported, quoted, conditional and ambiguous save asks are refused with a clarification', () => {

@@ -69,3 +69,17 @@ test('the settings connector row carries the same owner identity sentence', () =
   assert.equal(connectorState({ id: 'mattermost', state: 'connected', identity: { proven: true, match: false, value: 'other@example.test' } })?.identity, 'Signed in as a different account');
   assert.equal(connectorState({ id: 'knowledge', state: 'connected' })?.identity, undefined);
 });
+
+// W14 (LOGS.md L-02): Drive's consent is its own gate. The connect probe reports scope_missing, and the
+// row names what the owner has to do before any Drive read is attempted, never "Account not verified".
+test('a drive consent proof reads as needs-consent with its own one-time action', () => {
+  const html = connectionsMarkup([{
+    id: 'drive', state: 'connected', tools: 2, lastHandshakeAt: '2026-10-12T14:52:00Z',
+    reasonCode: 'scope_missing', identity: { proven: false, match: null, value: null, code: 'scope_missing' },
+  }]);
+  assert.match(html, /Needs consent/u);
+  assert.match(html, /lux-google-mcp authorize --family drive/u);
+  assert.match(html, /one-time/u);
+  assert.doesNotMatch(html, /Account not verified/u);
+  assert.equal(connectorState({ id: 'drive', state: 'connected', identity: { proven: false, match: null, value: null, code: 'scope_missing' } })?.identity, 'Needs consent');
+});

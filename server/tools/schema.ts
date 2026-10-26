@@ -133,9 +133,18 @@ export const toolsMigrations: readonly SchemaMigration[] = [{ owner: 'tools', ve
     `CREATE TRIGGER tool_calls_no_replace BEFORE INSERT ON tool_calls
       WHEN EXISTS(SELECT 1 FROM tool_calls WHERE (owner_id=NEW.owner_id AND run_id=NEW.run_id AND (execution_id=NEW.execution_id OR (NEW.call_id IS NOT NULL AND call_id=NEW.call_id))) OR (NEW.result_id IS NOT NULL AND result_id=NEW.result_id))
       BEGIN SELECT RAISE(ABORT,'call_replace_forbidden'); END`,
+    // Main's blanket delete ban returns in the one shape retention allows. A chat call row is
+    // metadata that lives 90 days (C-STORE-RETENTION requirement 2), so a delete before that age
+    // aborts, and the pruner's own 90 day delete is the only way a call row leaves the store. A
+    // dispatch row keeps its unconditional ban, so the audit trail is held by both guards.
+    `CREATE TRIGGER tool_calls_no_delete BEFORE DELETE ON tool_calls
+      WHEN OLD.created_at IS NULL OR OLD.created_at > CAST(strftime('%s','now') AS INTEGER)*1000 - 7776000000
+      BEGIN SELECT RAISE(ABORT,'call_delete_forbidden'); END`,
     `CREATE TRIGGER tool_calls_input_count_guard BEFORE INSERT ON tool_calls WHEN NEW.input_key_count IS NOT NULL AND (typeof(NEW.input_key_count)!='integer' OR NEW.input_key_count<0) BEGIN SELECT RAISE(ABORT,'input_count_invalid'); END`,
-    `CREATE TRIGGER tool_calls_seal_guard BEFORE UPDATE OF owner_id,run_id,execution_id,call_id,intent_json,state,input_sha256,input_fidelity,input_key_count,created_at ON tool_calls
-      WHEN NEW.owner_id IS NOT OLD.owner_id OR NEW.run_id IS NOT OLD.run_id OR NEW.execution_id IS NOT OLD.execution_id OR NEW.call_id IS NOT OLD.call_id OR NEW.intent_json IS NOT OLD.intent_json OR NEW.input_sha256 IS NOT OLD.input_sha256 OR NEW.input_fidelity IS NOT OLD.input_fidelity OR NEW.input_key_count IS NOT OLD.input_key_count OR NEW.created_at IS NOT OLD.created_at OR OLD.state!='intent' OR NEW.state='intent'
+    `CREATE TRIGGER tool_calls_seal_guard BEFORE UPDATE OF owner_id,run_id,execution_id,call_id,intent_json,state,result_id,result_sha256,input_sha256,input_fidelity,input_key_count,created_at ON tool_calls
+      WHEN NEW.owner_id IS NOT OLD.owner_id OR NEW.run_id IS NOT OLD.run_id OR NEW.execution_id IS NOT OLD.execution_id OR NEW.call_id IS NOT OLD.call_id OR NEW.intent_json IS NOT OLD.intent_json OR NEW.input_sha256 IS NOT OLD.input_sha256 OR NEW.input_fidelity IS NOT OLD.input_fidelity OR NEW.input_key_count IS NOT OLD.input_key_count OR NEW.created_at IS NOT OLD.created_at
+          OR ((NEW.result_id IS NOT OLD.result_id OR NEW.result_sha256 IS NOT OLD.result_sha256) AND NOT (OLD.state='intent' AND NEW.state!='intent'))
+          OR OLD.state!='intent' OR NEW.state='intent'
       BEGIN SELECT RAISE(ABORT,'call_identity_or_terminal'); END`,
     `CREATE TRIGGER tool_calls_content_guard BEFORE UPDATE OF input_json,result_json,content_pruned_at ON tool_calls
       WHEN NOT (OLD.state='intent' AND NEW.state IS NOT OLD.state)

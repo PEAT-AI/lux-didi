@@ -148,7 +148,7 @@ const WRITE_CUE = /\b(?:add|create|put|make|move|moved|mark|done|finish(?:ed)?|c
 export function ownerAskedForChange(words: string): boolean { return WRITE_CUE.test(words); }
 
 /** The server's own words for one call outcome, closed: never a body, never a token. */
-export type TrelloCallCode = 'not_signed_in' | 'auth_failed' | 'credential_revoked' | 'credential_mismatch' | 'rate_limited' | 'unavailable' | 'unknown' | 'tool_error' | 'protocol_error' | 'not_allowed';
+export type TrelloCallCode = 'not_signed_in' | 'auth_failed' | 'credential_revoked' | 'credential_mismatch' | 'inbox_unavailable' | 'rate_limited' | 'unavailable' | 'unknown' | 'tool_error' | 'protocol_error' | 'not_allowed';
 export type TrelloCallResult = { ok: true; value: unknown } | { ok: false; code: TrelloCallCode };
 export interface TrelloServerTool { name: string; inputSchema: unknown }
 /** The one door to the server: the advertised tools, and one call. It never retries. */
@@ -279,6 +279,7 @@ export const TRELLO_GUIDANCE: Readonly<Record<string, string>> = {
   not_configured: 'His board name is not set yet, so nothing on Trello was touched. Say that the board name goes in trello-board.json in the protected configuration directory first.',
   not_signed_in: 'Trello has no key file yet, so nothing was touched. Tell him the key goes in trello-key.json with scripts/import-trello-key.sh.',
   credential_revoked: 'Trello refused the stored key. Tell him to import his Trello key and token again with scripts/import-trello-key.sh.',
+  inbox_unavailable: 'Trello Inbox is not available with the API key. Say so plainly; do not guess at what he jotted.',
   credential_mismatch: 'The Trello key belongs to another member, not to him, so nothing was read or changed. Say so plainly and stop.',
   auth_failed: 'Trello refused the stored sign-in. Tell him to sign in to Trello again in Settings.',
   rate_limited: 'Trello asked to slow down. Say so and offer to try again in a moment.',

@@ -93,7 +93,7 @@ const SIGNIN_OAUTH_ERRORS = ['invalid_request', 'invalid_client', 'invalid_grant
  * is logged instead of being dropped here without a trace.
  */
 const TRELLO_CALL_TOOL = new RegExp(`^(?:${TRELLO_CALL_TOOLS.map(tool => tool.replace('.', '\\.')).join('|')})$`);
-const TRELLO_CALL_REASONS = ['not_configured', 'not_signed_in', 'auth_failed', 'credential_revoked', 'credential_mismatch', 'rate_limited', 'unavailable', 'board_not_found', 'board_ambiguous', 'unsupported', 'result_unrecognized', 'outside_scope',
+const TRELLO_CALL_REASONS = ['not_configured', 'not_signed_in', 'auth_failed', 'credential_revoked', 'credential_mismatch', 'inbox_unavailable', 'rate_limited', 'unavailable', 'board_not_found', 'board_ambiguous', 'unsupported', 'result_unrecognized', 'outside_scope',
   'list_unknown', 'list_ambiguous', 'card_unknown', 'card_ambiguous', 'label_unknown', 'item_unknown', 'invalid_due', 'description_full', 'not_owner_requested', 'no_change', 'write_failed', 'outcome_unknown', 'replayed'];
 /** W11-R3: the Gmail operators a compiled mail query may name, as a closed set, never the words. */
 const MAIL_QUERY_OPERATORS = ['from', 'to', 'cc', 'bcc', 'subject', 'after', 'before', 'newer_than', 'older_than', 'is', 'has', 'label', 'in'];

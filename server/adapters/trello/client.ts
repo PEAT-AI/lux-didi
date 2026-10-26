@@ -148,6 +148,9 @@ export function createTrelloRestTransport(options: TrelloRestOptions): TrelloTra
     },
 
     async call(tool: string, args: Args, signal?: AbortSignal): Promise<TrelloCallResult> {
+      // The Atlassian Inbox is not reachable with a key and a token: the boards and cards REST API has
+      // no inbox, so the read says so in words instead of answering with an empty list.
+      if (tool === 'trelloReadInbox' && String(args.action) === 'list') return { ok: false, code: 'inbox_unavailable' };
       const planned = trelloRequests(tool, args);
       if (!planned) return { ok: false, code: 'not_allowed' };
       if (!trelloOriginAllowed(base)) return { ok: false, code: 'not_allowed' };

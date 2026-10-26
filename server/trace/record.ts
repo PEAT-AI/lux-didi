@@ -465,9 +465,9 @@ export function pruneTraceContent(exec: TraceExec, now: number, options: PruneOp
   const calls = tableExists(exec, 'tool_calls')
     ? nullInPlace(`UPDATE tool_calls SET result_json=NULL, input_json=NULL, content_pruned_at=? WHERE rowid IN (SELECT rowid FROM tool_calls WHERE content_pruned_at IS NULL AND COALESCE(created_at, ${undatedCall(exec)}) < ? AND (result_json IS NOT NULL OR input_json IS NOT NULL) LIMIT ?)`, [contentCutoff])
     : 0;
-  const journalText = tableExists(exec, 'live_journal') ? pruneJournalText(exec, contentCutoff) : 0;
+  const journalText = tableExists(exec, 'live_journal') ? pruneJournalText(exec, contentCutoff, batched) : 0;
   const promptSnapshots = tableExists(exec, 'live_sessions')
-    ? exec.run('UPDATE live_sessions SET accepted_prompt_snapshot=NULL WHERE accepted_prompt_snapshot IS NOT NULL AND terminal_at IS NOT NULL AND terminal_at < ?', [contentCutoff])
+    ? batched('UPDATE live_sessions SET accepted_prompt_snapshot=NULL WHERE rowid IN (SELECT rowid FROM live_sessions WHERE accepted_prompt_snapshot IS NOT NULL AND terminal_at IS NOT NULL AND terminal_at < ? LIMIT ?)', [contentCutoff])
     : 0;
   const metadata = pruneMetadataRows(exec, metadataCutoff, batched);
   return { utterances, callResults, researchText, journalText, promptSnapshots, dispatches, calls, metadata };
@@ -511,7 +511,7 @@ function pruneMetadataRows(exec: TraceExec, cutoff: number, batched: (sql: strin
  * than `no_text_model`, or a source excluded from history. `summaries.reconcile()` re-distils any
  * ended session that has none, so its text must survive the cutoff. Without the summary tables the
  * pruner cannot prove that, and proves nothing by leaving the journal alone. */
-function pruneJournalText(exec: TraceExec, cutoff: number): number {
+function pruneJournalText(exec: TraceExec, cutoff: number, batched: (sql: string, params: SQLValue[]) => number): number {
   const prunable = tableExists(exec, 'conversation_summaries') && tableExists(exec, 'history_exclusions')
     ? `IN (SELECT s.live_session_id FROM live_sessions s
            WHERE s.terminal_at IS NOT NULL AND s.terminal_at < ?
@@ -526,11 +526,13 @@ function pruneJournalText(exec: TraceExec, cutoff: number): number {
   // deferred wait's duration for `remember_deferred`, the event and reason for `continuity`, which
   // `rowToFragment` reads back as `waitedMs` and the continuity event. Clearing those would report a
   // 1200 ms wait as 0 and lose the continuity event while `payload_bytes` still claimed the bytes.
-  return exec.run(`UPDATE live_journal SET text=NULL WHERE text IS NOT NULL AND kind IN ('inputTranscription','outputTranscription') AND live_session_id ${prunable}`, [cutoff])
+  // The journal is the largest content class, so both passes are bounded batches like every other
+  // content write: a first upgrade must never hold the live journal behind one long write.
+  return batched(`UPDATE live_journal SET text=NULL WHERE rowid IN (SELECT rowid FROM live_journal WHERE text IS NOT NULL AND kind IN ('inputTranscription','outputTranscription') AND live_session_id ${prunable} LIMIT ?)`, [cutoff])
     // `tool_json` arrives with the v3 live_journal, which is the renamed live_journal_extended; a Store
     // still at v2 keeps the narrower journal, so the tool payload pass is skipped rather than guessed.
     + (columnExists(exec, 'live_journal', 'tool_json')
-      ? exec.run(`UPDATE live_journal SET tool_json=NULL WHERE tool_json IS NOT NULL AND live_session_id ${prunable}`, [cutoff])
+      ? batched(`UPDATE live_journal SET tool_json=NULL WHERE rowid IN (SELECT rowid FROM live_journal WHERE tool_json IS NOT NULL AND live_session_id ${prunable} LIMIT ?)`, [cutoff])
       : 0);
 }
 

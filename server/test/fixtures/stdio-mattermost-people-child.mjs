@@ -20,7 +20,9 @@ const logPath = process.env.DIDI_FAKE_MATTERMOST_LOG;
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
-const now = Date.now();
+// The one clock this fixture and its suite agree on, so a "this week" window never depends on the
+// weekday the suite happens to run on (DIDI_FAKE_MATTERMOST_NOW, set by the suite).
+const now = Number(process.env.DIDI_FAKE_MATTERMOST_NOW ?? '') || Date.now();
 const iso = (ms) => new Date(ms).toISOString();
 const day = (ms) => iso(ms).slice(0, 10);
 

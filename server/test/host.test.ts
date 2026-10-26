@@ -518,9 +518,15 @@ for (const releaseNineCatalogue of [true, false]) {
       }), { mode: 0o600 });
     } else {
       for (const endpoint of ['knowledge', 'data', 'crm'] as const) {
+        // The stored token must be the shape Mongoose mints (email claim plus this endpoint's exact aud),
+        // because the connector proves the account from the token itself before it reads anything.
+        const payload = Buffer.from(JSON.stringify({
+          iss: url, aud: `mongoose:${endpoint}`, sub: 'synthetic-user', email: 'synthetic@example.test',
+          sid: 'synthetic-session', jti: 'synthetic-jti', typ: 'access', iat: 1_790_000_000, nbf: 1_790_000_000, exp: 1_790_003_600,
+        })).toString('base64url');
         await writeFile(join(config, `mongoose-${endpoint}.json`), JSON.stringify({
           schemaVersion: 3, endpoint, resource: `${url}/mcp/${endpoint}`, issuer: url, tokenEndpoint: `${url}/oauth/token`,
-          clientId: 'client', redirectPort: 45871, account: 'synthetic', accessToken: 'access-token', refreshToken: 'refresh-token',
+          clientId: 'client', redirectPort: 45871, account: 'synthetic', accessToken: `eyJhbGciOiJSUzI1NiJ9.${payload}.synthetic-signature`, refreshToken: 'refresh-token',
           expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now(),
         }), { mode: 0o600 });
       }

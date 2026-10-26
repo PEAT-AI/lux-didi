@@ -148,12 +148,15 @@ export function createMongooseSignIn(options: {
     const ownerIdentity = selection.state === 'configured' ? selection.catalog.ownerIdentity : null;
     const current: Pending = { endpoint, attemptId };
     pending = current;
+    let finished = false;
     const move = (phase: MongooseSignInPhase, reason?: MongooseSignInFailure): void => {
       attempts.set(entry.id, { attemptId, phase, ...(reason ? { reason } : {}) });
-      // H20: every attempt ends in the log, so a sign-in that never receives its callback is visible as
-      // its own outcome instead of living only in an in-memory map.
-      if (phase === 'signed_in') log({ event: 'signin_finished', endpoint, attemptId, outcome: 'signed_in' });
-      if (phase === 'failed') log({ event: 'signin_finished', endpoint, attemptId, outcome: reason ?? 'did_not_finish' });
+      // H20: every attempt ends in the log exactly once, so a sign-in that never receives its callback is
+      // visible as its own outcome instead of living only in an in-memory map. A failing hop and the
+      // rejection it causes both land here, so the guard is the attempt, not the call site.
+      if (finished || (phase !== 'signed_in' && phase !== 'failed')) return;
+      finished = true;
+      log({ event: 'signin_finished', endpoint, attemptId, outcome: phase === 'signed_in' ? 'signed_in' : reason ?? 'did_not_finish' });
     };
     move('running');
     log({ event: 'signin_requested', endpoint, attemptId, outcome: 'started' });

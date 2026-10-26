@@ -153,8 +153,9 @@ async function startFakeHost(email: string, owner: string, family: 'gmail') {
 }
 
 function scratchWebRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), 'didi-web-'));
-  for (const name of ['index.html']) writeFileSync(join(root, name), '');
+  const root = mkdtempSync(join(tmpdir(), 'didi-owner-identity-web-'));
+  writeFileSync(join(root, 'index.html'),
+    '<!doctype html><html><head><link rel="stylesheet" href="/assets/app.css"></head><body><script src="/assets/app.js"></script></body></html>');
   for (const name of ['sw.js', 'manifest.webmanifest', 'icon.svg']) writeFileSync(join(root, name), name === 'sw.js' ? '' : '{}');
   mkdirSync(join(root, 'assets'), { recursive: true });
   for (const name of ['app.js', 'app.css']) writeFileSync(join(root, 'assets', name), '');

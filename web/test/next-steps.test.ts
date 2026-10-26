@@ -128,11 +128,14 @@ test('W1-R3: a Mongoose row never says restart Lux Didi; each reason gets its tr
 // D2: the Trello board is connected by an imported API key, so neither row offers a sign-in.
 test('D2: the Trello board row names the import command and offers no Sign in button', () => {
   assert.ok((connectorIDs as readonly string[]).includes('trello'), 'the row is in the catalogue the app renders');
-  for (const reason of ['not_configured', 'not_signed_in', 'credential_revoked'] as const) {
+  for (const reason of ['not_configured', 'not_signed_in', 'credential_revoked', 'identity_mismatch'] as const) {
     const web = nextStep('trello', 'error', reason);
     assert.equal(web.signIn, undefined, `${reason}: no sign-in button on the Trello row`);
     assert.match(web.text, /scripts\/import-trello-key\.sh/, `${reason}: the command that imports the key is named`);
     assert.match(web.text, /trello-board\.json/, `${reason}: the private file is named`);
   }
   assert.equal(signInTarget('trello'), undefined, 'the board has no sign-in endpoint to call');
+  const mismatch = nextStep('trello', 'error', 'identity_mismatch');
+  assert.doesNotMatch(mismatch.text, /Sign in button/, 'a mismatch never points at a button that is gone');
+  assert.match(mismatch.text, /another Trello member/);
 });

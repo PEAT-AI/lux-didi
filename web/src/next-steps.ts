@@ -42,7 +42,9 @@ const mongooseReasonSteps: Partial<Record<ReasonCode, (label: string) => NextSte
   identity_mismatch: label => ({ text: `${label} is signed in as a different account than your configuration names. Use the Sign in button and sign in with the account your configuration names; a refused account is not retried, so the endpoint connects with the new sign-in from Lux Didi's next start.`, guideUrl: setupGuideUrl, signIn: true }),
 };
 /** D2: the Trello board is connected by the owner's own API key, so its row names the import command. */
-const trelloKeyStep = (label: string): NextStep => ({ text: `${label} uses the API key and token you already have. Run scripts/import-trello-key.sh <env-file> <config-dir> once, then write {"board": "<the name you see in Trello>", "ownerIdentity": "<your Trello email>"} to trello-board.json in the protected configuration directory and reopen Settings.`, guideUrl: mcpGuideUrl });
+const trelloKeyStep = (label: string, reason: string): NextStep => reason === 'identity_mismatch'
+  ? { text: `${label} is connected with a key that belongs to another Trello member than the one your configuration names. Import the key and token of the member trello-board.json names with scripts/import-trello-key.sh, then reopen Settings.`, guideUrl: mcpGuideUrl }
+  : { text: `${label} uses the API key and token you already have. Run scripts/import-trello-key.sh <env-file> <config-dir> once, then write {"board": "<the name you see in Trello>", "ownerIdentity": "<your Trello email>"} to trello-board.json in the protected configuration directory and reopen Settings.`, guideUrl: mcpGuideUrl };
 const failureStep: NextStep = { text: "Check the connector service, then use Copy diagnostics from the Lux Didi menu." };
 /** Mongoose signs in through the browser; the pasted-token path covers the other connectors only. */
 const mongooseCredentialStep = (label: string): NextStep => ({ text: `${label} has no stored session. Use the Sign in button on its row in Settings once this endpoint is in your connector configuration.`, guideUrl: setupGuideUrl });
@@ -72,7 +74,8 @@ const reasonSteps: Record<ReasonCode, NextStep> = {
 export function nextStep(id: string, state: string, reason?: string, retrying = false): NextStep {
   if (state === 'connected') return { text: 'no action needed' };
   if (state === 'configured') return { text: 'a Live session connects on demand' };
-  if (id === 'trello' && reason !== undefined && ['not_configured', 'not_signed_in', 'needs_sign_in', 'credential_revoked'].includes(reason)) return trelloKeyStep('Trello');
+  // D2: the board is connected by an imported key, so no Trello reason ever points at a Sign in button.
+  if (id === 'trello' && reason !== undefined && ['not_configured', 'not_signed_in', 'needs_sign_in', 'credential_revoked', 'identity_mismatch', 'credential_mismatch'].includes(reason)) return trelloKeyStep('Trello', reason);
   const endpoint = mongooseEndpoint(id);
   if (endpoint) {
     const label = mongooseEndpointLabel(endpoint);

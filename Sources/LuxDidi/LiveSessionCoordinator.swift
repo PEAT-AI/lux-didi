@@ -532,7 +532,7 @@ public actor LiveSessionCoordinator {
     }
 
     @discardableResult
-    public func close(trigger: LiveStopTrigger = .other) async -> LiveStopReceipt? {
+    public func close(trigger: LiveStopTrigger = .other, nativeReason: String? = nil) async -> LiveStopReceipt? {
         releaseCaptureDrain()
         freezeCaptureDiagnostics()
         let stopRequestedAt = Date()
@@ -551,7 +551,7 @@ public actor LiveSessionCoordinator {
         guard current(token, op) else { await connection?.cancel(); return nil }
         // The Stop itself: a control frame the socket layer never sheds, so the host learns the call is over even
         // when the queue is full. The teardown below is the second signal, for a host that only sees the socket go.
-        do { try await connection?.sendControl(.close) } catch { /* the socket teardown is the second signal */ }
+        do { try await connection?.sendControl(.close, reason: nativeReason) } catch { /* the socket teardown is the second signal */ }
         await connection?.cancel()
         let receipt = LiveStopReceipt(trigger: trigger, stopRequestedAt: stopRequestedAt,
                                       socketCloseSentMs: Int(Date().timeIntervalSince(stopRequestedAt) * 1000))

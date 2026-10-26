@@ -199,7 +199,7 @@ export interface LiveAttachment {
   playbackReceipt(frame: string): void;
   endAudioStream(): void;
   /** The client closed the session: end it now, keeping its journal. */
-  close(): void;
+  close(nativeReason?: string): void;
   detach(): void;
   /** Durable consumer_backpressure settlement when the socket's bufferedAmount bound is exceeded. */
   overflow(): void;

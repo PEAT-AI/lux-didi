@@ -31,7 +31,7 @@ import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
 import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
 
-import { hostLogEvent, LIVE_REBUILD_TRIGGERS, LIVE_STATE_CAUSES } from '../host/log.js';
+import { clockSync, hostLogEvent, LIVE_REBUILD_TRIGGERS, LIVE_STATE_CAUSES, NATIVE_END_REASONS, setLogContext } from '../host/log.js';
 import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -381,8 +381,33 @@ export const DELEGATION_DEADLINE_MS = 25_000;
 /** R6 late findings: a source that settles this long after the first answer is still silent context for the
  *  model, but it is no longer spoken, because the owner has moved on. */
 const LATE_WINDOW_MS = 20_000;
+/** R5: a sound this short is not a new question, so the late findings still land: the owner's filler, not an ask. */
+const FILLER_WORDS = 3;
 /** R6: how much of that block a spoken line carries, so the owner hears one sentence and not a report. */
 const LATE_SPOKEN_CHARS = 280;
+
+/** R5: what the late-commentary rule reads, so the owner's patience is pinned by a test and not by a transport. */
+export interface LateCommentaryState {
+  now: number; answeredAt: number; alreadySpoken: boolean;
+  inputAt?: number | undefined; ownerWords: number; lastModelAudioAt?: number | undefined;
+}
+
+/**
+ * R5 (call 01c4bd89): why a late block stays silent, or null when the turn is quiet enough to say one line aloud.
+ * A filler sound (a couple of words, or speech inside the speaking hold) is not a new question, so the findings
+ * still land; only an owner question begun after the answer parks them, and the owner's own voice and the answer's
+ * audio are separate holds.
+ */
+export function lateCommentarySilence(state: LateCommentaryState): string | null {
+  if (state.alreadySpoken) return 'already_spoken';
+  if (state.now - state.answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
+  const filler = state.ownerWords > 0 && state.ownerWords <= FILLER_WORDS;
+  const immediate = state.inputAt !== undefined && state.inputAt - state.answeredAt < SPEAKING_HOLD_MS;
+  if (state.inputAt !== undefined && state.inputAt > state.answeredAt && !filler && !immediate) return 'new_question';
+  if (state.inputAt !== undefined && state.now - state.inputAt < SPEAKING_HOLD_MS) return 'owner_speaking';
+  if (state.lastModelAudioAt !== undefined && state.now - state.lastModelAudioAt < ANSWER_AUDIO_HOLD_MS) return 'answer_playing';
+  return null;
+}
 
 /** How many tool steps the voice view keeps for the turn: one line per source, no scrollback. */
 const LIVE_STEPS_MAX = 8;
@@ -449,8 +474,8 @@ interface ActiveSession {
   /** First model audio of the current turn; reset at each model turn start. */
   firstAudioAt: number | undefined;
   /** L-04: the end of the last audible frame, owner speech end or model audio end, whichever came later, and whether
-   *  a tool was pending while the owner waited. The wait to the next model audio is the silence the owner heard. */
-  heardSince?: number | undefined; heardToolPending: boolean;
+   *  the wait that followed began after a tool result. The wait to the next model audio is the silence the owner heard. */
+  heardSince?: number | undefined; heardAfterTool: boolean;
   /** L-04: the end of the last audible model frame of the current turn, cleared at the owner's utterance boundary and at
    *  every model turn start, so a tool turn that spoke no preamble cannot inherit an earlier turn's frame. */
   turnAudioAt?: number | undefined;
@@ -502,6 +527,10 @@ interface ActiveSession {
   delegationTimer?: ReturnType<JobTimer> | undefined;
   /** R6: when this call's first answer went out with sources still reading, and which call spoke a late line. */
   researchAnsweredAt?: number | undefined; lateCommentaryFor?: string | undefined;
+  /** R6: the research this turn may collect once without a new owner turn, and how many sources it still reads. */
+  pendingResearch?: { id: string; count: number } | undefined;
+  /** R5: the word count of the owner's last finished utterance, so a filler sound is not read as a new question. */
+  ownerLastWords: number;
   /** C-DEPTH item 5 (W10-R12): the research text this call holds in the provider conversation, and the payload
    *  the rebuild will seed when it is due. */
   researchRetention: ResearchRetention; researchRebuildSeed?: string | undefined;
@@ -798,15 +827,31 @@ const MEMORY_STOP_WORDS = new Set(['the', 'and', 'for', 'but', 'not', 'you', 'yo
 const MEMORY_FRAMING_WORDS = new Set(['owner', 'said', 'says']);
 const MEMORY_FRAMING_LEAD = /^\s*(?:the\s+owner|[a-z]+(?:'s)?)\s+(?=(?:prefers?|likes?|loves?|wants?|needs?|hates?|dislikes?|enjoys?|said|says)\b)/i;
 // Which way a clause feels, so a paraphrase of a preference cannot become its opposite.
-/** The owner turn that just closed: the provider's deltas joined up to the finished boundary, never one fragment. */
-function finishedOwnerTurn(tx: Transaction, liveSessionId: string): string {
-  const rows = tx.all("SELECT text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id", [liveSessionId]);
+/** The provider's deltas joined up to the closing boundary of one journal kind: never one fragment. */
+function finishedUtterance(tx: Transaction, liveSessionId: string, kind: 'inputTranscription' | 'outputTranscription'): string {
+  const rows = tx.all('SELECT text,finished FROM live_journal WHERE live_session_id=? AND kind=? ORDER BY journal_id', [liveSessionId, kind]);
   let pending = '', closed = '';
   for (const row of rows) {
     pending += String(row['text'] ?? '');
     if (Number(row['finished']) === 1) { closed = pending.trim(); pending = ''; }
   }
   return closed;
+}
+
+/** The owner turn that just closed: the provider's deltas joined up to the finished boundary, never one fragment. */
+function finishedOwnerTurn(tx: Transaction, liveSessionId: string): string {
+  return finishedUtterance(tx, liveSessionId, 'inputTranscription');
+}
+
+/** The closed owner turn before the current one, which a bare "save this to lux" refers to. */
+function previousOwnerTurn(tx: Transaction, liveSessionId: string): string {
+  const rows = tx.all("SELECT text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id", [liveSessionId]);
+  let pending = '', last = '', before = '';
+  for (const row of rows) {
+    pending += String(row['text'] ?? '');
+    if (Number(row['finished']) === 1) { before = last; last = pending.trim(); pending = ''; }
+  }
+  return before;
 }
 
 const MEMORY_AFFIRM = new Set(['love', 'loves', 'like', 'likes', 'prefer', 'prefers', 'preferred', 'enjoy', 'enjoys',
@@ -1636,6 +1681,10 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       this.#store.transaction(tx => this.#terminalInTx(tx, liveSessionId, { state: 'not_started' }, false, this.#now(), 'ended', null));
       throw error;
     }
+    // C-LOG-ENVELOPE: the call is open, so name it once. One live session is one call (L2-R1), and every
+    // line the host emits until the next call opens carries this id and the provider generation inside it.
+    setLogContext({ liveSessionId, generation: 0 });
+    hostLogEvent(clockSync('call_open'));
     this.#store.transaction(tx => tx.run("UPDATE live_sessions SET lifecycle='active', updated_at=? WHERE live_session_id=?", [this.#now(), liveSessionId]));
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, quietRebuild: false, modelTextSinceOpen: false, request: structuredClone(request),
@@ -1647,7 +1696,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
       researchAdmission: new ResearchAdmission(), researchRetention: { retainedChars: 0, rebuilds: 0 },
-      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardToolPending: false, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
@@ -1697,7 +1746,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       setInputMuted: (muted: boolean) => this.#setInputMuted(handle, muted),
       playbackReceipt: frame => this.#playbackReceipt(handle, frame),
       endAudioStream: () => { if (handle.rebuilding) return; this.#guardHandle(handle); handle.session.endAudioStream(); },
-      close: () => this.#stop(handle),
+      close: (nativeReason?: string) => this.#stop(handle, nativeReason),
       detach: () => this.#detach(handle),
       overflow: () => {
         if (handle.terminal) return;
@@ -2008,7 +2057,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     const reply = unspokenReply(outputs);
     if (reply !== undefined) { handle.unspoken = reply; handle.unspokenDelivered = false; handle.unspokenResults = outputs.length; }
     // L-04: the wait that ends the next time she speaks followed a tool, which the heard-silence record names.
-    handle.heardToolPending = true;
+    handle.heardAfterTool = true;
     this.#armDebt(handle, outputs, 'tool_output');
     if (outcome === 'failed') void this.#recreateForDeadAir(handle, 'send_failed').catch(() => { /* the recreate names its own failure */ });
   }
@@ -2727,6 +2776,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
   async #openRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', savedHandle: string | undefined, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null, awaitReady = true): Promise<boolean> {
     handle.sessionTimer?.cancel();
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
+    // C-LOG-ENVELOPE F1: the rebuild opens a new provider session inside the same call, so every later
+    // line names the generation it really belongs to instead of the open-time zero.
+    setLogContext({ liveSessionId: handle.liveSessionId, generation: handle.generation });
     handle.recoveryRefused = false;
     // #1022 F1: the scheduler this handle carried answered for the generation that just ended.
     handle.researchScheduler = undefined; handle.researchSchedulerGeneration = undefined;
@@ -3102,10 +3154,15 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
 
   /** The client's explicit Stop: the app released the microphone and wants the call over now, not in five seconds.
    * The owner ended it, so the state is a plain close and the code names the reason. */
-  #stop(handle: ActiveSession): void {
+  #stop(handle: ActiveSession, nativeReason?: string): void {
     if (this.#settled(handle)) return;
+    // C-HEADPHONES 5: the app's own `live_end` reason travels with the Stop and the host log repeats
+    // it unchanged, so a route change is never recorded as the owner's stop. An unknown word stays
+    // user_stop: the log never invents a reason it was not told.
+    const reason = nativeReason && (NATIVE_END_REASONS as readonly string[]).includes(nativeReason)
+      ? nativeReason : 'user_stop';
     this.#settle(handle, { state: 'closed', code: 'user_stop' }, true, 'ended', null);
-    hostLogEvent({ event: 'session_end', reason: 'user_stop', msAfterStop: 0 });
+    hostLogEvent({ event: 'session_end', reason, msAfterStop: 0 });
   }
 
   /**
@@ -3322,11 +3379,11 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
             // end, so a preamble that satisfied the dead-air receipt no longer hides the answer's real silence.
             if (handle.heardSince !== undefined && this.#now() - handle.heardSince >= HEARD_SILENCE_MIN_MS) {
               hostLogEvent({ event: 'live_heard_silence', ms: Math.max(0, this.#now() - handle.heardSince),
-                toolPending: handle.heardToolPending });
+                silence: this.#silenceOwner(handle) });
             }
           }
           // L-04: this frame is the newest thing the owner heard, and the next wait starts at its end.
-          handle.heardSince = this.#now(); handle.heardToolPending = false;
+          handle.heardSince = this.#now(); handle.heardAfterTool = false;
           this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue;
         }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
@@ -3342,6 +3399,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;
+          if (handle.inputFinal) handle.ownerLastWords = typeof event.text === 'string' && event.text.trim() !== '' ? event.text.trim().split(/\s+/u).length : 0;
           if (handle.inputFinal) {
             // L-05: the provider sends the finished fragments of one utterance one after another, and the dead-air
             // receipt is owed one measurement per utterance, so only the first of them arms it.
@@ -3613,7 +3671,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // message is refused exactly like a second start in one owner turn.
     const parsedCalls = event.calls.map(call => {
       const parsed = parseResearch(call.args);
-      const verdict = parsed.ok ? handle.researchAdmission.admit(parsed.call.action) : undefined;
+      const verdict = parsed.ok ? handle.researchAdmission.admit(parsed.call.action, parsed.ok && this.#ownPendingResults(handle, parsed.call.action, parsed.call.researchId)) : undefined;
       return { call, parsed, verdict };
     });
     // F6: every research call in one model message runs concurrently; the adapter bounds each source.
@@ -3629,10 +3687,13 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         response = { ...ADMISSION_BLOCKED };
       } else {
         const firstStep = handle.toolStep;
+        // R2: the one "still searching" line this call may earn, armed for its own 10 s and cancelled by its answer.
+        const stillSearching = this.#armStillSearching(handle, call.id);
         try {
           const priorRunId = handle.researchLedger.last()?.researchId;
           response = await this.#boundedResearch(handle, scheduler.call({ ...parsed.call, callId: call.id }, handle.abort.signal), parsed.call, configured, generation, priorRunId);
         } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
+        stillSearching.cancel();
         // L8-Q01/Q05: the run this call started or continued, its question, and its first canonical execution
         // (only when this call ran alone, so a batch step is never credited to the wrong call).
         this.#linkResearchCall(handle, host, call.id, parsed.call.question, response, event.calls.length === 1 && handle.toolStep > firstStep ? firstStep : undefined);
@@ -3644,6 +3705,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       if (typeof asked === 'string' && asked.trim() !== '') this.#lastResearchQuestion.set(handle.liveSessionId, asked);
       const pending = response['pending'];
       if (Array.isArray(pending) && pending.length > 0) { handle.researchAnsweredAt = this.#now(); handle.lateCommentaryFor = undefined; }
+      // R6: the one research this turn may still collect from, and whether it still has sources reading.
+      const answeredId = typeof response['researchId'] === 'string' ? response['researchId'] : '';
+      handle.pendingResearch = Array.isArray(pending) && pending.length > 0 && answeredId !== '' ? { id: answeredId, count: pending.length } : undefined;
       return { id: call.id, name: call.name, response };
     }));
     for (const entry of settled) {
@@ -3666,6 +3730,41 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       });
     }
     return { responses, projections };
+  }
+
+  /**
+   * R2: the one short line an owner waiting on a research call hears at 10 s. It rides the speakable-progress
+   * channel (#538), the host's only input to the model while a tool call is pending, so the call is neither ended
+   * nor re-issued. An adapter without that channel leaves the wait silent and the receipt says `spoken: false`,
+   * which is the honest record instead of a claim the owner heard it.
+   */
+  #armStillSearching(handle: ActiveSession, callId: string): { cancel: () => void } {
+    const armedAt = this.#now();
+    const ownerAt = handle.inputAt;
+    const timer = this.#schedule(() => {
+      if (this.#settled(handle) || !handle.pendingCallIds.has(callId)) return;
+      // R2: a call the owner has moved past is not narrated: a new question ends the wait this line was for.
+      if (handle.inputAt !== undefined && (ownerAt === undefined || handle.inputAt > armedAt)) return;
+      const researchId = handle.researchLedger.last()?.researchId ?? '';
+      let spoken = false;
+      try {
+        const speak = handle.session.sendCommentary;
+        spoken = typeof speak === 'function' && speak.call(handle.session, { text: RESEARCH.stillSearchingLine }) !== false;
+      } catch { spoken = false; }
+      hostLogEvent({ event: 'research_still_searching', researchId, elapsedMs: RESEARCH_OPERATION.stillSearchingMs, spoken });
+    }, RESEARCH_OPERATION.stillSearchingMs);
+    timer.unref?.();
+    return timer;
+  }
+
+  /**
+   * R6: the model asking for the pending results of the research this same live turn started. That is not a new
+   * question: it names the research this session answered from, and that research still has sources reading.
+   */
+  #ownPendingResults(handle: ActiveSession, action: string, researchId: string | undefined): boolean {
+    if (action !== 'continue' || researchId === undefined) return false;
+    const pending = handle.pendingResearch;
+    return pending !== undefined && pending.count > 0 && pending.id === researchId;
   }
 
   /**
@@ -3694,7 +3793,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    */
   #lateFindings(handle: ActiveSession, generation: number, event: ResearchLateFindings): void {
     const receipt = { event: 'research_late_findings', researchId: event.researchId, source: event.source, ms: event.ms, items: event.items.length };
-    const drop = (reason: string): void => { hostLogEvent({ ...receipt, delivered: 'dropped', reason }); };
+    const drop = (reason: string): void => { hostLogEvent({ ...receipt, destination: 'dropped', reason }); };
     if (this.#settled(handle) || generation !== handle.generation) return drop('session_closed');
     // #472: a cut run's empty late event is a cut, not a source failure, and the receipt must say so.
     if (event.items.length === 0) return drop(event.cut === true ? 'run_cut' : event.ok ? 'no_new_findings' : 'source_failed');
@@ -3712,9 +3811,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // spoken once through the response channel or kept in the ledger for the next continuation. Never a
     // provider frame the wire refuses.
     const reason = this.#lateCommentaryReason(handle, event);
-    if (reason !== null) return hostLogEvent({ ...receipt, delivered: 'ledger', reason });
+    if (reason !== null) return hostLogEvent({ ...receipt, destination: 'ledger', reason });
     const line = `One more thing from ${event.source}: ${event.items[0]!.slice(0, LATE_SPOKEN_CHARS)}`;
-    try { handle.session.sendText({ text: line }); } catch { return hostLogEvent({ ...receipt, delivered: 'ledger', reason: 'send_failed' }); }
+    try { handle.session.sendText({ text: line }); } catch { return hostLogEvent({ ...receipt, destination: 'ledger', reason: 'send_failed' }); }
     if (event.source === 'calendar') handle.researchLedger.delivered(event.researchId, event.runId ?? -1, (event.calendarKeys ?? []).filter((_, index) => line.includes(event.items[index] ?? '\u0000')));
     if (event.mailKeys) {
       const keys = event.items.flatMap((item, index) => (event.mailKeys![index] && line.includes(item) ? [event.mailKeys![index]!] : []));
@@ -3722,23 +3821,31 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     }
     handle.lateCommentaryFor = event.researchId;
     hostLogEvent({ event: 'late_findings_sent', delegationKey: this.#delegationKey(handle), reason: 'late_findings' });
-    hostLogEvent({ ...receipt, delivered: 'response', reason: 'quiet' });
+    hostLogEvent({ ...receipt, destination: 'response', reason: 'quiet' });
+  }
+
+  /**
+   * R7 (H-02): what really owned the silence the owner just heard. A tool call actually in flight is `tool`; a
+   * provider that is only generating an answer is `provider`; anything else is the owner's own turn, `owner`.
+   */
+  #silenceOwner(handle: ActiveSession): 'tool' | 'provider' | 'owner' {
+    if (handle.pendingCallIds.size > 0) return 'tool';
+    // A wait that began after a tool result and has no call pending is the provider owing its answer, which is the
+    // case the old boolean mislabelled as a busy tool.
+    if (handle.heardAfterTool || handle.thinking || handle.awaitingAnswer) return 'provider';
+    return 'owner';
   }
 
   /** Why a late block stays silent, or null when the turn is quiet enough to say one line aloud. */
   #lateCommentaryReason(handle: ActiveSession, event: ResearchLateFindings): string | null {
-    const now = this.#now();
-    const answeredAt = handle.researchAnsweredAt ?? now;
-    if (handle.lateCommentaryFor === event.researchId) return 'already_spoken';
-    if (now - answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
-    // A question begun after the first answer means the owner moved on: the block stays context only.
-    if (handle.inputAt !== undefined && handle.inputAt > answeredAt) return 'new_question';
-    // Owner speech: speech that began before the first answer and has
-    // not gone quiet yet is still the owner talking, even though it is not a new question.
-    if (handle.inputAt !== undefined && now - handle.inputAt < SPEAKING_HOLD_MS) return 'owner_speaking';
-    // Answer audio is the model's own output, a different reason from the owner's voice.
-    if (handle.lastModelAudioAt !== undefined && now - handle.lastModelAudioAt < ANSWER_AUDIO_HOLD_MS) return 'answer_playing';
-    return null;
+    return lateCommentarySilence({
+      now: this.#now(),
+      answeredAt: handle.researchAnsweredAt ?? this.#now(),
+      alreadySpoken: handle.lateCommentaryFor === event.researchId,
+      inputAt: handle.inputAt,
+      ownerWords: handle.ownerLastWords,
+      lastModelAudioAt: handle.lastModelAudioAt,
+    });
   }
 
   /** A fresh turn of tool work: the step list restarts and every direct call opens its own line.
@@ -4076,7 +4183,10 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       if (transcription) {
         const turnId = handle.connection.turnId;
         if (turnId !== undefined) {
-          try { tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)', [turnId,transcription.type === 'inputTranscription' ? 'owner' : 'model',now,finished === 1 ? 1 : 0,text ?? '',journalId]); }
+          // L2-R1: live_journal keeps its fragments and its empty closing row; the audit row is where the
+          // assembled utterance belongs, so trace_utterance final=1 answers "what was said".
+          const said = finished === 1 && !text?.length ? finishedUtterance(tx, handle.liveSessionId, transcription.type) : text ?? '';
+          try { tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)', [turnId,transcription.type === 'inputTranscription' ? 'owner' : 'model',now,finished === 1 ? 1 : 0,said,journalId]); }
           catch { markDiagnosticLoss(tx,handle.liveSessionId,'trace_write_failed'); hostLogEvent({ event: 'live_trace_rejected',kind: 'turn.opened',code: 'record_failed' }); }
         } else if (text?.length) tx.run('UPDATE live_sessions SET diagnostic_unattributed_transcripts=COALESCE(diagnostic_unattributed_transcripts,0)+1 WHERE live_session_id=?', [handle.liveSessionId]);
       }
@@ -4084,7 +4194,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         const ownerTurn = finishedOwnerTurn(tx, handle.liveSessionId);
         // #573: the open tools are checked against the words of the turn they answer.
         if (ownerTurn) noteOwnerWords(handle.liveSessionId, ownerTurn);
-        if (ownerTurn && transcription?.finalOrigin !== 'typed') this.#vault.observe(tx, handle.liveSessionId, String(journalId), ownerTurn);
+        if (ownerTurn && transcription?.finalOrigin !== 'typed') this.#vault.observe(tx, handle.liveSessionId, String(journalId), ownerTurn, previousOwnerTurn(tx, handle.liveSessionId));
         // W6 item 6: the composed note listens to the same finalized owner turn, and to nothing else.
         if (ownerTurn && transcription?.finalOrigin !== 'typed') pendingOwnerText = ownerTurn;
       }

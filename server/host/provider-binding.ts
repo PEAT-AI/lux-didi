@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { credentialReceiptFor, requestCredentialsFor, seedScope, type CredentialRouteScope, type ProviderStatus } from '../config/index.js';
 import { ConfigError } from '../config/files.js';
 import { GeminiAdapter, type Credentials, type ModelPort, type Transport } from '../adapters/model/index.js';
+import { assertGeminiBinding } from '../adapters/model/gemini.js';
 
 export interface ProviderBindingIdentity { readonly accountSha256: string; readonly generation: string }
 /** Currentness changes only at an outbound invocation or explicit host boundary, never per media event. */
@@ -30,6 +31,9 @@ export function pinProviderBinding(configDir: string, scope: CredentialRouteScop
 export type PinnedProviderBinding = ReturnType<typeof pinProviderBinding>;
 /** All three text consumers use this exact profile route and one receipt per generation request. */
 export function boundTextModel(configDir: string, loaded: Extract<ProviderStatus, { status: 'ready' }>, testing?: { credentials?: Credentials; transport?: Transport }): { model: ModelPort; binding?: PinnedProviderBinding } {
+  // Validate the provider wiring here, at composition: a model this adapter cannot serve is then an
+  // ADAPTER_CONFIGURATION_INVALID status the host reports at start instead of a first-answer failure.
+  assertGeminiBinding(loaded.profile.modelId, loaded.profile.keyReference);
   const scope = seedScope('gemini', loaded.profile.modelId, loaded.profile.dataClasses);
   const binding = testing?.credentials ? undefined : pinProviderBinding(configDir, scope);
   const model: ModelPort = { generate(request, control) {

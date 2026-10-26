@@ -1,25 +1,34 @@
 #!/usr/bin/env node
-// didi-timeline: read the trace tables in state.sqlite and print one joinable timeline.
+// didi-timeline: read the trace tables in state.sqlite and the day's logs and print one joinable timeline.
 // Read-only canonical SQLite timeline. See docs/diagnostic-store.md.
 const { DatabaseSync } = require('node:sqlite');
-const { existsSync } = require('node:fs');
+const { existsSync, readdirSync, readFileSync } = require('node:fs');
 const { homedir } = require('node:os');
 const { join } = require('node:path');
 const { fileURLToPath } = require('node:url');
 
-const usage = `didi-timeline <session|latest> [options]
+const usage = `didi-timeline call <liveSessionId|latest> [--content] [--json]
+didi-timeline doctor [--json]
+didi-timeline list [--json]
+didi-timeline <session|latest> [options]
 
-  <session|latest>      a live session or Chat run id; latest selects the most recent Live session
+  call <session|latest> one call's ordered story: the store's turns and tool calls merged with
+                        host.log (and its rotated files), native-live.log and audio.log
+  doctor                log health: files, bytes, lines, torn lines, top events, oldest and newest
+                        day, and the lines no session or call can be attributed to
+  list                  one row per session the logs name: start, duration, tools, max silence, terminal
+  <session|latest>      the store-only timeline of a live session or Chat run id; latest selects the most recent Live session
   --turn N              only turn index N
   --content             opt into gated transcripts, requested/effective arguments and supported full source results
   --json                print the report as JSON (no owner text unless --content)
   --export-metadata     named columns of the five metadata tables only, never a dump
   --session <id>        with --export-metadata, restrict the export to one live session
-  --data-dir <path>     the host data directory holding state.sqlite
+  --data-dir <path>     the host data directory holding state.sqlite and logs/
 `;
 
+const COMMANDS = new Set(['call', 'doctor', 'list']);
 const argv = process.argv.slice(2);
-const options = { session: undefined, turn: undefined, content: false, json: false, exportMetadata: false, dataDir: undefined };
+const options = { command: undefined, session: undefined, turn: undefined, content: false, json: false, exportMetadata: false, dataDir: undefined };
 for (let index = 0; index < argv.length; index += 1) {
   const arg = argv[index];
   if (arg === '--turn') options.turn = Number(argv[++index]);
@@ -30,6 +39,7 @@ for (let index = 0; index < argv.length; index += 1) {
   else if (arg === '--data-dir') options.dataDir = argv[++index];
   else if (arg === '-h' || arg === '--help') { process.stdout.write(usage); process.exit(0); }
   else if (arg.startsWith('-')) fail(`unknown option ${arg}`);
+  else if (options.command === undefined && COMMANDS.has(arg)) options.command = arg;
   else if (options.session === undefined) options.session = arg;
   else fail(`unexpected argument ${arg}`);
 }
@@ -49,20 +59,103 @@ function dataDirectory() {
   return join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'lux-didi');
 }
 
-async function main() {
-  const database = join(dataDirectory(), 'state.sqlite');
-  if (!existsSync(database)) fail(`no state.sqlite under ${dataDirectory()}`);
+// Today's writer rotates host.log by size to host.log.1 and host.log.2 (host/log.ts:1327-1331); the day-file
+// shape host-YYYY-MM-DD.log is accepted ahead of the day rotation the log-health unit adds. Both shapes, and
+// the native and audio streams, are read oldest file name first; a stream is never guessed from file content.
+const LOG_STREAMS = [
+  ['host', /^host-\d{4}-\d{2}-\d{2}\.log(\.\d+)?$/], ['host', /^host\.log(\.\d+)?$/],
+  ['native', /^native-live\.log(\.\d+)?$/], ['audio', /^audio\.log(\.\d+)?$/],
+];
+
+function logInputs() {
+  const directory = join(dataDirectory(), 'logs');
+  if (!existsSync(directory)) return [];
+  const inputs = [];
+  for (const name of readdirSync(directory).sort()) {
+    const stream = LOG_STREAMS.find(([, pattern]) => pattern.test(name));
+    if (stream === undefined) continue;
+    inputs.push({ file: `logs/${name}`, stream: stream[0], text: readFileSync(join(directory, name), 'utf8') });
+  }
+  return inputs;
+}
+
+async function traceModule() {
   const built = new URL('../server/dist/trace/timeline.js', `file://${__filename}`);
   if (!existsSync(fileURLToPath(built))) fail('the trace module is not built; run: npm --prefix server run build');
-  const { buildTimeline, exportMetadata, renderTimeline, resolveSession } = await import(built.href);
+  return import(built.href);
+}
 
+function storeReader(database) {
   const db = new DatabaseSync(database, { readOnly: true });
+  db.exec('BEGIN');
+  return {
+    read: { all: (sql, params = []) => db.prepare(sql).all(...params), get: (sql, params = []) => db.prepare(sql).get(...params) },
+    close: () => { if (db.isTransaction) db.exec('ROLLBACK'); db.close(); },
+  };
+}
+
+async function callView() {
+  const { buildCallStory, buildTimeline, listCalls, renderCallStory, resolveSession, scanLogs } = await traceModule();
+  const scan = scanLogs(logInputs());
+  const spec = options.session ?? 'latest';
+  const database = join(dataDirectory(), 'state.sqlite');
+  const store = existsSync(database) ? storeReader(database) : undefined;
   try {
-    db.exec('BEGIN');
-    const read = {
-      all: (sql, params = []) => db.prepare(sql).all(...params),
-      get: (sql, params = []) => db.prepare(sql).get(...params),
-    };
+    let report;
+    let liveSessionId = store === undefined ? undefined : resolveSession(store.read, spec);
+    if (store !== undefined && liveSessionId !== undefined) report = buildTimeline(store.read, liveSessionId, timelineOptions(store.read));
+    // The store is one source, not the authority: a session the store has pruned is still in the logs, and the
+    // envelope from wagon L2 lets a bare callId speak for the call on its own.
+    let callId;
+    if (spec === 'latest') liveSessionId = liveSessionId ?? listCalls(scan)[0]?.liveSessionId;
+    else if (liveSessionId === undefined) {
+      if (scan.lines.some(line => line.liveSessionId === spec)) liveSessionId = spec;
+      else if (scan.lines.some(line => line.callId === spec)) callId = spec;
+    }
+    const story = buildCallStory(scan, report, {
+      ...(liveSessionId === undefined ? {} : { liveSessionId }),
+      ...(callId === undefined ? {} : { callId }),
+      ...(store === undefined ? {} : { read: store.read }),
+      content: options.content,
+    });
+    if (story.entries.length === 0) fail(`no call ${spec} in the logs or the store under ${dataDirectory()}`);
+    process.stdout.write(options.json ? `${JSON.stringify(story, null, 2)}\n` : renderCallStory(story));
+  } finally {
+    if (store !== undefined) store.close();
+  }
+}
+
+async function doctorView() {
+  const { logHealth, renderLogHealth, scanLogs } = await traceModule();
+  const health = logHealth(scanLogs(logInputs()));
+  process.stdout.write(options.json ? `${JSON.stringify(health, null, 2)}\n` : renderLogHealth(health));
+}
+
+async function listView() {
+  const { listCalls, renderCallList, scanLogs } = await traceModule();
+  const rows = listCalls(scanLogs(logInputs()));
+  process.stdout.write(options.json ? `${JSON.stringify(rows, null, 2)}\n` : renderCallList(rows));
+}
+
+// The content gate is the store's own: the assistant id it was installed for.
+function timelineOptions(read) {
+  return {
+    ...(options.turn === undefined ? {} : { turn: options.turn }),
+    content: options.content,
+    ...(options.content ? { contentAuthority: { ownerId: String(read.get("SELECT value FROM runtime_meta WHERE key='assistantId'")?.value ?? ''), allowedClasses: ['ordinary', 'private', 'sensitive'] } } : {}),
+  };
+}
+
+async function main() {
+  if (options.command === 'doctor') return doctorView();
+  if (options.command === 'list') return listView();
+  if (options.command === 'call') return callView();
+  const { buildTimeline, exportMetadata, renderTimeline, resolveSession } = await traceModule();
+  const database = join(dataDirectory(), 'state.sqlite');
+  if (!existsSync(database)) fail(`no state.sqlite under ${dataDirectory()}`);
+  const store = storeReader(database);
+  try {
+    const read = store.read;
     if (options.exportMetadata) {
       const selection = options.session === 'latest' ? resolveSession(read, 'latest') : options.session;
       process.stdout.write(`${JSON.stringify(exportMetadata(read, selection), null, 2)}\n`);
@@ -74,15 +167,10 @@ async function main() {
       process.stderr.write(`didi-timeline: no traced session for ${spec}\n`);
       process.exit(1);
     }
-    const report = buildTimeline(read, liveSessionId, {
-      ...(options.turn === undefined ? {} : { turn: options.turn }),
-      content: options.content,
-      ...(options.content ? { contentAuthority: { ownerId: String(read.get("SELECT value FROM runtime_meta WHERE key='assistantId'")?.value ?? ''),allowedClasses: ['ordinary','private','sensitive'] } } : {}),
-    });
+    const report = buildTimeline(read, liveSessionId, timelineOptions(read));
     process.stdout.write(options.json ? `${JSON.stringify(report, null, 2)}\n` : renderTimeline(report));
   } finally {
-    if (db.isTransaction) db.exec('ROLLBACK');
-    db.close();
+    store.close();
   }
 }
 

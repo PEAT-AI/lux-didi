@@ -7,14 +7,14 @@ import { createLuxKnowledgeReader, isCalendarDay, KNOWLEDGE_BODY_MAX_CHARS, KNOW
 import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
 import type { DriveGetInput, DriveSearchInput, GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
-import { googleToolStatus, projectGoogleResult } from '../tools/google.js';
+import { GOOGLE_ERROR_TABLE, googleOwnerLine, googleToolStatus, projectGoogleResult } from '../tools/google.js';
 import { createMongooseReader, mongooseEndpointName, MONGOOSE_ENDPOINT_TOOLS, MONGOOSE_READ_TOOLS, type MongooseEndpoint, type SearchInput } from './mongoose.js';
 import { createMattermostReader, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT, MATTERMOST_CHAT_TOOL, MATTERMOST_DEFAULTS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, type ChatReadInput } from './mattermost.js';
 import { createHash } from 'node:crypto';
 
 import { projectMongooseResult } from '../tools/mongoose.js';
 import { projectMattermostResult } from '../tools/mattermost.js';
-import { calendarIdentityValues, gmailIdentityValues, mattermostIdentityValues, mongooseIdentityValues, type IdentitySource } from './identity.js';
+import { calendarIdentityValues, gmailIdentityValues, mattermostIdentityValues, type IdentitySource } from './identity.js';
 
 export * from './lux-knowledge.js';
 export * from './google.js';
@@ -74,10 +74,11 @@ export interface ConnectorDescriptor {
   /** Connection status for a non-completed result, when the connector can classify it (R4). A classified
    * failure may also carry the one content-free log line the host must write for it. */
   /**
-   * Connection status for one completed-but-failed read. The approved endpoint is passed so an owner
-   * line can name the binding the helper itself reads (LOGS.md L-01), never a token value.
+   * Connection status for one failed read, completed-and-failed or refused before the wire (TR4-R8: a
+   * latched endpoint must answer the owner, never silently). The approved endpoint is passed so an
+   * owner line can name the binding the helper itself reads (LOGS.md L-01), never a token value.
    */
-  status?(evidence: ConnectorEvidence, endpoint?: ConnectionEndpoint): { state: 'configured' | 'error'; reason: string; code: string; log?: ToolFailureEvent } | undefined;
+  status?(evidence: ConnectorResult, endpoint?: ConnectionEndpoint): { state: 'configured' | 'error'; reason: string; code: string; log?: ToolFailureEvent } | undefined;
   /** The connector's own-account identity probe for one approved policy, when it has one (release 3f). */
   identity?(policy: ConnectionPolicy): IdentitySource | null;
 }
@@ -282,8 +283,19 @@ function googleProject(evidence: ConnectorEvidence, port: McpPort, policy: Conne
     ...(projection.projection[HOST_EVIDENCE] ? { [HOST_EVIDENCE]: projection.projection[HOST_EVIDENCE] } : {}),
   };
 }
-function googleStatus(evidence: ConnectorEvidence, endpoint?: ConnectionEndpoint): { state: 'configured' | 'error'; reason: string; code: string; log?: ToolFailureEvent } | undefined {
-  const status = googleToolStatus(evidence, endpoint);
+function googleStatus(evidence: ConnectorResult, endpoint?: ConnectionEndpoint): { state: 'configured' | 'error'; reason: string; code: string; log?: ToolFailureEvent } | undefined {
+  // Ruling TR4-R8: a latched endpoint refuses the read before the wire, so the connector answers for that
+  // refusal too: the closed code's own line from the one table, with the family the endpoint names.
+  if (evidence.state === 'refused') {
+    const refused = evidence.reason.split(':')[0]!.trim().replace(/_/g, '-');
+    const row = Object.hasOwn(GOOGLE_ERROR_TABLE, refused) ? GOOGLE_ERROR_TABLE[refused] : undefined;
+    if (row !== undefined) {
+      const named = `${endpoint?.id ?? ''} ${endpoint?.resource ?? ''}`.toLowerCase();
+      const family = /gmail/.test(named) ? 'gmail' : /drive/.test(named) ? 'drive' : 'calendar';
+      return { state: row.pinned ? 'configured' : 'error', reason: googleOwnerLine(row, family, endpoint), code: refused };
+    }
+  }
+  const status = googleToolStatus(evidence as ConnectorEvidence, endpoint);
   // A failure the helper's vocabulary names speaks its line and says how dead the endpoint is; a bodiless
   // one stays a plain failed call, so a lost mail page is never mistaken for an answer.
   // The closed code rides with the state so the host logs one event per classified failure (L-08).
@@ -328,7 +340,11 @@ const googleDescriptor: ConnectorDescriptor = {
     // LOGS.md L-02: the Drive family reports no own-account identity, so it probes for the read consent
     // itself -- the cheapest real read the helper offers -- and says so at connect instead of staying
     // silent until the first call fails with scope_missing. Strict, because no consent is no read.
-    if (family === 'drive') return { tool: 'drive_search_files', args: { query: 'consent', limit: 1 }, values: () => [], proves: 'consent', strict: true };
+    // D1-R4: the Drive family's account is proven by the helper's own pin, `helper_pin`: each Google
+    // child must carry LUX_GOOGLE_MCP_ACCOUNT equal to the owner email (refused at catalog load
+    // otherwise), and the helper compares every refreshed id_token against it. The read below is the
+    // strict consent half, and the helper's account_mismatch is its refusal.
+    if (family === 'drive') return { tool: 'drive_search_files', args: { query: 'consent', limit: 1 }, values: () => [], proves: 'consent', proof: 'helper_pin', strict: true };
     return family === 'calendar'
       ? { tool: 'calendar_list_calendars', args: {}, values: calendarIdentityValues, strict: true }
       : { tool: 'gmail_get_profile', args: {}, values: gmailIdentityValues, strict: true };
@@ -617,7 +633,9 @@ const mongooseDescriptor: ConnectorDescriptor = {
     } };
   },
   project(evidence, port, policy) { return companyProjection(evidence, policy, projectMongooseResult(port, evidence)); },
-  identity() { return { tool: 'get_started', args: {}, values: mongooseIdentityValues }; },
+  // Mongoose proves its account from its own minted access token (identity.ts tokenIdentity, via
+  // mongoose-auth): no `get_started` probe, and no probe of any kind on this connector.
+  identity() { return null; },
 };
 
 export const CONNECTOR_DESCRIPTORS: Readonly<Record<string, ConnectorDescriptor>> = {

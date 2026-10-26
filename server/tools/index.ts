@@ -19,7 +19,7 @@ import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
 import { STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, validateStageNote } from './lux-note.js';
-import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
+import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
 import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, ownerWords, validateOpen, type NativeActionCode } from './open.js';
@@ -335,7 +335,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         let projection = projectDiagnosticInput(call.toolName,capture);
         const declaration = 'connector' in bound.policy && typeof bound.policy.connector === 'string' ? connectorDescriptor(bound.policy.connector)?.declarations(bound.policy as ConnectionPolicy).find(item => item.name === call.toolName) : undefined;
         const sourceAccess = diagnosticContentAccess(tx,call.runId,{ownerId,allowedClasses:snapshot.acceptance.allowedClasses.filter(c => snapshot.acceptance.route.allowedClasses.includes(c))});
-        if (sourceAccess.state !== 'allowed' || projection.sha256 !== call.argumentsHash || (declaration && !declaration.validate(capture))) projection = {json:null,sha256:call.argumentsHash,fidelity:'hash_only_unsupported_v1',keyCount:projection.keyCount};
+        if (sourceAccess.state !== 'allowed' || projection.sha256 !== call.argumentsHash || (declaration && !declaration.validate(capture))) projection = {json:null,sha256:call.argumentsHash,fidelity:'hash_only_unsupported_v1',keyCount:projection.keyCount,keys:projection.keys};
         tx.run("INSERT INTO tool_calls(owner_id,run_id,execution_id,call_id,intent_json,state,input_json,input_sha256,input_fidelity,input_key_count) VALUES (?,?,?,?,?,'intent',?,?,?,?)", [ownerId, call.runId, call.executionId, call.callId ?? null, intentBytes(tx, call),projection.json,projection.sha256,projection.fidelity,projection.keyCount]);
         return 'fresh';
       });
@@ -639,6 +639,8 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             return { call: call as ToolCallIntent, claim: claimVaultWrite(tx, { liveSessionId: runId, content: args.content }) };
           });
           const receipt: VaultReceipt = staged.claim.state !== 'dispatch' ? staged.claim.receipt : vaultDispatch ? await vaultDispatch(staged.claim) : { saved: false, code: 'write_failed', guidance: 'the vault did not take the note, say it again' };
+          // C-LUX-SAVE: a refused attempt is still an attempt, so it gets its one line and the closed code.
+          if (staged.claim.state !== 'dispatch') hostLogEvent(vaultAttemptEvent(receipt, 0));
           const result = store.transaction(tx => complete(staged.call, vaultReceiptJson(receipt), ['ordinary'], tx));
           return { status: 'completed', result };
         },
@@ -806,7 +808,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 return { status: 'unknown', code };
               }
               if (evidence.state !== 'completed') {
-                const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' ? descriptor.status?.(evidence, p.endpoint) : undefined;
+                // TR4-R8: a refused read asks the connector too, so a latched endpoint answers the owner
+                // with its closed code's line rather than an empty result. A connector without a word
+                // table answers undefined and keeps the plain failure code below.
+                const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' || evidence.state === 'refused' ? descriptor.status?.(evidence, p.endpoint) : undefined;
                 if (!status) {
                   // Keep the failure cause truthful: a refused connector read names its reason; a child
                   // tool/protocol error is an unusable result. Either way surface a real code.

@@ -132,8 +132,8 @@ export function connectorState(value: unknown): { id: string; state: string; nex
   const attempt = record(row.signIn);
   const speaks = attempt !== undefined && (['running', 'waiting', 'finishing'].includes(String(attempt.phase))
     || (attempt.phase === 'failed' && ['needs_sign_in', 'not_signed_in', 'credential_missing'].includes(reason)));
-  const progress = endpoint && speaks ? signInAttemptText(signInLabel(endpoint), attempt, endpoint === 'trello' ? 'trello' : 'mongoose') : undefined;
-  // Only the three Mongoose endpoint rows and the Trello row can start a sign-in, and each carries its own name.
+  const progress = endpoint && speaks ? signInAttemptText(signInLabel(endpoint), attempt, 'mongoose') : undefined;
+  // Only the three Mongoose endpoint rows can start a sign-in, and each carries its own name.
   return { id, state: label, next: progress ?? step.text, ...(step.guideUrl ? { guideUrl: step.guideUrl } : {}), ...(wantsSignIn ? { signIn: true } : {}), ...(wantsSignIn && endpoint ? { signInEndpoint: endpoint } : {}) };
 }
 
@@ -203,7 +203,7 @@ function connectorsSection(connections: unknown, connectionsUnavailable: boolean
   const warnings = new Map(list.map(value => [connectorState(value)?.id, connectorWarning(value)] as const));
   const rows = list.map(connectorState).filter((row): row is NonNullable<ReturnType<typeof connectorState>> => row !== undefined);
   if (rows.length === 0) return '<h3>Connectors</h3><p class="muted">No connectors configured.</p>';
-return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.signInEndpoint ? ` <button type="button" class="secondary ${row.signInEndpoint === 'trello' ? 'trello-signin' : 'mongoose-signin'}" data-signin data-endpoint="${escapeHtml(row.id)}">Sign in to ${escapeHtml(signInLabel(row.signInEndpoint))}</button>` : ''}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}${warnings.get(row.id) ? ` <span class="notice" role="status">${escapeHtml(warnings.get(row.id)!)}</span>` : ''}</li>`).join('')}</ul>`;
+return `<h3>Connectors</h3><ul class="settings-connectors">${rows.map(row => `<li><strong>${escapeHtml(row.id)}</strong>: ${escapeHtml(row.state)}.${row.identity ? ` ${escapeHtml(row.identity)}.` : ''} ${escapeHtml(row.next)}${row.signInEndpoint ? ` <button type="button" class="secondary mongoose-signin" data-signin data-endpoint="${escapeHtml(row.id)}">Sign in to ${escapeHtml(signInLabel(row.signInEndpoint))}</button>` : ''}${row.guideUrl ? ` <a href="${escapeHtml(row.guideUrl)}" target="_blank" rel="noopener noreferrer">Setup guide</a>` : ''}${warnings.get(row.id) ? ` <span class="notice" role="status">${escapeHtml(warnings.get(row.id)!)}</span>` : ''}</li>`).join('')}</ul>`;
 }
 
 /** The one element shape the sign-in binder reads, so a test can supply plain objects. */
@@ -307,17 +307,18 @@ const attemptSentences: Record<string, (label: string, server: SignInServer) => 
   browser_unavailable: label => `Your browser could not be opened for the ${label} sign-in. Use the Sign in button to try again.`,
   callback_failed: label => `The browser's answer was refused or did not match this ${label} sign-in, so nothing was saved. Try again.`,
   callback_timeout: label => `The ${label} sign-in timed out waiting for the browser. Use the Sign in button to try again.`,
+  // Council 2026-10-26: never the rejected address, only the owner's own email and what to do.
+  account_mismatch: () => 'Signed in with the wrong Google account. Sign in again as rob@plantix.net.',
   token_refused: (label, server) => `${server.name} refused the sign-in at the last step, so nothing was saved for ${label}. Try again.`,
   store_failed: label => `The ${label} sign-in finished, but it could not be saved on this Mac. Try again.`,
   did_not_finish: label => `The ${label} sign-in did not finish. Use the Sign in button to try again.`,
 };
 /** Who answers a sign-in, the port its callback waits on, and what the owner checks when it cannot be reached. */
 type SignInServer = { name: string; port: number; check: string };
-const SIGN_IN_SERVERS: Record<'mongoose' | 'trello', SignInServer> = {
+const SIGN_IN_SERVERS: Record<'mongoose', SignInServer> = {
   mongoose: { name: 'Mongoose', port: 8768, check: 'check the VPN' },
-  trello: { name: 'Trello', port: 8769, check: 'check the internet connection' },
 };
-export function signInAttemptText(label: string, value: unknown, server: 'mongoose' | 'trello' = 'mongoose'): string | undefined {
+export function signInAttemptText(label: string, value: unknown, server: 'mongoose' = 'mongoose'): string | undefined {
   const attempt = record(value);
   if (!attempt || typeof attempt.attemptId !== 'string' || !/^[0-9a-f]{16}$/.test(attempt.attemptId)) return undefined;
   const steps = ['running', 'waiting', 'finishing'];

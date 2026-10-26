@@ -1,0 +1,53 @@
+{
+  "note": "Synthetic logs in today's real shapes (2026-10-25 host.log, native-live.log, audio.log): envelope-less lines, torn lines, events with no liveSessionId. Every id, tool and time is invented; no owner data.",
+  "liveSessionId": "3f2c8a10-0000-4a1a-9d1e-0000000000a1",
+  "otherSessionId": "3f2c8a10-0000-4a1a-9d1e-0000000000b2",
+  "pid": 5010,
+  "files": [
+    {
+      "file": "logs/host.log.1",
+      "stream": "host",
+      "text": [
+        "{\"timestamp\":\"2026-10-20T09:00:09.000Z\",\"pid\":5010,\"event\":\"connector_failure\",\"connector\":\"calendar\",\"reason\":\"token_expired\",\"endpointId\":\"calendar\",\"liveSessionId\":\"3f2c8a10-0000-4a1a-9d1e-0000000000a1\"}"
+      ]
+    },
+    {
+      "file": "logs/host.log",
+      "stream": "host",
+      "text": [
+        "{\"timestamp\":\"2026-10-20T09:00:00.000Z\",\"pid\":5010,\"event\":\"live_state\",\"state\":\"listening\",\"from\":\"speaking\",\"cause\":\"silence\",\"at\":1792486800000,\"liveSessionId\":\"3f2c8a10-0000-4a1a-9d1e-0000000000a1\",\"generation\":0}",
+        "{\"timestamp\":\"2026-10-19T15:00:00.000Z\",\"pid\":5099,\"event\":\"live_state\",\"state\":\"listening\",\"from\":\"speaking\",\"cause\":\"silence\",\"liveSessionId\":\"3f2c8a10-0000-4a1a-9d1e-0000000000b2\"}",
+        "{\"timestamp\":\"2026-10-20T09:00:01.000Z\",\"pid\":5010,\"event\":\"live_first_audio\",\"msSinceReady\":812,\"msSinceOpen\":1904,\"liveSessionId\":\"3f2c8a10-0000-4a1a-9d1e-0000000000a1\"}",
+        "{\"timestamp\":\"2026-10-20T09:00:02.000Z\",\"pid\":5010,\"event\":\"live_tool_turn\",\"sequence\":4206,\"toolCallsThisTurn\":1,\"toolLatencyMs\":[{\"tool\":\"calendar\",\"ms\":412}],\"toolResponseWhileGenerating\":false}",
+        "{\"timestamp\":\"2026-10-20T09:00:02.100Z\",\"pid\":5010,\"event\":\"tool_output_sent\",\"liveSessionId\":\"3f2c8a10-0000-4a1a-9d1e-0000000000a1\",\"generation\":0,\"tools\":1,\"msSinceArrived\":418,\"outcome\":\"sent\"}",
+        "{\"timestamp\":\"2026-10-20T09:00:03.500Z\",\"pid\":5010,\"event\":\"live_dead_air\",\"deadAirMs\":1744}",
+        "{\"timestamp\":\"2026-10-20T09:00:03.900Z\",\"pid\":5010,\"event\":\"live_idle_arm\",\"resetBy\":\"model_audio\",\"idleMs\":300000}",
+        "{\"timestamp\":\"2026-10-20T09:00:04.000Z\",\"pid\":5010,\"event\":\"research_joined\",\"researchId\":\"res_7f\",\"sources\":3}",
+        "{\"timestamp\":\"2026-10-20T09:00:05.000Z\",\"pid\":5010,\"event\":\"live_",
+        "{\"timestamp\":\"2026-10-20T09:00:05.500Z\",\"pid\":7777,\"event\":\"live_dead_air\",\"deadAirMs\":99000}",
+        "{\"timestamp\":\"2026-10-20T09:30:00.000Z\",\"pid\":5010,\"event\":\"live_dead_air\",\"deadAirMs\":42000}",
+        "{\"timestamp\":\"2026-10-20T09:00:10.000Z\",\"pid\":5010,\"event\":\"live_terminal\",\"state\":\"closed\",\"code\":\"voice_stop\"}"
+      ]
+    },
+    {
+      "file": "logs/native-live.log",
+      "stream": "native",
+      "text": [
+        "{\"event\":\"orb_occlusion\",\"timestamp\":\"2026-10-20T09:00:00.200Z\",\"mono_ms\":612,\"source_instance_id\":\"orb-1\",\"source_seq\":6,\"wall_ms\":1792486800200,\"occluded\":false,\"liveSessionId\":\"3f2c8a10-0000-4a1a-9d1e-0000000000a1\"}",
+        "{\"event\":\"live_interrupted\",\"timestamp\":\"2026-10-20T09:00:01.500Z\",\"mono_ms\":812,\"source_instance_id\":\"orb-1\",\"source_seq\":9,\"wall_ms\":1792486801500,\"reason\":\"owner_spoke\",\"liveSessionId\":\"3f2c8a10-0000-4a1a-9d1e-0000000000a1\"}",
+        "{\"event\":\"playback_underrun\",\"timestamp\":\"2026-10-20T09:00:06.500Z\",\"mono_ms\":6512,\"source_instance_id\":\"orb-1\",\"source_seq\":41,\"wall_ms\":1792486806500,\"queuedMs\":180}",
+        "{\"event\":\"live_end\",\"timestamp\":\"2026-10-20T09:00:10.400Z\",\"mono_ms\":10412,\"source_instance_id\":\"orb-1\",\"source_seq\":52,\"wall_ms\":1792486810400,\"state\":\"closed\"}"
+      ]
+    },
+    {
+      "file": "logs/audio.log",
+      "stream": "audio",
+      "text": [
+        "{\"event\":\"audio_owned\",\"timestamp\":\"2026-10-20T09:00:00.400Z\",\"mono_ms\":812,\"source_instance_id\":\"orb-1\",\"source_seq\":7,\"wall_ms\":1792486800400,\"liveSessionId\":\"3f2c8a10-0000-4a1a-9d1e-0000000000a1\"}",
+        "{\"event\":\"playback_level\",\"timestamp\":\"2026-10-20T09:00:02.400Z\",\"mono_ms\":2412,\"source_instance_id\":\"orb-1\",\"source_seq\":12,\"wall_ms\":1792486802400,\"frames\":960,\"peakDb\":-3.2,\"rmsDb\":-18.4,\"liveSessionId\":\"3f2c8a10-0000-4a1a-9d1e-0000000000a1\"}",
+        "not json: a torn audio line",
+        "{\"event\":\"playback_underrun\",\"timestamp\":\"2026-10-20T09:00:06.800Z\",\"mono_ms\":6812,\"source_instance_id\":\"orb-1\",\"source_seq\":42,\"wall_ms\":1792486806800,\"queuedMs\":90}"
+      ]
+    }
+  ]
+}

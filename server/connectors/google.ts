@@ -439,6 +439,23 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
 }
 
 /**
+ * D1-R4: the helper's own account pin, as the catalogue declares it. The lux-cli Google helper compares
+ * every refreshed id_token's verified email with LUX_GOOGLE_MCP_ACCOUNT and refuses every read otherwise
+ * (tools/google-mcp/google_mcp/creds.py, assert_identity), so a child pinned to another account can only
+ * act as that account. Didi refuses such a child, and a child with no pin at all, before registration.
+ */
+export const GOOGLE_HELPER_ACCOUNT_ENV = 'LUX_GOOGLE_MCP_ACCOUNT';
+
+export function googleAccountPinRefused(
+  entry: { connector: string; transport?: string; env?: Readonly<Record<string, string>> },
+  ownerIdentity: string | null,
+): boolean {
+  if (ownerIdentity === null || entry.connector !== 'google' || entry.transport !== 'stdio') return false;
+  const pinned = entry.env?.[GOOGLE_HELPER_ACCOUNT_ENV];
+  return typeof pinned !== 'string' || pinned.trim().toLowerCase() !== ownerIdentity.trim().toLowerCase();
+}
+
+/**
  * C-OPEN 6: a Google helper that runs from the reports folder (a private working copy that may be
  * archived at any time) is unsafe wiring. True when the command, or the interpreter its first line
  * names, sits under <home>/.lux/reports, as written or resolved. A file that cannot be read is the

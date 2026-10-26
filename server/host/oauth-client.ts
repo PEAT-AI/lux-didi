@@ -45,12 +45,16 @@ export interface OAuthRecord {
   consentStartedAt: number;
 }
 
-export type OAuthCredentialCode = 'credential-missing' | 'credential-refresh-failed' | 'credential-refresh-unavailable' | 'credential-refresh-busy' | 'credential-consent-expired' | 'credential-unavailable';
+export type OAuthCredentialCode = 'credential-missing' | 'credential-refresh-failed' | 'credential-refresh-unavailable' | 'credential-refresh-busy' | 'credential-consent-expired' | 'credential-unavailable'
+  // The minted token's own claims name another account, or cannot be decoded at all. A new sign-in is
+  // the only repair, so the endpoint parks on it (identity_mismatch / identity_unverified).
+  | 'credential-identity-mismatch' | 'credential-identity-unverified';
 export class OAuthCredentialError extends Error {
   constructor(readonly code: OAuthCredentialCode) { super(code); }
 }
 
-export type OAuthLoginCode = 'metadata-unavailable' | 'registration-refused' | 'port-in-use' | 'state-mismatch' | 'authorization-refused' | 'token-refused' | 'browser-unavailable' | 'timeout' | 'endpoint-not-allowed';
+export type OAuthLoginCode = 'metadata-unavailable' | 'registration-refused' | 'port-in-use' | 'state-mismatch' | 'authorization-refused' | 'token-refused' | 'browser-unavailable' | 'timeout' | 'endpoint-not-allowed'
+  | 'account-mismatch' | 'identity-mismatch' | 'identity-unverified';
 export class OAuthLoginError extends Error {
   constructor(readonly code: OAuthLoginCode) { super(code); }
 }
@@ -67,8 +71,10 @@ export type OAuthSignInHop =
   | { hop: 'discovery'; outcome: 'ok' | OAuthDiscoveryReason | 'config_invalid' | 'metadata_unreachable' | 'metadata_invalid' | 'issuer_mismatch' | 'endpoint_off_origin' }
   | { hop: 'registration'; outcome: 'ok' | 'port_in_use' | 'refused' | 'timeout' }
   | { hop: 'browser_handoff'; outcome: 'ok' | 'unavailable' | 'timeout' }
-  | { hop: 'callback'; outcome: 'ok' | 'state_mismatch' | 'authorization_refused' | 'timeout' }
-  | { hop: 'token'; outcome: 'ok' | 'unreachable' | 'timeout' } | { hop: 'token'; outcome: 'refused'; oauthError?: OAuthError }
+  | { hop: 'callback'; outcome: 'ok' | 'state_mismatch' | 'authorization_refused' | 'account_mismatch' | 'timeout' }
+  | { hop: 'token'; outcome: 'ok' | 'unreachable' | 'timeout' }
+  | { hop: 'token'; outcome: 'refused'; oauthError?: OAuthError }
+  | { hop: 'token'; outcome: 'identity_mismatch' | 'identity_unverified' }
   | { hop: 'stored'; outcome: 'ok' | 'failed' };
 type HopName = OAuthSignInHop['hop'];
 
@@ -207,6 +213,14 @@ export interface OAuthProvider {
 
 export interface OAuthLoginOptions {
   provider: OAuthProvider;
+  /**
+   * The one owner email this sign-in must land on. It is sent as `expected_email` (the authorization
+   * server's own refusal) and `login_hint` (Google's account prefill), and every caught token is checked
+   * against it before anything is stored.
+   */
+  expectedEmail?: string;
+  /** Prove a minted access token names the owner account; a refusal stores nothing. */
+  verifyToken?: (accessToken: string) => { ok: true } | { ok: false; code: 'identity_mismatch' | 'identity_unverified' };
   /** The one identity this sign-in binds, from trusted configuration; undefined refuses at discovery. */
   binding: OAuthBinding | undefined;
   configDir: string;
@@ -281,13 +295,15 @@ export async function runOAuthLogin(options: OAuthLoginOptions): Promise<OAuthRe
       const gotState = url.searchParams.get('state');
       const code = url.searchParams.get('code');
       const error = url.searchParams.get('error');
+      // Mongoose refuses a different Google account after its own check: access_denied plus its own word.
+      const accountMismatch = error === 'access_denied' && url.searchParams.get('mongoose_error') === 'account_mismatch';
       const accepted = pending !== undefined && !pending.used && gotState === pending.state && (code !== null || error !== null);
       response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
       response.end(accepted ? `Lux Didi received the ${provider.label} sign-in. You can close this tab.\n` : 'Lux Didi refused this sign-in. You can close this tab.\n');
       if (pending?.used) return;
       if (pending) pending.used = true;
       if (!accepted) { settle({ error: 'state' }); return; }
-      settle(code ? { code } : { error: 'authorization' });
+      settle(code ? { code } : accountMismatch ? { error: 'account_mismatch' } : { error: 'authorization' });
     });
     server = listener;
     await wait(new Promise<void>((resolve, reject) => {
@@ -327,6 +343,10 @@ export async function runOAuthLogin(options: OAuthLoginOptions): Promise<OAuthRe
     authorize.searchParams.set('code_challenge', challenge);
     authorize.searchParams.set('code_challenge_method', 'S256');
     authorize.searchParams.set('resource', binding.resource);
+    if (options.expectedEmail !== undefined) {
+      authorize.searchParams.set('login_hint', options.expectedEmail);
+      authorize.searchParams.set('expected_email', options.expectedEmail);
+    }
     if (options.showAuthorizationUrl) {
       stage = 'callback';
       options.showAuthorizationUrl(authorize.toString());
@@ -342,6 +362,7 @@ export async function runOAuthLogin(options: OAuthLoginOptions): Promise<OAuthRe
 
     const result = await wait(callback);
     if (result.error === 'state') return fail({ hop: 'callback', outcome: 'state_mismatch' }, 'state-mismatch');
+    if (result.error === 'account_mismatch') return fail({ hop: 'callback', outcome: 'account_mismatch' }, 'account-mismatch');
     if (!result.code) return fail({ hop: 'callback', outcome: 'authorization_refused' }, 'authorization-refused');
     hop({ hop: 'callback', outcome: 'ok' });
     stage = 'token';
@@ -363,6 +384,8 @@ export async function runOAuthLogin(options: OAuthLoginOptions): Promise<OAuthRe
     const refreshToken = granted?.['refresh_token'];
     const expiresIn = granted?.['expires_in'];
     if (!secret(accessToken) || !secret(refreshToken) || !Number.isSafeInteger(expiresIn) || (expiresIn as number) < 1) return fail({ hop: 'token', outcome: 'refused' }, 'token-refused');
+    const proof = options.verifyToken?.(accessToken);
+    if (proof && !proof.ok) return fail({ hop: 'token', outcome: proof.code }, proof.code === 'identity_mismatch' ? 'identity-mismatch' : 'identity-unverified');
     hop({ hop: 'token', outcome: 'ok' });
     stage = 'stored';
 
@@ -440,6 +463,11 @@ export interface OAuthTokenOptions {
 /** The provider rules a token read follows: how a record is accepted and the consent family's cap, if any. */
 export interface OAuthTokenPolicy {
   accept: (endpoint: string, resource: string) => OAuthBinding | undefined;
+  /**
+   * Prove a token before it is used: a cached one and a freshly refreshed one alike. It throws an
+   * OAuthCredentialError for a token that names another account, so a bad refresh is never written.
+   */
+  verifyToken?: (accessToken: string) => void;
   consentCapMs?: number;
   consentWarnMs?: number;
 }
@@ -473,7 +501,10 @@ async function resolveToken(configDir: string, reference: string, binding: OAuth
   const now = options.now ?? Date.now;
   const record = readOAuthRecord(configDir, reference, policy.accept);
   if (!record || !bound(record, binding)) throw new OAuthCredentialError('credential-missing');
-  if (now() < record.expiresAt - OAUTH_REFRESH_MARGIN_MS) return record.accessToken;
+  if (now() < record.expiresAt - OAUTH_REFRESH_MARGIN_MS) {
+    policy.verifyToken?.(record.accessToken);
+    return record.accessToken;
+  }
   if (policy.consentCapMs !== undefined && now() >= record.consentStartedAt + policy.consentCapMs) throw new OAuthCredentialError('credential-consent-expired');
   const key = `${configDir}\u0000${reference}`;
   const release = acquireLock(configDir, reference, now);
@@ -481,10 +512,16 @@ async function resolveToken(configDir: string, reference: string, binding: OAuth
     // Re-read under the lock: another writer may have rotated the family while we waited.
     const current = readOAuthRecord(configDir, reference, policy.accept) ?? record;
     if (!bound(current, binding)) throw new OAuthCredentialError('credential-missing');
-    if (now() < current.expiresAt - OAUTH_REFRESH_MARGIN_MS) return current.accessToken;
+    if (now() < current.expiresAt - OAUTH_REFRESH_MARGIN_MS) {
+      policy.verifyToken?.(current.accessToken);
+      return current.accessToken;
+    }
     let next: OAuthRecord;
     try { next = await refreshOAuthRecord(current, options); }
     catch (error) { options.notify?.('refresh-failed'); throw error; }
+    // A refreshed token that names another account is discarded: nothing is written, and the endpoint
+    // parks on a new sign-in instead of reading with the wrong account.
+    policy.verifyToken?.(next.accessToken);
     writeOAuthRecord(configDir, reference, next);
     if (policy.consentCapMs !== undefined && policy.consentWarnMs !== undefined && !warned.has(key) && now() >= next.consentStartedAt + policy.consentCapMs - policy.consentWarnMs) {
       warned.add(key);

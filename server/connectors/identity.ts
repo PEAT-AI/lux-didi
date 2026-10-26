@@ -29,6 +29,12 @@ export interface IdentitySource {
    * helper reports no own-account identity for Drive. A typed refusal is unproven either way.
    */
   proves?: 'identity' | 'consent';
+  /**
+   * How the account was proven, for the record: `identity` when the connector answered with its own
+   * account, `helper_pin` when the catalog pins the child to the owner email and the helper enforces
+   * that pin itself (the Drive family, D1-R4), `consent` for a read-only consent proof.
+   */
+  proof?: 'identity' | 'helper_pin' | 'consent';
 }
 
 /**
@@ -122,21 +128,51 @@ export function calendarIdentityValues(decoded: unknown): string[] {
   return chosen.flatMap(entry => strings(entry['id']));
 }
 
-/** Mattermost proves itself with the session's username and email; either may match. */
+/**
+ * Mattermost proves itself with the session's email. The username is compared only when the session
+ * reports no email at all: a reported email is the account, and "any of username or email" let a
+ * username of `rob` carry a session signed in as someone else (AUD-007).
+ */
 export function mattermostIdentityValues(decoded: unknown): string[] {
   const payload = payloadOf(decoded);
-  return isRecord(payload) ? [...strings(payload['username']), ...strings(payload['email'])] : [];
+  if (!isRecord(payload)) return [];
+  const email = strings(payload['email']);
+  return email.length > 0 ? email : strings(payload['username']);
+}
+
+/** The claim pair one minted access token proves: its email claim and the endpoint's exact audience. */
+export interface TokenClaimSpec {
+  emailClaim: string;
+  audience: string;
 }
 
 /**
- * Mongoose proves itself with the access card `get_started` returns: the identity block names the
- * signed-in employee, and its email is the only value compared. The card's endpoints are not identity.
+ * The payload of a JWT, base64url-decoded without any local signature check. The issuer verifies the
+ * signature on every call; Didi reads the claims to prove which account the token was minted for.
  */
-export function mongooseIdentityValues(decoded: unknown): string[] {
-  const payload = payloadOf(decoded);
-  if (!isRecord(payload)) return [];
-  const identity = payload['identity'];
-  return isRecord(identity) ? strings(identity['email']) : [];
+export function decodeTokenPayload(token: string): Record<string, unknown> | undefined {
+  const parts = token.split('.');
+  const encoded = parts[1];
+  if (parts.length !== 3 || encoded === undefined || encoded.length === 0) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+    return isRecord(parsed) ? parsed : undefined;
+  } catch { return undefined; }
+}
+
+/**
+ * Prove a minted token's own claims: the email claim must equal the owner email and `aud` must be the
+ * endpoint's exact audience string. A token that cannot be decoded or names no email is unverified; a
+ * decoded token for another account, or another audience, is a mismatch.
+ */
+export function tokenIdentity(token: string, spec: TokenClaimSpec, expected: readonly string[]): IdentityProof {
+  const payload = decodeTokenPayload(token);
+  if (payload === undefined) return { proven: false, match: null, value: null, code: 'identity_unverified' };
+  const email = payload[spec.emailClaim];
+  if (typeof email !== 'string' || email.length === 0) return { proven: false, match: null, value: null, code: 'identity_unverified' };
+  if (payload['aud'] !== spec.audience) return { proven: true, match: false, value: email };
+  if (expected.length === 0) return { proven: true, match: null, value: email };
+  return { proven: true, match: identityMatch(expected, [email]), value: email };
 }
 
 /** Classify one identity probe: a refused/unknown result or an empty value set is unproven. */

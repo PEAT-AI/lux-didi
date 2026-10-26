@@ -31,6 +31,16 @@ Mongoose knowledge, data and CRM are separate OAuth resources with separate sign
 
 Drive setup is optional and requires its own consent. When it is unavailable, a lookup must report that limitation, not turn it into a successful empty search. [mcp-configuration.md](mcp-configuration.md) owns setup details; [debugging.md](debugging.md) owns failure diagnosis.
 
+## One owner account, proven before every use
+
+Every identity-bearing connector acts as the one owner email in `ownerIdentity` of `provider-38/mcp.json` (`rob@plantix.net` today) and never as another account. The comparison is exact and case-insensitive on the EMAIL: a connector that reports an email must match it, so a matching username never carries a different mailbox (`server/connectors/identity.ts`).
+
+- Gmail proves itself with the profile's `emailAddress`, Calendar with the primary calendar id, and Mattermost with the session email (its username only when the session reports no email at all).
+- Drive proves itself from the helper's own account pin, `helper_pin`: the lux-cli helper compares every refreshed `id_token`'s verified address with `LUX_GOOGLE_MCP_ACCOUNT` and refuses every read otherwise (`tools/google-mcp/google_mcp/creds.py`, `assert_identity`, raising `AccountMismatch`/`IdentityUnverified`). Didi therefore requires each Google child's `LUX_GOOGLE_MCP_ACCOUNT` to equal `ownerIdentity` exactly (case-insensitive) when the catalog loads, and refuses a child pinned to any other account with `identity_mismatch` before it spawns. Drive stays strict, and the helper's `account_mismatch` or `identity_unverified` is its runtime refusal.
+- Mongoose proves itself from the access token it was minted (`email` plus that endpoint's exact `aud`) after the PKCE code exchange and after every refresh, with no `get_started` probe. The claim names and audience strings live in `server/test/fixtures/mongoose-token-claims.json` with the commit they were read from (Mongoose `backend/src/mongoose/auth/tokens.py`, `issue_mongoose_access_token`). The sign-in also sends `expected_email` and `login_hint`; Mongoose refuses a different Google account before it mints a code and returns `error=access_denied&mongoose_error=account_mismatch`, which Didi reports as its own outcome.
+- An identity failure is terminal for that endpoint: the endpoint latches until an explicit sign-in or a host restart, writes one `connector_latched` line with a closed code, and is never re-probed by the recovery round or by an owner turn. A tool call routed to a latched endpoint fails with that code, and the other endpoints keep working.
+- A sign-in always ends in the log: `signin_finished` with `signed_in` or a closed failure, and a sign-in that never receives its callback ends in `signin_callback outcome=timeout`.
+
 ## Keep one owner per contract
 
 - Protocol and accepted-result mechanics: [mcp-adapter.md](mcp-adapter.md).

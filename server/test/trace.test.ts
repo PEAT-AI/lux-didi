@@ -217,7 +217,7 @@ test('the JSON timeline carries no owner text unless --content asks for it', () 
   });
 });
 
-test('the 31-day prune removes trace content and keeps every metadata row', () => {
+test('the 31-day prune nulls trace content in place and keeps every metadata row', () => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-trace-'));
   const now = Date.now();
   const old = now - 31 * 86_400_000;
@@ -234,14 +234,17 @@ test('the 31-day prune removes trace content and keeps every metadata row', () =
     first.close();
 
     const reopened = new Store(dir, []);
-    assert.deepEqual(counts(reopened), { trace_turn: 2, trace_response: 0, trace_call: 1, trace_playback: 0, trace_event: 3, trace_utterance: 1, trace_call_result: 0 });
+    assert.deepEqual(counts(reopened), { trace_turn: 2, trace_response: 0, trace_call: 1, trace_playback: 0, trace_event: 3, trace_utterance: 2, trace_call_result: 1 });
+    const texts = reopened.transaction(tx => tx.all('SELECT at, text, content_pruned_at FROM trace_utterance ORDER BY at'));
+    assert.deepEqual(texts.map(row => [row['at'], row['text'], row['content_pruned_at'] !== null]), [[old + 10, null, true], [recent + 10, 'fresh transcript', false]],
+      'the transcript past the cutoff keeps its row and loses only its text');
     reopened.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('pruneTraceContent is scoped to the two content tables', () => {
+test('pruneTraceContent nulls the trace content in place and keeps the metadata rows', () => {
   withStore(store => {
     openTurn(store, 't1', 1, T0);
     record(store, 'call.intent', { liveSessionId: SESSION, turnId: 't1', callKey: 'c1' }, { name: 'calendar_window', argsChars: 3, intentAt: T0 + 5 });
@@ -250,9 +253,12 @@ test('pruneTraceContent is scoped to the two content tables', () => {
     const shapeWriter = (traceRecord as unknown as { recordQueryShape?: (exec: Store, shape: Record<string, unknown>, at: number) => number }).recordQueryShape!;
     shapeWriter(store, { source: 'mail', terms: 1, operators: [], topicWords: 1 }, T0);
     const pruned = store.transaction(tx => pruneTraceContent(tx, T0 + 40 * 86_400_000));
-    assert.deepEqual(pruned, { utterances: 1, callResults: 1, queryShapes: 1, researchText: 0, journalText: 0, promptSnapshots: 0 });
+    assert.deepEqual(pruned, { utterances: 1, callResults: 1, researchText: 0, journalText: 0, promptSnapshots: 0, dispatches: 0, calls: 0, metadata: 0 });
     assert.equal(counts(store).trace_turn, 1);
     assert.equal(counts(store).trace_call, 1);
+    assert.equal(counts(store).trace_utterance, 1, 'the transcript row stays: a 40 day old session is still described by its turn, role and timing');
+    assert.equal(counts(store).trace_call_result, 1, 'the call result row stays with its truncation flag');
+    assert.equal(store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM trace_query_shape')!['n'])), 1, 'a query shape is metadata and lives 90 days, not 30');
   });
 });
 
@@ -307,7 +313,7 @@ test('pruneTraceContent clears live text only where the transcript is no longer 
     const pruned = store.transaction(tx => pruneTraceContent(tx, now));
     // Three ended sessions are done with their transcript, and each clears two rows (the transcript
     // and the tool payload); all six ended sessions lose the accepted prompt snapshot.
-    assert.deepEqual(pruned, { utterances: 0, callResults: 0, queryShapes: 0, researchText: 0, journalText: 6, promptSnapshots: 6 });
+    assert.deepEqual(pruned, { utterances: 0, callResults: 0, researchText: 0, journalText: 6, promptSnapshots: 6, dispatches: 0, calls: 0, metadata: 0 });
 
     const rows = store.transaction(tx => tx.all("SELECT live_session_id, kind, text, tool_json, payload_bytes FROM live_journal WHERE kind IN ('inputTranscription','toolCall') ORDER BY live_session_id, journal_id"));
     const bySession = new Map<string, Array<Record<string, unknown>>>();
@@ -343,7 +349,7 @@ test('pruneTraceContent clears live text only where the transcript is no longer 
     ]);
 
     const again = store.transaction(tx => pruneTraceContent(tx, now));
-    assert.deepEqual(again, { utterances: 0, callResults: 0, queryShapes: 0, researchText: 0, journalText: 0, promptSnapshots: 0 }, 'the second start finds nothing to do');
+    assert.deepEqual(again, { utterances: 0, callResults: 0, researchText: 0, journalText: 0, promptSnapshots: 0, dispatches: 0, calls: 0, metadata: 0 }, 'the second start finds nothing to do');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -368,7 +374,7 @@ test('a prune over a migrated v3 journal clears the tool payload the migration m
         [SESSION, 'inputTranscription', 'owner words', endedAt]);
     });
     // A v2 store has no tool_json to clear, and the pruner must not fail on the column it cannot see.
-    assert.deepEqual(v2.transaction(tx => pruneTraceContent(tx, now)), { utterances: 0, callResults: 0, queryShapes: 0, researchText: 0, journalText: 0, promptSnapshots: 0 });
+    assert.deepEqual(v2.transaction(tx => pruneTraceContent(tx, now)), { utterances: 0, callResults: 0, researchText: 0, journalText: 0, promptSnapshots: 0, dispatches: 0, calls: 0, metadata: 0 });
     v2.close();
 
     const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
@@ -382,7 +388,7 @@ test('a prune over a migrated v3 journal clears the tool payload the migration m
           VALUES (?,?,?,?,?,?,?,0,'[]',0,NULL,?,NULL)`, ['sum-migrated', SESSION, 'complete', 'a summary', endedAt, 'm', 11, endedAt]);
       });
       const pruned = store.transaction(tx => pruneTraceContent(tx, now));
-      assert.deepEqual(pruned, { utterances: 0, callResults: 0, queryShapes: 0, researchText: 0, journalText: 2, promptSnapshots: 0 }, 'the migrated journal clears its text and its tool payload');
+      assert.deepEqual(pruned, { utterances: 0, callResults: 0, researchText: 0, journalText: 2, promptSnapshots: 0, dispatches: 0, calls: 0, metadata: 0 }, 'the migrated journal clears its text and its tool payload');
       const rows = store.transaction(tx => tx.all("SELECT kind, text, tool_json FROM live_journal WHERE live_session_id=? ORDER BY journal_id", [SESSION]));
       assert.deepEqual(rows.map(row => [row['kind'], row['text'], row['tool_json']]), [['inputTranscription', null, null], ['toolCall', null, null]]);
     } finally { store.close(); }
@@ -757,10 +763,12 @@ test('the trace v2 migration keeps every v1 row, applies once, and reopens an al
     try {
       assert.deepEqual(counts(migrated), seeded, 'every existing row of every trace table is kept');
       assert.equal(traceVersion(migrated), latestTraceVersion);
-      const ids = { liveSessionId: 'ls-v2', playbackKey: 'ls-v2:inst-v1:1', source: 'native', sourceInstanceId: 'inst-v1', sourceSeq: 1, at: T0, monoMs: 1 } as const;
-      assert.equal(record(migrated, 'playback.received', ids, { segmentSeq: 1, receivedAt: T0 }).duplicate, false,
+      // Real clock times again: a reopen runs the boot pruner, and metadata now lives ninety days.
+      const fresh = Date.now();
+      const ids = { liveSessionId: 'ls-v2', playbackKey: 'ls-v2:inst-v1:1', source: 'native', sourceInstanceId: 'inst-v1', sourceSeq: 1, at: fresh, monoMs: 1 } as const;
+      assert.equal(record(migrated, 'playback.received', ids, { segmentSeq: 1, receivedAt: fresh }).duplicate, false,
         'the same native sequence in another session is its own event, not a replay of ls-v1');
-      assert.equal(record(migrated, 'playback.received', ids, { segmentSeq: 1, receivedAt: T0 }).duplicate, true,
+      assert.equal(record(migrated, 'playback.received', ids, { segmentSeq: 1, receivedAt: fresh }).duplicate, true,
         'a replay inside one session is still deduped');
       assert.deepEqual(counts(migrated), { ...seeded, trace_event: 2, trace_playback: 2 });
     } finally { migrated.close(); }
@@ -963,7 +971,9 @@ test('L8-Q05/L8-Q01: a research call keeps its run id, its question in the conte
     const texts = store.transaction(tx => tx.all('SELECT kind, text FROM trace_research_text WHERE research_id=? ORDER BY rowid', ['rs-1'])).map(entry => [entry['kind'], entry['text']]);
     assert.deepEqual(texts, [['question', 'Synthetic question about the release plan'], ['web_query', 'synthetic release plan']]);
     const pruned = store.transaction(tx => pruneTraceContent(tx, T0 + 31 * 86_400_000));
-    assert.equal(store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM trace_research_text')!['n'])), 0, `research text is owner content and keeps the 30 day retention: ${JSON.stringify(pruned)}`);
+    const kept = store.transaction(tx => tx.all('SELECT kind, text, content_pruned_at FROM trace_research_text WHERE research_id=? ORDER BY rowid', ['rs-1']));
+    assert.deepEqual(kept.map(entry => [entry['kind'], entry['text']]), [['question', null], ['web_query', null]], `research text is owner content and keeps the 30 day retention in place: ${JSON.stringify(pruned)}`);
+    assert.ok(kept.every(entry => entry['content_pruned_at'] !== null));
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 

@@ -20,7 +20,7 @@ The reader owns accepted argument shapes and budgets. `KNOWLEDGE_BODY_MIN_CHARS`
 
 Configure the owner's endpoint and account through [mcp-configuration.md](mcp-configuration.md). A reachable knowledge server still needs a valid connection approval and allowed inference route/classes. Missing configuration or sign-in must remain unavailable, not become a successful empty answer.
 
-The read envelope does not authorize remote writes. Dictated and composed Lux notes use separate host-owned write paths with different owner gates; see [tool-owner.md](tool-owner.md) and [privacy-and-authority.md](privacy-and-authority.md). Searching knowledge is not consent to save conversation content back into it.
+The read envelope does not authorize remote writes. Dictated and composed Lux notes use separate host-owned write paths with different owner gates; see [tool-owner.md](tool-owner.md) and [privacy-and-authority.md](privacy-and-authority.md). Searching knowledge is not consent to save conversation content back into it. Both write paths name exactly one remote tool, `save_insight` under project `didi-voice`; `update_insight`, the delete and purge tools and every other write stay unreachable, so a research or model-initiated call can reach only the two reads above.
 
 ## Diagnosis and verification
 

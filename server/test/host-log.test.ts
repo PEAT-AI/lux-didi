@@ -428,6 +428,13 @@ test('vault_write keeps its closed shape: a state token, an insight id on a save
   assert.equal(safeEvent({ ...saved, state: 'saved' }), undefined, 'only the closed state tokens are allowed');
   assert.equal(safeEvent({ event: 'vault_write', state: 'confirmed', latencyMs: 42 }), undefined, 'a confirmed save without an id is not a receipt');
   assert.equal(safeEvent({ event: 'vault_write', state: 'failed', insightId: 'insight-7', latencyMs: 42 }), undefined, 'a failed write carries no id');
+  // C-LUX-SAVE: an unreachable vault and a refused attempt keep their closed codes, and only those codes.
+  const unavailable = { event: 'vault_write', state: 'unavailable', code: 'vault_unavailable', latencyMs: 42 };
+  assert.deepEqual(safeEvent(unavailable), unavailable, 'an unreachable vault is its own outcome and code');
+  const refused = { event: 'vault_write', state: 'failed', code: 'not_owner_requested', latencyMs: 0 };
+  assert.deepEqual(safeEvent(refused), refused, 'a refused attempt keeps its closed code');
+  assert.equal(safeEvent({ ...refused, code: 'saved_it' }), undefined, 'no other code crosses the boundary');
+  assert.equal(safeEvent({ ...refused, note: 'the boat survey is on Tuesday' }), undefined, 'and the note still never crosses it');
 });
 
 test('LAT-1023: a run receipt carries the round cap and the compaction counts as closed values', () => {

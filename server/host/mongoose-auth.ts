@@ -1,4 +1,4 @@
-import { MONGOOSE_ENDPOINTS, MONGOOSE_ENDPOINT_PATHS, mongooseEndpointName, type MongooseEndpoint } from '../connectors/mongoose.js';
+import { MONGOOSE_ENDPOINTS, MONGOOSE_ENDPOINT_PATHS, mongooseEndpointName, mongooseTokenIdentity, type MongooseEndpoint } from '../connectors/mongoose.js';
 import {
   discoverProtectedResource, oauthAccessToken, onOrigin as oauthOnOrigin, readOAuthRecord, trustedOrigin, writeOAuthRecord,
   OAUTH_DISCOVERY_TIMEOUT_MS, OAUTH_LOCK_STALE_MS, OAUTH_RECORD_KEYS, OAUTH_RECORD_LIMIT, OAUTH_RECORD_SCHEMA, OAUTH_REFRESH_MARGIN_MS,
@@ -118,12 +118,30 @@ export function mongooseCredentialPresent(configDir: string, reference: string):
   return record !== undefined && record.refreshToken.length > 0;
 }
 
-export type MongooseAuthOptions = OAuthTokenOptions;
+export interface MongooseAuthOptions extends OAuthTokenOptions {
+  /** The catalogue's one owner email; every minted token must name it, or the token is never used. */
+  ownerIdentity?: string | null;
+}
 
 /**
  * The access token for one endpoint. The record must be bound to exactly the binding the current
  * configuration implies; any other record, or no binding, is a sign-in and never a refresh.
  */
 export function mongooseAccessToken(configDir: string, reference: string, binding: MongooseBinding | undefined, options: MongooseAuthOptions = {}): Promise<string> {
-  return oauthAccessToken(configDir, reference, binding, { accept: acceptMongoose, consentCapMs: MONGOOSE_CONSENT_CAP_MS, consentWarnMs: MONGOOSE_CONSENT_WARN_MS }, options);
+  const { ownerIdentity, ...token } = options;
+  const expected = typeof ownerIdentity === 'string' && ownerIdentity.length > 0 ? [ownerIdentity] : [];
+  const endpoint = binding?.endpoint;
+  return oauthAccessToken(configDir, reference, binding, {
+    accept: acceptMongoose, consentCapMs: MONGOOSE_CONSENT_CAP_MS, consentWarnMs: MONGOOSE_CONSENT_WARN_MS,
+    // Council 2026-10-26 (option B): the endpoint's own minted JWT is the identity proof. A token for
+    // another account, or for another endpoint's audience, is never used and never stored. With no
+    // ownerIdentity configured there is nothing to compare, which is the catalogue's explicit
+    // no-comparison policy, not a fallback: the token is still decoded and its audience checked.
+    verifyToken: accessToken => {
+      if (endpoint === undefined) return;
+      const proof = mongooseTokenIdentity(accessToken, endpoint, expected);
+      if (proof.match === false) throw new OAuthCredentialError('credential-identity-mismatch');
+      if (!proof.proven && expected.length > 0) throw new OAuthCredentialError('credential-identity-unverified');
+    },
+  }, token);
 }

@@ -1,6 +1,6 @@
 import { runOAuthLogin, OAuthLoginError, OAUTH_ERRORS, OAUTH_LOGIN_TIMEOUT_MS, type OAuthError, type OAuthLoginCode, type OAuthProvider, type OAuthSignInHop } from './oauth-client.js';
 import { mongooseBinding, type MongooseOAuthRecord } from './mongoose-auth.js';
-import type { MongooseEndpoint } from '../connectors/mongoose.js';
+import { mongooseTokenIdentity, type MongooseEndpoint } from '../connectors/mongoose.js';
 
 /**
  * The owner's one-time Mongoose sign-in through the shared OAuth client: the endpoint's own resource
@@ -30,6 +30,8 @@ export interface MongooseLoginOptions {
   /** Which of the three endpoints this sign-in binds; it decides the resource and the record. */
   endpoint: MongooseEndpoint;
   account: string;
+  /** The catalogue's one owner email: the sign-in asks for it and every caught token must name it. */
+  ownerIdentity?: string | null;
   redirectPort?: number;
   timeoutMs?: number;
   fetch?: typeof fetch;
@@ -43,6 +45,22 @@ export interface MongooseLoginOptions {
 }
 
 export async function runMongooseLogin(options: MongooseLoginOptions): Promise<MongooseOAuthRecord> {
-  const { resourceUrl, endpoint, ...rest } = options;
-  return await runOAuthLogin({ ...rest, provider: MONGOOSE_PROVIDER, binding: mongooseBinding(resourceUrl, endpoint) }) as MongooseOAuthRecord;
+  const { resourceUrl, endpoint, ownerIdentity, ...rest } = options;
+  // The owner email is asked for twice: `expected_email` is Mongoose's own refusal before any code is
+  // minted (wagon M1), `login_hint` is Google's account prefill. Against a Mongoose that ignores both,
+  // the token claim check below is the guard, so this works with today's server too.
+  const expected = typeof ownerIdentity === 'string' && ownerIdentity.length > 0 ? [ownerIdentity] : [];
+  return await runOAuthLogin({
+    ...rest,
+    ...(expected.length > 0 ? { expectedEmail: ownerIdentity! } : {}),
+    // No ownerIdentity configured is the catalogue's explicit no-comparison policy: the token is still
+    // decoded and its audience checked, and only a configured owner email is refused on a mismatch.
+    ...(expected.length > 0 ? { verifyToken: (accessToken: string) => {
+      const proof = mongooseTokenIdentity(accessToken, endpoint, expected);
+      if (proof.match === false) return { ok: false as const, code: 'identity_mismatch' as const };
+      return proof.proven ? { ok: true as const } : { ok: false as const, code: 'identity_unverified' as const };
+    } } : {}),
+    provider: MONGOOSE_PROVIDER,
+    binding: mongooseBinding(resourceUrl, endpoint),
+  }) as MongooseOAuthRecord;
 }

@@ -198,16 +198,17 @@ test('the tools conduct names conditional capabilities and preserves source iden
   assert.match(NAYA_BACKEND_PROCEDURE, /put independent source lookups in one research plan so the host can run them concurrently/);
   assert.match(NAYA_VOICE_TOOLS, /Distinguish no match, unavailable access, missing sign-in, timeout, stale archive, partial content and unread pages/);
   assert.match(NAYA_VOICE_TOOLS, /Do not promise an unsolicited callback, future monitoring or work after this session/);
-  // Release 4: the vault is lux, memory is remember_note, and only a true receipt is a save.
-  assert.match(NAYA_VOICE_TOOLS, /The vault and memory are different places\. The vault is lux/);
-  assert.match(NAYA_VOICE_TOOLS, /he says the save phrase first, "save to my vault" and then the note/);
-  assert.match(NAYA_VOICE_TOOLS, /Say the note is saved only on saved:true/);
+  // Release 4 and C-LUX-SAVE: the vault is lux, memory is remember_note, his own natural words carry the save, and only a true receipt is a save.
+  assert.match(NAYA_VOICE_TOOLS, /The vault is lux, his knowledge base; remember_note is Naya's memory of him/);
+  assert.match(NAYA_VOICE_TOOLS, /in any words, "save this to lux", "put that in my knowledge", "save to my vault"/);
+  assert.match(NAYA_VOICE_TOOLS, /after a bare "save this" the note is what he said just before/);
+  assert.match(NAYA_VOICE_TOOLS, /Say saved only on saved:true/);
   // W6 item 11: a composed note is staged, read back word for word, and saved only after the owner says yes.
-  assert.match(NAYA_VOICE_TOOLS, /For a note worked out together call stage_lux_note/);
+  assert.match(NAYA_VOICE_TOOLS, /For a note worked out together or about the conversation call stage_lux_note/);
   assert.match(NAYA_VOICE_TOOLS, /read the frozen title and body back word for word/);
-  assert.match(NAYA_VOICE_TOOLS, /let the host save it only after he says yes/);
-  assert.match(NAYA_VOICE_TOOLS, /An add or change ask is not supported: offer a new note\./);
-  assert.match(NAYA_VOICE_TOOLS, /On outcome_unknown say you are not sure it landed and that he can check the vault, and never claim it was saved/);
+  assert.match(NAYA_VOICE_TOOLS, /the host saves only after he says yes/);
+  assert.match(NAYA_VOICE_TOOLS, /Add or change is not supported: offer a new note\./);
+  assert.match(NAYA_VOICE_TOOLS, /on outcome_unknown say you are not sure it landed and to check the vault, never claiming a save/);
   assert.doesNotMatch(NAYA_TOOLS, /three to five word|never announce progress|One moment|or call it at once/i);
   assert.doesNotMatch(NAYA_TOOLS, /[\u2013\u2014]/);
 });
@@ -355,9 +356,9 @@ test('the public character, voice surface and tool conduct are the authored verb
   // TR3-R1: W15's people rule is the ruled 75-char sentence, so the two blocks carrying it are re-pinned.
   assert.equal(sha(NAYA_CHARACTER), '1b188117660fe12204cd542001b585fcce69add4f1cc6d27689720e193cac977');
   assert.equal(sha(NAYA_VOICE_SURFACE), '1cf4e572cd49ae7d8d7e16ee3c11b53c6dc652dc1511b8b5625d4a8a3bcb0768');
-  assert.equal(sha(NAYA_VOICE_TOOLS), 'eca76004309a8aab7d57e4f65bc16fe6c397f1d8905953e08f8ca34738461be6');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '73c28c168340a22199b1dd5198c02227d6d47a48c04a5b734392852953b6d60c');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '92c556c1112232a01b24e05964a29e2082c27a8e93b2610f83aa498ba5090669');
-  assert.equal(sha(NAYA_TOOLS), 'cb2f327001f34e3914467b103d02be7a6cffcfb1623292d81c38b494b31da052');
+  assert.equal(sha(NAYA_TOOLS), '6ac84a814e9316df7c9bc7d227b7cbeca78bfd99953eeae4ae9d0e8175ce3087');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));
@@ -676,7 +677,9 @@ const WRAPPER_3O_CHARS = 6603;
 // #665/#666: the honesty rules and the turn-taking line they replace raise it to the measured wrapper.
 // TR-R5: the owner rule for authored text is re-pin, never trim a reviewed rule, so the bound carries the merged measure.
 // TR-R15: restoring W7's "rather than claiming it happened" clause, which W6's rewrite had dropped, measured 14_224.
-const WRAPPER_W5_CHARS = 14_300;
+// TRAIN4-R1: the merged wrapper measures 14_303 once main's write-honesty clause is back beside V1's save
+// wording; the bound carries the merged measure and no reviewed rule is trimmed for it (TR-R5).
+const WRAPPER_W5_CHARS = 14_350;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
@@ -702,7 +705,10 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // #621: the coverage header adds its own measure. #665/#666: the honesty rules add theirs.
   // TR-R5: a house budget re-pinned to the merged measure; no reviewed rule was trimmed for it.
   // TR-R15: measured 7_621 once W7's write-honesty clause was restored.
-  const cap = 7_700;
+  // TRAIN4-R1: V1's save wording and main's write-honesty clause now sit in one paragraph, so the
+  // merged measure is 7_700; the bound carries it, exactly as TR-R5 re-pins a house budget to the
+  // merged measure and no reviewed rule is trimmed for it.
+  const cap = 7_750;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.

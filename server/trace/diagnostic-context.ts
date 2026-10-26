@@ -4,6 +4,7 @@ import { historyEvidenceCurrent, type HistorySourceRef } from '../domain/history
 import { HISTORY_CLASSES } from '../domain/history-lifecycle.js';
 import { bindingDigestOf } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
+import { projectionAuthentic } from '../tools/diagnostic-input.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 
 interface Read { get: Transaction['get']; all: Transaction['all'] }
@@ -55,7 +56,7 @@ export function diagnosticSourceCurrent(read: Read, row: SQLRow, owner: string, 
   if (!snapshot || typeof snapshot.snapshot_json !== 'string' || snapshot.snapshot_sha256 !== row.run_snapshot_sha256 || sha256(snapshot.snapshot_json) !== snapshot.snapshot_sha256 || !current || current.enabled !== 1 || typeof current.policy_json !== 'string' || sha256(current.policy_json) !== current.policy_sha256 || current.policy_sha256 !== row.policy_sha256 || current.generation !== row.generation) return false;
   const frozen = JSON.parse(snapshot.snapshot_json), policy = JSON.parse(current.policy_json) as ConnectionPolicy;
   if (frozen.acceptance?.ownerId !== owner || frozen.acceptance?.runId !== row.run_id || !Array.isArray(frozen.connections) || !frozen.connections.some((c: { connectionId: string; sha256: string }) => c.connectionId === row.connection_id && c.sha256 === row.policy_sha256) || policy.endpoint.id !== row.endpoint_id || bindingDigestOf(policy.endpoint) !== row.binding_digest || policy.schemaDigest !== row.schema_digest || policy.sourcePolicy.id !== row.source_policy_id || policy.sourcePolicy.revision !== row.source_policy_revision || policy.sourcePolicy.unknownClass !== row.source_class || policy.endpoint.account !== row.account_id || policy.endpoint.resource !== row.resource_id) return false;
-  if (row.arguments_json !== null && (typeof row.arguments_json !== 'string' || sha256(row.arguments_json) !== row.arguments_sha256)) return false;
+  if (row.arguments_json !== null && (typeof row.arguments_json !== 'string' || !projectionAuthentic(String(row.arguments_fidelity), row.arguments_json, String(row.arguments_sha256)))) return false;
   return row.source_json === null || (typeof row.source_json === 'string' && sha256(row.source_json) === row.source_sha256 && Buffer.byteLength(row.source_json) === row.source_bytes);
 }
 export function diagnosticOriginCurrent(read: Read, owner: string, run: string, origin: DiagnosticOrigin, allowed: readonly DataClass[]): boolean {

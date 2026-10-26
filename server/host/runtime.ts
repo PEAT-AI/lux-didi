@@ -2,6 +2,7 @@ import { boundTextModel } from './provider-binding.js';
 import { loadMcpEndpoints } from '../config/mcp.js';
 import { isCustomVoiceId } from '../adapters/live-voice/openai.js';
 import { HostLog, captureHostDiagnostics } from './log.js';
+import { clearLogContext, clockSync } from './events.js';
 import { supervisionRequested } from './supervision.js';
 import { loadOwnerProfile } from '../config/owner-profile.js';
 import { installPeople, loadPeople } from '../people/index.js';
@@ -26,8 +27,7 @@ import { composeMcpRuntime, type ConnectorLifecycleEvent } from './mcp.js';
 import { spawn } from 'node:child_process';
 import { runMongooseLogin, type MongooseLoginOptions, type MongooseSignInHop } from './mongoose-login.js';
 import { MONGOOSE_ENDPOINTS, mongooseEndpointName } from '../connectors/mongoose.js';
-import { createTrelloBoard, runTrelloLogin, trelloBinding, trelloBoardName, trelloSignedIn, type TrelloLoginOptions } from './trello.js';
-import type { OAuthBinding } from './oauth-client.js';
+import { createTrelloBoard, trelloBoardName, trelloIdentity, trelloKey } from './trello.js';
 import type { McpRuntimeComposition } from './mcp.js';
 import { createGoogleReader, readCalendarDigest, type CalendarDigestRead, type CalendarDigestReadResult } from '../connectors/google.js';
 import { CalendarDigestCache } from '../live/warm-context.js';
@@ -45,7 +45,7 @@ export type AuthoritySource = (runId: string, signal: AbortSignal) => Promise<Li
 export type MongooseSignInStart = { status: 'started'; attemptId: string } | { status: 'failed'; reason: 'not-configured' | 'sign-in-in-progress' };
 /** Where one attempt is, as the Settings row shows it through the connection poll. */
 export type MongooseSignInPhase = 'running' | 'waiting' | 'finishing' | 'signed_in' | 'failed';
-export type MongooseSignInFailure = 'discovery_unreachable' | 'discovery_refused' | 'registration_refused' | 'port_in_use' | 'browser_unavailable' | 'callback_failed' | 'callback_timeout' | 'token_refused' | 'store_failed' | 'did_not_finish';
+export type MongooseSignInFailure = 'discovery_unreachable' | 'discovery_refused' | 'registration_refused' | 'port_in_use' | 'browser_unavailable' | 'callback_failed' | 'callback_timeout' | 'account_mismatch' | 'token_refused' | 'store_failed' | 'did_not_finish';
 export interface MongooseSignInAttempt { attemptId: string; phase: MongooseSignInPhase; reason?: MongooseSignInFailure }
 /** One owner click names the endpoint it signs in and answers at once; the attempt runs on and reports by row. */
 export interface MongooseSignIn {
@@ -82,8 +82,8 @@ function failureOf(hop: MongooseSignInHop): MongooseSignInFailure {
     case 'discovery': return hop.outcome === 'unreachable' || hop.outcome === 'timeout' || hop.outcome === 'metadata_unreachable' ? 'discovery_unreachable' : 'discovery_refused';
     case 'registration': return hop.outcome === 'port_in_use' ? 'port_in_use' : 'registration_refused';
     case 'browser_handoff': return 'browser_unavailable';
-    case 'callback': return hop.outcome === 'timeout' ? 'callback_timeout' : 'callback_failed';
-    case 'token': return 'token_refused';
+    case 'callback': return hop.outcome === 'timeout' ? 'callback_timeout' : hop.outcome === 'account_mismatch' ? 'account_mismatch' : 'callback_failed';
+    case 'token': return hop.outcome === 'identity_mismatch' || hop.outcome === 'identity_unverified' ? 'account_mismatch' : 'token_refused';
     case 'stored': return 'store_failed';
   }
 }
@@ -144,10 +144,19 @@ export function createMongooseSignIn(options: {
       return { status: 'failed', reason: 'not-configured' };
     }
     const { entry, endpoint } = named;
+    // The catalogue's one owner email is what a sign-in asks for and what its token must name.
+    const ownerIdentity = selection.state === 'configured' ? selection.catalog.ownerIdentity : null;
     const current: Pending = { endpoint, attemptId };
     pending = current;
+    let finished = false;
     const move = (phase: MongooseSignInPhase, reason?: MongooseSignInFailure): void => {
       attempts.set(entry.id, { attemptId, phase, ...(reason ? { reason } : {}) });
+      // H20: every attempt ends in the log exactly once, so a sign-in that never receives its callback is
+      // visible as its own outcome instead of living only in an in-memory map. A failing hop and the
+      // rejection it causes both land here, so the guard is the attempt, not the call site.
+      if (finished || (phase !== 'signed_in' && phase !== 'failed')) return;
+      finished = true;
+      log({ event: 'signin_finished', endpoint, attemptId, outcome: phase === 'signed_in' ? 'signed_in' : reason ?? 'did_not_finish' });
     };
     move('running');
     log({ event: 'signin_requested', endpoint, attemptId, outcome: 'started' });
@@ -162,6 +171,7 @@ export function createMongooseSignIn(options: {
     void Promise.resolve()
       .then(() => login({
         configDir: options.configDir, reference: entry.credentialRef!, resourceUrl: entry.url!, endpoint, account: entry.account, onHop,
+        ...(ownerIdentity ? { ownerIdentity } : {}),
         openBrowser: async (url: string) => { current.issued = url; await open(url); },
       }))
       .then(async () => {
@@ -181,76 +191,22 @@ export function createMongooseSignIn(options: {
   return signIn;
 }
 
-/** The Trello row's one sign-in: the same attempt machine as a Mongoose row, for the one board resource. */
-export interface TrelloSignIn {
-  (): Promise<MongooseSignInStart>;
-  attempt(signedIn: boolean): MongooseSignInAttempt | undefined;
-}
-export function createTrelloSignIn(options: {
-  configDir: string; binding?: OAuthBinding | undefined; open?: (url: string) => void | Promise<void>;
-  login?: (options: TrelloLoginOptions) => Promise<unknown>; log?: (event: Record<string, unknown>) => void;
-}): TrelloSignIn {
-  const open = options.open ?? openInDefaultBrowser;
-  const login = options.login ?? runTrelloLogin;
-  const binding = 'binding' in options ? options.binding : trelloBinding();
-  const log = (event: Record<string, unknown>): void => { try { options.log?.(event); } catch { /* the log never changes a sign-in */ } };
-  let latest: MongooseSignInAttempt | undefined;
-  let pending: { attemptId: string; issued?: string } | undefined;
-  const start = (): MongooseSignInStart => {
-    if (pending) {
-      const again = pending;
-      log({ event: 'signin_requested', endpoint: 'trello', attemptId: again.attemptId, outcome: 'reopened' });
-      if (again.issued !== undefined) {
-        const handoff = (outcome: 'ok' | 'unavailable') => log({ event: 'signin_browser_handoff', endpoint: 'trello', attemptId: again.attemptId, outcome });
-        let launched: Promise<void>;
-        try { launched = Promise.resolve(open(again.issued)); } catch { launched = Promise.reject(new Error('browser-unavailable')); }
-        void launched.then(() => handoff('ok'), () => handoff('unavailable'));
-      }
-      return { status: 'started', attemptId: again.attemptId };
-    }
-    const attemptId = randomBytes(8).toString('hex');
-    const current: { attemptId: string; issued?: string } = { attemptId };
-    pending = current;
-    const move = (phase: MongooseSignInPhase, reason?: MongooseSignInFailure): void => { latest = { attemptId, phase, ...(reason ? { reason } : {}) }; };
-    move('running');
-    log({ event: 'signin_requested', endpoint: 'trello', attemptId, outcome: 'started' });
-    let failure: MongooseSignInFailure | undefined;
-    const onHop = (hop: MongooseSignInHop): void => {
-      const { hop: name, ...outcome } = hop;
-      log({ event: `signin_${name}`, endpoint: 'trello', attemptId, ...outcome });
-      if (hop.outcome !== 'ok') { failure ??= failureOf(hop); move('failed', failure); return; }
-      if (hop.hop === 'browser_handoff') move('waiting');
-      if (hop.hop === 'callback') move('finishing');
-    };
-    void Promise.resolve()
-      .then(() => login({ configDir: options.configDir, binding, onHop, openBrowser: async (url: string) => { current.issued = url; await open(url); } }))
-      .then(() => { move('signed_in'); }, () => { move('failed', failure ?? 'did_not_finish'); })
-      .finally(() => { if (pending === current) pending = undefined; });
-    return { status: 'started', attemptId };
-  };
-  const signIn = (() => Promise.resolve(start())) as TrelloSignIn;
-  signIn.attempt = (signedIn: boolean) => {
-    if (signedIn && latest && (latest.phase === 'signed_in' || latest.phase === 'failed')) { latest = undefined; return undefined; }
-    return latest;
-  };
-  return signIn;
-}
-
-/**
- * W7-R4 (F14): what the Live settle does when a session ends, in the one order that matters. The board's
- * session state goes first, because it is a map delete that cannot throw, and the summary follows, so a
- * summariser failure can never keep a finished run's receipts alive.
- */
 export function sessionTerminalHooks(hooks: { endBoardSession: (liveSessionId: string) => void; scheduleSummary: (liveSessionId: string) => void }): (liveSessionId: string) => void {
   return liveSessionId => { hooks.endBoardSession(liveSessionId); hooks.scheduleSummary(liveSessionId); };
 }
 
-/** The Trello row the Settings poll shows: signed in and named, from the files alone, never a network probe. */
-export function trelloConnectionRow(configDir: string, binding: OAuthBinding | undefined = trelloBinding()): { id: string; connector: string; state: string; tools: number; error?: string } {
+/**
+ * The Trello row the Settings poll shows, judged from the files alone and never by a network probe: the
+ * owner's key file, the board he pinned and a named owner make the connection. Without a key there is
+ * nothing to connect, and the row carries the import command instead of a sign-in button.
+ */
+export function trelloConnectionRow(configDir: string, owner: 'unknown' | 'ok' | 'mismatch' = 'unknown'): { id: string; connector: string; state: string; tools: number; error?: string } {
   const row = { id: 'trello', connector: 'trello' };
-  if (!trelloSignedIn(configDir, binding)) return { ...row, state: 'error', tools: 0, error: 'not_signed_in' };
-  if (trelloBoardName(configDir) === undefined) return { ...row, state: 'error', tools: 0, error: 'not_configured' };
-  return { ...row, state: 'configured', tools: 2 };
+  const configured = trelloKey(configDir) !== undefined && trelloBoardName(configDir) !== undefined;
+  if (!configured) return { ...row, state: 'error', tools: 0, error: 'not_configured' };
+  // The owner rule: a key that belongs to another member is shown as a mismatch, never as connected.
+  if (owner === 'mismatch') return { ...row, state: 'error', tools: 0, error: 'credential_mismatch' };
+  return { ...row, state: 'connected', tools: 2 };
 }
 
 /**
@@ -614,7 +570,11 @@ export async function startHost(config: HostConfig) {
     }
     if (selection.state === 'configured') endpoints = selection.catalog.endpoints.length;
   } catch { /* Composition below owns invalid configuration errors. */ }
+  // A host start is a fresh process context: no earlier call's ids survive into this run.
+  clearLogContext();
   log.event({ event: 'host_started', releaseCommit, configDir: configKind, endpoints });
+  // C-LOG-ENVELOPE: the host's own clock line, so this process's monoMs can be dated against wall time.
+  log.event(clockSync('host_start'));
   retireDebugJournal(dataDir, log);
   const stopDiagnostics = captureHostDiagnostics(log);
   let store: Store;
@@ -720,8 +680,13 @@ export async function startHost(config: HostConfig) {
     };
     startupStage = 'listen';
     const signIn = createMongooseSignIn({ configDir: effectiveConfigDir, recover: () => mcp.recover(), log: event => log.event(event) });
-    const trelloSignIn = createTrelloSignIn({ configDir: effectiveConfigDir, log: event => log.event(event) });
-    const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), mongooseSignIn: signIn, mongooseSignInAttempt: (endpointId, connected) => signIn.attempt(endpointId, connected), trelloSignIn, trelloRow: () => { const row = trelloConnectionRow(effectiveConfigDir); const attempt = trelloSignIn.attempt(row.error === undefined); return attempt ? { ...row, signIn: attempt } : row; }, webRoot, port, ...(config.now ? { now: config.now } : {}) });
+    let trelloOwner: 'unknown' | 'ok' | 'mismatch' = 'unknown';
+    if (trelloKey(effectiveConfigDir) !== undefined) {
+      void trelloIdentity({ configDir: effectiveConfigDir }).then(outcome => {
+        trelloOwner = outcome.ok ? 'ok' : outcome.code === 'credential_mismatch' ? 'mismatch' : 'unknown';
+      }).catch(() => { /* the row stays file based when the probe cannot answer */ });
+    }
+    const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), mongooseSignIn: signIn, mongooseSignInAttempt: (endpointId, connected) => signIn.attempt(endpointId, connected), trelloRow: () => trelloConnectionRow(effectiveConfigDir, trelloOwner), webRoot, port, ...(config.now ? { now: config.now } : {}) });
     try {
       const descriptor: RuntimeDescriptor = { schemaVersion: 1, origin: service.origin, authorityEpoch: store.authorityEpoch, assistantId: store.assistantId, pid: process.pid, startedAt: new Date().toISOString() };
       await publish(descriptorPath, descriptor); // Never use a stale descriptor as authority or carry bearer material.

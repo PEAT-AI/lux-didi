@@ -1219,6 +1219,7 @@ private func checkPrimaryChannelConversion() throws {
             try await checkMuteWithoutSession()
             try await checkMuteBeforeCapture()
             try await VoiceProcessingSnapshotTests.run()
+        try await HeadphoneRouteTests.run()
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false) else {
                 throw NativeLiveAudioError.unsupportedFormat
             }

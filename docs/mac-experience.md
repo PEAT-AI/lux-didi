@@ -32,4 +32,9 @@ Settings reports connector limitations and provides the supported sign-in action
 
 A connection-lost terminal state is not an owner stop or a completed answer. Native audio recovery, host supervision and provider recovery are different owners. Preserve that distinction in visible state and diagnostics; [live-call.md](live-call.md) and [debugging.md](debugging.md) explain it.
 
+Connecting headphones never ends a call. Listening moves to the headset while the microphone stays the
+built-in one, which is why the visible state does not change and the status text stays quiet; only a lost
+capture device pauses the call and asks to resume. A machine with no built-in microphone (lid closed)
+says so in the same status text: `Using <name> microphone, built-in not available`.
+
 The orb's visual design is frozen unless explicitly authorized. Lifecycle or wording fixes are not permission to redesign motion, color, geometry or transparency. Existing producers in [checks.md](checks.md) cover native behavior; an offline screenshot does not prove a real microphone, account or audible call.

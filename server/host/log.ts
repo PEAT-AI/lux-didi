@@ -7,6 +7,7 @@ import { TURN_FAILED_REASONS } from '../adapters/live-voice/types.js';
 import { DEBT_PHASES, DEBT_REASONS } from '../trace/kinds.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { ConfigError } from '../config/files.js';
+import { clearLogContext, envelopeContext, monoMilliseconds, nextSeq, severityOf } from './events.js';
 import { LIVE_INSTRUCTION_SECTION_IDS } from '../prompt/live-persona.js';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -15,6 +16,8 @@ import { join } from 'node:path';
 const SAFE_TOKEN = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/;
 const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/;
 const SAFE_CALL_ID = /^[A-Za-z0-9_.:~-]{1,128}$/;
+/** R7: what owned a silence the owner heard: a tool call, the provider generating, or the owner's own speech. */
+const SILENCE_OWNERS = ['tool', 'provider', 'owner'];
 const RESEARCH_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'memory', 'web', 'drive'];
 const RESEARCH_CANDIDATES = ['knowledge_search', 'calendar_window', 'mail_search', 'mail_open', 'chat_search', 'chat_thread', 'company_search', 'web_search', 'brief', 'stop_answer', 'stop_insufficient', 'memory_search'];
 const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exhausted', 'no_candidates', 'voi_stop', 'ops_exhausted', 'deadline', 'cancelled', 'fallback', 'stop', 'failed', 'refused'];
@@ -43,11 +46,19 @@ export const LIVE_STATE_CAUSES = ['created', 'input', 'model_turn_start', 'audio
 /** #591: why a provider session was rebuilt, a closed set. The two watchdog tokens split a silent model from a
  *  model that owes the owner an answer; the other two name the transport causes that rebuild on their own. */
 export const LIVE_REBUILD_TRIGGERS = ['no_output_after_ambient', 'no_output_after_owner', 'line_dropped', 'session_window'] as const;
+/** C-HEADPHONES 5: the native app's closed `live_end` reasons, verbatim from NativeLiveJournal. A Stop
+ *  carries one and this log repeats it, so an audio route change is never written down as the owner's
+ *  own stop. A closed set: the log never prints a word the app did not send. */
+export const NATIVE_END_REASONS = ['invalid_output', 'child_exit', 'logout', 'shutdown', 'user_stop', 'app_quit',
+  'idle_limit', 'session_limit', 'host_failed', 'host_closed', 'audio_interruption', 'route_change'] as const;
 /** The provider handshake steps, in the order the adapter walks them. */
 const LIVE_HANDSHAKE_STEPS = ['credential_resolved', 'socket_open', 'session_start_sent', 'session_started'] as const;
 /** #538: the send outcome, a closed set. The debt phases and reasons live with the trace kinds, one definition. */
 const LIVE_TOOL_SEND_OUTCOMES = ['sent', 'deferred', 'failed'] as const;
 const SESSION_ID = /^[0-9a-f-]{36}$/i;
+/** C-LOG-ENVELOPE: the provider's own id shape, the same bound the transcription metadata already trusts. */
+const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$/;
+const isProviderId = (value: unknown): boolean => typeof value === 'string' && PROVIDER_ID.test(value);
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 /** K6: the layers a routed research call may name, in the model's own words. */
 const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'drive', 'web'];
@@ -82,9 +93,12 @@ const SIGNIN_OUTCOMES: Record<string, readonly string[]> = {
   signin_discovery: ['ok', 'config_invalid', 'unreachable', 'redirected', 'http_status', 'not_json', 'resource_mismatch', 'server_untrusted', 'metadata_unreachable', 'metadata_invalid', 'issuer_mismatch', 'endpoint_off_origin', 'timeout'],
   signin_registration: ['ok', 'port_in_use', 'refused', 'timeout'],
   signin_browser_handoff: ['ok', 'unavailable', 'timeout'],
-  signin_callback: ['ok', 'state_mismatch', 'authorization_refused', 'timeout'],
-  signin_token: ['ok', 'refused', 'unreachable', 'timeout'],
+  signin_callback: ['ok', 'state_mismatch', 'authorization_refused', 'account_mismatch', 'timeout'],
+  signin_token: ['ok', 'refused', 'unreachable', 'timeout', 'identity_mismatch', 'identity_unverified'],
   signin_stored: ['ok', 'failed'],
+  // H20: one closing line per attempt, whether it signed in or failed on a closed reason.
+  signin_finished: ['signed_in', 'discovery_unreachable', 'discovery_refused', 'registration_refused', 'port_in_use',
+    'browser_unavailable', 'callback_failed', 'callback_timeout', 'account_mismatch', 'token_refused', 'store_failed', 'did_not_finish'],
 };
 const SIGNIN_OAUTH_ERRORS = ['invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client', 'unsupported_grant_type', 'invalid_scope', 'invalid_target', 'access_denied'];
 /**
@@ -93,7 +107,7 @@ const SIGNIN_OAUTH_ERRORS = ['invalid_request', 'invalid_client', 'invalid_grant
  * is logged instead of being dropped here without a trace.
  */
 const TRELLO_CALL_TOOL = new RegExp(`^(?:${TRELLO_CALL_TOOLS.map(tool => tool.replace('.', '\\.')).join('|')})$`);
-const TRELLO_CALL_REASONS = ['not_configured', 'not_signed_in', 'auth_failed', 'rate_limited', 'unavailable', 'board_not_found', 'board_ambiguous', 'unsupported', 'result_unrecognized', 'outside_scope',
+const TRELLO_CALL_REASONS = ['not_configured', 'not_signed_in', 'auth_failed', 'credential_revoked', 'credential_mismatch', 'rate_limited', 'unavailable', 'board_not_found', 'board_ambiguous', 'unsupported', 'result_unrecognized', 'outside_scope',
   'list_unknown', 'list_ambiguous', 'card_unknown', 'card_ambiguous', 'label_unknown', 'item_unknown', 'invalid_due', 'description_full', 'not_owner_requested', 'no_change', 'write_failed', 'outcome_unknown', 'replayed'];
 /** W11-R3: the Gmail operators a compiled mail query may name, as a closed set, never the words. */
 const MAIL_QUERY_OPERATORS = ['from', 'to', 'cc', 'bcc', 'subject', 'after', 'before', 'newer_than', 'older_than', 'is', 'has', 'label', 'in'];
@@ -227,6 +241,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.code !== 'string' || !/^[a-z0-9]{1,16}$/.test(value.code)) return;
     return { event: 'debug_journal_removal_failed', code: value.code };
   }
+  if (value.event === 'clock_sync') {
+    // C-LOG-ENVELOPE: one line per host start and per call open. append adds the wall time and this
+    // process's monoMs, so the line carries only which clock event it dates.
+    if (!closedKeys(value, ['event', 'reason'])) return;
+    if (value.reason !== 'host_start' && value.reason !== 'call_open') return;
+    return { event: 'clock_sync', reason: value.reason };
+  }
   if (value.event === 'live_trace_rejected') {
     // O1b-A: the trace store's own receipt for a refused write: the kind and the store's typed code only,
     // never a payload. It replaces the debug journal's error receipt in the same slot in this whitelist.
@@ -288,6 +309,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'connector_connected' || value.event === 'connector_recovered'
     || value.event === 'connector_recovery_exhausted' || value.event === 'connector_unavailable'
+    || value.event === 'connector_latched'
     || value.event === 'connector_helper_stderr') {
     // #533: a connect that landed used to be silent, so silent meant unknown. #671: the mark that turns a
     // read into an instant `unavailable` was silent too. These lines are closed counts, ids and codes only:
@@ -311,6 +333,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (value.event === 'connector_unavailable') {
       if (!closedKeys(value, ['endpointId', 'event', 'reason']) || !token(value.reason)) return;
       return { event: 'connector_unavailable', endpointId: value.endpointId, reason: value.reason };
+    }
+    if (value.event === 'connector_latched') {
+      // One line per latch: a closed identity code and the endpoint id, never an address.
+      if (!closedKeys(value, ['code', 'endpointId', 'event']) || !token(value.code)) return;
+      return { event: 'connector_latched', endpointId: value.endpointId, code: value.code };
     }
     if (!closedKeys(value, ['bytes', 'endpointId', 'event']) || !count(value.bytes, 16_777_216)) return;
     return { event: 'connector_helper_stderr', endpointId: value.endpointId, bytes: value.bytes };
@@ -446,14 +473,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'connector_call', connector: 'trello', tool: value.tool, phase: value.phase, outcome: value.outcome, ...(hasReason ? { reason: value.reason } : {}) };
   }
   if (value.event === 'vault_write') {
-    // Closed shape: the operation state token, the vault's own insight id on a confirmed save, and the wire latency. Never text.
+    // Closed shape: the attempt outcome, the closed failure code, the vault's own insight id on a confirmed save, and the wire latency. Never text.
     const hasInsight = value.insightId !== undefined;
-    if (!closedKeys(value, ['event', 'state', ...(hasInsight ? ['insightId'] : []), 'latencyMs'])) return;
-    if (typeof value.state !== 'string' || !['confirmed', 'failed', 'uncertain'].includes(value.state)) return;
+    const hasCode = value.code !== undefined;
+    if (!closedKeys(value, ['event', 'state', ...(hasCode ? ['code'] : []), ...(hasInsight ? ['insightId'] : []), 'latencyMs'])) return;
+    if (typeof value.state !== 'string' || !['confirmed', 'failed', 'uncertain', 'unavailable'].includes(value.state)) return;
+    if (hasCode && !['not_owner_requested', 'write_failed', 'outcome_unknown', 'vault_unavailable'].includes(String(value.code))) return;
     if ((value.state === 'confirmed') !== hasInsight) return;
     if (hasInsight && !isSafeToken(value.insightId)) return;
     if (!Number.isSafeInteger(value.latencyMs) || Number(value.latencyMs) < 0) return;
-    return { event: 'vault_write', state: value.state, ...(hasInsight ? { insightId: value.insightId } : {}), latencyMs: value.latencyMs };
+    return { event: 'vault_write', state: value.state, ...(hasCode ? { code: value.code } : {}), ...(hasInsight ? { insightId: value.insightId } : {}), latencyMs: value.latencyMs };
   }
   if (value.event === 'memory_note') {
     // Closed shape: whether the note was saved, its code, the note's content word count, how many of
@@ -669,7 +698,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'session_end') {
     // Closed shape (3p): why the call ended and how long the stop took to be felt. Never text, never audio.
     if (!closedKeys(value, ['event', 'reason', 'msAfterStop'])) return;
-    if (value.reason !== 'user_stop' && value.reason !== 'consumer_closed' && value.reason !== 'app_quit') return;
+    if (!['user_stop', 'consumer_closed', 'app_quit'].includes(String(value.reason))
+      && !(NATIVE_END_REASONS as readonly string[]).includes(String(value.reason))) return;
     if (!isSafeCount(value.msAfterStop)) return;
     return { event: 'session_end', reason: value.reason, msAfterStop: value.msAfterStop };
   }
@@ -736,11 +766,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'live_dead_air', deadAirMs: value.deadAirMs };
   }
   if (value.event === 'live_heard_silence') {
-    // L-04: the silence the owner heard, from the end of the last audible frame to the next model audio. A duration
-    // and one flag, never turn content.
-    if (Object.keys(value).sort().join(',') !== ['event', 'ms', 'toolPending'].sort().join(',')) return;
-    if (!isSafeCount(value.ms) || typeof value.toolPending !== 'boolean') return;
-    return { event: 'live_heard_silence', ms: value.ms, toolPending: value.toolPending };
+    // L-04/R7: the silence the owner heard, from the end of the last audible frame to the next model audio, with
+    // what really owned it: a tool call, the provider generating, or the owner. A duration and one word, never
+    // turn content. The old boolean said "tool pending" even when the provider was simply generating.
+    if (Object.keys(value).sort().join(',') !== ['event', 'ms', 'silence'].sort().join(',')) return;
+    if (!isSafeCount(value.ms) || !SILENCE_OWNERS.includes(String(value.silence))) return;
+    return { event: 'live_heard_silence', ms: value.ms, silence: value.silence as string };
   }
   if (value.event === 'live_turn_open') {
     // #303: the provider streamed model audio and then went quiet without a turnComplete.
@@ -850,9 +881,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'gptlive_unknown_frame', type: value.type, count: value.count };
   }
   if (value.event === 'gptlive_turn_complete') {
-    if (!closedKeys(value, ['event', 'idleMs', 'drained'])) return;
+    // C-LOG-ENVELOPE: the provider ids this turn already carries, as ids only, so a turn joins the
+    // provider's own record without one word of its content.
+    const ids = ['responseId', 'itemId', 'eventId'].filter(key => Object.prototype.hasOwnProperty.call(value, key));
+    const keys = ['event', 'idleMs', 'drained', ...ids];
+    if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
     if (!isSafeCount(value.idleMs) || value.drained !== true) return;
-    return { event: 'gptlive_turn_complete', idleMs: value.idleMs, drained: true };
+    if (!ids.every(key => isProviderId(value[key]))) return;
+    return { event: 'gptlive_turn_complete', idleMs: value.idleMs, drained: true, ...Object.fromEntries(ids.map(key => [key, value[key]])) };
   }
   if (value.event === 'live_provider_error') {
     if (!closedKeys(value, ['event', 'type', 'code', 'param'])) return;
@@ -861,10 +897,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'gptlive_tool_output') {
     // 3r: one tool answer per delegated response, its call count and whether a continuation reached the wire.
-    if (!closedKeys(value, ['event', 'calls', 'responseCreate'])) return;
+    // C-LOG-ENVELOPE adds the provider's ids, ids only.
+    const ids = ['responseId', 'itemId', 'eventId'].filter(key => Object.prototype.hasOwnProperty.call(value, key));
+    if (Object.keys(value).sort().join(',') !== [...['event', 'calls', 'responseCreate'], ...ids].sort().join(',')) return;
     if (!isSafeCount(value.calls)) return;
     if (value.responseCreate !== 'sent' && value.responseCreate !== 'retried' && value.responseCreate !== 'failed') return;
-    return { event: 'gptlive_tool_output', calls: value.calls, responseCreate: value.responseCreate };
+    if (!ids.every(key => isProviderId(value[key]))) return;
+    return { event: 'gptlive_tool_output', calls: value.calls, responseCreate: value.responseCreate, ...Object.fromEntries(ids.map(key => [key, value[key]])) };
   }
   if (value.event === 'gptlive_delegation_stalled') {
     // 3r D4: detection only, so this is a receipt and never a command. Milliseconds since the outputs went out.
@@ -1104,23 +1143,42 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'research_first_answer') {
     // R6: when a call answered with sources still reading: the elapsed ms, the sources already in the
-    // reply and the ones it named as pending. Never a query, never a finding.
-    if (!closedKeys(value, ['event', 'researchId', 'ms', 'settled', 'pending'])) return;
+    // reply and the ones it named as pending. R7 adds only how it answered and the owner's wait. Never a
+    // query, never a finding.
+    if (!closedKeys(value, ['event', 'researchId', 'ms', 'settled', 'pending', 'kind', 'elapsedMs'])) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_first_answer');
     if (typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 120_000) return;
+    if (!['early', 'hard_stop'].includes(String(value.kind))) return;
+    if (typeof value.elapsedMs !== 'number' || !Number.isFinite(value.elapsedMs) || value.elapsedMs < 0 || value.elapsedMs > 120_000) return;
     if (!isSafeMembers(value.settled, RESEARCH_SOURCES) || !isSafeMembers(value.pending, RESEARCH_SOURCES)) return;
-    return { event: 'research_first_answer', researchId: value.researchId, ms: value.ms, settled: value.settled, pending: value.pending };
+    return { event: 'research_first_answer', researchId: value.researchId, ms: value.ms, settled: value.settled, pending: value.pending, kind: value.kind as string, elapsedMs: value.elapsedMs };
+  }
+  if (value.event === 'research_answer') {
+    // R7: a call whose sources all settled before its answer point: how it answered and how long the owner waited.
+    if (!closedKeys(value, ['event', 'researchId', 'kind', 'elapsedMs'])) return;
+    if (!isSafeId(value.researchId)) return rejectResearchId('research_answer');
+    if (value.kind !== 'full') return;
+    if (typeof value.elapsedMs !== 'number' || !Number.isFinite(value.elapsedMs) || value.elapsedMs < 0 || value.elapsedMs > 120_000) return;
+    return { event: 'research_answer', researchId: value.researchId, kind: 'full', elapsedMs: value.elapsedMs };
+  }
+  if (value.event === 'research_still_searching') {
+    // R2/R7: the one short line an owner waiting on a research call hears at 10 s, and whether it was spoken.
+    if (!closedKeys(value, ['event', 'researchId', 'elapsedMs', 'spoken'])) return;
+    if (!isSafeId(value.researchId)) return rejectResearchId('research_still_searching');
+    if (typeof value.elapsedMs !== 'number' || !Number.isFinite(value.elapsedMs) || value.elapsedMs < 0 || value.elapsedMs > 120_000) return;
+    if (typeof value.spoken !== 'boolean') return;
+    return { event: 'research_still_searching', researchId: value.researchId, elapsedMs: value.elapsedMs, spoken: value.spoken };
   }
   if (value.event === 'research_late_findings') {
     // R6: one line per source that settled after the first answer: how long it took, how many items it
     // really returned, and how the host delivered them. Never the text of one.
-    if (!closedKeys(value, ['event', 'researchId', 'source', 'ms', 'items', 'delivered', 'reason'])) return;
+    if (!closedKeys(value, ['event', 'researchId', 'source', 'ms', 'items', 'destination', 'reason'])) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_late_findings');
     if (!isSafeMember(value.source, RESEARCH_SOURCES)) return;
     if (typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 120_000) return;
     if (typeof value.items !== 'number' || !Number.isInteger(value.items) || value.items < 0 || value.items > 16) return;
-    if (!isSafeMember(value.delivered, LATE_DELIVERIES) || !isSafeMember(value.reason, LATE_REASONS)) return;
-    return { event: 'research_late_findings', researchId: value.researchId, source: value.source, ms: value.ms, items: value.items, delivered: value.delivered, reason: value.reason };
+    if (!isSafeMember(value.destination, LATE_DELIVERIES) || !isSafeMember(value.reason, LATE_REASONS)) return;
+    return { event: 'research_late_findings', researchId: value.researchId, source: value.source, ms: value.ms, items: value.items, destination: value.destination, reason: value.reason };
   }
   if (value.event === 'research_subcall') {
     // Q1: one metadata-only record per internal sub-call, never the query or result text. A calendar
@@ -1291,6 +1349,9 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
 }
 
+/** H-07: the end codes that are the call finishing, not the host failing. */
+const NORMAL_END_CODES = new Set(['closed', 'voice_stop', 'user_stop', 'idle_timeout']);
+
 export class HostLog {
   private readonly path: string;
   constructor(dataDir: string, private readonly limit = 5 * 1024 * 1024) {
@@ -1308,15 +1369,28 @@ export class HostLog {
     const state = (raw as { state?: unknown }).state;
     const code = (raw as { code?: unknown }).code;
     if (typeof code !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(code)) return;
-    if (state === 'closed') { this.append({ event: 'live_terminal', state, code }); return; }
-    this.append({ event: 'host_error', class: 'LiveTerminal', code });
+    // H-07: a normal end is not a fault, so it is not a host_error. Only a failing end stays one.
+    // C-LOG-ENVELOPE F2: the terminal line is the call's last line, so the call context ends with it and the
+    // host's own aftermath (resources, idle arms, connector lines) is never attributed to a closed call.
+    try {
+      if (state === 'closed' || NORMAL_END_CODES.has(code)) this.append({ event: 'live_terminal', state, code });
+      else this.append({ event: 'host_error', class: 'LiveTerminal', code });
+    } finally { clearLogContext(); }
   }
   error(error: unknown): void {
     // Class is a closed token. Exception messages and stacks are deliberately never read.
     this.append({ event: 'host_error', class: error instanceof ConfigError ? 'ConfigError' : 'Error', ...(error instanceof ConfigError ? { code: error.code } : {}) });
   }
   private append(event: Record<string, unknown>): void {
-    const line = Buffer.from(JSON.stringify({ timestamp: new Date().toISOString(), pid: process.pid, ...event }) + '\n');
+    // C-LOG-ENVELOPE: one envelope, written here and nowhere else. A field the event already carries keeps
+    // its own value, so no existing event shape changes meaning; the call context fills only what is absent.
+    const name = typeof event.event === 'string' ? event.event : '';
+    const severity = severityOf(name);
+    // A line whose name says nothing about its domain carries no cause; an event that already names its
+    // own cause keeps it, so no existing shape changes meaning.
+    const record = { timestamp: new Date().toISOString(), monoMs: monoMilliseconds(), pid: process.pid, seq: nextSeq(),
+      level: severity.level, ...(severity.cause === undefined ? {} : { cause: severity.cause }), ...envelopeContext(), ...event };
+    const line = Buffer.from(JSON.stringify(record) + '\n');
     if (line.length > this.limit) return;
     let fd = openSync(this.path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
     try {
@@ -1344,6 +1418,8 @@ const sinks = new Set<HostLog>();
 // The host log event API lives in the tool layer so the tool call sites can emit diagnostics
 // without importing the host; this module registers the durable sinks behind it.
 export { hostLogEvent } from '../tools/host-events.js';
+/** C-LOG-ENVELOPE: the live layer names its call once, and every line it emits while live carries it. */
+export { clockSync, clearLogContext, logContext, setLogContext } from './events.js';
 
 export function captureHostDiagnostics(log: HostLog): () => void {
   sinks.add(log);

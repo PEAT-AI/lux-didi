@@ -104,7 +104,8 @@ export class Store {
         // Trace tables are owned by the same Store and applied on every host: a debugger reads
         // one state.sqlite, never a second database with its own connection.
         this.applyMigrations([...migrations, ...traceMigrations]);
-        // Trace content retention: 30 days for the two content tables, metadata rows untouched.
+        // Trace content retention: 30 days for owner content, nulled in place; 90 days for the
+        // metadata rows that may be deleted. The run happens at host start, never inside a live call.
         const traceExec: TraceExec = {
           run: (sql, params = []) => Number(this.#db!.prepare(sql).run(...params).changes),
           all: (sql, params = []) => this.#db!.prepare(sql).all(...params) as SQLRow[],
@@ -120,6 +121,10 @@ export class Store {
         this.adminCredential = admitCredential(directory);
         this.#db.exec('COMMIT');
       } catch (error) { this.#db.exec('ROLLBACK'); throw error; }
+      // Fold the WAL back after the retention run committed, so pruning 11 MB of owner content does not
+      // leave a week of frames to be copied again on the next start. A checkpoint cannot run inside the
+      // write transaction above.
+      this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     } catch (error) { this.close(); throw error; }
   }
   private applyMigrations(migrations: readonly SchemaMigration[]): void {

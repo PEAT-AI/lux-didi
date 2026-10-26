@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { connectorIDs, reasonCodes, nextStep } from '../src/next-steps.ts';
+import { connectorIDs, reasonCodes, nextStep, signInTarget } from '../src/next-steps.ts';
 
 test('Swift and web tables have identical connector and reason keys', () => {
   const swift = readFileSync(new URL('../../Sources/LuxDidi/NativeNextSteps.swift', import.meta.url), 'utf8');
@@ -125,13 +125,17 @@ test('W1-R3: a Mongoose row never says restart Lux Didi; each reason gets its tr
   assert.match(nextStep('gmail', 'error', 'handshake_failed').text, /restart Lux Didi/);
 });
 
-// W7-R3: the native Settings row for the Trello board, matching the web row.
-test('W7-R3: the Trello board is a connector row with the same next steps in native and web', () => {
+// D2: the Trello board is connected by an imported API key, so neither row offers a sign-in.
+test('D2: the Trello board row names the import command and offers no Sign in button', () => {
   assert.ok((connectorIDs as readonly string[]).includes('trello'), 'the row is in the catalogue the app renders');
-  const swift = readFileSync(new URL('../../Sources/LuxDidi/NativeNextSteps.swift', import.meta.url), 'utf8');
-  assert.match(swift, /"trello": "Trello"/, 'the native row carries the same label');
-  assert.match(swift, /"trello": signInStep\("Trello"\)/, 'the native row offers the same sign-in step');
-  const web = nextStep('trello', 'error', 'not_signed_in');
-  assert.equal(web.signIn, true, 'the web row offers its Sign in button');
-  assert.match(web.text, /^Sign in to Trello in Settings/);
+  for (const reason of ['not_configured', 'not_signed_in', 'credential_revoked', 'identity_mismatch'] as const) {
+    const web = nextStep('trello', 'error', reason);
+    assert.equal(web.signIn, undefined, `${reason}: no sign-in button on the Trello row`);
+    assert.match(web.text, /scripts\/import-trello-key\.sh/, `${reason}: the command that imports the key is named`);
+    assert.match(web.text, /trello-board\.json/, `${reason}: the private file is named`);
+  }
+  assert.equal(signInTarget('trello'), undefined, 'the board has no sign-in endpoint to call');
+  const mismatch = nextStep('trello', 'error', 'identity_mismatch');
+  assert.doesNotMatch(mismatch.text, /Sign in button/, 'a mismatch never points at a button that is gone');
+  assert.match(mismatch.text, /Trello account behind this key is not Rob's/);
 });

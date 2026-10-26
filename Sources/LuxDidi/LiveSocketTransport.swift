@@ -99,6 +99,17 @@ public enum LiveControl: String, Sendable {
     /// The owner's mute, sent on the call's own socket: one frame each way, no payload.
     case inputMuted, inputLive
     public var json: String { "{\"type\":\"" + rawValue + "\"}" }
+    /// C-HEADPHONES 5: a closed `[a-z][a-z0-9_]*` word from `NativeLiveEndReason`, the one shape the
+    /// host accepts on a Stop, so the host log repeats the app's own reason and never free text.
+    public static func isEndReason(_ reason: String) -> Bool {
+        guard let first = reason.first, ("a"..."z").contains(first), reason.count <= 64 else { return false }
+        return reason.allSatisfy { ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "_" }
+    }
+    /// The Stop frame, carrying the app's own reason when it has one.
+    public static func closeFrame(reason: String?) -> String {
+        guard let reason, isEndReason(reason) else { return LiveControl.close.json }
+        return "{\"type\":\"close\",\"reason\":\"" + reason + "\"}"
+    }
 }
 
 public protocol LiveSocket: Sendable {
@@ -109,6 +120,9 @@ public protocol LiveSocket: Sendable {
     /// microphone stream, never a failed call.
     func sendPCMReportingShed(_ data: Data) async throws -> Bool
     func sendControl(_ control: LiveControl) async throws
+    /// C-HEADPHONES 5: the Stop may carry the app's own end reason. A socket that never sends one
+    /// keeps the plain frame, so the default below leaves every existing conformer unchanged.
+    func sendControl(_ control: LiveControl, reason: String?) async throws
     /// O1b-N: one bounded playback receipt frame on the socket the call already holds.
     func sendReceipt(_ frame: String) async throws
     func cancel() async
@@ -116,6 +130,8 @@ public protocol LiveSocket: Sendable {
 public extension LiveSocket {
     /// A socket that holds no shared lane has nothing to shed: every frame it accepts went out.
     func sendPCMReportingShed(_ data: Data) async throws -> Bool { try await sendPCM(data); return true }
+    /// A socket with no Stop reason to carry sends the plain control frame.
+    func sendControl(_ control: LiveControl, reason: String?) async throws { try await sendControl(control) }
 }
 public protocol LiveSocketConnecting: Sendable {
     func connect(_ binding: LiveSocketBinding) async throws -> any LiveSocket
@@ -350,6 +366,17 @@ private actor FoundationLiveSocket: LiveSocket {
     func sendControl(_ control: LiveControl) async throws {
         await sends.acquireControl()
         do { try await send(.string(control.json)) } catch { await sends.release(); throw error }
+        await sends.release()
+    }
+    /// C-HEADPHONES 5: the Stop carries the app's own end reason, so the host log names what ended
+    /// the call instead of assuming the owner did.
+    func sendControl(_ control: LiveControl, reason: String?) async throws {
+        guard control == .close, let reason, LiveControl.isEndReason(reason) else {
+            return try await sendControl(control)
+        }
+        await sends.acquireControl()
+        do { try await send(.string(LiveControl.closeFrame(reason: reason))) }
+        catch { await sends.release(); throw error }
         await sends.release()
     }
     private func send(_ message: URLSessionWebSocketTask.Message) async throws {

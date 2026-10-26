@@ -23,7 +23,7 @@ async function* frames(response: Response, signal: AbortSignal): AsyncGenerator<
   signal.addEventListener('abort', abort, { once: true });
   try {
     while (true) {
-      if (signal.aborted) throw Error('interrupted');
+      if (signal.aborted) throw new Interrupted('cancelled');
       const chunk = await reader.read();
       if (chunk.done) pending += decoder.decode();
       else {
@@ -66,11 +66,19 @@ function validPart(value: unknown): value is Part {
   return !('functionResponse' in value) && ('text' in value || 'functionCall' in value || 'thoughtSignature' in value);
 }
 
+/**
+ * The adapter's own wiring checks, exported so composition can run them at start: an unsupported model id
+ * or key reference is a configuration failure the host reports before the first answer, not inside it.
+ */
+export function assertGeminiBinding(modelId: string, keyReference: string): void {
+  if (!/^gemini-[a-z0-9][a-z0-9.-]{0,99}$/.test(modelId)) throw Error('invalid_model_id');
+  if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(keyReference)) throw Error('invalid_key_reference');
+}
+
 export class GeminiAdapter implements ModelPort {
   private readonly options: GeminiOptions;
   constructor(options: GeminiOptions) {
-    if (!/^gemini-[a-z0-9][a-z0-9.-]{0,99}$/.test(options.modelId)) throw Error('invalid_model_id');
-    if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(options.keyReference)) throw Error('invalid_key_reference');
+    assertGeminiBinding(options.modelId, options.keyReference);
     this.options = { ...options, ...(options.route ? { route: { ...options.route, dataClasses: [...options.route.dataClasses] } } : {}) };
   }
   async generate(request: ModelRequest, control: ModelControl): Promise<ModelResult> {
@@ -116,9 +124,12 @@ export class GeminiAdapter implements ModelPort {
         const body = JSON.stringify(payload);
         if (Buffer.byteLength(body) > 1_000_000) throw Error('request_limit');
         prompt.hash = createHash('sha256').update(body).digest('hex');
-        const key = await this.options.credentials.resolve(this.options.keyReference)
-          .catch((): string => { throw Error('credential_unavailable'); });
-        if (signal.aborted) throw Error('interrupted');
+        // An abort wins over a credential refusal: a revoked route cancels the answer, and its receipt
+        // says cancelled rather than unavailable (CONNECTED revoke and label-correction tests).
+        let key: string | undefined;
+        try { key = await this.options.credentials.resolve(this.options.keyReference); }
+        catch { throw signal.aborted ? new Interrupted('cancelled') : Error('credential_unavailable'); }
+        if (signal.aborted) throw new Interrupted('cancelled');
         if (!key || /[\r\n]/.test(key)) throw Error('credential_unavailable');
         const url = `${origin}/v1beta/models/${this.options.modelId}:streamGenerateContent?alt=sse`;
         const response = await (this.options.transport ?? fetch)(url, { method: 'POST', redirect: 'error', signal,

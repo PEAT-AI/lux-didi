@@ -116,7 +116,7 @@ Replace `knowledge` with `data` or `crm`. `--no-browser` prints an authorization
 
 ### Trello
 
-Privately create `trello-board.json` beside the sign-in record, mode `0600`, containing `{"board":"Your board name"}` with your actual board name. Do not publish it. In Settings choose **Sign in to Trello**, select the workspace containing that board and approve the requested access in the browser. No `mcp.json` Trello entry is needed.
+Trello uses the API key and token you already use with your own `trello` CLI, so there is nothing to sign in to. Import them once with `scripts/import-trello-key.sh <env-file> <config-dir>`: the script reads `TRELLO_API_KEY` and `TRELLO_TOKEN` from that env file and writes `trello-key.json` beside `trello-board.json` in the protected configuration directory, mode `0600`, printing neither value. Privately create `trello-board.json` there too, mode `0600`, containing `{"board":"Your board name","ownerIdentity":"your Trello account email"}` with your own values; `ownerTrelloUsername` takes the place of the email when Trello does not return one. Do not publish either file. Settings shows the row as connected; it no longer offers a Sign in button.
 
 Then ask for the board overview, overdue cards or a named list. Naya can make granted card changes on that board: create/update, comment, checklist, due date, move/done, label and archive. She cannot administer arbitrary boards/lists, change members or permanently delete cards. Ambiguous targets require clarification. A due date is not a promise that Naya will call you back.
 

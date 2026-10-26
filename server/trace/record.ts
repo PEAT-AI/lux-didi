@@ -539,9 +539,11 @@ function columnExists(exec: TraceExec, table: string, column: string): boolean {
  * pruner writes (a store opened at an older tools version), and a prune that names a missing column is
  * a SQL error, not a prune: run the statement only when every column it names is there. */
 function prunableColumns(exec: TraceExec, table: string, columns: readonly string[]): boolean {
-  if (!tableExists(exec, table)) return false;
-  const present = new Set(exec.all(`PRAGMA table_info(${table})`, []).map(row => String(row['name'])));
-  return columns.every(column => present.has(column));
+  // The store's transaction authorizer refuses PRAGMA, so the table's own CREATE TABLE text is the
+  // readable source for which columns it declares.
+  const row = exec.all("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", [table])[0];
+  const ddl = typeof row?.['sql'] === 'string' ? String(row['sql']) : '';
+  return ddl !== '' && columns.every(column => new RegExp(`(^|[^A-Za-z0-9_])${column}([^A-Za-z0-9_]|$)`).test(ddl));
 }
 
 function tableExists(exec: TraceExec, table: string): boolean {

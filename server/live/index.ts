@@ -451,6 +451,9 @@ interface ActiveSession {
   /** L-04: the end of the last audible frame, owner speech end or model audio end, whichever came later, and whether
    *  a tool was pending while the owner waited. The wait to the next model audio is the silence the owner heard. */
   heardSince?: number | undefined; heardToolPending: boolean;
+  /** L-04: the end of the last audible model frame of the current turn, cleared at the owner's utterance boundary and at
+   *  every model turn start, so a tool turn that spoke no preamble cannot inherit an earlier turn's frame. */
+  turnAudioAt?: number | undefined;
   /** Spoken output script codes of the current turn, counted and then reported as counts only. */
   turnLatin: number; turnDevanagari: number; turnChars: number;
   /** Whether this turn followed tool work and whether the owner cut it off. */
@@ -1641,7 +1644,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
       researchAdmission: new ResearchAdmission(), researchRetention: { retainedChars: 0, rebuilds: 0 },
-      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardToolPending: false, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardToolPending: false, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
@@ -2023,11 +2026,12 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     if (handle.debtSince !== undefined) { handle.debtTimer?.cancel(); handle.debtTimer = undefined; }
     // A muted session hears nothing, so nothing is owed to it while the mute holds.
     if (handle.muted) return;
-    // L-04: the clock is anchored at the end of the last audible frame of the model's own speech, not at the tool
-    // output, so the provider latency the owner sat through after her preamble is part of the same silence and the
-    // rung lands 8 s after the last thing she heard. A turn with no model audio before the call has no such frame,
-    // and the clock keeps its old anchor. The rung's own action is unchanged.
-    const lastAudible = handle.lastModelAudioAt ?? this.#now();
+    // L-04: the clock is anchored at the end of the last audible frame of this turn's own model speech, not at the
+    // tool output, so the provider latency the owner sat through after her preamble is part of the same silence and
+    // the rung lands 8 s after the last thing she heard. A turn that spoke no preamble has no such frame and keeps
+    // the old anchor at the tool output: a previous turn's audio is never this turn's silence. The rung's own
+    // action is unchanged.
+    const lastAudible = handle.turnAudioAt ?? this.#now();
     handle.debtSince = lastAudible;
     handle.debtBargeIn = false;
     handle.debtDeferred = false;
@@ -2480,6 +2484,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     const supersedes = connection.turnId;
     if (supersedes !== undefined) this.#closeTurn(handle, 'superseded');
     handle.modelTextSinceOpen = false;
+    // L-04: her own words restart the silence, so no earlier model frame of this turn anchors the debt clock.
+    handle.turnAudioAt = undefined;
     this.#cancelTimers(handle);
     handle.progressCallIds.clear();
     handle.exec.clear();
@@ -3149,7 +3155,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           if (handle.turnCompleteSeen) { handle.dropResponse = false; handle.outputJournalled = false; handle.turnCompleteSeen = false; }
           if (handle.muted) handle.mutedResponse = true;
           resetTurnScript(handle);
-          handle.firstAudioAt = undefined;
+          handle.firstAudioAt = undefined; handle.turnAudioAt = undefined;
           this.#beginModelTurn(handle);
           // A generation start is the think time. gpt-live-1 sends none for a plain turn, so the adapter
           // synthesizes one when the owner's episode ends, and this is what puts the orb in THINKING.
@@ -3295,6 +3301,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           }
           this.#cancelSpeakingHold(handle);
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
+          handle.turnAudioAt = handle.lastModelAudioAt;
           this.#noteState(handle, 'audio');
           if (handle.firstAudioAt === undefined) {
             handle.firstAudioAt = this.#now();

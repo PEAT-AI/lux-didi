@@ -217,7 +217,7 @@ test('the JSON timeline carries no owner text unless --content asks for it', () 
   });
 });
 
-test('the 31-day prune removes trace content and keeps every metadata row', () => {
+test('the 31-day prune nulls trace content in place and keeps every metadata row', () => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-trace-'));
   const now = Date.now();
   const old = now - 31 * 86_400_000;
@@ -234,7 +234,10 @@ test('the 31-day prune removes trace content and keeps every metadata row', () =
     first.close();
 
     const reopened = new Store(dir, []);
-    assert.deepEqual(counts(reopened), { trace_turn: 2, trace_response: 0, trace_call: 1, trace_playback: 0, trace_event: 3, trace_utterance: 1, trace_call_result: 0 });
+    assert.deepEqual(counts(reopened), { trace_turn: 2, trace_response: 0, trace_call: 1, trace_playback: 0, trace_event: 3, trace_utterance: 2, trace_call_result: 1 });
+    const texts = reopened.transaction(tx => tx.all('SELECT at, text, content_pruned_at FROM trace_utterance ORDER BY at'));
+    assert.deepEqual(texts.map(row => [row['at'], row['text'], row['content_pruned_at'] !== null]), [[old + 10, null, true], [recent + 10, 'fresh transcript', false]],
+      'the transcript past the cutoff keeps its row and loses only its text');
     reopened.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -760,10 +763,12 @@ test('the trace v2 migration keeps every v1 row, applies once, and reopens an al
     try {
       assert.deepEqual(counts(migrated), seeded, 'every existing row of every trace table is kept');
       assert.equal(traceVersion(migrated), latestTraceVersion);
-      const ids = { liveSessionId: 'ls-v2', playbackKey: 'ls-v2:inst-v1:1', source: 'native', sourceInstanceId: 'inst-v1', sourceSeq: 1, at: T0, monoMs: 1 } as const;
-      assert.equal(record(migrated, 'playback.received', ids, { segmentSeq: 1, receivedAt: T0 }).duplicate, false,
+      // Real clock times again: a reopen runs the boot pruner, and metadata now lives ninety days.
+      const fresh = Date.now();
+      const ids = { liveSessionId: 'ls-v2', playbackKey: 'ls-v2:inst-v1:1', source: 'native', sourceInstanceId: 'inst-v1', sourceSeq: 1, at: fresh, monoMs: 1 } as const;
+      assert.equal(record(migrated, 'playback.received', ids, { segmentSeq: 1, receivedAt: fresh }).duplicate, false,
         'the same native sequence in another session is its own event, not a replay of ls-v1');
-      assert.equal(record(migrated, 'playback.received', ids, { segmentSeq: 1, receivedAt: T0 }).duplicate, true,
+      assert.equal(record(migrated, 'playback.received', ids, { segmentSeq: 1, receivedAt: fresh }).duplicate, true,
         'a replay inside one session is still deduped');
       assert.deepEqual(counts(migrated), { ...seeded, trace_event: 2, trace_playback: 2 });
     } finally { migrated.close(); }

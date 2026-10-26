@@ -104,12 +104,16 @@ export class Store {
         // Trace tables are owned by the same Store and applied on every host: a debugger reads
         // one state.sqlite, never a second database with its own connection.
         this.applyMigrations([...migrations, ...traceMigrations]);
-        // Trace content retention: 30 days for the two content tables, metadata rows untouched.
+        // Trace content retention: 30 days for owner content, nulled in place; 90 days for the
+        // metadata rows that may be deleted. The run happens at host start, never inside a live call.
         const traceExec: TraceExec = {
           run: (sql, params = []) => Number(this.#db!.prepare(sql).run(...params).changes),
           all: (sql, params = []) => this.#db!.prepare(sql).all(...params) as SQLRow[],
         };
         pruneTraceContent(traceExec, Date.now());
+        // Fold the WAL back after a retention run, so pruning 11 MB of owner content does not leave a
+        // week of frames to be copied again on the next start.
+        this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
         this.#db.prepare("UPDATE runtime_outbox SET state='unknown', claim_token=NULL, lease_until=NULL WHERE state='claimed'").run();
         // Data hygiene at host start: a settled Live job row past its expiry is a delivered result from an
         // older run, and nothing reads it again. Purging it here keeps old feed text out of every surface.

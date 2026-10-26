@@ -15,6 +15,9 @@ import {
 
 /** A content-free id: one token, no whitespace, no punctuation that could carry prose. */const ID_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,95}$/;
 const TRACE_RESULT_MAX_CHARS = 16_384;
+/** Debug metadata outlives owner content by 60 days (lane-6 2.3): a dispatch row's ids, hashes,
+ * sizes, key names, timings and reason codes are what a month-old call is still compared by. */
+const METADATA_RETENTION_DAYS = 90;
 
 export class TraceRecordError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = 'TraceRecordError'; }
@@ -409,31 +412,100 @@ export function recordCallResult(port: TraceWritePort, result: { callKey: string
     tx.run('INSERT INTO trace_call_result(call_key, text, text_truncated) VALUES (?,?,?)', [result.callKey, text, over || result.truncated === true ? 1 : 0]);
   });
 }
-
 /**
- * Retention for owner content at 30 days, called at host start. Metadata rows keep their place: a
- * 30-day-old transcript, tool result, journal payload or accepted prompt snapshot loses its text and
- * keeps its ids, counts, kinds and outcome; WAL frames or free pages are not forensically erased.
- * A live session is only content-pruned once it has ended before the cutoff, so the reattach window
- * of a session that is still live is never shortened.
+ * Retention, called at host start and never during a live call.
+ *
+ * At 30 days every C-class column loses its content IN PLACE and the row records `content_pruned_at`:
+ * transcripts, call results, research questions, journal text, accepted prompt snapshots, connector
+ * result bodies, connector argument values, chat tool results and chat tool inputs. The row stays, so
+ * a month-old call is still described by its ids, hashes, sizes, key names, timings, outcomes and
+ * reason codes; a hash or a size is never nulled with the content it names. A live session is only
+ * content-pruned once it ended before the cutoff, so the reattach window is never shortened.
+ *
+ * At 90 days the metadata rows nothing forbids deleting are deleted: the trace tables' own rows. The
+ * tools tables keep theirs, a dispatch row being an audit record whose delete trigger stays; their
+ * content is already gone at 30 days. WAL frames and free pages are not forensically erased.
+ *
+ * Each pass is one bounded batch repeated until a batch comes up short, so a first run over a large
+ * store never holds the writer for long. The caller checkpoints the WAL after this returns.
  */
-export function pruneTraceContent(exec: TraceExec, now: number): { utterances: number; callResults: number; queryShapes: number; researchText: number; journalText: number; promptSnapshots: number } {
-  const cutoff = now - TRACE_RETENTION_DAYS * TRACE_DAY_MS;
-  const utterances = exec.run('DELETE FROM trace_utterance WHERE at < ?', [cutoff]);
-  const callResults = exec.run('DELETE FROM trace_call_result WHERE call_key IN (SELECT call_key FROM trace_call WHERE intent_at < ?)', [cutoff]);
-  // A query shape is metadata like a call row, and a store migrated before v5 has no table to prune.
-  const queryShapes = tableExists(exec, 'trace_query_shape') ? exec.run('DELETE FROM trace_query_shape WHERE at < ?', [cutoff]) : 0;
-  // L8-Q05: the research question and web query text are owner content with the same retention; a source
-  // read row is metadata and goes with them, like a query shape.
-  const researchText = tableExists(exec, 'trace_research_text') ? exec.run('DELETE FROM trace_research_text WHERE at < ?', [cutoff]) : 0;
-  if (tableExists(exec, 'trace_source_read')) exec.run('DELETE FROM trace_source_read WHERE at < ?', [cutoff]);
+export interface PruneOptions { batch?: number }
+export interface PruneReport {
+  utterances: number; callResults: number; researchText: number; journalText: number; promptSnapshots: number;
+  dispatches: number; calls: number; metadata: number;
+}
+const PRUNE_BATCH = 500;
+const PRUNE_MAX_BATCHES = 20;
+
+export function pruneTraceContent(exec: TraceExec, now: number, options: PruneOptions = {}): PruneReport {
+  const contentCutoff = now - TRACE_RETENTION_DAYS * TRACE_DAY_MS;
+  const metadataCutoff = now - METADATA_RETENTION_DAYS * TRACE_DAY_MS;
+  const batch = options.batch ?? PRUNE_BATCH;
+  const batched = (sql: string, params: SQLValue[]): number => {
+    let total = 0;
+    for (let pass = 0; pass < PRUNE_MAX_BATCHES; pass += 1) {
+      const changed = exec.run(sql, [...params, batch]);
+      total += changed;
+      if (changed < batch) break;
+    }
+    return total;
+  };
+  const nullInPlace = (sql: string, params: SQLValue[]): number => batched(sql, [now, ...params]);
+
+  const utterances = nullInPlace('UPDATE trace_utterance SET text=NULL, content_pruned_at=? WHERE rowid IN (SELECT rowid FROM trace_utterance WHERE text IS NOT NULL AND at < ? LIMIT ?)', [contentCutoff]);
+  const callResults = nullInPlace('UPDATE trace_call_result SET text=NULL, content_pruned_at=? WHERE rowid IN (SELECT rowid FROM trace_call_result WHERE text IS NOT NULL AND call_key IN (SELECT call_key FROM trace_call WHERE intent_at < ?) LIMIT ?)', [contentCutoff]);
+  // L8-Q05: the research question and web query text are owner content with the same retention.
+  const researchText = tableExists(exec, 'trace_research_text')
+    ? nullInPlace('UPDATE trace_research_text SET text=NULL, content_pruned_at=? WHERE rowid IN (SELECT rowid FROM trace_research_text WHERE text IS NOT NULL AND at < ? LIMIT ?)', [contentCutoff])
+    : 0;
   // The live and tools tables belong to other migration owners and are absent from a trace-only Store.
-  if (!tableExists(exec, 'live_journal')) return { utterances, callResults, queryShapes, researchText, journalText: 0, promptSnapshots: 0 };
-  // A journal is only surplus once its session ended before the cutoff AND the transcript has already
-  // been distilled or never will be: a complete summary, a summary that gave up for a reason other
-  // than `no_text_model`, or a source excluded from history. `summaries.reconcile()` re-distils any
-  // ended session that has none, so its text must survive the cutoff. Without the summary tables the
-  // pruner cannot prove that, and proves nothing by leaving the journal alone.
+  const dispatches = tableExists(exec, 'tool_dispatches')
+    ? nullInPlace('UPDATE tool_dispatches SET source_json=NULL, arguments_json=NULL, content_pruned_at=? WHERE rowid IN (SELECT rowid FROM tool_dispatches WHERE content_pruned_at IS NULL AND started_at < ? AND (source_json IS NOT NULL OR arguments_json IS NOT NULL) LIMIT ?)', [contentCutoff])
+    : 0;
+  const calls = tableExists(exec, 'tool_calls')
+    ? nullInPlace(`UPDATE tool_calls SET result_json=NULL, input_json=NULL, content_pruned_at=? WHERE rowid IN (SELECT rowid FROM tool_calls WHERE content_pruned_at IS NULL AND COALESCE(created_at, ${undatedCall(exec)}) < ? AND (result_json IS NOT NULL OR input_json IS NOT NULL) LIMIT ?)`, [contentCutoff])
+    : 0;
+  const journalText = tableExists(exec, 'live_journal') ? pruneJournalText(exec, contentCutoff) : 0;
+  const promptSnapshots = tableExists(exec, 'live_sessions')
+    ? exec.run('UPDATE live_sessions SET accepted_prompt_snapshot=NULL WHERE accepted_prompt_snapshot IS NOT NULL AND terminal_at IS NOT NULL AND terminal_at < ?', [contentCutoff])
+    : 0;
+  const metadata = pruneMetadataRows(exec, metadataCutoff, batched);
+  return { utterances, callResults, researchText, journalText, promptSnapshots, dispatches, calls, metadata };
+}
+
+/** A call row written before the v4 migration carries no `created_at`; its run's own acceptance time
+ * is the best evidence there is, and a row with neither is left alone rather than guessed at. */
+function undatedCall(exec: TraceExec): string {
+  return tableExists(exec, 'chat_runs')
+    ? "(SELECT CAST(strftime('%s',c.accepted_at) AS INTEGER)*1000 FROM chat_runs c WHERE c.run_id=tool_calls.run_id)"
+    : 'NULL';
+}
+
+/** The metadata tables, child before parent, so a delete never cascades into a row of a different age. */
+function pruneMetadataRows(exec: TraceExec, cutoff: number, batched: (sql: string, params: SQLValue[]) => number): number {
+  const deletes: readonly string[] = [
+    'DELETE FROM trace_utterance WHERE rowid IN (SELECT rowid FROM trace_utterance WHERE at < ? LIMIT ?)',
+    'DELETE FROM trace_call_result WHERE rowid IN (SELECT rowid FROM trace_call_result WHERE call_key IN (SELECT call_key FROM trace_call WHERE intent_at < ?) LIMIT ?)',
+    ...(tableExists(exec, 'trace_research_text') ? ['DELETE FROM trace_research_text WHERE rowid IN (SELECT rowid FROM trace_research_text WHERE at < ? LIMIT ?)'] : []),
+    ...(tableExists(exec, 'trace_query_shape') ? ['DELETE FROM trace_query_shape WHERE rowid IN (SELECT rowid FROM trace_query_shape WHERE at < ? LIMIT ?)'] : []),
+    ...(tableExists(exec, 'trace_source_read') ? ['DELETE FROM trace_source_read WHERE rowid IN (SELECT rowid FROM trace_source_read WHERE at < ? LIMIT ?)'] : []),
+    'DELETE FROM trace_event WHERE rowid IN (SELECT rowid FROM trace_event WHERE at < ? LIMIT ?)',
+    'DELETE FROM trace_playback WHERE rowid IN (SELECT rowid FROM trace_playback WHERE received_at < ? LIMIT ?)',
+    'DELETE FROM trace_response WHERE rowid IN (SELECT rowid FROM trace_response WHERE created_at < ? LIMIT ?)',
+    'DELETE FROM trace_call WHERE rowid IN (SELECT rowid FROM trace_call WHERE intent_at < ? LIMIT ?)',
+    'DELETE FROM trace_turn WHERE rowid IN (SELECT rowid FROM trace_turn WHERE opened_at < ? LIMIT ?)',
+  ];
+  let total = 0;
+  for (const sql of deletes) total += batched(sql, [cutoff]);
+  return total;
+}
+
+/** A journal is only surplus once its session ended before the cutoff AND the transcript has already
+ * been distilled or never will be: a complete summary, a summary that gave up for a reason other
+ * than `no_text_model`, or a source excluded from history. `summaries.reconcile()` re-distils any
+ * ended session that has none, so its text must survive the cutoff. Without the summary tables the
+ * pruner cannot prove that, and proves nothing by leaving the journal alone. */
+function pruneJournalText(exec: TraceExec, cutoff: number): number {
   const prunable = tableExists(exec, 'conversation_summaries') && tableExists(exec, 'history_exclusions')
     ? `IN (SELECT s.live_session_id FROM live_sessions s
            WHERE s.terminal_at IS NOT NULL AND s.terminal_at < ?
@@ -443,19 +515,17 @@ export function pruneTraceContent(exec: TraceExec, now: number): { utterances: n
                               OR (c.status = 'failed' AND COALESCE(c.error_code, '') NOT IN ('deadline','pending'))))
                OR EXISTS (SELECT 1 FROM history_exclusions h WHERE h.source_kind = 'live' AND h.source_id = s.live_session_id)))`
     : null;
+  if (prunable === null) return 0;
   // Only owner speech and tool payloads are content. A marker row's `text` is the marker itself: a
   // deferred wait's duration for `remember_deferred`, the event and reason for `continuity`, which
   // `rowToFragment` reads back as `waitedMs` and the continuity event. Clearing those would report a
   // 1200 ms wait as 0 and lose the continuity event while `payload_bytes` still claimed the bytes.
-  const journalText = prunable === null ? 0
-    : exec.run(`UPDATE live_journal SET text=NULL WHERE text IS NOT NULL AND kind IN ('inputTranscription','outputTranscription') AND live_session_id ${prunable}`, [cutoff])
-      // `tool_json` arrives with the v3 live_journal, which is the renamed live_journal_extended; a Store
-      // still at v2 keeps the narrower journal, so the tool payload pass is skipped rather than guessed.
-      + (columnExists(exec, 'live_journal', 'tool_json')
-        ? exec.run(`UPDATE live_journal SET tool_json=NULL WHERE tool_json IS NOT NULL AND live_session_id ${prunable}`, [cutoff])
-        : 0);
-  const promptSnapshots = exec.run(`UPDATE live_sessions SET accepted_prompt_snapshot=NULL WHERE accepted_prompt_snapshot IS NOT NULL AND terminal_at IS NOT NULL AND terminal_at < ?`, [cutoff]);
-  return { utterances, callResults, queryShapes, researchText, journalText, promptSnapshots };
+  return exec.run(`UPDATE live_journal SET text=NULL WHERE text IS NOT NULL AND kind IN ('inputTranscription','outputTranscription') AND live_session_id ${prunable}`, [cutoff])
+    // `tool_json` arrives with the v3 live_journal, which is the renamed live_journal_extended; a Store
+    // still at v2 keeps the narrower journal, so the tool payload pass is skipped rather than guessed.
+    + (columnExists(exec, 'live_journal', 'tool_json')
+      ? exec.run(`UPDATE live_journal SET tool_json=NULL WHERE tool_json IS NOT NULL AND live_session_id ${prunable}`, [cutoff])
+      : 0);
 }
 
 /** Whether the table's own DDL declares the column. The Store authorizer admits sqlite_master and

@@ -1,5 +1,5 @@
 import { diagnosticEpochCovers } from '../trace/diagnostic-context.js';
-import { projectDiagnosticInput } from './diagnostic-input.js';
+import { projectDiagnosticInput, projectionAuthentic } from './diagnostic-input.js';
 export { projectDiagnosticInput } from './diagnostic-input.js';
 import { historyForgotten } from '../domain/history-lifecycle.js';
 import { LUX_KNOWLEDGE_TOOLS } from '../connectors/lux-knowledge.js';
@@ -89,7 +89,7 @@ export function createDispatchOwner(options: {
           if (!row || row.state !== 'intent' || signal?.aborted || request.endpointId !== p.endpoint.id || request.generation !== p.generation || request.account !== p.endpoint.account || request.resource !== p.endpoint.resource || !p.toolNames.includes(request.toolName) || !options.current(tx,scope)) { rejected = true; return; }
           guardPassed = true;
           startedAccess = access(tx,scope);
-          tx.run("INSERT INTO tool_dispatches(dispatch_id,owner_id,run_id,execution_id,ordinal,connector,connection_id,policy_sha256,run_snapshot_sha256,binding_digest,schema_digest,source_policy_id,source_policy_revision,account_id,resource_id,session_revision,session_class,source_class,authority_epoch,endpoint_id,tool_name,generation,arguments_json,arguments_sha256,arguments_fidelity,arguments_key_count,started_at,started_mono_ms,clock_domain,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending')",[id,ownerId,scope.call.runId,scope.call.executionId,ordinal,p.connector,scope.bound.connectionId,scope.bound.sha256,scope.snapshotSha256,bindingDigestOf(p.endpoint),p.schemaDigest,p.sourcePolicy.id,p.sourcePolicy.revision,p.endpoint.account,p.endpoint.resource,startedAccess?.revision ?? null,startedAccess?.dataClass ?? null,p.sourcePolicy.unknownClass!,scope.call.authorityEpoch,request.endpointId,request.toolName,request.generation,startedAccess ? input.json : null,input.sha256,startedAccess ? input.fidelity : 'hash_only_source_denied_v1',input.keyCount,startedAt,startedMono,hostClockDomain]);
+          tx.run("INSERT INTO tool_dispatches(dispatch_id,owner_id,run_id,execution_id,ordinal,connector,connection_id,policy_sha256,run_snapshot_sha256,binding_digest,schema_digest,source_policy_id,source_policy_revision,account_id,resource_id,session_revision,session_class,source_class,authority_epoch,endpoint_id,tool_name,generation,arguments_json,arguments_sha256,arguments_fidelity,arguments_key_count,arguments_keys,started_at,started_mono_ms,clock_domain,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending')",[id,ownerId,scope.call.runId,scope.call.executionId,ordinal,p.connector,scope.bound.connectionId,scope.bound.sha256,scope.snapshotSha256,bindingDigestOf(p.endpoint),p.schemaDigest,p.sourcePolicy.id,p.sourcePolicy.revision,p.endpoint.account,p.endpoint.resource,startedAccess?.revision ?? null,startedAccess?.dataClass ?? null,p.sourcePolicy.unknownClass!,scope.call.authorityEpoch,request.endpointId,request.toolName,request.generation,startedAccess ? input.json : null,input.sha256,startedAccess ? input.fidelity : 'hash_only_source_denied_v1',input.keyCount,input.keys === null ? null : JSON.stringify(input.keys),startedAt,startedMono,hostClockDomain]);
           recorded = true;
         });
       } catch {
@@ -106,7 +106,9 @@ export function createDispatchOwner(options: {
         return result;
       }
       let body: {json: string; hash: string; bytes: number; entityHash: string; entityBytes: number} | undefined;
-      let reason = result.state === 'completed' ? 'unsupported_source_result' : result.state;
+      // STATE.md S-07: a connector that refuses a read names why ('cancelled-before-dispatch');
+      // the state is our closed token, the reason is theirs, and the row keeps both.
+      let reason = result.state === 'completed' ? 'unsupported_source_result' : (result.reason?.length ? result.reason : result.state);
       if ('payload' in result) {
         try { body = extractVerifiedSource(result,request,scope.bound,port); reason = 'captured_complete_v1'; }
         catch (error) { reason = error instanceof SourceCaptureError ? error.message : 'source_verification_failed'; }
@@ -209,7 +211,7 @@ function gatedDispatch(read: DiagnosticContentRead,row: SQLRow,authority: Diagno
   const current = read.get('SELECT policy_sha256,policy_json,generation FROM tool_connections WHERE owner_id=? AND connection_id=?',[row.owner_id!,row.connection_id!]);
   const allowed = access.state === 'allowed' && !!snapshot && snapshot.snapshot_sha256 === row.run_snapshot_sha256 && typeof snapshot.snapshot_json === 'string' && sha256(snapshot.snapshot_json) === snapshot.snapshot_sha256 && !!current && current.policy_sha256 === row.policy_sha256 && typeof current.policy_json === 'string' && sha256(current.policy_json) === current.policy_sha256 && current.generation === row.generation && row.session_revision === access.revision && (row.session_class === access.dataClass || diagnosticEpochCovers(read,row)) && authority.allowedClasses.includes(row.source_class as 'ordinary');
   if (!allowed) return {...row,arguments_json:null,source_json:null,read_state:'source_changed'};
-  if (row.arguments_json !== null && (typeof row.arguments_json !== 'string' || sha256(row.arguments_json) !== row.arguments_sha256)) return {...row,arguments_json:null,source_json:null,read_state:'stored_input_hash_mismatch'};
+  if (row.arguments_json !== null && (typeof row.arguments_json !== 'string' || !projectionAuthentic(String(row.arguments_fidelity), row.arguments_json, String(row.arguments_sha256)))) return {...row,arguments_json:null,source_json:null,read_state:'stored_input_hash_mismatch'};
   if (row.source_json !== null && (typeof row.source_json !== 'string' || sha256(row.source_json) !== row.source_sha256 || Buffer.byteLength(row.source_json) !== row.source_bytes)) return {...row,source_json:null,read_state:'stored_hash_mismatch'};
   return {...row,read_state:'allowed'};
 }

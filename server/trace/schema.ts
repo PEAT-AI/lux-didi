@@ -206,4 +206,49 @@ export const traceMigrations: readonly SchemaMigration[] = [{
      )`,
     `CREATE INDEX trace_research_text_at ON trace_research_text(at)`,
   ],
+}, {
+  // C-STORE-RETENTION (lane-6 unit C): a transcript, a call result and a research question are
+  // owner content with the same 30 day rule as the tools tables, so their rows now outlive their
+  // text: `text` becomes nullable and `content_pruned_at` records when it was nulled. The row keeps
+  // the id, role, kind, timing and truncation that a 30 day old call is still read back by, and it
+  // is deleted with the rest of the metadata at 90 days.
+  owner: 'trace',
+  version: 7,
+  statements: [
+    `ALTER TABLE trace_utterance RENAME TO trace_utterance_v6`,
+    `CREATE TABLE trace_utterance (
+       turn_id TEXT NOT NULL REFERENCES trace_turn(turn_id) ON DELETE CASCADE,
+       role TEXT NOT NULL CHECK (role IN ('owner','model')),
+       at INTEGER NOT NULL,
+       final INTEGER NOT NULL CHECK (final IN (0,1)),
+       text TEXT,
+       journal_id INTEGER,
+       content_pruned_at INTEGER
+     )`,
+    `INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) SELECT turn_id,role,at,final,text,journal_id FROM trace_utterance_v6`,
+    `DROP TABLE trace_utterance_v6`,
+    `CREATE INDEX trace_utterance_turn ON trace_utterance(turn_id, at)`,
+    `CREATE INDEX trace_utterance_at ON trace_utterance(at)`,
+    `ALTER TABLE trace_call_result RENAME TO trace_call_result_v6`,
+    `CREATE TABLE trace_call_result (
+       call_key TEXT PRIMARY KEY REFERENCES trace_call(call_key) ON DELETE CASCADE,
+       text TEXT,
+       text_truncated INTEGER NOT NULL CHECK (text_truncated IN (0,1)),
+       content_pruned_at INTEGER
+     )`,
+    `INSERT INTO trace_call_result(call_key,text,text_truncated) SELECT call_key,text,text_truncated FROM trace_call_result_v6`,
+    `DROP TABLE trace_call_result_v6`,
+    `ALTER TABLE trace_research_text RENAME TO trace_research_text_v6`,
+    `CREATE TABLE trace_research_text (
+       research_id TEXT NOT NULL,
+       call_key TEXT,
+       at INTEGER NOT NULL,
+       kind TEXT NOT NULL CHECK (kind IN ('question','web_query')),
+       text TEXT,
+       content_pruned_at INTEGER
+     )`,
+    `INSERT INTO trace_research_text(research_id,call_key,at,kind,text) SELECT research_id,call_key,at,kind,text FROM trace_research_text_v6`,
+    `DROP TABLE trace_research_text_v6`,
+    `CREATE INDEX trace_research_text_at ON trace_research_text(at)`,
+  ],
 }];

@@ -859,8 +859,11 @@ describe('openai gpt-live adapter', () => {
       { type: 'response.create' },
     ], 'the last answer completes the batch, and exactly one continuation follows it');
     // S1-R1: the receipt names the whole batch, not the round that happened to be last.
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_tool_output'),
+    const batch = logged().filter(entry => entry['event'] === 'gptlive_tool_output');
+    // C-LOG-ENVELOPE adds the provider's ids; the receipt's own fields are unchanged.
+    assert.deepEqual(batch.map(({ event, calls, responseCreate }) => ({ event, calls, responseCreate })),
       [{ event: 'gptlive_tool_output', calls: 2, responseCreate: 'sent' }]);
+    assert.match(String(batch[0]!['responseId']), /^resp_/, 'the provider response id rides the receipt');
   });
 
   test('S5: a duplicated delegation and a duplicated terminal event change nothing', async t => {
@@ -1035,7 +1038,9 @@ describe('openai gpt-live adapter', () => {
     assert.deepEqual(withoutIds(f.frames.slice(2)), [{ type: 'response.create' }]);
     const receipts = logged().filter(entry => entry['event'] === 'gptlive_tool_output');
     // S1-R1: the resumed create still carries the size of the batch it answers.
-    assert.deepEqual(receipts, [{ event: 'gptlive_tool_output', calls: 1, responseCreate: 'sent' }]);
+    assert.deepEqual(receipts.map(({ event, calls, responseCreate }) => ({ event, calls, responseCreate })),
+      [{ event: 'gptlive_tool_output', calls: 1, responseCreate: 'sent' }]);
+    assert.match(String(receipts[0]!['responseId']), /^resp_/, 'the provider response id rides the receipt');
   });
 
   test('3r A: answers that arrive in reverse order still send both outputs and one continuation', async t => {
@@ -1134,7 +1139,9 @@ describe('openai gpt-live adapter', () => {
     f.send(delegated('response.done', { response: { id: 'resp_1' } }));
     await quiet();
     assert.equal(f.frames.filter(frame => frame['type'] === 'response.create').length, 2, 'one retry, never a third');
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_tool_output'), [
+    // C-LOG-ENVELOPE adds the provider's ids; the receipt's own fields are unchanged.
+    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_tool_output')
+      .map(({ event, calls, responseCreate }) => ({ event, calls, responseCreate })), [
       { event: 'gptlive_tool_output', calls: 1, responseCreate: 'sent' },
       { event: 'gptlive_tool_output', calls: 1, responseCreate: 'retried' },
     ]);
@@ -1271,7 +1278,8 @@ describe('openai gpt-live adapter', () => {
     await f.frame(3);
     assert.equal(interruptions(captured), 0, '3r F: this error names no cut');
     assert.deepEqual(withoutIds(f.frames.slice(2)), [{ type: 'response.create' }], 'the deferred continuation is resumed');
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_tool_output'),
+    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_tool_output')
+      .map(({ event, calls, responseCreate }) => ({ event, calls, responseCreate })),
       [{ event: 'gptlive_tool_output', calls: 1, responseCreate: 'sent' }]);
   });
 

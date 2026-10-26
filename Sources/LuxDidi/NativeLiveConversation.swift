@@ -61,6 +61,9 @@ enum State: String, CaseIterable {
     private var muted = false, speaking = false
     /// One native-live end record per stop cycle; a repeated Stop is a no-op, like the capture summary.
     private var endRecorded = false
+    /// C-HEADPHONES 5: the reason this call ended for, so the Stop the host sees names it. A route
+    /// change pauses and records `route_change`; a resume clears it, because the call went on.
+    private var pendingEndReason: NativeLiveEndReason?
     /// #589: the host's terminal code was a voice stop, so presence closes the call as the owner's own.
     private(set) var hostVoiceStop = false
     /// Z2: when the one automatic restart after an unrequested capture interruption last ran.
@@ -117,6 +120,7 @@ enum State: String, CaseIterable {
             // C-HEADPHONES 4: only a genuine loss of the capture device pauses a call; the system
             // default input moving to a headset never reaches here, because capture is chosen by id.
             self.journal.append(.routeChange)
+            self.pendingEndReason = .routeChange
             self.state = .pausedForInput
             self.failure = "Microphone changed to " + name + ". Resume?"
         }
@@ -126,6 +130,7 @@ enum State: String, CaseIterable {
         }
         device.onResume = { [weak self] in
             guard let self, self.state == .pausedForInput else { return }
+            self.pendingEndReason = nil
             self.failure = nil
             self.state = self.muted ? .muted : (self.speaking ? .speaking : .listening)
         }
@@ -188,6 +193,7 @@ enum State: String, CaseIterable {
         latch.startRequested()
         generation &+= 1; let token = generation
         failure = nil; state = .connecting; muted = false; speaking = false; endRecorded = false
+        pendingEndReason = nil
         hostVoiceStop = false
         observer?.cancel()
         observer = Task { [weak self, coordinator] in
@@ -309,7 +315,8 @@ enum State: String, CaseIterable {
         return await withCheckedContinuation { continuation in
             Task {
                 let receipt: LiveStopReceipt?
-                if let hook { receipt = await hook(trigger) } else { receipt = await coordinator.close(trigger: trigger) }
+                let reason = pendingEndReason?.rawValue
+                if let hook { receipt = await hook(trigger) } else { receipt = await coordinator.close(trigger: trigger, nativeReason: reason) }
                 if first.take() { continuation.resume(returning: receipt) }
             }
             Task {

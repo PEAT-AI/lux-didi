@@ -882,8 +882,7 @@ test('a Stop carrying the native route_change reason logs session_end reason rou
   t.after(() => stopSink());
   const h = await harness(t, {});
   const { session, attachment } = await attached(h);
-  // The attachment's declared close takes no reason; the live session accepts the native one.
-  (attachment.close as (nativeReason?: string) => void).call(attachment, 'route_change');
+  attachment.close('route_change');
   const terminal = await attachment.done;
   assert.deepEqual(terminal.terminal, { state: 'closed', code: 'user_stop' }, 'the call still ends at once');
   const end = receipts.filter(record => record.event === 'session_end');
@@ -899,7 +898,7 @@ test('a Stop carrying an unknown reason still logs session_end reason user_stop'
   t.after(() => stopSink());
   const h = await harness(t, {});
   const { attachment } = await attached(h);
-  (attachment.close as (nativeReason?: string) => void).call(attachment, 'made_up_reason');
+  attachment.close('made_up_reason');
   await attachment.done;
   assert.deepEqual(receipts.filter(record => record.event === 'session_end'),
     [{ event: 'session_end', reason: 'user_stop', msAfterStop: 0 }]);

@@ -3090,6 +3090,20 @@ export function classifiedFailureText(texts: readonly string[]): string | undefi
 }
 
 /**
+ * LOGS.md L-01: the tool layer marks the projection it builds for a classified connector failure with that
+ * failure's own closed code, so the reader classifies by that mark, never by the words a read happened to
+ * carry. The words are still the line the owner hears, and a read that matched nothing carries no mark.
+ */
+export function classifiedProjectionText(results: readonly IntentSubResult[]): string | undefined {
+  for (const result of results) {
+    if (!result.ok) continue;
+    const code = (result as IntentSubResult & { classified?: unknown }).classified;
+    if (typeof code === 'string' && code !== '') return result.text.trim();
+  }
+  return undefined;
+}
+
+/**
  * #565: the shape of a dispatched batch, one row per distinct call. Counts, the closed operator names and
  * the topic's word count only, so a search word has no field to land in.
  */
@@ -4606,9 +4620,10 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     const block = shapeBlock(plan.read.kind === 'memory_search' ? 'knowledge_search' : plan.read.kind, own, deps.timeZone, { newestFirst: lastMeetingQuestion(context.question) });
     // P5-R5 (F1): the execute contract resolves `{ok: false, code}` for a sub-call the host did not
     // complete, so a returned failure is a failed read, never a search that matched nothing.
-    // LOGS.md L-01: an ok read whose own words shape to no line is a classified failure (the tool
-    // layer returns the owner's line as the result text), so it is a failed read, never an empty search.
-    const classified = block.lines.length > 0 ? undefined : classifiedFailureText(own.filter(result => result.ok).map(result => result.text));
+    // LOGS.md L-01: only a projection the tool layer itself classified (it carries the closed code) is a
+    // failed read. An ok read that merely carried words and shaped to no line is a search that matched
+    // nothing, so the header keeps its counts instead of calling a provider failure.
+    const classified = block.lines.length > 0 ? undefined : classifiedProjectionText(own);
     const missed = own.some(result => !result.ok) || classified !== undefined;
     if (classified !== undefined) run.failureLines.set(plan.read.source, classified);
     const outcome: LookupOutcome = block.lines.length > 0 ? 'ok' : cutShort ? 'timeout' : missed ? 'failed' : 'empty';
@@ -5735,10 +5750,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             if (part.source === null) continue;
             if (part.results.some(result => result.ok && result.text.trim())) {
               run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source); run.emptySearches.delete(part.source);
-            } else if (part.results.some(result => result.ok) && classifiedFailureText(part.results.filter(result => result.ok).map(result => result.text)) !== undefined) {
-              // LOGS.md L-01: the words this read carried are the helper's own refusal line, not an
-              // answer, so the source is failed and the reply speaks that line verbatim.
-              run.failureLines.set(part.source, classifiedFailureText(part.results.filter(result => result.ok).map(result => result.text))!);
+            } else if (classifiedProjectionText(part.results) !== undefined) {
+              // LOGS.md L-01: the tool layer's own code says this read is a classified failure, and the line
+              // it carried is the helper's refusal, not an answer, so the source is failed and the reply speaks it.
+              run.failureLines.set(part.source, classifiedProjectionText(part.results)!);
               run.sourcesFailed.add(part.source); run.sourcesDone.delete(part.source); run.emptySearches.delete(part.source);
             } else if (part.results.some(result => result.ok)) {
               // The connector answered and matched nothing: that is a search, not an outage.

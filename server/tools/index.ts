@@ -827,7 +827,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 // accepts only the closed transport-failure shape.
                 const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code: status.code });
                 if (failure) hostLogEvent(failure);
-                return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0 }, []) };
+                // `classified` is the closed code this projection stands for, so the reader that shapes it can
+                // call it a failed read by evidence instead of guessing from the words it carried.
+                return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0, classified: status.code }, []) };
               }
               reportToolStatus?.(p.endpoint.id, null);
               const sourceRefs = evidence[SOURCE_DISPATCH] ? [evidence[SOURCE_DISPATCH]!] : evidence[SOURCE_CHILD_DISPATCHES];

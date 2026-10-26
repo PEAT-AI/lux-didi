@@ -57,8 +57,11 @@ function driveConsentLine(): string {
   return googleOwnerLine(entry, 'drive', driveEndpoint());
 }
 
-function subResult(call: IntentSubCall, text: string, ok = true): IntentSubResult {
-  return { key: call.key, name: call.name, ok, text, originalCharacters: text.length, omittedCharacters: 0 };
+function subResult(call: IntentSubCall, text: string, ok = true, classified?: string): IntentSubResult {
+  // LOGS.md L-01: the tool layer marks the projection it builds for a classified connector failure with
+  // that failure's own code, and the fixture carries the same mark the real producer sets.
+  return { key: call.key, name: call.name, ok, text, originalCharacters: text.length, omittedCharacters: 0,
+    ...(classified === undefined ? {} : { classified }) } as IntentSubResult;
 }
 
 function harness(configured: readonly SourceKind[], answer: (call: IntentSubCall) => IntentSubResult): { deps: ResearchDeps; calls: IntentSubCall[]; sources: ResearchSourceLog[] } {
@@ -84,14 +87,14 @@ const FAMILIES: readonly { source: SourceKind; question: string; query: string }
 ];
 
 /** The calendar scope read answers with the one synthetic calendar; every other sub answers with `text`. */
-function answerFor(text: string): (call: IntentSubCall) => IntentSubResult {
-  return call => subResult(call, call.name === 'calendar_list_calendars' ? '- Main [primary]' : text);
+function answerFor(text: string, classified?: string): (call: IntentSubCall) => IntentSubResult {
+  return call => subResult(call, call.name === 'calendar_list_calendars' ? '- Main [primary]' : text, true, classified);
 }
 
 for (const family of FAMILIES) {
   test(`L-01 ${family.source}: a classified connector error is a failed source, never an empty search`, async () => {
     const line = driveConsentLine();
-    const h = harness([family.source], answerFor(line));
+    const h = harness([family.source], answerFor(line, 'scope_missing'));
     const reply = await runResearch(h.deps, { action: 'start', question: family.question, topic: 'harbour review', lookups: [{ source: family.source, query: family.query }] }, new AbortController().signal);
     const receipt = h.sources.find(entry => entry.source === family.source);
     assert.ok(receipt, 'the source settled with a receipt');

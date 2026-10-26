@@ -1033,7 +1033,10 @@ export function subResultOf(key: string, name: string, response: Record<string, 
   const text = typeof response['text'] === 'string' ? response['text'] : '';
   return { key, name, ok, text, originalCharacters: typeof response['originalCharacters'] === 'number' ? response['originalCharacters'] : text.length, omittedCharacters: typeof response['omittedCharacters'] === 'number' ? response['omittedCharacters'] : 0,
     // E4 (#611): the ranker's confidence was dropped here only, so the scheduled read lost the hedge.
-    ...(ok && response['knowledgeConfidence'] ? { knowledgeConfidence: response['knowledgeConfidence'] as { confidence: string; top?: string; candidates?: string } } : {}) };
+    ...(ok && response['knowledgeConfidence'] ? { knowledgeConfidence: response['knowledgeConfidence'] as { confidence: string; top?: string; candidates?: string } } : {}),
+    // LOGS.md L-01: the tool layer's closed code for a projection that only carries the owner's own refusal
+    // line, kept as evidence so the reader classifies the read by the code and never by its words.
+    ...(ok && typeof response['classified'] === 'string' ? { classified: response['classified'] } : {}) } as IntentSubResult;
 }
 
 export class LiveSessionOwner {

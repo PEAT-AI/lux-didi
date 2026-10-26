@@ -558,6 +558,8 @@ test('R5: a late finding is spoken after a filler sound, and only a real new que
   // The owner's filler sound: one word, the way he said "hm" while the last findings were landing.
   held.provider.emit({ type: 'inputTranscription', text: 'hm', finished: true });
   await flush();
+  // The speaking hold is 1.5 s: the owner has gone quiet again, so the block is his silence, not his voice.
+  await held.advance(2_000);
   held.release();
   for (let i = 0; i < 20 && spokenTexts(held).length === before; i++) { await flush(); await held.advance(200); }
   assert.ok(spokenTexts(held).length > before, 'the late finding was spoken, not parked as silent context');
@@ -573,6 +575,7 @@ test('R5: a late finding is spoken after a filler sound, and only a real new que
   const already = spokenTexts(asked).length;
   asked.provider.emit({ type: 'inputTranscription', text: 'and what about the other company we discussed in Jakarta', finished: true });
   await flush();
+  await asked.advance(2_000);
   asked.release();
   for (let i = 0; i < 20; i++) { await flush(); await asked.advance(200); }
   assert.equal(spokenTexts(asked).length, already, 'a new question parks the late block');

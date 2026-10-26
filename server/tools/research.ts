@@ -6364,7 +6364,9 @@ export function operationCoverage(run: RunState, findings: readonly FindingLike[
       const reported = reportedTotal(entries.flatMap(entry => typeof entry.total === 'number' ? [entry.total] : []));
       // Several different queries may overlap, so their totals are never added up.
       if (typeof reported === 'number') { total = Math.max(reported, examined); matches = total; }
-      else if (run.emptySearches.has(source) && examined === 0) { total = 0; matches = 0; }
+      // R1/R4: only a source that really answered with nothing reported a total of zero; a read the budget cut
+      // never returned, so its total is unknown and saying 0 would claim the source holds no records.
+      else if (run.emptySearches.has(source) && examined === 0 && run.sourcesDone.has(source)) { total = 0; matches = 0; }
       readComplete = run.sourcesDone.has(source) || run.emptySearches.has(source);
       stop = run.pending.has(source) || run.cutShort.has(source) || (run.reading?.has(source) === true && !readComplete) ? 'deadline'
         : run.sourcesFailed.has(source) ? 'failed'

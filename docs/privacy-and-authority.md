@@ -8,7 +8,7 @@ The installer preserves configuration; it does not create provider keys, sign in
 
 Three decisions remain separate:
 
-1. A credential identifies the configured provider or source account.
+1. A credential identifies the configured provider or source account. Every identity-bearing connector proves the one owner email (`ownerIdentity`) before use and after every token refresh: Gmail, Calendar, Mattermost and Drive from the account the helper answers for, Mongoose from the `email` and `aud` claims of its own minted access token. A connector that cannot prove it is refused, and an endpoint that proves another account stays refused until an explicit sign-in.
 2. A connection policy permits particular source tools and data classes.
 3. A model route and its consent permit particular classes to leave for inference.
 

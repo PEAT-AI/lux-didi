@@ -50,9 +50,10 @@ test('every web to native message is one the native side decodes', () => {
   assert.deepEqual(web, native, 'the web emits exactly the types BridgeInbound.decode handles');
 });
 
-test('the chat lane offers Allow only when a text model is configured', () => {
+test('the chat lane offers the explicit agreement with or without a text model (R66)', () => {
   const flat = lane.replace(/\s+/g, ' ');
   assert.match(flat, /Text chat is not configured\. Set the text chat model in Settings\./, 'with no model the lane says so and where to set it');
-  assert.match(flat, /const disclosureText = available \? `Chat messages go to <strong>\$\{escape\(chatModelLabel\(provider, model\)\)\}<\/strong> when you send them\. <button type="button" id="connected-consent" class="allow-link">Allow<\/button>` : blocked;/, 'Allow is offered only in the configured branch, and the model is named as Settings names it');
+  assert.match(flat, /const disclosureText = `\$\{available/, 'the model is named inside the same consent line');
+  assert.equal((flat.match(/id="connected-consent"/g) ?? []).length, 1, 'Allow is offered exactly once, configured or not (R66)');
   assert.match(flat, /<p class="connected-disclosure">\$\{disclosureText\}<\/p>/, 'the lane renders exactly the line it chose');
 });

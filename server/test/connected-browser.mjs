@@ -253,6 +253,16 @@ try {
         assert.equal(route.status, configured ? 'configured' : 'unconfigured');
         assert.equal('displayName' in status.model, false); assert.equal('displayName' in route, false);
         assert.equal(await page.title(), productTitle, 'owner label must not rename the public product');
+        // D1-R2 discriminator: when the consent control is absent, print what the page itself saw. The
+        // harness collects pageerror/console/API traffic but never shows it, which is what hid the cause.
+        if (await page.locator('#connected-consent').count() === 0) {
+          const seen = await page.evaluate(() => ({
+            status: document.querySelector('#connected-panel')?.innerText.slice(0, 400) ?? null,
+            consentRendered: !!document.querySelector('#connected-consent'),
+            available: document.querySelector('#connected-draft') !== null,
+          }));
+          console.error('CONSENT-MISSING', JSON.stringify({ mode, api: { status: status.model, route: route.status }, seen, ownerErrors, ownerConsole, ownerRequests }));
+        }
         assert.equal(await page.locator('#connected-consent').isDisabled(), false, 'R66 keeps explicit agreement operable without a route');
         if (!configured) {
           assert.equal(await page.locator('#connected-send').isDisabled(), true);

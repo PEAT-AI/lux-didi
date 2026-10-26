@@ -743,7 +743,9 @@ test('W1: the click route answers started at once while discovery is still pendi
     let row = await poll();
     for (let wait = 0; wait < 40 && (row['signIn'] as { phase: string }).phase === 'running'; wait += 1) { await new Promise(resolve => setTimeout(resolve, 50)); row = await poll(); }
     assert.deepEqual(row['signIn'], { attemptId: data.attemptId, phase: 'failed', reason: 'discovery_unreachable' }, 'a discovery that never answers is unreachable (the VPN), not a refusal');
-    assert.deepEqual(events.map(event => `${event['event']}:${event['outcome']}`), ['signin_requested:started', 'signin_discovery:timeout']);
+    // H20: the attempt also closes with one line, so a failure is visible without reading memory.
+    assert.deepEqual(events.map(event => `${event['event']}:${event['outcome']}`),
+      ['signin_requested:started', 'signin_discovery:timeout', 'signin_finished:discovery_unreachable']);
     for (const event of events) {
       assert.deepEqual(safeEvent(event), event, 'the host log keeps every sign-in line unchanged');
       assert.equal(event['endpoint'], 'knowledge');

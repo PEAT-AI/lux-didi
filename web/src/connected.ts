@@ -180,15 +180,15 @@ export class ConnectedView {
     // is a defect, not a placeholder (V3-R6 item 2).
     const notesSection = this.#memoryOpen || this.#memorySelected.length ? this.#notesSection() : '';
     const typing = r && !r.finalEntryId && r.state !== 'terminal' && !r.partialText ? '<p class="typing" role="status" aria-label="Naya is typing"><span></span><span></span><span></span></p>' : '';
-    // The lane says what a send will do, and never offers a consent it cannot use: with no text
-    // model there is nothing to allow, so the line names the state and points at Settings.
+    // The lane says what a send will do, and still offers the explicit agreement without a model:
+    // R66 keeps the owner's own consent operable without a route, while only a configured model can
+    // ever make the send button ready. The blocked line names the state and points at Settings.
     const blocked = this.#status.status === 'unconfigured' ? 'Text chat is not configured. Set the text chat model in Settings.'
       : this.#status.status === 'disabled' ? 'Text chat is turned off. Turn it on in Settings.'
       : 'Text chat is not available right now. Check Settings for the text chat model, then try again.';
-    // One line, and only the line the lane can keep: with no text model there is nothing to allow.
-    const disclosureText = available
-      ? `Chat messages go to <strong>${escape(chatModelLabel(provider, model))}</strong> when you send them. <button type="button" id="connected-consent" class="allow-link">Allow</button>`
-      : blocked;
+    const disclosureText = `${available
+      ? `Chat messages go to <strong>${escape(chatModelLabel(provider, model))}</strong> when you send them.`
+      : blocked} <button type="button" id="connected-consent" class="allow-link">Allow</button>`;
     panel.innerHTML = `<section class="connected-conversation" aria-label="Connected Naya conversation">
       ${grant || this.#consent ? '' : `<p class="connected-disclosure">${disclosureText}</p>`}
       <div class="chat-list" id="chat-list">

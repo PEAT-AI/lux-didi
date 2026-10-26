@@ -166,12 +166,12 @@ test('the schedule gives up after every delay and stays stopped', () => {
   } finally { mock.timers.reset(); }
 });
 
-test('an identity probe that ran out of time is inconclusive and retryable, a mismatch is not', async () => {
+test('an identity failure is terminal per endpoint, whether it timed out or mismatched', async () => {
   const source: IdentitySource = { tool: 'get_profile', args: {}, values: decoded => [String((decoded as { id?: unknown }).id)] };
   const slow = await proveIdentity({ source, expected: [ACCOUNT], timeoutMs: 5, call: () => new Promise<ConnectorResult>(() => {}) });
   assert.equal(slow.proven, false);
   assert.equal(slow.code, 'identity_timeout', 'a timeout is its own closed code, never a mismatch');
-  assert.equal(identityFailureRetryable(slow), true, 'and it schedules recovery');
+  assert.equal(identityFailureRetryable(slow), false, 'council 2026-10-26: no recovery ladder for an identity failure');
   const mismatch = await proveIdentity({ source, expected: [ACCOUNT], timeoutMs: 50, call: async () => ({ state: 'completed', decodedResult: { id: 'other@example.test' } } as unknown as ConnectorResult) });
   assert.equal(mismatch.match, false);
   assert.equal(identityFailureRetryable(mismatch), false, 'a mismatch stays failed until the next reconnect');

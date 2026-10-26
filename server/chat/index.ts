@@ -718,7 +718,9 @@ export class ChatService implements ChatPort {
     extras: { partial?: true; notReached?: readonly string[] } = {}): RunSnapshot {
     this.#authorize(context);
     const resultCurrent = this.#resultClasses(run.runId) !== null;
-    if (!resultCurrent) { outcome = 'unavailable'; text = ''; }
+    // A cancelled run has no answer to withhold: a revoke or a label correction that made its evidence
+    // unreadable must not turn the cancellation into an unavailability. Every other outcome degrades.
+    if (!resultCurrent && outcome !== 'cancelled') { outcome = 'unavailable'; text = ''; }
     const final = this.#config.store.transaction(tx => {
       const row = this.#row(tx, run.runId, context);
       if (row.state === 'terminal') {

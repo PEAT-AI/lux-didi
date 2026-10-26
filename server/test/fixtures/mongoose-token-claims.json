@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "provenance": {
+    "repo": "PEAT-AI/mongoose",
+    "sha": "cade720f05eb4ab165c832e068c3e462b0765ae4",
+    "file": "backend/src/mongoose/auth/tokens.py",
+    "symbol": "issue_mongoose_access_token",
+    "audiences_file": "backend/src/mongoose/mcp_endpoints.py",
+    "captured": "2026-10-26"
+  },
+  "authorize": {
+    "provenance": {
+      "repo": "PEAT-AI/lux-didi",
+      "note": "expected_email and login_hint are this contract's request; wagon M1 adds them to Mongoose /oauth/authorize, and today's server ignores unknown parameters, so the token claim check below is the guard."
+    },
+    "params": [
+      "response_type",
+      "client_id",
+      "redirect_uri",
+      "scope",
+      "state",
+      "code_challenge",
+      "code_challenge_method",
+      "resource",
+      "login_hint",
+      "expected_email"
+    ]
+  },
+  "token": {
+    "claims": [
+      "iss",
+      "aud",
+      "sub",
+      "email",
+      "sid",
+      "jti",
+      "typ",
+      "iat",
+      "nbf",
+      "exp"
+    ],
+    "typ": "access",
+    "email_claim": "email",
+    "audiences": {
+      "knowledge": "mongoose:knowledge",
+      "data": "mongoose:data",
+      "crm": "mongoose:crm"
+    }
+  },
+  "refusal": {
+    "error": "access_denied",
+    "mongoose_error": "account_mismatch"
+  }
+}

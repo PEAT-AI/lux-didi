@@ -45,8 +45,6 @@ export interface TrelloFake {
   member: { id: string; username: string; email?: string; fullName?: string };
   boards: { id: string; name: string; closed: boolean }[];
   lists: FakeList[]; cards: FakeCard[]; labels: FakeLabel[]; checklists: FakeChecklist[];
-  /** The owner's quick-capture Inbox: cards he jotted from his phone, on no board of the workspace. */
-  inbox: { listId: string; cards: FakeCard[] };
   /** Every call the REST surface received, in order: the server tool and action it stands for. */
   calls: { tool: string; args: Record<string, unknown> }[];
   /** The next write is received and then the connection is cut with no answer. */
@@ -84,8 +82,6 @@ const TOOL_ACTIONS: Record<string, Record<string, { props: string[]; required: s
   },
   trelloWriteBoard: { create: { props: ['name'], required: ['name'] } },
   trelloWriteList: { create: { props: ['boardId', 'name'], required: ['boardId', 'name'] }, move: { props: ['listId', 'boardId'], required: ['listId'] } },
-  trelloReadInbox: { list: { props: ['cursor'], required: [] } },
-  trelloWriteInbox: { create: { props: ['name'], required: ['name'] } },
   trelloReadPlanner: { get: { props: [], required: [] } },
   trelloWritePlanner: { create: { props: ['start', 'end'], required: ['start', 'end'] } },
 };
@@ -136,13 +132,6 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
     card('Plan review', 'Short Term Backlog'),
     card('Plan review', 'Long Term Backlog'),
   ];
-  // W7-R1: the Inbox is quick capture, not a list of the pinned board, so a board read never shows it.
-  const inboxListId = ari('list', objectId(now - 120 * day));
-  const inboxBoardId = ari('board', objectId(now - 500 * day));
-  const jotted = (name: string, createdAt: number): FakeCard =>
-    ({ id: ari('card', objectId(createdAt)), name, desc: '', due: null, dueComplete: false, listId: inboxListId, boardId: inboxBoardId, closed: false, labelIds: [] });
-  const inboxCards = [jotted('Jotted note from the phone', now - 30_000), jotted('Older jotting', now - 3 * day)];
-  cards.push(...inboxCards);
   cards.push({ id: ari('card', objectId(now - 5 * day)), name: 'Foreign card', desc: '', due: null, dueComplete: false, listId: listId('Sprint', other.id), boardId: other.id, closed: false, labelIds: [] });
   const comments = [{ id: ari('comment', objectId(now - 2 * day)), cardId: cards[2]!.id, text: 'Rang the venue, they hold the room until Friday' }];
   const checklists: FakeChecklist[] = [{ id: ari('checklist', objectId(now - 9 * day)), name: 'Prep', cardId: cards[2]!.id, items: [{ id: ari('check-item', objectId(now - 9 * day)), name: 'Call the venue', state: 'incomplete' }] }];
@@ -175,10 +164,6 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
       case 'trelloReadList.list_by_board': { const p = page(lists.filter(list => list.boardId === args.boardId && !list.closed), args.cursor); return ok({ lists: p.slice.map(list => ({ id: list.id, name: list.name, closed: list.closed })), pageInfo: p.pageInfo }); }
       case 'trelloReadCard.list_by_list': { const p = page(cards.filter(entry => entry.listId === args.listId && !entry.closed), args.cursor); return ok({ cards: p.slice.map(cardJson), pageInfo: p.pageInfo }); }
       case 'trelloReadCard.get': { const found = findCard(args.cardId); return found ? ok({ card: cardJson(found) }) : toolError('not found'); }
-      case 'trelloReadInbox.list': {
-        const p = page(inboxCards.filter(card => !card.closed), args.cursor);
-        return ok({ cards: p.slice.map(cardJson), pageInfo: p.pageInfo });
-      }
       case 'trelloReadCard.list_comments': { const p = page(comments.filter(entry => entry.cardId === args.cardId), args.cursor); return ok({ comments: p.slice.map(entry => ({ id: entry.id, text: entry.text })), pageInfo: p.pageInfo }); }
       case 'trelloReadChecklist.list_by_card': { const p = page(checklists.filter(list => list.cardId === args.cardId), args.cursor); return ok({ checklists: p.slice.map(list => ({ id: list.id, name: list.name, checkItems: list.items })), pageInfo: p.pageInfo }); }
       case 'trelloWriteCard.create': {
@@ -276,9 +261,8 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
     json(response, 200, value);
   });
   const port = await listen(server);
-  const base = `http://127.0.0.1:${port}/1`;
   return {
-    url: base, key, token, member, boards, lists, cards, labels, checklists, inbox: { listId: inboxListId, cards: inboxCards }, calls,
+    url: `http://127.0.0.1:${port}/1`, key, token, member, boards, lists, cards, labels, checklists, calls,
     dropNextCall() { drop = true; },
     failNextCall() { fail = true; },
     rateLimitNextCall(times: number, retryAfterSeconds = 1) { limited = { times, retryAfter: retryAfterSeconds }; },

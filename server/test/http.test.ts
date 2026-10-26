@@ -751,3 +751,16 @@ test('W1: the click route answers started at once while discovery is still pendi
     }
   } finally { await f.cleanup(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('D2-R4: a Trello key that belongs to another member shows as an identity mismatch, never connected', async () => {
+  const f = await fixture(undefined, () => ({ endpoints: [] }), undefined, undefined, {
+    trelloRow: () => ({ id: 'trello', connector: 'trello', state: 'error', tools: 0, error: 'credential_mismatch' }),
+  });
+  try {
+    const browser = await pair(f);
+    const rows = await fetch(`${f.service.origin}/api/v1/live/connections`, { headers: { Cookie: browser.cookie.split(';')[0]!, 'Sec-Fetch-Site': 'same-origin' } });
+    const data = (await rows.json()).data as Record<string, unknown>[];
+    assert.equal(data[0]!.state, 'error');
+    assert.equal(data[0]!.reasonCode, 'identity_mismatch', 'the row says which member the key belongs to');
+  } finally { await f.cleanup(); }
+});

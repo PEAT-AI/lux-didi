@@ -50,6 +50,7 @@ export function connectionReasonCode(input: { state: string; error: string; reas
   if (/^not_signed_in$/.test(error)) return signIn ? 'needs_sign_in' : 'not_signed_in';
   // W7-R2: the Trello board has no configured name, which is the owner's private file, not a fault.
   if (/^not_configured$/.test(error)) return 'not_configured';
+  if (/^credential_mismatch$/.test(error)) return 'identity_mismatch';
   if (/^credential-refresh-unavailable$/.test(error)) return 'unreachable';
   if (/^credential-(missing|refresh-failed|consent-expired)$/.test(error)) return signIn ? 'needs_sign_in' : 'unknown';
   // An identity probe that ran out of time says nothing about whose account it is, so it is unreachable.

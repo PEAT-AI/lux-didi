@@ -41,8 +41,7 @@ never a silent fallback, and only booleans and closed codes reach the log.
 
 A 401 is reported as `credential_revoked`, a 429 as `rate_limited` after one wait that honours `Retry-After`, and a network
 failure or a timeout as `unavailable`; no read answers empty on failure. The Trello surface is the one pinned board: boards,
-lists, cards, labels and checklists over REST. There is no Inbox read; the Atlassian Inbox is a product
-surface with no REST endpoint, and the owner asked for the board alone.
+lists, cards, labels and checklists over REST. The owner asked for that one board and nothing else.
 ## Google and Mattermost helpers
 
 Google families use separately configured stdio endpoints: `gmail`, `calendar` and optional `drive`. Each needs the helper's own account authorization and read scopes. Gmail or Calendar consent does not imply Drive consent. Use the exact command, account and token location selected for the installed helper, not a guessed universal Didi sign-in command.

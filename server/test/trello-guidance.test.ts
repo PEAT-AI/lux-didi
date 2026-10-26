@@ -32,10 +32,8 @@ test('a note is a dated line in the description, because the server has no comme
   assert.match(String((TRELLO_WRITE_PARAMETERS.properties.text as { description: string }).description), /description/);
 });
 
-test('the read description names the Inbox he jots into, and never a comment tool (W7-R1)', () => {
-});
 
-test('every Trello call writes one content-free connector_call line, the Inbox read included (F12)', () => {
+test('every Trello call writes one content-free connector_call line, a read included (F12)', () => {
   for (const tool of ['read.overview', 'write.move', 'write.note']) {
     assert.ok(safeEvent({ event: 'connector_call', connector: 'trello', tool, phase: 'settle', outcome: 'ok' }), `host.log keeps ${tool}`);
   }

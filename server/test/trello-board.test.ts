@@ -109,7 +109,7 @@ test('W7-F6: a write answered with another card, or a reply over the size bound,
   } finally { await local.close(); }
 })
 
-test('tools for boards, lists, members, Inbox and Planner are never planned and never called', async () => {
+test('tools for boards, lists, members and Planner are never planned and never called', async () => {
   const index = indexTrelloSchemas(trelloSchemas());
   for (const tool of TRELLO_SERVER_DENY) assert.equal(planTrelloCall(index, tool, [{ action: 'create', name: 'x' }]), undefined, tool);
   assert.equal(planTrelloCall(index, 'trelloSearch', [{ action: 'search', query: 'x' }]), undefined, 'server search is not on the allowlist');

@@ -26,7 +26,7 @@ import { composeMcpRuntime, type ConnectorLifecycleEvent } from './mcp.js';
 import { spawn } from 'node:child_process';
 import { runMongooseLogin, type MongooseLoginOptions, type MongooseSignInHop } from './mongoose-login.js';
 import { MONGOOSE_ENDPOINTS, mongooseEndpointName } from '../connectors/mongoose.js';
-import { createTrelloBoard, trelloBoardName, trelloKey } from './trello.js';
+import { createTrelloBoard, trelloBoardName, trelloIdentity, trelloKey } from './trello.js';
 import type { McpRuntimeComposition } from './mcp.js';
 import { createGoogleReader, readCalendarDigest, type CalendarDigestRead, type CalendarDigestReadResult } from '../connectors/google.js';
 import { CalendarDigestCache } from '../live/warm-context.js';
@@ -189,10 +189,13 @@ export function sessionTerminalHooks(hooks: { endBoardSession: (liveSessionId: s
  * owner's key file, the board he pinned and a named owner make the connection. Without a key there is
  * nothing to connect, and the row carries the import command instead of a sign-in button.
  */
-export function trelloConnectionRow(configDir: string): { id: string; connector: string; state: string; tools: number; error?: string } {
+export function trelloConnectionRow(configDir: string, owner: 'unknown' | 'ok' | 'mismatch' = 'unknown'): { id: string; connector: string; state: string; tools: number; error?: string } {
   const row = { id: 'trello', connector: 'trello' };
   const configured = trelloKey(configDir) !== undefined && trelloBoardName(configDir) !== undefined;
-  return configured ? { ...row, state: 'connected', tools: 2 } : { ...row, state: 'error', tools: 0, error: 'not_configured' };
+  if (!configured) return { ...row, state: 'error', tools: 0, error: 'not_configured' };
+  // The owner rule: a key that belongs to another member is shown as a mismatch, never as connected.
+  if (owner === 'mismatch') return { ...row, state: 'error', tools: 0, error: 'credential_mismatch' };
+  return { ...row, state: 'connected', tools: 2 };
 }
 
 /**
@@ -662,7 +665,13 @@ export async function startHost(config: HostConfig) {
     };
     startupStage = 'listen';
     const signIn = createMongooseSignIn({ configDir: effectiveConfigDir, recover: () => mcp.recover(), log: event => log.event(event) });
-    const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), mongooseSignIn: signIn, mongooseSignInAttempt: (endpointId, connected) => signIn.attempt(endpointId, connected), trelloRow: () => trelloConnectionRow(effectiveConfigDir), webRoot, port, ...(config.now ? { now: config.now } : {}) });
+    let trelloOwner: 'unknown' | 'ok' | 'mismatch' = 'unknown';
+    if (trelloKey(effectiveConfigDir) !== undefined) {
+      void trelloIdentity({ configDir: effectiveConfigDir }).then(outcome => {
+        trelloOwner = outcome.ok ? 'ok' : outcome.code === 'credential_mismatch' ? 'mismatch' : 'unknown';
+      }).catch(() => { /* the row stays file based when the probe cannot answer */ });
+    }
+    const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), mongooseSignIn: signIn, mongooseSignInAttempt: (endpointId, connected) => signIn.attempt(endpointId, connected), trelloRow: () => trelloConnectionRow(effectiveConfigDir, trelloOwner), webRoot, port, ...(config.now ? { now: config.now } : {}) });
     try {
       const descriptor: RuntimeDescriptor = { schemaVersion: 1, origin: service.origin, authorityEpoch: store.authorityEpoch, assistantId: store.assistantId, pid: process.pid, startedAt: new Date().toISOString() };
       await publish(descriptorPath, descriptor); // Never use a stale descriptor as authority or carry bearer material.

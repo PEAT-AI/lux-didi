@@ -15,6 +15,10 @@ import {
 import { safeEvent } from '../host/log.js';
 import { startHost } from '../host/runtime.js';
 import type { ConnectorResult } from '../connectors/index.js';
+// The owner-identity contract's own matrix file (fixture, per-connector proofs, latch and sign-in
+// outcomes). It is imported here because the connector-identity test is the file the declared checks
+// select; running it from two files would register the same tests twice in the full ring.
+import './owner-identity-everywhere.test.js';
 
 // Every identity below is synthetic; no real account, address or token appears in this file.
 const OWNER = 'owner@example.test';
@@ -38,7 +42,9 @@ test('each connector maps its own identity field, and only its own', () => {
   assert.deepEqual(gmailIdentityValues({ emailAddress: 42 }), []);
   assert.deepEqual(calendarIdentityValues({ calendars: [{ id: 'work' }, { id: OWNER, primary: true }] }), [OWNER]);
   assert.deepEqual(calendarIdentityValues({ calendars: [{ id: 'primary' }, { id: 'work' }] }), []);
-  assert.deepEqual(mattermostIdentityValues({ username: 'owner', email: OWNER }), ['owner', OWNER]);
+  // AUD-007: a reported email is the account; the username never carries a different email past it.
+  assert.deepEqual(mattermostIdentityValues({ username: 'owner', email: OWNER }), [OWNER]);
+  assert.deepEqual(mattermostIdentityValues({ username: 'owner' }), ['owner'], 'no email at all: the username is the only account value');
   assert.deepEqual(mattermostIdentityValues({}), []);
 });
 

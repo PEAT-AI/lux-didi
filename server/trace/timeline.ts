@@ -455,7 +455,7 @@ const LOG_EVENT_KIND: Record<string, CallEntryKind> = {
   live_dead_air: 'silence', live_heard_silence: 'silence', live_watchdog: 'silence', playback_underrun: 'silence',
   connector_identity: 'connector', connector_failure: 'connector', connector_connected: 'connector',
   research_run: 'research', research_joined: 'research', research_call_arrived: 'research', research_source: 'research',
-  research_first_answer: 'research', research_late_findings: 'research',
+  research_first_answer: 'research', research_late_findings: 'research', research_progress: 'research',
   live_terminal: 'terminal', live_end: 'terminal', live_session_diagnostics: 'terminal',
 };
 /** Metadata only, in reading order: no message, no text, no argument or result body. */

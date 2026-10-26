@@ -97,6 +97,23 @@ test('C-LOG-ENVELOPE: a normal end is info and never host_error', async t => {
   assert.deepEqual(records.map(record => record.cause), ['owner', 'owner', 'owner', 'host']);
 });
 
+test('C-LOG-ENVELOPE: the call context ends with its terminal line', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-envelope-after-terminal-'));
+  t.after(() => { clearLogContext(); return rm(root, { recursive: true, force: true }); });
+  const log = new HostLog(root);
+  setLogContext({ liveSessionId: SESSION, generation: 0 });
+  log.event({ event: 'live_heard_silence', ms: 10, toolPending: false });
+  log.terminal({ state: 'closed', code: 'voice_stop' });
+  // Nothing after the end of the call belongs to it: the host's own lines are not that call's aftermath.
+  log.event({ event: 'host_resources', rssMb: 120, heapUsedMb: 40, cpuPct: 1 });
+  const records = await lines(root);
+  assert.deepEqual(records.map(record => record.event), ['live_heard_silence', 'live_terminal', 'host_resources']);
+  assert.equal(records[0]!.liveSessionId, SESSION, 'the call names itself while it is live');
+  assert.equal(records[1]!.liveSessionId, SESSION, 'and its terminal line still names it');
+  assert.equal('liveSessionId' in records[2]!, false, 'a line after the terminal belongs to no call');
+  assert.equal('generation' in records[2]!, false);
+});
+
 test('C-LOG-ENVELOPE: a clock_sync line ties one process clock to wall time', async t => {
   const root = await mkdtemp(join(tmpdir(), 'didi-envelope-clock-'));
   t.after(() => rm(root, { recursive: true, force: true }));

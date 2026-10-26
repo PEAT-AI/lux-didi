@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import { composeLive, resolveLiveMemory } from '../host/live.js';
-import { captureHostDiagnostics, HostLog, safeEvent } from '../host/log.js';
+import { captureHostDiagnostics, HostLog, logContext, safeEvent } from '../host/log.js';
 import { readSessionTranscript } from '../services/summarize.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { WebSocket } from 'ws';
@@ -6543,7 +6543,7 @@ test('#656: a model silent after the read settles still rebuilds once, after the
   const held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler,
     limits: openaiLimits, beforeTool: () => held });
-  await openPort(h, 'inflight-then-mute-656');
+  const { session } = await openPort(h, 'inflight-then-mute-656');
   await ownerInput(fake);
   fake.emit({ type: 'toolCall', calls: [{ id: 'mute656', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
@@ -6564,6 +6564,10 @@ test('#656: a model silent after the read settles still rebuilds once, after the
   const muteRebuilds = rebuildReceipts(receipts, 'live_rebuild')
     .filter(entry => entry['trigger'] === 'no_output_after_owner' || entry['trigger'] === 'no_output_after_ambient');
   assert.equal(muteRebuilds.length, 1, 'never two model-mute rebuilds in one window');
+  // C-LOG-ENVELOPE F1: the rebuild moves the call's provider generation, so every later line says which
+  // provider session it belongs to, and it is still the same call.
+  assert.deepEqual([logContext().liveSessionId, logContext().generation], [session.liveSessionId, 1],
+    'the provider rebuild advances the envelope generation inside one call');
 });
 
 test('#656: owner audio sent during a rebuild is held and delivered to the new session, not dropped', async t => {

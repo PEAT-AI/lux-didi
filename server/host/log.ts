@@ -1376,7 +1376,7 @@ const sinks = new Set<HostLog>();
 // without importing the host; this module registers the durable sinks behind it.
 export { hostLogEvent } from '../tools/host-events.js';
 /** C-LOG-ENVELOPE: the live layer names its call once, and every line it emits while live carries it. */
-export { clockSync, clearLogContext, setLogContext } from './events.js';
+export { clockSync, clearLogContext, logContext, setLogContext } from './events.js';
 
 export function captureHostDiagnostics(log: HostLog): () => void {
   sinks.add(log);

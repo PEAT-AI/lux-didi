@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
 import { hostMigrations } from '../host/runtime.js';
-import { createDispatchOwner } from '../tools/dispatch.js';
+import { createDispatchOwner, SOURCE_TOOL_GATE } from '../tools/dispatch.js';
 import { CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { MATTERMOST_PERSON_TOOLS } from '../connectors/mattermost.js';
 
@@ -86,4 +86,20 @@ test('a Mattermost person read is admitted by the capture gate and captured, exa
       assert.equal(row.state, 'completed');
     }
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+// The structural half: both sides are derived from the connector modules' own exports
+// (CONNECTOR_ENVELOPES maps each connector to its published read list), never a hand-copied array,
+// so a tool added to any connector cannot be silently refused by the capture gate.
+test('every read tool a connector module publishes is in the capture gate list', () => {
+  const connectors = Object.keys(CONNECTOR_ENVELOPES);
+  assert.ok(connectors.length > 0, 'the connector modules publish read envelopes');
+  for (const connector of connectors) {
+    const published = CONNECTOR_ENVELOPES[connector]!;
+    const admitted = SOURCE_TOOL_GATE[connector] ?? [];
+    assert.ok(admitted.length > 0, `${connector} publishes ${published.length} read tools but the capture gate has no list for it`);
+    for (const tool of published) {
+      assert.ok(admitted.includes(tool), `${connector} publishes ${tool} but the capture gate refuses it as unsupported_source_tool`);
+    }
+  }
 });

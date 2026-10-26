@@ -109,7 +109,6 @@ function control(raw: string): { type: (typeof LIVE_CONTROLS)[number]; reason?: 
   if (typeof reason !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(reason)) return null;
   return { type: known, reason };
 }
-}
 
 /** Parse one JSON frame without judging it; the native-action bus owns its own closed shape. */
 function parseFrame(raw: string): unknown {

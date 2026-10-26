@@ -8,7 +8,6 @@ import type { LiveVoiceAdapterOptions, LiveVoiceEvent } from '../adapters/live-v
 import { CANARY, collect, control, FakeClock, FakeSocket, fakeReady, fixture, options, pcm16, ready, request, silence } from './openai-live-voice-fixture.js';
 import { Pcm16Upsampler } from '../adapters/live-voice/resample.js';
 import { safeEvent } from '../host/log.js';
-import { attachHostLogSink } from '../tools/host-events.js';
 import { NAYA_BACKEND_PROCEDURE } from '../prompt/backend-procedure.js';
 import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -1420,7 +1419,7 @@ describe('openai gpt-live turn states', () => {
     assert.deepEqual(project(opened.captured.events), ['listening', 'thinking', 'speaking', 'listening']);
   });
 
-  test('C-LOG-ENVELOPE E: the closing transcript rows carry the assembled utterance and no log line does', async t => {
+  test('C-LOG-ENVELOPE: the journal keeps its empty closing row and no log line carries the words', async t => {
     const clock = new FakeClock();
     const opened = await ready(t, { clock });
     const logged: unknown[] = [];
@@ -1433,7 +1432,7 @@ describe('openai gpt-live turn states', () => {
     await until(() => starts(opened.captured) === 1);
     const inputFinal = opened.captured.events.filter(event => event.type === 'inputTranscription' && event.finished === true);
     assert.equal(inputFinal.length, 1, 'the ended episode closes the owner transcript once');
-    assert.equal(inputFinal[0]!.type === 'inputTranscription' && inputFinal[0]!.text, 'What is on my plate');
+    assert.equal(inputFinal[0]!.type === 'inputTranscription' && inputFinal[0]!.text, '', 'the journal closing row stays empty (L2-R1)');
     opened.f.send({ type: 'session.output_transcript.delta', delta: 'A cheese' });
     opened.f.send({ type: 'session.output_transcript.delta', delta: ' sandwich.' });
     speak(opened.f);
@@ -1444,8 +1443,8 @@ describe('openai gpt-live turn states', () => {
     await until(() => completions(opened.captured) === 1);
     const outputFinal = opened.captured.events.filter(event => event.type === 'outputTranscription' && event.finished === true);
     assert.equal(outputFinal.length, 1, 'the end of the turn closes the answer transcript once');
-    assert.equal(outputFinal[0]!.type === 'outputTranscription' && outputFinal[0]!.text, 'A cheese sandwich.');
-    // The same turn's host lines stay metadata: the utterance never enters host.log.
+    assert.equal(outputFinal[0]!.type === 'outputTranscription' && outputFinal[0]!.text, '', 'the journal closing row stays empty (L2-R1)');
+    // The same turn's host lines stay metadata: ids and counts only, never the utterance.
     assert.equal(JSON.stringify(logged).includes('sandwich'), false);
     assert.equal(JSON.stringify(logged).includes(' my plate'), false);
   });

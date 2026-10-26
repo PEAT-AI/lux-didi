@@ -3,6 +3,7 @@ import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import { composeLive, resolveLiveMemory } from '../host/live.js';
 import { captureHostDiagnostics, HostLog, safeEvent } from '../host/log.js';
+import { readSessionTranscript } from '../services/summarize.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { WebSocket } from 'ws';
 import { onceDetach, pumpOutput } from '../http/live-upgrade.js';
@@ -4467,7 +4468,7 @@ test('R6: a source that settles after the first answer is appended once, and sai
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
   assert.equal(late.length, 1, 'one receipt for the source that landed later');
   assert.equal(late[0]!['source'], 'chat');
-  assert.equal(late[0]!['delivered'], 'response', 'a quiet turn hears it through the response channel, the one the provider accepts');
+  assert.equal(late[0]!['destination'], 'response', 'a quiet turn hears it through the response channel, the one the provider accepts');
   assert.deepEqual(fake.thinking, [], 'no provider append carries a late finding (#438)');
   assert.deepEqual(fake.texts.map(text => text.split(':')[0]), ['One more thing from chat'], 'one spoken line, naming the source');
   assert.deepEqual(fake.commentary, [], 'the refused commentary append is no longer the door a finding takes');
@@ -4539,7 +4540,7 @@ test('#472: a late source result reaches the model while the session is live', a
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
   assert.equal(late.length, 1, 'one receipt for the source that landed later');
   assert.equal(late[0]!['source'], 'chat');
-  assert.notEqual(late[0]!['delivered'], 'dropped', `the late result is not dropped: ${JSON.stringify(late[0])}`);
+  assert.notEqual(late[0]!['destination'], 'dropped', `the late result is not dropped: ${JSON.stringify(late[0])}`);
   assert.ok(fake.texts.some(text => text.startsWith('One more thing from chat')), 'the model carries the late finding on the response channel');
   h.owner.revoke(session.liveSessionId);
 });
@@ -4568,7 +4569,7 @@ test('R6: a late finding speaks nothing over an owner who has started a new ques
   await settlePort();
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
   assert.equal(late.length, 1);
-  assert.equal(late[0]!['delivered'], 'ledger', 'kept in the run ledger for the next continuation');
+  assert.equal(late[0]!['destination'], 'ledger', 'kept in the run ledger for the next continuation');
   assert.notEqual(late[0]!['reason'], 'quiet', 'and the receipt says why it stayed silent');
   assert.deepEqual(fake.thinking, [], 'no provider append carries a late finding (#438)');
   assert.deepEqual(fake.commentary, [], 'the owner hears nothing over herself');
@@ -4600,7 +4601,7 @@ test('R6/B1: a late finding stays silent while the owner speech that began befor
   await settlePort();
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
   assert.equal(late.length, 1);
-  assert.equal(late[0]!['delivered'], 'ledger', 'kept in the run ledger for the next continuation');
+  assert.equal(late[0]!['destination'], 'ledger', 'kept in the run ledger for the next continuation');
   assert.equal(late[0]!['reason'], 'owner_speaking', 'her own voice, not the model\'s answer audio');
   assert.deepEqual(fake.commentary, [], 'nothing is said over the owner');
   assert.deepEqual(fake.thinking, [], 'no provider append carries a late finding (#438)');
@@ -4630,8 +4631,8 @@ test('R6: a Gemini late finding rides the response channel, not a thinking chann
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
   assert.equal(late.length, 1, 'one receipt, and nothing silently appended');
   // #438/#516: the finding is delivered through the one channel every adapter has, or kept in the ledger.
-  assert.notEqual(late[0]!['delivered'], 'dropped', 'a late finding is never thrown away for a missing channel');
-  assert.ok(['response', 'ledger'].includes(String(late[0]!['delivered'])), `delivered through a real channel: ${late[0]!['delivered']}`);
+  assert.notEqual(late[0]!['destination'], 'dropped', 'a late finding is never thrown away for a missing channel');
+  assert.ok(['response', 'ledger'].includes(String(late[0]!['destination'])), `delivered through a real channel: ${late[0]!['destination']}`);
 });
 
 test('a tool past the host ceiling is answered once with a timeout and one continuation', async t => {
@@ -5100,6 +5101,39 @@ test('O1b-A: a synthetic tool turn writes one turn, ordered utterances, a tool r
   assert.deepEqual(utterances.map(row => row['text']), ['What is on my plate?', 'Nothing is on your plate.']);
   // O1b-A: the JSONL journal wrote under <dataDir>/debug and nothing writes it any more.
   assert.equal(existsSync(join(h.dir, 'debug')), false, 'a live session creates no debug/ directory');
+  attachment.close();
+});
+
+// L2-R1: live_journal keeps its fragments and its empty closing row, so every concatenating reader is
+// unchanged; the audit row is where the assembled utterance belongs, and it answers "what was said".
+test('C-LOG-ENVELOPE: the closing utterance row carries the whole sentence, once', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const session = h.owner.create({ idempotencyKey: 'envelope-utterance', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'what is on', finished: false }));
+  fake.emit(portEvent({ type: 'inputTranscription', text: ' my plate', finished: false }));
+  await settlePort();
+  fake.emit(portEvent({ type: 'inputTranscription', text: '', finished: true }));
+  fake.emit(portEvent({ type: 'outputTranscription', text: 'nothing is on', finished: false }));
+  fake.emit(portEvent({ type: 'outputTranscription', text: ' your plate.', finished: false }));
+  fake.emit(portEvent(audibleFrame));
+  fake.emit(portEvent({ type: 'outputTranscription', text: '', finished: true }));
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+  const turnId = String(h.store.transaction(tx => tx.get('SELECT turn_id FROM trace_turn WHERE live_session_id=?', [session.liveSessionId]))!['turn_id']);
+  const finals = h.store.transaction(tx => tx.all('SELECT role, text FROM trace_utterance WHERE turn_id=? AND final=1 ORDER BY at, rowid', [turnId]));
+  assert.deepEqual(finals.map(row => row['role']), ['owner', 'model']);
+  assert.deepEqual(finals.map(row => row['text']), ['what is on my plate', 'nothing is on your plate.']);
+  // The journal itself did not change shape: fragments, then an empty closing row per kind.
+  const journal = h.store.transaction(tx => tx.all("SELECT text, finished FROM live_journal WHERE live_session_id=? AND kind LIKE '%Transcription' ORDER BY journal_id", [session.liveSessionId]));
+  const closing = journal.filter(row => Number(row['finished']) === 1);
+  assert.deepEqual(closing.map(row => row['text']), ['', ''], 'the closing journal rows stay empty');
+  // A concatenating reader still sees the utterance exactly once.
+  const transcript = h.store.transaction(tx => readSessionTranscript(tx, session.liveSessionId));
+  assert.deepEqual(transcript.turns.map(turn => [turn.speaker, turn.text]),
+    [['owner', 'what is on my plate'], ['assistant', 'nothing is on your plate.']]);
   attachment.close();
 });
 

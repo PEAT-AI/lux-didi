@@ -31,7 +31,7 @@ import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
 import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
 
-import { hostLogEvent, LIVE_REBUILD_TRIGGERS, LIVE_STATE_CAUSES } from '../host/log.js';
+import { clockSync, hostLogEvent, LIVE_REBUILD_TRIGGERS, LIVE_STATE_CAUSES, setLogContext } from '../host/log.js';
 import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -798,15 +798,20 @@ const MEMORY_STOP_WORDS = new Set(['the', 'and', 'for', 'but', 'not', 'you', 'yo
 const MEMORY_FRAMING_WORDS = new Set(['owner', 'said', 'says']);
 const MEMORY_FRAMING_LEAD = /^\s*(?:the\s+owner|[a-z]+(?:'s)?)\s+(?=(?:prefers?|likes?|loves?|wants?|needs?|hates?|dislikes?|enjoys?|said|says)\b)/i;
 // Which way a clause feels, so a paraphrase of a preference cannot become its opposite.
-/** The owner turn that just closed: the provider's deltas joined up to the finished boundary, never one fragment. */
-function finishedOwnerTurn(tx: Transaction, liveSessionId: string): string {
-  const rows = tx.all("SELECT text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id", [liveSessionId]);
+/** The provider's deltas joined up to the closing boundary of one journal kind: never one fragment. */
+function finishedUtterance(tx: Transaction, liveSessionId: string, kind: 'inputTranscription' | 'outputTranscription'): string {
+  const rows = tx.all('SELECT text,finished FROM live_journal WHERE live_session_id=? AND kind=? ORDER BY journal_id', [liveSessionId, kind]);
   let pending = '', closed = '';
   for (const row of rows) {
     pending += String(row['text'] ?? '');
     if (Number(row['finished']) === 1) { closed = pending.trim(); pending = ''; }
   }
   return closed;
+}
+
+/** The owner turn that just closed: the provider's deltas joined up to the finished boundary, never one fragment. */
+function finishedOwnerTurn(tx: Transaction, liveSessionId: string): string {
+  return finishedUtterance(tx, liveSessionId, 'inputTranscription');
 }
 
 const MEMORY_AFFIRM = new Set(['love', 'loves', 'like', 'likes', 'prefer', 'prefers', 'preferred', 'enjoy', 'enjoys',
@@ -1636,6 +1641,10 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       this.#store.transaction(tx => this.#terminalInTx(tx, liveSessionId, { state: 'not_started' }, false, this.#now(), 'ended', null));
       throw error;
     }
+    // C-LOG-ENVELOPE: the call is open, so name it once. One live session is one call (L2-R1), and every
+    // line the host emits until the next call opens carries this id and the provider generation inside it.
+    setLogContext({ liveSessionId, generation: 0 });
+    hostLogEvent(clockSync('call_open'));
     this.#store.transaction(tx => tx.run("UPDATE live_sessions SET lifecycle='active', updated_at=? WHERE live_session_id=?", [this.#now(), liveSessionId]));
     const handle: ActiveSession = {
       generation: 0, attempts: 0, rebuilding: false, quietRebuild: false, modelTextSinceOpen: false, request: structuredClone(request),
@@ -3694,7 +3703,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    */
   #lateFindings(handle: ActiveSession, generation: number, event: ResearchLateFindings): void {
     const receipt = { event: 'research_late_findings', researchId: event.researchId, source: event.source, ms: event.ms, items: event.items.length };
-    const drop = (reason: string): void => { hostLogEvent({ ...receipt, delivered: 'dropped', reason }); };
+    const drop = (reason: string): void => { hostLogEvent({ ...receipt, destination: 'dropped', reason }); };
     if (this.#settled(handle) || generation !== handle.generation) return drop('session_closed');
     // #472: a cut run's empty late event is a cut, not a source failure, and the receipt must say so.
     if (event.items.length === 0) return drop(event.cut === true ? 'run_cut' : event.ok ? 'no_new_findings' : 'source_failed');
@@ -3712,9 +3721,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // spoken once through the response channel or kept in the ledger for the next continuation. Never a
     // provider frame the wire refuses.
     const reason = this.#lateCommentaryReason(handle, event);
-    if (reason !== null) return hostLogEvent({ ...receipt, delivered: 'ledger', reason });
+    if (reason !== null) return hostLogEvent({ ...receipt, destination: 'ledger', reason });
     const line = `One more thing from ${event.source}: ${event.items[0]!.slice(0, LATE_SPOKEN_CHARS)}`;
-    try { handle.session.sendText({ text: line }); } catch { return hostLogEvent({ ...receipt, delivered: 'ledger', reason: 'send_failed' }); }
+    try { handle.session.sendText({ text: line }); } catch { return hostLogEvent({ ...receipt, destination: 'ledger', reason: 'send_failed' }); }
     if (event.source === 'calendar') handle.researchLedger.delivered(event.researchId, event.runId ?? -1, (event.calendarKeys ?? []).filter((_, index) => line.includes(event.items[index] ?? '\u0000')));
     if (event.mailKeys) {
       const keys = event.items.flatMap((item, index) => (event.mailKeys![index] && line.includes(item) ? [event.mailKeys![index]!] : []));
@@ -3722,7 +3731,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     }
     handle.lateCommentaryFor = event.researchId;
     hostLogEvent({ event: 'late_findings_sent', delegationKey: this.#delegationKey(handle), reason: 'late_findings' });
-    hostLogEvent({ ...receipt, delivered: 'response', reason: 'quiet' });
+    hostLogEvent({ ...receipt, destination: 'response', reason: 'quiet' });
   }
 
   /** Why a late block stays silent, or null when the turn is quiet enough to say one line aloud. */
@@ -4076,7 +4085,10 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       if (transcription) {
         const turnId = handle.connection.turnId;
         if (turnId !== undefined) {
-          try { tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)', [turnId,transcription.type === 'inputTranscription' ? 'owner' : 'model',now,finished === 1 ? 1 : 0,text ?? '',journalId]); }
+          // L2-R1: live_journal keeps its fragments and its empty closing row; the audit row is where the
+          // assembled utterance belongs, so trace_utterance final=1 answers "what was said".
+          const said = finished === 1 && !text?.length ? finishedUtterance(tx, handle.liveSessionId, transcription.type) : text ?? '';
+          try { tx.run('INSERT INTO trace_utterance(turn_id,role,at,final,text,journal_id) VALUES (?,?,?,?,?,?)', [turnId,transcription.type === 'inputTranscription' ? 'owner' : 'model',now,finished === 1 ? 1 : 0,said,journalId]); }
           catch { markDiagnosticLoss(tx,handle.liveSessionId,'trace_write_failed'); hostLogEvent({ event: 'live_trace_rejected',kind: 'turn.opened',code: 'record_failed' }); }
         } else if (text?.length) tx.run('UPDATE live_sessions SET diagnostic_unattributed_transcripts=COALESCE(diagnostic_unattributed_transcripts,0)+1 WHERE live_session_id=?', [handle.liveSessionId]);
       }

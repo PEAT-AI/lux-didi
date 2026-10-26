@@ -156,7 +156,7 @@ test('R5: a filler sound never parks a late finding; only a new question does', 
     'speech that began inside the 1.5 s hold after the answer is not a new question, so the block lands once he stops');
   assert.equal(lateCommentarySilence({ ...quiet, now: 2_000, inputAt: 1_100, ownerWords: 9 }), 'owner_speaking',
     'while he is still talking the block waits, it is neither spoken over him nor parked');
-  assert.equal(lateCommentarySilence({ ...quiet, inputAt: 2_800 }), 'owner_speaking', 'the owner is still talking');
+  assert.equal(lateCommentarySilence({ ...quiet, now: 1_500, inputAt: 900 }), 'owner_speaking', 'speech that began before the answer and has not gone quiet is still him talking');
   assert.equal(lateCommentarySilence({ ...quiet, lastModelAudioAt: 2_000 }), 'answer_playing', 'the answer audio is still playing');
   assert.equal(lateCommentarySilence({ ...quiet, now: 21_000 }), 'window_elapsed', 'a block that lands too late stays context');
   assert.equal(lateCommentarySilence({ ...quiet, alreadySpoken: true }), 'already_spoken', 'one late line per call');

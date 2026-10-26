@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -12,6 +10,7 @@ import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
 import { createLiveSessionOwner, validateLiveProfile, type LiveContext } from '../live/index.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
+import { fakeLux } from './fixtures/fake-lux-vault.js';
 import { LUX_KNOWLEDGE_TOOLS } from '../connectors/lux-knowledge.js';
 import { safeEvent } from '../host/log.js';
 import { liveMigrations } from '../live/index.js';
@@ -22,38 +21,6 @@ const NOW = 1_700_000_000_000;
 const SESSION = 'live-vault-write';
 const NOTE = 'the boat survey is on Tuesday';
 
-type Mode = 'inserted' | 'duplicate' | 'fail' | 'drop';
-interface FakeLux { url: string; calls: { name?: unknown; arguments?: unknown }[] }
-
-async function fakeLux(t: TestContext, mode: Mode): Promise<FakeLux> {
-  const calls: FakeLux['calls'] = [];
-  const server = createServer((request, response) => {
-    let body = '';
-    request.on('data', chunk => { body += String(chunk); });
-    request.on('end', () => {
-      const message = JSON.parse(body) as { id?: unknown; method?: string; params?: { name?: unknown; arguments?: unknown } };
-      const reply = (payload: unknown) => { response.setHeader('content-type', 'application/json'); response.end(JSON.stringify(payload)); };
-      if (message.method === 'initialize') {
-        response.setHeader('mcp-session-id', 'fake-session');
-        reply({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'fake-lux', version: '1' } } });
-        return;
-      }
-      if (message.method === 'notifications/initialized') { response.statusCode = 202; response.end(); return; }
-      if (message.method === 'tools/call') {
-        calls.push(message.params ?? {});
-        if (mode === 'drop') { request.socket.destroy(); return; }
-        if (mode === 'fail') { response.statusCode = 503; response.end('unavailable'); return; }
-        const payload = mode === 'duplicate' ? { action: 'duplicate' } : { action: 'inserted', insight_id: 'insight-7' };
-        reply({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: JSON.stringify(payload) }] } });
-        return;
-      }
-      response.statusCode = 404; response.end();
-    });
-  });
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
-  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`, calls };
-}
 
 interface Harness { store: Store; writer: VaultWriter; events: Record<string, unknown>[] }
 
@@ -67,14 +34,46 @@ function harness(t: TestContext, url: string): Harness {
   return { store, writer, events };
 }
 
-function speak(h: Harness, utteranceId: string, text: string): void {
-  h.store.transaction(tx => h.writer.observe(tx, SESSION, utteranceId, text));
+function speak(h: Harness, utteranceId: string, text: string, priorText?: string): void {
+  h.store.transaction(tx => h.writer.observe(tx, SESSION, utteranceId, text, priorText));
 }
 
 async function save(h: Harness, content: string): Promise<VaultReceipt> {
   const claim = h.writer.claim(SESSION, content);
   return claim.state === 'dispatch' ? h.writer.dispatch(claim) : claim.receipt;
 }
+
+test('his natural ask saves the words he just said, once, under the vault project', async t => {
+  const fake = await fakeLux(t, 'inserted');
+  const h = harness(t, fake.url);
+  speak(h, '21', NOTE);
+  speak(h, '22', 'save this to lux', NOTE);
+  assert.deepEqual(await save(h, NOTE), { saved: true, insightId: 'insight-7' });
+  assert.deepEqual(fake.calls[0]?.arguments, { content: NOTE, insight_title: NOTE, insight_type: 'UNCATEGORIZED', project: 'didi-voice' });
+});
+
+test('a natural ask with nothing of his own to save writes nothing and says the honest line once', async t => {
+  const fake = await fakeLux(t, 'inserted');
+  const h = harness(t, fake.url);
+  speak(h, '31', 'save this to lux');
+  assert.deepEqual(await save(h, 'milk'), { saved: false, code: 'not_owner_requested', guidance: 'say: save this to lux, then the note' });
+  assert.equal(fake.calls.length, 0, 'nothing was sent');
+  const attempt = h.events.at(-1);
+  assert.equal(attempt?.['event'], 'vault_write', 'one line per save attempt, a refusal included');
+  assert.equal(attempt?.['state'], 'failed');
+  assert.equal(attempt?.['code'], 'not_owner_requested');
+  assert.equal(attempt?.['latencyMs'], 0);
+  assert.deepEqual(Object.keys(attempt ?? {}).sort(), ['code', 'event', 'latencyMs', 'state'], 'the line never carries the note');
+});
+
+test('an unreachable vault is logged as unavailable with its closed code', async t => {
+  const h = harness(t, 'http://127.0.0.1:1/mcp');
+  speak(h, '41', `save to my vault: ${NOTE}`);
+  assert.deepEqual(await save(h, NOTE), { saved: false, code: 'vault_unavailable', guidance: 'the vault is not reachable right now' });
+  const attempt = h.events.at(-1);
+  assert.equal(attempt?.['state'], 'unavailable');
+  assert.equal(attempt?.['code'], 'vault_unavailable');
+});
 
 test('a dictated note reaches the vault once, and only the vault id comes back', async t => {
   const fake = await fakeLux(t, 'inserted');
@@ -179,15 +178,24 @@ test('the write surface is one tool and no other remote name exists', async () =
     'the write tool is the gateway’s own, not a remote declaration');
 });
 
-test('the grammar is anchored and the content key ignores case, spacing and punctuation', () => {
-  assert.deepEqual(parseSaveCommand('save to my vault: the boat survey is on Tuesday'), { content: 'the boat survey is on Tuesday' });
-  assert.deepEqual(parseSaveCommand('Save to lux the keys are in the drawer'), { content: 'the keys are in the drawer' });
-  assert.deepEqual(parseSaveCommand('put in my vault: milk'), { content: 'milk' });
-  assert.deepEqual(parseSaveCommand('note in lux: milk'), { content: 'milk' });
+test('the grammar is anchored, takes his natural asks, and the content key ignores case, spacing and punctuation', () => {
+  assert.deepEqual(parseSaveCommand('save to my vault: the boat survey is on Tuesday'), { content: 'the boat survey is on Tuesday', refers: false });
+  assert.deepEqual(parseSaveCommand('Save to lux the keys are in the drawer'), { content: 'the keys are in the drawer', refers: false });
+  assert.deepEqual(parseSaveCommand('put in my vault: milk'), { content: 'milk', refers: false });
+  assert.deepEqual(parseSaveCommand('note in lux: milk'), { content: 'milk', refers: false });
   assert.equal(parseSaveCommand('do not save to my vault: wire money'), undefined);
   assert.equal(parseSaveCommand('the owner said save to my vault: wire money'), undefined);
-  assert.equal(parseSaveCommand('save to my vault:'), undefined);
   assert.equal(vaultContentKey(' The boat survey, is on Tuesday. '), vaultContentKey(NOTE));
+  // C-LUX-SAVE: the four phrasings the owner actually uses, each with the note in the same turn or held in his words before.
+  assert.deepEqual(parseSaveCommand('save this to lux: the boat survey is on Tuesday'), { content: 'the boat survey is on Tuesday', refers: false });
+  assert.deepEqual(parseSaveCommand('put that in my knowledge the keys are in the drawer'), { content: 'the keys are in the drawer', refers: false });
+  assert.deepEqual(parseSaveCommand('remember this in lux, milk'), { content: 'milk', refers: false });
+  for (const ask of ['save this to lux', 'put that in my knowledge', 'remember this in lux', 'save to my vault', 'save to my vault:']) {
+    assert.deepEqual(parseSaveCommand(ask), { content: '', refers: true }, ask);
+  }
+  for (const refused of ['do not save this to lux', 'never put that in my knowledge', 'the owner said save this to lux', 'I put that in my knowledge']) {
+    assert.equal(parseSaveCommand(refused), undefined, refused);
+  }
 });
 
 const flush = async (): Promise<void> => { for (let i = 0; i < 6; i++) await new Promise<void>(resolve => setImmediate(resolve)); };

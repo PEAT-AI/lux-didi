@@ -562,7 +562,9 @@ test('R5: a late finding is spoken after a filler sound, and only a real new que
   await held.advance(2_000);
   held.release();
   for (let i = 0; i < 20 && spokenTexts(held).length === before; i++) { await flush(); await held.advance(200); }
-  assert.ok(spokenTexts(held).length > before, 'the late finding was spoken, not parked as silent context');
+  const spoken = spokenTexts(held).length;
+  const diagnostics = JSON.stringify({ late: lateReceipts(held), texts: spoken });
+  assert.ok(spoken > before, `the late finding was spoken, not parked as silent context (${diagnostics})`);
   assert.ok(held.receipts.some(record => record['event'] === 'late_findings_sent'), 'the receipt says it went out');
 
   // The control: a real new question still parks the block, so the filler rule never swallows an owner turn.

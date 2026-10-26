@@ -483,7 +483,13 @@ function undatedCall(exec: TraceExec): string {
 
 /** The metadata tables, child before parent, so a delete never cascades into a row of a different age. */
 function pruneMetadataRows(exec: TraceExec, cutoff: number, batched: (sql: string, params: SQLValue[]) => number): number {
+  // A chat call row is metadata, but one that still owns a dispatch row is part of the audit trail,
+  // and the dispatch row is never deleted: the foreign key decides which call rows are deletable.
+  const orphan = tableExists(exec, 'tool_dispatches')
+    ? ' AND NOT EXISTS (SELECT 1 FROM tool_dispatches d WHERE d.owner_id=tool_calls.owner_id AND d.run_id=tool_calls.run_id AND d.execution_id=tool_calls.execution_id)'
+    : '';
   const deletes: readonly string[] = [
+    ...(tableExists(exec, 'tool_calls') ? [`DELETE FROM tool_calls WHERE rowid IN (SELECT rowid FROM tool_calls WHERE created_at < ? AND result_json IS NULL AND input_json IS NULL${orphan} LIMIT ?)`] : []),
     'DELETE FROM trace_utterance WHERE rowid IN (SELECT rowid FROM trace_utterance WHERE at < ? LIMIT ?)',
     'DELETE FROM trace_call_result WHERE rowid IN (SELECT rowid FROM trace_call_result WHERE call_key IN (SELECT call_key FROM trace_call WHERE intent_at < ?) LIMIT ?)',
     ...(tableExists(exec, 'trace_research_text') ? ['DELETE FROM trace_research_text WHERE rowid IN (SELECT rowid FROM trace_research_text WHERE at < ? LIMIT ?)'] : []),

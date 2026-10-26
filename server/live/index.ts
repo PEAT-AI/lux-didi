@@ -2023,10 +2023,11 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     if (handle.debtSince !== undefined) { handle.debtTimer?.cancel(); handle.debtTimer = undefined; }
     // A muted session hears nothing, so nothing is owed to it while the mute holds.
     if (handle.muted) return;
-    // L-04: the clock is anchored at the end of the last audible frame, not at the tool output, so the latency the
-    // owner sat through before the tool returned is part of the same silence and the rung lands 8 s after the last
-    // thing she heard. The rung's own action is unchanged.
-    const lastAudible = handle.heardSince ?? this.#now();
+    // L-04: the clock is anchored at the end of the last audible frame of the model's own speech, not at the tool
+    // output, so the provider latency the owner sat through after her preamble is part of the same silence and the
+    // rung lands 8 s after the last thing she heard. A turn with no model audio before the call has no such frame,
+    // and the clock keeps its old anchor. The rung's own action is unchanged.
+    const lastAudible = handle.lastModelAudioAt ?? this.#now();
     handle.debtSince = lastAudible;
     handle.debtBargeIn = false;
     handle.debtDeferred = false;

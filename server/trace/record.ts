@@ -459,10 +459,10 @@ export function pruneTraceContent(exec: TraceExec, now: number, options: PruneOp
     ? nullInPlace('UPDATE trace_research_text SET text=NULL, content_pruned_at=? WHERE rowid IN (SELECT rowid FROM trace_research_text WHERE text IS NOT NULL AND at < ? LIMIT ?)', [contentCutoff])
     : 0;
   // The live and tools tables belong to other migration owners and are absent from a trace-only Store.
-  const dispatches = tableExists(exec, 'tool_dispatches')
+  const dispatches = prunableColumns(exec, 'tool_dispatches', ['source_json', 'arguments_json', 'content_pruned_at'])
     ? nullInPlace('UPDATE tool_dispatches SET source_json=NULL, arguments_json=NULL, content_pruned_at=? WHERE rowid IN (SELECT rowid FROM tool_dispatches WHERE content_pruned_at IS NULL AND started_at < ? AND (source_json IS NOT NULL OR arguments_json IS NOT NULL) LIMIT ?)', [contentCutoff])
     : 0;
-  const calls = tableExists(exec, 'tool_calls')
+  const calls = prunableColumns(exec, 'tool_calls', ['result_json', 'input_json', 'content_pruned_at'])
     ? nullInPlace('UPDATE tool_calls SET result_json=NULL, input_json=NULL, content_pruned_at=? WHERE rowid IN (SELECT rowid FROM tool_calls WHERE content_pruned_at IS NULL AND created_at < ? AND (result_json IS NOT NULL OR input_json IS NOT NULL) LIMIT ?)', [contentCutoff])
     : 0;
   const journalText = tableExists(exec, 'live_journal') ? pruneJournalText(exec, contentCutoff, batched) : 0;
@@ -481,7 +481,7 @@ function pruneMetadataRows(exec: TraceExec, cutoff: number, batched: (sql: strin
     ? ' AND NOT EXISTS (SELECT 1 FROM tool_dispatches d WHERE d.owner_id=tool_calls.owner_id AND d.run_id=tool_calls.run_id AND d.execution_id=tool_calls.execution_id)'
     : '';
   const deletes: readonly string[] = [
-    ...(tableExists(exec, 'tool_calls') ? [`DELETE FROM tool_calls WHERE rowid IN (SELECT rowid FROM tool_calls WHERE created_at < ? AND result_json IS NULL AND input_json IS NULL${orphan} LIMIT ?)`] : []),
+    ...(prunableColumns(exec, 'tool_calls', ['created_at', 'result_json', 'input_json']) ? [`DELETE FROM tool_calls WHERE rowid IN (SELECT rowid FROM tool_calls WHERE created_at < ? AND result_json IS NULL AND input_json IS NULL${orphan} LIMIT ?)`] : []),
     'DELETE FROM trace_utterance WHERE rowid IN (SELECT rowid FROM trace_utterance WHERE at < ? LIMIT ?)',
     'DELETE FROM trace_call_result WHERE rowid IN (SELECT rowid FROM trace_call_result WHERE call_key IN (SELECT call_key FROM trace_call WHERE intent_at < ?) LIMIT ?)',
     ...(tableExists(exec, 'trace_research_text') ? ['DELETE FROM trace_research_text WHERE rowid IN (SELECT rowid FROM trace_research_text WHERE at < ? LIMIT ?)'] : []),
@@ -533,6 +533,15 @@ function pruneJournalText(exec: TraceExec, cutoff: number, batched: (sql: string
 function columnExists(exec: TraceExec, table: string, column: string): boolean {
   const ddl = exec.all("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", [table])[0]?.['sql'];
   return typeof ddl === 'string' && new RegExp(`(^|[^A-Za-z0-9_])${column}([^A-Za-z0-9_]|$)`).test(ddl);
+}
+
+/** The columns a table actually carries. Another migration owner's table can predate the columns this
+ * pruner writes (a store opened at an older tools version), and a prune that names a missing column is
+ * a SQL error, not a prune: run the statement only when every column it names is there. */
+function prunableColumns(exec: TraceExec, table: string, columns: readonly string[]): boolean {
+  if (!tableExists(exec, table)) return false;
+  const present = new Set(exec.all(`PRAGMA table_info(${table})`, []).map(row => String(row['name'])));
+  return columns.every(column => present.has(column));
 }
 
 function tableExists(exec: TraceExec, table: string): boolean {

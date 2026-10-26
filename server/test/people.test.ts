@@ -3,9 +3,10 @@
 // strictly, rendered into one instructions section and resolved by one host-owned pure function.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   PEOPLE_CHAR_LIMIT, loadPeople, parsePeople, renderPeople, resolveSpoken, splitSpoken, installPeople,
   peopleSnapshot, peopleSection, lookupPeople, personByEmail, ambiguityQuestion, PEOPLE_LOOKUP_DECLARATION,
@@ -13,6 +14,7 @@ import {
 } from '../people/index.js';
 import { LIVE_INSTRUCTION_HARD_LIMIT, composeLiveSessionInstruction, ownerProfileSections } from '../prompt/index.js';
 import { validateOwnerProfile } from '../prompt/index.js';
+import { safeEvent } from '../host/log.js';
 import { compileMailQuery } from '../tools/research.js';
 import { attendeeName } from '../tools/live-shape.js';
 import { groupHoldsAll } from '../connectors/mattermost.js';
@@ -201,4 +203,91 @@ test('people: a group conversation whose members are a superset of the resolved 
   assert.equal(groupHoldsAll(channel, ['ravi.e', 'sandeep.e']), true);
   assert.equal(groupHoldsAll(channel, ['ravi.e', 'missing.e']), false);
   assert.equal(groupHoldsAll({ id: 'g2', type: 'G', displayName: 'ravi.e, sandeep.e, extra.e' }, ['ravi.e']), true);
+});
+
+test('people: ambiguous is true only when a spoken part is ambiguous', () => {
+  install();
+  // A fully resolved pair is not an ambiguity, even though it names two people.
+  const pair = peopleLookupResult({ name: 'Sandy and Ravi' });
+  assert.equal(pair.ambiguous, false);
+  assert.deepEqual(pair.people.map(person => person.name), ['Sandeep Example', 'Ravi Example']);
+  // One part that two roster people share is the ambiguity, and its candidates come along.
+  const shared = peopleLookupResult({ name: 'Jitendra and Sandy' });
+  assert.equal(shared.ambiguous, true);
+  assert.deepEqual(shared.people.map(person => person.name), ['Jitendra Example', 'Jitendra Second', 'Sandeep Example']);
+  assert.equal(peopleLookupResult({ name: 'Wasim' }).ambiguous, false);
+  installPeople(null);
+});
+
+test('people: the three closed events survive the host log allowlist and refuse foreign keys', () => {
+  assert.deepEqual(safeEvent({ event: 'people_loaded', count: 5, bytes: 900, chars: 400 }),
+    { event: 'people_loaded', count: 5, bytes: 900, chars: 400 });
+  assert.equal(safeEvent({ event: 'people_loaded', count: 5, bytes: 900, chars: 400, name: 'Ravi Example' }), undefined);
+  assert.equal(safeEvent({ event: 'people_loaded', count: -1, bytes: 900, chars: 400 }), undefined);
+  assert.deepEqual(safeEvent({ event: 'people_invalid', reason: 'duplicate_id' }), { event: 'people_invalid', reason: 'duplicate_id' });
+  assert.equal(safeEvent({ event: 'people_invalid', reason: 'Ravi Example' }), undefined);
+  assert.deepEqual(safeEvent({ event: 'people_trimmed', dropped: 3, tier2: 3 }), { event: 'people_trimmed', dropped: 3, tier2: 3 });
+  assert.equal(safeEvent({ event: 'people_trimmed', dropped: -1, tier2: 0 }), undefined);
+  assert.equal(safeEvent({ event: 'people_trimmed', dropped: 3 }), undefined);
+});
+
+test('people: the live tool registry ships people_lookup as a read tool', () => {
+  // The registration lives in server/tools/index.ts, whose liveDefinitions needs a full run row; the
+  // shipped artifact is read instead, so a definition dropped from the registry or moved off the read
+  // effect turns this test red.
+  const built = readFileSync(fileURLToPath(new URL('../tools/index.js', import.meta.url)), 'utf8');
+  assert.match(built, /\.\.\.PEOPLE_LOOKUP_DECLARATION, effect: 'read'/u);
+  assert.match(built, /peopleLookupResult\(args\)/u);
+});
+
+test('people: an over-ceiling roster file reports the tier 2 lines it dropped', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-people-trim-'));
+  try {
+    const profile = join(dir, 'naya-local.json');
+    writeFileSync(profile, '{}');
+    const people = [] as Record<string, unknown>[];
+    for (let n = 0; n < 200; n += 1) {
+      people.push({ id: `person-${n}`, name: `Person Number${n} Longfamily`, aliases: [], role: 'colleague in the field team for the region',
+        circle: 'plantix', project: '', tier: 2, email: [], mattermost: '' });
+    }
+    writeFileSync(join(dir, 'people.json'), JSON.stringify({ version: 1, people }));
+    chmodSync(join(dir, 'people.json'), 0o600);
+    const loaded = loadPeople(profile);
+    assert.equal(loaded.status, 'loaded');
+    if (loaded.status !== 'loaded') return;
+    assert.ok(loaded.rendered.dropped > 0, 'the ceiling must drop lines');
+    assert.equal(loaded.rendered.droppedTier2, loaded.rendered.dropped);
+    assert.ok(loaded.rendered.text.length <= PEOPLE_CHAR_LIMIT);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('people: a full lore plus a 130 person roster still composes under the hard limit', () => {
+  const people = [] as Record<string, unknown>[];
+  for (let n = 0; n < 130; n += 1) {
+    people.push({
+      id: `person-${n}`, name: `Person Number${n}`, aliases: [`Nick${n}`], role: 'colleague in the field team',
+      circle: 'plantix', project: '', tier: 1, email: [`person.${n}@example.test`], mattermost: `person.${n}`, note: '',
+    });
+  }
+  const snapshot = parsePeople({ version: 1, people });
+  const events: { event: string; dropped?: number; tier2?: number }[] = [];
+  installPeople(snapshot, event => { events.push(event as { event: string }); });
+  const profile = validateOwnerProfile({
+    schemaVersion: 1, kind: 'profile', ownerId: 'owner-1', profileVersion: 'test',
+    displayName: 'Owner Example',
+    style: { text: '# Style\nstyle', dataClass: 'ordinary' },
+    lore: { text: `# Lore\n${'l'.repeat(14_000)}`, dataClass: 'ordinary' },
+  }, 'owner-1');
+  const composed = composeLiveSessionInstruction({
+    text: `# BASE\n${'b'.repeat(20_000)}`, tools: ['research', 'mattermost_chat'], records: [], trustedChars: LIVE_INSTRUCTION_HARD_LIMIT,
+    ownerProfile: profile, earlierConversations: 'x'.repeat(8_957), accentSelection: 'indian-strong',
+  });
+  assert.ok(composed.text.length < LIVE_INSTRUCTION_HARD_LIMIT, `${composed.text.length} over the hard limit`);
+  const section = composed.sections.find(entry => entry.id === 'people');
+  assert.ok(section !== undefined, 'the people section must still be present');
+  assert.ok(section.chars <= PEOPLE_CHAR_LIMIT);
+  const trimmed = events.filter(event => event.event === 'people_trimmed');
+  assert.equal(trimmed.length, 1, JSON.stringify(events));
+  assert.ok((trimmed[0]!.dropped ?? 0) > 0);
+  installPeople(null);
 });

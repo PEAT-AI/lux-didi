@@ -59,8 +59,9 @@ function dataDirectory() {
   return join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'lux-didi');
 }
 
-// host.log rotates by size as host.log.<n> today and by day as host-<YYYY-MM-DD>.log, so both shapes and
-// the native/audio streams are read, oldest file name first, and a stream name is never guessed from content.
+// Today's writer rotates host.log by size to host.log.1 and host.log.2 (host/log.ts:1327-1331); the day-file
+// shape host-YYYY-MM-DD.log is accepted ahead of the day rotation the log-health unit adds. Both shapes, and
+// the native and audio streams, are read oldest file name first; a stream is never guessed from file content.
 const LOG_STREAMS = [
   ['host', /^host-\d{4}-\d{2}-\d{2}\.log(\.\d+)?$/], ['host', /^host\.log(\.\d+)?$/],
   ['native', /^native-live\.log(\.\d+)?$/], ['audio', /^audio\.log(\.\d+)?$/],

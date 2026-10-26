@@ -111,9 +111,6 @@ export class Store {
           all: (sql, params = []) => this.#db!.prepare(sql).all(...params) as SQLRow[],
         };
         pruneTraceContent(traceExec, Date.now());
-        // Fold the WAL back after a retention run, so pruning 11 MB of owner content does not leave a
-        // week of frames to be copied again on the next start.
-        this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
         this.#db.prepare("UPDATE runtime_outbox SET state='unknown', claim_token=NULL, lease_until=NULL WHERE state='claimed'").run();
         // Data hygiene at host start: a settled Live job row past its expiry is a delivered result from an
         // older run, and nothing reads it again. Purging it here keeps old feed text out of every surface.
@@ -124,6 +121,10 @@ export class Store {
         this.adminCredential = admitCredential(directory);
         this.#db.exec('COMMIT');
       } catch (error) { this.#db.exec('ROLLBACK'); throw error; }
+      // Fold the WAL back after the retention run committed, so pruning 11 MB of owner content does not
+      // leave a week of frames to be copied again on the next start. A checkpoint cannot run inside the
+      // write transaction above.
+      this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     } catch (error) { this.close(); throw error; }
   }
   private applyMigrations(migrations: readonly SchemaMigration[]): void {

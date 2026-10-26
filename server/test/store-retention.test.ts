@@ -121,7 +121,7 @@ test('the triggers refuse a non-null content write and any metadata change', () 
   withStore(store => {
     seedDispatch(store, 'd-guard', 'exec-guard', T0);
     const refuse = (sql: string, params: unknown[]): void => {
-      assert.throws(() => store.transaction(tx => { tx.run(sql, params as never[]); }), 'the content guard aborts the write');
+      assert.throws(() => store.transaction(tx => { tx.run(sql, params as never[]); }), /_immutable|_forbidden/, `the guard aborts: ${sql}`);
     };
     refuse("UPDATE tool_dispatches SET source_json='{}' WHERE dispatch_id='d-guard'", []);
     refuse("UPDATE tool_dispatches SET arguments_json='{}' WHERE dispatch_id='d-guard'", []);

@@ -26,7 +26,7 @@ const OTHER = 'other@example.test';
 /** The shared contract fixture, captured from Mongoose's own mint (see its provenance block). */
 const claimsFixture = JSON.parse(readFileSync(new URL('../../test/fixtures/mongoose-token-claims.json', import.meta.url), 'utf8')) as {
   provenance: { repo: string; sha: string; file: string; symbol: string };
-  authorize: { params: string[] };
+  authorize: { params: string[]; provenance: { repo: string; note: string } };
   token: { claims: string[]; typ: string; email_claim: string; audiences: Record<string, string> };
   refusal: { error: string; mongoose_error: string };
 };
@@ -59,6 +59,9 @@ test('the Mongoose contract fixture names the exact claims, audiences and author
   assert.deepEqual([...claimsFixture.authorize.params].sort(),
     ['client_id', 'code_challenge', 'code_challenge_method', 'expected_email', 'login_hint', 'redirect_uri', 'resource', 'response_type', 'scope', 'state']);
   assert.deepEqual(claimsFixture.refusal, { error: 'access_denied', mongoose_error: 'account_mismatch' });
+  // The two request parameters are this contract's, not cade720f's: M1 adds them, and the token proof is the guard today.
+  assert.equal(claimsFixture.authorize.provenance.repo, 'PEAT-AI/lux-didi');
+  assert.match(claimsFixture.authorize.provenance.note, /ignores unknown parameters/);
 });
 
 test('the Mongoose token proves the owner email and the endpoint audience, and refuses anything else', () => {

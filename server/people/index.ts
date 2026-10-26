@@ -273,9 +273,11 @@ export function peopleLookupResult(args: unknown): { readonly people: readonly P
   closed(value, ['name'], 'invalid_arguments');
   const name = plain(required(value, 'name'), 'name', 60);
   const snapshot = peopleSnapshot();
+  const bindings = snapshot === null ? [] : resolveSpoken(snapshot, name);
   const entries = snapshot === null ? [] : lookupPeople(snapshot, name);
   return {
-    ambiguous: entries.length > 1,
+    // Two people the owner named are a pair, not an ambiguity; only a part the roster cannot split is.
+    ambiguous: bindings.some(binding => binding.kind === 'ambiguous'),
     people: Object.freeze(entries.map(person => Object.freeze({
       id: person.id, name: person.name, aliases: person.aliases, role: person.role, circle: person.circle,
       project: person.project, email: person.email, mattermost: person.mattermost, note: person.note,

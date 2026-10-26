@@ -4948,6 +4948,9 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   const raced = await Promise.race([settled, wait(RESEARCH.firstAnswerMs)]);
   stopTimers();
   if (raced === 'settled') return undefined;
+  // R3/R4: whether this answer is the hard stop, decided by what ended the wait rather than by arithmetic on the
+  // clock: a timer that came due or a budget already spent means the sources were not waited for any longer.
+  let budgetSpent = false;
   // ROUTE-1022 (#526): a question about one source answers with that source, so the first answer does
   // not go out on whatever read happened to land first. The wait is inside the run's own budget, and a
   // source that is not being read is never waited for.
@@ -4957,12 +4960,14 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
     const waiting = [...first.required].some(source => first.reading.has(source) && !live.run.sourcesDone.has(source));
     const operationLeft = live.run.operationDeadlineAt === undefined ? Number.POSITIVE_INFINITY : live.run.operationDeadlineAt - RESEARCH_OPERATION.returnReserveMs - deps.now();
     const left = Math.min(first.releaseAt() - deps.now(), operationLeft);
-    if (!waiting || left <= 0 || first.cut === true) break;
+    if (!waiting) break;
+    if (left <= 0 || first.cut === true) { budgetSpent = true; break; }
     const woken = new Promise<'woken'>(resolve => { first.wake = () => resolve('woken'); });
     const next = await Promise.race([settled, woken, wait(left)]);
     delete first.wake;
     stopTimers();
     if (next === 'settled') return undefined;
+    if (next === 'due') budgetSpent = true;
   }
   const view = first.snapshot?.();
   if (view === undefined) return undefined;
@@ -4977,12 +4982,13 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
       const next = await Promise.race([settled, wait(left)]);
       stopTimers();
       if (next === 'settled') return undefined;
-    }
+      if (next === 'due') budgetSpent = true;
+    } else budgetSpent = true;
   }
   const pending = [...first.reading].filter(source => !view.run.sourcesDone.has(source));
   // R3/R4: a source the hard stop left behind did not return in time, and only a source still reading when the
-  // answer is released is still searching. Neither is ever called a timeout while its results are arriving.
-  const hardStopped = first.releaseAt !== undefined && deps.now() >= first.releaseAt() - RESEARCH_OPERATION.returnReserveMs;
+  // answer is released early is still searching. Neither is ever called a timeout while its results are arriving.
+  const hardStopped = budgetSpent || first.cut === true;
   if (!evidenceAllowed(deps, view.run, new AbortController().signal)) return deniedEvidence(deps, view.run);
   // ROUTE-1022 (#526): an early answer is partial by definition until its readers settle, and it names
   // them; an answer with nothing left reading is complete and says nothing more is to fetch.

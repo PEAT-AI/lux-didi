@@ -45,7 +45,7 @@ export type AuthoritySource = (runId: string, signal: AbortSignal) => Promise<Li
 export type MongooseSignInStart = { status: 'started'; attemptId: string } | { status: 'failed'; reason: 'not-configured' | 'sign-in-in-progress' };
 /** Where one attempt is, as the Settings row shows it through the connection poll. */
 export type MongooseSignInPhase = 'running' | 'waiting' | 'finishing' | 'signed_in' | 'failed';
-export type MongooseSignInFailure = 'discovery_unreachable' | 'discovery_refused' | 'registration_refused' | 'port_in_use' | 'browser_unavailable' | 'callback_failed' | 'callback_timeout' | 'token_refused' | 'store_failed' | 'did_not_finish';
+export type MongooseSignInFailure = 'discovery_unreachable' | 'discovery_refused' | 'registration_refused' | 'port_in_use' | 'browser_unavailable' | 'callback_failed' | 'callback_timeout' | 'account_mismatch' | 'token_refused' | 'store_failed' | 'did_not_finish';
 export interface MongooseSignInAttempt { attemptId: string; phase: MongooseSignInPhase; reason?: MongooseSignInFailure }
 /** One owner click names the endpoint it signs in and answers at once; the attempt runs on and reports by row. */
 export interface MongooseSignIn {
@@ -82,8 +82,8 @@ function failureOf(hop: MongooseSignInHop): MongooseSignInFailure {
     case 'discovery': return hop.outcome === 'unreachable' || hop.outcome === 'timeout' || hop.outcome === 'metadata_unreachable' ? 'discovery_unreachable' : 'discovery_refused';
     case 'registration': return hop.outcome === 'port_in_use' ? 'port_in_use' : 'registration_refused';
     case 'browser_handoff': return 'browser_unavailable';
-    case 'callback': return hop.outcome === 'timeout' ? 'callback_timeout' : 'callback_failed';
-    case 'token': return 'token_refused';
+    case 'callback': return hop.outcome === 'timeout' ? 'callback_timeout' : hop.outcome === 'account_mismatch' ? 'account_mismatch' : 'callback_failed';
+    case 'token': return hop.outcome === 'identity_mismatch' || hop.outcome === 'identity_unverified' ? 'account_mismatch' : 'token_refused';
     case 'stored': return 'store_failed';
   }
 }
@@ -144,10 +144,16 @@ export function createMongooseSignIn(options: {
       return { status: 'failed', reason: 'not-configured' };
     }
     const { entry, endpoint } = named;
+    // The catalogue's one owner email is what a sign-in asks for and what its token must name.
+    const ownerIdentity = selection.state === 'configured' ? selection.catalog.ownerIdentity : null;
     const current: Pending = { endpoint, attemptId };
     pending = current;
     const move = (phase: MongooseSignInPhase, reason?: MongooseSignInFailure): void => {
       attempts.set(entry.id, { attemptId, phase, ...(reason ? { reason } : {}) });
+      // H20: every attempt ends in the log, so a sign-in that never receives its callback is visible as
+      // its own outcome instead of living only in an in-memory map.
+      if (phase === 'signed_in') log({ event: 'signin_finished', endpoint, attemptId, outcome: 'signed_in' });
+      if (phase === 'failed') log({ event: 'signin_finished', endpoint, attemptId, outcome: reason ?? 'did_not_finish' });
     };
     move('running');
     log({ event: 'signin_requested', endpoint, attemptId, outcome: 'started' });
@@ -162,6 +168,7 @@ export function createMongooseSignIn(options: {
     void Promise.resolve()
       .then(() => login({
         configDir: options.configDir, reference: entry.credentialRef!, resourceUrl: entry.url!, endpoint, account: entry.account, onHop,
+        ...(ownerIdentity ? { ownerIdentity } : {}),
         openBrowser: async (url: string) => { current.issued = url; await open(url); },
       }))
       .then(async () => {

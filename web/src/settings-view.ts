@@ -307,6 +307,8 @@ const attemptSentences: Record<string, (label: string, server: SignInServer) => 
   browser_unavailable: label => `Your browser could not be opened for the ${label} sign-in. Use the Sign in button to try again.`,
   callback_failed: label => `The browser's answer was refused or did not match this ${label} sign-in, so nothing was saved. Try again.`,
   callback_timeout: label => `The ${label} sign-in timed out waiting for the browser. Use the Sign in button to try again.`,
+  // Council 2026-10-26: never the rejected address, only the owner's own email and what to do.
+  account_mismatch: () => 'Signed in with the wrong Google account. Sign in again as rob@plantix.net.',
   token_refused: (label, server) => `${server.name} refused the sign-in at the last step, so nothing was saved for ${label}. Try again.`,
   store_failed: label => `The ${label} sign-in finished, but it could not be saved on this Mac. Try again.`,
   did_not_finish: label => `The ${label} sign-in did not finish. Use the Sign in button to try again.`,

@@ -89,7 +89,8 @@ test('every identity-bearing connector proves the owner email and refuses anothe
   }
   // AUD-007: a username that matches never carries an email that does not.
   assert.equal(proof(mattermost, { username: 'rob', email: OTHER }).match, false);
-  assert.equal(proof(mattermost, { username: 'rob' }).match, true, 'no email at all: the username is the only account value');
+  // With no email at all the username is the only account value; it still has to match the expected set.
+  assert.equal(classifyIdentity({ state: 'completed', decodedResult: { username: 'rob' } } as unknown as ConnectorResult, mattermost, ['rob']).match, true);
 });
 
 function gmailHostWith(email: string, owner: string) {
@@ -121,15 +122,31 @@ async function startFakeHost(email: string, owner: string, family: 'gmail') {
   await once(endpoint, 'listening');
   const address = endpoint.address() as { port: number };
   const url = `http://127.0.0.1:${address.port}/gmail`;
-  await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: owner, endpoints: [
-    { id: 'gmail', connector: 'google', transport: 'streamable-http', url, account: 'synthetic', resource: 'gmail', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' },
-  ] }), { mode: 0o600 });
-  const webRoot = scratchWebRoot();
-  const host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
-  const close = async (): Promise<void> => {
-    await host.close();
+  const stopEndpoint = async (): Promise<void> => {
     endpoint.closeAllConnections();
     await new Promise<void>(done => endpoint.close(() => done()));
+  };
+  try {
+    await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: owner, endpoints: [
+      { id: 'gmail', connector: 'google', transport: 'streamable-http', url, account: 'synthetic', resource: 'gmail', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' },
+    ] }), { mode: 0o600 });
+  } catch (error) {
+    await stopEndpoint();
+    await rm(dir, { recursive: true, force: true });
+    throw error;
+  }
+  const webRoot = scratchWebRoot();
+  let host: Awaited<ReturnType<typeof startHost>>;
+  try {
+    host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
+  } catch (error) {
+    await stopEndpoint();
+    await rm(dir, { recursive: true, force: true });
+    throw error;
+  }
+  const close = async (): Promise<void> => {
+    await host.close();
+    await stopEndpoint();
     await rm(dir, { recursive: true, force: true });
   };
   return { dir, host, calls, close };
@@ -137,8 +154,10 @@ async function startFakeHost(email: string, owner: string, family: 'gmail') {
 
 function scratchWebRoot(): string {
   const root = mkdtempSync(join(tmpdir(), 'didi-web-'));
-  for (const name of ['index.html', 'app.js', 'app.css']) writeFileSync(join(root, name), '');
+  for (const name of ['index.html']) writeFileSync(join(root, name), '');
+  for (const name of ['sw.js', 'manifest.webmanifest', 'icon.svg']) writeFileSync(join(root, name), name === 'sw.js' ? '' : '{}');
   mkdirSync(join(root, 'assets'), { recursive: true });
+  for (const name of ['app.js', 'app.css']) writeFileSync(join(root, 'assets', name), '');
   return root;
 }
 
@@ -192,19 +211,33 @@ function mongooseFetch(accessToken: string) {
 async function signIn(accessToken: string, callback?: (url: URL) => Promise<void>, timeoutMs = 2_000) {
   const hops: MongooseSignInHop[] = [];
   let authorized: string | undefined;
-  const login = runMongooseLogin({
+  const started = runMongooseLogin({
     configDir: await mkdtemp(join(tmpdir(), 'didi-mongoose-login-')),
     reference: 'mongoose-knowledge', resourceUrl: `${ISSUER}/mcp/knowledge`, endpoint: 'knowledge',
     account: 'synthetic', ownerIdentity: OWNER, redirectPort: 0, timeoutMs, fetch: mongooseFetch(accessToken),
     onHop: hop => { hops.push(hop); },
     showAuthorizationUrl: url => { authorized = url; },
   });
+  // Settle through a tuple at once, so a refusal is never an unhandled rejection while the callback runs.
+  const login = started.then(
+    (value): Settled<typeof value> => ({ ok: true, value }),
+    (error: unknown): Settled<never> => ({ ok: false, error: error instanceof Error ? error as Error & { code?: string } : new Error('sign-in refused') }),
+  );
   // The authorize URL is issued only after the listener is bound, so the callback can be delivered at once.
   for (let attempt = 0; attempt < 100 && authorized === undefined; attempt += 1) await new Promise(done => setTimeout(done, 5));
   assert.ok(authorized !== undefined, 'the sign-in issued its authorize URL');
   const url = new URL(authorized);
   if (callback !== undefined) await callback(url);
   return { login, hops, authorize: url };
+}
+
+type Settled<T> = { ok: true; value: T } | { ok: false; error: Error & { code?: string } };
+
+/** Await one sign-in and return its refusal, failing the test when it unexpectedly signed in. */
+async function refusalOf(login: Promise<Settled<unknown>>): Promise<Error & { code?: string }> {
+  const settled = await login;
+  assert.equal(settled.ok, false, `expected a refused sign-in, got ${settled.ok ? 'a stored record' : 'a refusal'}`);
+  return (settled as { ok: false; error: Error & { code?: string } }).error;
 }
 
 function redirectFor(authorize: URL, params: Record<string, string>): URL {
@@ -217,7 +250,7 @@ function redirectFor(authorize: URL, params: Record<string, string>): URL {
 test('the Mongoose sign-in asks for the owner email and refuses to store another account', async () => {
   const pedro = token(claimsFor(claimsFixture.token.audiences.knowledge!, OTHER));
   const { login, hops, authorize } = await signIn(pedro, async url => { await fetch(redirectFor(url, { code: 'synthetic-code' })); });
-  await assert.rejects(login, (error: Error & { code?: string }) => error.code === 'identity-mismatch');
+  assert.equal((await refusalOf(login)).code, 'identity-mismatch');
   assert.equal(authorize.searchParams.get('expected_email'), OWNER, 'Mongoose refuses a different account before minting a code');
   assert.equal(authorize.searchParams.get('login_hint'), OWNER, 'Google prefills the owner account');
   assert.deepEqual(hops.filter(hop => hop.outcome !== 'ok'), [{ hop: 'token', outcome: 'identity_mismatch' }]);
@@ -226,20 +259,21 @@ test('the Mongoose sign-in asks for the owner email and refuses to store another
 test('the owner token is stored; the callback refusal account_mismatch is its own typed outcome', async () => {
   const owner = token(claimsFor(claimsFixture.token.audiences.knowledge!, OWNER));
   const ok = await signIn(owner, async url => { await fetch(redirectFor(url, { code: 'synthetic-code' })); });
-  const record = await ok.login;
-  assert.equal(record.accessToken, owner);
+  const stored = await ok.login;
+  assert.equal(stored.ok, true);
+  assert.equal((stored as { ok: true; value: { accessToken: string } }).value.accessToken, owner);
   assert.equal(ok.hops.filter(hop => hop.outcome !== 'ok').length, 0);
 
   const refused = await signIn(owner, async url => {
     await fetch(redirectFor(url, { error: claimsFixture.refusal.error, mongoose_error: claimsFixture.refusal.mongoose_error }));
   });
-  await assert.rejects(refused.login, (error: Error & { code?: string }) => error.code === 'account-mismatch');
+  assert.equal((await refusalOf(refused.login)).code, 'account-mismatch');
   assert.deepEqual(refused.hops.filter(hop => hop.outcome !== 'ok'), [{ hop: 'callback', outcome: 'account_mismatch' }]);
 });
 
 test('a sign-in that never receives its callback ends in signin_callback outcome timeout', async () => {
   const owner = token(claimsFor(claimsFixture.token.audiences.knowledge!, OWNER));
   const { login, hops } = await signIn(owner, undefined, 120);
-  await assert.rejects(login, (error: Error & { code?: string }) => error.code === 'timeout');
+  assert.equal((await refusalOf(login)).code, 'timeout');
   assert.deepEqual(hops.filter(hop => hop.outcome !== 'ok'), [{ hop: 'callback', outcome: 'timeout' }]);
 });

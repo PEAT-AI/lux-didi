@@ -82,9 +82,12 @@ const SIGNIN_OUTCOMES: Record<string, readonly string[]> = {
   signin_discovery: ['ok', 'config_invalid', 'unreachable', 'redirected', 'http_status', 'not_json', 'resource_mismatch', 'server_untrusted', 'metadata_unreachable', 'metadata_invalid', 'issuer_mismatch', 'endpoint_off_origin', 'timeout'],
   signin_registration: ['ok', 'port_in_use', 'refused', 'timeout'],
   signin_browser_handoff: ['ok', 'unavailable', 'timeout'],
-  signin_callback: ['ok', 'state_mismatch', 'authorization_refused', 'timeout'],
-  signin_token: ['ok', 'refused', 'unreachable', 'timeout'],
+  signin_callback: ['ok', 'state_mismatch', 'authorization_refused', 'account_mismatch', 'timeout'],
+  signin_token: ['ok', 'refused', 'unreachable', 'timeout', 'identity_mismatch', 'identity_unverified'],
   signin_stored: ['ok', 'failed'],
+  // H20: one closing line per attempt, whether it signed in or failed on a closed reason.
+  signin_finished: ['signed_in', 'discovery_unreachable', 'discovery_refused', 'registration_refused', 'port_in_use',
+    'browser_unavailable', 'callback_failed', 'callback_timeout', 'account_mismatch', 'token_refused', 'store_failed', 'did_not_finish'],
 };
 const SIGNIN_OAUTH_ERRORS = ['invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client', 'unsupported_grant_type', 'invalid_scope', 'invalid_target', 'access_denied'];
 /**
@@ -288,6 +291,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'connector_connected' || value.event === 'connector_recovered'
     || value.event === 'connector_recovery_exhausted' || value.event === 'connector_unavailable'
+    || value.event === 'connector_latched'
     || value.event === 'connector_helper_stderr') {
     // #533: a connect that landed used to be silent, so silent meant unknown. #671: the mark that turns a
     // read into an instant `unavailable` was silent too. These lines are closed counts, ids and codes only:
@@ -311,6 +315,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (value.event === 'connector_unavailable') {
       if (!closedKeys(value, ['endpointId', 'event', 'reason']) || !token(value.reason)) return;
       return { event: 'connector_unavailable', endpointId: value.endpointId, reason: value.reason };
+    }
+    if (value.event === 'connector_latched') {
+      // One line per latch: a closed identity code and the endpoint id, never an address.
+      if (!closedKeys(value, ['code', 'endpointId', 'event']) || !token(value.code)) return;
+      return { event: 'connector_latched', endpointId: value.endpointId, code: value.code };
     }
     if (!closedKeys(value, ['bytes', 'endpointId', 'event']) || !count(value.bytes, 16_777_216)) return;
     return { event: 'connector_helper_stderr', endpointId: value.endpointId, bytes: value.bytes };

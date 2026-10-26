@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto';
 
 import { projectMongooseResult } from '../tools/mongoose.js';
 import { projectMattermostResult } from '../tools/mattermost.js';
-import { calendarIdentityValues, gmailIdentityValues, mattermostIdentityValues, mongooseIdentityValues, type IdentitySource } from './identity.js';
+import { calendarIdentityValues, gmailIdentityValues, mattermostIdentityValues, type IdentitySource } from './identity.js';
 
 export * from './lux-knowledge.js';
 export * from './google.js';
@@ -617,7 +617,9 @@ const mongooseDescriptor: ConnectorDescriptor = {
     } };
   },
   project(evidence, port, policy) { return companyProjection(evidence, policy, projectMongooseResult(port, evidence)); },
-  identity() { return { tool: 'get_started', args: {}, values: mongooseIdentityValues }; },
+  // Mongoose proves its account from its own minted access token (identity.ts tokenIdentity, via
+  // mongoose-auth): no `get_started` probe, and no probe of any kind on this connector.
+  identity() { return null; },
 };
 
 export const CONNECTOR_DESCRIPTORS: Readonly<Record<string, ConnectorDescriptor>> = {

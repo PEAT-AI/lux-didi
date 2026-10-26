@@ -1,4 +1,5 @@
 import { SOURCE_DISPATCH, type SourceDispatchEvidence } from '../adapters/mcp/port.js';
+import { tokenIdentity, type IdentityProof, type TokenClaimSpec } from './identity.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
@@ -16,6 +17,22 @@ export const MONGOOSE_ENDPOINT_PATHS: Readonly<Record<MongooseEndpoint, string>>
 export const MONGOOSE_ENDPOINT_AUDIENCES: Readonly<Record<MongooseEndpoint, string>> = {
   knowledge: 'mongoose:knowledge', data: 'mongoose:data', crm: 'mongoose:crm',
 };
+
+/**
+ * The token claim pair each endpoint mints: the `email` claim and that endpoint's exact `aud` string,
+ * read from Mongoose's own mint (`issue_mongoose_access_token`, PEAT-AI/mongoose cade720f) and
+ * checked into `server/test/fixtures/mongoose-token-claims.json`.
+ */
+export const MONGOOSE_TOKEN_CLAIMS: Readonly<Record<MongooseEndpoint, TokenClaimSpec>> = {
+  knowledge: { emailClaim: 'email', audience: MONGOOSE_ENDPOINT_AUDIENCES.knowledge },
+  data: { emailClaim: 'email', audience: MONGOOSE_ENDPOINT_AUDIENCES.data },
+  crm: { emailClaim: 'email', audience: MONGOOSE_ENDPOINT_AUDIENCES.crm },
+};
+
+/** Prove one endpoint's minted access token against the owner email and that endpoint's audience. */
+export function mongooseTokenIdentity(token: string, endpoint: MongooseEndpoint, expected: readonly string[]): IdentityProof {
+  return tokenIdentity(token, MONGOOSE_TOKEN_CLAIMS[endpoint], expected);
+}
 
 /**
  * The read envelope of one endpoint at Mongoose aa105bc6, taken from the generated tool file of that

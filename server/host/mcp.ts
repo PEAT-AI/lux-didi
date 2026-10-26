@@ -136,12 +136,13 @@ export interface ConnectorFailureDetail {
 }
 
 /**
- * Whether an unproven identity proof is worth a bounded background retry. A probe that ran out of time is
- * inconclusive and worth one; a mismatch, or a refusal that only a new sign-in fixes, is not.
+ * Whether an identity failure is worth a bounded background retry. Never (council 2026-10-26): an
+ * identity failure is terminal for that endpoint. The endpoint latches until an explicit sign-in or a
+ * host restart, so an account that cannot be proven is probed once per sign-in and once per host start,
+ * never on the recovery ladder and never once per owner turn.
  */
-export function identityFailureRetryable(proof: IdentityProof): boolean {
-  // A revoked credential and a missing one are answered by a new sign-in, never by another probe.
-  return proof.match !== false && proof.code !== 'credential_missing' && proof.code !== 'credential_revoked';
+export function identityFailureRetryable(_proof: IdentityProof): boolean {
+  return false;
 }
 
 /** Every restart delay of one bounded background recovery round, after a retryable connect failure. */
@@ -196,6 +197,8 @@ export type ConnectorLifecycleEvent =
   | { event: 'connector_recovery_exhausted'; endpointId: string; attempts: number; reason: string }
   | { event: 'connector_unavailable'; endpointId: string; reason: string }
   | { event: 'connector_helper_stderr'; endpointId: string; bytes: number }
+  /** One identity failure latched this endpoint until an explicit sign-in or a host restart. */
+  | { event: 'connector_latched'; endpointId: string; code: string }
   | { event: 'google_mcp_path_unsafe'; endpointId: string };
 
 /** Compose the inert MCP runtime once at startup: config, owner and registry only, no remote work. */
@@ -230,6 +233,8 @@ export async function composeMcpRuntime(options: {
   const expectedIdentities = selection.state === 'configured'
     ? [selection.catalog.ownerIdentity, selection.catalog.ownerChatUsername].filter((value): value is string => typeof value === 'string' && value.length > 0)
     : [];
+  // The one owner EMAIL: a username may stand in only where a connector reports no email at all.
+  const ownerIdentity = selection.state === 'configured' ? selection.catalog.ownerIdentity : null;
   // One rule: every configured read connector gets the longer call deadline, so a real hybrid
   // archive search cannot hit the five-second default. Connect and discovery stay on budgets.timeoutMs.
   const callDeadlineMs = options.callDeadlineMs ?? ENDPOINT_CALL_DEADLINE_MS;
@@ -246,6 +251,7 @@ export async function composeMcpRuntime(options: {
       // The record must be bound to the resource this catalogue entry configures, or it is a sign-in.
       return await mongooseAccessToken(configDir, reference, owner ? mongooseEntryBinding(owner) : undefined, {
         now,
+        ownerIdentity,
         // #502: a refused refresh is spoken once, by the endpoint's own typed connector_failure line
         // (credential-refresh-failed), never twice through this notice as well. A consent notice has no
         // such line, so it still speaks here.
@@ -348,7 +354,7 @@ export async function composeMcpRuntime(options: {
     return sha256(`${readMongooseOAuth(configDir, reference)?.refreshToken ?? ''}\u0000${pasted}`);
   };
   // Every credential-stage reason only a new sign-in fixes. A busy refresh is not one of them.
-  const signInReasons = new Set(['not_signed_in', 'credential-missing', 'credential-refresh-failed', 'credential-consent-expired']);
+  const signInReasons = new Set(['not_signed_in', 'credential-missing', 'credential-refresh-failed', 'credential-consent-expired', 'credential-identity-mismatch', 'credential-identity-unverified']);
   const bursts = new Map<string, { session: number; token: number | undefined }>();
   const flights = new Map<string, Promise<void>>();
   const recoverEndpoint = (id: string): Promise<void> => {
@@ -478,12 +484,30 @@ export async function composeMcpRuntime(options: {
         .catch(() => { /* the per-connector report already carries the failure */ });
     }
   };
+  // Endpoints latched by an identity failure: no probe, no recovery round, no re-arm, until an explicit
+  // sign-in (the stored credential changes) or a host restart clears the whole map.
+  const latched = new Map<string, 'identity_mismatch' | IdentityErrorCode>();
+  const latchEndpoint = (entry: McpEndpointEntry, code: 'identity_mismatch' | IdentityErrorCode): void => {
+    recovery.stop(entry.id);
+    rearm.delete(entry.id);
+    if (entry.credentialRef != null) needsSignIn.set(entry.id, storedCredentialDigest(entry.credentialRef));
+    if (latched.get(entry.id) === code) return;
+    latched.set(entry.id, code);
+    options.lifecycleLog?.({ event: 'connector_latched', endpointId: entry.id, code });
+  };
   const settle = async (entry: McpEndpointEntry, token: number, attempt: 'first-connect' | 'refresh', identityOnce: ReturnType<typeof identityProofMemo>): Promise<{ retryable: boolean }> => {
     const roundStarted = now();
     lastAttemptAt.set(entry.id, roundStarted);
     const previous = reports.get(entry.id);
     ready.delete(entry.id);
     const stale = (): boolean => closed || generations.get(entry.id) !== token;
+    // A latched endpoint is never probed again: it stays loudly uncallable with its closed code, and the
+    // other endpoints keep working.
+    const latchedCode = latched.get(entry.id);
+    if (latchedCode !== undefined) {
+      reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: latchedCode === 'identity_mismatch' ? 'identity-mismatch' : 'identity-unproven', reasonCode: latchedCode });
+      return { retryable: false };
+    }
     if (entry.configurationError || entry.unknownClass === null) {
       const code = entry.configurationError ?? 'unknown-class-missing';
       reportFailure(entry, 'config', attempt, code);
@@ -501,7 +525,7 @@ export async function composeMcpRuntime(options: {
       if (mongooseCredentialAtStart(entry.connector, local) === 'not_signed_in') {
         needsSignIn.set(entry.id, storedCredentialDigest(entry.credentialRef));
         reportFailure(entry, 'credential', attempt, 'not_signed_in');
-        reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'not_signed_in', reasonCode: 'not_signed_in' });
+        reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'not_signed_in', reasonCode: 'not_signed_in' as const });
         return { retryable: false };
       }
       needsSignIn.delete(entry.id);
@@ -656,13 +680,15 @@ export async function composeMcpRuntime(options: {
           const code = refusalCode(identity);
           // A probe that ran out of time is inconclusive, not a refusal: it schedules the bounded
           // background recovery. Only a definite refusal stays failed until the next reconnect.
-          const retryable = identityFailureRetryable(identity);
+          // Terminal per endpoint: the latch stops the ladder and every later probe (H-01).
+          latchEndpoint(entry, code);
           reportFailure(entry, 'handshake', attempt, code);
           if (attempt === 'first-connect' && entry.transport === 'stdio') replaceSession.add(entry.id);
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code === 'identity_mismatch' ? 'identity-mismatch' : 'identity-unproven', reasonCode: code, identity });
-          return { retryable };
+          return { retryable: false };
         }
         if (!identity.proven) {
+          latchEndpoint(entry, refusalCode(identity));
           reportFailure(entry, 'handshake', attempt, refusalCode(identity));
           if (attempt === 'first-connect' && entry.transport === 'stdio') replaceSession.add(entry.id);
           reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'identity-unproven', ...(identity.code ? { reasonCode: identity.code } : {}), identity });
@@ -764,6 +790,8 @@ export async function composeMcpRuntime(options: {
         const landed = storedCredentialDigest(entry.credentialRef);
         if (landed === parked) return;
         needsSignIn.delete(id);
+        // An explicit sign-in is the one release of an identity latch for this endpoint.
+        latched.delete(id);
         const token = (generations.get(id) ?? 0) + 1;
         generations.set(id, token);
         recovery.stop(id);

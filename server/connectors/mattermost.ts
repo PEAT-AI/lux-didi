@@ -2,6 +2,7 @@ import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type SourceDispatchEvidence, 
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
+import { ambiguityQuestion, currentBinding } from '../people/index.js';
 
 /**
  * The only Mattermost tools this connector may ever read, in fixed order. Posting, reacting

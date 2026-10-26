@@ -122,7 +122,7 @@ Then ask for the board overview, overdue cards or a named list. Naya can make gr
 
 ### Gmail, Calendar and Drive
 
-Install and configure the Google helper with the selected account and token path. Use its authorization command for each family: `lux-google-mcp authorize --family gmail`, `--family calendar` or `--family drive`, passing its own `--token <token file> --account <address>` binding (the same values the endpoint's `LUX_GOOGLE_MCP_TOKEN` and `LUX_GOOGLE_MCP_ACCOUNT` name), so the token it writes serves that one family and no other. Use the configured helper executable, not an unrelated copy found on PATH.
+Install and configure the Google helper with the selected account and token path. Use its authorization command for each family: `lux-google-mcp authorize --family gmail`, `--family calendar` or `--family drive`, supplying the additional account/token options shown by that installed helper's `--help`. Use the configured helper executable, not an unrelated copy found on PATH.
 
 Drive needs its own read consent and endpoint; Gmail access does not imply Drive access. After changing helper/catalog files, restart Didi deliberately. Ask for a small read first, such as upcoming events or a named document, and verify that the answer identifies what was actually searched. A sign-in-needed result is not an empty mailbox or calendar.
 

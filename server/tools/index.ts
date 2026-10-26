@@ -802,8 +802,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 // LOGS.md L-08: every classified failure is one closed host event, so host.log tells a
                 // failed read from an empty one. The endpoint id, the tool and the classified code only:
                 // no argument, no payload, no helper text. A code that is not one word is not logged.
+                // It travels on the host-log channel, whose sink owns validation, because the owner log
+                // accepts only the closed transport-failure shape.
                 const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code: status.code });
-                if (failure) options.log?.(failure);
+                if (failure) hostLogEvent(failure);
                 return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0 }, []) };
               }
               reportToolStatus?.(p.endpoint.id, null);

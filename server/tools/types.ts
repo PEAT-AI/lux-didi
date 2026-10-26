@@ -4,7 +4,6 @@ import type { RememberNotePort } from './remember.js';
 import type { VaultDispatchPort } from './vault-write.js';
 import type { JsonObject as JsonValue } from '../adapters/model/types.js';
 import type { LiveVoiceProvider } from '../adapters/live-voice/types.js';
-import type { ConnectorFailureEvent } from './host-events.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
 import type { HistorySourceRef } from '../domain/history-reader.js';
 import type { ResultScope } from '../adapters/mcp/port.js';
@@ -49,7 +48,7 @@ export interface ToolFailureEvent {
   tool: string; connector: string; errorClass: 'Error' | 'SyntaxError' | 'UnknownThrow'; messageHead: string;
 }
 export interface ToolsOwnerOptions {
-  log?: (event: ToolFailureEvent | ConnectorFailureEvent) => void;
+  log?: (event: ToolFailureEvent) => void;
   grantMode?: 'explicit' | 'owner-trusted-reads';
   store: StorePort; ownerId: string; registry: McpRegistry; port: McpPort;
   lookupAuthority(runId: string, signal: AbortSignal): Promise<LiveAuthority | null>;

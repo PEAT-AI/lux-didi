@@ -450,13 +450,3 @@ test('the import script writes a 0600 key file and prints no secret', async () =
     assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { key, token });
   } finally { rmSync(configDir, { recursive: true, force: true }); rmSync(join(envFile, '..'), { recursive: true, force: true }); }
 });
-
-// D2-R2: the Atlassian Inbox is not on the boards and cards REST API, so the read says so in words.
-test('D2-R2: the Inbox read is a closed spoken reason, never an empty list', async () => {
-  const before = fake.calls.length;
-  const inbox = await board.read(session(), { view: 'inbox' });
-  assert.equal(inbox.ok, false, 'the Inbox is never answered with an empty list');
-  assert.equal(inbox.code, 'inbox_unavailable');
-  assert.match(String(inbox.guidance), /^Trello Inbox is not available with the API key\./, 'the words say it plainly');
-  assert.equal(fake.calls.length, before, 'nothing is sent for a read the API cannot answer');
-});

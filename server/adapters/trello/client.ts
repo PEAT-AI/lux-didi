@@ -21,7 +21,6 @@ export const TRELLO_ACTIONS: Readonly<Record<string, Readonly<Record<string, rea
   trelloReadList: { list_by_board: ['boardId', 'cursor'] },
   trelloReadCard: { get: ['cardId'], list_by_list: ['listId', 'cursor'], list_comments: ['cardId', 'cursor'] },
   trelloReadChecklist: { list_by_card: ['cardId', 'cursor'] },
-  trelloReadInbox: { list: ['cursor'] },
   trelloWriteCard: {
     create: ['listId', 'name', 'desc', 'due', 'pos'], update: ['cardId', 'name', 'desc', 'due', 'dueComplete'],
     move: ['cardId', 'listId', 'pos'], archive: ['cardId'],
@@ -88,8 +87,6 @@ export function trelloRequests(tool: string, args: Args): { requests: Request[];
       return { requests: [{ method: 'POST', path: `checklists/${path([String(args.checklistId)])}/checkItems`, body: defined({ name: args.name, pos: args.pos }) }] };
     case 'trelloWriteChecklist.update_item':
       return { requests: [{ method: 'PUT', path: `checklists/${path([String(args.checklistId)])}/checkItems/${path([String(args.itemId)])}`, body: defined({ name: args.name, state: args.state }) }] };
-    // The Atlassian Inbox is a product surface with no REST endpoint: the read refuses rather than answering empty.
-    case 'trelloReadInbox.list': return undefined;
     default: return undefined;
   }
 }
@@ -148,9 +145,6 @@ export function createTrelloRestTransport(options: TrelloRestOptions): TrelloTra
     },
 
     async call(tool: string, args: Args, signal?: AbortSignal): Promise<TrelloCallResult> {
-      // The Atlassian Inbox is not reachable with a key and a token: the boards and cards REST API has
-      // no inbox, so the read says so in words instead of answering with an empty list.
-      if (tool === 'trelloReadInbox' && String(args.action) === 'list') return { ok: false, code: 'inbox_unavailable' };
       const planned = trelloRequests(tool, args);
       if (!planned) return { ok: false, code: 'not_allowed' };
       if (!trelloOriginAllowed(base)) return { ok: false, code: 'not_allowed' };

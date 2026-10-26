@@ -29,6 +29,8 @@ cp "$root/server/host/mcp.ts" "$out/source/host/"
 # W14: the loud-error suite proves the classified-failure row is admitted by the real host log, so the
 # harness compiles host/log.ts and its small import closure too.
 cp "$root/server/host/log.ts" "$out/source/host/"
+# L2: host/log.ts re-exports the call-context helpers from host/events.ts, so stage that module too.
+cp "$root/server/host/events.ts" "$out/source/host/"
 # W15: tools, connectors and the live persona resolve people through the host snapshot, so the
 # harness compiles that module and its import closure too.
 cp "$root"/server/people/*.ts "$out/source/people/"

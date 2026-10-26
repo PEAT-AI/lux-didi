@@ -356,9 +356,9 @@ test('the public character, voice surface and tool conduct are the authored verb
   // TR3-R1: W15's people rule is the ruled 75-char sentence, so the two blocks carrying it are re-pinned.
   assert.equal(sha(NAYA_CHARACTER), '1b188117660fe12204cd542001b585fcce69add4f1cc6d27689720e193cac977');
   assert.equal(sha(NAYA_VOICE_SURFACE), '1cf4e572cd49ae7d8d7e16ee3c11b53c6dc652dc1511b8b5625d4a8a3bcb0768');
-  assert.equal(sha(NAYA_VOICE_TOOLS), '8822291a6dc64c22c73c43496ab4c1c5d92aa8ca7d9ab87f06c17a003a646874');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '73c28c168340a22199b1dd5198c02227d6d47a48c04a5b734392852953b6d60c');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '92c556c1112232a01b24e05964a29e2082c27a8e93b2610f83aa498ba5090669');
-  assert.equal(sha(NAYA_TOOLS), '5eb63df49ff8d0c3d76913c4ce71c2b1eaee03ef47be06da627111d27d6aa2f8');
+  assert.equal(sha(NAYA_TOOLS), '6ac84a814e9316df7c9bc7d227b7cbeca78bfd99953eeae4ae9d0e8175ce3087');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));
@@ -677,7 +677,9 @@ const WRAPPER_3O_CHARS = 6603;
 // #665/#666: the honesty rules and the turn-taking line they replace raise it to the measured wrapper.
 // TR-R5: the owner rule for authored text is re-pin, never trim a reviewed rule, so the bound carries the merged measure.
 // TR-R15: restoring W7's "rather than claiming it happened" clause, which W6's rewrite had dropped, measured 14_224.
-const WRAPPER_W5_CHARS = 14_300;
+// TRAIN4-R1: the merged wrapper measures 14_303 once main's write-honesty clause is back beside V1's save
+// wording; the bound carries the merged measure and no reviewed rule is trimmed for it (TR-R5).
+const WRAPPER_W5_CHARS = 14_350;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
@@ -703,7 +705,10 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // #621: the coverage header adds its own measure. #665/#666: the honesty rules add theirs.
   // TR-R5: a house budget re-pinned to the merged measure; no reviewed rule was trimmed for it.
   // TR-R15: measured 7_621 once W7's write-honesty clause was restored.
-  const cap = 7_700;
+  // TRAIN4-R1: V1's save wording and main's write-honesty clause now sit in one paragraph, so the
+  // merged measure is 7_700; the bound carries it, exactly as TR-R5 re-pins a house budget to the
+  // merged measure and no reviewed rule is trimmed for it.
+  const cap = 7_750;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.

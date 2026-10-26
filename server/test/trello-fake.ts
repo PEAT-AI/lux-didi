@@ -260,7 +260,8 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
     }
     const [tool, args] = planned;
     calls.push({ tool, args: structuredClone(args) });
-    if (drop && tool.startsWith('trelloWrite')) { drop = false; request.socket.destroy(); return; }
+    // The write lands and the answer never comes: the caller cannot know, which is the case worth reading back.
+    if (drop && tool.startsWith('trelloWrite')) { drop = false; run(tool, args); request.socket.destroy(); return; }
     if (fail && tool.startsWith('trelloWrite')) { fail = false; json(response, 400, { message: 'refused' }); return; }
     const answer = run(tool, args) as { isError?: boolean; content: { text: string }[] };
     const text = answer.content[0]?.text ?? '';

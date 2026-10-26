@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
@@ -222,6 +222,53 @@ test('the Drive family records its account proof as the helper pin, and stays st
   assert.equal(source?.proof, 'helper_pin');
   assert.equal(source?.proves, 'consent');
   assert.equal(source?.strict, true);
+});
+
+test('composition refuses a Drive child pinned to another account and connects the owner pin', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-google-compose-'));
+  const config = join(dir, 'provider-config');
+  await mkdir(config, { mode: 0o700 });
+  // The child speaks stdio MCP and drops a marker on start-up, so "never spawned" is an observation, not a claim.
+  const child = join(dir, 'fake-drive.cjs');
+  const tools = ['drive_search_files', 'drive_get_file'].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
+  const reply = (message: { id?: unknown; method: string }) => message.id === undefined ? undefined : {
+    jsonrpc: '2.0', id: message.id, result: message.method === 'initialize'
+      ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake-drive', version: '1' } }
+      : message.method === 'tools/list' ? { tools }
+      : message.method === 'tools/call' ? { content: [{ type: 'text', text: JSON.stringify({ files: [], nextPageToken: null }) }] } : {},
+  };
+  await writeFile(child, [
+    "require('node:fs').writeFileSync(process.env.DRIVE_CHILD_MARKER, 'started');",
+    `const tools=${JSON.stringify(tools)};`,
+    `const reply=${reply.toString()};`,
+    "require('node:readline').createInterface({input:process.stdin}).on('line', line => { const response=reply(JSON.parse(line)); if(response) console.log(JSON.stringify(response)); });",
+  ].join('\n'));
+  const marker = (id: string): string => join(dir, `${id}.started`);
+  const googleChild = (id: string, pinned: string) => ({
+    id, connector: 'google', transport: 'stdio', command: process.execPath, args: [child],
+    env: { HOME: dir, LOGNAME: '', LUX_GOOGLE_MCP_ACCOUNT: pinned, PATH: process.env.PATH ?? '/usr/bin', SHELL: '', TERM: '', USER: '', DRIVE_CHILD_MARKER: marker(id) },
+    account: 'local', resource: id, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'private',
+  });
+  await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: OWNER, endpoints: [
+    googleChild('drive-other', OTHER), googleChild('drive-owner', OWNER.toUpperCase()),
+  ] }), { mode: 0o600 });
+  const webRoot = scratchWebRoot();
+  let host: Awaited<ReturnType<typeof startHost>> | undefined;
+  try {
+    host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
+    const headers = { Authorization: `Bearer ${host.store.adminCredential}`, 'Content-Type': 'application/json', 'X-Didi-Authority-Epoch': host.descriptor.authorityEpoch, 'Idempotency-Key': randomUUID() };
+    const status = await fetch(host.descriptor.origin + '/api/v1/tools/status', { headers });
+    const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; reasonCode?: string }>;
+    const byId = (id: string) => reports.find(report => report.id === id);
+    assert.equal(byId('drive-other')?.state, 'error', 'a child pinned to another account is refused');
+    assert.equal(byId('drive-other')?.reasonCode, 'identity_mismatch');
+    assert.equal(existsSync(marker('drive-other')), false, 'the refused child never spawned');
+    assert.equal(byId('drive-owner')?.state, 'connected', 'the owner pin connects');
+    assert.equal(existsSync(marker('drive-owner')), true, 'the owner child really spawned');
+  } finally {
+    if (host !== undefined) await host.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('a tool call routed to a latched endpoint is refused with its closed code', async () => {

@@ -191,7 +191,7 @@ test('a Google child pinned to another account is refused at catalog load, the o
   await mkdir(config, { mode: 0o700 });
   const child = (id: string, pinned: string) => ({
     id, connector: 'google', transport: 'stdio', command: '/usr/bin/env', args: [],
-    env: { HOME: '', LOGNAME: '', LUX_GOOGLE_MCP_ACCOUNT: pinned, PATH: '', SHELL: '', TERM: '', USER: '' },
+    env: { HOME: '/tmp', LOGNAME: '', LUX_GOOGLE_MCP_ACCOUNT: pinned, PATH: '/usr/bin', SHELL: '', TERM: '', USER: '' },
     account: 'local', resource: id, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'private',
   });
   // D1-R4: the helper pins every family to LUX_GOOGLE_MCP_ACCOUNT and refuses a read otherwise, so Didi

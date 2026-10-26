@@ -12,11 +12,11 @@ export const WEB_MODEL = 'gemini-3.8-flash';
  * The council's hard deadline: the transport is cancelled at this point, never left running.
  * #670: 78 live grounded reads (2026-10-25) took 5.2 s median, 7.9 s p95, 10.3 s p99 and 11.5 s at worst,
  * and the headers arrive at 5.06 s, so an 8 s budget cut about one read in twenty. 12 s cut none of them.
- * Every timer above this read sits higher: the read's outer cut is one second past it, the research answer
- * budget is this plus its 2 s slack, the ledger start deadline is 15 s and the answer cap is 20 s, so this
- * timer is the one that fires and says timeout (#645: never a budget at the low end of the typical range).
+ * R1 (owner order 2026-10-26): call 01c4bd89 lost a web read that finished at 10.1 s while the call answered at
+ * 5.5 s, so the budget is 14 s now: it fits inside the research call's 15 s patience budget, with the read's own
+ * outer cut one second past it, so this timer is still the one that fires and says timeout (#645).
  */
-export const WEB_DEADLINE_MS = 12_000;
+export const WEB_DEADLINE_MS = 14_000;
 
 /** The one place the web budget is read, so the research row and this module cannot drift apart. */
 export function webDeadlineMs(_query: string): number { return WEB_DEADLINE_MS; }

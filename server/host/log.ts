@@ -15,6 +15,8 @@ import { join } from 'node:path';
 const SAFE_TOKEN = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/;
 const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/;
 const SAFE_CALL_ID = /^[A-Za-z0-9_.:~-]{1,128}$/;
+/** R7: what owned a silence the owner heard: a tool call, the provider generating, or the owner's own speech. */
+const SILENCE_OWNERS = ['tool', 'provider', 'owner'];
 const RESEARCH_SOURCES = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'memory', 'web', 'drive'];
 const RESEARCH_CANDIDATES = ['knowledge_search', 'calendar_window', 'mail_search', 'mail_open', 'chat_search', 'chat_thread', 'company_search', 'web_search', 'brief', 'stop_answer', 'stop_insufficient', 'memory_search'];
 const RESEARCH_STOPS = ['answered', 'selector_stop', 'insufficient', 'rounds_exhausted', 'no_candidates', 'voi_stop', 'ops_exhausted', 'deadline', 'cancelled', 'fallback', 'stop', 'failed', 'refused'];
@@ -736,11 +738,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'live_dead_air', deadAirMs: value.deadAirMs };
   }
   if (value.event === 'live_heard_silence') {
-    // L-04: the silence the owner heard, from the end of the last audible frame to the next model audio. A duration
-    // and one flag, never turn content.
-    if (Object.keys(value).sort().join(',') !== ['event', 'ms', 'toolPending'].sort().join(',')) return;
-    if (!isSafeCount(value.ms) || typeof value.toolPending !== 'boolean') return;
-    return { event: 'live_heard_silence', ms: value.ms, toolPending: value.toolPending };
+    // L-04/R7: the silence the owner heard, from the end of the last audible frame to the next model audio, with
+    // what really owned it: a tool call, the provider generating, or the owner. A duration and one word, never
+    // turn content. The old boolean said "tool pending" even when the provider was simply generating.
+    if (Object.keys(value).sort().join(',') !== ['event', 'ms', 'silence'].sort().join(',')) return;
+    if (!isSafeCount(value.ms) || !SILENCE_OWNERS.includes(String(value.silence))) return;
+    return { event: 'live_heard_silence', ms: value.ms, silence: value.silence as string };
   }
   if (value.event === 'live_turn_open') {
     // #303: the provider streamed model audio and then went quiet without a turnComplete.
@@ -1104,12 +1107,23 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'research_first_answer') {
     // R6: when a call answered with sources still reading: the elapsed ms, the sources already in the
-    // reply and the ones it named as pending. Never a query, never a finding.
-    if (!closedKeys(value, ['event', 'researchId', 'ms', 'settled', 'pending'])) return;
+    // reply and the ones it named as pending. R7 adds only how it answered and the owner's wait. Never a
+    // query, never a finding.
+    if (!closedKeys(value, ['event', 'researchId', 'ms', 'settled', 'pending', 'kind', 'elapsedMs'])) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_first_answer');
     if (typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 120_000) return;
+    if (!['early', 'full', 'hard_stop'].includes(String(value.kind))) return;
+    if (typeof value.elapsedMs !== 'number' || !Number.isFinite(value.elapsedMs) || value.elapsedMs < 0 || value.elapsedMs > 120_000) return;
     if (!isSafeMembers(value.settled, RESEARCH_SOURCES) || !isSafeMembers(value.pending, RESEARCH_SOURCES)) return;
-    return { event: 'research_first_answer', researchId: value.researchId, ms: value.ms, settled: value.settled, pending: value.pending };
+    return { event: 'research_first_answer', researchId: value.researchId, ms: value.ms, settled: value.settled, pending: value.pending, kind: value.kind as string, elapsedMs: value.elapsedMs };
+  }
+  if (value.event === 'research_still_searching') {
+    // R2/R7: the one short line an owner waiting on a research call hears at 10 s, and whether it was spoken.
+    if (!closedKeys(value, ['event', 'researchId', 'elapsedMs', 'spoken'])) return;
+    if (!isSafeId(value.researchId)) return rejectResearchId('research_still_searching');
+    if (typeof value.elapsedMs !== 'number' || !Number.isFinite(value.elapsedMs) || value.elapsedMs < 0 || value.elapsedMs > 120_000) return;
+    if (typeof value.spoken !== 'boolean') return;
+    return { event: 'research_still_searching', researchId: value.researchId, elapsedMs: value.elapsedMs, spoken: value.spoken };
   }
   if (value.event === 'research_late_findings') {
     // R6: one line per source that settled after the first answer: how long it took, how many items it

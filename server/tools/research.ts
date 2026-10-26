@@ -208,7 +208,12 @@ export const RESEARCH = Object.freeze({
   knowledgeOpenIds: 0,
   /** ROUTE-1022 (#526): what a reply tells the model in plain words, so it never re-asks, and a cut run names its readers. */
   completeNote: 'Nothing more to fetch for this question.',
-  stillReadingNote: 'Still reading: ',
+  /** R4: a source still reading is still searching; the reply never calls it a timeout while it is arriving. */
+  stillReadingNote: 'Still searching: ',
+  /** R3/R4: a source the hard stop left behind did not return in time, which is what the reply says. */
+  hardStopNote: 'Did not return in time: ',
+  /** R2: the one short line an owner hears at 10 s while a research call is still reading. */
+  stillSearchingLine: 'Still searching, one moment.',
   /**
    * LAT-1023: one short clause, so an answer that ran out of rounds or of room never reads as a whole
    * record and never lets the model claim a record does not exist.
@@ -505,10 +510,10 @@ export function sourceDeadlineMs(sources: readonly SourceKind[]): number {
 /**
  * P5-R1: the whole research call, as the owner ordered it: the slowest source the call reads plus two
  * seconds, capped at 20 s. A call of local reads is short, and a call that reads nothing slow is never
- * given a slow source's budget.
+ * given a slow source's budget. R1: no call's answer budget is wider than the patience budget itself.
  */
 export function researchCallBudgetMs(sources: readonly SourceKind[]): number {
-  return Math.min(RESEARCH.answerCapMs, sourceDeadlineMs(sources) + RESEARCH.answerSlackMs);
+  return Math.min(RESEARCH.answerCapMs, RESEARCH_OPERATION.deadlineMs, sourceDeadlineMs(sources) + RESEARCH.answerSlackMs);
 }
 
 /** pUseful(S) = 1 - product(1 - p_a) over the chosen actions. */
@@ -2005,6 +2010,8 @@ const windowDates = (window: string, now: number, timeZone: string): { windowFro
 /** R6: one metadata-only line for the moment a call answered ahead of the sources still reading. */
 export interface ResearchFirstAnswer {
   event: 'research_first_answer'; researchId: string; ms: number; settled: SourceKind[]; pending: SourceKind[];
+  /** R3/R7: how the answer was reached, and how long the owner waited for it. */
+  kind: 'early' | 'full' | 'hard_stop'; elapsedMs: number;
 }
 
 /** R6: one event per source that settles after the first answer. Only what the source really returned. */
@@ -3334,8 +3341,10 @@ function sourceTroubleLine(run: RunState): string | undefined {
     if (!cut && !run.sourcesFailed.has(source)) continue;
     const code = run.unavailableReasons.get(source);
     // K1: a web lookup this session cannot serve says so in the owner's words, never as a chat answer.
+    // R4: a read the run cut short did not return in time; only the connector's own timeout code is a timeout.
     if (code === 'web_not_available') parts.push('web: not available');
-    else if (cut || (code !== undefined && TIMED_OUT.has(code))) parts.push(`${label}: not read (timed out after ${secondsOfSource(source)} s)`);
+    else if (cut) parts.push(`${label}: did not return in time`);
+    else if (code !== undefined && TIMED_OUT.has(code)) parts.push(`${label}: not read (timed out after ${secondsOfSource(source)} s)`);
     else parts.push(`${label}: unavailable (${(code !== undefined ? plainReason(code) : undefined) ?? 'no answer'})`);
   }
   return parts.length === 0 ? undefined : parts.join('; ');
@@ -4957,8 +4966,8 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   const view = first.snapshot?.();
   if (view === undefined) return undefined;
   const found = [...view.run.ledger.values()].flatMap(entry => entry.lines ?? []).concat([...view.run.calendar.values()].flatMap(read => [...read.events.values()].map(event => event.line)), [...mailMessages(view.run).values()].map(message => message.line));
-  // No source has findings yet: the call waits for them, but only to the operation deadline (C-LIVE behaviour 2),
-  // where it answers with what it has and the readers still running detach to the late-findings path.
+  // No source has findings yet: the call waits for them to the hard stop (R3), where it answers with what it has and
+  // the readers still running detach to the late-findings path.
   if (found.length === 0 && !first.historyPages?.some(page => typeof page['text'] === 'string' && page['text'].length > 0 || Array.isArray(page['hits']) && page['hits'].length > 0)) {
     const deadlineAt = view.run.operationDeadlineAt;
     if (deadlineAt === undefined) return loop;
@@ -4970,6 +4979,9 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
     }
   }
   const pending = [...first.reading].filter(source => !view.run.sourcesDone.has(source));
+  // R3/R4: a source the hard stop left behind did not return in time, and only a source still reading when the
+  // answer is released is still searching. Neither is ever called a timeout while its results are arriving.
+  const hardStopped = first.releaseAt !== undefined && deps.now() >= first.releaseAt() - RESEARCH_OPERATION.returnReserveMs;
   if (!evidenceAllowed(deps, view.run, new AbortController().signal)) return deniedEvidence(deps, view.run);
   // ROUTE-1022 (#526): an early answer is partial by definition until its readers settle, and it names
   // them; an answer with nothing left reading is complete and says nothing more is to fetch.
@@ -4981,7 +4993,7 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
     ...early,
     status: partial || early['canContinue'] === true ? 'partial' : 'complete',
     canContinue: partial || early['canContinue'] === true,
-    note: partial ? `${RESEARCH.stillReadingNote}${pending.join(', ')}.${String(early['note'] ?? '').includes(RESEARCH.moreAvailableNote) ? ` ${RESEARCH.moreAvailableNote}` : ''}` : (typeof early['note'] === 'string' ? early['note'] : RESEARCH.completeNote),
+    note: partial ? `${hardStopped ? RESEARCH.hardStopNote : RESEARCH.stillReadingNote}${pending.join(', ')}.${String(early['note'] ?? '').includes(RESEARCH.moreAvailableNote) ? ` ${RESEARCH.moreAvailableNote}` : ''}` : (typeof early['note'] === 'string' ? early['note'] : RESEARCH.completeNote),
   }, view.limit);
   const reply: JsonObject = wrapped;
   first.mailShown = new Set((reply as MailReply)[mailDelivery]?.keys ?? []);
@@ -4995,7 +5007,7 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   first.at = deps.now();
   view.run.answeredAt = first.at;
   const researchId = typeof reply['researchId'] === 'string' ? reply['researchId'] : '';
-  (deps.logFirstAnswer ?? ((event: ResearchFirstAnswer): void => { hostLogEvent(event); }))({ event: 'research_first_answer', researchId, ms: RESEARCH.firstAnswerMs, settled: [...view.run.sourcesDone], pending });
+  (deps.logFirstAnswer ?? ((event: ResearchFirstAnswer): void => { hostLogEvent(event); }))({ event: 'research_first_answer', researchId, ms: RESEARCH.firstAnswerMs, settled: [...view.run.sourcesDone], pending, kind: hardStopped ? 'hard_stop' : 'early', elapsedMs: Math.max(0, deps.now() - view.run.startedAt) });
   return capReply({ ...reply, pending }, view.limit);
 }
 
@@ -5004,7 +5016,15 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   const first: FirstAnswerState = { mailShown: new Set(), seen: new Set(), delivered: new Set(), reading: new Set() };
   const loop = runResearchLoop(deps, call, signal, first);
   const early = await firstAnswerOf(deps, first, loop);
-  if (early === undefined) { const reply = await loop; if (!deps.authorizeEvidence) markCalendarReply(deps.ledger, reply); return reply; }
+  if (early === undefined) {
+    const reply = await loop;
+    if (!deps.authorizeEvidence) markCalendarReply(deps.ledger, reply);
+    // R7: a call every one of whose sources settled logs its answer too, so each research call has one answer line.
+    const researchId = typeof reply['researchId'] === 'string' ? reply['researchId'] : '';
+    const done = first.snapshot?.().run;
+    (deps.logFirstAnswer ?? ((event: ResearchFirstAnswer): void => { hostLogEvent(event); }))({ event: 'research_first_answer', researchId, ms: RESEARCH.firstAnswerMs, settled: done === undefined ? [] : [...done.sourcesDone], pending: [], kind: 'full', elapsedMs: Math.max(0, deps.now() - (done?.startedAt ?? deps.now())) });
+    return reply;
+  }
   // The call answers now. The readers keep going to their own deadlines, so their findings still land.
   // C-LIVE: the detached loop's own closing reply is never handed to the model, so the findings it marks as
   // given are unmarked again; an owner follow-up then hears them instead of "already given".
@@ -5212,7 +5232,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     }
   }
   run.direction = call.direction ?? run.direction;
-  run.operationDeadlineAt = now() + RESEARCH_OPERATION.deadlineMs;
+  // R3: the readers are bounded by the hard stop, not by the patience budget: a source that has not returned by
+  // then is cut, and the call names it. A page never starts unless it fits the patience budget (boundedPages).
+  run.operationDeadlineAt = now() + RESEARCH_OPERATION.hardStopMs;
   run.reading = first.reading;
   // #621: the ask's own route, so a source it names but the session never wired still says why.
   for (const source of requiredSources(run.question ?? question)) run.route.add(source);
@@ -5398,14 +5420,15 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   };
   let heartbeat = schedule(beat, RESEARCH.progressEveryMs);
 
-  // RD/P5-R1: a start call answers, or reports its honest partial, inside its own budget. The bound is one
-  // cut for the whole run, so the prime-source read that starts before the selector is bounded too.
+  // RD/P5-R1: a start call answers, or reports its honest partial, inside its own budget. R3: the one cut for the
+  // whole run is the hard stop, so a read in flight keeps its full patience instead of dying at the patience
+  // budget the owner complained about; the patience budget decides what may still be started.
   const answerCut = new AbortController();
   // ROUTE-1022 (#526): a cut read ends the first answer's wait for the source it is about.
   answerCut.signal.addEventListener('abort', () => { first.cut = true; first.wake?.(); }, { once: true });
   const hint = hintedSources(call.sources, configured);
-  let answerMs = researchCallBudgetMs(hint.length > 0 ? hint : []);
-  let answerTimer = call.action === 'start' ? schedule(() => answerCut.abort(), answerMs) : { unref: () => {}, cancel: () => {} };
+  const answerMs = RESEARCH_OPERATION.hardStopMs;
+  const answerTimer = call.action === 'start' ? schedule(() => answerCut.abort(), answerMs) : { unref: () => {}, cancel: () => {} };
   // ROUTE-1022 (#526): the source classes this question is about, and the run's own budget as the
   // latest moment the first answer may hold for them. Both are read by the first answer point only,
   // and both are set here so the budget is the one this run declared.
@@ -5413,20 +5436,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   const plannedText = planText(question, run);
   const required = new Set(requiredSources(plannedText).filter(source => configured.includes(source)));
   if (required.size > 0) first.required = required;
-  first.releaseAt = () => started + answerMs;
-  /**
-   * P5-R1: the call budget is the slowest source this call reads plus the slack, capped. A batch that
-   * carries a 12 s connector read may not be cut by a local read's smaller budget, and a batch of
-   * local reads only is never widened for a slow source it does not read.
-   */
-  const allowAnswer = (sources: readonly SourceKind[]): void => {
-    if (call.action !== 'start') return;
-    const wanted = researchCallBudgetMs(sources);
-    if (wanted <= answerMs) return;
-    answerMs = wanted;
-    answerTimer.cancel();
-    answerTimer = schedule(() => answerCut.abort(), Math.max(0, answerMs - (now() - started)));
-  };
+  first.releaseAt = () => started + RESEARCH_OPERATION.hardStopMs;
   // Outcome 5: the owner's knowledge base is the prime source. Its read starts immediately, in
   // parallel with source selection, unless the owner named one certain non-knowledge source.
   const knowledgeSubs = candidateSubs('knowledge_search', { question, topic: run.topic, ownerWords, configured, evidence: run.evidence, nowMs: now(), timeZone: deps.timeZone });
@@ -5557,8 +5567,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
           const named = sourceKindOf(kind);
           return named !== null ? [named] : kind === 'brief' ? [...configured] : [];
         });
-        allowAnswer(batchSources);
-        // #621: every round adds what it routed to, so a source the deadline never reached still says so.
+        // R1: the batch's sources are read by the same patience budget every call names once.
         for (const source of batchSources) run.route.add(source);
         const remainingMs = batchDeadline - now();
         if (remainingMs <= 0) { stopReason = 'deadline'; break; }
@@ -6220,17 +6229,20 @@ export class ResearchScheduler {
 // ---- C-LIVE (W5): owner-turn admission, the bounded operation and per-source coverage --------------------------
 
 /**
- * C-LIVE behaviour 2: one research operation answers by `deadlineMs`. Measured on the installed host.log
- * (2026-10-12 to 10-25, 723 research_source rows): p50 per source 0.1 to 3.9 s, p90 5.3 to 7.7 s; a whole run
- * p50 2.2 s, p90 9.8 s. The first answer point (4.5 s) already answers when one source has findings; 6 s is the
- * bound for a call with nothing yet, and the readers still running detach to the late-findings path. A page
- * starts only when its estimate (this read's last page, else the per-source p50) finishes `returnReserveMs`
- * before the deadline; the host settles the call itself `hostGraceMs` after the deadline if the loop has not.
+ * R1 (owner order 2026-10-26): research patience, named once. A call waits for the sources its question needs
+ * up to `deadlineMs` (15 s) instead of the 6 s that answered call 01c4bd89 while its web read was still
+ * running; at `stillSearchingMs` (10 s) an owner still waiting hears one short "still searching" line; and
+ * `hardStopMs` (20 s) is the absolute bound, where the call answers with what it has and names the source that
+ * did not return in time. A page starts only when its estimate (this read's last page, else the per-source p50)
+ * finishes `returnReserveMs` before the patience budget, and `deadlineMs` plus `hostGraceMs` is exactly
+ * `hardStopMs`, so the host's own settle bound and the call's own are the same number written once.
  */
 export const RESEARCH_OPERATION = Object.freeze({
-  deadlineMs: 6_000,
+  deadlineMs: 15_000,
+  stillSearchingMs: 10_000,
+  hardStopMs: 20_000,
   returnReserveMs: 500,
-  hostGraceMs: 1_000,
+  hostGraceMs: 5_000,
   pageEstimateMs: Object.freeze({ mail: 2_000, calendar: 1_400 }),
 });
 
@@ -6252,9 +6264,16 @@ export class ResearchAdmission {
   #turns = 0;
   #grant: number | undefined;
   #deliveredAt: number | undefined;
+  /** R6: the one own-results continue this session may spend without a new owner turn. */
+  #ownResults = false;
   ownerTurn(): void { this.#turns += 1; this.#grant = this.#turns; }
-  admit(action: ResearchAction): AdmissionVerdict {
+  /**
+   * R6: `ownResults` is the model asking for the pending results of the research this same turn started, while that
+   * research still has sources reading. That one continue spends no owner turn, and a second one is refused.
+   */
+  admit(action: ResearchAction, ownResults = false): AdmissionVerdict {
     if (action === 'stop') return { admitted: true };
+    if (ownResults && action === 'continue' && !this.#ownResults) { this.#ownResults = true; return { admitted: true }; }
     if (this.#turns === 0) return { admitted: false, reason: 'no_owner_turn' };
     if (this.#grant !== this.#turns) return { admitted: false, reason: 'turn_spent' };
     if (action === 'continue' && this.#deliveredAt !== undefined && this.#turns <= this.#deliveredAt) return { admitted: false, reason: 'no_turn_since_result' };
@@ -6268,7 +6287,10 @@ export class ResearchAdmission {
 /** C-LIVE behaviour 2: the reads whose next page can still finish before the operation must answer. */
 function boundedPages<T extends { lastPageMs?: number; boundStop?: boolean }>(run: RunState, source: 'mail' | 'calendar', reads: readonly T[], nowMs: number): T[] {
   if (run.operationDeadlineAt === undefined) return [...reads];
-  const end = run.operationDeadlineAt - RESEARCH_OPERATION.returnReserveMs;
+  // R1/R3: an operation may run to the hard stop, but no new page starts that cannot finish inside the patience
+  // budget, so the extra grace only serves a page already in flight.
+  const patienceAt = Math.min(run.operationDeadlineAt, run.startedAt + RESEARCH_OPERATION.deadlineMs);
+  const end = patienceAt - RESEARCH_OPERATION.returnReserveMs;
   return reads.filter(read => {
     const fits = nowMs + (read.lastPageMs ?? RESEARCH_OPERATION.pageEstimateMs[source]) <= end;
     if (!fits) read.boundStop = true;

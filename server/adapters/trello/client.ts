@@ -168,7 +168,10 @@ export function createTrelloRestTransport(options: TrelloRestOptions): TrelloTra
               redirect: 'error',
               signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]) : AbortSignal.timeout(TIMEOUT_MS),
             });
-          } catch { return { ok: false, code: 'unavailable' }; }
+          } catch {
+            // A read that never got an answer changed nothing; a write may have landed, so it stays unknown.
+            return { ok: false, code: request.method === 'GET' ? 'unavailable' : 'unknown' };
+          }
         };
         let response = await attempt();
         if (!(response instanceof Response)) return response;

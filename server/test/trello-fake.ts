@@ -66,7 +66,7 @@ const TOOL_ACTIONS: Record<string, Record<string, { props: string[]; required: s
   trelloReadMember: { get_me: { props: [], required: [] } },
   trelloReadBoard: { get: { props: ['boardId'], required: ['boardId'] }, list: { props: ['cursor'], required: [] }, list_labels: { props: ['boardId', 'cursor'], required: ['boardId'] } },
   trelloReadList: { list_by_board: { props: ['boardId', 'cursor'], required: ['boardId'] } },
-  trelloReadCard: { get: { props: ['cardId'], required: ['cardId'] }, list_by_list: { props: ['listId', 'cursor'], required: ['listId'] } },
+  trelloReadCard: { get: { props: ['cardId'], required: ['cardId'] }, list_by_list: { props: ['listId', 'cursor'], required: ['listId'] }, list_comments: { props: ['cardId', 'cursor'], required: ['cardId'] } },
   trelloReadChecklist: { list_by_card: { props: ['cardId', 'cursor'], required: ['cardId'] } },
   trelloSearch: { search: { props: ['query'], required: ['query'] } },
   trelloWriteCard: {
@@ -144,6 +144,7 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
   const inboxCards = [jotted('Jotted note from the phone', now - 30_000), jotted('Older jotting', now - 3 * day)];
   cards.push(...inboxCards);
   cards.push({ id: ari('card', objectId(now - 5 * day)), name: 'Foreign card', desc: '', due: null, dueComplete: false, listId: listId('Sprint', other.id), boardId: other.id, closed: false, labelIds: [] });
+  const comments = [{ id: ari('comment', objectId(now - 2 * day)), cardId: cards[2]!.id, text: 'Rang the venue, they hold the room until Friday' }];
   const checklists: FakeChecklist[] = [{ id: ari('checklist', objectId(now - 9 * day)), name: 'Prep', cardId: cards[2]!.id, items: [{ id: ari('check-item', objectId(now - 9 * day)), name: 'Call the venue', state: 'incomplete' }] }];
 
   const calls: TrelloFake['calls'] = [];
@@ -178,6 +179,7 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
         const p = page(inboxCards.filter(card => !card.closed), args.cursor);
         return ok({ cards: p.slice.map(cardJson), pageInfo: p.pageInfo });
       }
+      case 'trelloReadCard.list_comments': { const p = page(comments.filter(entry => entry.cardId === args.cardId), args.cursor); return ok({ comments: p.slice.map(entry => ({ id: entry.id, text: entry.text })), pageInfo: p.pageInfo }); }
       case 'trelloReadChecklist.list_by_card': { const p = page(checklists.filter(list => list.cardId === args.cardId), args.cursor); return ok({ checklists: p.slice.map(list => ({ id: list.id, name: list.name, checkItems: list.items })), pageInfo: p.pageInfo }); }
       case 'trelloWriteCard.create': {
         if (!lists.some(list => list.id === args.listId)) return toolError('list not found');

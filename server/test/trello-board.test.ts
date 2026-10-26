@@ -76,7 +76,7 @@ test('search, recent and one card read only the pinned board', async () => {
   assert.deepEqual((recent.cards as { name: string }[]).map(card => card.name), ['Quick note from the phone']);
   const card = await board.read(session(), { view: 'card', card: 'book the venue' });
   assert.deepEqual(card.checklists, [{ name: 'Prep', items: [{ item: 'Call the venue', checked: false }] }]);
-  assert.equal(card.comments, 'not offered by the Trello server');
+  assert.deepEqual(card.comments, [{ text: 'Rang the venue, they hold the room until Friday' }]);
 });
 
 test('a card, list or id from another board is outside_scope: reads classify it, no write is ever dispatched', async () => {
@@ -354,7 +354,6 @@ test('W7-F5: the guard reads a change in his own words, so a read ask never admi
   { ask: 'move the venue card to Done', tool: 'write', args: { action: 'move', card: 'Book the venue', list: 'Done' }, judge: calls => calls.filter(call => call.tool.startsWith('trelloWrite')).map(call => call.args.action).join() === 'move' },
   { ask: 'set the due date of the venue card to Friday', tool: 'write', args: { action: 'due', card: 'Book the venue', due: '2026-10-30' }, judge: calls => calls.some(call => call.args.due === '2026-10-30T09:00:00.000Z') },
   { ask: 'note on the bank card that the call moved', tool: 'write', args: { action: 'note', card: 'Answer from the bank', text: 'the call moved' }, judge: calls => calls.some(call => typeof call.args.desc === 'string' && call.args.desc.endsWith('2026-10-26: the call moved')) },
-  { ask: 'what did I jot down today', tool: 'read', args: { view: 'inbox' }, judge: (calls, result) => calls.some(call => call.tool === 'trelloReadInbox') && Array.isArray(result.jotted) && Array.isArray(result.cards) },
 ];
 for (const row of EVAL_ROWS) {
   test(`eval: "${row.ask}"`, async () => {

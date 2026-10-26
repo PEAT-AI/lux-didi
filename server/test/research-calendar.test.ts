@@ -158,16 +158,17 @@ test('calendar collection keeps one source deadline across pages and resumes an 
       return { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: [event(19, n)], ...(n < 9 ? { nextPageToken: String(n + 1) } : {}) }) };
     });
     const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
-    // R1: the patience budget is 15 s, so how many 5 s pages fit is not the point of this test; the bound is the
-    // stop reason and the kept cursor, and at least the page that fit was started.
-    assert.ok(tokens.length >= 1, 'the page that fits is started');
+    // R1: the patience budget is 15 s, so pages start while 5 s more fits: two pages (0 and 5 s), and the third
+    // (10 s + 5 s = 15 s) is never started. Exact counts, re-derived from the budget, never lower bounds.
+    assert.equal(tokens.length, deadline ? 2 : 7, 'no page starts that cannot finish inside the 15 s patience budget');
     if (deadline) {
+      assert.equal((first['calendarCoverage'] as Record<string, unknown>)['received'], 2, 'the pages that fit are kept');
       assert.equal((first['calendarCoverage'] as Record<string, unknown>)['failed'], false, 'a page never started is not a failed page');
       const row = (first['sourceCoverage'] as Record<string, unknown>[]).find(entry => entry['source'] === 'calendar');
       assert.equal(row?.['stop'], 'deadline'); assert.equal(row?.['more'], 'upstream');
     } else assert.equal(first['canContinue'], true);
     await runResearch(h.deps, { action: 'continue', researchId: String(first['researchId']) }, signal());
-    assert.ok(tokens.length >= (deadline ? 2 : 7));
+    assert.equal(tokens.length, deadline ? 4 : 10, 'the follow-up reads on from the kept cursor inside its own 15 s budget');
     assert.equal(new Set(tokens).size, tokens.length, 'each exact page dispatched once, failed pages never retried');
   }
 });

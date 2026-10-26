@@ -15,7 +15,7 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
-import { RESEARCH_OPERATION, ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
+import { RESEARCH, RESEARCH_OPERATION, ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -60,7 +60,7 @@ class DeadlineClock {
 }
 
 /** The fake live voice provider: each open is one provider generation the test drives and can kill. */
-interface Generation { live(): void; die(): void; toolResponses: LiveToolResponse[][]; texts: string[]; request: LiveVoiceRequest }
+interface Generation { live(): void; die(): void; toolResponses: LiveToolResponse[][]; texts: string[]; commentaries: string[]; request: LiveVoiceRequest }
 function providerPort() {
   const generations: Generation[] = [];
   let events: (event: LiveVoiceEvent) => void = () => {};
@@ -84,6 +84,7 @@ function providerPort() {
       events = event => { pending.push(event); wake(); };
       const toolResponses: LiveToolResponse[][] = [];
       const texts: string[] = [];
+      const commentaries: string[] = [];
       const iterator: AsyncIterable<LiveVoiceEvent> = {
         async *[Symbol.asyncIterator]() {
           for (;;) {
@@ -95,13 +96,16 @@ function providerPort() {
       };
       const session: LiveVoiceSession = {
         ready, done, events: iterator,
-        sendAudio(): void {}, sendText(input: { text: string }): void { texts.push(input.text); }, endAudioStream(): void {},
+        sendAudio(): void {}, sendText(input: { text: string }): void { texts.push(input.text); },
+        /** R2: the speakable-progress channel, which is how the owner hears a still-searching line. */
+        sendCommentary(input: { text: string }): boolean { commentaries.push(input.text); return true; },
+        endAudioStream(): void {},
         sendToolResponse(input): 'sent' { toolResponses.push([...input.responses]); return 'sent'; },
         close(): void { if (ended) return; end(); resolveDone({ status: 'cancelled', code: 'cancelled' }); },
       };
       control.signal.addEventListener('abort', () => { if (ended) return; end(); resolveDone({ status: 'cancelled', code: 'cancelled' }); }, { once: true });
       generations.push({
-        request, toolResponses, texts,
+        request, toolResponses, texts, commentaries,
         live: () => { events({ sequence: ++sequence, type: 'ready' } as LiveVoiceEvent); resolveReady(); },
         die: () => { rejectReady(new Error('synthetic transport loss')); resolveDone({ status: 'failed', code: 'transport_error', recoverable: true }); end(); },
       });
@@ -501,4 +505,76 @@ test('L8-06: a web read still running at the first answer is still_reading in th
   const header = String(reply!['coverage']);
   assert.doesNotMatch(header, /web skipped_by_route/u, `a reading source is never told as skipped (${header})`);
   assert.match(header, /web still_reading/u, `it is told as still reading (${header})`);
+});
+
+// --- R1 (call 01c4bd89): the patience line, and a late finding that a filler sound cannot park -------------
+
+/** Every speakable-progress line the voice model was handed, across every provider generation. */
+function commentaries(h: Harness): string[] { return h.provider.generations.flatMap(generation => generation.commentaries); }
+/** Every host-to-model text the voice session was handed (the late-findings channel). */
+function spokenTexts(h: Harness): string[] { return h.provider.generations.flatMap(generation => generation.texts); }
+const stillSearching = (h: Harness): Record<string, unknown>[] => h.receipts.filter(record => record['event'] === 'research_still_searching');
+const lateReceipts = (h: Harness): Record<string, unknown>[] => h.receipts.filter(record => record['event'] === 'research_late_findings');
+
+test('R2: an owner still waiting at 10 s hears one short still-searching line, and never a second one', async t => {
+  const h = await harness(t);
+  h.hold();
+  await ownerSays(h);
+  await research(h, 'd1', start);
+  await h.advance(9_500);
+  assert.deepEqual(commentaries(h), [], 'nothing is said while the wait is under 10 s');
+  await h.advance(1_000);
+  assert.deepEqual(commentaries(h), [RESEARCH.stillSearchingLine], 'one short line, at 10 s');
+  assert.equal(stillSearching(h).length, 1, 'one receipt for the line');
+  assert.equal(stillSearching(h)[0]!['spoken'], true, 'the adapter carried it, so the owner heard it');
+  assert.match(String(stillSearching(h)[0]!['researchId']), /^[0-9a-f-]{36}$/u, 'the line names the research it is about');
+  // The call still runs: the line never ends it, and the wait never earns a second filler.
+  await h.advance(9_000);
+  assert.equal(commentaries(h).length, 1, 'one filler per wait, however long the wait runs');
+  assert.equal(stillSearching(h).length, 1, 'and one receipt');
+});
+
+test('R2: a source that settles at 8.7 s earns no still-searching line', async t => {
+  const h = await harness(t);
+  h.hold();
+  await ownerSays(h);
+  await research(h, 'd1', start);
+  await h.advance(8_700);
+  h.release();
+  const reply = await replyFor(h, 'd1', 2_000);
+  assert.equal(reply['error'], undefined, 'the call answered from the source that returned');
+  assert.deepEqual(commentaries(h), [], 'a source that settles before 10 s leaves the owner nothing to hear');
+  assert.equal(stillSearching(h).length, 0, 'and no receipt claims a line');
+});
+
+test('R5: a late finding is spoken after a filler sound, and only a real new question parks it', async t => {
+  const held = await harness(t);
+  held.hold();
+  await ownerSays(held);
+  await research(held, 'd1', start);
+  const reply = await replyFor(held, 'd1', OPERATION_DEADLINE_MS + HOST_GRACE_MS);
+  assert.equal(reply['status'], 'partial', 'the call answered with the read still out');
+  const before = spokenTexts(held).length;
+  // The owner's filler sound: one word, the way he said "hm" while the last findings were landing.
+  held.provider.emit({ type: 'inputTranscription', text: 'hm', finished: true });
+  await flush();
+  held.release();
+  for (let i = 0; i < 20 && spokenTexts(held).length === before; i++) { await flush(); await held.advance(200); }
+  assert.ok(spokenTexts(held).length > before, 'the late finding was spoken, not parked as silent context');
+  assert.ok(held.receipts.some(record => record['event'] === 'late_findings_sent'), 'the receipt says it went out');
+
+  // The control: a real new question still parks the block, so the filler rule never swallows an owner turn.
+  const asked = await harness(t);
+  asked.hold();
+  await ownerSays(asked);
+  await research(asked, 'd1', start);
+  const parked = await replyFor(asked, 'd1', OPERATION_DEADLINE_MS + HOST_GRACE_MS);
+  assert.equal(parked['status'], 'partial');
+  const already = spokenTexts(asked).length;
+  asked.provider.emit({ type: 'inputTranscription', text: 'and what about the other company we discussed in Jakarta', finished: true });
+  await flush();
+  asked.release();
+  for (let i = 0; i < 20; i++) { await flush(); await asked.advance(200); }
+  assert.equal(spokenTexts(asked).length, already, 'a new question parks the late block');
+  assert.ok(lateReceipts(asked).some(record => record['reason'] === 'new_question'), 'and the receipt names the reason');
 });

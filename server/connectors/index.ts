@@ -73,7 +73,11 @@ export interface ConnectorDescriptor {
   project(evidence: ConnectorEvidence, port: McpPort, policy: ConnectionPolicy): ModelSnapshot;
   /** Connection status for a non-completed result, when the connector can classify it (R4). A classified
    * failure may also carry the one content-free log line the host must write for it. */
-  status?(evidence: ConnectorEvidence): { state: 'configured' | 'error'; reason: string; log?: ToolFailureEvent } | undefined;
+  /**
+   * Connection status for one completed-but-failed read. The approved endpoint is passed so an owner
+   * line can name the binding the helper itself reads (LOGS.md L-01), never a token value.
+   */
+  status?(evidence: ConnectorEvidence, endpoint?: ConnectionEndpoint): { state: 'configured' | 'error'; reason: string; code: string; log?: ToolFailureEvent } | undefined;
   /** The connector's own-account identity probe for one approved policy, when it has one (release 3f). */
   identity?(policy: ConnectionPolicy): IdentitySource | null;
 }
@@ -278,11 +282,12 @@ function googleProject(evidence: ConnectorEvidence, port: McpPort, policy: Conne
     ...(projection.projection[HOST_EVIDENCE] ? { [HOST_EVIDENCE]: projection.projection[HOST_EVIDENCE] } : {}),
   };
 }
-function googleStatus(evidence: ConnectorEvidence): { state: 'configured' | 'error'; reason: string; log?: ToolFailureEvent } | undefined {
-  const status = googleToolStatus(evidence);
+function googleStatus(evidence: ConnectorEvidence, endpoint?: ConnectionEndpoint): { state: 'configured' | 'error'; reason: string; code: string; log?: ToolFailureEvent } | undefined {
+  const status = googleToolStatus(evidence, endpoint);
   // A failure the helper's vocabulary names speaks its line and says how dead the endpoint is; a bodiless
   // one stays a plain failed call, so a lost mail page is never mistaken for an answer.
-  return status !== undefined && status.code !== 'no_content' ? { state: status.state, reason: status.reason, ...(status.log ? { log: status.log } : {}) } : undefined;
+  // The closed code rides with the state so the host logs one event per classified failure (L-08).
+  return status !== undefined && status.code !== 'no_content' ? { state: status.state, reason: status.reason, code: status.code, ...(status.log ? { log: status.log } : {}) } : undefined;
 }
 const googleDescriptor: ConnectorDescriptor = {
   id: 'google',
@@ -320,8 +325,10 @@ const googleDescriptor: ConnectorDescriptor = {
   status: googleStatus,
   identity(policy) {
     const family = googleFamily(policy.toolNames);
-    // The Drive family has no own-account read; its helper pins the account its own token was issued for.
-    if (family === 'drive') return null;
+    // LOGS.md L-02: the Drive family reports no own-account identity, so it probes for the read consent
+    // itself -- the cheapest real read the helper offers -- and says so at connect instead of staying
+    // silent until the first call fails with scope_missing. Strict, because no consent is no read.
+    if (family === 'drive') return { tool: 'drive_search_files', args: { query: 'consent', limit: 1 }, values: () => [], proves: 'consent', strict: true };
     return family === 'calendar'
       ? { tool: 'calendar_list_calendars', args: {}, values: calendarIdentityValues, strict: true }
       : { tool: 'gmail_get_profile', args: {}, values: gmailIdentityValues, strict: true };

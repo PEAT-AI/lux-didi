@@ -1770,6 +1770,8 @@ interface CalendarRead {
   code?: string;
   /** C-LIVE: the last page's own duration, and a page the operation bound did not start. */
   lastPageMs?: number; boundStop?: boolean;
+  /** LOGS.md L-01: the words a page carried when it brought no event, so a refusal is never an empty window. */
+  plain?: string;
 }
 export interface RunState {
   /** C-LIVE: the moment this operation must have answered by; no page starts that cannot finish before it. */
@@ -1839,6 +1841,8 @@ export interface RunState {
   neverRan?: Set<SourceKind>;
   /** P5: why a source cannot serve a read right now, so the reply names the cause and never guesses. */
   unavailableReasons: Map<SourceKind, string>;
+  /** LOGS.md L-01: the owner line one source's classified failure spoke, so the reply can say it. */
+  failureLines: Map<SourceKind, string>;
   /** #637: the channel the ask named, kept so an unknown one is said in the owner's own words. */
   chatChannel?: string;
   /** #663: the closest channel names the connector's refusal carried, so the reply can voice them. */
@@ -1891,7 +1895,7 @@ export class ResearchLedger {
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
       historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
-      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), chatChannelClosest: [], chatNotes: [], route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), broadenedChat: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
+      calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), failureLines: new Map(), chatChannelClosest: [], chatNotes: [], route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), broadenedChat: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
     };
     this.#runs.set(researchId, run);
     this.#activeId = researchId;
@@ -1921,7 +1925,7 @@ export class ResearchLedger {
       calendar: new Map([...existing.calendar].map(([key, read]) => [key, { ...read, events: new Map(read.events), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), calendarDelivered: new Set(existing.calendarDelivered),
       ledger: new Map(existing.ledger), evidence: new Map(existing.evidence), readKinds: new Set(existing.readKinds), sourcesDone: new Set(existing.sourcesDone), sourcesFailed: new Set(existing.sourcesFailed), pending: new Set(existing.pending), pendingWaiters: new Set(),
       calls: new Set(existing.calls), emptySearches: new Map(existing.emptySearches), cutShort: new Set(existing.cutShort),
-      unavailableReasons: new Map(existing.unavailableReasons), chatChannelClosest: [], chatNotes: [], web: [...existing.web], webAttribution: [...existing.webAttribution],
+      unavailableReasons: new Map(existing.unavailableReasons), failureLines: new Map(existing.failureLines), chatChannelClosest: [], chatNotes: [], web: [...existing.web], webAttribution: [...existing.webAttribution],
     };
     delete run.bodyCursorRequested; delete run.mailDeadlineAt; delete run.mailCursorRequested;
     existing.cancelled = true; existing.progressAbort.abort();
@@ -3057,6 +3061,21 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
 
 
 /**
+ * LOGS.md L-01: a connector-classified failure reaches research as a completed result whose text is
+ * the owner's own line (the tool layer's "never an empty success"), so an ok read that carries words
+ * while its shape has no line is a failed read, never a search that matched nothing. A read that
+ * really matched nothing carries no words, so a true empty stays empty. Bracket-only notes (an
+ * upstream continuation, an incomplete window) are metadata, not a reason.
+ */
+export function classifiedFailureText(texts: readonly string[]): string | undefined {
+  for (const text of texts) {
+    const words = text.split('\n').map(line => line.trim()).filter(line => line !== '' && !/^\[[^\]]*\]$/u.test(line)).join(' ').trim();
+    if (words !== '') return words;
+  }
+  return undefined;
+}
+
+/**
  * #565: the shape of a dispatched batch, one row per distinct call. Counts, the closed operator names and
  * the topic's word count only, so a search word has no field to land in.
  */
@@ -3671,6 +3690,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // own knowledge, not a read, so the reply says which it is.
     ...(run.sourcesFailed.has('web') ? [RESEARCH.generalKnowledgeNote] : []),
     ...(unreachable.length === 0 ? [] : [`I could not reach ${unreachable.length === 1 ? unreachable[0]! : `${unreachable.slice(0, -1).join(', ')} and ${unreachable[unreachable.length - 1]!}`} right now.`]),
+    // LOGS.md L-01: a source that failed with a classified reason says that reason verbatim, so the
+    // owner hears the helper's own line (for Drive consent: the exact authorize command) and not a
+    // search that found nothing.
+    ...[...run.failureLines.values()],
     ...cutShort,
     ...searchedNothing,
     ...(coverage !== undefined ? [coverage] : []),
@@ -4262,7 +4285,10 @@ async function mailGroup(deps: ResearchDeps, run: RunState, plans: readonly Rout
     // Release 4: a read that already delivered its pages keeps them; a later lost page makes it partial,
     // and only a read that delivered nothing at all is a failed read.
     const delivered = lines.length > 0;
-    const outcome: LookupOutcome = delivered ? 'ok' : signal.aborted || run.cutShort.has('mail') ? 'timeout' : read.failed ? 'failed' : 'empty';
+    // LOGS.md L-01: a page that carried only the helper's own reason line is a failed read, not an empty one.
+    const classified = delivered || read.failed ? undefined : classifiedFailureText([read.plain ?? '']);
+    if (classified !== undefined) run.failureLines.set('mail', classified);
+    const outcome: LookupOutcome = delivered ? 'ok' : signal.aborted || run.cutShort.has('mail') ? 'timeout' : read.failed || classified !== undefined ? 'failed' : 'empty';
     const failedPages = read.failedPages ?? 0;
     const info = mailQueryInfo(read);
     return { lookup: plan.lookup, kind: plan.read.kind, tool: INTERNAL.mailList, source: 'mail', outcome, ms: now() - started, lines, total: read.messages.size, ...(info === undefined ? {} : { mail: info }), ...(delivered && failedPages > 0 ? { partial: { reason: 'pages_failed' as const, failedPages } } : {}) };
@@ -4368,6 +4394,9 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
           const id = /\[id ([A-Za-z0-9_-]+)\]/.exec(line)?.[1];
           read.events.set(id ? `${id}:${line}` : JSON.stringify([read.args, read.nextPageToken ?? null, index]), { id: id ?? '', start: line.slice(2).split(',')[0]!.trim(), line, bodyTruncated: false });
         }
+        // LOGS.md L-01: a page that named no event keeps its own words, so a refused window is a
+        // failed read and its owner line can be spoken, never an empty window.
+        if (read.events.size === 0) read.plain = [read.plain, result.text].filter(Boolean).join('\n');
         read.exhausted = true;
         return;
       }
@@ -4413,7 +4442,10 @@ async function calendarGroup(deps: ResearchDeps, run: RunState, plans: readonly 
     const read = key === undefined ? undefined : run.calendar.get(key);
     const lines = read && !credited.has(key!) ? [...read.events.values()].map(event => event.line) : [];
     if (key) credited.add(key);
-    const outcome: LookupOutcome = !read ? 'unavailable' : read.events.size > 0 ? 'ok' : read.failed ? 'failed' : read.exhausted ? 'empty' : 'timeout';
+    // LOGS.md L-01: a refused calendar read carries the owner's line and no event, so it is failed.
+    const classified = !read || read.events.size > 0 || read.failed ? undefined : classifiedFailureText([read.plain ?? '']);
+    if (classified !== undefined) run.failureLines.set('calendar', classified);
+    const outcome: LookupOutcome = !read ? 'unavailable' : read.events.size > 0 ? 'ok' : read.failed || classified !== undefined ? 'failed' : read.exhausted ? 'empty' : 'timeout';
     return { lookup: plan.lookup, kind: plan.read.kind, tool: INTERNAL.calendarList, source: 'calendar', outcome, ms: now() - started, lines, total: read?.events.size ?? 0 };
   });
 }
@@ -4560,7 +4592,11 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     const block = shapeBlock(plan.read.kind === 'memory_search' ? 'knowledge_search' : plan.read.kind, own, deps.timeZone, { newestFirst: lastMeetingQuestion(context.question) });
     // P5-R5 (F1): the execute contract resolves `{ok: false, code}` for a sub-call the host did not
     // complete, so a returned failure is a failed read, never a search that matched nothing.
-    const missed = own.some(result => !result.ok);
+    // LOGS.md L-01: an ok read whose own words shape to no line is a classified failure (the tool
+    // layer returns the owner's line as the result text), so it is a failed read, never an empty search.
+    const classified = block.lines.length > 0 ? undefined : classifiedFailureText(own.filter(result => result.ok).map(result => result.text));
+    const missed = own.some(result => !result.ok) || classified !== undefined;
+    if (classified !== undefined) run.failureLines.set(plan.read.source, classified);
     const outcome: LookupOutcome = block.lines.length > 0 ? 'ok' : cutShort ? 'timeout' : missed ? 'failed' : 'empty';
     // #637: a channel the chat connector does not know keeps its own code, so the reply says the
     // channel is unknown in words instead of collapsing it into a failed read.
@@ -5685,6 +5721,11 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             if (part.source === null) continue;
             if (part.results.some(result => result.ok && result.text.trim())) {
               run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source); run.emptySearches.delete(part.source);
+            } else if (part.results.some(result => result.ok) && classifiedFailureText(part.results.filter(result => result.ok).map(result => result.text)) !== undefined) {
+              // LOGS.md L-01: the words this read carried are the helper's own refusal line, not an
+              // answer, so the source is failed and the reply speaks that line verbatim.
+              run.failureLines.set(part.source, classifiedFailureText(part.results.filter(result => result.ok).map(result => result.text))!);
+              run.sourcesFailed.add(part.source); run.sourcesDone.delete(part.source); run.emptySearches.delete(part.source);
             } else if (part.results.some(result => result.ok)) {
               // The connector answered and matched nothing: that is a search, not an outage.
               run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source);
@@ -5719,7 +5760,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             // P5 outcome 4: one receipt per source read, with the deadline it was actually given.
             logSource({
               event: 'research_source', researchId: run.researchId, source: lookupSourceOf(part.source),
-              outcome: block.lines.length > 0 ? 'ok' : cut.signal.aborted ? 'timeout' : part.results.some(result => !result.ok) ? 'failed' : 'empty',
+              outcome: block.lines.length > 0 ? 'ok' : cut.signal.aborted ? 'timeout' : part.results.some(result => !result.ok) || run.failureLines.has(part.source) ? 'failed' : 'empty',
               // K8: a prime knowledge read reports its own dispatch span, never the selector wait before it,
               // whether this round pulled it through the answer cut or through the prefetched read.
               ms: (consumeKnowledge || prefetchedKnowledge) && knowledgeEndedAt > 0 ? Math.max(0, knowledgeEndedAt - knowledgeStartedAt) : Math.max(0, now() - at),

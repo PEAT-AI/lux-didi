@@ -120,6 +120,29 @@ function hostMatches(a: RunAcceptance, h: Pick<HostContext, 'runId' | 'actorId' 
  * freezes, whether or not the transport has come up yet.
  */
 export interface LiveRunConnections { durableConnectionIds?(tx: Transaction): string[] }
+/**
+ * LOGS.md L-08: one classified connector failure, closed. Ids and the connector's own code only, so
+ * host.log can tell a failed read from an empty one; never an argument, a payload, a query or a line
+ * of helper text. Its own event name, because `tool_failure` is a transport failure and
+ * `connector_failure` a connect-time stage.
+ */
+export interface ClassifiedFailureEvent {
+  event: 'tool_classified_failure';
+  endpointId: string;
+  connector: string;
+  tool: string;
+  code: string;
+}
+
+const EVENT_TOKEN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
+/** The closed failure event for one classified result, or undefined when a value is not an id or a code. */
+export function classifiedFailureEvent(input: { endpointId: string; connector: string; tool: string; code: string }): ClassifiedFailureEvent | undefined {
+  if (!EVENT_TOKEN.test(input.code)) return undefined;
+  if (input.endpointId === '' || input.endpointId.length > 64 || input.connector === '' || input.connector.length > 32 || input.tool === '' || input.tool.length > 64) return undefined;
+  return { event: 'tool_classified_failure', endpointId: input.endpointId, connector: input.connector, tool: input.tool, code: input.code };
+}
+
 export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveRunConnections {
   const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
@@ -762,7 +785,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 return { status: 'unknown', code };
               }
               if (evidence.state !== 'completed') {
-                const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' ? descriptor.status?.(evidence) : undefined;
+                const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' ? descriptor.status?.(evidence, p.endpoint) : undefined;
                 if (!status) {
                   // Keep the failure cause truthful: a refused connector read names its reason; a child
                   // tool/protocol error is an unusable result. Either way surface a real code.
@@ -776,6 +799,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 // names a content-free log line (an unknown helper code, a Didi defect) writes it too.
                 reportToolStatus?.(p.endpoint.id, status);
                 if (status.log) options.log?.(status.log);
+                // LOGS.md L-08: every classified failure is one closed host event, so host.log tells a
+                // failed read from an empty one. The endpoint id, the tool and the classified code only:
+                // no argument, no payload, no helper text. A code that is not one word is not logged.
+                // It travels on the host-log channel, whose sink owns validation, because the owner log
+                // accepts only the closed transport-failure shape.
+                const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code: status.code });
+                if (failure) hostLogEvent(failure);
                 return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0 }, []) };
               }
               reportToolStatus?.(p.endpoint.id, null);

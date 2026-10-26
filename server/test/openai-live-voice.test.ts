@@ -1448,6 +1448,8 @@ describe('openai gpt-live turn states', () => {
     clock.advance(500);
     await until(() => waiting(opened.captured) === 1);
     clock.advance(1_000);
+    await quiet();
+    clock.advance(500);
     await until(() => completions(opened.captured) === 1);
     const outputFinal = opened.captured.events.filter(event => event.type === 'outputTranscription' && event.finished === true);
     assert.equal(outputFinal.length, 1, 'the end of the turn closes the answer transcript once');

@@ -1,0 +1,108 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { HostLog } from '../host/log.js';
+import { LOG_CAUSES, LOG_LEVELS, clearLogContext, setLogContext } from '../host/events.js';
+import { attachHostLogSink, hostLogEvent } from '../tools/host-events.js';
+
+// C-LOG-ENVELOPE: one envelope per host.log line, written in HostLog.append from the context a call
+// sets, so a reader can order a call by monoMs, see how bad a line is, and join it to the live session.
+
+const SESSION = '11111111-2222-4333-8444-555555555555';
+const CALL = 'call_abc123';
+type Line = Record<string, unknown> & { event: string; level: string; cause: string; seq: number; monoMs: number };
+
+async function lines(root: string): Promise<Line[]> {
+  const text = await readFile(join(root, 'logs', 'host.log'), 'utf8');
+  return text.trim().split('\n').map(line => JSON.parse(line) as Line);
+}
+
+test('C-LOG-ENVELOPE: every line carries level, cause, seq, monoMs and the wall clock', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-envelope-level-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const log = new HostLog(root);
+  log.event({ event: 'config_seeded', file: 'providers.json', from: 'provider-config' });
+  log.event({ event: 'host_started', releaseCommit: 'unknown', configDir: 'seeded', endpoints: 0 });
+  log.event({ event: 'live_attach_rejected', code: 'internal' });
+  const records = await lines(root);
+  assert.equal(records.length, 3);
+  for (const record of records) {
+    assert.ok(LOG_LEVELS.includes(record.level as never), `${record.event} carries a level`);
+    assert.ok(LOG_CAUSES.includes(record.cause as never), `${record.event} carries a cause`);
+    assert.ok(Number.isInteger(record.monoMs) && record.monoMs >= 0, `${record.event} carries monoMs`);
+    assert.ok(!Number.isNaN(Date.parse(String(record.timestamp))));
+  }
+  assert.deepEqual(records.map(record => record.seq), [1, 2, 3], 'seq is one per line, per process');
+  assert.ok(records[1]!.monoMs >= records[0]!.monoMs, 'monoMs never goes backwards');
+  assert.equal(records[1]!.level, 'info');
+  assert.equal(records[2]!.level, 'warn', 'a rejected event is a degradation, not a routine line');
+});
+
+test('C-LOG-ENVELOPE: a scripted call stamps both ids on every live event, terminal included', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-envelope-call-'));
+  const log = new HostLog(root);
+  const detach = attachHostLogSink(log);
+  t.after(() => { detach(); clearLogContext(); return rm(root, { recursive: true, force: true }); });
+  // The live layer opens a call by naming the owner's call and the session it runs in, then emits as usual.
+  setLogContext({ callId: CALL, liveSessionId: SESSION });
+  hostLogEvent({ event: 'clock_sync', reason: 'call_open' });
+  hostLogEvent({ event: 'live_dead_air', deadAirMs: 1200 });
+  hostLogEvent({ event: 'live_heard_silence', ms: 900, toolPending: false });
+  hostLogEvent({ event: 'live_tool_turn', sequence: 1, toolCallsThisTurn: 0, toolLatencyMs: [], toolResponseWhileGenerating: false });
+  hostLogEvent({ event: 'gptlive_tool_output', calls: 0, responseCreate: 'sent' });
+  log.terminal({ state: 'closed', code: 'voice_stop' });
+  const records = await lines(root);
+  assert.deepEqual(records.map(record => record.event),
+    ['clock_sync', 'live_dead_air', 'live_heard_silence', 'live_tool_turn', 'gptlive_tool_output', 'live_terminal']);
+  for (const record of records) {
+    assert.equal(record.liveSessionId, SESSION, `${record.event} names the live session`);
+    assert.equal(record.callId, CALL, `${record.event} names the call`);
+  }
+  detach();
+  clearLogContext();
+});
+
+test('C-LOG-ENVELOPE: a call context never widens the allowlist', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-envelope-context-'));
+  t.after(() => { clearLogContext(); return rm(root, { recursive: true, force: true }); });
+  const log = new HostLog(root);
+  // Free text and an owner utterance in the context fields are refused, exactly as a content field would be.
+  setLogContext({ liveSessionId: 'SECRET-session', callId: 'SECRET call id' } as never);
+  log.event({ event: 'config_seeded', file: 'providers.json', from: 'provider-config' });
+  const text = await readFile(join(root, 'logs', 'host.log'), 'utf8');
+  assert.equal(text.includes('SECRET'), false);
+  const [record] = await lines(root);
+  assert.equal('liveSessionId' in record!, false);
+  assert.equal('callId' in record!, false);
+  clearLogContext();
+});
+
+test('C-LOG-ENVELOPE: a normal end is info and never host_error', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-envelope-terminal-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const log = new HostLog(root);
+  log.terminal({ state: 'closed', code: 'closed' });
+  log.terminal({ state: 'closed', code: 'voice_stop' });
+  log.terminal({ state: 'failed', code: 'idle_timeout' });
+  log.terminal({ state: 'failed', code: 'protocol_error' });
+  log.terminal({ state: 'failed', code: 'SECRET invalid code' });
+  const records = await lines(root);
+  assert.equal(records.length, 4);
+  assert.deepEqual(records.map(record => record.event), ['live_terminal', 'live_terminal', 'live_terminal', 'host_error']);
+  assert.deepEqual(records.map(record => record.level), ['info', 'info', 'info', 'error']);
+});
+
+test('C-LOG-ENVELOPE: a clock_sync line ties one process clock to wall time', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-envelope-clock-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const log = new HostLog(root);
+  log.event({ event: 'clock_sync', reason: 'host_start' });
+  log.event({ event: 'clock_sync', reason: 'call_open' });
+  log.event({ event: 'clock_sync', reason: 'SECRET' });
+  const records = await lines(root);
+  assert.equal(records.length, 2);
+  assert.deepEqual(records.map(record => record.reason), ['host_start', 'call_open']);
+  for (const record of records) assert.ok(Number.isInteger(record.monoMs) && !Number.isNaN(Date.parse(String(record.timestamp))));
+});

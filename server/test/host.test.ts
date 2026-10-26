@@ -184,9 +184,14 @@ test('canonical compiler emits every published production unit and no unpublishe
 test('actual host connects durable domain, supersedes reminders, exposes conflicts and survives process restart', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-host-domain-'));
   let host = await startHost({ dataDir: dir, webRoot, port: 0 });
-  const startup = JSON.parse((await readFile(join(dir, 'logs', 'host.log'), 'utf8')).split('\n')[0]!);
-  assert.deepEqual(Object.keys(startup).sort(), ['configDir', 'endpoints', 'event', 'pid', 'releaseCommit', 'timestamp']);
+  const startupLines = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  const startup = startupLines[0]!;
+  assert.deepEqual(Object.keys(startup).sort(), ['cause', 'configDir', 'endpoints', 'event', 'level', 'monoMs', 'pid', 'releaseCommit', 'seq', 'timestamp']);
   assert.equal(startup.event, 'host_started');
+  // C-LOG-ENVELOPE: one clock_sync per host start, so a later reader can order this process's lines.
+  assert.equal(startupLines[1].event, 'clock_sync');
+  assert.equal(startupLines[1].reason, 'host_start');
+  assert.ok(Number.isInteger(startupLines[1].monoMs) && !Number.isNaN(Date.parse(startupLines[1].timestamp)));
   assert.equal(startup.releaseCommit, 'unknown');
   assert.equal(startup.configDir, 'seeded');
   assert.equal(startup.endpoints, 0);
@@ -581,7 +586,7 @@ test('host rejects an unknown connector kind before discovery and names it', asy
 test('durable diagnostics rotate privately and persist only safe structured events', async () => {
   const root = await mkdtemp(join(tmpdir(), 'didi-log-'));
   try {
-    const log = new HostLog(root, 220);
+    const log = new HostLog(root, 400);
     for (let n = 0; n < 12; n++) log.event({ event: 'config_seeded', file: 'providers.json', from: 'provider-config' });
     log.event({ event: 'live_attach_rejected', code: 'internal', message: 'SECRET-message', bearer: 'SECRET-bearer', key: 'SECRET-key' });
     for (const name of ['host.log', 'host.log.1', 'host.log.2']) {
@@ -595,7 +600,7 @@ test('durable diagnostics rotate privately and persist only safe structured even
         assert.equal(record.pid, process.pid);
         assert.ok(['config_seeded', 'live_attach_rejected'].includes(record.event));
       }
-      assert.ok(Buffer.byteLength(text) <= 220);
+      assert.ok(Buffer.byteLength(text) <= 400);
     }
     const newest = await readFile(join(root, 'logs', 'host.log'), 'utf8');
     assert.match(newest, /live_attach_rejected/);

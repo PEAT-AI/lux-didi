@@ -10,7 +10,7 @@ if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" || ! -d "$deps
 fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-google.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
-mkdir -p "$out/source/"{tools,contracts,domain,runtime,connectors,test,config,host,adapters/model,adapters/mcp,adapters/live-voice,trace}
+mkdir -p "$out/source/"{tools,contracts,domain,runtime,connectors,test,config,host,adapters/model,adapters/mcp,adapters/live-voice,trace,prompt,live,http}
 cp "$root"/server/tools/*.ts "$out/source/tools/"
 cp "$root"/server/contracts/*.ts "$out/source/contracts/"
 # server/tools reads the memory model and the debug journal receipt: copy those trees too.
@@ -26,6 +26,12 @@ cp "$root"/server/adapters/mcp/*.ts "$out/source/adapters/mcp/"
 cp "$root/server/adapters/live-voice/types.ts" "$out/source/adapters/live-voice/"
 cp "$root"/server/config/{mcp,files}.ts "$out/source/config/"
 cp "$root/server/host/mcp.ts" "$out/source/host/"
+# W14: the loud-error suite proves the classified-failure row is admitted by the real host log, so the
+# harness compiles host/log.ts and its small import closure too.
+cp "$root/server/host/log.ts" "$out/source/host/"
+cp "$root"/server/prompt/{types,backend-procedure,live-persona}.ts "$out/source/prompt/"
+cp "$root/server/live/stop-phrase.ts" "$out/source/live/"
+cp "$root/server/http/routes.ts" "$out/source/http/"
 cp "$root/server/host/mongoose-auth.ts" "$out/source/host/"
 cp "$root/server/host/oauth-client.ts" "$out/source/host/"
 cp "$root/server/test/google-connector.test.ts" "$out/source/test/"

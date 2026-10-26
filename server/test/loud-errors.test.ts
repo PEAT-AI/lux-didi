@@ -11,15 +11,33 @@
 // Every identity here is synthetic: a fixture account and a fixture token path.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Store } from '../runtime/store.js';
+import { createToolsOwner, toolsMigrations } from '../tools/index.js';
+import { attachHostLogSink } from '../tools/host-events.js';
+import { safeEvent } from '../host/log.js';
+import { sha256 } from '../tools/canonical.js';
+import { createMcpAdapter } from '../adapters/mcp/adapter.js';
+import { McpRegistry } from '../adapters/mcp/registry.js';
+import { MemoryResultStore } from '../adapters/mcp/store.js';
+import { noteGmailAccount } from '../tools/open-handles.js';
+import type { EndpointConfig } from '../adapters/mcp/port.js';
+import type { LiveAuthority, RunAcceptance } from '../tools/types.js';
+import type { ToolCallIntent } from '../adapters/model/types.js';
 import { ResearchLedger, runResearch, type ResearchDeps, type ResearchSourceLog, type SourceKind } from '../tools/research.js';
 import { GOOGLE_ERROR_TABLE, googleOwnerLine, googleToolStatus, type GoogleStatus } from '../tools/google.js';
 import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
+import { GOOGLE_TOOLS } from '../connectors/google.js';
 import { classifyIdentity, proveIdentity, type IdentityProof } from '../connectors/identity.js';
 import { classifiedFailureEvent } from '../tools/index.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import type { ConnectorEvidence, ConnectorResult } from '../connectors/index.js';
 
+const here = dirname(fileURLToPath(import.meta.url));
 const ACCOUNT = 'ravi.example@example.test';
 const TOKEN_PATH = '/tmp/synthetic-google-token.json';
 
@@ -162,4 +180,68 @@ test('L-08: a classified failure writes one closed host event, ids and a code an
   assert.equal(Object.hasOwn(event, 'args'), false, 'no arguments ride along');
   assert.equal(Object.hasOwn(event, 'text'), false, 'no helper text rides along');
   assert.equal(classifiedFailureEvent({ endpointId: 'drive', connector: 'google', tool: 'drive_search_files', code: 'not a token' }), undefined, 'a code that is not a closed token is refused');
+});
+
+/**
+ * L-08, the emitting surface: a real owner dispatch through a real stdio child that refuses with
+ * scope_missing must reach an attached host log sink as one closed event, and the host log's own
+ * validator must keep it. Deleting the emit at server/tools/index.ts turns this red.
+ */
+test('L-08: one classified connector failure reaches the host log sink and the host log admits it', async () => {
+  noteGmailAccount(undefined);
+  const home = mkdtempSync(join(tmpdir(), 'didi-loud-errors-'));
+  const child = join(here, 'fixtures', 'google-mcp-child.mjs');
+  const args = [child, 'code:scope_missing', join(home, 'child.pid')];
+  const store = new Store(join(home, 'data'), toolsMigrations);
+  const registry = new McpRegistry();
+  const env = { HOME: join(home, 'home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' };
+  // The synthetic child answers every tool call with one published helper code; scope_missing is the
+  // Drive family's own consent refusal. No account, network or credential file is touched.
+  registry.register({ id: 'gmail', transport: 'stdio', command: process.execPath, args, env, account: 'local', resource: 'google-fixture' } as unknown as EndpointConfig);
+  registry.enable('gmail'); registry.allowEgress('gmail');
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), budgets: { timeoutMs: 4000 } });
+  const seen: unknown[] = [];
+  const detach = attachHostLogSink({ event: raw => { seen.push(raw); } });
+  try {
+    const discovery = await adapter.discover('gmail');
+    assert.equal(discovery.state, 'discovered');
+    if (discovery.state !== 'discovered') throw new Error('not discovered');
+    const names = [...GOOGLE_TOOLS];
+    let live: LiveAuthority | null = null;
+    const owner = createToolsOwner({ store, ownerId: store.assistantId, registry, port: adapter, lookupAuthority: async () => live });
+    const policy: ConnectionPolicy = {
+      schemaVersion: 1, ownerId: store.assistantId, connectionId: 'gmail', generation: 1, enabled: true, connector: 'google',
+      endpoint: { id: 'gmail', transport: 'stdio', command: process.execPath, args, env, account: 'local', resource: 'google-fixture', credentialRef: null },
+      toolNames: names, schemaDigest: discovery.schemaDigest,
+      sourcePolicy: { id: 'google-read', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
+      route: { identity: 'voice', allowedClasses: ['private'] },
+      bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 },
+    };
+    owner.applyConnection(policy);
+    // Applying a changed policy suspends the endpoint's approval, exactly as the host does; a fresh
+    // discovery of the same catalog restores the digest the applied policy names.
+    const again = await adapter.discover('gmail');
+    assert.equal(again.state, 'discovered');
+    registry.approve({ endpointId: 'gmail', schemaDigest: policy.schemaDigest, generation: 1, account: 'local', resource: 'google-fixture', toolNames: names, effect: 'read' });
+    const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['gmail'] };
+    const accepted = store.transaction(tx => owner.snapshotRun(tx, acceptance));
+    live = { ...acceptance, acceptedRunHash: accepted.sha256 };
+    const callArgs = {};
+    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'gmail_search_messages', argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: 'local', resourceId: 'google-fixture' };
+    assert.equal(owner.journal.intent(intent), 'fresh');
+    const definition = owner.definitions('run').find(candidate => candidate.name === 'gmail_search_messages');
+    assert.ok(definition?.execute);
+    const outcome = await definition.execute!(callArgs, { ...intent, signal: new AbortController().signal });
+    assert.equal(outcome.status, 'completed', 'a classified failure is still a completed call (its text is the reason)');
+    const rows = seen.filter(raw => typeof raw === 'object' && raw !== null && (raw as { event?: unknown }).event === 'tool_classified_failure');
+    assert.equal(rows.length, 1, 'exactly one classified-failure row reaches the host log');
+    assert.deepEqual(rows[0], { event: 'tool_classified_failure', endpointId: 'gmail', connector: 'google', tool: 'gmail_search_messages', code: 'scope_missing' });
+    assert.deepEqual(safeEvent(rows[0]), rows[0], 'the host log admits the row and keeps every field');
+    assert.equal(safeEvent({ ...(rows[0] as Record<string, unknown>), args: { q: 'synthetic' } }), undefined, 'the host log refuses a row carrying arguments');
+  } finally {
+    detach();
+    await adapter.close();
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
 });

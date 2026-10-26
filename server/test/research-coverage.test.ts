@@ -297,10 +297,11 @@ test('#653: a status ask on a closed run names each source by its closed outcome
   });
   const call = runResearch(h.deps, { action: 'start', question: 'are my tools working', topic: 'tools' }, new AbortController().signal);
   for (let tick = 0; tick < 50; tick += 1) await Promise.resolve();
-  // C-LIVE: the operation answers at its deadline while every read still runs, and says so honestly.
-  clock.advance(RESEARCH_OPERATION.deadlineMs);
+  // R1: the call holds for its sources to the 20 s hard stop, and every read here runs past it, so the answer says
+  // plainly which sources did not return in time instead of calling them timeouts.
+  clock.advance(RESEARCH_OPERATION.hardStopMs);
   const early = await call;
-  assert.match(String(early['note']), /still searching/iu, `an open run names what it is still searching (${String(early['note'])})`);
+  assert.match(String(early['note']), /did not return in time/iu, `an open run names what did not return in time (${String(early['note'])})`);
   // Once the run has closed on the source deadlines, a status read of it names each closed outcome.
   clock.advance(RESEARCH.startDeadlineMs + 1);
   for (let tick = 0; tick < 50; tick += 1) await Promise.resolve();

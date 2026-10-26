@@ -1302,7 +1302,7 @@ struct NativeLiveInterruptionSample: Sendable {
         // One rate receipt per session accompanies the queue measurements.
         log("playback_rate", ["rate": NativePlaybackRate.label(sessionRate)])
         // Playback starts in write(_:) only after the prebuffer fills, never on an empty queue.
-        route = "Microphone: " + input.name + " · Output: " + Self.defaultDevice(input: false).name
+        route = "Microphone: " + input.name + " · Output: " + outputDevice().name
         activateCapture(capture, send: send)
         installConfigurationObserver(object: engine)
         ready = true

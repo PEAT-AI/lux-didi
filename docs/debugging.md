@@ -32,6 +32,24 @@ node scripts/didi-timeline "LIVE_SESSION_OR_CHAT_RUN_ID" --data-dir /absolute/ho
 
 `latest` means latest Live session. A chat run ID is not its conversation session ID. [Diagnostic store](diagnostic-store.md) owns the table relationships, gated `--content` inspection and read-only SQL recipes.
 
+## Read one line of host.log
+
+Every host.log line carries the same envelope, so a call can be assembled without guessing:
+
+| Field | Meaning |
+| --- | --- |
+| `timestamp` | wall time, ISO milliseconds UTC |
+| `monoMs` | milliseconds since this process started, from the monotonic clock |
+| `pid`, `seq` | the process, and this process's line counter: a gap is a lost line, not a gap in time |
+| `level` | `debug`, `info`, `warn` or `error`, from the event name, never from the caller |
+| `cause` | `tool`, `provider`, `owner`, `network`, `audio`, `host`, `connector` or `config`, on the lines whose name states a domain |
+| `liveSessionId`, `generation` | the call every live line belongs to, and the provider session inside it |
+| `runId`, `researchId`, `endpointId`, `attempt` | the same joins on chat, research and connector lines |
+
+A normal end (`closed`, `voice_stop`, `user_stop`, `idle_timeout`) is `level: info` on a `live_terminal` line; only a failing end is a `host_error`. One `clock_sync` line follows every host start and every call open: it carries the wall time and this process's `monoMs`, so two processes' clocks can be ordered against each other. Never sort raw `monoMs` values across processes.
+
+Host lines carry no content: no utterance, query, address or body. The assembled utterance of a closed turn lives in `trace_utterance` where `final=1`, which is what answers "what was said"; `live_journal` keeps the fragments and an empty closing row, so every concatenating reader still yields each turn once.
+
 ## Locate the failing owner
 
 | Observation | Distinguish before changing code | Owner |

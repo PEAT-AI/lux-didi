@@ -126,6 +126,8 @@ const REAL_CLOCK: LiveVoiceClock = {
   setTimer: (ms, fire) => setTimeout(fire, ms),
   clearTimer: handle => { clearTimeout(handle as ReturnType<typeof setTimeout>); },
 };
+/** C-LOG-ENVELOPE: the provider's own id shape, the same bound the transcription metadata already trusts. */
+const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$/;
 function transcriptMetadata(message: ObjectValue): { providerEventId?: string; providerStartMs?: number; providerEndMs?: number } {
   const validMs = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
   const start = message.start_ms, end = message.end_ms;
@@ -384,6 +386,9 @@ class Session implements LiveVoiceSession {
   readonly events: AsyncIterable<LiveVoiceEvent>;
   private socket: WebSocket | undefined;
   private terminal: LiveVoiceOutcome | undefined;
+  /** C-LOG-ENVELOPE: the provider's own ids for this turn, ids only, so host.log joins the turn. */
+  private lastItemId: string | undefined;
+  private lastEventId: string | undefined;
   private isReady = false;
   private draining = false;
   private recoverable = false;
@@ -859,6 +864,7 @@ class Session implements LiveVoiceSession {
     // Ruling GL1-R1: a whitespace-only fragment is still journaled, and it starts no episode.
     if (message.delta.trim().length) this.noteInput();
     this.userTranscriptOpen = true;
+    if (typeof message.event_id === 'string' && PROVIDER_ID.test(message.event_id)) this.lastEventId = message.event_id;
     this.diagnostic.inputTranscriptionEvents += 1;
     this.diagnostic.inputTranscriptionCharacters += message.delta.length;
     this.emit({ type: 'inputTranscription', text: message.delta, finished: false, ...transcriptMetadata(message) });
@@ -965,15 +971,25 @@ class Session implements LiveVoiceSession {
     if (this.outputSilence !== undefined) { this.clock.clearTimer(this.outputSilence); this.outputSilence = undefined; }
     if (this.outputTranscriptOpen) { this.outputTranscriptOpen = false; this.emit({ type: 'outputTranscription', text: '', finished: true, finalOrigin: 'app_response_end' }); }
     if (this.emit({ type: 'turnComplete' })) { this.diagnostic.turnCompleteEvents += 1; this.diagnostic.generationCompleteEvents += 1; }
-    hostLogEvent({ event: 'gptlive_turn_complete', idleMs, drained: true });
+    hostLogEvent({ event: 'gptlive_turn_complete', idleMs, drained: true, ...this.providerIds() });
     hostLogEvent({ event: 'playback_rearm', count: this.playbackRearms });
     this.playbackRearms = 0;
     this.touch();
   }
 
+  /** The provider ids this turn already carries: response, output item and the last frame's own id. */
+  private providerIds(): { responseId?: string; itemId?: string; eventId?: string } {
+    return {
+      ...(this.currentResponse === undefined ? {} : { responseId: this.currentResponse }),
+      ...(this.lastItemId === undefined ? {} : { itemId: this.lastItemId }),
+      ...(this.lastEventId === undefined ? {} : { eventId: this.lastEventId }),
+    };
+  }
+
   private outputTranscript(message: ObjectValue): void {
     if (typeof message.delta !== 'string') fail('protocol_error');
     // Transcripts are never dropped: the host journals what was actually spoken.
+    if (typeof message.event_id === 'string' && PROVIDER_ID.test(message.event_id)) this.lastEventId = message.event_id;
     if (message.delta.length) {
       this.outputTranscriptOpen = true;
       this.emit({ type: 'outputTranscription', text: message.delta, finished: false, ...transcriptMetadata(message) });
@@ -1094,6 +1110,7 @@ class Session implements LiveVoiceSession {
     }
     const item = event.item;
     if (!object(item)) fail('protocol_error');
+    if (typeof item.id === 'string' && PROVIDER_ID.test(item.id)) this.lastItemId = item.id;
     if (item.type !== 'function_call') { this.touch(); return; }
     let args: JsonObject;
     try { const parsed: unknown = JSON.parse(typeof item.arguments === 'string' && item.arguments.length ? item.arguments : '{}'); args = object(parsed) ? parsed : {}; }
@@ -1448,7 +1465,7 @@ class Session implements LiveVoiceSession {
     const answered = this.continuationCalls;
     this.continuationCalls = 0;
     this.lastContinuationCalls = answered;
-    hostLogEvent({ event: 'gptlive_tool_output', calls: answered, responseCreate: attempt ? 'retried' : 'sent' });
+    hostLogEvent({ event: 'gptlive_tool_output', calls: answered, responseCreate: attempt ? 'retried' : 'sent', ...this.providerIds() });
     return this.continuationOutcome = 'sent';
   }
 

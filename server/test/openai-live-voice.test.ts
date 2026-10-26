@@ -859,8 +859,11 @@ describe('openai gpt-live adapter', () => {
       { type: 'response.create' },
     ], 'the last answer completes the batch, and exactly one continuation follows it');
     // S1-R1: the receipt names the whole batch, not the round that happened to be last.
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_tool_output'),
+    const batch = logged().filter(entry => entry['event'] === 'gptlive_tool_output');
+    // C-LOG-ENVELOPE adds the provider's ids; the receipt's own fields are unchanged.
+    assert.deepEqual(batch.map(({ event, calls, responseCreate }) => ({ event, calls, responseCreate })),
       [{ event: 'gptlive_tool_output', calls: 2, responseCreate: 'sent' }]);
+    assert.match(String(batch[0]!['responseId']), /^resp_/, 'the provider response id rides the receipt');
   });
 
   test('S5: a duplicated delegation and a duplicated terminal event change nothing', async t => {
@@ -1035,7 +1038,9 @@ describe('openai gpt-live adapter', () => {
     assert.deepEqual(withoutIds(f.frames.slice(2)), [{ type: 'response.create' }]);
     const receipts = logged().filter(entry => entry['event'] === 'gptlive_tool_output');
     // S1-R1: the resumed create still carries the size of the batch it answers.
-    assert.deepEqual(receipts, [{ event: 'gptlive_tool_output', calls: 1, responseCreate: 'sent' }]);
+    assert.deepEqual(receipts.map(({ event, calls, responseCreate }) => ({ event, calls, responseCreate })),
+      [{ event: 'gptlive_tool_output', calls: 1, responseCreate: 'sent' }]);
+    assert.match(String(receipts[0]!['responseId']), /^resp_/, 'the provider response id rides the receipt');
   });
 
   test('3r A: answers that arrive in reverse order still send both outputs and one continuation', async t => {
@@ -1134,7 +1139,9 @@ describe('openai gpt-live adapter', () => {
     f.send(delegated('response.done', { response: { id: 'resp_1' } }));
     await quiet();
     assert.equal(f.frames.filter(frame => frame['type'] === 'response.create').length, 2, 'one retry, never a third');
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_tool_output'), [
+    // C-LOG-ENVELOPE adds the provider's ids; the receipt's own fields are unchanged.
+    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_tool_output')
+      .map(({ event, calls, responseCreate }) => ({ event, calls, responseCreate })), [
       { event: 'gptlive_tool_output', calls: 1, responseCreate: 'sent' },
       { event: 'gptlive_tool_output', calls: 1, responseCreate: 'retried' },
     ]);
@@ -1271,7 +1278,8 @@ describe('openai gpt-live adapter', () => {
     await f.frame(3);
     assert.equal(interruptions(captured), 0, '3r F: this error names no cut');
     assert.deepEqual(withoutIds(f.frames.slice(2)), [{ type: 'response.create' }], 'the deferred continuation is resumed');
-    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_tool_output'),
+    assert.deepEqual(logged().filter(entry => entry['event'] === 'gptlive_tool_output')
+      .map(({ event, calls, responseCreate }) => ({ event, calls, responseCreate })),
       [{ event: 'gptlive_tool_output', calls: 1, responseCreate: 'sent' }]);
   });
 
@@ -1417,6 +1425,38 @@ describe('openai gpt-live turn states', () => {
     clock.advance(500);
     await until(() => completions(opened.captured) === 1);
     assert.deepEqual(project(opened.captured.events), ['listening', 'thinking', 'speaking', 'listening']);
+  });
+
+  test('C-LOG-ENVELOPE: the journal keeps its empty closing row and no log line carries the words', async t => {
+    const clock = new FakeClock();
+    const opened = await ready(t, { clock });
+    const logged: unknown[] = [];
+    const detach = attachHostLogSink({ event: raw => logged.push(raw) });
+    t.after(detach);
+    opened.f.send({ type: 'session.input_transcript.delta', delta: 'What is on' });
+    opened.f.send({ type: 'session.input_transcript.delta', delta: ' my plate' });
+    await until(() => opened.captured.events.filter(event => event.type === 'inputTranscription').length === 2);
+    clock.advance(700);
+    await until(() => starts(opened.captured) === 1);
+    const inputFinal = opened.captured.events.filter(event => event.type === 'inputTranscription' && event.finished === true);
+    assert.equal(inputFinal.length, 1, 'the ended episode closes the owner transcript once');
+    assert.equal(inputFinal[0]!.type === 'inputTranscription' && inputFinal[0]!.text, '', 'the journal closing row stays empty (L2-R1)');
+    opened.f.send({ type: 'session.output_transcript.delta', delta: 'A cheese' });
+    opened.f.send({ type: 'session.output_transcript.delta', delta: ' sandwich.' });
+    speak(opened.f);
+    await until(() => audioOf(opened.captured).length === 1);
+    clock.advance(500);
+    await until(() => waiting(opened.captured) === 1);
+    clock.advance(1_000);
+    await quiet();
+    clock.advance(500);
+    await until(() => completions(opened.captured) === 1);
+    const outputFinal = opened.captured.events.filter(event => event.type === 'outputTranscription' && event.finished === true);
+    assert.equal(outputFinal.length, 1, 'the end of the turn closes the answer transcript once');
+    assert.equal(outputFinal[0]!.type === 'outputTranscription' && outputFinal[0]!.text, '', 'the journal closing row stays empty (L2-R1)');
+    // The same turn's host lines stay metadata: ids and counts only, never the utterance.
+    assert.equal(JSON.stringify(logged).includes('sandwich'), false);
+    assert.equal(JSON.stringify(logged).includes(' my plate'), false);
   });
 
   test('audio before the completion re-enters SPEAKING', async t => {

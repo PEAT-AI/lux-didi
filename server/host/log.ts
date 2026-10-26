@@ -7,6 +7,7 @@ import { TURN_FAILED_REASONS } from '../adapters/live-voice/types.js';
 import { DEBT_PHASES, DEBT_REASONS } from '../trace/kinds.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { ConfigError } from '../config/files.js';
+import { clearLogContext, envelopeContext, monoMilliseconds, nextSeq, severityOf } from './events.js';
 import { LIVE_INSTRUCTION_SECTION_IDS } from '../prompt/live-persona.js';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -48,6 +49,9 @@ const LIVE_HANDSHAKE_STEPS = ['credential_resolved', 'socket_open', 'session_sta
 /** #538: the send outcome, a closed set. The debt phases and reasons live with the trace kinds, one definition. */
 const LIVE_TOOL_SEND_OUTCOMES = ['sent', 'deferred', 'failed'] as const;
 const SESSION_ID = /^[0-9a-f-]{36}$/i;
+/** C-LOG-ENVELOPE: the provider's own id shape, the same bound the transcription metadata already trusts. */
+const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$/;
+const isProviderId = (value: unknown): boolean => typeof value === 'string' && PROVIDER_ID.test(value);
 const RESEARCH_WINDOW_KINDS = ['today', 'tomorrow', 'week', 'date'];
 /** K6: the layers a routed research call may name, in the model's own words. */
 const ROUTED_SOURCES = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'drive', 'web'];
@@ -226,6 +230,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['code', 'event'])) return;
     if (typeof value.code !== 'string' || !/^[a-z0-9]{1,16}$/.test(value.code)) return;
     return { event: 'debug_journal_removal_failed', code: value.code };
+  }
+  if (value.event === 'clock_sync') {
+    // C-LOG-ENVELOPE: one line per host start and per call open. append adds the wall time and this
+    // process's monoMs, so the line carries only which clock event it dates.
+    if (!closedKeys(value, ['event', 'reason'])) return;
+    if (value.reason !== 'host_start' && value.reason !== 'call_open') return;
+    return { event: 'clock_sync', reason: value.reason };
   }
   if (value.event === 'live_trace_rejected') {
     // O1b-A: the trace store's own receipt for a refused write: the kind and the store's typed code only,
@@ -850,9 +861,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'gptlive_unknown_frame', type: value.type, count: value.count };
   }
   if (value.event === 'gptlive_turn_complete') {
-    if (!closedKeys(value, ['event', 'idleMs', 'drained'])) return;
+    // C-LOG-ENVELOPE: the provider ids this turn already carries, as ids only, so a turn joins the
+    // provider's own record without one word of its content.
+    const ids = ['responseId', 'itemId', 'eventId'].filter(key => Object.prototype.hasOwnProperty.call(value, key));
+    const keys = ['event', 'idleMs', 'drained', ...ids];
+    if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
     if (!isSafeCount(value.idleMs) || value.drained !== true) return;
-    return { event: 'gptlive_turn_complete', idleMs: value.idleMs, drained: true };
+    if (!ids.every(key => isProviderId(value[key]))) return;
+    return { event: 'gptlive_turn_complete', idleMs: value.idleMs, drained: true, ...Object.fromEntries(ids.map(key => [key, value[key]])) };
   }
   if (value.event === 'live_provider_error') {
     if (!closedKeys(value, ['event', 'type', 'code', 'param'])) return;
@@ -861,10 +877,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'gptlive_tool_output') {
     // 3r: one tool answer per delegated response, its call count and whether a continuation reached the wire.
-    if (!closedKeys(value, ['event', 'calls', 'responseCreate'])) return;
+    // C-LOG-ENVELOPE adds the provider's ids, ids only.
+    const ids = ['responseId', 'itemId', 'eventId'].filter(key => Object.prototype.hasOwnProperty.call(value, key));
+    if (Object.keys(value).sort().join(',') !== [...['event', 'calls', 'responseCreate'], ...ids].sort().join(',')) return;
     if (!isSafeCount(value.calls)) return;
     if (value.responseCreate !== 'sent' && value.responseCreate !== 'retried' && value.responseCreate !== 'failed') return;
-    return { event: 'gptlive_tool_output', calls: value.calls, responseCreate: value.responseCreate };
+    if (!ids.every(key => isProviderId(value[key]))) return;
+    return { event: 'gptlive_tool_output', calls: value.calls, responseCreate: value.responseCreate, ...Object.fromEntries(ids.map(key => [key, value[key]])) };
   }
   if (value.event === 'gptlive_delegation_stalled') {
     // 3r D4: detection only, so this is a receipt and never a command. Milliseconds since the outputs went out.
@@ -1114,13 +1133,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'research_late_findings') {
     // R6: one line per source that settled after the first answer: how long it took, how many items it
     // really returned, and how the host delivered them. Never the text of one.
-    if (!closedKeys(value, ['event', 'researchId', 'source', 'ms', 'items', 'delivered', 'reason'])) return;
+    if (!closedKeys(value, ['event', 'researchId', 'source', 'ms', 'items', 'destination', 'reason'])) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_late_findings');
     if (!isSafeMember(value.source, RESEARCH_SOURCES)) return;
     if (typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 120_000) return;
     if (typeof value.items !== 'number' || !Number.isInteger(value.items) || value.items < 0 || value.items > 16) return;
-    if (!isSafeMember(value.delivered, LATE_DELIVERIES) || !isSafeMember(value.reason, LATE_REASONS)) return;
-    return { event: 'research_late_findings', researchId: value.researchId, source: value.source, ms: value.ms, items: value.items, delivered: value.delivered, reason: value.reason };
+    if (!isSafeMember(value.destination, LATE_DELIVERIES) || !isSafeMember(value.reason, LATE_REASONS)) return;
+    return { event: 'research_late_findings', researchId: value.researchId, source: value.source, ms: value.ms, items: value.items, destination: value.destination, reason: value.reason };
   }
   if (value.event === 'research_subcall') {
     // Q1: one metadata-only record per internal sub-call, never the query or result text. A calendar
@@ -1291,6 +1310,9 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
 }
 
+/** H-07: the end codes that are the call finishing, not the host failing. */
+const NORMAL_END_CODES = new Set(['closed', 'voice_stop', 'user_stop', 'idle_timeout']);
+
 export class HostLog {
   private readonly path: string;
   constructor(dataDir: string, private readonly limit = 5 * 1024 * 1024) {
@@ -1308,15 +1330,28 @@ export class HostLog {
     const state = (raw as { state?: unknown }).state;
     const code = (raw as { code?: unknown }).code;
     if (typeof code !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(code)) return;
-    if (state === 'closed') { this.append({ event: 'live_terminal', state, code }); return; }
-    this.append({ event: 'host_error', class: 'LiveTerminal', code });
+    // H-07: a normal end is not a fault, so it is not a host_error. Only a failing end stays one.
+    // C-LOG-ENVELOPE F2: the terminal line is the call's last line, so the call context ends with it and the
+    // host's own aftermath (resources, idle arms, connector lines) is never attributed to a closed call.
+    try {
+      if (state === 'closed' || NORMAL_END_CODES.has(code)) this.append({ event: 'live_terminal', state, code });
+      else this.append({ event: 'host_error', class: 'LiveTerminal', code });
+    } finally { clearLogContext(); }
   }
   error(error: unknown): void {
     // Class is a closed token. Exception messages and stacks are deliberately never read.
     this.append({ event: 'host_error', class: error instanceof ConfigError ? 'ConfigError' : 'Error', ...(error instanceof ConfigError ? { code: error.code } : {}) });
   }
   private append(event: Record<string, unknown>): void {
-    const line = Buffer.from(JSON.stringify({ timestamp: new Date().toISOString(), pid: process.pid, ...event }) + '\n');
+    // C-LOG-ENVELOPE: one envelope, written here and nowhere else. A field the event already carries keeps
+    // its own value, so no existing event shape changes meaning; the call context fills only what is absent.
+    const name = typeof event.event === 'string' ? event.event : '';
+    const severity = severityOf(name);
+    // A line whose name says nothing about its domain carries no cause; an event that already names its
+    // own cause keeps it, so no existing shape changes meaning.
+    const record = { timestamp: new Date().toISOString(), monoMs: monoMilliseconds(), pid: process.pid, seq: nextSeq(),
+      level: severity.level, ...(severity.cause === undefined ? {} : { cause: severity.cause }), ...envelopeContext(), ...event };
+    const line = Buffer.from(JSON.stringify(record) + '\n');
     if (line.length > this.limit) return;
     let fd = openSync(this.path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
     try {
@@ -1344,6 +1379,8 @@ const sinks = new Set<HostLog>();
 // The host log event API lives in the tool layer so the tool call sites can emit diagnostics
 // without importing the host; this module registers the durable sinks behind it.
 export { hostLogEvent } from '../tools/host-events.js';
+/** C-LOG-ENVELOPE: the live layer names its call once, and every line it emits while live carries it. */
+export { clockSync, clearLogContext, logContext, setLogContext } from './events.js';
 
 export function captureHostDiagnostics(log: HostLog): () => void {
   sinks.add(log);

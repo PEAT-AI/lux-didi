@@ -273,7 +273,7 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
     json(response, 200, value);
   });
   const port = await listen(server);
-  const base = `http://127.0.0.1:${port}`;
+  const base = `http://127.0.0.1:${port}/1`;
   return {
     url: base, key, token, member, boards, lists, cards, labels, checklists, inbox: { listId: inboxListId, cards: inboxCards }, calls,
     dropNextCall() { drop = true; },

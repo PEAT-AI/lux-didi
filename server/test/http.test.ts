@@ -376,7 +376,7 @@ test('W7: the Trello row rides on the connection poll, with no sign-in affordanc
     const browser = await pair(f);
     const rows = await fetch(`${f.service.origin}/api/v1/live/connections`, { headers: { Cookie: browser.cookie.split(';')[0]!, 'Sec-Fetch-Site': 'same-origin' } });
     const data = (await rows.json()).data as Record<string, unknown>[];
-    assert.deepEqual(data, [{ id: 'trello', state: 'connected', tools: 2, lastHandshakeAt: null, retrying: false }]);
+    assert.deepEqual(data, [{ id: 'trello', state: 'connected', tools: 2, lastHandshakeAt: null, reasonCode: null, retrying: false }]);
     const gone = await fetch(`${f.service.origin}/api/v1/connectors/trello/sign-in`, { method: 'POST', headers: { Cookie: browser.cookie.split(';')[0]!, Origin: f.service.origin, 'X-Didi-CSRF': browser.csrf, 'Content-Type': 'application/json', 'Idempotency-Key': 'trello-sign-in-1' }, body: '{}' });
     assert.equal(gone.status, 404, 'the Trello sign-in route is gone with the OAuth path');
   } finally { await f.cleanup(); }

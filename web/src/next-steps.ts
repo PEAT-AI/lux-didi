@@ -43,7 +43,7 @@ const mongooseReasonSteps: Partial<Record<ReasonCode, (label: string) => NextSte
 };
 /** D2: the Trello board is connected by the owner's own API key, so its row names the import command. */
 const trelloKeyStep = (label: string, reason: string): NextStep => reason === 'identity_mismatch'
-  ? { text: `${label} is connected with a key that belongs to another Trello member than the one your configuration names. Import the key and token of the member trello-board.json names with scripts/import-trello-key.sh, then reopen Settings.`, guideUrl: mcpGuideUrl }
+  ? { text: `The Trello account behind this key is not Rob's. Import the key and token of the member trello-board.json names with scripts/import-trello-key.sh, then reopen Settings.`, guideUrl: mcpGuideUrl }
   : { text: `${label} uses the API key and token you already have. Run scripts/import-trello-key.sh <env-file> <config-dir> once, then write {"board": "<the name you see in Trello>", "ownerIdentity": "<your Trello email>"} to trello-board.json in the protected configuration directory and reopen Settings.`, guideUrl: mcpGuideUrl };
 const failureStep: NextStep = { text: "Check the connector service, then use Copy diagnostics from the Lux Didi menu." };
 /** Mongoose signs in through the browser; the pasted-token path covers the other connectors only. */

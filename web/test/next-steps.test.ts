@@ -137,5 +137,5 @@ test('D2: the Trello board row names the import command and offers no Sign in bu
   assert.equal(signInTarget('trello'), undefined, 'the board has no sign-in endpoint to call');
   const mismatch = nextStep('trello', 'error', 'identity_mismatch');
   assert.doesNotMatch(mismatch.text, /Sign in button/, 'a mismatch never points at a button that is gone');
-  assert.match(mismatch.text, /another Trello member/);
+  assert.match(mismatch.text, /Trello account behind this key is not Rob's/);
 });

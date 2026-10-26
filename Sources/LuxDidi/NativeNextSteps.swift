@@ -20,8 +20,10 @@ enum NativeNextSteps {
         "mongoose-knowledge": "Mongoose knowledge", "mongoose-data": "Mongoose data", "mongoose-crm": "Mongoose CRM",
         "trello": "Trello",
     ]
-    /// W7: the Trello board signs in through its own row, and offers the same next step the web row does.
-    private static let endpointSignInSteps: [String: NativeNextStep] = ["trello": signInStep("Trello")]
+    /// The Trello row's own sentence: the same import command the web row names, never a Sign in button.
+    private static let trelloKeyStep = NativeNextStep(text: "Trello uses the API key and token you already have. If the Trello account behind this key is not Rob's, import the key and token of the member trello-board.json names with scripts/import-trello-key.sh, then reopen Settings.", command: nil, guideURL: setupGuide)
+    /// D2-R5: the Trello board is connected by an imported API key, so no row offers a sign-in for it.
+    private static let endpointSignInSteps: [String: NativeNextStep] = [:]
     private static let endpointNames: [String: String] = [
         "mongoose-knowledge": "knowledge", "mongoose-data": "data", "mongoose-crm": "crm",
     ]
@@ -65,6 +67,7 @@ enum NativeNextSteps {
         if state == "connected" { return NativeNextStep(text: "no action needed", command: nil) }
         if state == "configured" { return NativeNextStep(text: "a Live session connects on demand", command: nil) }
         if let step = endpointSignInSteps[id], reason == "needs_sign_in" || reason == "not_signed_in" { return step }
+        if id == "trello", ["not_configured", "not_signed_in", "needs_sign_in", "credential_revoked", "identity_mismatch"].contains(reason ?? "") { return trelloKeyStep }
         if let label = endpointLabels[id], reason == "needs_sign_in" || reason == "not_signed_in" { return signInStep(label) }
         if let label = endpointLabels[id], reason == "unreachable" { return unreachableStep(label) }
         if state == "missing" || reason == "credential_missing" {

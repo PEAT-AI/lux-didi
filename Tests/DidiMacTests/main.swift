@@ -1031,8 +1031,9 @@ expect(NativeNextSteps.reasonCodes == ["configuration_error", "credential_missin
 let dataSignIn = NativeNextSteps.lookup(id: "mongoose-data", state: "error", reason: "needs_sign_in")
 expect(dataSignIn.text.contains("Sign in to Mongoose data in Settings") && dataSignIn.command == nil, "a signed-out data endpoint carries its own sign-in step")
 // W7-R3: the Trello board row signs in from Settings, in the same words as the web row.
-let trelloSignIn = NativeNextSteps.lookup(id: "trello", state: "error", reason: "not_signed_in")
-expect(trelloSignIn.text == "Sign in to Trello in Settings: the Sign in button is on the Trello row, and the connector reconnects by itself when you finish." && trelloSignIn.command == nil, "a signed-out Trello row carries its own sign-in step")
+let trelloSignIn = NativeNextSteps.lookup(id: "trello", state: "error", reason: "identity_mismatch")
+expect(trelloSignIn.text.contains("is not Rob's") && trelloSignIn.text.contains("scripts/import-trello-key.sh") && !trelloSignIn.text.contains("Sign in button") && trelloSignIn.command == nil, "a Trello mismatch names the import command, never a Sign in button")
+expect(trelloSignIn.text.contains("is not Rob's") && trelloSignIn.text.contains("scripts/import-trello-key.sh") && !trelloSignIn.text.contains("Sign in") && trelloSignIn.command == nil, "a Trello mismatch names the import command, never a Sign in button")
 expect(NativeNextSteps.endpointName("mongoose-data") == "data" && NativeNextSteps.endpointName("mongoose") == nil, "only the three endpoint rows can be signed in")
 
 // R-SEC-3: ordinary owner/device labels are not safe support exports.

@@ -463,7 +463,7 @@ export function pruneTraceContent(exec: TraceExec, now: number, options: PruneOp
     ? nullInPlace('UPDATE tool_dispatches SET source_json=NULL, arguments_json=NULL, content_pruned_at=? WHERE rowid IN (SELECT rowid FROM tool_dispatches WHERE content_pruned_at IS NULL AND started_at < ? AND (source_json IS NOT NULL OR arguments_json IS NOT NULL) LIMIT ?)', [contentCutoff])
     : 0;
   const calls = tableExists(exec, 'tool_calls')
-    ? nullInPlace(`UPDATE tool_calls SET result_json=NULL, input_json=NULL, content_pruned_at=? WHERE rowid IN (SELECT rowid FROM tool_calls WHERE content_pruned_at IS NULL AND COALESCE(created_at, ${undatedCall(exec)}) < ? AND (result_json IS NOT NULL OR input_json IS NOT NULL) LIMIT ?)`, [contentCutoff])
+    ? nullInPlace('UPDATE tool_calls SET result_json=NULL, input_json=NULL, content_pruned_at=? WHERE rowid IN (SELECT rowid FROM tool_calls WHERE content_pruned_at IS NULL AND created_at < ? AND (result_json IS NOT NULL OR input_json IS NOT NULL) LIMIT ?)', [contentCutoff])
     : 0;
   const journalText = tableExists(exec, 'live_journal') ? pruneJournalText(exec, contentCutoff, batched) : 0;
   const promptSnapshots = tableExists(exec, 'live_sessions')
@@ -471,14 +471,6 @@ export function pruneTraceContent(exec: TraceExec, now: number, options: PruneOp
     : 0;
   const metadata = pruneMetadataRows(exec, metadataCutoff, batched);
   return { utterances, callResults, researchText, journalText, promptSnapshots, dispatches, calls, metadata };
-}
-
-/** A call row written before the v4 migration carries no `created_at`; its run's own acceptance time
- * is the best evidence there is, and a row with neither is left alone rather than guessed at. */
-function undatedCall(exec: TraceExec): string {
-  return tableExists(exec, 'chat_runs')
-    ? "(SELECT CAST(strftime('%s',c.accepted_at) AS INTEGER)*1000 FROM chat_runs c WHERE c.run_id=tool_calls.run_id)"
-    : 'NULL';
 }
 
 /** The metadata tables, child before parent, so a delete never cascades into a row of a different age. */

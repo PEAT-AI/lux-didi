@@ -7,7 +7,7 @@ import { TURN_FAILED_REASONS } from '../adapters/live-voice/types.js';
 import { DEBT_PHASES, DEBT_REASONS } from '../trace/kinds.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { ConfigError } from '../config/files.js';
-import { envelopeContext, monoMilliseconds, nextSeq, severityOf } from './events.js';
+import { clearLogContext, envelopeContext, monoMilliseconds, nextSeq, severityOf } from './events.js';
 import { LIVE_INSTRUCTION_SECTION_IDS } from '../prompt/live-persona.js';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -1331,8 +1331,12 @@ export class HostLog {
     const code = (raw as { code?: unknown }).code;
     if (typeof code !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(code)) return;
     // H-07: a normal end is not a fault, so it is not a host_error. Only a failing end stays one.
-    if (state === 'closed' || NORMAL_END_CODES.has(code)) { this.append({ event: 'live_terminal', state, code }); return; }
-    this.append({ event: 'host_error', class: 'LiveTerminal', code });
+    // C-LOG-ENVELOPE F2: the terminal line is the call's last line, so the call context ends with it and the
+    // host's own aftermath (resources, idle arms, connector lines) is never attributed to a closed call.
+    try {
+      if (state === 'closed' || NORMAL_END_CODES.has(code)) this.append({ event: 'live_terminal', state, code });
+      else this.append({ event: 'host_error', class: 'LiveTerminal', code });
+    } finally { clearLogContext(); }
   }
   error(error: unknown): void {
     // Class is a closed token. Exception messages and stacks are deliberately never read.

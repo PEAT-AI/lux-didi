@@ -151,7 +151,7 @@ test('R5: a filler sound never parks a late finding; only a new question does', 
   const fillerWords: LateCommentaryState = { ...quiet, now: 3_000, inputAt: 1_200, ownerWords: 1 };
   assert.equal(lateCommentarySilence(fillerWords), null, 'one word after the answer is a filler, and the finding lands');
   assert.equal(lateCommentarySilence({ ...fillerWords, ownerWords: 3 }), null, 'three words are still a filler');
-  assert.equal(lateCommentarySilence({ ...fillerWords, inputAt: 2_000, ownerWords: 4 }), 'new_question', 'a real question parks the block');
+  assert.equal(lateCommentarySilence({ ...fillerWords, now: 4_500, inputAt: 2_500, ownerWords: 4 }), 'new_question', 'a real question, asked after the answer and past the hold, parks the block');
   const immediate: LateCommentaryState = { ...quiet, now: 2_000, inputAt: 1_100, ownerWords: 9 };
   assert.equal(lateCommentarySilence(immediate), null, 'speech inside the 1.5 s speaking hold is not a new question');
   assert.equal(lateCommentarySilence({ ...quiet, inputAt: 2_800 }), 'owner_speaking', 'the owner is still talking');

@@ -13,6 +13,9 @@ import {
 } from '../connectors/identity.js';
 import { MONGOOSE_ENDPOINTS, MONGOOSE_ENDPOINT_AUDIENCES, mongooseTokenIdentity as endpointTokenIdentity } from '../connectors/mongoose.js';
 import { runMongooseLogin, type MongooseSignInHop } from '../host/mongoose-login.js';
+import { createMcpAdapter } from '../adapters/mcp/adapter.js';
+import { McpRegistry } from '../adapters/mcp/registry.js';
+import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { startHost } from '../host/runtime.js';
 import type { ConnectorResult } from '../connectors/index.js';
 
@@ -176,6 +179,16 @@ test('a mismatch latches the endpoint: one probe, one connector_latched line, an
     const lines = (await readFile(join(f.dir, 'state', 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0).map(line => JSON.parse(line) as Record<string, unknown>);
     assert.deepEqual(lines.filter(line => line.event === 'connector_latched').map(line => ({ endpointId: line.endpointId, code: line.code })), [{ endpointId: 'gmail', code: 'identity_mismatch' }]);
   } finally { await f.close(); }
+});
+
+test('a tool call routed to a latched endpoint is refused with its closed code', async () => {
+  // The latch is checked before any grant, so the refusal names the real reason instead of a lost grant.
+  const registry = new McpRegistry();
+  registry.register({ id: 'gmail', url: 'http://127.0.0.1:9/gmail', account: 'synthetic', resource: 'gmail' });
+  const adapter = createMcpAdapter({ registry, store: new MemoryResultStore(), latchedCode: id => id === 'gmail' ? 'identity_mismatch' : undefined });
+  const request = { endpointId: 'gmail', toolName: 'gmail_search_messages', arguments: {}, generation: 1, account: 'synthetic', resource: 'gmail' };
+  assert.deepEqual(await adapter.call(request), { state: 'refused', reason: 'identity_mismatch' });
+  await adapter.close();
 });
 
 test('a clean proof keeps the endpoint callable and latches nothing', async () => {

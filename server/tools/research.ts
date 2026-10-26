@@ -3283,6 +3283,8 @@ export const CHAT_RECEIPT_REASONS: readonly string[] = [
   'tool-not-granted', 'credential-refresh-failed', 'source_not_granted', 'not_signed_in', 'timeout',
   'deadline', 'timed_out', 'schema-drift', 'grant-stale', 'source-unavailable', 'sdk_protocol_rejected',
   'connector_error', 'invalid_result', 'unavailable', 'refused',
+  // Council 2026-10-26: a read routed to an endpoint latched by an identity failure names that code.
+  'identity_mismatch', 'identity_unverified',
   // F3 (#637): a channel the ask named and the connector does not know is its own receipt reason.
   'channel_not_found',
 ];

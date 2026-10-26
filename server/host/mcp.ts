@@ -268,7 +268,7 @@ export async function composeMcpRuntime(options: {
     }
   };
   const helperStderr = (detail: { endpointId: string; bytes: number }): void => options.lifecycleLog?.({ event: 'connector_helper_stderr', ...detail });
-  const port = createMcpAdapter({ registry, store: new MemoryResultStore(), callTimeoutMsByEndpoint, resolveCredential, onHelperStderr: helperStderr, onTransportState: event => transportState(event) });
+  const port = createMcpAdapter({ registry, store: new MemoryResultStore(), callTimeoutMsByEndpoint, resolveCredential, onHelperStderr: helperStderr, onTransportState: event => transportState(event), latchedCode: id => latched.get(id) });
   const reports = new Map<string, McpEndpointReport>();
   const connectors = new Map<string, string>();
   const ready = new Set<string>();

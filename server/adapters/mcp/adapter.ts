@@ -28,6 +28,11 @@ export interface McpAdapterOptions {
   callTimeoutMsByEndpoint?: ReadonlyMap<string, number>;
   maxConcurrentCallsByEndpoint?: ReadonlyMap<string, number>;
   assertCredentialCurrent?: (reference: string) => void;
+  /**
+   * The closed code an endpoint is latched under, if any. A call routed to a latched endpoint is refused
+   * with that code before any grant check, so the failure names the real reason instead of a lost grant.
+   */
+  latchedCode?: (endpointId: string) => string | undefined;
 }
 /** Concurrent dispatched calls allowed per endpoint; callers beyond it queue in arrival order. */
 const DEFAULT_MAX_CONCURRENT_CALLS = 6;
@@ -455,6 +460,8 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire
       let observedOperation: Operation | undefined;
       const invoke = async (): Promise<CallResult> => {
       if (closed) return { state: 'refused', reason: 'adapter-closed' };
+      const latched = options.latchedCode?.(request.endpointId);
+      if (latched !== undefined) return { state: 'refused', reason: latched };
       let scope: ResultScope;
       try { scope = options.registry.authorize(request); } catch { return { state: 'refused', reason: 'local-read-grant-refused' }; }
       const config = options.registry.endpoint(request.endpointId);

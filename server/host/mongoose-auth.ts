@@ -134,12 +134,14 @@ export function mongooseAccessToken(configDir: string, reference: string, bindin
   return oauthAccessToken(configDir, reference, binding, {
     accept: acceptMongoose, consentCapMs: MONGOOSE_CONSENT_CAP_MS, consentWarnMs: MONGOOSE_CONSENT_WARN_MS,
     // Council 2026-10-26 (option B): the endpoint's own minted JWT is the identity proof. A token for
-    // another account, or for another endpoint's audience, is never used and never stored.
+    // another account, or for another endpoint's audience, is never used and never stored. With no
+    // ownerIdentity configured there is nothing to compare, which is the catalogue's explicit
+    // no-comparison policy, not a fallback: the token is still decoded and its audience checked.
     verifyToken: accessToken => {
       if (endpoint === undefined) return;
       const proof = mongooseTokenIdentity(accessToken, endpoint, expected);
       if (proof.match === false) throw new OAuthCredentialError('credential-identity-mismatch');
-      if (!proof.proven) throw new OAuthCredentialError('credential-identity-unverified');
+      if (!proof.proven && expected.length > 0) throw new OAuthCredentialError('credential-identity-unverified');
     },
   }, token);
 }

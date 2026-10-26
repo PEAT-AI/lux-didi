@@ -53,11 +53,13 @@ export async function runMongooseLogin(options: MongooseLoginOptions): Promise<M
   return await runOAuthLogin({
     ...rest,
     ...(expected.length > 0 ? { expectedEmail: ownerIdentity! } : {}),
-    verifyToken: accessToken => {
+    // No ownerIdentity configured is the catalogue's explicit no-comparison policy: the token is still
+    // decoded and its audience checked, and only a configured owner email is refused on a mismatch.
+    ...(expected.length > 0 ? { verifyToken: (accessToken: string) => {
       const proof = mongooseTokenIdentity(accessToken, endpoint, expected);
-      if (proof.match === false) return { ok: false, code: 'identity_mismatch' };
-      return proof.proven ? { ok: true } : { ok: false, code: 'identity_unverified' };
-    },
+      if (proof.match === false) return { ok: false as const, code: 'identity_mismatch' as const };
+      return proof.proven ? { ok: true as const } : { ok: false as const, code: 'identity_unverified' as const };
+    } } : {}),
     provider: MONGOOSE_PROVIDER,
     binding: mongooseBinding(resourceUrl, endpoint),
   }) as MongooseOAuthRecord;

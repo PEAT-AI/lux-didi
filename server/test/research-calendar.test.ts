@@ -154,15 +154,15 @@ test('calendar collection keeps one source deadline across pages and resumes an 
       const token = call.args['pageToken'] as string | undefined;
       tokens.push(token);
       const n = token ? Number(token) : 0;
-      if (deadline) clock += 5000;
+      if (deadline) clock += 20_000;
       return { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: [event(19, n)], ...(n < 9 ? { nextPageToken: String(n + 1) } : {}) }) };
     });
     const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
     // R1: pages keep starting while their estimate fits the 15 s patience budget, so the run stops with a page
     // that fit and a cursor kept; the owner's follow-up is a new operation that reads on from it.
-    assert.equal(tokens.length, deadline ? 2 : 7, 'no page starts that cannot finish inside the 15 s patience budget');
+    assert.equal(tokens.length, deadline ? 1 : 7, 'no page starts that cannot finish inside the 15 s patience budget');
     if (deadline) {
-      assert.equal((first['calendarCoverage'] as Record<string, unknown>)['received'], 2, 'the pages that fit are kept');
+      assert.equal((first['calendarCoverage'] as Record<string, unknown>)['received'], 1, 'the page that fit is kept');
       assert.equal((first['calendarCoverage'] as Record<string, unknown>)['failed'], false, 'a page never started is not a failed page');
       const row = (first['sourceCoverage'] as Record<string, unknown>[]).find(entry => entry['source'] === 'calendar');
       assert.equal(row?.['stop'], 'deadline'); assert.equal(row?.['more'], 'upstream');

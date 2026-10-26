@@ -3348,7 +3348,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;
-          if (handle.inputFinal) handle.ownerLastWords = event.text.trim() === '' ? 0 : event.text.trim().split(/\s+/u).length;
+          if (handle.inputFinal) handle.ownerLastWords = typeof event.text === 'string' && event.text.trim() !== '' ? event.text.trim().split(/\s+/u).length : 0;
           if (handle.inputFinal) {
             // L-05: the provider sends the finished fragments of one utterance one after another, and the dead-air
             // receipt is owed one measurement per utterance, so only the first of them arms it.

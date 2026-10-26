@@ -7,7 +7,7 @@ import { createLuxKnowledgeReader, isCalendarDay, KNOWLEDGE_BODY_MAX_CHARS, KNOW
 import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
 import type { DriveGetInput, DriveSearchInput, GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
-import { googleToolStatus, projectGoogleResult } from '../tools/google.js';
+import { GOOGLE_ERROR_TABLE, googleOwnerLine, googleToolStatus, projectGoogleResult } from '../tools/google.js';
 import { createMongooseReader, mongooseEndpointName, MONGOOSE_ENDPOINT_TOOLS, MONGOOSE_READ_TOOLS, type MongooseEndpoint, type SearchInput } from './mongoose.js';
 import { createMattermostReader, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT, MATTERMOST_CHAT_TOOL, MATTERMOST_DEFAULTS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, type ChatReadInput } from './mattermost.js';
 import { createHash } from 'node:crypto';
@@ -284,7 +284,18 @@ function googleProject(evidence: ConnectorEvidence, port: McpPort, policy: Conne
   };
 }
 function googleStatus(evidence: ConnectorResult, endpoint?: ConnectionEndpoint): { state: 'configured' | 'error'; reason: string; code: string; log?: ToolFailureEvent } | undefined {
-  const status = googleToolStatus(evidence, endpoint);
+  // Ruling TR4-R8: a latched endpoint refuses the read before the wire, so the connector answers for that
+  // refusal too: the closed code's own line from the one table, with the family the endpoint names.
+  if (evidence.state === 'refused') {
+    const refused = evidence.reason.split(':')[0]!.trim().replace(/_/g, '-');
+    const row = Object.hasOwn(GOOGLE_ERROR_TABLE, refused) ? GOOGLE_ERROR_TABLE[refused] : undefined;
+    if (row !== undefined) {
+      const named = `${endpoint?.id ?? ''} ${endpoint?.resource ?? ''}`.toLowerCase();
+      const family = /gmail/.test(named) ? 'gmail' : /drive/.test(named) ? 'drive' : 'calendar';
+      return { state: row.pinned ? 'configured' : 'error', reason: googleOwnerLine(row, family, endpoint), code: refused };
+    }
+  }
+  const status = googleToolStatus(evidence as ConnectorEvidence, endpoint);
   // A failure the helper's vocabulary names speaks its line and says how dead the endpoint is; a bodiless
   // one stays a plain failed call, so a lost mail page is never mistaken for an answer.
   // The closed code rides with the state so the host logs one event per classified failure (L-08).

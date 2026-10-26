@@ -13,7 +13,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { identityAction, identityProofMemo, proveIdentity, refusalCode, IDENTITY_TIMEOUT_MS, type IdentityErrorCode, type IdentityProof } from '../connectors/identity.js';
-import { googleMcpPathUnsafe } from '../connectors/google.js';
+import { googleAccountPinRefused, googleMcpPathUnsafe } from '../connectors/google.js';
 import { noteGmailAccount } from '../tools/open-handles.js';
 import { homedir } from 'node:os';
 
@@ -311,6 +311,15 @@ export async function composeMcpRuntime(options: {
   for (const entry of endpoints) {
     if (!Object.hasOwn(CONNECTOR_DESCRIPTORS, entry.connector)) throw new ConnectorCompositionError('unknown_connector', entry.id, entry.connector);
     if (entry.enabled) {
+      // D1-R4: a Google child pinned to any account but the owner, or to none, can only act as another
+      // account or prove no account, so it is refused before registration and never spawned.
+      if (googleAccountPinRefused(entry, ownerIdentity)) {
+        rejected.add(entry.id);
+        reportFailure(entry, 'config', 'first-connect', 'identity_mismatch');
+        reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: null, error: 'identity_mismatch', reasonCode: 'identity_mismatch', configurationError: 'identity_mismatch' });
+        connectors.set(entry.id, entry.connector);
+        continue;
+      }
       try {
         if (entry.transport === 'stdio') {
           registry.register({ id: entry.id, transport: 'stdio', command: entry.command, args: [...entry.args], env: { ...entry.env }, account: entry.account, resource: entry.resource });

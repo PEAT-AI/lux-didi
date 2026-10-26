@@ -211,12 +211,12 @@ function optionalUsername(value: unknown): string | null {
 }
 /** Installed <dataDir>/provider-config/mcp.json: a small, owner-only, secret-free endpoint catalog. */export interface HttpMcpEndpointEntry {
   id: string; transport: 'streamable-http'; url: string; connector: string;
-  unknownClass: DataClass | null; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'identity_mismatch';
+  unknownClass: DataClass | null; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid';
   account: string; resource: string; credentialRef: string | null; enabled: boolean; allowEgress: boolean;
 }
 /** The stdio arm names an absolute local executable, ordered args and the approved env; no url/credentialRef. */
 export interface StdioMcpEndpointEntry {
-  unknownClass: DataClass | null; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'identity_mismatch';
+  unknownClass: DataClass | null; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid';
   id: string; transport: 'stdio'; command: string; args: readonly string[]; env: Readonly<Record<string, string>>;
   connector: string; account: string; resource: string; credentialRef: null; enabled: boolean; allowEgress: boolean;
 }
@@ -314,24 +314,6 @@ function mongooseEndpointEntry(url: string, resource: unknown, credentialRef: st
   if (path.replace('/mcp/', 'mongoose:') !== resource) fail('invalid_source');
 }
 
-/**
- * D1-R4: every Google child must pin the helper to the owner account. The helper compares the refreshed
- * id_token's verified email with `LUX_GOOGLE_MCP_ACCOUNT` and refuses every read otherwise
- * (lux-cli tools/google-mcp/google_mcp/creds.py, assert_identity), so a child pinned elsewhere, or not
- * pinned at all, can only act as another account or not prove one. Such a child is refused with
- * `identity_mismatch` at catalog load, before any spawn; the comparison is exact and case-insensitive.
- */
-function googleAccountPins(endpoints: readonly McpEndpointEntry[], ownerIdentity: string | null): readonly McpEndpointEntry[] {
-  if (ownerIdentity === null) return endpoints;
-  const owner = ownerIdentity.trim().toLowerCase();
-  return endpoints.map(endpoint => {
-    if (endpoint.connector !== 'google' || endpoint.transport !== 'stdio') return endpoint;
-    const pinned = endpoint.env['LUX_GOOGLE_MCP_ACCOUNT'];
-    if (typeof pinned === 'string' && pinned.trim().toLowerCase() === owner) return endpoint;
-    return { ...endpoint, configurationError: 'identity_mismatch' as const };
-  });
-}
-
 /** The catalog carries all three Mongoose endpoints, once each, with three distinct resources and refs. */
 function mongooseEndpointSet(endpoints: readonly McpEndpointEntry[]): void {
   const mongoose = endpoints.filter(endpoint => endpoint.connector === mongooseConnector);
@@ -364,5 +346,5 @@ export function loadMcpEndpoints(options: { configDir: string; events?: McpCatal
   const seen = new Set<string>(); const endpoints: McpEndpointEntry[] = [];
   for (const item of replaceInstalledMongoose(rawEndpoints, events)) { const entry = endpointEntry(item); if (seen.has(entry.id)) fail('invalid_profile'); seen.add(entry.id); endpoints.push(entry); }
   mongooseEndpointSet(endpoints);
-  return { state: 'configured', catalog: { grantMode, endpoints: googleAccountPins(endpoints, ownerIdentity), ownerIdentity, ownerChatUsername } };
+  return { state: 'configured', catalog: { grantMode, endpoints, ownerIdentity, ownerChatUsername } };
 }

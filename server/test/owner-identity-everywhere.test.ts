@@ -15,6 +15,7 @@ import { MONGOOSE_ENDPOINTS, MONGOOSE_ENDPOINT_AUDIENCES, mongooseTokenIdentity 
 import { runMongooseLogin, type MongooseSignInHop } from '../host/mongoose-login.js';
 import { loadMcpEndpoints } from '../config/mcp.js';
 import { connectorDescriptor } from '../connectors/index.js';
+import { googleAccountPinRefused } from '../connectors/google.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
@@ -204,9 +205,15 @@ test('a Google child pinned to another account is refused at catalog load, the o
     const selection = loadMcpEndpoints({ configDir: config });
     assert.equal(selection.state, 'configured');
     const entries = selection.state === 'configured' ? selection.catalog.endpoints : [];
-    const byId = (id: string) => entries.find(entry => entry.id === id);
-    assert.equal(byId('drive-owner')?.configurationError, undefined, 'the owner pin proves the family');
-    assert.equal(byId('drive-other')?.configurationError, 'identity_mismatch', 'another account is refused at load');
+    const refused = (id: string, owner: string | null) => {
+      const entry = entries.find(candidate => candidate.id === id);
+      assert.ok(entry !== undefined, `the catalogue carries ${id}`);
+      return googleAccountPinRefused(entry, owner);
+    };
+    // Exactly what the host does at registration, before any spawn.
+    assert.equal(refused('drive-owner', OWNER), false, 'the owner pin, case-insensitively, proves the family');
+    assert.equal(refused('drive-other', OWNER), true, 'another account is refused before spawn');
+    assert.equal(refused('drive-owner', null), false, 'no configured owner is the no-comparison policy');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

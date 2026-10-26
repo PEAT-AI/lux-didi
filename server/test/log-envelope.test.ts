@@ -50,7 +50,7 @@ test('C-LOG-ENVELOPE: a scripted call stamps its session and generation on every
   setLogContext({ liveSessionId: SESSION, generation: 0 });
   hostLogEvent({ event: 'clock_sync', reason: 'call_open' });
   hostLogEvent({ event: 'live_dead_air', deadAirMs: 1200 });
-  hostLogEvent({ event: 'live_heard_silence', ms: 900, toolPending: false });
+  hostLogEvent({ event: 'live_heard_silence', ms: 900, silence: 'owner' });
   hostLogEvent({ event: 'live_tool_turn', sequence: 1, toolCallsThisTurn: 0, toolLatencyMs: [], toolResponseWhileGenerating: false });
   hostLogEvent({ event: 'gptlive_tool_output', calls: 0, responseCreate: 'sent' });
   log.terminal({ state: 'closed', code: 'voice_stop' });
@@ -102,7 +102,7 @@ test('C-LOG-ENVELOPE: the call context ends with its terminal line', async t => 
   t.after(() => { clearLogContext(); return rm(root, { recursive: true, force: true }); });
   const log = new HostLog(root);
   setLogContext({ liveSessionId: SESSION, generation: 0 });
-  log.event({ event: 'live_heard_silence', ms: 10, toolPending: false });
+  log.event({ event: 'live_heard_silence', ms: 10, silence: 'owner' });
   log.terminal({ state: 'closed', code: 'voice_stop' });
   // Nothing after the end of the call belongs to it: the host's own lines are not that call's aftermath.
   log.event({ event: 'host_resources', rssMb: 120, heapUsedMb: 40, cpuPct: 1 });

@@ -25,12 +25,14 @@ Tool arguments and results are untrusted. A document, email or model answer cann
 | Action | Authority and limit |
 | --- | --- |
 | Local memory | A local record, not a write to its original external source; inspect it in Memory |
-| Dictated Lux note | The owner asks to save the dictated text; `server/tools/vault-write.ts` owns this flow |
+| Dictated Lux note | The owner asks in his own words, "save this to lux", "put that in my knowledge", "remember this in lux" or "save to my vault"; a bare ask saves the turn he spoke just before it; `server/tools/vault-write.ts` owns this flow |
 | Composed Lux note | Explicitly enabled, staged, read back and confirmed before creation; `server/tools/lux-note.ts` owns the state machine |
 | Trello card change | An owner-requested action on the privately pinned board; `server/tools/trello.ts` owns the exposed actions |
 | Native open | An allowed native action, not arbitrary application automation; `server/tools/open.ts` and `Sources/LuxDidi/NativeActions.swift` own it |
 
 Composed notes default **off**: `liveFeatures` in `server/live/config.ts` returns `composedNotes: false` unless enabled. `STAGE_NOTE_IDENTITY` identifies `stage_lux_note`; staging alone does not save. `noteOwnerUtterance` and `noteOwnerFragment` handle confirmation and interruption, rather than treating any earlier "yes" in a conversation as authorization.
+
+A dictated save is one remote tool, `save_insight` under project `didi-voice`, reached only through the vault write transport; the connector read envelope never names a write. Each save attempt writes exactly one `vault_write` host log line carrying its outcome (`confirmed`, `failed`, `uncertain`, `unavailable`) and closed code, and never the note text.
 
 Trello's `TRELLO_WRITE_ACTIONS` is a closed surface. The board pin is configured privately through `TRELLO_BOARD_FILE` in `server/host/trello.ts`. Do not publish its real name or infer board administration, member changes or permanent deletion from the fact that card writes are available. Already granted card actions do not use the composed-note confirmation flow. Unknown write outcomes must remain unknown, not be retried as if nothing happened.
 

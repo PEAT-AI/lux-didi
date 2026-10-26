@@ -16,7 +16,7 @@ export const VAULT_REMOTE_TOOL = 'save_insight';
 export const VAULT_INSIGHT_TYPE = 'UNCATEGORIZED';
 export const VAULT_PROJECT = 'didi-voice';
 /** Spoken guidance, never a save claim. */
-export const VAULT_SAY_SAVE_PHRASE = 'say: save to my vault, then the note';
+export const VAULT_SAY_SAVE_PHRASE = 'say: save this to lux, then the note';
 export const VAULT_SAY_UNKNOWN = 'I am not sure it landed, check the vault';
 export const VAULT_SAY_FAILED = 'the vault did not take the note, say it again';
 export const VAULT_SAY_UNAVAILABLE = 'the vault is not reachable right now';
@@ -61,17 +61,33 @@ const GUIDANCE: Readonly<Record<VaultCode, string>> = {
 
 const refusal = (code: VaultCode): VaultReceipt => ({ saved: false, code, guidance: GUIDANCE[code] });
 
+/**
+ * The one host line a save attempt may write: the closed outcome, the closed code, the vault's own
+ * id on a confirmed save and the wire latency. The note never appears.
+ */
+export function vaultAttemptEvent(receipt: VaultReceipt, latencyMs: number): Record<string, unknown> {
+  const state = receipt.saved ? 'confirmed' : receipt.code === 'vault_unavailable' ? 'unavailable' : receipt.code === 'outcome_unknown' ? 'uncertain' : 'failed';
+  return { event: 'vault_write', state, ...(receipt.code === undefined ? {} : { code: receipt.code }), ...(receipt.insightId === undefined ? {} : { insightId: receipt.insightId }), latencyMs };
+}
+
 /** Case, whitespace and punctuation are not content: the proposal and the uttered note compare equal past them. */
 export const vaultContentKey = (text: string): string => text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 
-/** An anchored dictation command: the save phrase, then the note the owner said. Nothing else matches. */
-const SAVE_COMMAND = /^(?:naya\s*,?\s+)?(?:please\s+)?(?:save\s+to\s+(?:my\s+)?(?:vault|lux)|save\s+in\s+lux|put\s+in\s+my\s+vault|note\s+in\s+lux)\b[^\p{L}\p{N}]*([\s\S]*)$/iu;
+/** An anchored owner ask: a save verb, his demonstrative or none, then lux, the knowledge base or the vault. */
+const SAVE_COMMAND = /^(?:naya\s*,?\s+)?(?:please\s+)?(?:save|remember|put|store|note|write)\s+(?:(?:this|that|it|these|those|them)\s+)?(?:to|in|into)\s+(?:my\s+|the\s+)?(?:lux(?:\s+knowledge)?|knowledge\s+base|knowledge|vault)\b[^\p{L}\p{N}]*([\s\S]*)$/iu;
 
-export function parseSaveCommand(text: string): { content: string } | undefined {
+export type SaveCommand = { readonly content: string; readonly refers: boolean };
+
+/**
+ * His words after the ask are the note. A bare ask ("save this to lux") refers to the words he said
+ * just before it, and the host resolves those from the journal: the grammar alone is not permission.
+ */
+export function parseSaveCommand(text: string): SaveCommand | undefined {
   const match = SAVE_COMMAND.exec(text.replace(/\s+/g, ' ').trim());
   if (!match) return undefined;
   const content = String(match[1] ?? '').replace(/\s+/g, ' ').trim();
-  return vaultContentKey(content).length >= 2 ? { content } : undefined;
+  if (vaultContentKey(content).length >= 2) return { content, refers: false };
+  return content === '' ? { content: '', refers: true } : undefined;
 }
 
 /**
@@ -96,12 +112,14 @@ const INSIGHT_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 export const validInsightId = (value: unknown): value is string => typeof value === 'string' && INSIGHT_ID.test(value);
 
 /** A final owner utterance minted this single-use authorization, or nothing at all. */
-export function mintVaultAuthorization(tx: Transaction, options: { liveSessionId: string; utteranceId: string; text: string; now: number }): string | undefined {
+export function mintVaultAuthorization(tx: Transaction, options: { liveSessionId: string; utteranceId: string; text: string; priorText?: string; now: number }): string | undefined {
   const parsed = parseSaveCommand(options.text);
   if (!parsed) return undefined;
+  const content = parsed.refers ? (options.priorText ?? '').replace(/\s+/g, ' ').trim() : parsed.content;
+  if (vaultContentKey(content).length < 2) return undefined;
   const opId = randomUUID();
   tx.run('INSERT OR IGNORE INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
-    [opId, options.liveSessionId, options.utteranceId, VAULT_REMOTE_TOOL, parsed.content, vaultContentKey(parsed.content), vaultTitle(parsed.content), 'authorized', options.now]);
+    [opId, options.liveSessionId, options.utteranceId, VAULT_REMOTE_TOOL, content, vaultContentKey(content), vaultTitle(content), 'authorized', options.now]);
   const stored = tx.get('SELECT op_id FROM vault_writes WHERE live_session_id=? AND utterance_id=?', [options.liveSessionId, options.utteranceId]);
   return stored ? String(stored['op_id']) : undefined;
 }
@@ -153,12 +171,19 @@ export class VaultWriter {
   }
 
   /** Called inside the journal transaction of a final owner transcription. */
-  observe(tx: Transaction, liveSessionId: string, utteranceId: string, text: string): void {
-    mintVaultAuthorization(tx, { liveSessionId, utteranceId, text, now: this.#now() });
+  observe(tx: Transaction, liveSessionId: string, utteranceId: string, text: string, priorText?: string): void {
+    mintVaultAuthorization(tx, { liveSessionId, utteranceId, text, ...(priorText === undefined ? {} : { priorText }), now: this.#now() });
   }
 
   claim(liveSessionId: string, content: string): VaultClaim {
-    return this.#store.transaction(tx => claimVaultWrite(tx, { liveSessionId, content }));
+    const claim = this.#store.transaction(tx => claimVaultWrite(tx, { liveSessionId, content }));
+    if (claim.state === 'settled') this.#attempt(claim.receipt, 0);
+    return claim;
+  }
+
+  /** One line per save attempt: the closed outcome and code, never the note. */
+  #attempt(receipt: VaultReceipt, latencyMs: number): void {
+    this.#log(vaultAttemptEvent(receipt, latencyMs));
   }
 
   async dispatch(claim: { opId: string; content: string; title: string }): Promise<VaultReceipt> {
@@ -175,9 +200,9 @@ export class VaultWriter {
     const code = result.outcome === 'inserted' ? undefined : result.outcome === 'unavailable' ? 'vault_unavailable' : result.outcome === 'failed' || result.outcome === 'duplicate' ? 'write_failed' : 'outcome_unknown';
     this.#store.transaction(tx => tx.run('UPDATE vault_writes SET state=?,insight_id=?,code=?,latency_ms=?,settled_at=? WHERE op_id=? AND state=?',
       [state, insightId ?? null, code ?? null, latencyMs, this.#now(), opId, 'dispatched']));
-    this.#log({ event: 'vault_write', state, ...(insightId === undefined ? {} : { insightId }), latencyMs });
-    if (state === 'confirmed' && insightId) return { saved: true, insightId };
-    return refusal(code === 'vault_unavailable' ? 'vault_unavailable' : code === 'write_failed' ? 'write_failed' : 'outcome_unknown');
+    const receipt = state === 'confirmed' && insightId ? { saved: true, insightId } : refusal(code === 'vault_unavailable' ? 'vault_unavailable' : code === 'write_failed' ? 'write_failed' : 'outcome_unknown');
+    this.#attempt(receipt, latencyMs);
+    return receipt;
   }
 }
 

@@ -17,7 +17,7 @@ import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { fakeLux } from './fixtures/fake-lux-vault.js';
 
 const NOW = 1_700_000_000_000;
-const NOTE = 'the survey boat is moored at the third pontoon';
+const NOTE = 'the survey boat is moored at pontoon three';
 
 /**
  * C-LUX-SAVE: the owner's own words, replayed through the shipped voice boundary. His notation is a

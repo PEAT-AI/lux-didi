@@ -2,7 +2,11 @@
 // Fixture: server/test/fixtures/timeline-call.json. Every value in it is invented.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import {
   buildCallStory, listCalls, logHealth, renderCallList, renderCallStory, renderLogHealth, scanLogs,
   type LogInput, type LogStream, type TimelineReport, type TraceRead,
@@ -162,6 +166,35 @@ test('list view shows start, duration, tools, max silence and terminal (#1026)',
   assert.equal(older.liveSessionId, fixture.otherSessionId);
   assert.equal(older.durationMs, 0);
   assert.equal(older.terminal, null);
+});
+
+test('the CLI discovers host.log, its rotated file and audio.log, and nothing else (L3-F3, #1026)', () => {
+  const cli = fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url));
+  const dir = mkdtempSync(join(tmpdir(), 'didi-timeline-'));
+  try {
+    mkdirSync(join(dir, 'logs'));
+    writeFileSync(join(dir, 'logs', 'host.log'), [
+      '{"timestamp":"2026-10-20T09:00:00.000Z","pid":5010,"event":"live_state","state":"listening","liveSessionId":"sess-cli-1"}',
+      '{"timestamp":"2026-10-20T09:00:09.000Z","pid":5010,"event":"live_terminal","state":"closed","code":"voice_stop","liveSessionId":"sess-cli-1"}',
+    ].join('\n'));
+    writeFileSync(join(dir, 'logs', 'host.log.1'), '{"timestamp":"2026-10-19T09:00:00.000Z","pid":4999,"event":"live_state","state":"listening","liveSessionId":"sess-cli-2"}');
+    writeFileSync(join(dir, 'logs', 'audio.log'), '{"event":"audio_owned","timestamp":"2026-10-20T09:00:01.000Z","mono_ms":1,"source_instance_id":"orb","source_seq":2,"wall_ms":1792486801000,"liveSessionId":"sess-cli-1"}');
+    writeFileSync(join(dir, 'logs', 'notes.txt'), '{"timestamp":"2026-10-20T09:00:02.000Z","pid":1,"event":"not_a_log"}');
+    const doctor = execFileSync(process.execPath, [cli, 'doctor', '--data-dir', dir], { encoding: 'utf8' });
+    assert.match(doctor, /^logs files=3 lines=4 torn=0 /);
+    assert.match(doctor, /logs\/host\.log\.1 host 1 lines 0 torn/);
+    assert.doesNotMatch(doctor, /notes\.txt/);
+    const list = execFileSync(process.execPath, [cli, 'list', '--data-dir', dir], { encoding: 'utf8' });
+    assert.match(list, /sess-cli-1 2026-10-20T09:00:00\.000Z 9\.000s/);
+    assert.match(list, /sess-cli-2 2026-10-19T09:00:00\.000Z 0\.000s/);
+    const call = execFileSync(process.execPath, [cli, 'call', 'sess-cli-1', '--data-dir', dir], { encoding: 'utf8' });
+    assert.match(call, /^call sess-cli-1 start=2026-10-20T09:00:00\.000Z dur=9000ms entries=3/);
+    const store = spawnSync(process.execPath, [cli, 'latest', '--data-dir', dir], { encoding: 'utf8' });
+    assert.equal(store.status, 1);
+    assert.match(store.stderr, /no state\.sqlite/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('the three renders are metadata only and greppable (#1026)', () => {

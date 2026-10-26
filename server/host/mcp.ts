@@ -69,7 +69,7 @@ export function composeMcpConnection(options: { store: Store; owner: ToolsOwner;
 }
 
 export type McpEndpointState = 'missing' | 'configured' | 'connecting' | 'connected' | 'error';
-export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; reasonCode?: 'identity_mismatch' | 'not_signed_in' | IdentityErrorCode; identity?: IdentityProof; /** C-OPEN 6: a closed wiring notice the Settings row names; it never stops the connector. */ warning?: 'google_mcp_path_unsafe'; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'owner-approval-required' | 'ambiguous-legacy-policy'; exception?: { class: string; code: string } }
+export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; reasonCode?: 'identity_mismatch' | 'not_signed_in' | IdentityErrorCode; identity?: IdentityProof; /** C-OPEN 6: a closed wiring notice the Settings row names; it never stops the connector. */ warning?: 'google_mcp_path_unsafe'; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'identity_mismatch' | 'owner-approval-required' | 'ambiguous-legacy-policy'; exception?: { class: string; code: string } }
 export interface McpRuntimeComposition {
   registry: McpRegistry;
   port: McpPort;

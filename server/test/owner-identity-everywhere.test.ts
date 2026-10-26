@@ -13,6 +13,7 @@ import {
 } from '../connectors/identity.js';
 import { MONGOOSE_ENDPOINTS, MONGOOSE_ENDPOINT_AUDIENCES, mongooseTokenIdentity as endpointTokenIdentity } from '../connectors/mongoose.js';
 import { runMongooseLogin, type MongooseSignInHop } from '../host/mongoose-login.js';
+import { loadMcpEndpoints } from '../config/mcp.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
@@ -182,6 +183,30 @@ test('a mismatch latches the endpoint: one probe, one connector_latched line, an
     const lines = (await readFile(join(f.dir, 'state', 'logs', 'host.log'), 'utf8')).split('\n').filter(line => line.length > 0).map(line => JSON.parse(line) as Record<string, unknown>);
     assert.deepEqual(lines.filter(line => line.event === 'connector_latched').map(line => ({ endpointId: line.endpointId, code: line.code })), [{ endpointId: 'gmail', code: 'identity_mismatch' }]);
   } finally { await f.close(); }
+});
+
+test('a Google child pinned to another account is refused at catalog load, the owner pin passes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-google-pin-'));
+  const config = join(dir, 'provider-config');
+  await mkdir(config, { mode: 0o700 });
+  const child = (id: string, pinned: string) => ({
+    id, connector: 'google', transport: 'stdio', command: '/usr/bin/env', args: [],
+    env: { HOME: '', LOGNAME: '', LUX_GOOGLE_MCP_ACCOUNT: pinned, PATH: '', SHELL: '', TERM: '', USER: '' },
+    account: 'local', resource: id, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'private',
+  });
+  // D1-R4: the helper pins every family to LUX_GOOGLE_MCP_ACCOUNT and refuses a read otherwise, so Didi
+  // refuses a child pinned elsewhere before it ever spawns, and accepts the owner's own pin.
+  await writeFile(join(config, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: OWNER, endpoints: [
+    child('drive-owner', OWNER.toUpperCase()), child('drive-other', OTHER),
+  ] }), { mode: 0o600 });
+  try {
+    const selection = loadMcpEndpoints({ configDir: config });
+    assert.equal(selection.state, 'configured');
+    const entries = selection.state === 'configured' ? selection.catalog.endpoints : [];
+    const byId = (id: string) => entries.find(entry => entry.id === id);
+    assert.equal(byId('drive-owner')?.configurationError, undefined, 'the owner pin proves the family');
+    assert.equal(byId('drive-other')?.configurationError, 'identity_mismatch', 'another account is refused at load');
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test('a tool call routed to a latched endpoint is refused with its closed code', async () => {

@@ -23,3 +23,19 @@ The host composes its canonical runtime rules around the authored sections. Over
 `ChatService` in `server/chat/index.ts` stores the selected profile in `chat_run_owner_profile` at acceptance. Dispatch must use the accepted snapshot, not reread the mutable file. Live acceptance is owned by `server/live/index.ts`; changing a current profile is not permission to open an old session with invented instructions.
 
 The public `ownerProfile` projection is status and display information, not an export of authored text. Keep profile paths, lore, private versions and accepted instruction content out of status, errors and diagnostic receipts. An active profile proves neither provider readiness nor that a model will follow its style exactly.
+
+## The people roster beside the profile
+
+`people.json` sits in the same directory as the active owner profile; the host reads it once at start, with the profile directory's own resolution and the same `validateRoot` and `readPrivate` rules. It is the owner's own list of the people Naya should know at every call start, and it is the only source the people resolver may bind on.
+
+```json
+{ "version": 1,
+  "people": [
+    { "id": "ravi-example", "name": "Ravi Example", "aliases": ["Ravi", "Robby"],
+      "role": "head of sales India", "circle": "plantix", "project": "",
+      "tier": 1, "email": ["ravi.example@example.test"], "mattermost": "ravi.e", "note": "" } ] }
+```
+
+`id` is a stable unique slug, `name` the canonical display name, `aliases` the curated first names, nicknames and speech-to-text forms, `circle` one of `plantix`, `helm`, `external`, `family`, `friend` or `project`, `tier` 1 for a full instruction line or 2 for name and role only, `email` and `mattermost` the handles a connector may act on, and `note` an optional hint of at most 80 characters. The schema is strict: an unknown key, a duplicate id or a malformed value rejects the whole file, the host logs `people_invalid` with its reason, and no roster is loaded rather than a partial one.
+
+A tier 1 line renders as `Name (aliases) - role - circle/project - email local part - @mattermost`; a tier 2 line as `Name - role`; the order is the file's own. The section has its own `PEOPLE_CHAR_LIMIT` and drops tier 2 lines from the end first, logging the count in `people_trimmed`; the total instruction still answers to `LIVE_INSTRUCTION_HARD_LIMIT`. A spoken name binds only on an exact folded name, alias or handle: two people sharing one is a question naming both, and a name outside the roster falls through to the connector's own search. All identities above are synthetic.

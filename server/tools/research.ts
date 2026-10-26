@@ -8,6 +8,7 @@ import type { ToolResultBinding, JsonObject } from '../adapters/model/types.js';
 import type { CalendarEvent as RetainedCalendarEvent, CalendarScope, MailMessage } from './live-shape.js';
 import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
 import { chatAsk, chatIntent, chatSubs } from './chat-intent.js';
+import { bindPerson, peopleSnapshot } from '../people/index.js';
 import { MAIL_QUERY_OPERATORS } from '../contracts/mail-operators.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
 import { WEB_DEADLINE_MS, WEB_SEARCH_ACTION, broaderWebQuery, clipWebEvidence, sentencePrefix, webAttribution, webDeadlineMs, webEvidenceText, webFooter, webSourceCards, type WebOutcome, type WebSearchPort } from './web-search.js';
@@ -667,6 +668,19 @@ const MAIL_ARTICLES = new Set(['the', 'a', 'an', 'my', 'our', 'your', 'his', 'he
  */
 const OWNER_MAIL_NAMES = new Set(['rob', "rob's", 'robs', 'my', 'me', 'myself']);
 
+/**
+ * W15: the roster's addresses for the spoken person, so the mail query names an address rather than a
+ * word. An unknown name keeps the connector's own text path exactly as before.
+ */
+function mailPersonClause(person: string | undefined): string[] {
+  if (person === undefined) return [];
+  const snapshot = peopleSnapshot();
+  const binding = snapshot === null ? undefined : bindPerson(snapshot, person);
+  const addresses = binding?.kind === 'resolved' ? binding.person.email : [];
+  if (addresses.length === 0) return [`from:${person} OR to:${person}`];
+  return [addresses.map(address => `from:${address} OR to:${address}`).join(' OR ')];
+}
+
 /** The person a question asks about, when it asks about mail from or to them. */
 function mailPersonName(question: string): string | undefined {
   const words = question.split(/\s+/);
@@ -892,7 +906,7 @@ export function compileMailQuery(question: string, query: string | undefined, no
   // question no longer asks Gmail for five coincidences at once and matches nothing.
   const words = mailTerms(text, 8, person === undefined ? undefined : new Set([person]));
   const terms = words.length > 3 ? [...words.slice(0, 3), words.slice(3).join(' OR ')] : words;
-  const leading = [...flags, ...(person === undefined ? [] : [`from:${person} OR to:${person}`])];
+  const leading = [...flags, ...mailPersonClause(person)];
   // E6 (#609): the window the caller's own recipe asked for, so a fallback search is compiled here once.
   const window = asked ?? fallbackWindow;
   // E6 (#609): the fallback recipe keeps its own order, the inbox and its window first, because that is the

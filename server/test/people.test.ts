@@ -3,7 +3,7 @@
 // strictly, rendered into one instructions section and resolved by one host-owned pure function.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -91,7 +91,7 @@ test('people: the resolver binds a curated alias, reports the shared alias ambig
   assert.equal(sandy.length, 1);
   assert.equal(sandy[0]!.kind, 'resolved');
   assert.equal(sandy[0]!.kind === 'resolved' ? sandy[0]!.person.name : '', 'Sandeep Example');
-  const both = resolveSpoken(snapshot, 'mail from Jitendra and Sandy');
+  const both = resolveSpoken(snapshot, 'Jitendra and Sandy');
   assert.equal(both.length, 2);
   assert.equal(both[0]!.kind, 'ambiguous');
   const candidates = both[0]!.kind === 'ambiguous' ? both[0]!.people.map(person => person.name) : [];
@@ -132,10 +132,12 @@ test('people: the loader reads people.json beside the owner profile and fails lo
     writeFileSync(profile, '{}');
     assert.equal(loadPeople(profile).status, 'absent');
     writeFileSync(join(dir, 'people.json'), JSON.stringify(fixturePeople()));
+    chmodSync(join(dir, 'people.json'), 0o600);
     const loaded = loadPeople(profile);
     assert.equal(loaded.status, 'loaded');
     assert.equal(loaded.status === 'loaded' ? loaded.snapshot.people.length : 0, 5);
     writeFileSync(join(dir, 'people.json'), '{"version":1,"people":[{"id":"x"}]}');
+    chmodSync(join(dir, 'people.json'), 0o600);
     const broken = loadPeople(profile);
     assert.equal(broken.status, 'invalid');
     assert.equal(broken.status === 'invalid' ? typeof broken.reason : '', 'string');

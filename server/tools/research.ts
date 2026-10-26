@@ -3821,8 +3821,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     const spokenNote = calendarLeftOut === 0 ? note
       : note === undefined ? `I left out ${calendarLeftOut} calendar ${calendarLeftOut === 1 ? 'event' : 'events'} to keep this answer short.`
         : `${note} I left out ${calendarLeftOut} calendar ${calendarLeftOut === 1 ? 'event' : 'events'} to keep this answer short.`;
+    // R4: this note is composed when the run has stopped waiting, so a source still in `pending` did not return in
+    // time; only the first answer point, which answers while the readers keep going, says "still searching".
     let settledNote = complete ? (spokenNote === undefined ? RESEARCH.completeNote : `${spokenNote} ${RESEARCH.completeNote}`)
-      : stillReading.length > 0 ? `${RESEARCH.stillReadingNote}${stillReading.map(source => SOURCE_LABEL[source]).join(', ')}`
+      : stillReading.length > 0 ? `${RESEARCH.hardStopNote}${stillReading.map(source => SOURCE_LABEL[source]).join(', ')}`
         // #634: an unread source is named once, in the coverage header, never again in the note.
         : canRepeat && moreAvailable ? (spokenNote === undefined ? RESEARCH.moreAvailableNote : `${spokenNote} ${RESEARCH.moreAvailableNote}`) : spokenNote;
     // #653: a status ask hears each source's own outcome in plain words, never a guess about it.

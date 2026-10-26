@@ -226,9 +226,11 @@ function createdFromId(ari: string): number | undefined {
 
 /** The structured value of a call: JSON text content or structured content. Anything else is unrecognized. */
 export function trelloPayload(result: unknown): unknown {
+  // The REST API answers with the record itself; a server tool answered with an envelope of it.
+  if (Array.isArray(result)) return result;
   if (!isRecord(result)) return undefined;
   if (result.structuredContent !== undefined) return result.structuredContent;
-  if (!Array.isArray(result.content)) return undefined;
+  if (!Array.isArray(result.content)) return result;
   for (const item of result.content) {
     if (isRecord(item) && item.type === 'text' && typeof item.text === 'string') {
       try { return JSON.parse(item.text); } catch { return undefined; }

@@ -29,7 +29,7 @@ before(async () => {
   dir = mkdtempSync(join(tmpdir(), 'trello-board-'));
   writeKey(dir, fake.key, fake.token);
   // W7-R2: the name is the owner's private configuration, so the fixture writes that file.
-  writeFileSync(join(dir, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD }), { mode: 0o600 });
+  writeFileSync(join(dir, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD, ownerIdentity: 'rob@plantix.net' }), { mode: 0o600 });
   board = createTrelloBoard({ configDir: dir, url: fake.url, timeZone: 'UTC', now, log: event => { events.push(event); } });
 });
 after(async () => { await fake.close(); rmSync(dir, { recursive: true, force: true }); });

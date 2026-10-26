@@ -104,7 +104,7 @@ test('L-04: a fast tool and 6 s of model latency produce one heard-silence event
   assert.equal(events.length, 1, 'one event per wait, not one event per transcription fragment');
   const ms = Number(events[0]!['ms']);
   assert.ok(ms >= 5_900 && ms <= 6_300, `the wait the owner heard is about 6 s, not ${ms} ms`);
-  assert.equal(events[0]!['toolPending'], true, 'the wait followed a tool output');
+  assert.equal(events[0]!['silence'], 'provider', 'H-02: the tool had already returned, so the provider owned that silence');
 });
 
 test('L-04: the audible-debt rung is anchored at the last audible frame, not at the tool output', async t => {
@@ -143,7 +143,7 @@ test('L-05: three fragments of one utterance produce one measurement, not three'
   assert.equal(events.length, 1, 'one heard-silence measurement for one utterance');
   const ms = Number(events[0]!['ms']);
   assert.ok(ms >= 1_900 && ms <= 2_100, `the wait after the last fragment is about 2 s, not ${ms} ms`);
-  assert.equal(events[0]!['toolPending'], false);
+  assert.equal(events[0]!['silence'], 'owner', 'the wait followed the owner\'s own utterance, not a tool and not the provider');
 });
 
 test('L-04: a tool turn with no preamble is anchored at the arm time, not at an earlier turn\'s audio', async t => {

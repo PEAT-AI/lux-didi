@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   buildCallStory, listCalls, logHealth, renderCallList, renderCallStory, renderLogHealth, scanLogs,
-  type LogInput, type LogStream, type TimelineReport,
+  type LogInput, type LogStream, type TimelineReport, type TraceRead,
 } from '../trace/timeline.js';
 
 interface FixtureFile { file: string; stream: LogStream; text: string[] }
@@ -20,6 +20,7 @@ function report(): TimelineReport {
     liveSessionId: fixture.liveSessionId,
     capturedAt: 1792486800000,
     callFailures: { count: 0, kinds: {} },
+    contentAccess: { state: 'allowed', dataClass: 'ordinary', revision: 1 },
     gaps: [], nativeGaps: [], unattributedPlayback: [], unattributedCalls: [], unattributedResponses: [],
     turns: [{
       turn: {
@@ -91,6 +92,25 @@ test('call view carries owner content only when asked (#1026)', () => {
   const loud = buildCallStory(scan(), report(), { liveSessionId: fixture.liveSessionId, content: true });
   assert.ok(loud.content);
   assert.ok(loud.entries.some(e => e.text === 'owner utterance at=1792486800500 final text="move my two oclock"'));
+});
+
+/** The store as `buildTimeline` leaves it: the research text is the one content table the view reads. */
+const researchRead: TraceRead = {
+  all: sql => sql.includes('trace_research_text')
+    ? [{ at: 1792486804300, kind: 'question', research_id: 'res_7f', text: 'calendar next week' }]
+    : [],
+  get: () => undefined,
+};
+
+test('call --content prints the researched question, and only then (#1026)', () => {
+  const quiet = buildCallStory(scan(), report(), { liveSessionId: fixture.liveSessionId, read: researchRead });
+  assert.equal(quiet.entries.some(e => e.text.includes('calendar next week')), false);
+  const loud = buildCallStory(scan(), report(), { liveSessionId: fixture.liveSessionId, content: true, read: researchRead });
+  assert.ok(loud.entries.some(e => e.text === 'research question at=1792486804300 text="calendar next week"'));
+  // The store's own gate decides, not the flag: a denied read stays denied even with --content.
+  const denied = buildCallStory(scan(), { ...report(), contentAccess: { state: 'denied', reason: 'class_denied' } },
+    { liveSessionId: fixture.liveSessionId, content: true, read: researchRead });
+  assert.equal(denied.entries.some(e => e.text.includes('calendar next week')), false);
 });
 
 test('call view prefers callId when the envelope is there (#1026)', () => {

@@ -208,7 +208,7 @@ test('the CLI discovers host.log, its rotated file and audio.log, and nothing el
     const call = execFileSync(process.execPath, [cli, 'call', 'sess-cli-1', '--data-dir', dir], { encoding: 'utf8' });
     assert.match(call, /^call sess-cli-1 start=2026-10-20T09:00:00\.000Z dur=9000ms entries=3/);
     const store = spawnSync(process.execPath, [cli, 'latest', '--data-dir', dir], { encoding: 'utf8' });
-    assert.equal(store.status, 1);
+    assert.equal(store.status, 2);
     assert.match(store.stderr, /no state\.sqlite/);
   } finally {
     rmSync(dir, { recursive: true, force: true });

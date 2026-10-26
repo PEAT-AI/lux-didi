@@ -379,3 +379,281 @@ export function renderTimeline(report: TimelineReport): string {
   }
   return `${lines.join('\n')}\n`;
 }
+
+// ---------------------------------------------------------------------------
+// #1026: the log-backed views. One call's whole story across host.log (and its rotated files),
+// native-live.log and audio.log, plus the log health doctor. Reading is line tolerant: a torn or
+// non-JSON line is counted, never fatal, because one truncated write used to abort a whole file.
+// A line joins a call by its callId (the envelope L2 writes), else by its liveSessionId, else by
+// the pid and time window of the session's own lines. The third case is always reported as such.
+
+export type LogStream = 'host' | 'native' | 'audio';
+export interface LogInput { file: string; stream: LogStream; text: string }
+export interface LogLine {
+  file: string; stream: LogStream; line: number;
+  at: number | null; monoMs: number | null; seq: number | null; pid: number | null;
+  event: string; callId: string | null; liveSessionId: string | null;
+  record: Record<string, unknown>;
+}
+export interface LogFileHealth { file: string; stream: LogStream; bytes: number; lines: number; torn: number; oldestDay: string | null; newestDay: string | null }
+export interface LogScan { lines: LogLine[]; files: LogFileHealth[]; torn: number }
+
+const count = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) ? value : null;
+const name = (value: unknown): string | null => typeof value === 'string' && value !== '' ? value : null;
+const day = (value: number | null): string | null => value === null ? null : new Date(value).toISOString().slice(0, 10);
+
+/** One parsed record. `at` is wall clock (epoch ms), `monoMs` and `seq` are the positional fields. */
+function logLine(record: Record<string, unknown>, file: string, stream: LogStream, line: number): LogLine {
+  const stamp = typeof record.timestamp === 'string' ? Date.parse(record.timestamp) : NaN;
+  const at = Number.isFinite(stamp) ? stamp : count(record.wall_ms) ?? count(record.at);
+  return {
+    file, stream, line, at, monoMs: count(record.monoMs) ?? count(record.mono_ms),
+    seq: count(record.seq) ?? count(record.source_seq), pid: count(record.pid),
+    event: String(record.event), callId: name(record.callId), liveSessionId: name(record.liveSessionId), record,
+  };
+}
+
+export function scanLogs(inputs: readonly LogInput[]): LogScan {
+  const lines: LogLine[] = [];
+  const files: LogFileHealth[] = [];
+  let torn = 0;
+  for (const input of inputs) {
+    let fileLines = 0, fileTorn = 0;
+    const stamps: number[] = [];
+    for (const [index, raw] of input.text.split('\n').entries()) {
+      if (raw.trim() === '') continue;
+      let record: unknown;
+      try { record = JSON.parse(raw); } catch { fileTorn += 1; continue; }
+      if (record === null || typeof record !== 'object' || typeof (record as Record<string, unknown>).event !== 'string') { fileTorn += 1; continue; }
+      const line = logLine(record as Record<string, unknown>, input.file, input.stream, index + 1);
+      lines.push(line);
+      if (line.at !== null) stamps.push(line.at);
+      fileLines += 1;
+    }
+    torn += fileTorn;
+    files.push({
+      file: input.file, stream: input.stream, bytes: Buffer.byteLength(input.text, 'utf8'), lines: fileLines, torn: fileTorn,
+      oldestDay: stamps.length ? day(Math.min(...stamps)) : null, newestDay: stamps.length ? day(Math.max(...stamps)) : null,
+    });
+  }
+  return { lines, files, torn };
+}
+
+export type CallEntryKind = 'state' | 'owner' | 'model' | 'tool' | 'research' | 'silence' | 'connector' | 'terminal';
+export interface CallEntry { at: number | null; monoMs: number | null; kind: CallEntryKind; text: string; joinedBy: 'store' | 'call' | 'session' | 'window' }
+export interface CallStory {
+  liveSessionId: string | null; callId: string | null; startedAt: number | null; durationMs: number | null;
+  entries: CallEntry[]; joinedByWindow: number; skipped: number; torn: number; files: number; content: boolean;
+}
+
+/** The event families a call is debugged by. Everything else is noise in this view, so it is counted. */
+const LOG_EVENT_KIND: Record<string, CallEntryKind> = {
+  live_state: 'state', audio_owned: 'state', audio_released: 'state', audio_started: 'state', live_interrupted: 'state',
+  live_first_audio: 'model', live_answer_audio: 'model', gptlive_turn_complete: 'model', live_turn_script: 'model',
+  live_handshake: 'model', live_provider_open: 'model', live_provider_ready: 'model',
+  live_tool_turn: 'tool', tool_output_sent: 'tool', gptlive_tool_output: 'tool',
+  live_dead_air: 'silence', live_heard_silence: 'silence', live_watchdog: 'silence', playback_underrun: 'silence',
+  connector_identity: 'connector', connector_failure: 'connector', connector_connected: 'connector',
+  research_run: 'research', research_joined: 'research', research_call_arrived: 'research', research_source: 'research',
+  research_first_answer: 'research', research_late_findings: 'research',
+  live_terminal: 'terminal', live_end: 'terminal', live_session_diagnostics: 'terminal',
+};
+/** Metadata only, in reading order: no message, no text, no argument or result body. */
+const LOG_DETAIL_KEYS = [
+  'state', 'from', 'cause', 'connector', 'reason', 'phase', 'outcome', 'code', 'endpointId', 'proven', 'match',
+  'researchId', 'sources', 'tools', 'calls', 'ms', 'msSinceReady', 'msSinceOpen', 'msSinceArrived', 'deadAirMs',
+  'queuedMs', 'toolPending', 'failureClass', 'closeReason', 'terminalReason',
+] as const;
+
+function logEntryText(line: LogLine): string[] {
+  const latency = line.event === 'live_tool_turn' ? line.record.toolLatencyMs : undefined;
+  if (Array.isArray(latency) && latency.length > 0) {
+    return latency.map(item => {
+      const tool = item !== null && typeof item === 'object' ? (item as Record<string, unknown>) : {};
+      return `tool ${String(tool.tool)} ms=${count(tool.ms) ?? '?'}`;
+    });
+  }
+  const parts: string[] = [line.event];
+  for (const key of LOG_DETAIL_KEYS) {
+    const value = line.record[key];
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') parts.push(`${key}=${String(value)}`);
+  }
+  return [parts.join(' ')];
+}
+
+/** A session's own lines bound its window; a pidless line inside it, or one of its pids, joins by that window. */
+const WINDOW_MARGIN_MS = 2000;
+interface Attribution { lines: { line: LogLine; joinedBy: 'call' | 'session' | 'window' }[]; start: number | null; end: number | null }
+
+function attributeLines(scan: LogScan, spec: { liveSessionId?: string; callId?: string }): Attribution {
+  const span = (lines: readonly LogLine[]): [number | null, number | null] => {
+    const stamps = lines.map(line => line.at).filter((value): value is number => value !== null);
+    return stamps.length === 0 ? [null, null] : [Math.min(...stamps), Math.max(...stamps)];
+  };
+  if (spec.callId !== undefined) {
+    const own = scan.lines.filter(line => line.callId === spec.callId);
+    const [start, end] = span(own);
+    return { lines: own.map(line => ({ line, joinedBy: 'call' as const })), start, end };
+  }
+  const session = scan.lines.filter(line => line.liveSessionId === spec.liveSessionId);
+  const [start, end] = span(session);
+  const matched: Attribution['lines'] = session.map(line => ({ line, joinedBy: 'session' as const }));
+  if (start === null || end === null) return { lines: matched, start, end };
+  const pids = new Set(session.map(line => line.pid).filter((pid): pid is number => pid !== null));
+  for (const line of scan.lines) {
+    if (line.liveSessionId === spec.liveSessionId) continue;
+    if (line.liveSessionId !== null || line.at === null) continue;
+    if (line.at < start - WINDOW_MARGIN_MS || line.at > end + WINDOW_MARGIN_MS) continue;
+    if (line.pid !== null && !pids.has(line.pid)) continue;
+    matched.push({ line, joinedBy: 'window' });
+  }
+  const [from, to] = span(matched.map(item => item.line));
+  return { lines: matched, start: from, end: to };
+}
+
+const timeOf = (value: number | null | undefined): number => value ?? Number.POSITIVE_INFINITY;
+
+function storeEntries(report: TimelineReport, content: boolean): CallEntry[] {
+  const entries: CallEntry[] = [];
+  const push = (at: number | null, monoMs: number | null, kind: CallEntryKind, text: string): void => {
+    entries.push({ at, monoMs, kind, text, joinedBy: 'store' });
+  };
+  for (const track of report.turns) {
+    push(track.turn.openedAt, track.turn.monoMs, 'state', `turn ${track.turn.turnIndex} opened origin=${track.turn.origin}`);
+    for (const utterance of track.utterances ?? []) {
+      push(utterance.at, null, utterance.role === 'owner' ? 'owner' : 'model',
+        `${utterance.role} utterance at=${utterance.at} ${utterance.final ? 'final' : 'partial'}${content ? ` text=${JSON.stringify(utterance.text)}` : ''}`);
+    }
+    if (track.turn.firstAudibleAt !== null) push(track.turn.firstAudibleAt, null, 'model', 'first model audio');
+    for (const response of track.responses) push(response.createdAt, null, 'model', `response ${response.responseKey} status=${response.status}`);
+    for (const call of track.calls) push(call.intentAt, null, 'tool', `tool ${call.name} outcome=${call.outcome} ms=${call.ms ?? '-'}`);
+    for (const playback of track.playback) {
+      push(playback.audibleAt ?? playback.receivedAt, null, 'model', `playback ${playback.playbackKey} ${playback.terminationReason ?? 'open'}`);
+    }
+  }
+  for (const call of report.unattributedCalls) push(call.intentAt, null, 'tool', `unattributed tool ${call.name} outcome=${call.outcome} ms=${call.ms ?? '-'}`);
+  return entries;
+}
+
+export interface CallStoryOptions { liveSessionId?: string; callId?: string; content?: boolean }
+
+/** The whole story of one call: the store's turns, tool calls and responses merged into the ordered log. */
+export function buildCallStory(scan: LogScan, report: TimelineReport | undefined, options: CallStoryOptions = {}): CallStory {
+  const matched = attributeLines(scan, {
+    ...(options.liveSessionId === undefined ? {} : { liveSessionId: options.liveSessionId }),
+    ...(options.callId === undefined ? {} : { callId: options.callId }),
+  });
+  const entries: CallEntry[] = report === undefined ? [] : storeEntries(report, options.content === true);
+  let skipped = 0;
+  let joinedByWindow = 0;
+  for (const { line, joinedBy } of matched.lines) {
+    const kind = LOG_EVENT_KIND[line.event];
+    if (kind === undefined) { skipped += 1; continue; }
+    if (joinedBy === 'window') joinedByWindow += 1;
+    for (const text of logEntryText(line)) entries.push({ at: line.at, monoMs: line.monoMs, kind, text, joinedBy });
+  }
+  entries.sort((left, right) => timeOf(left.at) - timeOf(right.at) || (left.monoMs ?? 0) - (right.monoMs ?? 0));
+  const stamps = entries.map(entry => entry.at).filter((value): value is number => value !== null);
+  const startedAt = stamps.length ? Math.min(...stamps) : matched.start;
+  const endedAt = stamps.length ? Math.max(...stamps) : matched.end;
+  return {
+    liveSessionId: options.liveSessionId ?? null,
+    callId: options.callId ?? null,
+    startedAt,
+    durationMs: startedAt === null || endedAt === null ? null : endedAt - startedAt,
+    entries, joinedByWindow, skipped, torn: scan.torn, files: scan.files.length,
+    content: options.content === true,
+  };
+}
+
+export interface LogHealth {
+  files: LogFileHealth[]; lines: number; torn: number; bytes: number;
+  oldestDay: string | null; newestDay: string | null;
+  topEvents: { event: string; lines: number; share: number }[];
+  unattributed: { lines: number; streams: Record<string, number>; topEvents: { event: string; lines: number }[] };
+}
+
+function tally<T extends string>(values: Iterable<T>): Map<T, number> {
+  const counts = new Map<T, number>();
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+  return counts;
+}
+
+export function logHealth(scan: LogScan, top = 10): LogHealth {
+  const stamps = scan.lines.map(line => line.at).filter((value): value is number => value !== null);
+  const events = tally(scan.lines.map(line => line.event));
+  const topEvents = [...events.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, top)
+    .map(([event, lines]) => ({ event, lines, share: scan.lines.length === 0 ? 0 : Math.round((lines / scan.lines.length) * 1000) / 1000 }));
+  const loose = scan.lines.filter(line => line.liveSessionId === null && line.callId === null);
+  return {
+    files: scan.files, lines: scan.lines.length, torn: scan.torn,
+    bytes: scan.files.reduce((total, file) => total + file.bytes, 0),
+    oldestDay: stamps.length ? day(Math.min(...stamps)) : null,
+    newestDay: stamps.length ? day(Math.max(...stamps)) : null,
+    topEvents,
+    unattributed: {
+      lines: loose.length,
+      streams: Object.fromEntries(tally(loose.map(line => line.stream))),
+      topEvents: [...tally(loose.map(line => line.event)).entries()]
+        .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0])).slice(0, 5)
+        .map(([event, lines]) => ({ event, lines })),
+    },
+  };
+}
+
+export interface CallRow { liveSessionId: string; start: number; durationMs: number; tools: number; maxSilenceMs: number | null; terminal: string | null; lines: number }
+
+/** One row per session the logs name, newest first, with the window-joined lines counted in. */
+export function listCalls(scan: LogScan): CallRow[] {
+  const sessions = new Set(scan.lines.map(line => line.liveSessionId).filter((value): value is string => value !== null));
+  const rows: CallRow[] = [];
+  for (const liveSessionId of sessions) {
+    const { lines, start, end } = attributeLines(scan, { liveSessionId });
+    if (start === null || end === null) continue;
+    let tools = 0, maxSilenceMs: number | null = null, terminal: string | null = null;
+    for (const { line } of lines) {
+      const latency = line.record.toolLatencyMs;
+      if (Array.isArray(latency)) tools += latency.length;
+      else if (line.event === 'live_tool_turn') tools += count(line.record.toolCallsThisTurn) ?? 0;
+      const silence = count(line.record.deadAirMs) ?? (line.event === 'live_heard_silence' ? count(line.record.ms) : null);
+      if (silence !== null && (maxSilenceMs === null || silence > maxSilenceMs)) maxSilenceMs = silence;
+      if (line.event === 'live_terminal') terminal = `${name(line.record.state) ?? 'unknown'}/${name(line.record.code) ?? 'unknown'}`;
+    }
+    rows.push({ liveSessionId, start, durationMs: end - start, tools, maxSilenceMs, terminal, lines: lines.length });
+  }
+  return rows.sort((left, right) => right.start - left.start || left.liveSessionId.localeCompare(right.liveSessionId));
+}
+
+const seconds = (ms: number | null): string => ms === null ? '-' : `${(ms / 1000).toFixed(3)}s`;
+
+export function renderCallStory(story: CallStory): string {
+  const id = story.liveSessionId ?? story.callId ?? 'unknown';
+  const head = `call ${id} start=${wall(story.startedAt)} dur=${story.durationMs ?? '-'}ms entries=${story.entries.length}` +
+    ` joined-by-window=${story.joinedByWindow} skipped=${story.skipped} torn=${story.torn} files=${story.files} content=${story.content ? 'on' : 'off'}`;
+  const body = story.entries.map(entry => `+${entry.at === null || story.startedAt === null ? '-' : entry.at - story.startedAt}ms ${entry.kind} ${entry.text}`);
+  return `${[head, ...body].join('\n')}\n`;
+}
+
+export function renderLogHealth(health: LogHealth): string {
+  const lines = [
+    `logs files=${health.files.length} lines=${health.lines} torn=${health.torn} bytes=${health.bytes}` +
+      ` oldest-day=${orDash(health.oldestDay)} newest-day=${orDash(health.newestDay)}`,
+    ...health.files.map(file => `  ${file.file} ${file.stream} ${file.lines} lines ${file.torn} torn ${file.bytes} bytes ${orDash(file.oldestDay)}..${orDash(file.newestDay)}`),
+    'top events:',
+    ...health.topEvents.map(event => `  ${event.event} ${event.lines} ${(event.share * 100).toFixed(1)}%`),
+    `unattributed ${health.unattributed.lines} of ${health.lines} lines (no liveSessionId, no callId)`,
+    ...Object.entries(health.unattributed.streams).map(([stream, count]) => `  ${stream} ${count}`),
+    ...health.unattributed.topEvents.map(event => `  ${event.event} ${event.lines}`),
+  ];
+  return `${lines.join('\n')}\n`;
+}
+
+export function renderCallList(rows: readonly CallRow[]): string {
+  const lines = ['session start dur tools silence terminal'];
+  for (const row of rows) {
+    lines.push(`${row.liveSessionId} ${wall(row.start)} ${seconds(row.durationMs)} ${row.tools} ${row.maxSilenceMs === null ? '-' : `${row.maxSilenceMs}ms`} ${row.terminal ?? '-'}`);
+  }
+  return `${lines.join('\n')}\n`;
+}

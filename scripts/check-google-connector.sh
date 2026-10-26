@@ -10,7 +10,7 @@ if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" || ! -d "$deps
 fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-google.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
-mkdir -p "$out/source/"{tools,contracts,domain,runtime,connectors,test,config,host,adapters/model,adapters/mcp,adapters/live-voice,trace}
+mkdir -p "$out/source/"{tools,contracts,domain,runtime,connectors,test,config,host,adapters/model,adapters/mcp,adapters/live-voice,trace,prompt,live,http,people}
 cp "$root"/server/tools/*.ts "$out/source/tools/"
 cp "$root"/server/contracts/*.ts "$out/source/contracts/"
 # server/tools reads the memory model and the debug journal receipt: copy those trees too.
@@ -26,9 +26,20 @@ cp "$root"/server/adapters/mcp/*.ts "$out/source/adapters/mcp/"
 cp "$root/server/adapters/live-voice/types.ts" "$out/source/adapters/live-voice/"
 cp "$root"/server/config/{mcp,files}.ts "$out/source/config/"
 cp "$root/server/host/mcp.ts" "$out/source/host/"
+# W14: the loud-error suite proves the classified-failure row is admitted by the real host log, so the
+# harness compiles host/log.ts and its small import closure too.
+cp "$root/server/host/log.ts" "$out/source/host/"
+# W15: tools, connectors and the live persona resolve people through the host snapshot, so the
+# harness compiles that module and its import closure too.
+cp "$root"/server/people/*.ts "$out/source/people/"
+cp "$root"/server/prompt/{types,backend-procedure,live-persona}.ts "$out/source/prompt/"
+cp "$root/server/live/stop-phrase.ts" "$out/source/live/"
+cp "$root/server/http/routes.ts" "$out/source/http/"
 cp "$root/server/host/mongoose-auth.ts" "$out/source/host/"
 cp "$root/server/host/oauth-client.ts" "$out/source/host/"
 cp "$root/server/test/google-connector.test.ts" "$out/source/test/"
+# W14: the loud-error suite runs in this same harness, so a classified failure can never go quiet again.
+cp "$root/server/test/loud-errors.test.ts" "$out/source/test/"
 mkdir -p "$out/source/test/fixtures"
 cp "$root/server/test/fixtures/google-mcp-child.mjs" "$out/source/test/fixtures/"
 cp "$root/server/test/fixtures/google-error-contract-6ee466f0.json" "$out/source/test/fixtures/"
@@ -42,4 +53,4 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
 mkdir -p "$out/dist/test/fixtures"
 cp "$root/server/test/fixtures/google-mcp-child.mjs" "$out/dist/test/fixtures/"
 cp "$root/server/test/fixtures/google-error-contract-6ee466f0.json" "$out/dist/test/fixtures/"
-node_test_files --test-timeout=15000 "$out/dist/test/google-connector.test.js"
+node_test_files --test-timeout=15000 "$out/dist/test/google-connector.test.js" "$out/dist/test/loud-errors.test.js"

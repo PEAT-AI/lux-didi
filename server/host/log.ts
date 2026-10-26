@@ -166,6 +166,24 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'chat_timing', runId: value.runId, outcome: value.outcome, rounds: [...value.rounds],
       tools, fenceMs: value.fenceMs, acquireMs: value.acquireMs, answerMs: value.answerMs };
   }
+  if (value.event === 'people_loaded') {
+    // W15: the roster receipt is counts and bytes only, never a name from the file.
+    if (!closedKeys(value, ['bytes', 'chars', 'count', 'event'])) return;
+    if (![value.count, value.bytes, value.chars].every(entry => Number.isSafeInteger(entry) && (entry as number) >= 0)) return;
+    return { event: 'people_loaded', count: value.count, bytes: value.bytes, chars: value.chars };
+  }
+  if (value.event === 'people_invalid') {
+    // W15: a malformed roster fails loud with its closed reason code, and the roster stays absent.
+    if (!closedKeys(value, ['event', 'reason'])) return;
+    if (typeof value.reason !== 'string' || !/^[a-z0-9_]{1,40}$/.test(value.reason)) return;
+    return { event: 'people_invalid', reason: value.reason };
+  }
+  if (value.event === 'people_trimmed') {
+    // W15: how many roster lines the section ceiling dropped, and how many of them were tier 2.
+    if (!closedKeys(value, ['dropped', 'event', 'tier2'])) return;
+    if (![value.dropped, value.tier2].every(entry => Number.isSafeInteger(entry) && (entry as number) >= 0)) return;
+    return { event: 'people_trimmed', dropped: value.dropped, tier2: value.tier2 };
+  }
   if (value.event === 'launch_kind') {
     // #613: which launch opened the app and the two flags it decides. Closed set, metadata only.
     const allowed = ['autoConnects', 'event', 'kind', 'windowShown'];
@@ -234,6 +252,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (hasEndpoint && !isSafeId(value.endpointId)) return;
     if (hasAttempt && (typeof value.attempt !== 'string' || !attempts.includes(value.attempt))) return;
     return { event: 'connector_failure', connector: value.connector, stage: value.stage, ...(hasReason ? { reason: value.reason } : {}), ...(hasException ? { exceptionCode: value.exceptionCode } : {}), ...(hasEndpoint ? { endpointId: value.endpointId } : {}), ...(hasAttempt ? { attempt: value.attempt } : {}) };
+  }
+  if (value.event === 'tool_classified_failure') {
+    // W14 (LOGS.md L-08): one row per call the connector itself refused with a typed code, so host.log
+    // tells a failed read from an empty one. The endpoint id, the connector, the tool and the code only:
+    // never an argument, a payload, a query or a line of helper text.
+    if (!closedKeys(value, ['code', 'connector', 'endpointId', 'event', 'tool'])) return;
+    if (!isSafeId(value.endpointId) || !isSafeToken(value.tool) || !isSafeToken(value.connector) || !isSafeToken(value.code)) return;
+    return { event: 'tool_classified_failure', endpointId: value.endpointId, connector: value.connector, tool: value.tool, code: value.code };
   }
   if (value.event === 'connector_identity') {
     // Closed identity proof only: a connector name, two booleans and the proof's own closed code, never
@@ -708,6 +734,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.keys(value).sort().join(',') !== ['event', 'deadAirMs'].sort().join(',')) return;
     if (!isSafeCount(value.deadAirMs)) return;
     return { event: 'live_dead_air', deadAirMs: value.deadAirMs };
+  }
+  if (value.event === 'live_heard_silence') {
+    // L-04: the silence the owner heard, from the end of the last audible frame to the next model audio. A duration
+    // and one flag, never turn content.
+    if (Object.keys(value).sort().join(',') !== ['event', 'ms', 'toolPending'].sort().join(',')) return;
+    if (!isSafeCount(value.ms) || typeof value.toolPending !== 'boolean') return;
+    return { event: 'live_heard_silence', ms: value.ms, toolPending: value.toolPending };
   }
   if (value.event === 'live_turn_open') {
     // #303: the provider streamed model audio and then went quiet without a turnComplete.

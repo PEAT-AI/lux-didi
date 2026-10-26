@@ -22,6 +22,8 @@ import { ResearchLedger, runResearch, shapeBlock, type ResearchDeps } from '../t
 import { chatAsk, chatIntent, chatWindow, spokenChannel } from '../tools/chat-intent.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
+// The fixture's clock and the suite's, one instant, so the week window is the same every run.
+const FIXTURE_NOW = Date.parse('2026-10-25T09:00:00Z');
 const child = join(here, 'fixtures', 'stdio-mattermost-people-child.mjs');
 const ACCOUNT = 'local';
 const RESOURCE = 'mattermost';
@@ -40,7 +42,7 @@ async function setup(t: { after(fn: () => Promise<void> | void): void }, mode: '
   const registry = new McpRegistry();
   const config: EndpointConfig = {
     id: 'mattermost', transport: 'stdio', command: process.execPath, args: [child, mode],
-    env: { HOME: dir, PATH: process.env.PATH ?? '/usr/bin', DIDI_FAKE_MATTERMOST_LOG: log, LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+    env: { HOME: dir, PATH: process.env.PATH ?? '/usr/bin', DIDI_FAKE_MATTERMOST_LOG: log, DIDI_FAKE_MATTERMOST_NOW: String(FIXTURE_NOW), LOGNAME: '', SHELL: '', TERM: '', USER: '' },
     account: ACCOUNT, resource: RESOURCE,
   };
   registry.register(config);
@@ -83,7 +85,7 @@ function researchDeps(f: Awaited<ReturnType<typeof setup>>, planned: IntentSubCa
     const text = projected.ok ? projected.projection.text : '';
     return { key: call.key, name: call.name, ok: projected.ok, text, originalCharacters: text.length, omittedCharacters: 0 };
   }));
-  return { now: () => Date.now(), configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger(), timeZone: 'UTC' };
+  return { now: () => FIXTURE_NOW, configured: ['chat'], execute, emit: () => {}, log: () => {}, ledger: new ResearchLedger(), timeZone: 'UTC' };
 }
 
 const searches = (calls: readonly Call[]) => calls.filter(call => call.name === 'mattermost_search').map(call => call.arguments);

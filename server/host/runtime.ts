@@ -4,6 +4,7 @@ import { isCustomVoiceId } from '../adapters/live-voice/openai.js';
 import { HostLog, captureHostDiagnostics } from './log.js';
 import { supervisionRequested } from './supervision.js';
 import { loadOwnerProfile } from '../config/owner-profile.js';
+import { installPeople, loadPeople } from '../people/index.js';
 import { ConfigError, readPrivate, validateRoot } from '../config/files.js';
 import { homedir, platform } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -623,6 +624,17 @@ export async function startHost(config: HostConfig) {
     startupStage = 'owner';
     const owner = loadOwnerProfile({ ...(config.ownerProfilePath !== undefined ? { path: config.ownerProfilePath } : {}), ownerId: store.assistantId });
     if (owner.status === 'error') throw new ConfigError('invalid_profile');
+    // W15: the owner's people roster is read once here, from the directory the owner profile itself
+    // resolves to; a malformed file is loud and leaves the roster absent, never partial.
+    const people = config.ownerProfilePath === undefined ? { status: 'absent' as const } : loadPeople(config.ownerProfilePath);
+    if (people.status === 'loaded') {
+      installPeople(people.snapshot, event => log.event(event));
+      log.event({ event: 'people_loaded', count: people.snapshot.people.length, bytes: people.snapshot.bytes, chars: people.rendered.text.length });
+      if (people.rendered.dropped > 0) log.event({ event: 'people_trimmed', dropped: people.rendered.dropped, tier2: people.rendered.droppedTier2 });
+    } else {
+      installPeople(null);
+      if (people.status === 'invalid') log.event({ event: 'people_invalid', reason: people.reason });
+    }
     const providerConfigDir = resolve(config.configDir ?? join(dataDir, 'provider-config'));
     await seedProviderConfig(dataDir, providerConfigDir, log);
     // R3: authority is pluggable; sources are consulted in registration order and never fabricated.

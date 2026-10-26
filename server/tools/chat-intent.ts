@@ -6,6 +6,7 @@
  */
 import type { JsonObject } from '../adapters/model/types.js';
 import type { IntentSubCall } from './intent.js';
+import { canonicalName } from '../people/index.js';
 
 export type ChatIntentKind = 'person-said' | 'person-overview' | 'channel-recent' | 'group-chat' | 'topic-search';
 
@@ -79,7 +80,9 @@ function cleanName(raw: string): string | undefined {
   while (parts.length > 0 && NAME_TAIL.has(parts[parts.length - 1]!.toLowerCase())) parts.pop();
   if (parts.length === 0) return undefined;
   const name = parts.join(' ');
-  return NOT_A_PERSON.has(parts[0]!.toLowerCase()) ? undefined : name;
+  if (NOT_A_PERSON.has(parts[0]!.toLowerCase())) return undefined;
+  // W15: a name the owner's roster resolves routes as the roster's own canonical name.
+  return canonicalName(name) ?? name;
 }
 
 /** A list of sources ("my calendar, mail and team chat") is never a channel name. */

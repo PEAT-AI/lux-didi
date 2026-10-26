@@ -29,7 +29,9 @@ fi
 log=$(mktemp "${TMPDIR:-/tmp}/npm-ci-offline.XXXXXX")
 trap 'rm -f "$log"' EXIT
 
-(cd "$dir" && npm --prefix "$PWD" "$@") 2>"$log"
+# cd is the whole pin: npm --prefix "$PWD" breaks when the path crosses a symlink (macOS /tmp, /var),
+# where npm then treats the prefix as another project and refuses the lock as out of sync.
+(cd "$dir" && npm "$@") 2>"$log"
 status=$?
 cat "$log" >&2
 

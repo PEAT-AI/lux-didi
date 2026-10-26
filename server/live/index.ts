@@ -306,6 +306,9 @@ export const RESPONSE_WATCHDOG_WINDOW_MS = 120_000;
 /** #538: the audible debt rung. The clock is non-sliding: the first rung lands 8 s after the model began owing audio,
  *  whatever text it wrote in between. The rebuild rung is seven seconds later, which is AUDIBLE_DEBT_REBUILD_MS. */
 export const AUDIBLE_DEBT_RUNG_MS = 8_000;
+/** L-04: the shortest silence worth a `live_heard_silence` record. Below it the wait is the ordinary latency of one
+ *  model turn, and reporting every such pause would bury the waits the owner actually sits through. */
+export const HEARD_SILENCE_MIN_MS = 1_000;
 export const AUDIBLE_DEBT_REBUILD_MS = AUDIBLE_DEBT_RUNG_MS + RESPONSE_WATCHDOG_RECOVERY_MS;
 /** #656: owner audio that arrives while a rebuild is open is held for the new session, newest last. The cap is three
  *  seconds of the 16 kHz s16 mono uplink (32 bytes per millisecond); past it the oldest held frame is the one dropped. */
@@ -445,6 +448,12 @@ interface ActiveSession {
   inputFinalAt: number | undefined;
   /** First model audio of the current turn; reset at each model turn start. */
   firstAudioAt: number | undefined;
+  /** L-04: the end of the last audible frame, owner speech end or model audio end, whichever came later, and whether
+   *  a tool was pending while the owner waited. The wait to the next model audio is the silence the owner heard. */
+  heardSince?: number | undefined; heardToolPending: boolean;
+  /** L-04: the end of the last audible model frame of the current turn, cleared at the owner's utterance boundary and at
+   *  every model turn start, so a tool turn that spoke no preamble cannot inherit an earlier turn's frame. */
+  turnAudioAt?: number | undefined;
   /** Spoken output script codes of the current turn, counted and then reported as counts only. */
   turnLatin: number; turnDevanagari: number; turnChars: number;
   /** Whether this turn followed tool work and whether the owner cut it off. */
@@ -1024,7 +1033,10 @@ export function subResultOf(key: string, name: string, response: Record<string, 
   const text = typeof response['text'] === 'string' ? response['text'] : '';
   return { key, name, ok, text, originalCharacters: typeof response['originalCharacters'] === 'number' ? response['originalCharacters'] : text.length, omittedCharacters: typeof response['omittedCharacters'] === 'number' ? response['omittedCharacters'] : 0,
     // E4 (#611): the ranker's confidence was dropped here only, so the scheduled read lost the hedge.
-    ...(ok && response['knowledgeConfidence'] ? { knowledgeConfidence: response['knowledgeConfidence'] as { confidence: string; top?: string; candidates?: string } } : {}) };
+    ...(ok && response['knowledgeConfidence'] ? { knowledgeConfidence: response['knowledgeConfidence'] as { confidence: string; top?: string; candidates?: string } } : {}),
+    // LOGS.md L-01: the tool layer's closed code for a projection that only carries the owner's own refusal
+    // line, kept as evidence so the reader classifies the read by the code and never by its words.
+    ...(ok && typeof response['classified'] === 'string' ? { classified: response['classified'] } : {}) } as IntentSubResult;
 }
 
 export class LiveSessionOwner {
@@ -1635,7 +1647,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
       researchAdmission: new ResearchAdmission(), researchRetention: { retainedChars: 0, rebuilds: 0 },
-      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardToolPending: false, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
@@ -1995,6 +2007,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // and the session that replaces this one can still speak it.
     const reply = unspokenReply(outputs);
     if (reply !== undefined) { handle.unspoken = reply; handle.unspokenDelivered = false; handle.unspokenResults = outputs.length; }
+    // L-04: the wait that ends the next time she speaks followed a tool, which the heard-silence record names.
+    handle.heardToolPending = true;
     this.#armDebt(handle, outputs, 'tool_output');
     if (outcome === 'failed') void this.#recreateForDeadAir(handle, 'send_failed').catch(() => { /* the recreate names its own failure */ });
   }
@@ -2015,7 +2029,13 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     if (handle.debtSince !== undefined) { handle.debtTimer?.cancel(); handle.debtTimer = undefined; }
     // A muted session hears nothing, so nothing is owed to it while the mute holds.
     if (handle.muted) return;
-    handle.debtSince = this.#now();
+    // L-04: the clock is anchored at the end of the last audible frame of this turn's own model speech, not at the
+    // tool output, so the provider latency the owner sat through after her preamble is part of the same silence and
+    // the rung lands 8 s after the last thing she heard. A turn that spoke no preamble has no such frame and keeps
+    // the old anchor at the tool output: a previous turn's audio is never this turn's silence. The rung's own
+    // action is unchanged.
+    const lastAudible = handle.turnAudioAt ?? this.#now();
+    handle.debtSince = lastAudible;
     handle.debtBargeIn = false;
     handle.debtDeferred = false;
     handle.debtHeldForTool = false;
@@ -2023,7 +2043,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // One silence, one clock: the sliding watchdog stands down for the silence the debt clock now owns.
     this.#cancelWatchdog(handle);
     this.#noteDebt(handle, 'start', reason);
-    this.#scheduleDebt(handle, AUDIBLE_DEBT_RUNG_MS, 'rung');
+    this.#scheduleDebt(handle, Math.max(1, AUDIBLE_DEBT_RUNG_MS - (this.#now() - lastAudible)), 'rung');
   }
 
   #scheduleDebt(handle: ActiveSession, delayMs: number, step: 'rung' | 'rebuild'): void {
@@ -2467,6 +2487,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     const supersedes = connection.turnId;
     if (supersedes !== undefined) this.#closeTurn(handle, 'superseded');
     handle.modelTextSinceOpen = false;
+    // L-04: her own words restart the silence, so no earlier model frame of this turn anchors the debt clock.
+    handle.turnAudioAt = undefined;
     this.#cancelTimers(handle);
     handle.progressCallIds.clear();
     handle.exec.clear();
@@ -3136,7 +3158,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           if (handle.turnCompleteSeen) { handle.dropResponse = false; handle.outputJournalled = false; handle.turnCompleteSeen = false; }
           if (handle.muted) handle.mutedResponse = true;
           resetTurnScript(handle);
-          handle.firstAudioAt = undefined;
+          handle.firstAudioAt = undefined; handle.turnAudioAt = undefined;
           this.#beginModelTurn(handle);
           // A generation start is the think time. gpt-live-1 sends none for a plain turn, so the adapter
           // synthesizes one when the owner's episode ends, and this is what puts the orb in THINKING.
@@ -3282,6 +3304,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           }
           this.#cancelSpeakingHold(handle);
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
+          handle.turnAudioAt = handle.lastModelAudioAt;
           this.#noteState(handle, 'audio');
           if (handle.firstAudioAt === undefined) {
             handle.firstAudioAt = this.#now();
@@ -3295,7 +3318,15 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
               hostLogEvent({ event: 'live_dead_air', deadAirMs: Math.max(0, handle.firstAudioAt - handle.inputFinalAt - handle.mutedMs) });
               handle.inputFinalAt = undefined;
             }
+            // L-04: the wait the owner heard, measured from the last audible frame rather than from her turn's
+            // end, so a preamble that satisfied the dead-air receipt no longer hides the answer's real silence.
+            if (handle.heardSince !== undefined && this.#now() - handle.heardSince >= HEARD_SILENCE_MIN_MS) {
+              hostLogEvent({ event: 'live_heard_silence', ms: Math.max(0, this.#now() - handle.heardSince),
+                toolPending: handle.heardToolPending });
+            }
           }
+          // L-04: this frame is the newest thing the owner heard, and the next wait starts at its end.
+          handle.heardSince = this.#now(); handle.heardToolPending = false;
           this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue;
         }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
@@ -3312,7 +3343,11 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;
           if (handle.inputFinal) {
-            handle.inputFinalAt = handle.inputAt; handle.mutedMs = 0;
+            // L-05: the provider sends the finished fragments of one utterance one after another, and the dead-air
+            // receipt is owed one measurement per utterance, so only the first of them arms it.
+            if (handle.inputFinalAt === undefined) handle.inputFinalAt = handle.inputAt;
+            // L-04: her speech is audible, so the wait the owner hears starts at its last fragment.
+            handle.heardSince = handle.inputAt; handle.mutedMs = 0;
             if (ownerTurnOpen) {
               ownerTurnOpen = false;
             }
@@ -3388,7 +3423,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         return;
       }
       handle.inputFinal = true;
-      handle.inputFinalAt = this.#now(); handle.mutedMs = 0;
+      // L-05: the quiet-timer finalization of one utterance is the same utterance the provider already ended.
+      if (handle.inputFinalAt === undefined) handle.inputFinalAt = this.#now();
+      handle.heardSince = this.#now(); handle.mutedMs = 0;
       for (const resolve of handle.inputFinalWaiters ?? []) resolve();
     }, Math.max(0, 300 - (this.#now() - handle.inputAt)));
     handle.inputFinalTimer.unref();

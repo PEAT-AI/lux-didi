@@ -11,7 +11,12 @@ if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" || ! -d "$deps
 fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-tool-owner.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
-mkdir -p "$out/source/"{tools,contracts,runtime,connectors,domain,test,host,adapters/model,adapters/mcp,adapters/live-voice,trace}
+mkdir -p "$out/source/"{tools,contracts,runtime,connectors,domain,test,host,adapters/model,adapters/mcp,adapters/live-voice,trace,people}
+# W15: tools, connectors and the prompt resolve people through the host snapshot, so the staged tree
+# carries that module, its config door and its import closure too.
+mkdir -p "$out/source/config"
+cp "$root"/server/config/files.ts "$out/source/config/"
+cp "$root"/server/people/*.ts "$out/source/people/"
 # server/trace imports the domain modules (labels, history-reader, history-lifecycle): copy them too.
 cp "$root"/server/domain/*.ts "$out/source/domain/"
 cp "$root"/server/tools/*.ts "$out/source/tools/"

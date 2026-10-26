@@ -23,6 +23,7 @@ import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validate
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
 import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, ownerWords, validateOpen, type NativeActionCode } from './open.js';
+import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
 
@@ -120,6 +121,29 @@ function hostMatches(a: RunAcceptance, h: Pick<HostContext, 'runId' | 'actorId' 
  * freezes, whether or not the transport has come up yet.
  */
 export interface LiveRunConnections { durableConnectionIds?(tx: Transaction): string[] }
+/**
+ * LOGS.md L-08: one classified connector failure, closed. Ids and the connector's own code only, so
+ * host.log can tell a failed read from an empty one; never an argument, a payload, a query or a line
+ * of helper text. Its own event name, because `tool_failure` is a transport failure and
+ * `connector_failure` a connect-time stage.
+ */
+export interface ClassifiedFailureEvent {
+  event: 'tool_classified_failure';
+  endpointId: string;
+  connector: string;
+  tool: string;
+  code: string;
+}
+
+const EVENT_TOKEN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
+/** The closed failure event for one classified result, or undefined when a value is not an id or a code. */
+export function classifiedFailureEvent(input: { endpointId: string; connector: string; tool: string; code: string }): ClassifiedFailureEvent | undefined {
+  if (!EVENT_TOKEN.test(input.code)) return undefined;
+  if (input.endpointId === '' || input.endpointId.length > 64 || input.connector === '' || input.connector.length > 32 || input.tool === '' || input.tool.length > 64) return undefined;
+  return { event: 'tool_classified_failure', endpointId: input.endpointId, connector: input.connector, tool: input.tool, code: input.code };
+}
+
 export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveRunConnections {
   const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
@@ -557,6 +581,26 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           return { status: 'completed', result };
         },
       });
+      // W15: people_lookup reads only the host's own roster snapshot; no connector, no network, no write.
+      definitions.push({ ...PEOPLE_LOOKUP_DECLARATION, effect: 'read', accountId: 'gateway:live-voice', resourceId: 'intent', validate: validatePeopleLookup,
+        async execute(args, context) {
+          if (context.runId !== runId || !validatePeopleLookup(args) || context.signal.aborted) return { status: 'failed' };
+          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
+          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' };
+          const result = store.transaction(tx => {
+            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
+            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+            const call = storedCall(tx, row);
+            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: PEOPLE_LOOKUP_DECLARATION.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: 'gateway:live-voice', resourceId: 'intent', ...(call.callId !== undefined ? { callId: call.callId } : {}) };
+            if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
+            const snapshot = validateCallRun(tx, call);
+            assertLiveIdentity(tx, call); target(snapshot, call, tx);
+            if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
+            return complete(call as ToolCallIntent, peopleLookupResult(args), ['ordinary'], tx);
+          });
+          return { status: 'completed', result };
+        },
+      });
       // Item 1/10: the composed stage is declared to the live model only while the capability switch is
       // on, and it can never write: the host commits after its own read-back boundary and confirmation.
       if (composedNotes) definitions.push({ ...STAGE_NOTE_IDENTITY, description: 'Stage a note composed from this conversation for the Lux vault. The host reads it back and saves it only after the owner confirms. It never saves by itself.', effect: 'write', parameters: STAGE_NOTE_PARAMETERS, validate: validateStageNote,
@@ -762,7 +806,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 return { status: 'unknown', code };
               }
               if (evidence.state !== 'completed') {
-                const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' ? descriptor.status?.(evidence) : undefined;
+                const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' ? descriptor.status?.(evidence, p.endpoint) : undefined;
                 if (!status) {
                   // Keep the failure cause truthful: a refused connector read names its reason; a child
                   // tool/protocol error is an unusable result. Either way surface a real code.
@@ -776,7 +820,16 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 // names a content-free log line (an unknown helper code, a Didi defect) writes it too.
                 reportToolStatus?.(p.endpoint.id, status);
                 if (status.log) options.log?.(status.log);
-                return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0 }, []) };
+                // LOGS.md L-08: every classified failure is one closed host event, so host.log tells a
+                // failed read from an empty one. The endpoint id, the tool and the classified code only:
+                // no argument, no payload, no helper text. A code that is not one word is not logged.
+                // It travels on the host-log channel, whose sink owns validation, because the owner log
+                // accepts only the closed transport-failure shape.
+                const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code: status.code });
+                if (failure) hostLogEvent(failure);
+                // `classified` is the closed code this projection stands for, so the reader that shapes it can
+                // call it a failed read by evidence instead of guessing from the words it carried.
+                return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0, classified: status.code }, []) };
               }
               reportToolStatus?.(p.endpoint.id, null);
               const sourceRefs = evidence[SOURCE_DISPATCH] ? [evidence[SOURCE_DISPATCH]!] : evidence[SOURCE_CHILD_DISPATCHES];

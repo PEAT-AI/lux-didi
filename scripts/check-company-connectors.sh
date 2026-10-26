@@ -25,6 +25,9 @@ cp "$root"/server/adapters/mcp/*.ts "$out/source/adapters/mcp/"
 # server/tools imports the Live provider union type: copy its declaration module too.
 cp "$root/server/adapters/live-voice/types.ts" "$out/source/adapters/live-voice/"
 cp "$root"/server/config/{mcp,files}.ts "$out/source/config/"
+# W15: tools and connectors resolve people through the host snapshot, so the staged tree carries it.
+mkdir -p "$out/source/people"
+cp "$root"/server/people/*.ts "$out/source/people/"
 cp "$root/server/host/mcp.ts" "$out/source/host/"
 # host/mcp.ts resolves the host-owned OAuth record for a Mongoose session.
 cp "$root/server/host/mongoose-auth.ts" "$out/source/host/"

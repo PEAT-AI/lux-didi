@@ -93,15 +93,21 @@ function markerFrame(marker: LivePublicMarker): Record<string, unknown> {
   return frame;
 }
 
-/** Strict tiny control: exactly one `type` key with a known command, else null. */
-function control(raw: string): (typeof LIVE_CONTROLS)[number] | null {
+/** C-HEADPHONES 5: strict tiny control, exactly one `type` key with a known command plus, on a Stop
+ *  only, the app's own end reason, one closed word. Anything else is null, exactly as before. */
+function control(raw: string): { type: (typeof LIVE_CONTROLS)[number]; reason?: string } | null {
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { return null; }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  const keys = Object.keys(parsed);
-  if (keys.length !== 1 || keys[0] !== 'type') return null;
+  const keys = Object.keys(parsed).sort();
   const type = (parsed as { type?: unknown }).type;
-  return typeof type === 'string' && (LIVE_CONTROLS as readonly string[]).includes(type) ? type as (typeof LIVE_CONTROLS)[number] : null;
+  if (typeof type !== 'string' || !(LIVE_CONTROLS as readonly string[]).includes(type)) return null;
+  const known = type as (typeof LIVE_CONTROLS)[number];
+  if (keys.length === 1 && keys[0] === 'type') return { type: known };
+  if (known !== 'close' || keys.length !== 2 || keys[0] !== 'reason' || keys[1] !== 'type') return null;
+  const reason = (parsed as { reason?: unknown }).reason;
+  if (typeof reason !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(reason)) return null;
+  return { type: known, reason };
 }
 
 /** Parse one JSON frame without judging it; the native-action bus owns its own closed shape. */
@@ -263,12 +269,13 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
       // session (trace/ingest.ts); a refused one is journaled by typed code and dropped, never closing
       // the socket. An unknown control below still closes, exactly as before.
       if (raw.includes('"playback_receipt"')) { attachment.playbackReceipt(raw); return; }
-      const type = control(raw);
-      if (type === null) { ws.close(1002, 'invalid_control'); return; }
+      const command = control(raw);
+      if (command === null) { ws.close(1002, 'invalid_control'); return; }
+      const type = command.type;
       if (type === 'inputMuted' || type === 'inputLive') { attachment.setInputMuted(type === 'inputMuted'); return; }
       if (type === 'endAudioStream') { try { attachment.endAudioStream(); } catch { ws.close(1002, 'invalid_command'); } return; }
       // The explicit Stop: the app released the microphone and wants the call over, not the socket merely quieter.
-      attachment.close();
+      attachment.close(command.reason);
       ws.close(1000, 'client_close');
     });
     void pumpOutput(ws, attachment, detach, options.maxBufferedBytes);

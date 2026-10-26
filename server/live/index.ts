@@ -31,7 +31,7 @@ import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
 import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
 
-import { clockSync, hostLogEvent, LIVE_REBUILD_TRIGGERS, LIVE_STATE_CAUSES, setLogContext } from '../host/log.js';
+import { clockSync, hostLogEvent, LIVE_REBUILD_TRIGGERS, LIVE_STATE_CAUSES, NATIVE_END_REASONS, setLogContext } from '../host/log.js';
 import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
 import { validateAcceptedPrompt } from './config.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -1735,7 +1735,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       setInputMuted: (muted: boolean) => this.#setInputMuted(handle, muted),
       playbackReceipt: frame => this.#playbackReceipt(handle, frame),
       endAudioStream: () => { if (handle.rebuilding) return; this.#guardHandle(handle); handle.session.endAudioStream(); },
-      close: () => this.#stop(handle),
+      close: (nativeReason?: string) => this.#stop(handle, nativeReason),
       detach: () => this.#detach(handle),
       overflow: () => {
         if (handle.terminal) return;
@@ -3143,10 +3143,15 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
 
   /** The client's explicit Stop: the app released the microphone and wants the call over now, not in five seconds.
    * The owner ended it, so the state is a plain close and the code names the reason. */
-  #stop(handle: ActiveSession): void {
+  #stop(handle: ActiveSession, nativeReason?: string): void {
     if (this.#settled(handle)) return;
+    // C-HEADPHONES 5: the app's own `live_end` reason travels with the Stop and the host log repeats
+    // it unchanged, so a route change is never recorded as the owner's stop. An unknown word stays
+    // user_stop: the log never invents a reason it was not told.
+    const reason = nativeReason && (NATIVE_END_REASONS as readonly string[]).includes(nativeReason)
+      ? nativeReason : 'user_stop';
     this.#settle(handle, { state: 'closed', code: 'user_stop' }, true, 'ended', null);
-    hostLogEvent({ event: 'session_end', reason: 'user_stop', msAfterStop: 0 });
+    hostLogEvent({ event: 'session_end', reason, msAfterStop: 0 });
   }
 
   /**

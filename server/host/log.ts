@@ -46,6 +46,11 @@ export const LIVE_STATE_CAUSES = ['created', 'input', 'model_turn_start', 'audio
 /** #591: why a provider session was rebuilt, a closed set. The two watchdog tokens split a silent model from a
  *  model that owes the owner an answer; the other two name the transport causes that rebuild on their own. */
 export const LIVE_REBUILD_TRIGGERS = ['no_output_after_ambient', 'no_output_after_owner', 'line_dropped', 'session_window'] as const;
+/** C-HEADPHONES 5: the native app's closed `live_end` reasons, verbatim from NativeLiveJournal. A Stop
+ *  carries one and this log repeats it, so an audio route change is never written down as the owner's
+ *  own stop. A closed set: the log never prints a word the app did not send. */
+export const NATIVE_END_REASONS = ['invalid_output', 'child_exit', 'logout', 'shutdown', 'user_stop', 'app_quit',
+  'idle_limit', 'session_limit', 'host_failed', 'host_closed', 'audio_interruption', 'route_change'] as const;
 /** The provider handshake steps, in the order the adapter walks them. */
 const LIVE_HANDSHAKE_STEPS = ['credential_resolved', 'socket_open', 'session_start_sent', 'session_started'] as const;
 /** #538: the send outcome, a closed set. The debt phases and reasons live with the trace kinds, one definition. */
@@ -682,7 +687,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'session_end') {
     // Closed shape (3p): why the call ended and how long the stop took to be felt. Never text, never audio.
     if (!closedKeys(value, ['event', 'reason', 'msAfterStop'])) return;
-    if (value.reason !== 'user_stop' && value.reason !== 'consumer_closed' && value.reason !== 'app_quit') return;
+    if (!['user_stop', 'consumer_closed', 'app_quit'].includes(String(value.reason))
+      && !(NATIVE_END_REASONS as readonly string[]).includes(String(value.reason))) return;
     if (!isSafeCount(value.msAfterStop)) return;
     return { event: 'session_end', reason: value.reason, msAfterStop: value.msAfterStop };
   }

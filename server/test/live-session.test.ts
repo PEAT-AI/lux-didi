@@ -875,6 +875,36 @@ test('a user Stop ends the live session at once as user_stop and keeps its journ
   assert.deepEqual(h.owner.get(session.liveSessionId).terminal, { state: 'closed', code: 'user_stop' }, 'the first reason stands');
 });
 
+// C-HEADPHONES 5: the app's native `live_end` reason travels with the Stop, so a route change is
+// recorded as a route change and never as the owner's own stop.
+test('a Stop carrying the native route_change reason logs session_end reason route_change', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const stopSink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => stopSink());
+  const h = await harness(t, {});
+  const { session, attachment } = await attached(h);
+  attachment.close('route_change');
+  const terminal = await attachment.done;
+  assert.deepEqual(terminal.terminal, { state: 'closed', code: 'user_stop' }, 'the call still ends at once');
+  const end = receipts.filter(record => record.event === 'session_end');
+  assert.deepEqual(end, [{ event: 'session_end', reason: 'route_change', msAfterStop: 0 }]);
+  assert.ok(safeEvent(end[0]), 'the host log whitelist accepts the native reason');
+  assert.equal(h.owner.get(session.liveSessionId).terminal?.state, 'closed');
+});
+
+// An unknown word from the app is never invented into the log: it stays the owner's stop.
+test('a Stop carrying an unknown reason still logs session_end reason user_stop', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const stopSink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => stopSink());
+  const h = await harness(t, {});
+  const { attachment } = await attached(h);
+  attachment.close('made_up_reason');
+  await attachment.done;
+  assert.deepEqual(receipts.filter(record => record.event === 'session_end'),
+    [{ event: 'session_end', reason: 'user_stop', msAfterStop: 0 }]);
+});
+
 // #589: the deterministic host phrase gate. The owner's own finalized sentence with her name at an edge
 // ends the call at once, with no model turn and no generation in the stop path.
 type VoiceStopSocket = Parameters<typeof pumpOutput>[0];

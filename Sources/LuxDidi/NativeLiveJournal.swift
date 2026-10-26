@@ -219,6 +219,19 @@ final class NativeLiveJournal {
     /// Append any existing native-live record, stamped now.
     func append(_ record: [String: Any]) { append(record, at: now()) }
 
+    /// C-HEADPHONES 5: the output switch, in the same words audio.log uses, so a reader of either
+    /// log sees what playback moved between and how long the rebuild took.
+    func appendAudioOutputSwitched(from: String, to: String, ms: Int) {
+        append(["event": "audio_output_switched", "from": from, "to": to, "ms": ms])
+    }
+
+    /// C-HEADPHONES 5: which microphone policy carried the call, built in or an announced fallback.
+    func appendAudioInputPolicy(_ detail: [String: String]) {
+        var record: [String: Any] = ["event": "audio_input_policy"]
+        for (key, value) in detail { record[key] = value }
+        append(record)
+    }
+
     /// Append any existing native-live record. Every line gets the launch identity, both clocks, a
     /// sequence and, inside a call, the session id; a caller's own timestamp is kept. One line costs
     /// exactly one sequence number, so the range a reader sees has no free gaps.

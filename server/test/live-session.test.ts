@@ -6571,12 +6571,13 @@ test('#656: owner audio sent during a rebuild is held and delivered to the new s
 });
 
 test('#656: the ladder waits out each call on that call\'s own ceiling, a research run on its deadline', async t => {
-  // A plain call is bounded by the non-research ceiling; a research operation by its own deadline plus the host's
-  // grace (C-LIVE behaviour 4), which is shorter: an admitted operation never holds the ladder past it.
+  // A plain call is bounded by the non-research ceiling; a research operation by its own patience deadline plus the
+  // host's grace (C-LIVE behaviour 4), which R1 makes exactly its 20 s hard stop: the owner ordered 15 s of patience
+  // for a slow source, so a research run may now hold the ladder longer than a plain 12 s call and never past 20 s.
   assert.equal(callCeilingMs('search_knowledge'), TOOL_CEILING_MS);
   assert.equal(callCeilingMs(RESEARCH_TOOL_NAME), RESEARCH_OPERATION.deadlineMs + RESEARCH_OPERATION.hostGraceMs);
+  assert.equal(callCeilingMs(RESEARCH_TOOL_NAME), RESEARCH_OPERATION.hardStopMs, 'the call ceiling is the hard stop, named once');
   assert.equal(callCeilingMs(undefined), TOOL_CEILING_MS, 'a call whose name is unknown keeps the plain ceiling');
-  assert.ok(callCeilingMs(RESEARCH_TOOL_NAME) < TOOL_CEILING_MS, 'the research operation is bounded tighter than a plain call');
   // And the hold itself ends at the ceiling: a plain call older than TOOL_CEILING_MS no longer owns the silence.
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });

@@ -99,7 +99,7 @@ test('replay 01c4bd89: the call answers after its slow source settles, never bef
   assert.equal(answeredAt[0]! - NOW, 10_100, 'the answer went out when the read landed, inside the 15 s budget');
   assert.equal(reply['status'], 'complete', 'a settled source completes the answer');
   assert.doesNotMatch(JSON.stringify(reply), /timed out/, 'a source that returned is never called a timeout');
-  assert.deepEqual(h.firstAnswers, [{ kind: 'full', elapsedMs: 10_100 }], 'one answer line, full, with the owner wait');
+  assert.deepEqual(h.firstAnswers, [], 'a call whose sources all settled logs its answer as full, not as a first answer ahead of them');
 });
 
 test('replay 01c4bd89: a source that never returns stops the call at the hard stop and is named honestly', async () => {

@@ -15,7 +15,7 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
-import { ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
+import { RESEARCH_OPERATION, ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -33,10 +33,9 @@ import type { LiveToolResponse, LiveVoiceControl, LiveVoiceEvent, LiveVoiceOutco
  * and a real follow-up from the owner continues the run.
  */
 
-/** The operation deadline measured and proposed in W5 (C-LIVE behaviour 2): the call answers by this. */
-const OPERATION_DEADLINE_MS = 6_000;
-/** What the host waits past the operation deadline before it settles the call itself. */
-const HOST_GRACE_MS = 1_000;
+/** R1: the patience budget and the host grace, read from the one place that names them. */
+const OPERATION_DEADLINE_MS = RESEARCH_OPERATION.deadlineMs;
+const HOST_GRACE_MS = RESEARCH_OPERATION.hostGraceMs;
 const BLOCKED = { status: 'blocked', reason: 'owner_turn_required', directive: 'answer_existing_result', retry_without_new_owner_turn: false };
 
 const NOW = 1_700_000_000_000;
@@ -458,8 +457,9 @@ test('replay 9: overlapping pages are deduplicated and a changing total is repor
 test('replay 10: no page starts that cannot finish before the deadline', async () => {
   const clock = fakeClock();
   const h = mailHarness(clock, page => {
-    // The first page alone takes 3.5 s, so a second page of the same size cannot fit before the deadline.
-    if (page === 1) { clock.set(clock.at() + 3_500); return mailPage([1, 2], 'page-2'); }
+    // R1: the first page alone takes 8 s, so a second page of the same size cannot finish inside the 15 s
+    // patience budget, which is what the page-fit rule is about.
+    if (page === 1) { clock.set(clock.at() + 8_000); return mailPage([1, 2], 'page-2'); }
     return mailPage([3, 4]);
   });
   const reply = await runResearch(h.deps, mailAsk, new AbortController().signal);

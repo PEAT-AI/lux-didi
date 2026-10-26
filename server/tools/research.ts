@@ -2010,8 +2010,8 @@ const windowDates = (window: string, now: number, timeZone: string): { windowFro
 /** R6: one metadata-only line for the moment a call answered ahead of the sources still reading. */
 export interface ResearchFirstAnswer {
   event: 'research_first_answer'; researchId: string; ms: number; settled: SourceKind[]; pending: SourceKind[];
-  /** R3/R7: how the answer was reached, and how long the owner waited for it. */
-  kind: 'early' | 'full' | 'hard_stop'; elapsedMs: number;
+  /** R3/R7: how the answer was reached, and how long the owner waited for it. A full answer logs `research_answer`. */
+  kind: 'early' | 'hard_stop'; elapsedMs: number;
 }
 
 /** R6: one event per source that settles after the first answer. Only what the source really returned. */
@@ -5019,10 +5019,10 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
   if (early === undefined) {
     const reply = await loop;
     if (!deps.authorizeEvidence) markCalendarReply(deps.ledger, reply);
-    // R7: a call every one of whose sources settled logs its answer too, so each research call has one answer line.
-    const researchId = typeof reply['researchId'] === 'string' ? reply['researchId'] : '';
-    const done = first.snapshot?.().run;
-    (deps.logFirstAnswer ?? ((event: ResearchFirstAnswer): void => { hostLogEvent(event); }))({ event: 'research_first_answer', researchId, ms: RESEARCH.firstAnswerMs, settled: done === undefined ? [] : [...done.sourcesDone], pending: [], kind: 'full', elapsedMs: Math.max(0, deps.now() - (done?.startedAt ?? deps.now())) });
+    // R7: a call every one of whose sources settled logs its answer too, so each research call has one answer line
+    // and it says the answer was full rather than early.
+    const run = first.snapshot?.().run;
+    hostLogEvent({ event: 'research_answer', researchId: typeof reply['researchId'] === 'string' ? reply['researchId'] : '', kind: 'full', elapsedMs: Math.max(0, deps.now() - (run?.startedAt ?? deps.now())) });
     return reply;
   }
   // The call answers now. The readers keep going to their own deadlines, so their findings still land.

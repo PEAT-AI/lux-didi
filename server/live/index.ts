@@ -3688,8 +3688,12 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    * which is the honest record instead of a claim the owner heard it.
    */
   #armStillSearching(handle: ActiveSession, callId: string): { cancel: () => void } {
+    const armedAt = this.#now();
+    const ownerAt = handle.inputAt;
     const timer = this.#schedule(() => {
       if (this.#settled(handle) || !handle.pendingCallIds.has(callId)) return;
+      // R2: a call the owner has moved past is not narrated: a new question ends the wait this line was for.
+      if (handle.inputAt !== undefined && (ownerAt === undefined || handle.inputAt > armedAt)) return;
       const researchId = handle.researchLedger.last()?.researchId ?? '';
       let spoken = false;
       try {
@@ -3775,7 +3779,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    */
   #silenceOwner(handle: ActiveSession): 'tool' | 'provider' | 'owner' {
     if (handle.pendingCallIds.size > 0) return 'tool';
-    if (handle.thinking || handle.awaitingAnswer) return 'provider';
+    // A wait that began after a tool result and has no call pending is the provider owing its answer, which is the
+    // case the old boolean mislabelled as a busy tool.
+    if (handle.heardAfterTool || handle.thinking || handle.awaitingAnswer) return 'provider';
     return 'owner';
   }
 

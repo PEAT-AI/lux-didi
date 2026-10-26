@@ -158,11 +158,12 @@ test('calendar collection keeps one source deadline across pages and resumes an 
       return { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: [event(19, n)], ...(n < 9 ? { nextPageToken: String(n + 1) } : {}) }) };
     });
     const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
-    // C-LIVE: a 5 s page cannot be followed by another inside the 6 s operation, so the second page is never
-    // started; its cursor is kept, and the owner's follow-up is a new operation that reads exactly one more page.
-    assert.equal(tokens.length, deadline ? 1 : 7, 'no page starts that cannot finish; maxOps also includes the scope read');
+    // R1: a 5 s page cannot be followed by another that would end past the 15 s patience budget, so the page
+    // that fit is the one started; its cursor is kept, and the owner's follow-up is a new operation that reads
+    // exactly one more page.
+    assert.equal(tokens.length, deadline ? 2 : 7, 'no page starts that cannot finish; maxOps also includes the scope read');
     if (deadline) {
-      assert.equal((first['calendarCoverage'] as Record<string, unknown>)['received'], 1, 'the page that fit is kept');
+      assert.equal((first['calendarCoverage'] as Record<string, unknown>)['received'], 2, 'the pages that fit are kept');
       assert.equal((first['calendarCoverage'] as Record<string, unknown>)['failed'], false, 'a page never started is not a failed page');
       const row = (first['sourceCoverage'] as Record<string, unknown>[]).find(entry => entry['source'] === 'calendar');
       assert.equal(row?.['stop'], 'deadline'); assert.equal(row?.['more'], 'upstream');

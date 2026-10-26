@@ -1112,10 +1112,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'researchId', 'ms', 'settled', 'pending', 'kind', 'elapsedMs'])) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_first_answer');
     if (typeof value.ms !== 'number' || !Number.isFinite(value.ms) || value.ms < 0 || value.ms > 120_000) return;
-    if (!['early', 'full', 'hard_stop'].includes(String(value.kind))) return;
+    if (!['early', 'hard_stop'].includes(String(value.kind))) return;
     if (typeof value.elapsedMs !== 'number' || !Number.isFinite(value.elapsedMs) || value.elapsedMs < 0 || value.elapsedMs > 120_000) return;
     if (!isSafeMembers(value.settled, RESEARCH_SOURCES) || !isSafeMembers(value.pending, RESEARCH_SOURCES)) return;
     return { event: 'research_first_answer', researchId: value.researchId, ms: value.ms, settled: value.settled, pending: value.pending, kind: value.kind as string, elapsedMs: value.elapsedMs };
+  }
+  if (value.event === 'research_answer') {
+    // R7: a call whose sources all settled before its answer point: how it answered and how long the owner waited.
+    if (!closedKeys(value, ['event', 'researchId', 'kind', 'elapsedMs'])) return;
+    if (!isSafeId(value.researchId)) return rejectResearchId('research_answer');
+    if (value.kind !== 'full') return;
+    if (typeof value.elapsedMs !== 'number' || !Number.isFinite(value.elapsedMs) || value.elapsedMs < 0 || value.elapsedMs > 120_000) return;
+    return { event: 'research_answer', researchId: value.researchId, kind: 'full', elapsedMs: value.elapsedMs };
   }
   if (value.event === 'research_still_searching') {
     // R2/R7: the one short line an owner waiting on a research call hears at 10 s, and whether it was spoken.

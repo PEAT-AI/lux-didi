@@ -115,10 +115,10 @@ const fakeClock = (t: { mock: { timers: { tick: (ms: number) => void } } }): { t
 
 test('#655: the research row and the web module read one budget, above the measured tail', () => {
   // #670: 78 live grounded reads on 2026-10-25 measured median 5.2 s, p95 7.9 s, p99 10.3 s and max
-  // 11.5 s, so 8 s cut about one read in twenty. 12 s cut none of them and stays under the 14 s answer
-  // budget and the 20 s answer cap.
+  // 11.5 s, so 8 s cut about one read in twenty. R1: 14 s cuts none of them and still fits inside the 15 s
+  // research patience budget, which is the one number `RESEARCH_OPERATION` names.
   assert.equal(RESEARCH.sourceDeadline.web, WEB_DEADLINE_MS, 'one number, read from one place');
-  assert.equal(WEB_DEADLINE_MS, 12_000, 'the web budget is the 12 s that cut none of 78 measured reads');
+  assert.equal(WEB_DEADLINE_MS, 14_000, 'the web budget is the 14 s that cut none of 78 measured reads');
   assert.equal(webDeadlineMs('what is the weather in Pune tomorrow'), WEB_DEADLINE_MS, 'a weather ask is not slower than any other');
 });
 

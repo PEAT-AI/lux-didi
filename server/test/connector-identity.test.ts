@@ -91,7 +91,8 @@ test('a proof failure (throw or timeout) is unproven, never a refusal', async ()
   const thrown = await proveIdentity({ source: gmail, expected: [OWNER], call: async () => { throw new Error('boom'); } });
   assert.deepEqual(thrown, { proven: false, match: null, value: null });
   const timedOut = await proveIdentity({ source: gmail, expected: [OWNER], call: () => new Promise<ConnectorResult>(() => {}), timeoutMs: 5 });
-  assert.deepEqual(timedOut, { proven: false, match: null, value: null });
+  // A timeout is still unproven, and it keeps its own closed code so the refusal can name it.
+  assert.deepEqual(timedOut, { proven: false, match: null, value: null, code: 'identity_timeout' });
   const proven = await proveIdentity({ source: gmail, expected: [OWNER], call: async () => evidence({ emailAddress: OWNER }) });
   assert.deepEqual(proven, { proven: true, match: true, value: OWNER });
 });

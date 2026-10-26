@@ -34,6 +34,10 @@ cp server/tools/trello.ts "$out/source/tools/"
 cp server/tools/redact.ts "$out/source/tools/"
 cp server/tools/declarations.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts server/tools/open-handles.ts server/tools/types.ts server/tools/history.ts server/tools/diagnostic-input.ts server/tools/canonical.ts server/tools/received-body.ts server/tools/remember.ts server/tools/calendar-window.ts server/tools/web-search.ts server/tools/chat-intent.ts "$out/source/tools/"
 cp server/prompt/*.ts "$out/source/prompt/"
+# W15: the persona, the tools and the connectors resolve people through the host snapshot, so the
+# staging tree carries that module and its import closure too.
+mkdir -p "$out/source/people"
+cp server/people/*.ts "$out/source/people/"
 cp server/host/log.ts "$out/source/host/"
 # host/log.ts names the stop gate constants, so stage the module it imports.
 cp server/live/stop-phrase.ts "$out/source/live/"

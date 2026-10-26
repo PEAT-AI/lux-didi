@@ -134,6 +134,24 @@ test('call view prefers callId when the envelope is there (#1026)', () => {
   assert.equal(story.callId, 'call_9');
 });
 
+test('a foreign callId never joins this call by window (L3-F4, #1026)', () => {
+  const scanned = scanLogs([{
+    file: 'logs/host.log', stream: 'host',
+    text: [
+      '{"timestamp":"2026-10-20T09:00:00.000Z","pid":5010,"event":"live_state","state":"listening","liveSessionId":"sess-1"}',
+      '{"timestamp":"2026-10-20T09:00:02.000Z","pid":5010,"event":"live_dead_air","deadAirMs":55000,"callId":"call_foreign"}',
+      '{"timestamp":"2026-10-20T09:00:03.000Z","pid":5010,"event":"live_dead_air","deadAirMs":1744,"callId":"call_mine","liveSessionId":"sess-1"}',
+      '{"timestamp":"2026-10-20T09:00:04.000Z","pid":5010,"event":"live_dead_air","deadAirMs":33,"callId":"call_mine"}',
+    ].join('\n'),
+  }]);
+  const story = buildCallStory(scanned, undefined, { liveSessionId: 'sess-1' });
+  assert.deepEqual(story.entries.map(e => [e.text, e.joinedBy]), [
+    ['live_state state=listening', 'session'],
+    ['live_dead_air deadAirMs=1744', 'session'],
+    ['live_dead_air deadAirMs=33', 'window'],
+  ]);
+});
+
 test('doctor reports files, torn lines, days, top events and unattributed lines (#1026)', () => {
   const health = logHealth(scan());
   assert.equal(health.files.length, 4);

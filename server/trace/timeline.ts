@@ -500,9 +500,13 @@ function attributeLines(scan: LogScan, spec: { liveSessionId?: string; callId?: 
   const matched: Attribution['lines'] = session.map(line => ({ line, joinedBy: 'session' as const }));
   if (start === null || end === null) return { lines: matched, start, end };
   const pids = new Set(session.map(line => line.pid).filter((pid): pid is number => pid !== null));
+  // The envelope's callIds the session's own lines name. A window candidate that carries another call's
+  // callId belongs to that call, whatever the pid and the clock say.
+  const callIds = new Set(session.map(line => line.callId).filter((callId): callId is string => callId !== null));
   for (const line of scan.lines) {
     if (line.liveSessionId === spec.liveSessionId) continue;
     if (line.liveSessionId !== null || line.at === null) continue;
+    if (line.callId !== null && !callIds.has(line.callId)) continue;
     if (line.at < start - WINDOW_MARGIN_MS || line.at > end + WINDOW_MARGIN_MS) continue;
     if (line.pid !== null && !pids.has(line.pid)) continue;
     matched.push({ line, joinedBy: 'window' });

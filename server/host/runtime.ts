@@ -2,7 +2,7 @@ import { boundTextModel } from './provider-binding.js';
 import { loadMcpEndpoints } from '../config/mcp.js';
 import { isCustomVoiceId } from '../adapters/live-voice/openai.js';
 import { HostLog, captureHostDiagnostics } from './log.js';
-import { clockSync } from './events.js';
+import { clearLogContext, clockSync } from './events.js';
 import { supervisionRequested } from './supervision.js';
 import { loadOwnerProfile } from '../config/owner-profile.js';
 import { installPeople, loadPeople } from '../people/index.js';
@@ -615,6 +615,8 @@ export async function startHost(config: HostConfig) {
     }
     if (selection.state === 'configured') endpoints = selection.catalog.endpoints.length;
   } catch { /* Composition below owns invalid configuration errors. */ }
+  // A host start is a fresh process context: no earlier call's ids survive into this run.
+  clearLogContext();
   log.event({ event: 'host_started', releaseCommit, configDir: configKind, endpoints });
   // C-LOG-ENVELOPE: the host's own clock line, so this process's monoMs can be dated against wall time.
   log.event(clockSync('host_start'));

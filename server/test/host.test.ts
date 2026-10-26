@@ -20,7 +20,7 @@ import type { ConnectionPolicy, LiveAuthority, RunAcceptance } from '../tools/ty
 import type { ToolCallIntent } from '../adapters/model/types.js';
 import { toolsMigrations } from '../tools/schema.js';
 import { SUPERVISION_FLAG, supervisionRequested } from '../host/supervision.js';
-import { HostLog, safeEvent } from '../host/log.js';
+import { HostLog, clearLogContext, safeEvent } from '../host/log.js';
 import { Store } from '../runtime/store.js';
 import { CalendarDigestCache, WarmContextCache, chooseStartContext, withProvenance } from '../live/warm-context.js';
 import { createLiveSessionOwner } from '../live/index.js';
@@ -168,7 +168,7 @@ test('canonical compiler emits every published production unit and no unpublishe
     'index.ts', 'runtime/**/*.ts', 'http/**/*.ts', 'contracts/**/*.ts', 'domain/**/*.ts',
     'host/**/*.ts', 'memory/**/*.ts', 'chat/**/*.ts', 'config/**/*.ts', 'adapters/model/**/*.ts', 'adapters/mcp/**/*.ts',
     'adapters/live-voice/**/*.ts', 'connectors/**/*.ts', 'prompt/**/*.ts', 'live/**/*.ts',
-    'trace/**/*.ts',
+    'trace/**/*.ts', 'people/**/*.ts',
   ].sort(), 'canonical production roots must include all accepted units and approved CHAT/config composition');
   for (const entry of ['index', 'runtime/store', 'http/server', 'contracts/index', 'domain/facade',
     'host/index', 'chat/index', 'config/index', 'adapters/model/index', 'adapters/mcp/adapter', 'prompt/index', 'live/index']) {
@@ -184,20 +184,20 @@ test('canonical compiler emits every published production unit and no unpublishe
 test('actual host connects durable domain, supersedes reminders, exposes conflicts and survives process restart', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-host-domain-'));
   let host = await startHost({ dataDir: dir, webRoot, port: 0 });
-  const startupLines = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-  const startup = startupLines[0]!;
-  assert.deepEqual(Object.keys(startup).sort(), ['cause', 'configDir', 'endpoints', 'event', 'level', 'monoMs', 'pid', 'releaseCommit', 'seq', 'timestamp']);
-  assert.equal(startup.event, 'host_started');
-  // C-LOG-ENVELOPE: one clock_sync per host start, so a later reader can order this process's lines.
-  assert.equal(startupLines[1].event, 'clock_sync');
-  assert.equal(startupLines[1].reason, 'host_start');
-  assert.ok(Number.isInteger(startupLines[1].monoMs) && !Number.isNaN(Date.parse(startupLines[1].timestamp)));
-  assert.equal(startup.releaseCommit, 'unknown');
-  assert.equal(startup.configDir, 'seeded');
-  assert.equal(startup.endpoints, 0);
-  assert.equal(JSON.stringify(startup).includes(dir), false);
   let child: ChildProcess | undefined;
   try {
+    const startupLines = (await readFile(join(dir, 'logs', 'host.log'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    const startup = startupLines[0]!;
+    assert.deepEqual(Object.keys(startup).sort(), ['cause', 'configDir', 'endpoints', 'event', 'level', 'monoMs', 'pid', 'releaseCommit', 'seq', 'timestamp']);
+    assert.equal(startup.event, 'host_started');
+    // C-LOG-ENVELOPE: one clock_sync per host start, so a later reader can order this process's lines.
+    assert.equal(startupLines[1].event, 'clock_sync');
+    assert.equal(startupLines[1].reason, 'host_start');
+    assert.ok(Number.isInteger(startupLines[1].monoMs) && !Number.isNaN(Date.parse(startupLines[1].timestamp)));
+    assert.equal(startup.releaseCommit, 'unknown');
+    assert.equal(startup.configDir, 'seeded');
+    assert.equal(startup.endpoints, 0);
+    assert.equal(JSON.stringify(startup).includes(dir), false);
     const credential = host.store.adminCredential;
     let origin = host.descriptor.origin;
     const epoch = host.descriptor.authorityEpoch;
@@ -654,6 +654,8 @@ test('provider terminal diagnostics retain only bounded class and code', async (
 test('Live session diagnostics persist only the closed content-free counter schema', async () => {
   const root = await mkdtemp(join(tmpdir(), 'didi-live-diagnostics-log-'));
   try {
+    // The call context is process-global, so this receipt is read with no call open.
+    clearLogContext();
     const log = new HostLog(root);
     const numeric = ['adapterGenerations','ownerAudioCalls','ownerAudioBytes','ownerRebuildingDropCalls','ownerRebuildingDropBytes',
       'adapterAudioCalls','adapterAudioBytes','drainingDropCalls','drainingDropBytes',
@@ -668,7 +670,7 @@ test('Live session diagnostics persist only the closed content-free counter sche
     const records = text.trim().split('\n').map(line => JSON.parse(line));
     assert.equal(records.length, 1); assert.equal(records[0].event, 'live_session_diagnostics');
     assert.equal(records[0].terminalCode, 'client_closed'); assert.equal(records[0].outputAudioPCMBytes, numeric.indexOf('outputAudioPCMBytes'));
-    assert.equal(text.includes('SECRET'), false); assert.equal('liveSessionId' in records[0], false);
+    assert.equal(text.includes('SECRET'), false); assert.equal('liveSessionId' in records[0], false, 'no call is open for this receipt');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

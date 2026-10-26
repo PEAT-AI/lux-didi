@@ -114,7 +114,8 @@ ORDER BY at, mono_ms, kind;
 
 -- name: call_owner_content
 -- The content half of `didi-timeline call --content`: utterance text and research question/web query text
--- for one session. Content class C lives here and never in a log, which is why this query is separate.
+-- for one session. This is the query the view runs when the store's content gate allows it; content class C
+-- lives here and never in a log, which is why it is separate from call_timeline.
 SELECT 'utterance' AS kind, t.turn_index AS ordinal, u.role AS detail, u.at AS at, u.final AS final, u.text AS text
   FROM trace_utterance u JOIN trace_turn t ON t.turn_id=u.turn_id WHERE t.live_session_id=:session
 UNION ALL

@@ -513,7 +513,7 @@ function attributeLines(scan: LogScan, spec: { liveSessionId?: string; callId?: 
 
 const timeOf = (value: number | null | undefined): number => value ?? Number.POSITIVE_INFINITY;
 
-function storeEntries(report: TimelineReport, content: boolean): CallEntry[] {
+function storeEntries(report: TimelineReport, content: boolean, read: TraceRead | undefined): CallEntry[] {
   const entries: CallEntry[] = [];
   const push = (at: number | null, monoMs: number | null, kind: CallEntryKind, text: string): void => {
     entries.push({ at, monoMs, kind, text, joinedBy: 'store' });
@@ -532,10 +532,21 @@ function storeEntries(report: TimelineReport, content: boolean): CallEntry[] {
     }
   }
   for (const call of report.unattributedCalls) push(call.intentAt, null, 'tool', `unattributed tool ${call.name} outcome=${call.outcome} ms=${call.ms ?? '-'}`);
+  // The researched question and web query are content class C, so they are read only when the flag asks and
+  // the store's own gate for this session allowed it: a denied read stays denied here too.
+  if (content && read !== undefined && report.contentAccess?.state === 'allowed') {
+    const rows = read.all(
+      'SELECT x.at,x.kind,x.research_id,x.text FROM trace_research_text x WHERE x.research_id IN' +
+      ' (SELECT research_id FROM trace_call WHERE live_session_id=? AND research_id IS NOT NULL) ORDER BY x.at, x.rowid',
+      [report.liveSessionId]);
+    for (const row of rows) {
+      push(num(row.at), null, 'research', `research ${String(row.kind)} at=${num(row.at)} text=${JSON.stringify(String(row.text))}`);
+    }
+  }
   return entries;
 }
 
-export interface CallStoryOptions { liveSessionId?: string; callId?: string; content?: boolean }
+export interface CallStoryOptions { liveSessionId?: string; callId?: string; content?: boolean; read?: TraceRead }
 
 /** The whole story of one call: the store's turns, tool calls and responses merged into the ordered log. */
 export function buildCallStory(scan: LogScan, report: TimelineReport | undefined, options: CallStoryOptions = {}): CallStory {
@@ -543,7 +554,7 @@ export function buildCallStory(scan: LogScan, report: TimelineReport | undefined
     ...(options.liveSessionId === undefined ? {} : { liveSessionId: options.liveSessionId }),
     ...(options.callId === undefined ? {} : { callId: options.callId }),
   });
-  const entries: CallEntry[] = report === undefined ? [] : storeEntries(report, options.content === true);
+  const entries: CallEntry[] = report === undefined ? [] : storeEntries(report, options.content === true, options.read);
   let skipped = 0;
   let joinedByWindow = 0;
   for (const { line, joinedBy } of matched.lines) {

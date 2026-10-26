@@ -97,31 +97,31 @@ async function callView() {
   const { buildCallStory, buildTimeline, listCalls, renderCallStory, resolveSession, scanLogs } = await traceModule();
   const scan = scanLogs(logInputs());
   const spec = options.session ?? 'latest';
-  let report;
-  let liveSessionId;
   const database = join(dataDirectory(), 'state.sqlite');
-  if (existsSync(database)) {
-    const store = storeReader(database);
-    try {
-      liveSessionId = resolveSession(store.read, spec);
-      if (liveSessionId !== undefined) report = buildTimeline(store.read, liveSessionId, timelineOptions(store.read));
-    } finally { store.close(); }
+  const store = existsSync(database) ? storeReader(database) : undefined;
+  try {
+    let report;
+    let liveSessionId = store === undefined ? undefined : resolveSession(store.read, spec);
+    if (store !== undefined && liveSessionId !== undefined) report = buildTimeline(store.read, liveSessionId, timelineOptions(store.read));
+    // The store is one source, not the authority: a session the store has pruned is still in the logs, and the
+    // envelope from wagon L2 lets a bare callId speak for the call on its own.
+    let callId;
+    if (spec === 'latest') liveSessionId = liveSessionId ?? listCalls(scan)[0]?.liveSessionId;
+    else if (liveSessionId === undefined) {
+      if (scan.lines.some(line => line.liveSessionId === spec)) liveSessionId = spec;
+      else if (scan.lines.some(line => line.callId === spec)) callId = spec;
+    }
+    const story = buildCallStory(scan, report, {
+      ...(liveSessionId === undefined ? {} : { liveSessionId }),
+      ...(callId === undefined ? {} : { callId }),
+      ...(store === undefined ? {} : { read: store.read }),
+      content: options.content,
+    });
+    if (story.entries.length === 0) fail(`no call ${spec} in the logs or the store under ${dataDirectory()}`);
+    process.stdout.write(options.json ? `${JSON.stringify(story, null, 2)}\n` : renderCallStory(story));
+  } finally {
+    if (store !== undefined) store.close();
   }
-  // The store is one source, not the authority: a session the store has pruned is still in the logs, and the
-  // envelope from wagon L2 lets a bare callId speak for the call on its own.
-  let callId;
-  if (spec === 'latest') liveSessionId = liveSessionId ?? listCalls(scan)[0]?.liveSessionId;
-  else if (liveSessionId === undefined) {
-    if (scan.lines.some(line => line.liveSessionId === spec)) liveSessionId = spec;
-    else if (scan.lines.some(line => line.callId === spec)) callId = spec;
-  }
-  const story = buildCallStory(scan, report, {
-    ...(liveSessionId === undefined ? {} : { liveSessionId }),
-    ...(callId === undefined ? {} : { callId }),
-    content: options.content,
-  });
-  if (story.entries.length === 0) fail(`no call ${spec} in the logs or the store under ${dataDirectory()}`);
-  process.stdout.write(options.json ? `${JSON.stringify(story, null, 2)}\n` : renderCallStory(story));
 }
 
 async function doctorView() {

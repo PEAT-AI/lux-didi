@@ -193,12 +193,16 @@ export function ambiguityQuestion(_spoken: string, people: readonly Person[]): s
   return `${people.map(person => `${person.name} in ${person.role}`).join(' or ')}?`;
 }
 
-let current: { readonly snapshot: PeopleSnapshot; readonly section: string } | null = null;
+/** One trim receipt, the same closed shape the host log accepts. */
+export interface PeopleTrimEvent { readonly event: 'people_trimmed'; readonly dropped: number; readonly tier2: number }
+export type PeopleEventSink = (event: PeopleTrimEvent) => void;
+
+let current: { readonly snapshot: PeopleSnapshot; readonly section: string; readonly sink: PeopleEventSink | undefined } | null = null;
 
 /** The host installs the loaded roster once at start; nothing else replaces it during a run. */
-export function installPeople(snapshot: PeopleSnapshot | null): void {
+export function installPeople(snapshot: PeopleSnapshot | null, sink?: PeopleEventSink): void {
   const section = snapshot === null ? '' : renderPeople(snapshot).text;
-  current = snapshot === null ? null : Object.freeze({ snapshot, section });
+  current = snapshot === null ? null : Object.freeze({ snapshot, section, sink });
 }
 
 export function peopleSnapshot(): PeopleSnapshot | null { return current?.snapshot ?? null; }
@@ -207,6 +211,19 @@ export function peopleSnapshot(): PeopleSnapshot | null { return current?.snapsh
 export function peopleSection(): string | undefined {
   const section = current?.section ?? '';
   return section.length > 0 ? section : undefined;
+}
+
+/**
+ * The roster rendered against what the rest of the instruction leaves: at most PEOPLE_CHAR_LIMIT and at
+ * most the room the composer measured. Tier 2 lines yield first, then tier 1 from the end, and the count
+ * dropped is the people_trimmed receipt. It never returns a section that would push a start over budget.
+ */
+export function peopleSectionWithin(room: number): string | undefined {
+  if (current === null) return undefined;
+  const allowance = Math.min(PEOPLE_CHAR_LIMIT, Math.max(0, Math.floor(room)));
+  const rendered = renderPeople(current.snapshot, allowance);
+  if (rendered.dropped > 0) current.sink?.({ event: 'people_trimmed', dropped: rendered.dropped, tier2: rendered.droppedTier2 });
+  return rendered.text === PEOPLE_HEADING ? undefined : rendered.text;
 }
 
 function bind(spoken: string): PersonBinding {

@@ -628,7 +628,7 @@ export async function startHost(config: HostConfig) {
     // resolves to; a malformed file is loud and leaves the roster absent, never partial.
     const people = config.ownerProfilePath === undefined ? { status: 'absent' as const } : loadPeople(config.ownerProfilePath);
     if (people.status === 'loaded') {
-      installPeople(people.snapshot);
+      installPeople(people.snapshot, event => log.event(event));
       log.event({ event: 'people_loaded', count: people.snapshot.people.length, bytes: people.snapshot.bytes, chars: people.rendered.text.length });
       if (people.rendered.dropped > 0) log.event({ event: 'people_trimmed', dropped: people.rendered.dropped, tier2: people.rendered.droppedTier2 });
     } else {

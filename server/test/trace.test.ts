@@ -258,7 +258,7 @@ test('pruneTraceContent nulls the trace content in place and keeps the metadata 
     assert.equal(counts(store).trace_call, 1);
     assert.equal(counts(store).trace_utterance, 1, 'the transcript row stays: a 40 day old session is still described by its turn, role and timing');
     assert.equal(counts(store).trace_call_result, 1, 'the call result row stays with its truncation flag');
-    assert.equal(counts(store).trace_query_shape, 1, 'a query shape is metadata and lives 90 days, not 30');
+    assert.equal(store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM trace_query_shape')!['n'])), 1, 'a query shape is metadata and lives 90 days, not 30');
   });
 });
 

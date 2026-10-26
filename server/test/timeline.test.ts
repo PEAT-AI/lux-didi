@@ -63,7 +63,7 @@ test('call view orders the four streams and marks what joined by window (#1026)'
     'owner utterance at=1792486800500 final',
     'first model audio',
     'live_first_audio msSinceReady=812 msSinceOpen=1904',
-    'response resp_1 status=complete',
+    'response resp_1 status=completed',
     'live_interrupted reason=owner_spoke',
     'tool calendar ms=412',
     'tool calendar outcome=completed ms=412',
@@ -137,7 +137,7 @@ test('list view shows start, duration, tools, max silence and terminal (#1026)',
   assert.ok(newest && older);
   assert.deepEqual(newest, {
     liveSessionId: fixture.liveSessionId, start: 1792486800000, durationMs: 10400, tools: 1,
-    maxSilenceMs: 1744, terminal: 'closed/voice_stop', lines: 13,
+    maxSilenceMs: 1744, terminal: 'closed/voice_stop', lines: 16,
   });
   assert.equal(older.liveSessionId, fixture.otherSessionId);
   assert.equal(older.durationMs, 0);
@@ -149,7 +149,7 @@ test('the three renders are metadata only and greppable (#1026)', () => {
   const text = renderCallStory(story);
   assert.match(text, /^call 3f2c8a10-0000-4a1a-9d1e-0000000000a1 /);
   assert.match(text, /joined-by-window=7/);
-  assert.match(text, /\n\+9000ms connector connector_failure/);
+  assert.match(text, /\n\+\d+ms connector connector_failure connector=calendar reason=token_expired endpointId=calendar/);
   assert.equal(text.includes('two oclock'), false);
   const health = renderLogHealth(logHealth(scan()));
   assert.match(health, /torn=2/);

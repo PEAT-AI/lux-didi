@@ -1,5 +1,5 @@
 import { diagnosticContentAccess } from '../trace/content.js';
-import { hostLogEvent, classifiedFailureEvent } from './host-events.js';
+import { hostLogEvent } from './host-events.js';
 import { createDispatchOwner, projectDiagnosticInput } from './dispatch.js';
 import { RECEIVED_BODY, RECEIVED_BODY_TOOLS, RECEIVED_BODY_PARAMETERS, receivedBodyArguments, receivedBodyEnd, type ReceivedBodyPage, type RemoteResultLineage } from './received-body.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -120,6 +120,29 @@ function hostMatches(a: RunAcceptance, h: Pick<HostContext, 'runId' | 'actorId' 
  * freezes, whether or not the transport has come up yet.
  */
 export interface LiveRunConnections { durableConnectionIds?(tx: Transaction): string[] }
+/**
+ * LOGS.md L-08: one classified connector failure, closed. Ids and the connector's own code only, so
+ * host.log can tell a failed read from an empty one; never an argument, a payload, a query or a line
+ * of helper text. Its own event name, because `tool_failure` is a transport failure and
+ * `connector_failure` a connect-time stage.
+ */
+export interface ClassifiedFailureEvent {
+  event: 'tool_classified_failure';
+  endpointId: string;
+  connector: string;
+  tool: string;
+  code: string;
+}
+
+const EVENT_TOKEN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
+/** The closed failure event for one classified result, or undefined when a value is not an id or a code. */
+export function classifiedFailureEvent(input: { endpointId: string; connector: string; tool: string; code: string }): ClassifiedFailureEvent | undefined {
+  if (!EVENT_TOKEN.test(input.code)) return undefined;
+  if (input.endpointId === '' || input.endpointId.length > 64 || input.connector === '' || input.connector.length > 32 || input.tool === '' || input.tool.length > 64) return undefined;
+  return { event: 'tool_classified_failure', endpointId: input.endpointId, connector: input.connector, tool: input.tool, code: input.code };
+}
+
 export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveRunConnections {
   const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');

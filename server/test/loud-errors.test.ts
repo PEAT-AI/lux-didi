@@ -15,7 +15,7 @@ import { ResearchLedger, runResearch, type ResearchDeps, type ResearchSourceLog,
 import { GOOGLE_ERROR_TABLE, googleOwnerLine, googleToolStatus, type GoogleStatus } from '../tools/google.js';
 import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
 import { classifyIdentity, proveIdentity, type IdentityProof } from '../connectors/identity.js';
-import { classifiedFailureEvent } from '../tools/host-events.js';
+import { classifiedFailureEvent } from '../tools/index.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import type { ConnectorEvidence, ConnectorResult } from '../connectors/index.js';

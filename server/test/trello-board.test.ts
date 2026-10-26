@@ -1,13 +1,13 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createTrelloBoard, runTrelloLogin, trelloBinding, trelloSignedIn, trelloTokenSource, TRELLO_REFERENCE, TRELLO_SCOPE } from '../host/trello.js';
-import { createTrelloTransport } from '../adapters/trello/client.js';
-import { foldName, indexTrelloSchemas, ownerAskedForChange, planTrelloCall, trelloDueInstant, validateTrelloRead, validateTrelloWrite, TRELLO_CALL_TOOLS, TRELLO_SERVER_ALLOW, TRELLO_SERVER_DENY, TRELLO_WRITE_DESCRIPTION, type TrelloBoard } from '../tools/trello.js';
-import { OAuthLoginError, writeOAuthRecord, type OAuthSignInHop } from '../host/oauth-client.js';
-import { fakeToolSchemas, startTrelloFake, SYNTHETIC_BOARD, type TrelloFake } from './trello-fake.js';
+import { createTrelloBoard, TRELLO_KEY_FILE, trelloConfigured, trelloIdentity } from '../host/trello.js';
+import { createTrelloRestTransport, trelloSchemas } from '../adapters/trello/client.js';
+import { foldName, indexTrelloSchemas, ownerAskedForChange, planTrelloCall, trelloDueInstant, validateTrelloRead, validateTrelloWrite, TRELLO_SERVER_ALLOW, TRELLO_SERVER_DENY, TRELLO_WRITE_DESCRIPTION, type TrelloBoard } from '../tools/trello.js';
+import { startTrelloFake, SYNTHETIC_BOARD, type TrelloFake } from './trello-fake.js';
 
 /** Monday 2026-10-26 10:00 UTC; the board's zone is UTC so the windows are exact. */
 const NOW = Date.UTC(2026, 9, 26, 10, 0);
@@ -19,104 +19,27 @@ let dir: string;
 let board: TrelloBoard;
 const events: Record<string, unknown>[] = [];
 
-async function signIn(configDir: string, target: TrelloFake, hops?: OAuthSignInHop[]): Promise<string> {
-  let authorizeUrl = '';
-  await runTrelloLogin({ configDir, binding: trelloBinding(target.resource, target.issuer), redirectPort: 0, now,
-    ...(hops ? { onHop: hop => { hops.push(hop); } } : {}),
-    openBrowser: async url => {
-      authorizeUrl = url;
-      const { callback } = await target.consent(url);
-      setImmediate(() => { void fetch(callback).then(response => response.text()); });
-    } });
-  return authorizeUrl;
+/** The owner's private key file, exactly as scripts/import-trello-key.sh writes it. */
+function writeKey(configDir: string, key = 'key-owner', token = 'token-owner'): void {
+  writeFileSync(join(configDir, TRELLO_KEY_FILE), JSON.stringify({ key, token }), { mode: 0o600 });
 }
 
 before(async () => {
   fake = await startTrelloFake({ now: NOW });
   dir = mkdtempSync(join(tmpdir(), 'trello-board-'));
-  await signIn(dir, fake);
+  writeKey(dir, fake.key, fake.token);
   // W7-R2: the name is the owner's private configuration, so the fixture writes that file.
-  writeFileSync(join(dir, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD }), { mode: 0o600 });
-  board = createTrelloBoard({ configDir: dir, binding: trelloBinding(fake.resource, fake.issuer), timeZone: 'UTC', now, log: event => { events.push(event); } });
+  writeFileSync(join(dir, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD, ownerIdentity: 'rob@plantix.net' }), { mode: 0o600 });
+  board = createTrelloBoard({ configDir: dir, url: fake.url, timeZone: 'UTC', now, log: event => { events.push(event); } });
 });
 after(async () => { await fake.close(); rmSync(dir, { recursive: true, force: true }); });
 
 const writes = () => fake.calls.filter(call => call.tool.startsWith('trelloWrite'));
 const session = (() => { let n = 0; return () => `live-trello-${++n}`; })();
 
-test('the sign-in runs every hop against a resource and an issuer on different origins and stores one private record', async () => {
-  const local = await startTrelloFake({ now: NOW });
-  const configDir = mkdtempSync(join(tmpdir(), 'trello-login-'));
-  try {
-    const hops: OAuthSignInHop[] = [];
-    const authorizeUrl = await signIn(configDir, local, hops);
-    assert.deepEqual(hops.map(hop => `${hop.hop}:${hop.outcome}`), ['discovery:ok', 'registration:ok', 'browser_handoff:ok', 'callback:ok', 'token:ok', 'stored:ok']);
-    const url = new URL(authorizeUrl);
-    assert.equal(url.origin, new URL(local.issuer).origin, 'the browser goes to the issuer origin');
-    assert.equal(url.searchParams.get('resource'), local.resource);
-    assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
-    assert.equal(url.searchParams.get('scope'), TRELLO_SCOPE);
-    // F10: the Inbox read this connector now performs is granted, and nothing wider is asked for.
-    assert.match(TRELLO_SCOPE, /(?:^| )read:member\.inbox:trello(?: |$)/, 'the Inbox read is granted');
-    assert.match(TRELLO_SCOPE, /(?:^| )write:member\.inbox:trello(?: |$)/, 'the Inbox to board move is granted');
-    assert.match(TRELLO_SCOPE, /(?:^| )write:board:trello(?: |$)/, 'the board writes are granted');
-    assert.ok(!/planner|write:organization/.test(TRELLO_SCOPE), 'the scope never asks for Planner or workspace writes');
-    assert.equal(local.registrations[0]?.token_endpoint_auth_method, 'none');
-    assert.match(String((local.registrations[0]?.redirect_uris as string[])[0]), /^http:\/\/127\.0\.0\.1:\d+\/callback$/);
-    assert.deepEqual(local.tokens, [{ grant: 'authorization_code', resource: local.resource }]);
-    const path = join(configDir, `${TRELLO_REFERENCE}.json`);
-    assert.equal(statSync(path).mode & 0o777, 0o600);
-    const record = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
-    assert.deepEqual([record.endpoint, record.resource, record.issuer], ['board', local.resource, local.issuer]);
-    assert.ok(trelloSignedIn(configDir, trelloBinding(local.resource, local.issuer)));
-    assert.ok(!trelloSignedIn(configDir, trelloBinding()), 'a record for another resource is not a sign-in for the real one');
-  } finally { await local.close(); rmSync(configDir, { recursive: true, force: true }); }
-});
 
-for (const [name, setup, outcome] of [
-  ['a protected-resource document naming another authorization server', (f: TrelloFake) => { f.override.prm = { authorization_servers: ['https://auth.example.invalid/x'] }; }, 'server_untrusted'],
-  ['a protected-resource document naming another resource', (f: TrelloFake) => { f.override.prm = { resource: `${f.resource}x` }; }, 'resource_mismatch'],
-  ['server metadata with a foreign issuer', (f: TrelloFake) => { f.override.as = { issuer: `${new URL(f.issuer).origin}/OtherTenant` }; }, 'issuer_mismatch'],
-  ['server metadata with a token endpoint off the issuer origin', (f: TrelloFake) => { f.override.as = { token_endpoint: 'https://token.example.invalid/oauth/token' }; }, 'endpoint_off_origin'],
-] as const) {
-  test(`discovery refuses ${name} before any registration`, async () => {
-    const local = await startTrelloFake({ now: NOW });
-    const configDir = mkdtempSync(join(tmpdir(), 'trello-refuse-'));
-    try {
-      setup(local);
-      const hops: OAuthSignInHop[] = [];
-      await assert.rejects(signIn(configDir, local, hops), (error: unknown) => error instanceof OAuthLoginError && error.code === 'metadata-unavailable');
-      assert.deepEqual(hops, [{ hop: 'discovery', outcome }]);
-      assert.equal(local.registrations.length, 0);
-    } finally { await local.close(); rmSync(configDir, { recursive: true, force: true }); }
-  });
-}
 
-test('an expiring session refreshes once with the resource URL and the board keeps working', async () => {
-  const local = await startTrelloFake({ now: NOW });
-  const configDir = mkdtempSync(join(tmpdir(), 'trello-refresh-'));
-  try {
-    await signIn(configDir, local);
-    const record = JSON.parse(readFileSync(join(configDir, `${TRELLO_REFERENCE}.json`), 'utf8'));
-    writeOAuthRecord(configDir, TRELLO_REFERENCE, { ...record, expiresAt: NOW + 60_000 });
-    const token = await trelloTokenSource(configDir, trelloBinding(local.resource, local.issuer), { now })();
-    assert.equal(token.ok, true);
-    assert.deepEqual(local.tokens.map(entry => entry.grant), ['authorization_code', 'refresh_token']);
-    assert.equal(local.tokens[1]?.resource, local.resource);
-  } finally { await local.close(); rmSync(configDir, { recursive: true, force: true }); }
-});
 
-test('without a sign-in nothing is offered and nothing is sent', async () => {
-  const empty = mkdtempSync(join(tmpdir(), 'trello-empty-'));
-  try {
-    const before = fake.calls.length;
-    const signedOut = createTrelloBoard({ configDir: empty, binding: trelloBinding(fake.resource, fake.issuer), timeZone: 'UTC', now });
-    assert.equal(signedOut.available(), false);
-    assert.equal((await signedOut.read(session(), { view: 'overview' })).code, 'not_signed_in');
-    assert.equal((await signedOut.write(session(), { action: 'archive', card: 'Call the plumber' }, ASK)).code, 'not_signed_in');
-    assert.equal(fake.calls.length, before);
-  } finally { rmSync(empty, { recursive: true, force: true }); }
-});
 
 test('the overview pins the board by name and counts every list through all its pages', async () => {
   const result = await board.read(session(), { view: 'overview' });
@@ -153,7 +76,7 @@ test('search, recent and one card read only the pinned board', async () => {
   assert.deepEqual((recent.cards as { name: string }[]).map(card => card.name), ['Quick note from the phone']);
   const card = await board.read(session(), { view: 'card', card: 'book the venue' });
   assert.deepEqual(card.checklists, [{ name: 'Prep', items: [{ item: 'Call the venue', checked: false }] }]);
-  assert.equal(card.comments, 'not offered by the Trello server');
+  assert.deepEqual(card.comments, [{ text: 'Rang the venue, they hold the room until Friday' }]);
 });
 
 test('a card, list or id from another board is outside_scope: reads classify it, no write is ever dispatched', async () => {
@@ -172,41 +95,26 @@ test('a card, list or id from another board is outside_scope: reads classify it,
   assert.equal(sent.filter(call => call.tool === 'trelloReadCard' && call.args.action === 'get').length, 2, 'the foreign card is read to classify it, once for the read and once for the refused write');
 });
 
-test('W7-F4: a write the live tools/list does not offer is unsupported, and nothing reaches the server', async () => {
-  const local = await startTrelloFake({ now: NOW, withoutTool: 'trelloWriteCard' });
-  const configDir = mkdtempSync(join(tmpdir(), 'trello-noschema-'));
-  try {
-    await signIn(configDir, local);
-    writeFileSync(join(configDir, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD }), { mode: 0o600 });
-    const noCardWrites = createTrelloBoard({ configDir, binding: trelloBinding(local.resource, local.issuer), timeZone: 'UTC', now });
-    const before = local.calls.length;
-    const refused = await noCardWrites.write(session(), { action: 'archive', card: 'Call the plumber' }, 'archive it');
-    assert.equal(refused.code, 'unsupported');
-    assert.ok(local.calls.slice(before).every(call => call.tool.startsWith('trelloRead')), 'no write shape was sent');
-  } finally { await local.close(); rmSync(configDir, { recursive: true, force: true }); }
-  const index = indexTrelloSchemas(fakeToolSchemas());
-  assert.equal(planTrelloCall(index, 'trelloWriteCard', [{ action: 'move', cardId: 'ari:cloud:trello::card/workspace/w0fake/1' }]), undefined, 'a planned property the schema does not carry is unsupported');
-});
 
-test('W7-F6: a reply with another id, or one over the size bound, is attributed to nothing', async () => {
+test('W7-F6: a write answered with another card, or a reply over the size bound, is attributed to nothing', async () => {
   // A server of its own: an oversized reply is cancelled mid-stream, which is no other test's business.
   const local = await startTrelloFake({ now: NOW });
   try {
-    const transport = createTrelloTransport({ url: local.mcpUrl, token: async () => ({ ok: true, token: local.accessToken }) });
+    const transport = createTrelloRestTransport({ url: local.url, credentials: async () => ({ ok: true, key: local.key, token: local.token }) });
     local.replyWithWrongId();
-    assert.deepEqual(await transport.call('trelloReadBoard', { action: 'list' }), { ok: false, code: 'protocol_error' }, 'another id is no reply');
+    assert.deepEqual(await transport.call('trelloWriteCard', { action: 'archive', cardId: local.cards[0]!.id }), { ok: false, code: 'protocol_error' }, 'another card is no receipt');
     local.bloatNextReply(2_000_000);
     assert.deepEqual(await transport.call('trelloReadBoard', { action: 'list' }), { ok: false, code: 'protocol_error' }, 'a body over the bound is no reply');
     assert.equal((await transport.call('trelloReadBoard', { action: 'list' })).ok, true, 'the next reply is read again, so neither bad one was attributed');
   } finally { await local.close(); }
-});
+})
 
-test('tools for boards, lists, members, Inbox and Planner are never planned and never called', async () => {
-  const index = indexTrelloSchemas(fakeToolSchemas());
+test('tools for boards, lists, members and Planner are never planned and never called', async () => {
+  const index = indexTrelloSchemas(trelloSchemas());
   for (const tool of TRELLO_SERVER_DENY) assert.equal(planTrelloCall(index, tool, [{ action: 'create', name: 'x' }]), undefined, tool);
   assert.equal(planTrelloCall(index, 'trelloSearch', [{ action: 'search', query: 'x' }]), undefined, 'server search is not on the allowlist');
   assert.equal(index.get('trelloWriteCard')?.has('create'), true);
-  const transport = createTrelloTransport({ url: fake.mcpUrl, token: async () => ({ ok: true, token: fake.accessToken }) });
+  const transport = createTrelloRestTransport({ url: fake.url, credentials: async () => ({ ok: true, key: fake.key, token: fake.token }) });
   assert.deepEqual(await transport.call('trelloWriteBoard', { action: 'create', name: 'x' }), { ok: false, code: 'not_allowed' });
   assert.deepEqual(await transport.call('trelloWriteList', { action: 'move', listId: 'x' }), { ok: false, code: 'not_allowed' });
   assert.ok(fake.calls.every(call => Object.hasOwn(TRELLO_SERVER_ALLOW, call.tool) && !(TRELLO_SERVER_DENY as readonly string[]).includes(call.tool)));
@@ -352,61 +260,13 @@ test('the host log lines are content-free: tool, phase, outcome and a closed rea
   }
 });
 
-// W7-R1: quick capture from his phone lands in the Trello Inbox, not on the board.
-test('what he jotted today reads the Inbox and the board cards he added today', async () => {
-  const run = session();
-  const before = fake.calls.length;
-  const result = await board.read(run, { view: 'inbox' });
-  assert.equal(result.ok, true, JSON.stringify(result));
-  assert.equal(result.today, '2026-10-26');
-  const jotted = result.jotted as { card: string; name: string; list: string; jotted: string }[];
-  assert.deepEqual(jotted.map(entry => entry.name), ['Jotted note from the phone'], 'today Inbox cards, and only today ones');
-  assert.deepEqual([jotted[0]!.list, jotted[0]!.jotted], ['Inbox', '2026-10-26']);
-  const cards = result.cards as { name: string }[];
-  assert.ok(cards.some(entry => entry.name === 'Quick note from the phone'), 'the board cards he added today are read with it');
-  assert.ok(!cards.some(entry => entry.name === 'Call the plumber'), 'an older board card is not today');
-  const tools = fake.calls.slice(before).map(call => call.tool);
-  assert.ok(tools.includes('trelloReadInbox'), 'the Inbox is read through the server');
-  assert.ok(tools.every(tool => tool.startsWith('trelloRead')), 'a jot read writes nothing');
-  // F12: an Inbox read is a logged call, under a name the host's closed set keeps.
-  assert.ok(TRELLO_CALL_TOOLS.includes('read.inbox'), 'the host log vocabulary carries the Inbox read');
-  assert.ok(events.some(event => event.tool === 'read.inbox'), 'the Inbox read emits its content-free connector_call line');
-});
-
-test('an Inbox card moves onto a list of the pinned board, and no other Inbox write exists', async () => {
-  const run = session();
-  const inboxCard = fake.inbox.cards[0]!;
-  const read = await board.read(run, { view: 'inbox' });
-  assert.equal(read.ok, true, JSON.stringify(read));
-  const handle = (read.jotted as { card: string }[])[0]!.card;
-  const listId = fake.lists.find(list => list.name === 'Short Term Backlog' && list.boardId === fake.boards[0]!.id)!.id;
-  const before = writes().length;
-  for (const [args, words] of [
-    [{ action: 'archive', card: handle }, 'archive it'],
-    [{ action: 'note', card: handle, text: 'a line' }, 'note on the card'],
-    [{ action: 'done', card: handle }, 'mark it done'],
-    [{ action: 'label', card: handle, label: 'green' }, 'add the green label'],
-  ] as const) {
-    assert.equal((await board.write(run, args, words)).code, 'outside_scope', JSON.stringify(args));
-  }
-  const moved = await board.write(run, { action: 'move', card: handle, list: 'Short Term Backlog' }, 'put that note into Short Term Backlog');
-  assert.equal(moved.ok, true, JSON.stringify(moved));
-  assert.equal(moved.change, 'moved from the Inbox to Short Term Backlog');
-  assert.deepEqual(writes().slice(before), [{ tool: 'trelloWriteCard', args: { action: 'move', cardId: inboxCard.id, listId } }], 'the only Inbox write is the move onto the board');
-  assert.equal(inboxCard.listId, listId, 'the note is in that list now');
-  // F13: the moved note is a card of the board now, and its Inbox handle is spent rather than a trap.
-  const noted = await board.write(run, { action: 'note', card: 'Jotted note from the phone', text: 'kept in the backlog' }, 'note on the card');
-  assert.equal(noted.ok, true, JSON.stringify(noted));
-  assert.equal((await board.write(run, { action: 'archive', card: handle }, 'archive it')).code, 'card_unknown', 'the Inbox handle no longer names anything');
-});
-
 // W7-R2: the repository is public, so the board name lives only in the owner's private config.
 test('the board name comes only from the private config: with none, nothing on Trello is touched', async () => {
   const unnamed = mkdtempSync(join(tmpdir(), 'trello-noname-'));
   const local = await startTrelloFake({ now: NOW });
   try {
-    await signIn(unnamed, local);
-    const board2 = createTrelloBoard({ configDir: unnamed, binding: trelloBinding(local.resource, local.issuer), timeZone: 'UTC', now });
+    writeKey(unnamed, local.key, local.token);
+    const board2 = createTrelloBoard({ configDir: unnamed, url: local.url, timeZone: 'UTC', now });
     const before = local.calls.length;
     const read = await board2.read(session(), { view: 'overview' });
     assert.equal(read.code, 'not_configured');
@@ -420,9 +280,9 @@ test('the configured name is the pin, and no board name is in the code', async (
   const configured = mkdtempSync(join(tmpdir(), 'trello-configured-'));
   const local = await startTrelloFake({ now: NOW });
   try {
-    await signIn(configured, local);
+    writeKey(configured, local.key, local.token);
     writeFileSync(join(configured, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD }), { mode: 0o600 });
-    const board2 = createTrelloBoard({ configDir: configured, binding: trelloBinding(local.resource, local.issuer), timeZone: 'UTC', now });
+    const board2 = createTrelloBoard({ configDir: configured, url: local.url, timeZone: 'UTC', now });
     const result = await board2.read(session(), { view: 'overview' });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(result.board, SYNTHETIC_BOARD, 'the pin is the name the owner configured');
@@ -494,7 +354,6 @@ test('W7-F5: the guard reads a change in his own words, so a read ask never admi
   { ask: 'move the venue card to Done', tool: 'write', args: { action: 'move', card: 'Book the venue', list: 'Done' }, judge: calls => calls.filter(call => call.tool.startsWith('trelloWrite')).map(call => call.args.action).join() === 'move' },
   { ask: 'set the due date of the venue card to Friday', tool: 'write', args: { action: 'due', card: 'Book the venue', due: '2026-10-30' }, judge: calls => calls.some(call => call.args.due === '2026-10-30T09:00:00.000Z') },
   { ask: 'note on the bank card that the call moved', tool: 'write', args: { action: 'note', card: 'Answer from the bank', text: 'the call moved' }, judge: calls => calls.some(call => typeof call.args.desc === 'string' && call.args.desc.endsWith('2026-10-26: the call moved')) },
-  { ask: 'what did I jot down today', tool: 'read', args: { view: 'inbox' }, judge: (calls, result) => calls.some(call => call.tool === 'trelloReadInbox') && Array.isArray(result.jotted) && Array.isArray(result.cards) },
 ];
 for (const row of EVAL_ROWS) {
   test(`eval: "${row.ask}"`, async () => {
@@ -505,3 +364,89 @@ for (const row of EVAL_ROWS) {
     assert.ok(row.judge(fake.calls.slice(before), result), JSON.stringify(fake.calls.slice(before)));
   });
 }
+
+// D2: the owner's own API key is the whole connection. No sign-in, no OAuth, no browser.
+test('a key file with the owner key and board name connects, and no key file is not configured', async () => {
+  assert.equal(trelloConfigured(dir), true, 'the fixture key file, board name and owner name are a connection');
+  const empty = mkdtempSync(join(tmpdir(), 'trello-nokey-'));
+  try {
+    const before = fake.calls.length;
+    const unconfigured = createTrelloBoard({ configDir: empty, url: fake.url, timeZone: 'UTC', now });
+    assert.equal(trelloConfigured(empty), false);
+    assert.equal(unconfigured.available(), false, 'without a key nothing is offered');
+    assert.equal((await unconfigured.read(session(), { view: 'overview' })).code, 'not_configured');
+    assert.equal(fake.calls.length, before, 'nothing reaches Trello without a key');
+  } finally { rmSync(empty, { recursive: true, force: true }); }
+});
+
+test('a revoked key is credential_revoked: loud, typed, and never an empty board', async () => {
+  const local = await startTrelloFake({ now: NOW });
+  const stale = mkdtempSync(join(tmpdir(), 'trello-revoked-'));
+  try {
+    writeKey(stale, local.key, 'a-token-trello-no-longer-accepts');
+    writeFileSync(join(stale, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD, ownerIdentity: 'rob@plantix.net' }), { mode: 0o600 });
+    const revoked = createTrelloBoard({ configDir: stale, url: local.url, timeZone: 'UTC', now });
+    const read = await revoked.read(session(), { view: 'overview' });
+    assert.equal(read.ok, false, 'a refused key is never an empty board');
+    assert.equal(read.code, 'credential_revoked');
+    assert.match(String(read.guidance), /import-trello-key\.sh/, 'the guidance names the command that replaces the key');
+    assert.equal((await revoked.write(session(), { action: 'archive', card: 'Call the plumber' }, ASK)).code, 'credential_revoked');
+  } finally { await local.close(); rmSync(stale, { recursive: true, force: true }); }
+});
+
+test('a rate-limited call waits the retry-after once and then reports rate_limited', async () => {
+  const local = await startTrelloFake({ now: NOW });
+  try {
+    const waits: number[] = [];
+    const transport = createTrelloRestTransport({
+      url: local.url, credentials: async () => ({ ok: true, key: local.key, token: local.token }),
+      sleep: async (ms: number) => { waits.push(ms); },
+    });
+    local.rateLimitNextCall(1, 2);
+    assert.equal((await transport.call('trelloReadBoard', { action: 'list' })).ok, true, 'one retry after the wait succeeds');
+    assert.deepEqual(waits, [2000], 'the Retry-After header is respected once, not guessed');
+    local.rateLimitNextCall(2, 1);
+    const limited = await transport.call('trelloReadBoard', { action: 'list' });
+    assert.deepEqual(limited, { ok: false, code: 'rate_limited' }, 'a second 429 in a row is reported, never retried forever');
+  } finally { await local.close(); }
+});
+
+test('the member behind the key must be the owner: email first, then the configured username', async () => {
+  const matching = await startTrelloFake({ now: NOW });
+  const other = await startTrelloFake({ now: NOW, member: { id: 'member0other', username: 'someone-else', email: 'someone@example.com' } });
+  const nameless = await startTrelloFake({ now: NOW, member: { id: 'member0named', username: 'robplantix' } });
+  const make = (target: TrelloFake, owner: Record<string, string>): string => {
+    const configDir = mkdtempSync(join(tmpdir(), 'trello-identity-'));
+    writeKey(configDir, target.key, target.token);
+    writeFileSync(join(configDir, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD, ...owner }), { mode: 0o600 });
+    return configDir;
+  };
+  const dirs = [make(matching, { ownerIdentity: 'rob@plantix.net' }), make(other, { ownerIdentity: 'rob@plantix.net' }),
+    make(nameless, { ownerTrelloUsername: 'robplantix' }), make(nameless, { ownerTrelloUsername: 'another-account' })];
+  try {
+    assert.deepEqual(await trelloIdentity({ configDir: dirs[0]!, url: matching.url }), { ok: true, member: { username: 'robplantix', email: 'rob@plantix.net', fullName: 'Rob' } });
+    assert.deepEqual(await trelloIdentity({ configDir: dirs[1]!, url: other.url }), { ok: false, code: 'credential_mismatch' }, 'another member never acts as the owner');
+    assert.equal((await trelloIdentity({ configDir: dirs[2]!, url: nameless.url })).ok, true, 'without an email the username is the identity');
+    assert.deepEqual(await trelloIdentity({ configDir: dirs[3]!, url: nameless.url }), { ok: false, code: 'credential_mismatch' });
+  } finally {
+    for (const configDir of dirs) rmSync(configDir, { recursive: true, force: true });
+    for (const target of [matching, other, nameless]) await target.close();
+  }
+});
+
+test('the import script writes a 0600 key file and prints no secret', async () => {
+  const envFile = join(mkdtempSync(join(tmpdir(), 'trello-env-')), 'trello.env');
+  const configDir = mkdtempSync(join(tmpdir(), 'trello-import-'));
+  const key = 'f'.repeat(32);
+  const token = 't'.repeat(64);
+  try {
+    writeFileSync(envFile, `TRELLO_API_KEY=${key}\nTRELLO_TOKEN=${token}\n`, { mode: 0o600 });
+    const result = spawnSync('bash', ['scripts/import-trello-key.sh', envFile, configDir], { encoding: 'utf8', cwd: process.cwd() });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(`${String(result.stdout)}${String(result.stderr)}`.includes(key), false, 'the key is never printed');
+    assert.equal(`${String(result.stdout)}${String(result.stderr)}`.includes(token), false, 'the token is never printed');
+    const path = join(configDir, TRELLO_KEY_FILE);
+    assert.equal(statSync(path).mode & 0o777, 0o600, 'the key file is private');
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { key, token });
+  } finally { rmSync(configDir, { recursive: true, force: true }); rmSync(join(envFile, '..'), { recursive: true, force: true }); }
+});

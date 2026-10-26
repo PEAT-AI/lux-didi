@@ -965,11 +965,11 @@ test('#645: the chat read is bounded at ten seconds, and a timed out one says ti
     lookups: [{ source: 'chat', query: 'release' }],
   }, new AbortController().signal);
   await flushed();
-  // C-LIVE: the operation answers at its deadline with the chat still reading; the chat's own 10 s cut is what a
-  // later read of the closed run reports.
+  // R1: the call waits its 15 s patience budget for the source the question needs, so a chat read with a 10 s
+  // deadline reports its own timeout before the answer; the reply names that closed outcome.
   clock.advance(RESEARCH_OPERATION.deadlineMs);
   const early = await call;
-  assert.match(String(early['coverage']), /chat still_reading/u, `the operation answers on time and says the chat is still reading (${String(early['coverage'])})`);
+  assert.match(String(early['coverage']), /chat timed_out/u, `the operation answers on time and names the chat's own timeout (${String(early['coverage'])})`);
   await flushed();
   clock.advance(RESEARCH.sourceDeadline.chat);
   await flushed();
@@ -1002,10 +1002,11 @@ test('#635: a chat read cut by its own budget after it answered is a partial tim
   });
   const call = runResearch(h.deps, { action: 'start', question: 'what did the team say in chat about the release' }, new AbortController().signal);
   await flushed();
-  // C-LIVE: the operation answers at its deadline with what the chat had; the cut is reported once the run closed.
+  // R1: the call waits the 15 s patience budget, so the chat's own cut has arrived: what it read is kept and the
+  // source is reported as a partial timeout.
   clock.advance(RESEARCH_OPERATION.deadlineMs);
   const early = await call;
-  assert.match(String(early['coverage']), /chat still_reading/u, `the early answer says the chat is still reading (${String(early['coverage'])})`);
+  assert.match(String(early['coverage']), /chat partial_timeout 1 of 1 shown/u, `the answer keeps what the chat read and reports the cut (${String(early['coverage'])})`);
   await flushed();
   clock.advance(RESEARCH.sourceDeadline.chat);
   await flushed();

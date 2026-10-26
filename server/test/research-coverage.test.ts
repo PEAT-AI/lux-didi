@@ -233,7 +233,7 @@ test('#635: a chat read still in flight when the reply is composed says still_re
   const header = String(reply['coverage']);
   assert.match(header, /chat still_reading/u, `the header names the read still in flight (${header})`);
   assert.doesNotMatch(header, /chat skipped_by_route/u, 'a read nobody skipped is never called skipped');
-  assert.match(String(reply['note']), /Still reading: chat/u, 'and the note says the same thing');
+  assert.match(String(reply['note']), /Still searching: chat/u, 'and the note says the same thing, in R1 words');
   release();
 });
 
@@ -300,7 +300,7 @@ test('#653: a status ask on a closed run names each source by its closed outcome
   // C-LIVE: the operation answers at its deadline while every read still runs, and says so honestly.
   clock.advance(RESEARCH_OPERATION.deadlineMs);
   const early = await call;
-  assert.match(String(early['note']), /still reading/iu, `an open run names what it is still reading (${String(early['note'])})`);
+  assert.match(String(early['note']), /still searching/iu, `an open run names what it is still searching (${String(early['note'])})`);
   // Once the run has closed on the source deadlines, a status read of it names each closed outcome.
   clock.advance(RESEARCH.startDeadlineMs + 1);
   for (let tick = 0; tick < 50; tick += 1) await Promise.resolve();
@@ -309,7 +309,7 @@ test('#653: a status ask on a closed run names each source by its closed outcome
   assert.match(note, /team chat did not answer within 10 seconds/u, `chat is named by its closed outcome (${note})`);
   assert.match(note, /mail did not answer within 12 seconds/u, `mail is named by its closed outcome (${note})`);
   assert.doesNotMatch(note, /alive|working/iu, 'no source is called alive or working');
-  assert.doesNotMatch(note, /Still reading/u, 'a closed run never says still reading');
+  assert.doesNotMatch(note, /Still searching/u, 'a closed run never says still searching');
 });
 
 test('#653: a status ask says a calendar that answered nothing, in plain words', async () => {

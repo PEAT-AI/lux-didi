@@ -3341,10 +3341,9 @@ function sourceTroubleLine(run: RunState): string | undefined {
     if (!cut && !run.sourcesFailed.has(source)) continue;
     const code = run.unavailableReasons.get(source);
     // K1: a web lookup this session cannot serve says so in the owner's words, never as a chat answer.
-    // R4: a read the run cut short did not return in time; only the connector's own timeout code is a timeout.
+    // R4: a read cut short by its own budget is a timeout; the hard stop names what it left behind in the note.
     if (code === 'web_not_available') parts.push('web: not available');
-    else if (cut) parts.push(`${label}: did not return in time`);
-    else if (code !== undefined && TIMED_OUT.has(code)) parts.push(`${label}: not read (timed out after ${secondsOfSource(source)} s)`);
+    else if (cut || (code !== undefined && TIMED_OUT.has(code))) parts.push(`${label}: not read (timed out after ${secondsOfSource(source)} s)`);
     else parts.push(`${label}: unavailable (${(code !== undefined ? plainReason(code) : undefined) ?? 'no answer'})`);
   }
   return parts.length === 0 ? undefined : parts.join('; ');

@@ -218,8 +218,8 @@ test('the fidelity columns accept only the declared tokens', () => {
   withStore(store => {
     assert.throws(() => store.transaction(tx => tx.run(
       "INSERT INTO tool_calls(owner_id,run_id,execution_id,intent_json,state,input_fidelity) VALUES('o','r','exec-fidelity','{}','intent','made_up_v1')")),
-    /fidelity/i, 'an undeclared chat input fidelity is refused');
-    assert.throws(() => seedDispatch(store, 'd-fidelity', 'exec-fidelity', T0, { fidelity: 'made_up_v1' }), /fidelity/i,
+    /CHECK constraint failed/, 'an undeclared chat input fidelity is refused');
+    assert.throws(() => seedDispatch(store, 'd-fidelity', 'exec-fidelity', T0, { fidelity: 'made_up_v1' }), /CHECK constraint failed/,
       'an undeclared dispatch arguments fidelity is refused');
   });
 });

@@ -91,7 +91,7 @@ export const toolsMigrations: readonly SchemaMigration[] = [{ owner: 'tools', ve
       owner_id TEXT NOT NULL, run_id TEXT NOT NULL, execution_id TEXT NOT NULL, call_id TEXT,
       intent_json TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('intent','completed','failed','unknown','refused')),
       result_id TEXT UNIQUE, result_json TEXT, result_sha256 TEXT,
-      input_json TEXT, input_sha256 TEXT, input_fidelity TEXT, input_key_count INTEGER,
+      input_json TEXT, input_sha256 TEXT, input_fidelity TEXT CHECK(input_fidelity IS NULL OR input_fidelity IN ('complete_v1','partial_v1','hash_only_unsupported_v1','hash_only_source_denied_v1')), input_key_count INTEGER,
       created_at INTEGER DEFAULT (CAST(strftime('%s','now') AS INTEGER)*1000), content_pruned_at INTEGER,
       PRIMARY KEY(owner_id,run_id,execution_id), UNIQUE(owner_id,run_id,call_id),
       CHECK((state='intent' AND result_id IS NULL AND result_json IS NULL AND result_sha256 IS NULL) OR
@@ -106,7 +106,7 @@ export const toolsMigrations: readonly SchemaMigration[] = [{ owner: 'tools', ve
       binding_digest TEXT NOT NULL, schema_digest TEXT NOT NULL, source_policy_id TEXT NOT NULL, source_policy_revision INTEGER NOT NULL, account_id TEXT NOT NULL, resource_id TEXT NOT NULL,
       session_revision INTEGER, session_class TEXT, source_class TEXT NOT NULL CHECK(source_class IN ('ordinary','private','sensitive')), authority_epoch TEXT NOT NULL,
       endpoint_id TEXT NOT NULL, tool_name TEXT NOT NULL, generation INTEGER NOT NULL,
-      arguments_json TEXT, arguments_sha256 TEXT NOT NULL, arguments_fidelity TEXT NOT NULL, arguments_key_count INTEGER CHECK(arguments_key_count>=0),
+      arguments_json TEXT, arguments_sha256 TEXT NOT NULL, arguments_fidelity TEXT NOT NULL CHECK(arguments_fidelity IN ('complete_v1','partial_v1','hash_only_unsupported_v1','hash_only_source_denied_v1')), arguments_key_count INTEGER CHECK(arguments_key_count>=0),
       arguments_keys TEXT, content_pruned_at INTEGER,
       started_at INTEGER NOT NULL, started_mono_ms INTEGER NOT NULL, clock_domain TEXT NOT NULL,
       state TEXT NOT NULL CHECK(state IN ('pending','completed','unavailable','unknown')),

@@ -6362,11 +6362,12 @@ export function operationCoverage(run: RunState, findings: readonly FindingLike[
       const entries = [...run.ledger.values()].filter(entry => entry.source === source && !entry.bodyOnly);
       examined = new Set(entries.flatMap(entry => entry.lines ?? [])).size;
       const reported = reportedTotal(entries.flatMap(entry => typeof entry.total === 'number' ? [entry.total] : []));
+      // R1/R4: only a read that really finished may state a total. A read the budget cut did not return, so its
+      // total is unknown, and a zero there would claim the source holds no records.
+      const answered = run.sourcesDone.has(source) && !run.sourcesFailed.has(source) && !run.cutShort.has(source);
       // Several different queries may overlap, so their totals are never added up.
-      if (typeof reported === 'number') { total = Math.max(reported, examined); matches = total; }
-      // R1/R4: only a source that really answered with nothing reported a total of zero; a read the budget cut
-      // never returned, so its total is unknown and saying 0 would claim the source holds no records.
-      else if (run.emptySearches.has(source) && examined === 0 && run.sourcesDone.has(source)) { total = 0; matches = 0; }
+      if (typeof reported === 'number' && (examined > 0 || answered)) { total = Math.max(reported, examined); matches = total; }
+      else if (answered && run.emptySearches.has(source) && examined === 0) { total = 0; matches = 0; }
       readComplete = run.sourcesDone.has(source) || run.emptySearches.has(source);
       stop = run.pending.has(source) || run.cutShort.has(source) || (run.reading?.has(source) === true && !readComplete) ? 'deadline'
         : run.sourcesFailed.has(source) ? 'failed'

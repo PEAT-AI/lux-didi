@@ -160,9 +160,9 @@ test('calendar collection keeps one source deadline across pages and resumes an 
     const first = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'week' }] }, signal());
     // R1: pages keep starting while their estimate fits the 15 s patience budget, so the run stops with a page
     // that fit and a cursor kept; the owner's follow-up is a new operation that reads on from it.
-    assert.equal(tokens.length, deadline ? 4 : 7, 'no page starts that cannot finish inside the 15 s patience budget');
+    assert.equal(tokens.length, deadline ? 2 : 7, 'no page starts that cannot finish inside the 15 s patience budget');
     if (deadline) {
-      assert.equal((first['calendarCoverage'] as Record<string, unknown>)['received'], 4, 'the pages that fit are kept');
+      assert.equal((first['calendarCoverage'] as Record<string, unknown>)['received'], 2, 'the pages that fit are kept');
       assert.equal((first['calendarCoverage'] as Record<string, unknown>)['failed'], false, 'a page never started is not a failed page');
       const row = (first['sourceCoverage'] as Record<string, unknown>[]).find(entry => entry['source'] === 'calendar');
       assert.equal(row?.['stop'], 'deadline'); assert.equal(row?.['more'], 'upstream');

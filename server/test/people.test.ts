@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import {
   PEOPLE_CHAR_LIMIT, loadPeople, parsePeople, renderPeople, resolveSpoken, splitSpoken, installPeople,
   peopleSnapshot, peopleSection, lookupPeople, personByEmail, ambiguityQuestion, PEOPLE_LOOKUP_DECLARATION,
-  peopleLookupResult, type PeopleSnapshot,
+  peopleLookupResult, validatePeopleLookup, type PeopleSnapshot,
 } from '../people/index.js';
 import { LIVE_INSTRUCTION_HARD_LIMIT, composeLiveSessionInstruction, ownerProfileSections } from '../prompt/index.js';
 import { validateOwnerProfile } from '../prompt/index.js';
@@ -122,6 +122,9 @@ test('people: lookup returns roster entries without any connector, and email map
   assert.equal(result.people[0]?.name, 'Sandeep Example');
   assert.equal(PEOPLE_LOOKUP_DECLARATION.name, 'people_lookup');
   assert.deepEqual(PEOPLE_LOOKUP_DECLARATION.parameters.required, ['name']);
+  assert.equal(validatePeopleLookup({ name: 'Sandy' }), true);
+  assert.equal(validatePeopleLookup({ name: '' }), false);
+  assert.equal(validatePeopleLookup({ name: 'Sandy', extra: 1 }), false);
   installPeople(null);
 });
 

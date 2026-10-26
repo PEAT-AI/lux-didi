@@ -10,7 +10,7 @@ if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" || ! -d "$deps
 fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-google.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
-mkdir -p "$out/source/"{tools,contracts,domain,runtime,connectors,test,config,host,adapters/model,adapters/mcp,adapters/live-voice,trace,prompt,live,http}
+mkdir -p "$out/source/"{tools,contracts,domain,runtime,connectors,test,config,host,adapters/model,adapters/mcp,adapters/live-voice,trace,prompt,live,http,people}
 cp "$root"/server/tools/*.ts "$out/source/tools/"
 cp "$root"/server/contracts/*.ts "$out/source/contracts/"
 # server/tools reads the memory model and the debug journal receipt: copy those trees too.
@@ -29,6 +29,9 @@ cp "$root/server/host/mcp.ts" "$out/source/host/"
 # W14: the loud-error suite proves the classified-failure row is admitted by the real host log, so the
 # harness compiles host/log.ts and its small import closure too.
 cp "$root/server/host/log.ts" "$out/source/host/"
+# W15: tools, connectors and the live persona resolve people through the host snapshot, so the
+# harness compiles that module and its import closure too.
+cp "$root"/server/people/*.ts "$out/source/people/"
 cp "$root"/server/prompt/{types,backend-procedure,live-persona}.ts "$out/source/prompt/"
 cp "$root/server/live/stop-phrase.ts" "$out/source/live/"
 cp "$root/server/http/routes.ts" "$out/source/http/"

@@ -159,17 +159,32 @@ function codeOf(text: string): string {
  * marks the endpoint dead. Either way the status names the helper's code and its own line, never a state
  * word and never an empty success.
  */
-export function googleToolStatus(evidence: ConnectorEvidence, endpoint?: ConnectionEndpoint): GoogleStatus | undefined {
+export function googleToolStatus(evidence: ConnectorResult, endpoint?: ConnectionEndpoint): GoogleStatus | undefined {
   if (evidence.state === 'completed') return undefined;
-  const content = decodeMcpContentText(evidence.decodedResult);
+  // Ruling TR4-R8: a refused call speaks the closed code in the owner's words instead of answering
+  // silently. The latch and refusal carry identity codes with an underscore where the helper's own
+  // vocabulary uses a hyphen, and the one table above is the only place those words live.
+  if (evidence.state === 'refused') {
+    const refused = codeOf(evidence.reason).replace(/_/g, '-');
+    const row = googleErrorEntry(refused);
+    if (row !== undefined) {
+      // A refused result carries no tool name, so the endpoint names the family for the consent command.
+      const named = `${endpoint?.id ?? ''} ${endpoint?.resource ?? ''}`.toLowerCase();
+      const family = /gmail/.test(named) ? 'gmail' : /drive/.test(named) ? 'drive' : 'calendar';
+      return { state: row.pinned ? 'configured' : 'error', code: refused, reason: googleOwnerLine(row, family, endpoint) };
+    }
+  }
+  // Past the refused branch the result is a completed envelope, and only that shape carries a tool.
+  const record = evidence as ConnectorEvidence;
+  const content = decodeMcpContentText(record.decodedResult);
   if (!content.ok) return { state: 'error', code: 'no_content', reason: 'tool call failed; no content' };
   const code = codeOf(content.text);
   const entry = googleErrorEntry(code);
   if (entry === undefined) {
-    return { state: 'error', code: UNKNOWN_HELPER_REASON, reason: UNKNOWN_HELPER_OWNER_LINE, log: googleUnknownLog(code, evidence.tool) };
+    return { state: 'error', code: UNKNOWN_HELPER_REASON, reason: UNKNOWN_HELPER_OWNER_LINE, log: googleUnknownLog(code, record.tool) };
   }
-  const log = entry.recovery === 'log_defect' ? googleDefectLog(code, evidence.tool) : undefined;
-  return { state: entry.pinned ? 'configured' : 'error', code, reason: googleOwnerLine(entry, googleFamilyOf(evidence), endpoint), ...(log ? { log } : {}) };
+  const log = entry.recovery === 'log_defect' ? googleDefectLog(code, record.tool) : undefined;
+  return { state: entry.pinned ? 'configured' : 'error', code, reason: googleOwnerLine(entry, googleFamilyOf(record), endpoint), ...(log ? { log } : {}) };
 }
 
 /** The two variables the helper reads its own binding from (lux-cli google_mcp/binding.py). */

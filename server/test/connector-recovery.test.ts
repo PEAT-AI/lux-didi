@@ -166,15 +166,50 @@ test('the schedule gives up after every delay and stays stopped', () => {
   } finally { mock.timers.reset(); }
 });
 
-test('an identity failure is terminal per endpoint, whether it timed out or mismatched', async () => {
+test('an inconclusive identity probe keeps the ladder, a definite failure is terminal per endpoint', async () => {
   const source: IdentitySource = { tool: 'get_profile', args: {}, values: decoded => [String((decoded as { id?: unknown }).id)] };
   const slow = await proveIdentity({ source, expected: [ACCOUNT], timeoutMs: 5, call: () => new Promise<ConnectorResult>(() => {}) });
   assert.equal(slow.proven, false);
   assert.equal(slow.code, 'identity_timeout', 'a timeout is its own closed code, never a mismatch');
-  assert.equal(identityFailureRetryable(slow), false, 'council 2026-10-26: no recovery ladder for an identity failure');
+  assert.equal(identityFailureRetryable(slow), true, 'TR4-R8: the proof did not answer, so it is inconclusive and earns the bounded ladder');
+  // An answered "no account" is definite, never inconclusive: only a proof that did not answer is retried.
+  assert.equal(identityFailureRetryable({ proven: false, match: null, value: null, code: 'identity_unverified' }), false, 'a definite unproven answer latches until an explicit sign-in');
   const mismatch = await proveIdentity({ source, expected: [ACCOUNT], timeoutMs: 50, call: async () => ({ state: 'completed', decodedResult: { id: 'other@example.test' } } as unknown as ConnectorResult) });
   assert.equal(mismatch.match, false);
   assert.equal(identityFailureRetryable(mismatch), false, 'a mismatch stays failed until the next reconnect');
+});
+
+// TR4-R8: an inconclusive probe is retryable but its ladder is spent once, so one call of any length
+// probes it at most once plus the ladder, never once per owner turn.
+test('TR4-R8: an identity that times out every time is probed at most once plus the ladder, over 50 owner turns', async t => {
+  let probes = 0;
+  const gmail = await fixture({ tools: GMAIL_TOOLS, call: () => { probes += 1; return { payload: {}, delayMs: 400 }; } });
+  t.after(() => gmail.close());
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-probe-cap-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT, ownerChatUsername: 'owner',
+    endpoints: [googleConfig(gmail.url, 'gmail', 'mail')],
+  }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  let clock = 9_000_000;
+  const runtime = await composeMcpRuntime({
+    store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    callDeadlineMs: 120, recoveryDelaysMs: FAST, now: () => clock,
+  });
+  t.after(() => runtime.close());
+  // FAST mirrors CONNECTOR_RECOVERY_DELAYS_MS, so the ladder is the real one, driven in tens of ms.
+  const capped = 1 + CONNECTOR_RECOVERY_DELAYS_MS.length;
+  await until(() => probes >= capped, 4000);
+  await until(() => runtime.status().endpoints[0]!.retrying === false, 4000);
+  assert.equal(runtime.status().endpoints[0]!.reasonCode, 'identity_timeout', 'the ladder ended on the inconclusive code');
+  for (let turn = 0; turn < 50; turn += 1) {
+    clock += 30 * 60_000 / 50;
+    runtime.connectionIds();
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.ok(probes <= capped, `fifty owner turns over thirty simulated minutes add no probe, saw ${probes}`);
 });
 
 test('a transport timeout is unreachable, a known cancellation is not, and nothing falls through to unknown', () => {
@@ -272,8 +307,9 @@ test('a gmail proof that runs out of time is retried until it proves the account
   let gmailProbes = 0;
   const gmail = await fixture({ tools: GMAIL_TOOLS, call: () => {
     gmailProbes += 1;
-    // The first probe comes back without an account, which is what the owner's session saw; the retry answers.
-    return gmailProbes === 1 ? { payload: {} } : { payload: { emailAddress: ACCOUNT } };
+    // TR4-R8: the first proof never answers inside the call deadline, so it is inconclusive (retryable)
+    // rather than a definite refusal; the retry answers with the owner's own address.
+    return gmailProbes === 1 ? { payload: {}, delayMs: 400 } : { payload: { emailAddress: ACCOUNT } };
   } });
   t.after(() => gmail.close());
   const calendar = await fixture({ tools: CALENDAR_TOOLS, call: () => ({ payload: { calendars: [{ id: ACCOUNT, primary: true }] } }) });
@@ -289,7 +325,7 @@ test('a gmail proof that runs out of time is retried until it proves the account
   const identity: Array<{ connector: string; proven: boolean; match: boolean | null; endpointId: string }> = [];
   const runtime = await composeMcpRuntime({
     store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
-    callDeadlineMs: 2000, recoveryDelaysMs: FAST,
+    callDeadlineMs: 120, recoveryDelaysMs: FAST,
     identityLog: (connector, proven, match, endpointId) => { identity.push({ connector, proven, match, endpointId: endpointId ?? '' }); },
   });
   t.after(() => runtime.close());
@@ -297,7 +333,7 @@ test('a gmail proof that runs out of time is retried until it proves the account
   const calendarFirst = first.find(row => row.id === 'calendar')!;
   const gmailFirst = first.find(row => row.id === 'gmail')!;
   assert.equal(gmailFirst.state, 'error', 'the slow proof left gmail unproven');
-  assert.equal(gmailFirst.reasonCode, 'identity_unverified', 'an unproven proof, never a mismatch');
+  assert.equal(gmailFirst.reasonCode, 'identity_timeout', 'the proof did not answer, so it is inconclusive, never a mismatch');
   assert.equal(gmailFirst.retrying, true, 'so recovery is scheduled instead of staying down all session');
   assert.equal(calendarFirst.state, 'connected', 'calendar proved itself and never depended on gmail');
   assert.equal(calendarFirst.error, undefined);
@@ -437,8 +473,11 @@ test('671-R2: a recovery attempt writes its own closed reason line, first connec
 });
 
 test('671-R2: a read earns one fresh attempt per interval after a round spent on a retryable reason', async t => {
-  let probes = 0;
-  const gmail = await fixture({ tools: GMAIL_TOOLS, call: () => { probes += 1; return { payload: {} }; } });
+  // TR4-R8: the re-arm a read earns belongs to a retryable non-identity reason (an inconclusive
+  // identity is never re-armed by a read), so this drives main's per-interval attempt with a tool
+  // definition the client refuses, the same fast closed cause the bounded round above uses.
+  let attempts = 0;
+  const gmail = await fixture({ tools: [...GMAIL_TOOLS, { name: 'gmail_search_messages', inputSchema: { type: 'object', properties: [], required: 'not-an-array' } }], call: () => ({ payload: { emailAddress: ACCOUNT } }) });
   t.after(() => gmail.close());
   const dir = mkdtempSync(join(tmpdir(), 'didi-google-rearm-'));
   const configDir = join(dir, 'provider-config');
@@ -453,31 +492,32 @@ test('671-R2: a read earns one fresh attempt per interval after a round spent on
   const runtime = await composeMcpRuntime({
     store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
     now: () => clock, recoveryDelaysMs: FAST,
+    connectorLog: (_connector: string, _stage: string, detail?: { endpointId?: string }) => { if (detail?.endpointId === 'gmail') attempts += 1; },
   });
   t.after(() => runtime.close());
-  // Enough probes for the first connect plus the whole bounded round, every one of them unproven.
+  // Enough attempts for the first connect plus the whole bounded round, every one of them unproven.
   const spent = 1 + FAST.length;
-  await until(() => probes >= spent, 4000);
+  await until(() => attempts >= spent, 4000);
   assert.equal(runtime.status().endpoints[0]!.retrying, false, 'the bounded round is spent');
   assert.equal(CONNECTOR_REARM_INTERVAL_MS, 120_000, 'the interval is two minutes');
   // A read one millisecond short of the interval earns nothing.
   clock += CONNECTOR_REARM_INTERVAL_MS - 1;
   runtime.connectionIds();
   await new Promise(resolve => setTimeout(resolve, 40));
-  assert.equal(probes, spent, 'a read inside the interval never re-arms');
+  assert.equal(attempts, spent, 'a read inside the interval never re-arms');
   // A read at the interval earns exactly one fresh attempt, and a second read earns none.
   clock += 1;
   runtime.connectionIds();
-  await until(() => probes === spent + 1, 4000);
-  assert.equal(probes, spent + 1, 'one fresh attempt, no more');
+  await until(() => attempts === spent + 1, 4000);
+  assert.equal(attempts, spent + 1, 'one fresh attempt, no more');
   runtime.connectionIds();
   await new Promise(resolve => setTimeout(resolve, 40));
-  assert.equal(probes, spent + 1, 'a second read in the same window earns nothing');
+  assert.equal(attempts, spent + 1, 'a second read in the same window earns nothing');
   // The fresh attempt failed retryably, so the next window is two minutes after that attempt.
   clock += CONNECTOR_REARM_INTERVAL_MS;
   runtime.connectionIds();
-  await until(() => probes === spent + 2, 4000);
-  assert.equal(probes, spent + 2, 'the endpoint is not left down for the rest of the session');
+  await until(() => attempts === spent + 2, 4000);
+  assert.equal(attempts, spent + 2, 'the endpoint is not left down for the rest of the session');
 });
 
 test('671-R2: a non-retryable reason never re-arms, however often a read asks', async t => {
@@ -593,20 +633,25 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 const marker = process.argv[2]; const owner = process.argv[3];
 const first = !existsSync(marker);
 if (first) writeFileSync(marker, 'seen');
+// TR4-R8: the helper is correctly pinned to the owner, so its one failure is a retryable first_call
+// discovery refusal (a definition the client will not accept), never an identity one; D1's own test
+// covers the refused pin.
 const sdk = new Server({ name: 'fake-google', version: '1' }, { capabilities: { tools: { listChanged: false } } });
 sdk.setRequestHandler('tools/list', () => ({ tools: [
   { name: 'gmail_get_profile', inputSchema: { type: 'object', properties: {} } },
   { name: 'gmail_search', inputSchema: { type: 'object', properties: {} } },
+  // One refused definition on the very first child is a first_call discovery failure: retryable, so a
+  // fresh helper is spawned, and that child's catalogue is clean.
+  ...(first ? [{ name: 'gmail_search_messages', inputSchema: { type: 'object', properties: [], required: 'not-an-array' } }] : []),
 ] }));
 sdk.setRequestHandler('tools/call', request => {
   if (request.params.name !== 'gmail_get_profile') return { content: [{ type: 'text', text: JSON.stringify({ messages: [] }) }] };
-  if (first) return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: 'identity_unverified' }) }] };
   return { content: [{ type: 'text', text: JSON.stringify({ emailAddress: owner }) }] };
 });
 await sdk.connect(new StdioServerTransport());
 `;
 
-test('1022: a stdio helper that pins a refused identity is replaced before the recovery probe', async t => {
+test('1022: a correctly pinned stdio helper that fails discovery once is replaced before the recovery probe', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-stdio-pinned-'));
   // Beside the compiled test so the child resolves the same node_modules the test itself does.
   const helper = join(dirname(fileURLToPath(import.meta.url)), `pinned-helper-${randomUUID()}.mjs`);
@@ -618,7 +663,9 @@ test('1022: a stdio helper that pins a refused identity is replaced before the r
   writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
     schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT,
     endpoints: [{ id: 'gmail', transport: 'stdio', command: process.execPath, args: [helper, marker, ACCOUNT],
-      env: { HOME: join(dir, 'home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+      // TR4-R8: a stdio Google child is refused unless it pins the owner account, so this helper, which
+      // proves the identity it pins, carries the pin the catalogue declares.
+      env: { HOME: join(dir, 'home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '', LUX_GOOGLE_MCP_ACCOUNT: ACCOUNT },
       connector: 'google', account: 'local', resource: 'google-gmail', credentialRef: null,
       enabled: true, allowEgress: true, unknownClass: 'private' }],
   }), { mode: 0o600 });
@@ -628,7 +675,7 @@ test('1022: a stdio helper that pins a refused identity is replaced before the r
     recoveryDelaysMs: FAST, lifecycleLog: event => { lifecycle.push(event as Lifecycle); } });
   t.after(() => { void runtime.close(); });
   const failed = runtime.status().endpoints[0]!;
-  assert.equal(failed.state, 'error', 'the pinned helper refused the proof');
+  assert.equal(failed.state, 'error', 'the first child refused its catalogue');
   assert.equal(failed.retrying, true, 'so one bounded round is scheduled');
   await until(() => runtime.status().endpoints[0]!.state === 'connected');
   const recovered = lifecycle.filter(entry => entry.event === 'connector_recovered');

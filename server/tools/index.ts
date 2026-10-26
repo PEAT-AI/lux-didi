@@ -808,7 +808,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 return { status: 'unknown', code };
               }
               if (evidence.state !== 'completed') {
-                const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' ? descriptor.status?.(evidence, p.endpoint) : undefined;
+                // TR4-R8: a refused read asks the connector too, so a latched endpoint answers the owner
+                // with its closed code's line rather than an empty result. A connector without a word
+                // table answers undefined and keeps the plain failure code below.
+                const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' || evidence.state === 'refused' ? descriptor.status?.(evidence, p.endpoint) : undefined;
                 if (!status) {
                   // Keep the failure cause truthful: a refused connector read names its reason; a child
                   // tool/protocol error is an unusable result. Either way surface a real code.

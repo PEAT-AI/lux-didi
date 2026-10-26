@@ -136,13 +136,23 @@ export interface ConnectorFailureDetail {
 }
 
 /**
- * Whether an identity failure is worth a bounded background retry. Never (council 2026-10-26): an
- * identity failure is terminal for that endpoint. The endpoint latches until an explicit sign-in or a
- * host restart, so an account that cannot be proven is probed once per sign-in and once per host start,
- * never on the recovery ladder and never once per owner turn.
+ * Whether an identity failure is worth a bounded background retry. Only an inconclusive probe is:
+ * `identity_timeout` means the proof did not answer in time, so the connector earns the bounded
+ * recovery ladder (5/20/60 s), never a restart per owner turn (TR4-R8). The definite outcomes
+ * `identity_unverified`, `identity_mismatch` and `not_signed_in` are terminal for that endpoint: it
+ * latches until an explicit sign-in or a host restart (C-OWNER-IDENTITY point 5).
  */
-export function identityFailureRetryable(_proof: IdentityProof): boolean {
-  return false;
+export function identityFailureRetryable(proof: IdentityProof): boolean {
+  return proof.code === 'identity_timeout';
+}
+
+/**
+ * The report's closed reason for one identity refusal. Ruling TR4-R8: a helper that answers
+ * `credential_missing` is a dead credential, a sign-in need, never an unproven account, so its row
+ * says `not_signed_in`; every other code keeps its own closed name.
+ */
+function outcomeCode(code: 'identity_mismatch' | IdentityErrorCode): 'identity_mismatch' | 'not_signed_in' | IdentityErrorCode {
+  return code === 'credential_missing' ? 'not_signed_in' : code;
 }
 
 /** Every restart delay of one bounded background recovery round, after a retryable connect failure. */
@@ -449,7 +459,10 @@ export async function composeMcpRuntime(options: {
   // one fresh attempt per interval and no more.
   const lastAttemptAt = new Map<string, number>();
   // The endpoints whose bounded round was spent on a retryable reason and may be re-armed by a read.
+  // An identity timeout is retryable but never re-armed by a read (TR4-R8): its ladder is 5/20/60 s and
+  // an owner turn never restarts it, so this set only ever holds non-identity failures.
   const rearm = new Set<string>();
+  const identityTimeouts = new Set<string>();
   const retryEndpoint = async (entry: McpEndpointEntry): Promise<{ retryable: boolean }> => {
     if (closed) return { retryable: false };
     const token = (generations.get(entry.id) ?? 0) + 1;
@@ -472,7 +485,9 @@ export async function composeMcpRuntime(options: {
     if (!scheduled) {
       // #671-R2: the round is spent on a retryable reason, so the endpoint may earn one fresh attempt
       // from a read that needs it, never more than once per {@link CONNECTOR_REARM_INTERVAL_MS}.
-      rearm.add(entry.id);
+      // TR4-R8: an inconclusive identity probe is not re-armed by a read, so a call of any length probes
+      // it at most once plus the ladder.
+      if (!identityTimeouts.has(entry.id)) rearm.add(entry.id);
       options.lifecycleLog?.({ event: 'connector_recovery_exhausted', endpointId: entry.id, attempts: recovery.attempts(entry.id),
         reason: failureReasons.get(entry.id) ?? 'connector-unavailable' });
     }
@@ -507,6 +522,8 @@ export async function composeMcpRuntime(options: {
   const settle = async (entry: McpEndpointEntry, token: number, attempt: 'first-connect' | 'refresh', identityOnce: ReturnType<typeof identityProofMemo>): Promise<{ retryable: boolean }> => {
     const roundStarted = now();
     lastAttemptAt.set(entry.id, roundStarted);
+    // TR4-R8: this attempt decides the flag; only an identity_timeout sets it again below.
+    identityTimeouts.delete(entry.id);
     const previous = reports.get(entry.id);
     ready.delete(entry.id);
     const stale = (): boolean => closed || generations.get(entry.id) !== token;
@@ -687,21 +704,23 @@ export async function composeMcpRuntime(options: {
           // A strict source refuses an unproven identity too. The reason code is a closed helper code,
           // so the reply names the source without ever carrying the account or a token path.
           const code = refusalCode(identity);
-          // A probe that ran out of time is inconclusive, not a refusal: it schedules the bounded
-          // background recovery. Only a definite refusal stays failed until the next reconnect.
-          // Terminal per endpoint: the latch stops the ladder and every later probe (H-01).
-          latchEndpoint(entry, code);
+          // An inconclusive probe is not a refusal: identity_timeout earns the bounded recovery
+          // ladder (TR4-R8). Only a definite failure latches (C-OWNER-IDENTITY point 5).
+          const retryable = identityFailureRetryable(identity);
+          if (retryable) identityTimeouts.add(entry.id); else latchEndpoint(entry, code);
           reportFailure(entry, 'handshake', attempt, code);
           if (attempt === 'first-connect' && entry.transport === 'stdio') replaceSession.add(entry.id);
-          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code === 'identity_mismatch' ? 'identity-mismatch' : 'identity-unproven', reasonCode: code, identity });
-          return { retryable: false };
+          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: code === 'identity_mismatch' ? 'identity-mismatch' : 'identity-unproven', reasonCode: outcomeCode(code), identity });
+          return { retryable };
         }
         if (!identity.proven) {
-          latchEndpoint(entry, refusalCode(identity));
-          reportFailure(entry, 'handshake', attempt, refusalCode(identity));
+          const code = refusalCode(identity);
+          const retryable = identityFailureRetryable(identity);
+          if (retryable) identityTimeouts.add(entry.id); else latchEndpoint(entry, code);
+          reportFailure(entry, 'handshake', attempt, code);
           if (attempt === 'first-connect' && entry.transport === 'stdio') replaceSession.add(entry.id);
-          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'identity-unproven', ...(identity.code ? { reasonCode: identity.code } : {}), identity });
-          return { retryable: identityFailureRetryable(identity) };
+          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'identity-unproven', reasonCode: outcomeCode(code), identity });
+          return { retryable };
         }
       } else if (identitySource && expectedIdentities.length === 0) {
         // No owner identity configured and a non-strict source: the explicit no-comparison policy.

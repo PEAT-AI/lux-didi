@@ -74,10 +74,11 @@ export interface ConnectorDescriptor {
   /** Connection status for a non-completed result, when the connector can classify it (R4). A classified
    * failure may also carry the one content-free log line the host must write for it. */
   /**
-   * Connection status for one completed-but-failed read. The approved endpoint is passed so an owner
-   * line can name the binding the helper itself reads (LOGS.md L-01), never a token value.
+   * Connection status for one failed read, completed-and-failed or refused before the wire (TR4-R8: a
+   * latched endpoint must answer the owner, never silently). The approved endpoint is passed so an
+   * owner line can name the binding the helper itself reads (LOGS.md L-01), never a token value.
    */
-  status?(evidence: ConnectorEvidence, endpoint?: ConnectionEndpoint): { state: 'configured' | 'error'; reason: string; code: string; log?: ToolFailureEvent } | undefined;
+  status?(evidence: ConnectorResult, endpoint?: ConnectionEndpoint): { state: 'configured' | 'error'; reason: string; code: string; log?: ToolFailureEvent } | undefined;
   /** The connector's own-account identity probe for one approved policy, when it has one (release 3f). */
   identity?(policy: ConnectionPolicy): IdentitySource | null;
 }
@@ -282,7 +283,7 @@ function googleProject(evidence: ConnectorEvidence, port: McpPort, policy: Conne
     ...(projection.projection[HOST_EVIDENCE] ? { [HOST_EVIDENCE]: projection.projection[HOST_EVIDENCE] } : {}),
   };
 }
-function googleStatus(evidence: ConnectorEvidence, endpoint?: ConnectionEndpoint): { state: 'configured' | 'error'; reason: string; code: string; log?: ToolFailureEvent } | undefined {
+function googleStatus(evidence: ConnectorResult, endpoint?: ConnectionEndpoint): { state: 'configured' | 'error'; reason: string; code: string; log?: ToolFailureEvent } | undefined {
   const status = googleToolStatus(evidence, endpoint);
   // A failure the helper's vocabulary names speaks its line and says how dead the endpoint is; a bodiless
   // one stays a plain failed call, so a lost mail page is never mistaken for an answer.

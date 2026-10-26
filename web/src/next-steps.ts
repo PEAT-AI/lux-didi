@@ -17,10 +17,10 @@ export function mongooseEndpoint(id: string): MongooseEndpointName | undefined {
 }
 export function mongooseEndpointLabel(name: MongooseEndpointName): string { return mongooseLabels[name]; }
 /** Every row an owner signs in to from Settings: the three Mongoose endpoints and the Trello board. */
-export type SignInName = MongooseEndpointName | "trello";
+export type SignInName = MongooseEndpointName;
 // D2: the Trello board is connected by an imported API key, so it has no sign-in to offer.
-export function signInTarget(id: string): SignInName | undefined { return id === "trello" ? undefined : mongooseEndpoint(id); }
-export function signInLabel(name: SignInName): string { return name === "trello" ? "Trello" : mongooseEndpointLabel(name); }
+export function signInTarget(id: string): SignInName | undefined { return mongooseEndpoint(id); }
+export function signInLabel(name: SignInName): string { return mongooseEndpointLabel(name); }
 
 export interface NextStep { text: string; guideUrl?: string; command?: string; signIn?: boolean }
 const setupGuideUrl = "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup";

@@ -2,6 +2,7 @@ import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type SourceDispatchEvidence, 
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
 import type { McpRegistry } from '../adapters/mcp/registry.js';
+import { ambiguityQuestion, currentBinding } from '../people/index.js';
 
 /**
  * The only Mattermost tools this connector may ever read, in fixed order. Posting, reacting
@@ -167,6 +168,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** One channel as the list_channels result describes it; the id is absent in some fixtures. */
 export interface MattermostChannel { id?: string; name?: string; displayName?: string; type?: string; /** C-CHAT: the server's last post time, on a filtered page. */ lastPostAt?: string; /** C-CHAT: D and G member usernames, on a filtered page. */ members?: string[] }
+
+/** A channel's member usernames, from the filtered page's field or the display name it joins. */
+export function groupMembers(channel: MattermostChannel): string[] {
+  return channel.members ?? (channel.displayName ?? '').split(/\s*,\s*/u).filter(Boolean);
+}
+
+/**
+ * W15: a group conversation holds the resolved people when its members include every one of them. A
+ * superset is enough: the real conversation carries the owner and often one more colleague.
+ */
+export function groupHoldsAll(channel: MattermostChannel, wanted: readonly string[]): boolean {
+  const members = groupMembers(channel);
+  return wanted.every(person => members.includes(person));
+}
 
 /**
  * The reader's channel index: the list_channel result is stable for minutes, so one internal read
@@ -806,6 +821,15 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
    * whose name is that username, and the reply says person lookups need the newer archive.
    */
   async function findPerson(name: string, capture: (evidence: MattermostEvidence) => void, signal?: AbortSignal): Promise<PersonOutcome> {
+    // W15: the owner's roster decides who a spoken name is before any child search runs, so an alias
+    // such as "Sandy" binds to the colleague itself and the child's prefix match never guesses.
+    const known = currentBinding(name);
+    if (known.kind === 'resolved') {
+      return known.person.mattermost.length > 0
+        ? { kind: 'person', username: known.person.mattermost, display: known.person.name }
+        : { kind: 'not-found', text: `${known.person.name} has no team chat handle in the owner's people list.` };
+    }
+    if (known.kind === 'ambiguous') return { kind: 'clarify', text: `Which ${name} do you mean: ${ambiguityQuestion(name, known.people)}` };
     if (granted('mattermost_resolve_person')) {
       const resolved = await read('mattermost_resolve_person', { name }, signal);
       if (!resolved.ok) return { kind: 'failed', result: resolved.result };
@@ -870,8 +894,12 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     if (input.intent === 'person' || input.intent === 'overview') {
       const name = input.person === undefined ? undefined : boundedText(input.person);
       if (name === undefined) return { state: 'refused', reason: 'invalid-person' };
+      // W15: the roster answers first; its usernames go to the child instead of the spoken text.
+      const known = currentBinding(name);
+      if (known.kind === 'ambiguous') return finish({ ...base, read: `a person called ${name}`, clarify: `Which ${name} do you mean: ${ambiguityQuestion(name, known.people)}` });
+      const knownUsername = known.kind === 'resolved' && known.person.mattermost.length > 0 ? known.person.mattermost : undefined;
       if (input.intent === 'overview' && granted('mattermost_conversation_overview')) {
-        const asked = await read('mattermost_conversation_overview', { person: name, ...dates, per_section_limit: MATTERMOST_CHAT.overviewPosts }, signal);
+        const asked = await read('mattermost_conversation_overview', { person: knownUsername ?? name, ...dates, per_section_limit: MATTERMOST_CHAT.overviewPosts }, signal);
         if (!asked.ok) {
           // The child refuses an ambiguous or unknown person with a JSON body naming the candidates.
           const body = 'decodedResult' in asked.result ? contentJson(asked.result.decodedResult) : undefined;
@@ -975,10 +1003,12 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       rows = channels.filter(channel => channel.type === 'G');
       notes.push('group lookups by member need the newer chat archive');
     }
-    const membersOf = (channel: MattermostChannel): string[] => channel.members ?? (channel.displayName ?? '').split(/\s*,\s*/u).filter(Boolean);
-    const withAll = rows.filter(channel => people.every(person => membersOf(channel).includes(person)));
+    const membersOf = (channel: MattermostChannel): string[] => groupMembers(channel);
+    // W15: a superset of the resolved people is the conversation, most recent first when several fit.
+    const withAll = rows.filter(channel => groupHoldsAll(channel, people));
+    const newest = (channel: MattermostChannel): string => channel.lastPostAt ?? '';
     const exact = withAll.filter(channel => membersOf(channel).filter(member => member !== who.owner.username).length === people.length);
-    const target = exact.length === 1 ? exact[0]! : withAll.length === 1 ? withAll[0]! : undefined;
+    const target = exact.length === 1 ? exact[0]! : [...withAll].sort((a, b) => newest(b).localeCompare(newest(a)))[0];
     const groupLabel = (channel: MattermostChannel): string => spokenList(membersOf(channel).filter(member => member !== who.owner.username), 'and');
     if (target === undefined || target.id === undefined) {
       if (withAll.length === 0) return finish({ ...base, read: `a group chat with ${spokenList(spokenPeople as string[], 'and')}`, notFound: `I found no group chat with ${spokenList(spokenPeople as string[], 'and')}.`, ...missingOf(...notes) });

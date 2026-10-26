@@ -3,6 +3,7 @@ import { lstatSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { OwnerProfileSnapshot } from './types.js';
 import { NAYA_BACKEND_PROCEDURE } from './backend-procedure.js';
+import { PEOPLE_CHAR_LIMIT, peopleSectionWithin } from '../people/index.js';
 
 export { NAYA_BACKEND_PROCEDURE } from './backend-procedure.js';
 
@@ -83,7 +84,7 @@ The vault and memory are different places. The vault is lux, the owner's knowled
 
 To open a document, deck or sheet, use a drive lookup; use the exact item already returned when it fits. If it lists several files and no handle, ask which one, then look up his pick by its id. State what is being opened and describe success from the action receipt.
 
-${NAYA_OPEN_SURFACE} Do not claim broader computer control. Nothing is sent to another person by Naya.`;
+${NAYA_OPEN_SURFACE} When the owner names a person, the people list and the people resolver decide who it is; ask which person only when the resolver reports the name as ambiguous. Do not claim broader computer control. Nothing is sent to another person by Naya.`;
 
 /** The full tool conduct: the voice-side policy, then the delegated backend's lookup procedure. */
 export const NAYA_TOOLS = `${NAYA_VOICE_TOOLS}\n\n${NAYA_BACKEND_PROCEDURE}`;
@@ -113,7 +114,9 @@ export const OWNER_LORE_CHAR_LIMIT = 14_000;
 export const LIVE_RECOVERY_PICKUP = 'The connection dropped for a moment and is back. Continue the conversation exactly where it was. Do not greet and do not re-introduce yourself. If you were in the middle of an answer, say in a few words that you are back and finish the thought; otherwise answer the owner\'s last words.';
 const separator = '\n\n';
 /** The closed set of Live instruction section ids; the host-log allowlist validates against it. */
-export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'calendar', 'tools', 'owner-style', 'owner-lore', 'standing-memory', 'overlay', 'pickup', 'previous-openers', 'opening-options', 'memory', 'earlier-conversations', 'voice', 'voice-description'] as const);
+export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'calendar', 'tools', 'people', 'owner-style', 'owner-lore', 'standing-memory', 'overlay', 'pickup', 'previous-openers', 'opening-options', 'memory', 'earlier-conversations', 'voice', 'voice-description'] as const);
+/** The people section's ceiling lives with its renderer; the composer never exceeds it. */
+export { PEOPLE_CHAR_LIMIT };
 /** Every composed section id is a listed id, so a new section cannot skip the allowlist. */
 export type LiveInstructionSectionId = typeof LIVE_INSTRUCTION_SECTION_IDS[number];
 // Generic lead voice block: the accent text comes only from the overlay or the input accent.
@@ -393,6 +396,8 @@ export function composeLiveInstruction(input: ComposeLiveInstructionInput): Comp
   const runtimeText = input.runtimeContext?.length ? input.runtimeContext : undefined;
   const voiceDescriptionText = input.voiceDescription !== undefined && input.voiceDescription.length
     ? `${VOICE_DESCRIPTION_PREFIX}${input.voiceDescription}` : undefined;
+  // W15: the owner's own roster, rendered against the remaining budget after the yields below.
+  let people: string | undefined;
 
   type Entry = { id: ComposedSection['id']; text: string };
   // Issue 1014 order: voice head, owner style, persona overlay, base and truth rules, tools conduct,
@@ -406,6 +411,7 @@ export function composeLiveInstruction(input: ComposeLiveInstructionInput): Comp
     entries.push({ id: 'base', text: input.base });
     if (tools !== undefined) entries.push({ id: 'tools', text: tools });
     if (runtime !== undefined) entries.push({ id: 'runtime', text: runtime });
+    if (people !== undefined) entries.push({ id: 'people', text: people });
     entries.push(...ownerLore);
     if (memory !== undefined) entries.push({ id: 'memory', text: memory });
     entries.push({ id: 'voice', text: voice });
@@ -426,6 +432,9 @@ export function composeLiveInstruction(input: ComposeLiveInstructionInput): Comp
   if (over() && memory !== undefined) { dropped.push({ id: 'memory', text: '' }); memory = undefined; }
   if (over() && tools !== undefined) { dropped.push({ id: 'tools', text: '' }); tools = undefined; }
   if (over() && runtime !== undefined) { dropped.push({ id: 'runtime', text: '' }); runtime = undefined; }
+  // W15 (W15-R2): the roster takes what the other sections leave and never fails a call at start.
+  const room = LIVE_INSTRUCTION_HARD_LIMIT - size(select(tools, memory, runtime)) - separator.length;
+  if (room > 0) people = peopleSectionWithin(room);
   const entries = select(tools, memory, runtime);
   if (size(entries) > LIVE_INSTRUCTION_HARD_LIMIT) throw new PersonaOverlayError('instruction_too_large');
   const text = assemble(entries.map(entry => entry.text));
@@ -838,7 +847,7 @@ export function composeLiveSessionInstruction(input: {
   // A standing note is resolved and ranked by its source; it never rides the uuid-ordered # Memory list.
   const standingRecords: readonly StandingMemoryRecord[] = input.records.flatMap(record => record.standing === undefined ? [] : [record.standing]);
   const plainRecords = input.records.filter(record => record.standing === undefined).map(record => ({ id: record.id, text: record.text }));
-  const entries = (records: readonly string[], earlierSection: string | undefined, standing: readonly string[] = []): Entry[] => {
+  const entries = (records: readonly string[], earlierSection: string | undefined, standing: readonly string[] = [], peopleText?: string): Entry[] => {
     const standingEntry: Entry[] = standing.length ? [{ id: 'standing-memory', text: `${STANDING_MEMORY_PREFACE}${separator}${standing.join(separator)}` }] : [];
     const memory: Entry[] = records.length ? [{ id: 'memory', text: `${preface}${separator}${records.join(separator)}` }] : [];
     const earlierEntry: Entry[] = earlierSection !== undefined ? [{ id: 'earlier-conversations', text: earlierSection }] : [];
@@ -850,6 +859,7 @@ export function composeLiveSessionInstruction(input: {
       ...emitStyle.map(text => ({ id: 'owner-style' as const, text })),
       ...(emitOverlay !== undefined ? [{ id: 'overlay' as const, text: emitOverlay }] : []),
       ...(tools !== undefined ? [{ id: 'tools' as const, text: tools }] : []),
+      ...(peopleText !== undefined ? [{ id: 'people' as const, text: peopleText }] : []),
       ...emitLore.map(text => ({ id: 'owner-lore' as const, text })), ...standingEntry, ...memory, ...earlierEntry, ...pickup, ...openers, ...openingOptions,
     ];
     const placed: Entry[] = [
@@ -860,6 +870,7 @@ export function composeLiveSessionInstruction(input: {
       ...(tools !== undefined ? [{ id: 'tools' as const, text: tools }] : []),
       ...(runtime !== undefined ? [{ id: 'runtime' as const, text: runtime }] : []),
       ...(calendar !== undefined ? [{ id: 'calendar' as const, text: calendar }] : []),
+      ...(peopleText !== undefined ? [{ id: 'people' as const, text: peopleText }] : []),
       ...emitLore.map(text => ({ id: 'owner-lore' as const, text })), ...standingEntry, ...memory, ...earlierEntry, ...pickup, ...openers, ...openingOptions,
       ...bodyEntries(body),
     ];
@@ -877,7 +888,7 @@ export function composeLiveSessionInstruction(input: {
       { id: last.id, text: `${last.text}${separator}${accent.tail}` },
     ]);
   };
-  const wrap = (records: readonly string[], earlierSection: string | undefined = undefined, standing: readonly string[] = []): string => assemble(entries(records, earlierSection, standing).filter(entry => entry.text.length).map(entry => entry.text));
+  const wrap = (records: readonly string[], earlierSection: string | undefined = undefined, standing: readonly string[] = [], peopleText?: string): string => assemble(entries(records, earlierSection, standing, peopleText).filter(entry => entry.text.length).map(entry => entry.text));
   if (wrap([], undefined).length > input.trustedChars) throw new PersonaOverlayError('instruction_too_large');
   const records: string[] = [], selectedIds: string[] = [], omitted: { id: string; reason: 'budget' }[] = [];
   for (const record of [...plainRecords].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
@@ -896,7 +907,13 @@ export function composeLiveSessionInstruction(input: {
     else { standing.push(rendered); selectedIds.push(item.id); }
   }
   const earlierIncluded = earlier !== undefined && wrap(records, earlier, standing).length <= input.trustedChars;
-  const chosen = entries(records, earlierIncluded ? earlier : undefined, standing).filter(entry => entry.text.length);
+  const earlierSection = earlierIncluded ? earlier : undefined;
+  // W15 (W15-R2): the roster takes what every other section leaves, so a full lore plus a long roster
+  // still composes under the hard limit; it is trimmed and the trim is logged, never thrown.
+  const room = input.trustedChars - assemble(entries(records, earlierSection, standing).filter(entry => entry.text.length).map(entry => entry.text)).length - separator.length;
+  const peopleText = room > 0 ? peopleSectionWithin(room) : undefined;
+  let chosen = entries(records, earlierSection, standing, peopleText).filter(entry => entry.text.length);
+  if (assemble(chosen.map(entry => entry.text)).length > input.trustedChars) chosen = entries(records, earlierSection, standing).filter(entry => entry.text.length);
   return { text: assemble(chosen.map(entry => entry.text)), selectedIds, omitted, sections: Object.freeze(chosen.map(entry => Object.freeze({ id: entry.id, chars: entry.text.length }))), earlierConversationsIncluded: earlierIncluded,
     standing: { selected: standing.length, omitted: standingOmitted, chars: standing.length ? [STANDING_MEMORY_PREFACE, ...standing].join(separator).length : 0 } };
 }

@@ -166,6 +166,24 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'chat_timing', runId: value.runId, outcome: value.outcome, rounds: [...value.rounds],
       tools, fenceMs: value.fenceMs, acquireMs: value.acquireMs, answerMs: value.answerMs };
   }
+  if (value.event === 'people_loaded') {
+    // W15: the roster receipt is counts and bytes only, never a name from the file.
+    if (!closedKeys(value, ['bytes', 'chars', 'count', 'event'])) return;
+    if (![value.count, value.bytes, value.chars].every(entry => Number.isSafeInteger(entry) && (entry as number) >= 0)) return;
+    return { event: 'people_loaded', count: value.count, bytes: value.bytes, chars: value.chars };
+  }
+  if (value.event === 'people_invalid') {
+    // W15: a malformed roster fails loud with its closed reason code, and the roster stays absent.
+    if (!closedKeys(value, ['event', 'reason'])) return;
+    if (typeof value.reason !== 'string' || !/^[a-z0-9_]{1,40}$/.test(value.reason)) return;
+    return { event: 'people_invalid', reason: value.reason };
+  }
+  if (value.event === 'people_trimmed') {
+    // W15: how many roster lines the section ceiling dropped, and how many of them were tier 2.
+    if (!closedKeys(value, ['dropped', 'event', 'tier2'])) return;
+    if (![value.dropped, value.tier2].every(entry => Number.isSafeInteger(entry) && (entry as number) >= 0)) return;
+    return { event: 'people_trimmed', dropped: value.dropped, tier2: value.tier2 };
+  }
   if (value.event === 'launch_kind') {
     // #613: which launch opened the app and the two flags it decides. Closed set, metadata only.
     const allowed = ['autoConnects', 'event', 'kind', 'windowShown'];

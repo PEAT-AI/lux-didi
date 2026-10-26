@@ -10,6 +10,18 @@
  *    mistaken for the whole thing.
  */
 
+/**
+ * W15: an attendee is named from the roster when the address or the display name binds to a person,
+ * so the owner hears "Ravi Example" rather than a mail address; an unknown attendee keeps its own name.
+ */
+export function attendeeName(attendee: Record<string, unknown>): string {
+  const email = typeof attendee['email'] === 'string' ? attendee['email'] : '';
+  const display = typeof attendee['displayName'] === 'string' ? attendee['displayName'] : '';
+  const snapshot = peopleSnapshot();
+  const person = snapshot === null || email.length === 0 ? undefined : personByEmail(snapshot, email);
+  return person?.name ?? (display || email);
+}
+
 /** Per-tool budgets for the text a tool result puts in front of the Live model. Each bound is
  * named so a reviewer can see the size policy: 3 knowledge hits with 400-character bodies, 8
  * Mattermost posts with 250-character bodies, 10 mail messages with 300-character excerpts (1500
@@ -18,6 +30,7 @@
  * hard ceiling on any single model-visible result, and LIVE_COMBINED_CHARS the larger ceiling for
  * a result that combines several sources. */
 import { bodySourceLinks, gmailThreadUrl, mintOpenLine, openDestination, withOpenHandles } from './open-handles.js';
+import { peopleSnapshot, personByEmail } from '../people/index.js';
 export const GMAIL_BODY_CHARS = 1500;
 export const GMAIL_LIST_MESSAGES = 10;
 export const GMAIL_LIST_EXCERPT_CHARS = 300;
@@ -464,7 +477,7 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const openLine = link ? mintOpenLine({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' }) : undefined;
     if (openLine) lines.push(openLine);
     const attendees = Array.isArray(entry['attendees']) ? entry['attendees'] : [];
-    const names = attendees.filter(isRecord).map(a => field(a, 'displayName', 'email')).filter(Boolean);
+    const names = attendees.filter(isRecord).map(a => attendeeName(a)).filter(Boolean);
     // L8-01: the people lines are whole, never the part a cut removes, and carry no character count.
     if (names.length) lines.push(attendeeNamesLine(names, entry['attendeesOmitted'] === true));
     const organizer = isRecord(entry['organizer']) ? field(entry['organizer'], 'displayName', 'email') : '';

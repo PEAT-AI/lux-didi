@@ -18,7 +18,8 @@ export function mongooseEndpoint(id: string): MongooseEndpointName | undefined {
 export function mongooseEndpointLabel(name: MongooseEndpointName): string { return mongooseLabels[name]; }
 /** Every row an owner signs in to from Settings: the three Mongoose endpoints and the Trello board. */
 export type SignInName = MongooseEndpointName | "trello";
-export function signInTarget(id: string): SignInName | undefined { return id === "trello" ? "trello" : mongooseEndpoint(id); }
+// D2: the Trello board is connected by an imported API key, so it has no sign-in to offer.
+export function signInTarget(id: string): SignInName | undefined { return id === "trello" ? undefined : mongooseEndpoint(id); }
 export function signInLabel(name: SignInName): string { return name === "trello" ? "Trello" : mongooseEndpointLabel(name); }
 
 export interface NextStep { text: string; guideUrl?: string; command?: string; signIn?: boolean }
@@ -40,6 +41,8 @@ const mongooseReasonSteps: Partial<Record<ReasonCode, (label: string) => NextSte
   not_configured: label => ({ text: `${label} has no board name yet. Write {"board": "<the name you see in Trello>"} to trello-board.json in the protected configuration directory, then reopen Settings.`, guideUrl: mcpGuideUrl }),
   identity_mismatch: label => ({ text: `${label} is signed in as a different account than your configuration names. Use the Sign in button and sign in with the account your configuration names; a refused account is not retried, so the endpoint connects with the new sign-in from Lux Didi's next start.`, guideUrl: setupGuideUrl, signIn: true }),
 };
+/** D2: the Trello board is connected by the owner's own API key, so its row names the import command. */
+const trelloKeyStep = (label: string): NextStep => ({ text: `${label} uses the API key and token you already have. Run scripts/import-trello-key.sh <env-file> <config-dir> once, then write {"board": "<the name you see in Trello>", "ownerIdentity": "<your Trello email>"} to trello-board.json in the protected configuration directory and reopen Settings.`, guideUrl: mcpGuideUrl });
 const failureStep: NextStep = { text: "Check the connector service, then use Copy diagnostics from the Lux Didi menu." };
 /** Mongoose signs in through the browser; the pasted-token path covers the other connectors only. */
 const mongooseCredentialStep = (label: string): NextStep => ({ text: `${label} has no stored session. Use the Sign in button on its row in Settings once this endpoint is in your connector configuration.`, guideUrl: setupGuideUrl });
@@ -69,8 +72,7 @@ const reasonSteps: Record<ReasonCode, NextStep> = {
 export function nextStep(id: string, state: string, reason?: string, retrying = false): NextStep {
   if (state === 'connected') return { text: 'no action needed' };
   if (state === 'configured') return { text: 'a Live session connects on demand' };
-  // The Trello board row signs in from Settings like a Mongoose row.
-  if (id === 'trello' && (reason === 'needs_sign_in' || reason === 'not_signed_in')) return signInStep('Trello');
+  if (id === 'trello' && reason !== undefined && ['not_configured', 'not_signed_in', 'needs_sign_in', 'credential_revoked'].includes(reason)) return trelloKeyStep('Trello');
   const endpoint = mongooseEndpoint(id);
   if (endpoint) {
     const label = mongooseEndpointLabel(endpoint);

@@ -148,7 +148,7 @@ const WRITE_CUE = /\b(?:add|create|put|make|move|moved|mark|done|finish(?:ed)?|c
 export function ownerAskedForChange(words: string): boolean { return WRITE_CUE.test(words); }
 
 /** The server's own words for one call outcome, closed: never a body, never a token. */
-export type TrelloCallCode = 'not_signed_in' | 'auth_failed' | 'rate_limited' | 'unavailable' | 'unknown' | 'tool_error' | 'protocol_error' | 'not_allowed';
+export type TrelloCallCode = 'not_signed_in' | 'auth_failed' | 'credential_revoked' | 'credential_mismatch' | 'rate_limited' | 'unavailable' | 'unknown' | 'tool_error' | 'protocol_error' | 'not_allowed';
 export type TrelloCallResult = { ok: true; value: unknown } | { ok: false; code: TrelloCallCode };
 export interface TrelloServerTool { name: string; inputSchema: unknown }
 /** The one door to the server: the advertised tools, and one call. It never retries. */
@@ -211,7 +211,8 @@ export interface TrelloCard { id: string; name: string; desc: string; due: strin
 interface TrelloList { id: string; name: string }
 interface TrelloLabel { id: string; name: string; color: string }
 
-const ARI = (entity: string) => new RegExp(`^ari:cloud:trello::${entity}/workspace/[A-Za-z0-9]{1,64}/[A-Za-z0-9]{1,64}$`);
+// Trello's REST API names an object by a 24 hex digit id; the Atlassian ARIs carry the same id at the end.
+const ARI = (entity: string) => new RegExp(`^(?:ari:cloud:trello::${entity}/workspace/[A-Za-z0-9]{1,64}/)?[0-9a-f]{24}$`);
 const CARD_ARI = ARI('card'); const LIST_ARI = ARI('list'); const BOARD_ARI = ARI('board'); const LABEL_ARI = ARI('label');
 const CHECKLIST_ARI = ARI('checklist'); const ITEM_ARI = ARI('check-item');
 const text = (value: unknown): string => typeof value === 'string' ? value : '';
@@ -274,7 +275,9 @@ export function trelloCardOf(value: unknown): TrelloCard | undefined {
 /** Closed codes the model hears, each with the one clause Naya says. */
 export const TRELLO_GUIDANCE: Readonly<Record<string, string>> = {
   not_configured: 'His board name is not set yet, so nothing on Trello was touched. Say that the board name goes in trello-board.json in the protected configuration directory first.',
-  not_signed_in: 'Trello is not signed in. Tell him to use Sign in to Trello in Settings once.',
+  not_signed_in: 'Trello has no key file yet, so nothing was touched. Tell him the key goes in trello-key.json with scripts/import-trello-key.sh.',
+  credential_revoked: 'Trello refused the stored key. Tell him to import his Trello key and token again with scripts/import-trello-key.sh.',
+  credential_mismatch: 'The Trello key belongs to another member, not to him, so nothing was read or changed. Say so plainly and stop.',
   auth_failed: 'Trello refused the stored sign-in. Tell him to sign in to Trello again in Settings.',
   rate_limited: 'Trello asked to slow down. Say so and offer to try again in a moment.',
   unavailable: 'Trello did not answer. Say Trello is not reachable right now; nothing changed.',
@@ -583,7 +586,7 @@ export class TrelloBoard {
   /** One read on the pinned board. A failure is a closed code, never an empty success. */
   async read(runId: string, args: Args, signal?: AbortSignal): Promise<JsonObject> {
     const tool = `read.${String(args.view)}`;
-    if (!this.available()) return this.#refusal(new Refusal('not_signed_in'), tool, 'admit');
+    if (!this.available()) return this.#refusal(new Refusal('not_configured'), tool, 'admit');
     if (this.#boardName === undefined) return this.#refusal(new Refusal('not_configured'), tool, 'admit');
     const session = this.#session(runId);
     try {
@@ -682,7 +685,7 @@ export class TrelloBoard {
   async write(runId: string, args: Args, ownerWords: string, signal?: AbortSignal): Promise<JsonObject> {
     const action = String(args.action) as TrelloWriteAction;
     const tool = `write.${action}`;
-    if (!this.available()) return this.#refusal(new Refusal('not_signed_in'), tool, 'admit');
+    if (!this.available()) return this.#refusal(new Refusal('not_configured'), tool, 'admit');
     if (this.#boardName === undefined) return this.#refusal(new Refusal('not_configured'), tool, 'admit');
     if (!ownerAskedForChange(ownerWords)) return this.#refusal(new Refusal('not_owner_requested'), tool, 'admit');
     const session = this.#session(runId);
@@ -713,8 +716,8 @@ export class TrelloBoard {
       const result = await this.#transport.call(call.tool, call.args, signal);
       if (!result.ok) {
         // A refused first step changed nothing; anything after a sent step is not known.
-        const definite = step === 0 && (result.code === 'tool_error' || result.code === 'auth_failed' || result.code === 'not_signed_in' || result.code === 'rate_limited' || result.code === 'unavailable' || result.code === 'not_allowed');
-        const code = definite ? (result.code === 'auth_failed' || result.code === 'not_signed_in' || result.code === 'rate_limited' || result.code === 'unavailable' ? result.code : 'write_failed') : 'outcome_unknown';
+        const definite = step === 0 && (result.code === 'tool_error' || result.code === 'auth_failed' || result.code === 'credential_revoked' || result.code === 'credential_mismatch' || result.code === 'not_signed_in' || result.code === 'rate_limited' || result.code === 'unavailable' || result.code === 'not_allowed');
+        const code = definite ? (result.code === 'auth_failed' || result.code === 'credential_revoked' || result.code === 'credential_mismatch' || result.code === 'not_signed_in' || result.code === 'rate_limited' || result.code === 'unavailable' ? result.code : 'write_failed') : 'outcome_unknown';
         this.#emit(tool, 'settle', definite ? 'failed' : 'unknown', code);
         session.snapshot = undefined;
         const receipt: JsonObject = { ok: false, code, guidance: TRELLO_GUIDANCE[code]! };

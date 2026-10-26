@@ -368,25 +368,19 @@ test('the Mongoose sign-in route starts only on an explicit owner click and carr
   } finally { await f.cleanup(); }
 });
 
-test('W7: the Trello row rides on the connection poll and its click starts the board sign-in only on a fresh owner click', async () => {
-  let clicks = 0;
+test('W7: the Trello row rides on the connection poll, with no sign-in affordance at all', async () => {
   const f = await fixture(undefined, () => ({ endpoints: [] }), undefined, undefined, {
-    trelloSignIn: async () => { clicks += 1; return { status: 'started' as const, attemptId: 'fedcba9876543210' }; },
-    trelloRow: () => ({ id: 'trello', connector: 'trello', state: 'error', tools: 0, error: 'not_signed_in', signIn: { attemptId: 'fedcba9876543210', phase: 'waiting' } }),
+    trelloRow: () => ({ id: 'trello', connector: 'trello', state: 'connected', tools: 2 }),
   });
   try {
     const browser = await pair(f);
-    const headers = { Cookie: browser.cookie.split(';')[0]!, Origin: f.service.origin, 'X-Didi-CSRF': browser.csrf, 'Content-Type': 'application/json' };
-    const rows = await fetch(`${f.service.origin}/api/v1/live/connections`, { headers: { Cookie: headers.Cookie, 'Sec-Fetch-Site': 'same-origin' } });
-    assert.deepEqual((await rows.json()).data, [{ id: 'trello', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'needs_sign_in', retrying: false, signIn: { attemptId: 'fedcba9876543210', phase: 'waiting' } }]);
-    assert.equal(clicks, 0, 'reading the rows never starts a sign-in');
-    const refused = await fetch(`${f.service.origin}/api/v1/connectors/trello/sign-in`, { method: 'POST', headers: { ...headers, 'X-Didi-CSRF': 'stale', 'Idempotency-Key': 'trello-sign-in-1' }, body: '{}' });
-    assert.equal(refused.status, 403);
-    const response = await fetch(`${f.service.origin}/api/v1/connectors/trello/sign-in`, { method: 'POST', headers: { ...headers, 'Idempotency-Key': 'trello-sign-in-1' }, body: '{}' });
-    assert.deepEqual((await response.json()).data, { status: 'started', attemptId: 'fedcba9876543210' });
-    assert.equal(clicks, 1);
+    const rows = await fetch(`${f.service.origin}/api/v1/live/connections`, { headers: { Cookie: browser.cookie.split(';')[0]!, 'Sec-Fetch-Site': 'same-origin' } });
+    const data = (await rows.json()).data as Record<string, unknown>[];
+    assert.deepEqual(data, [{ id: 'trello', state: 'connected', tools: 2, lastHandshakeAt: null, retrying: false }]);
+    const gone = await fetch(`${f.service.origin}/api/v1/connectors/trello/sign-in`, { method: 'POST', headers: { Cookie: browser.cookie.split(';')[0]!, Origin: f.service.origin, 'X-Didi-CSRF': browser.csrf, 'Content-Type': 'application/json', 'Idempotency-Key': 'trello-sign-in-1' }, body: '{}' });
+    assert.equal(gone.status, 404, 'the Trello sign-in route is gone with the OAuth path');
   } finally { await f.cleanup(); }
-});
+})
 
 test('a sign-in that cannot start answers with a named reason, never unknown', async () => {
   const f = await fixture(undefined, undefined, async () => ({ status: 'failed' as const, reason: 'port-in-use' }));

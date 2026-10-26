@@ -1,94 +1,131 @@
-import { OAuthCredentialError, oauthAccessToken, oauthBinding, readOAuthRecord, runOAuthLogin, type OAuthBinding, type OAuthProvider, type OAuthRecord, type OAuthSignInHop } from './oauth-client.js';
-import { createTrelloTransport, TRELLO_MCP_URL, type TrelloTokenSource } from '../adapters/trello/client.js';
+import { createTrelloRestTransport, identityMatches, trelloRequests, TRELLO_API_URL } from '../adapters/trello/client.js';
 import { TrelloBoard, type TrelloLog } from '../tools/trello.js';
 import { parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 
 /**
- * The Trello board connection: the official remote MCP server, signed in once by the owner through the
- * shared OAuth client, with its record beside the Mongoose records in the private configuration directory.
- * The resource and issuer are the server's published identities (RFC 9728 and RFC 8414 documents of
- * 2026-10-25); a discovery that names anything else is refused.
+ * The Trello board connection with the owner's own API key: one private key file, read with the same
+ * reader as the board name, and the REST client behind it. There is no sign-in, no OAuth record and no
+ * browser hand-off: the key is the connection.
  */
-export const TRELLO_REFERENCE = 'trello';
-export const TRELLO_ISSUER = 'https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3';
-/**
- * Read and write on boards, read of the member, the workspace and offline refresh, and the member's Inbox:
- * F10, the owner's quick-capture notes are read there (read:member.inbox) and one of them is moved onto a
- * list of his board (write:member.inbox). Never Planner, never a workspace write. Whether the move also
- * needs the board write scope is settled by the first real sign-in; the board write is asked for anyway
- * because every other write the ruling grants goes through it.
- */
-export const TRELLO_SCOPE = 'offline_access read:me read:account read:member:trello read:member.inbox:trello write:member.inbox:trello read:board:trello write:board:trello read:organization:trello';
-export const TRELLO_LOGIN_PORT = 8769;
-export const TRELLO_PROVIDER: OAuthProvider = { scope: TRELLO_SCOPE, clientName: 'lux-didi', label: 'Trello', defaultPort: TRELLO_LOGIN_PORT };
-/** The record names one resource; the row in Settings and the log lines name it `trello`. */
-export const TRELLO_ENDPOINT = 'board';
+export const TRELLO_KEY_FILE = 'trello-key.json';
+/** W7-R2: the board name and the owner's identity live in the owner's private configuration. */
+export const TRELLO_BOARD_FILE = 'trello-board.json';
+const TRELLO_FILE_LIMIT = 1024;
 
-/** The binding for the official server, or for a fixture's own resource and issuer in a test. */
-export function trelloBinding(resource = TRELLO_MCP_URL, issuer = TRELLO_ISSUER): OAuthBinding | undefined {
-  return oauthBinding(TRELLO_ENDPOINT, resource, issuer);
+export interface TrelloCredentials { key: string; token: string }
+export interface TrelloConfig { board?: string; ownerIdentity?: string; ownerTrelloUsername?: string }
+
+const record = (configDir: string, file: string): Record<string, unknown> | undefined => {
+  try {
+    const parsed = parseJson(readPrivate(join(configDir, file), TRELLO_FILE_LIMIT));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
+  } catch { return undefined; }
+};
+const written = (value: unknown): string | undefined => typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+
+/** The owner's key and token, or nothing: the file is 0600, its own uid and never a symlink. */
+export function trelloKey(configDir: string): TrelloCredentials | undefined {
+  const file = record(configDir, TRELLO_KEY_FILE);
+  const key = written(file?.key);
+  const token = written(file?.token);
+  return key && token ? { key, token } : undefined;
 }
 
-const accept = (binding: OAuthBinding) => (endpoint: string, resource: string): OAuthBinding | undefined =>
-  endpoint === binding.endpoint && resource === binding.resource ? binding : undefined;
-
-/** A usable record exists, read without any network. */
-export function trelloSignedIn(configDir: string, binding: OAuthBinding | undefined): boolean {
-  return binding !== undefined && readOAuthRecord(configDir, TRELLO_REFERENCE, accept(binding)) !== undefined;
-}
-
-/** The bearer for each request, refreshed lazily under the shared lock; the closed reason when there is none. */
-export function trelloTokenSource(configDir: string, binding: OAuthBinding | undefined, options: { fetch?: typeof fetch; now?: () => number } = {}): TrelloTokenSource {
-  return async () => {
-    if (!binding) return { ok: false, code: 'not_signed_in' };
-    try { return { ok: true, token: await oauthAccessToken(configDir, TRELLO_REFERENCE, binding, { accept: accept(binding) }, options) }; }
-    catch (error) {
-      const code = error instanceof OAuthCredentialError ? error.code : 'credential-refresh-unavailable';
-      if (code === 'credential-missing') return { ok: false, code: 'not_signed_in' };
-      if (code === 'credential-refresh-failed' || code === 'credential-consent-expired' || code === 'credential-unavailable') return { ok: false, code: 'auth_failed' };
-      return { ok: false, code: 'unavailable' };
-    }
+export function trelloConfig(configDir: string): TrelloConfig {
+  const file = record(configDir, TRELLO_BOARD_FILE);
+  return {
+    ...(written(file?.board) ? { board: written(file?.board)! } : {}),
+    ...(written(file?.ownerIdentity) ? { ownerIdentity: written(file?.ownerIdentity)! } : {}),
+    ...(written(file?.ownerTrelloUsername) ? { ownerTrelloUsername: written(file?.ownerTrelloUsername)! } : {}),
   };
 }
 
-export interface TrelloLoginOptions {
-  configDir: string;
-  binding: OAuthBinding | undefined;
-  redirectPort?: number;
-  timeoutMs?: number;
-  fetch?: typeof fetch;
-  openBrowser?: (url: string) => void | Promise<void>;
-  showAuthorizationUrl?: (url: string) => void;
-  onHop?: (hop: OAuthSignInHop) => void;
-  now?: () => number;
+export function trelloBoardName(configDir: string): string | undefined { return trelloConfig(configDir).board; }
+
+/** A key file, a board name and a named owner: without all three the connector is not configured. */
+export function trelloConfigured(configDir: string): boolean {
+  const config = trelloConfig(configDir);
+  return trelloKey(configDir) !== undefined && config.board !== undefined && (config.ownerIdentity !== undefined || config.ownerTrelloUsername !== undefined);
 }
 
-/** The owner's one Trello sign-in: the same discovery, registration, PKCE, callback and exchange as Mongoose. */
-export function runTrelloLogin(options: TrelloLoginOptions): Promise<OAuthRecord> {
-  return runOAuthLogin({ ...options, provider: TRELLO_PROVIDER, reference: TRELLO_REFERENCE, account: 'owner' });
+/** The owner's expected Trello identity, from the private configuration; empty means nothing is checked. */
+function expectedIdentity(config: TrelloConfig): { email?: string; username?: string } {
+  return { ...(config.ownerIdentity ? { email: config.ownerIdentity } : {}), ...(config.ownerTrelloUsername ? { username: config.ownerTrelloUsername } : {}) };
 }
+
+export interface TrelloIdentityOptions {
+  configDir: string;
+  url?: string;
+  fetch?: typeof fetch;
+  timeoutMs?: number;
+}
+
+export interface TrelloMember { username?: string; email?: string; fullName?: string }
+export type TrelloIdentityOutcome = { ok: true; member: TrelloMember } | { ok: false; code: 'not_configured' | 'unavailable' | 'credential_revoked' | 'credential_mismatch' };
 
 /**
- * W7-R2: the board name lives in the owner's private configuration, never in this public repository.
- * `trello-board.json` beside the sign-in record holds `{"board": "<the name he sees in Trello>"}`; with
- * none, the connector reports not_configured and nothing reaches the server.
+ * The owner rule for every connection: the member behind the key is the owner. A Trello member's email
+ * is compared with ownerIdentity; when Trello withholds it, the username must be the configured one.
+ * Only booleans and closed codes leave this function, never a member record.
  */
-export const TRELLO_BOARD_FILE = 'trello-board.json';
-const TRELLO_BOARD_LIMIT = 1024;
-
-export function trelloBoardName(configDir: string): string | undefined {
+export async function trelloIdentity(options: TrelloIdentityOptions): Promise<TrelloIdentityOutcome> {
+  const credentials = trelloKey(options.configDir);
+  const config = trelloConfig(options.configDir);
+  if (!credentials) return { ok: false, code: 'not_configured' };
+  const planned = trelloRequests('trelloReadMember', { action: 'get_me' });
+  if (!planned) return { ok: false, code: 'not_configured' };
+  const url = new URL(`${(options.url ?? TRELLO_API_URL).replace(/\/+$/, '')}/members/me`);
+  url.searchParams.set('fields', 'username,email,fullName');
+  url.searchParams.set('key', credentials.key);
+  url.searchParams.set('token', credentials.token);
+  let response: Response;
   try {
-    const parsed = parseJson(readPrivate(join(configDir, TRELLO_BOARD_FILE), TRELLO_BOARD_LIMIT));
-    const board = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as { board?: unknown }).board : undefined;
-    return typeof board === 'string' && board.trim() !== '' ? board.trim() : undefined;
-  } catch { return undefined; }
+    response = await (options.fetch ?? fetch)(url, { headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(options.timeoutMs ?? 12_000) });
+  } catch { return { ok: false, code: 'unavailable' }; }
+  if (response.status === 401 || response.status === 403) return { ok: false, code: 'credential_revoked' };
+  if (!response.ok) return { ok: false, code: 'unavailable' };
+  let parsed: unknown;
+  try { parsed = JSON.parse(await response.text()); } catch { return { ok: false, code: 'unavailable' }; }
+  const member = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as TrelloMember : {};
+  if (!identityMatches(member, expectedIdentity(config))) return { ok: false, code: 'credential_mismatch' };
+  const username = written(member.username);
+  const email = written(member.email);
+  return { ok: true, member: { ...(username ? { username } : {}), ...(email ? { email } : {}), ...(written(member.fullName) ? { fullName: written(member.fullName)! } : {}) } };
 }
 
-/** The board service over the official server, bound to the stored sign-in. */
-export function createTrelloBoard(options: { configDir: string; binding?: OAuthBinding | undefined; boardName?: string; timeZone?: string; fetch?: typeof fetch; now?: () => number; log?: TrelloLog }): TrelloBoard {
-  const binding = 'binding' in options ? options.binding : trelloBinding();
-  const transport = createTrelloTransport({ ...(binding ? { url: binding.resource } : {}), token: trelloTokenSource(options.configDir, binding, { ...(options.fetch ? { fetch: options.fetch } : {}), ...(options.now ? { now: options.now } : {}) }), ...(options.fetch ? { fetch: options.fetch } : {}) });
-  return new TrelloBoard({ transport, signedIn: () => trelloSignedIn(options.configDir, binding), boardName: options.boardName ?? trelloBoardName(options.configDir),
-    ...(options.timeZone ? { timeZone: options.timeZone } : {}), ...(options.now ? { now: options.now } : {}), ...(options.log ? { log: options.log } : {}) });
+export interface TrelloBoardOptions {
+  configDir: string;
+  /** The REST base; the product host, or a loopback origin in a test. */
+  url?: string;
+  boardName?: string;
+  timeZone?: string;
+  now?: () => number;
+  log?: TrelloLog;
+  fetch?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** The board service over the owner's key, bound to the private configuration directory. */
+export function createTrelloBoard(options: TrelloBoardOptions): TrelloBoard {
+  const transport = createTrelloRestTransport({
+    ...(options.url ? { url: options.url } : {}),
+    credentials: async () => {
+      const credentials = trelloKey(options.configDir);
+      return credentials ? { ok: true as const, ...credentials } : { ok: false as const, code: 'not_signed_in' as const };
+    },
+    ...(options.fetch ? { fetch: options.fetch } : {}),
+    ...(options.sleep ? { sleep: options.sleep } : {}),
+    // Every call first proves the key belongs to the owner: an email match, else the configured username.
+    ...(trelloConfig(options.configDir).ownerIdentity !== undefined || trelloConfig(options.configDir).ownerTrelloUsername !== undefined
+      ? { identity: expectedIdentity(trelloConfig(options.configDir)) } : {}),
+  });
+  return new TrelloBoard({
+    transport,
+    signedIn: () => trelloKey(options.configDir) !== undefined,
+    boardName: options.boardName ?? trelloBoardName(options.configDir),
+    ...(options.timeZone ? { timeZone: options.timeZone } : {}),
+    ...(options.now ? { now: options.now } : {}),
+    ...(options.log ? { log: options.log } : {}),
+  });
 }

@@ -1,4 +1,3 @@
-import { createHash, randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -29,37 +28,37 @@ export interface FakeChecklist { id: string; name: string; cardId: string; items
 export interface TrelloFakeOptions {
   /** Board name the owner pins; a second board holds a foreign list and card. */
   boardName?: string;
-  /** Card list pages are this long, so paging is exercised. */
+  /** Collection pages are this long, so paging is exercised. */
   pageSize?: number;
-  /** A server tool the advertised tools/list leaves out, so a plan against it is unsupported. */
-  withoutTool?: string;
+  /** The key and token the owner's key file carries; any other pair is refused with 401. */
+  key?: string;
+  token?: string;
+  /** The member `GET /1/members/me` answers with, so an identity mismatch can be exercised. */
+  member?: { id: string; username: string; email?: string; fullName?: string };
   now: number;
 }
 
 export interface TrelloFake {
-  resource: string; issuer: string; mcpUrl: string;
+  /** The loopback origin the REST client is pointed at, standing in for https://api.trello.com/1. */
+  url: string;
+  key: string; token: string;
+  member: { id: string; username: string; email?: string; fullName?: string };
   boards: { id: string; name: string; closed: boolean }[];
   lists: FakeList[]; cards: FakeCard[]; labels: FakeLabel[]; checklists: FakeChecklist[];
   /** The owner's quick-capture Inbox: cards he jotted from his phone, on no board of the workspace. */
   inbox: { listId: string; cards: FakeCard[] };
-  /** Every tools/call the server received, in order: tool and arguments. */
+  /** Every call the REST surface received, in order: the server tool and action it stands for. */
   calls: { tool: string; args: Record<string, unknown> }[];
-  /** Token requests: grant type and the resource each one named. */
-  tokens: { grant: string; resource: string | null }[];
-  registrations: Record<string, unknown>[];
-  /** Mint a code the way the consent page would, for the URL the browser was handed. */
-  consent(authorizeUrl: string): Promise<{ callback: string }>;
-  /** The next write tools/call is received and then the connection is cut with no answer. */
+  /** The next write is received and then the connection is cut with no answer. */
   dropNextCall(): void;
-  /** The next write tools/call answers with a tool error and changes nothing. */
+  /** The next write answers 400 and changes nothing. */
   failNextCall(): void;
-  /** The next tools/call is answered with a reply carrying another id. */
+  /** The next N calls answer 429 with this Retry-After, before any work is done. */
+  rateLimitNextCall(times: number, retryAfterSeconds?: number): void;
+  /** The next write answers with a reply carrying another id. */
   replyWithWrongId(): void;
-  /** The next tools/call is answered with a reply at least this many bytes. */
+  /** The next write is answered with a reply at least this many bytes. */
   bloatNextReply(bytes: number): void;
-  /** Overrides for discovery documents, to prove refusals. */
-  override: { prm?: Record<string, unknown>; as?: Record<string, unknown> };
-  accessToken: string;
   close(): Promise<void>;
 }
 
@@ -92,17 +91,6 @@ const TOOL_ACTIONS: Record<string, Record<string, { props: string[]; required: s
 };
 
 /** The advertised schemas: one object per tool with an action enum and one branch per action. */
-export function fakeToolSchemas(): { name: string; inputSchema: Record<string, unknown> }[] {
-  return Object.entries(TOOL_ACTIONS).map(([name, actions]) => {
-    const props = new Set(Object.values(actions).flatMap(action => action.props));
-    return { name, inputSchema: {
-      type: 'object', required: ['action'],
-      properties: { action: { type: 'string', enum: Object.keys(actions) }, ...Object.fromEntries([...props].map(prop => [prop, { type: prop === 'dueComplete' ? 'boolean' : prop === 'pos' ? 'number' : 'string' }])) },
-      oneOf: Object.entries(actions).map(([action, shape]) => ({ properties: { action: { const: action }, ...Object.fromEntries(shape.props.map(prop => [prop, {}])) }, required: ['action', ...shape.required] })),
-    } };
-  });
-}
-
 async function body(request: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(chunk as Buffer);
@@ -159,14 +147,8 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
   const checklists: FakeChecklist[] = [{ id: ari('checklist', objectId(now - 9 * day)), name: 'Prep', cardId: cards[2]!.id, items: [{ id: ari('check-item', objectId(now - 9 * day)), name: 'Call the venue', state: 'incomplete' }] }];
 
   const calls: TrelloFake['calls'] = [];
-  const tokens: TrelloFake['tokens'] = [];
-  const registrations: Record<string, unknown>[] = [];
-  const override: TrelloFake['override'] = {};
   let drop = false; let fail = false; let wrongId = false; let bloat: number | undefined;
-  const state = { accessToken: randomBytes(16).toString('hex'), refreshToken: randomBytes(16).toString('hex') };
-  const codes = new Map<string, { clientId: string; redirectUri: string; challenge: string; resource: string }>();
-  const clients = new Set<string>();
-  const sessions = new Set<string>();
+  let limited: { times: number; retryAfter: number } | undefined;
 
   const cardJson = (value: FakeCard) => ({ id: value.id, name: value.name, desc: value.desc, due: value.due, dueComplete: value.dueComplete, listId: value.listId, boardId: value.boardId, closed: value.closed,
     labels: value.labelIds.map(id => labels.find(label => label.id === id)!).map(label => ({ id: label.id, name: label.name, color: label.color })), dateLastActivity: new Date(now).toISOString() });
@@ -227,98 +209,78 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
     }
   }
 
-  let issuer = '';
-  let resource = '';
-  const mcp = createServer(async (request, response) => {
+  // The REST surface: api.trello.com/1, key and token as query parameters, exactly the calls the board makes.
+  const key = options.key ?? 'fakekey00000000000000000';
+  const token = options.token ?? 'faketoken0000000000000000';
+  const member = options.member ?? { id: 'member0fake', username: 'robplantix', email: 'rob@plantix.net', fullName: 'Rob' };
+  const only = (payload: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> =>
+    Object.fromEntries(keys.filter(name => payload[name] !== undefined).map(name => [name, payload[name]]));
+
+  /** One REST request as the server tool and action it stands for; nothing else is reachable. */
+  function route(method: string, parts: string[], query: URLSearchParams, payload: Record<string, unknown>): [string, Record<string, unknown>] | undefined {
+    const path = `/${parts.join('/')}`;
+    const id = (index: number) => decodeURIComponent(parts[index] ?? '');
+    const page = (args: Record<string, unknown>): Record<string, unknown> => query.get('cursor') === null ? args : { ...args, cursor: String(query.get('cursor')) };
+    if (method === 'GET' && path === '/boards') return ['trelloReadBoard', page({ action: 'list' })];
+    if (method === 'GET' && parts[0] === 'boards' && parts[2] === 'labels') return ['trelloReadBoard', page({ action: 'list_labels', boardId: id(1) })];
+    if (method === 'GET' && parts[0] === 'boards' && parts[2] === 'lists') return ['trelloReadList', page({ action: 'list_by_board', boardId: id(1) })];
+    if (method === 'GET' && parts[0] === 'lists' && parts[2] === 'cards') return ['trelloReadCard', page({ action: 'list_by_list', listId: id(1) })];
+    if (method === 'GET' && parts[0] === 'cards' && parts[2] === 'actions') return ['trelloReadCard', page({ action: 'list_comments', cardId: id(1) })];
+    if (method === 'GET' && parts[0] === 'cards' && parts[2] === 'checklists') return ['trelloReadChecklist', page({ action: 'list_by_card', cardId: id(1) })];
+    if (method === 'GET' && parts[0] === 'cards' && parts.length === 2) return ['trelloReadCard', { action: 'get', cardId: id(1) }];
+    if (method === 'POST' && path === '/cards') return ['trelloWriteCard', { action: 'create', ...only(payload, ['name', 'desc', 'due', 'pos']), listId: payload.idList }];
+    if (method === 'PUT' && parts[0] === 'cards' && parts.length === 2) {
+      if ('closed' in payload) return ['trelloWriteCard', { action: 'archive', cardId: id(1) }];
+      if ('idList' in payload) return ['trelloWriteCard', { action: 'move', cardId: id(1), listId: payload.idList, ...only(payload, ['pos']) }];
+      return ['trelloWriteCard', { action: 'update', cardId: id(1), ...only(payload, ['name', 'desc', 'due', 'dueComplete']) }];
+    }
+    if (method === 'POST' && parts[0] === 'cards' && parts[2] === 'idLabels') return ['trelloWriteCard', { action: 'add_label', cardId: id(1), labelId: payload.value }];
+    if (method === 'DELETE' && parts[0] === 'cards' && parts[2] === 'idLabels') return ['trelloWriteCard', { action: 'remove_label', cardId: id(1), labelId: id(3) }];
+    if (method === 'POST' && path === '/checklists') return ['trelloWriteChecklist', { action: 'create', cardId: payload.idCard, name: payload.name, ...only(payload, ['pos']) }];
+    if (method === 'POST' && parts[0] === 'checklists' && parts[2] === 'checkItems') return ['trelloWriteChecklist', { action: 'add_item', checklistId: id(1), name: payload.name, ...only(payload, ['pos']) }];
+    if (method === 'PUT' && parts[0] === 'checklists' && parts[2] === 'checkItems') return ['trelloWriteChecklist', { action: 'update_item', checklistId: id(1), itemId: id(3), ...only(payload, ['name', 'state']) }];
+    return undefined;
+  }
+
+  const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
-    if (request.method === 'GET' && url.pathname === '/.well-known/oauth-protected-resource/v1') {
-      json(response, 200, { resource, authorization_servers: [issuer], bearer_methods_supported: ['header'], scopes_supported: ['offline_access', 'read:board:trello', 'write:board:trello', 'read:member.inbox:trello', 'write:member.inbox:trello'], ...override.prm }); return;
-    }
-    if (url.pathname !== '/v1') { json(response, 503, { message: 'Temporarily Unavailable', status: 503 }); return; }
-    if (request.headers.authorization !== `Bearer ${state.accessToken}`) {
-      json(response, 401, { error: 'invalid_token' }, { 'www-authenticate': `Bearer resource_metadata="${resource.replace('/v1', '')}/.well-known/oauth-protected-resource/v1"` }); return;
-    }
-    const message = JSON.parse(await body(request)) as { id?: number; method: string; params?: Record<string, unknown> };
-    if (message.method === 'initialize') {
-      const session = randomBytes(8).toString('hex'); sessions.add(session);
-      json(response, 200, { jsonrpc: '2.0', id: message.id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'trello-fake', version: '1' } } }, { 'mcp-session-id': session }); return;
-    }
-    if (!sessions.has(String(request.headers['mcp-session-id']))) { json(response, 404, { error: 'session' }); return; }
-    if (message.method === 'notifications/initialized') { response.writeHead(202).end(); return; }
-    if (message.method === 'tools/list') { json(response, 200, { jsonrpc: '2.0', id: message.id, result: { tools: fakeToolSchemas().filter(tool => tool.name !== options.withoutTool) } }); return; }
-    if (message.method === 'tools/call') {
-      const tool = String(message.params?.name);
-      const args = (message.params?.arguments ?? {}) as Record<string, unknown>;
-      calls.push({ tool, args: structuredClone(args) });
-      if (drop && tool.startsWith('trelloWrite')) { drop = false; run(tool, args); request.socket.destroy(); return; }
-      if (fail && tool.startsWith('trelloWrite')) { fail = false; json(response, 200, { jsonrpc: '2.0', id: message.id, result: toolError('refused') }); return; }
-      if (wrongId) { wrongId = false; json(response, 200, { jsonrpc: '2.0', id: `other-${String(message.id)}`, result: run(tool, args) }); return; }
-      if (bloat !== undefined) {
-        const filler = 'x'.repeat(bloat);
-        bloat = undefined;
-        json(response, 200, { jsonrpc: '2.0', id: message.id, result: ok({ filler }) });
-        return;
-      }
-      response.writeHead(200, { 'content-type': 'text/event-stream' });
-      response.end(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: message.id, result: run(tool, args) })}\n\n`);
+    if (url.searchParams.get('key') !== key || url.searchParams.get('token') !== token) { json(response, 401, { message: 'invalid key or token' }); return; }
+    if (request.method === 'GET' && url.pathname === '/1/members/me') { json(response, 200, member); return; }
+    const method = request.method ?? 'GET';
+    const raw = method === 'GET' ? '' : await body(request);
+    const payload = raw === '' ? {} : JSON.parse(raw) as Record<string, unknown>;
+    const planned = route(method, url.pathname.replace(/^\/1\//, '').split('/'), url.searchParams, payload);
+    if (!planned) { json(response, 404, { message: 'no route' }); return; }
+    if (limited && limited.times > 0) {
+      limited.times -= 1;
+      json(response, 429, { message: 'rate limited' }, { 'retry-after': String(limited.retryAfter) });
       return;
     }
-    json(response, 200, { jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'method' } });
+    const [tool, args] = planned;
+    calls.push({ tool, args: structuredClone(args) });
+    if (drop && tool.startsWith('trelloWrite')) { drop = false; request.socket.destroy(); return; }
+    if (fail && tool.startsWith('trelloWrite')) { fail = false; json(response, 400, { message: 'refused' }); return; }
+    const answer = run(tool, args) as { isError?: boolean; content: { text: string }[] };
+    const text = answer.content[0]?.text ?? '';
+    if (answer.isError === true) { json(response, 400, { message: text }); return; }
+    let value: unknown = JSON.parse(text);
+    if (wrongId) {
+      wrongId = false;
+      const record = value as { card?: { id?: string } };
+      value = record.card ? { ...record, card: { ...record.card, id: ari('card', objectId(now - 700 * 86_400_000)) } } : { items: [{}], pad: '' };
+    }
+    if (bloat !== undefined) { value = { ...(value as Record<string, unknown>), pad: 'x'.repeat(bloat) }; bloat = undefined; }
+    json(response, 200, value);
   });
-  const auth = createServer(async (request, response) => {
-    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
-    const origin = new URL(issuer).origin;
-    if (request.method === 'GET' && url.pathname === `/.well-known/oauth-authorization-server/${FAKE_TENANT}`) {
-      json(response, 200, { issuer, authorization_endpoint: `${origin}/authorize`, token_endpoint: `${origin}/oauth/token`, registration_endpoint: `${issuer}/dcr/register`,
-        code_challenge_methods_supported: ['S256'], token_endpoint_auth_methods_supported: ['none'], grant_types_supported: ['authorization_code', 'refresh_token'], response_types_supported: ['code'], ...override.as }); return;
-    }
-    if (request.method === 'POST' && url.pathname === `/${FAKE_TENANT}/dcr/register`) {
-      const registration = JSON.parse(await body(request)) as Record<string, unknown>;
-      registrations.push(registration);
-      const redirects = registration.redirect_uris;
-      if (!Array.isArray(redirects) || !redirects.every(uri => typeof uri === 'string' && /^http:\/\/127\.0\.0\.1:\d+\/callback$/.test(uri))) { json(response, 400, { error: 'invalid_redirect_uri' }); return; }
-      const clientId = randomBytes(8).toString('hex'); clients.add(clientId);
-      json(response, 201, { client_id: clientId, redirect_uris: redirects }); return;
-    }
-    if (request.method === 'POST' && url.pathname === '/oauth/token') {
-      const form = new URLSearchParams(await body(request));
-      tokens.push({ grant: String(form.get('grant_type')), resource: form.get('resource') });
-      if (form.get('resource') !== resource) { json(response, 400, { error: 'invalid_target' }); return; }
-      if (form.get('grant_type') === 'authorization_code') {
-        const bound = codes.get(String(form.get('code'))); codes.delete(String(form.get('code')));
-        const verifier = String(form.get('code_verifier'));
-        if (!bound || bound.clientId !== form.get('client_id') || bound.redirectUri !== form.get('redirect_uri') || bound.resource !== resource
-          || createHash('sha256').update(verifier).digest('base64url') !== bound.challenge) { json(response, 400, { error: 'invalid_grant' }); return; }
-      } else if (form.get('grant_type') === 'refresh_token') {
-        if (form.get('refresh_token') !== state.refreshToken) { json(response, 400, { error: 'invalid_grant' }); return; }
-      } else { json(response, 400, { error: 'unsupported_grant_type' }); return; }
-      state.accessToken = randomBytes(16).toString('hex'); state.refreshToken = randomBytes(16).toString('hex');
-      json(response, 200, { access_token: state.accessToken, refresh_token: state.refreshToken, expires_in: 3600, token_type: 'Bearer' }); return;
-    }
-    json(response, 404, {});
-  });
-  const mcpPort = await listen(mcp);
-  const authPort = await listen(auth);
-  resource = `http://127.0.0.1:${mcpPort}/v1`;
-  issuer = `http://127.0.0.1:${authPort}/${FAKE_TENANT}`;
+  const port = await listen(server);
+  const base = `http://127.0.0.1:${port}`;
   return {
-    resource, issuer, mcpUrl: resource, boards, lists, cards, labels, checklists, inbox: { listId: inboxListId, cards: inboxCards }, calls, tokens, registrations, override,
-    get accessToken() { return state.accessToken; },
-    async consent(authorizeUrl: string) {
-      const url = new URL(authorizeUrl);
-      const clientId = String(url.searchParams.get('client_id'));
-      if (!clients.has(clientId) || url.searchParams.get('code_challenge_method') !== 'S256' || url.searchParams.get('resource') !== resource) throw new Error('consent refused');
-      const code = randomBytes(12).toString('hex');
-      codes.set(code, { clientId, redirectUri: String(url.searchParams.get('redirect_uri')), challenge: String(url.searchParams.get('code_challenge')), resource });
-      return { callback: `${url.searchParams.get('redirect_uri')}?code=${code}&state=${encodeURIComponent(String(url.searchParams.get('state')))}` };
-    },
+    url: base, key, token, member, boards, lists, cards, labels, checklists, inbox: { listId: inboxListId, cards: inboxCards }, calls,
     dropNextCall() { drop = true; },
     failNextCall() { fail = true; },
+    rateLimitNextCall(times: number, retryAfterSeconds = 1) { limited = { times, retryAfter: retryAfterSeconds }; },
     replyWithWrongId() { wrongId = true; },
     bloatNextReply(bytes: number) { bloat = bytes; },
-    async close() {
-      await new Promise<void>(resolve => { mcp.close(() => resolve()); mcp.closeAllConnections(); });
-      await new Promise<void>(resolve => { auth.close(() => resolve()); auth.closeAllConnections(); });
-    },
+    async close() { await new Promise<void>(resolve => { server.close(() => resolve()); }); },
   };
 }

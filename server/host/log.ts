@@ -1,6 +1,6 @@
 import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_LIMITS, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
-import { TRELLO_CALL_TOOLS } from '../tools/trello.js';
+import { TRELLO_CALL_TOOLS, TRELLO_WRITE_ARGUMENT_FIELDS } from '../tools/trello.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { TURN_FAILED_REASONS } from '../adapters/live-voice/types.js';
@@ -138,6 +138,16 @@ const isSafeId = (value: unknown): value is string => typeof value === 'string' 
  * never the value.
  */
 const rejectResearchId = (event: string): Record<string, unknown> => ({ event: 'research_id_rejected', kind: event, field: 'researchId' });
+
+/**
+ * C-FILLER: the closed property paths a normalisation may name, a top-level field or one lookup entry's field.
+ * Names only: a value never rides this line, so an entry that carries one is dropped whole.
+ */
+const NORMALIZED_PATH = /^(?:question|topic|researchId|sources|direction|cursor|pageCursor|lookups)(?:\[\d{1,2}\])?(?:\.(?:source|query|history|mail))?$/u;
+const isNormalizedPaths = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0 && value.length <= 32
+  && value.every(path => typeof path === 'string' && NORMALIZED_PATH.test(path));
+const isTrelloNormalizedPaths = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0 && value.length <= 8
+  && value.every(path => typeof path === 'string' && TRELLO_WRITE_ARGUMENT_FIELDS.includes(path));
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
 /** C-PITCH: a fundamental frequency in Hz, or null when the response had no voiced frames. */
 const isSafeHz = (value: unknown): value is number | null =>
@@ -552,11 +562,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'connector_call' && value.connector === 'trello') {
     // W7: one line per Trello board call phase: Didi's own tool and action, the phase and a closed outcome. Never card text.
     const hasReason = value.reason !== undefined;
-    if (!closedKeys(value, ['event', 'connector', 'tool', 'phase', 'outcome', ...(hasReason ? ['reason'] : [])])) return;
+    // C-FILLER: a normalised line names the write properties it dropped; a name is never a value.
+    const hasNormalized = value.normalized !== undefined;
+    if (!closedKeys(value, ['event', 'connector', 'tool', 'phase', 'outcome', ...(hasReason ? ['reason'] : []), ...(hasNormalized ? ['normalized'] : [])])) return;
+    if (hasNormalized && !isTrelloNormalizedPaths(value.normalized)) return;
     if (typeof value.tool !== 'string' || !TRELLO_CALL_TOOL.test(value.tool)) return;
     if (!isSafeMember(value.phase, ['admit', 'dispatch', 'settle']) || !isSafeMember(value.outcome, ['ok', 'refused', 'failed', 'unknown'])) return;
     if (hasReason && !isSafeMember(value.reason, TRELLO_CALL_REASONS)) return;
-    return { event: 'connector_call', connector: 'trello', tool: value.tool, phase: value.phase, outcome: value.outcome, ...(hasReason ? { reason: value.reason } : {}) };
+    return { event: 'connector_call', connector: 'trello', tool: value.tool, phase: value.phase, outcome: value.outcome, ...(hasReason ? { reason: value.reason } : {}),
+      ...(hasNormalized ? { normalized: [...value.normalized] } : {}) };
   }
   if (value.event === 'vault_write') {
     // Closed shape: the attempt outcome, the closed failure code, the vault's own insight id on a confirmed save, and the wire latency. Never text.
@@ -1065,8 +1079,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'research_refused') {
     // C-RESEARCH-CONTRACT T-04: the refusal names the closed reason and the call's shape as lengths and closed
-    // source names. Field text, question text and lookup values never enter a log line.
-    if (!closedKeys(value, ['event', 'state', 'sequence', 'reason', 'action', 'fields', 'unknownFieldCount', 'lookupCount', 'topicChars', 'questionChars', 'queryChars', 'lookupSources'])) return;
+    // source names. Field text, question text and lookup values never enter a log line. C-FILLER adds the closed
+    // property paths a normalisation dropped: names only, never a value.
+    const normalized = value.normalized === undefined ? undefined : value.normalized;
+    if (!closedKeys(value, ['event', 'state', 'sequence', 'reason', 'action', 'fields', 'unknownFieldCount', 'lookupCount', 'topicChars', 'questionChars', 'queryChars', 'lookupSources', ...(normalized === undefined ? [] : ['normalized'])])) return;
+    if (normalized !== undefined && !isNormalizedPaths(normalized)) return;
     if (value.state !== 'refused' || !(value.sequence === null || isSafeCount(value.sequence))) return;
     if (!(RESEARCH_REFUSAL_REASONS as readonly unknown[]).includes(value.reason) || !['start', 'continue', 'stop', 'missing', 'invalid'].includes(String(value.action))) return;
     if (!isSafeCount(value.unknownFieldCount) || !isSafeCount(value.lookupCount)) return;
@@ -1082,7 +1099,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(fields, [...RESEARCH_ARGUMENT_FIELDS]) || !Object.values(fields).every(type => (RESEARCH_ARGUMENT_TYPES as readonly unknown[]).includes(type))) return;
     return { event: 'research_refused', state: 'refused', sequence: value.sequence, reason: value.reason, action: value.action,
       fields: Object.fromEntries(RESEARCH_ARGUMENT_FIELDS.map(key => [key, fields[key]])), unknownFieldCount: value.unknownFieldCount, lookupCount: value.lookupCount,
-      topicChars: value.topicChars, questionChars: value.questionChars, queryChars: [...value.queryChars], lookupSources: [...value.lookupSources] };
+      topicChars: value.topicChars, questionChars: value.questionChars, queryChars: [...value.queryChars], lookupSources: [...value.lookupSources],
+      ...(normalized === undefined ? {} : { normalized: [...normalized] }) };
   }
   if (value.event === 'live_tool_turn') {
     // O1/F6: per-turn tool metrics, tool names, millisecond latency and per-endpoint peak concurrency only.
@@ -1204,15 +1222,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'research_routed') {
     // K6: which layers the model named, how many lookups, per-source ms and outcome. Never a query.
     const routedCall = Object.prototype.hasOwnProperty.call(value, 'callKey');
-    const keys = [...['event', 'researchId', 'sources', 'lookups', 'ms', 'outcomes'], ...(routedCall ? ['callKey'] : [])];
+    const hasNormalized = Object.prototype.hasOwnProperty.call(value, 'normalized');
+    const keys = [...['event', 'researchId', 'sources', 'lookups', 'ms', 'outcomes'], ...(routedCall ? ['callKey'] : []), ...(hasNormalized ? ['normalized'] : [])];
     if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
+    if (hasNormalized && !isNormalizedPaths(value.normalized)) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_routed');
     if (routedCall && !isSafeId(value.callKey)) return;
     if (!isSafeCount(value.lookups)) return;
     if (!Array.isArray(value.sources) || value.sources.length > 4 || !isSafeMembers(value.sources, ROUTED_SOURCES)) return;
     if (!Array.isArray(value.outcomes) || value.outcomes.length !== value.sources.length || !isSafeMembers(value.outcomes, ROUTED_OUTCOMES)) return;
     if (!Array.isArray(value.ms) || value.ms.length !== value.sources.length || value.ms.some(ms => !isSafeCount(ms))) return;
-    return { event: 'research_routed', researchId: value.researchId, ...(routedCall ? { callKey: value.callKey } : {}), sources: value.sources, lookups: value.lookups, ms: value.ms, outcomes: value.outcomes };
+    return { event: 'research_routed', researchId: value.researchId, ...(routedCall ? { callKey: value.callKey } : {}), sources: value.sources, lookups: value.lookups, ms: value.ms, outcomes: value.outcomes,
+      ...(hasNormalized ? { normalized: [...value.normalized] } : {}) };
   }
   if (value.event === 'research_source') {
     // N3/P5: one receipt per source read: the layer, its outcome, its wall time and the deadline it was

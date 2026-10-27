@@ -118,17 +118,43 @@ const WRITE_SHAPES: Readonly<Record<TrelloWriteAction, { required: readonly stri
   archive: { required: ['card'], optional: [] },
 };
 const WRITE_LIMITS: Readonly<Record<string, number>> = { card: TRELLO_NAME_MAX, list: 120, name: TRELLO_NAME_MAX, description: TRELLO_DESC_MAX, text: TRELLO_NOTE_MAX, item: 300, checklist: 120, due: 16, label: 60 };
+/** C-FILLER: every property a write shape can carry, so a normalised log line names a path and never a value. */
+export const TRELLO_WRITE_ARGUMENT_FIELDS: readonly string[] =
+  [...new Set(Object.values(WRITE_SHAPES).flatMap(shape => [...shape.required, ...shape.optional]))];
+
+/** C-FILLER: the value the voice model sends for a property the chosen action does not use. False, 0 and text are
+ *  real values, and a property the action does use keeps exactly today's validation. */
+const isFillerWriteArgument = (value: unknown): boolean => value === false || value === undefined || value === null || value === ''
+  || (Array.isArray(value) && value.length === 0) || (isRecord(value) && Object.keys(value).length === 0);
+
+/** C-FILLER (council 98187): drop the properties this action's shape does not take when they carry a filler value,
+ *  and name each one. Everything else, including an unknown property with a real value, is left to the validator. */
+export function normalizeTrelloWrite(args: unknown): { args: Args; normalized: string[] } {
+  if (!isRecord(args) || typeof args.action !== 'string' || !(TRELLO_WRITE_ACTIONS as readonly string[]).includes(args.action)) {
+    return { args: isRecord(args) ? args : {}, normalized: [] };
+  }
+  const shape = WRITE_SHAPES[args.action as TrelloWriteAction];
+  const used = ['action', ...shape.required, ...shape.optional];
+  const normalized: string[] = [];
+  const kept = Object.fromEntries(Object.entries(args).filter(([key, value]) => {
+    if (used.includes(key) || !isFillerWriteArgument(value)) return true;
+    normalized.push(key);
+    return false;
+  }));
+  return { args: kept, normalized };
+}
 
 export function validateTrelloWrite(args: unknown): args is Args {
-  if (!isRecord(args) || typeof args.action !== 'string' || !(TRELLO_WRITE_ACTIONS as readonly string[]).includes(args.action)) return false;
-  const shape = WRITE_SHAPES[args.action as TrelloWriteAction];
-  if (!only(args, ['action', ...shape.required, ...shape.optional]) || !shape.required.every(key => args[key] !== undefined)) return false;
-  for (const [key, value] of Object.entries(args)) {
+  const { args: clean } = normalizeTrelloWrite(args);
+  if (!isRecord(clean) || typeof clean.action !== 'string' || !(TRELLO_WRITE_ACTIONS as readonly string[]).includes(clean.action)) return false;
+  const shape = WRITE_SHAPES[clean.action as TrelloWriteAction];
+  if (!only(clean, ['action', ...shape.required, ...shape.optional]) || !shape.required.every(key => clean[key] !== undefined)) return false;
+  for (const [key, value] of Object.entries(clean)) {
     if (key === 'action') continue;
     if (key === 'checked' || key === 'complete' || key === 'remove') { if (typeof value !== 'boolean') return false; continue; }
     if (!str(value, WRITE_LIMITS[key] ?? 0)) return false;
   }
-  if (args.action === 'update' && args.name === undefined && args.description === undefined) return false;
+  if (clean.action === 'update' && clean.name === undefined && clean.description === undefined) return false;
   return true;
 }
 
@@ -300,7 +326,7 @@ export const TRELLO_GUIDANCE: Readonly<Record<string, string>> = {
   outcome_unknown: 'Naya is not sure the change landed. Say so and suggest he look at the card in Trello.',
 };
 
-export type TrelloLog = (event: { event: 'connector_call'; connector: 'trello'; tool: string; phase: 'admit' | 'dispatch' | 'settle'; outcome: 'ok' | 'refused' | 'failed' | 'unknown'; reason?: string }) => void;
+export type TrelloLog = (event: { event: 'connector_call'; connector: 'trello'; tool: string; phase: 'admit' | 'dispatch' | 'settle'; outcome: 'ok' | 'refused' | 'failed' | 'unknown'; reason?: string; /** C-FILLER: the write properties dropped as filler, names only. */ normalized?: readonly string[] }) => void;
 
 interface Snapshot { lists: TrelloList[]; labels: TrelloLabel[]; cards: TrelloCard[]; complete: boolean; at: number }
 interface Session {
@@ -388,8 +414,8 @@ export class TrelloBoard {
     return session;
   }
 
-  #emit(tool: string, phase: 'admit' | 'dispatch' | 'settle', outcome: 'ok' | 'refused' | 'failed' | 'unknown', reason?: string): void {
-    try { this.#log?.({ event: 'connector_call', connector: 'trello', tool, phase, outcome, ...(reason ? { reason } : {}) }); } catch { /* a log never changes a call */ }
+  #emit(tool: string, phase: 'admit' | 'dispatch' | 'settle', outcome: 'ok' | 'refused' | 'failed' | 'unknown', reason?: string, normalized?: readonly string[]): void {
+    try { this.#log?.({ event: 'connector_call', connector: 'trello', tool, phase, outcome, ...(reason ? { reason } : {}), ...(normalized?.length ? { normalized } : {}) }); } catch { /* a log never changes a call */ }
   }
 
   async #call(planned: TrelloPlannedCall, signal?: AbortSignal): Promise<unknown> {
@@ -542,10 +568,10 @@ export class TrelloBoard {
     throw new Refusal('card_unknown');
   }
 
-  #refusal(error: unknown, tool: string, phase: 'admit' | 'settle'): JsonObject {
+  #refusal(error: unknown, tool: string, phase: 'admit' | 'settle', normalized?: readonly string[]): JsonObject {
     const code = error instanceof Refusal ? error.code : 'unavailable';
     const extra = error instanceof Refusal ? error.extra : {};
-    this.#emit(tool, phase, 'refused', code);
+    this.#emit(tool, phase, 'refused', code, normalized);
     return { ok: false, code, guidance: TRELLO_GUIDANCE[code] ?? TRELLO_GUIDANCE.unavailable!, ...extra };
   }
 
@@ -643,21 +669,23 @@ export class TrelloBoard {
    * write in one session answers from its first receipt; the server is called once and never again.
    */
   async write(runId: string, args: Args, ownerWords: string, signal?: AbortSignal): Promise<JsonObject> {
-    const action = String(args.action) as TrelloWriteAction;
+    // C-FILLER: the unused properties the voice model sent as a filler value are absent before anything runs.
+    const { args: clean, normalized } = normalizeTrelloWrite(args);
+    const action = String(clean.action) as TrelloWriteAction;
     const tool = `write.${action}`;
-    if (!this.available()) return this.#refusal(new Refusal('not_configured'), tool, 'admit');
-    if (this.#boardName === undefined) return this.#refusal(new Refusal('not_configured'), tool, 'admit');
-    if (!ownerAskedForChange(ownerWords)) return this.#refusal(new Refusal('not_owner_requested'), tool, 'admit');
+    if (!this.available()) return this.#refusal(new Refusal('not_configured'), tool, 'admit', normalized);
+    if (this.#boardName === undefined) return this.#refusal(new Refusal('not_configured'), tool, 'admit', normalized);
+    if (!ownerAskedForChange(ownerWords)) return this.#refusal(new Refusal('not_owner_requested'), tool, 'admit', normalized);
     const session = this.#session(runId);
     let plan: WritePlan;
     let snapshot: Snapshot;
     try {
       snapshot = await this.#snapshot(session, signal);
-      plan = await this.#plan(session, snapshot, action, args, signal);
-    } catch (error) { return this.#refusal(error, tool, 'admit'); }
+      plan = await this.#plan(session, snapshot, action, clean, signal);
+    } catch (error) { return this.#refusal(error, tool, 'admit', normalized); }
     const replay = session.ledger.get(plan.key);
-    if (replay) { this.#emit(tool, 'admit', 'refused', 'replayed'); return { ...replay, replayed: true }; }
-    this.#emit(tool, 'admit', 'ok');
+    if (replay) { this.#emit(tool, 'admit', 'refused', 'replayed', normalized); return { ...replay, replayed: true }; }
+    this.#emit(tool, 'admit', 'ok', undefined, normalized);
     let last: unknown;
     const steps = [...plan.calls];
     for (let step = 0; step < steps.length + (plan.followUp ? 1 : 0); step++) {
@@ -666,19 +694,19 @@ export class TrelloBoard {
       if (!call || !allowed || !allowed.includes(String(call.args.action))) {
         // Nothing was sent for this step; a step after a sent one leaves the outcome open.
         const code = step === 0 ? 'unsupported' : 'outcome_unknown';
-        this.#emit(tool, 'settle', step === 0 ? 'refused' : 'unknown', code);
+        this.#emit(tool, 'settle', step === 0 ? 'refused' : 'unknown', code, normalized);
         session.snapshot = undefined;
         const receipt: JsonObject = { ok: false, code, guidance: TRELLO_GUIDANCE[code]! };
         if (step > 0) session.ledger.set(plan.key, receipt);
         return receipt;
       }
-      this.#emit(tool, 'dispatch', 'ok');
+      this.#emit(tool, 'dispatch', 'ok', undefined, normalized);
       const result = await this.#transport.call(call.tool, call.args, signal);
       if (!result.ok) {
         // A refused first step changed nothing; anything after a sent step is not known.
         const definite = step === 0 && (result.code === 'tool_error' || result.code === 'auth_failed' || result.code === 'credential_revoked' || result.code === 'credential_mismatch' || result.code === 'not_signed_in' || result.code === 'rate_limited' || result.code === 'unavailable' || result.code === 'not_allowed');
         const code = definite ? (result.code === 'auth_failed' || result.code === 'credential_revoked' || result.code === 'credential_mismatch' || result.code === 'not_signed_in' || result.code === 'rate_limited' || result.code === 'unavailable' ? result.code : 'write_failed') : 'outcome_unknown';
-        this.#emit(tool, 'settle', definite ? 'failed' : 'unknown', code);
+        this.#emit(tool, 'settle', definite ? 'failed' : 'unknown', code, normalized);
         session.snapshot = undefined;
         const receipt: JsonObject = { ok: false, code, guidance: TRELLO_GUIDANCE[code]! };
         if (!definite) session.ledger.set(plan.key, receipt);
@@ -695,12 +723,12 @@ export class TrelloBoard {
     if (!card && action !== 'checklist') {
       const receipt: JsonObject = { ok: false, code: 'outcome_unknown', guidance: TRELLO_GUIDANCE.outcome_unknown! };
       session.ledger.set(plan.key, receipt);
-      this.#emit(tool, 'settle', 'unknown', 'outcome_unknown');
+      this.#emit(tool, 'settle', 'unknown', 'outcome_unknown', normalized);
       return receipt;
     }
     const receipt: JsonObject = { ok: true, written: action, ...plan.describe(card, snapshot) };
     session.ledger.set(plan.key, receipt);
-    this.#emit(tool, 'settle', 'ok');
+    this.#emit(tool, 'settle', 'ok', undefined, normalized);
     return receipt;
   }
 

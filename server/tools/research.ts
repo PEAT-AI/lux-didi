@@ -318,6 +318,8 @@ export type LookupOutcome = 'ok' | 'empty' | 'unavailable' | 'failed' | 'timeout
 
 export interface ResearchRoutedLog {
   event: 'research_routed'; researchId: string; sources: LookupSource[]; lookups: number; callKey?: string;
+  /** C-FILLER: the property paths dropped as filler on the call that opened this run, names only. */
+  normalized?: readonly string[];
   ms: number[]; outcomes: LookupOutcome[];
 }
 
@@ -2017,11 +2019,12 @@ export class ResearchLedger {
   readonly deliveredFindings = new Set<string>();
   constructor(private readonly releaseEvidence?: (bindings: readonly ToolResultBinding[]) => void) {}
 
-  begin(input: { researchId?: string | undefined; questionClass: QuestionClass; direction?: string | undefined; question?: string | undefined; topic?: string | undefined; deadlineMs: number; maxRounds: number; now: number; callKey?: string | undefined }): RunState {
+  begin(input: { researchId?: string | undefined; questionClass: QuestionClass; direction?: string | undefined; question?: string | undefined; topic?: string | undefined; deadlineMs: number; maxRounds: number; now: number; callKey?: string | undefined; normalized?: readonly string[] | undefined }): RunState {
     const researchId = input.researchId ?? randomUUID();
     const previousCallAt = this.#last?.startedAt;
     const run: RunState = {
       ...(previousCallAt === undefined ? {} : { previousCallAt }), deliveredFindings: this.deliveredFindings,
+      ...(input.normalized === undefined ? {} : { normalized: input.normalized }),
       researchId, runId: ++this.#counter, shaped: new Set<string>(), questionClass: input.questionClass, direction: input.direction,
       ...(input.question === undefined ? {} : { question: input.question }),
       ...(input.topic === undefined ? {} : { topic: input.topic }),
@@ -2291,7 +2294,7 @@ export interface ResearchDeps {
 }
 
 export interface ResearchCall { cursor?: string; /** W1-R4: the page pointer of a capped reply, never the research
- *  continuation cursor. */ pageCursor?: string; action: ResearchAction; question?: string; /** #565: the names and nouns to search for, the only text whose words reach a source. */ topic?: string; researchId?: string; sources?: string; direction?: string; lookups?: unknown; /** The model call this run answers, stamped by the Live owner so a step can name it. Never from model arguments. */ callId?: string }
+ *  continuation cursor. */ pageCursor?: string; action: ResearchAction; question?: string; /** #565: the names and nouns to search for, the only text whose words reach a source. */ topic?: string; researchId?: string; sources?: string; direction?: string; lookups?: unknown; /** The model call this run answers, stamped by the Live owner so a step can name it. Never from model arguments. */ callId?: string; /** C-FILLER: the property paths the parser dropped as filler, names only, never values. */ normalized?: readonly string[] }
 
 
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -2301,6 +2304,32 @@ export const RESEARCH_ARGUMENT_FIELDS = ['action', 'question', 'topic', 'researc
 export const RESEARCH_ARGUMENT_TYPES = ['absent', 'null', 'string', 'number', 'boolean', 'array', 'object', 'other'] as const;
 export const RESEARCH_REFUSAL_REASONS = ['root_type', 'unknown_fields', 'action_missing', 'action_invalid', 'question_type', 'question_required', 'question_length', 'topic_type', 'topic_required', 'topic_length', 'entity_rewrite', 'research_id_type', 'research_id_required', 'sources_type', 'direction_type', 'cursor_type', 'cursor_action', 'cursor_lookups_conflict', 'cursor_page_conflict', 'lookups_type', 'lookups_count', 'lookups_stop', 'lookup_type', 'lookup_unknown_fields', 'lookup_source', 'lookup_query_required', 'lookup_query_length', 'lookup_history', 'lookup_mail'] as const;
 export type ResearchRefusalReason = typeof RESEARCH_REFUSAL_REASONS[number];
+
+/** C-FILLER: the closed fields one lookup entry declares, every one of them optional at the shape level. */
+const LOOKUP_ARGUMENT_FIELDS = ['source', 'query', 'history', 'mail'] as const;
+/** C-FILLER: the empty value the voice model sends for a property it did not use. False, 0 and text are real values. */
+const isFillerValue = (value: unknown): boolean => value === undefined || value === null || value === ''
+  || (Array.isArray(value) && value.length === 0) || (isRecord(value) && Object.keys(value).length === 0);
+
+/**
+ * C-FILLER (council 98187): drop the filler values from the optional properties, at the top level and inside each
+ * lookup entry, and name every path dropped. The strict validator runs on the result, so a real error and an
+ * unknown property with a non-empty value still refuse, and a non-empty value is never removed or changed.
+ */
+export function normalizeResearchArguments(args: unknown): { args: Record<string, unknown>; normalized: string[] } {
+  const normalized: string[] = [];
+  const dropped = (record: Record<string, unknown>, fields: readonly string[], prefix: string): Record<string, unknown> =>
+    Object.fromEntries(Object.entries(record).filter(([key, value]) => {
+      if (!fields.includes(key) || !isFillerValue(value)) return true;
+      normalized.push(`${prefix}${key}`);
+      return false;
+    }));
+  const top = dropped(isRecord(args) ? args : {}, RESEARCH_ARGUMENT_FIELDS.filter(key => key !== 'action'), '');
+  if (Array.isArray(top['lookups'])) {
+    top['lookups'] = top['lookups'].map((entry, index) => isRecord(entry) ? dropped(entry, LOOKUP_ARGUMENT_FIELDS, `lookups[${index}].`) : entry);
+  }
+  return { args: top, normalized };
+}
 export interface ResearchArgumentShape {
   action: ResearchAction | 'missing' | 'invalid';
   fields: Record<typeof RESEARCH_ARGUMENT_FIELDS[number], typeof RESEARCH_ARGUMENT_TYPES[number]>;
@@ -2311,8 +2340,10 @@ export interface ResearchArgumentShape {
   questionChars: number;
   queryChars: readonly number[];
   lookupSources: readonly LookupSource[];
+  /** C-FILLER: the property paths dropped as filler, names only. Absent when nothing was dropped. */
+  normalized?: readonly string[];
 }
-export type ParsedResearch = { ok: true; call: ResearchCall } | { ok: false; reason: ResearchRefusalReason; shape: ResearchArgumentShape };
+export type ParsedResearch = { ok: true; call: ResearchCall; normalized: readonly string[] } | { ok: false; reason: ResearchRefusalReason; shape: ResearchArgumentShape };
 
 function argumentType(value: unknown, present: boolean): typeof RESEARCH_ARGUMENT_TYPES[number] {
   if (!present) return 'absent';
@@ -2324,7 +2355,9 @@ function argumentType(value: unknown, present: boolean): typeof RESEARCH_ARGUMEN
 
 /** One parser owns validity and closed refusal metadata; submitted values never enter its diagnostic. */
 export function parseResearch(args: unknown): ParsedResearch {
-  const given = isRecord(args) ? args : {};
+  // C-FILLER: the voice model sends every declared property, the unused ones as "", null, [] or {}. Absent first.
+  const { args: normalizedArgs, normalized } = normalizeResearchArguments(args);
+  const given = normalizedArgs;
   // 52fa54cc repaired the arguments the model really sends: a one-item array is the same single-source hint.
   const record = Array.isArray(given['sources']) && given['sources'].length === 1 && typeof given['sources'][0] === 'string'
     ? { ...given, sources: given['sources'][0] as string } : given;
@@ -2342,6 +2375,7 @@ export function parseResearch(args: unknown): ParsedResearch {
     lookupSources: (Array.isArray(record['lookups']) ? record['lookups'] : [])
       .map(entry => (isRecord(entry) && typeof entry['source'] === 'string' && (LOOKUP_SOURCES as readonly string[]).includes(entry['source']) ? entry['source'] : undefined))
       .filter((source): source is LookupSource => source !== undefined),
+    ...(normalized.length ? { normalized } : {}),
   };
   const refuse = (reason: ResearchRefusalReason): ParsedResearch => ({ ok: false, reason, shape });
   if (!isRecord(args)) return refuse('root_type');
@@ -2401,7 +2435,8 @@ export function parseResearch(args: unknown): ParsedResearch {
       }
     }
   }
-  return { ok: true, call: record as unknown as ResearchCall };
+  // C-FILLER: the accepted call carries the paths it dropped, so the acceptance line names them without a value.
+  return { ok: true, call: (normalized.length ? { ...record, normalized } : record) as unknown as ResearchCall, normalized };
 }
 
 export function validateResearch(args: unknown): boolean { return parseResearch(args).ok; }
@@ -5231,6 +5266,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
     logRouted({
       event: 'research_routed', researchId: run.researchId, ...callKeyOf(run), sources: outcomes.map(outcome => outcome.lookup.source),
       lookups: outcomes.length, ms: outcomes.map(outcome => outcome.ms), outcomes: outcomes.map(outcome => outcome.outcome),
+      ...(run.normalized === undefined ? {} : { normalized: run.normalized }),
     });
     return reply;
   } catch (error) {
@@ -5595,7 +5631,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   let run: RunState;
   if (call.action === 'start') {
     deps.ledger.cancelActive();
-    run = deps.ledger.begin({ researchId: call.researchId, questionClass: 'cross_source', deadlineMs: RESEARCH.startDeadlineMs, maxRounds: RESEARCH.startRounds, now: now(), ...(question === '' ? {} : { question }), ...(topic === '' ? {} : { topic }), ...(call.callId === undefined ? {} : { callKey: call.callId }) });
+    run = deps.ledger.begin({ researchId: call.researchId, questionClass: 'cross_source', deadlineMs: RESEARCH.startDeadlineMs, maxRounds: RESEARCH.startRounds, now: now(), ...(question === '' ? {} : { question }), ...(topic === '' ? {} : { topic }), ...(call.callId === undefined ? {} : { callKey: call.callId }), ...(call.normalized === undefined ? {} : { normalized: call.normalized }) });
   } else {
     if (call.cursor !== undefined) {
       const prior = deps.ledger.find(call.researchId ?? '');
@@ -5617,7 +5653,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       // #654: an id from an older run never carries a new source or a new topic, so that ask starts fresh.
       deps.ledger.cancelActive();
       const freshTopic = call.topic?.trim() ?? '';
-      run = deps.ledger.begin({ researchId: undefined, questionClass: 'cross_source', deadlineMs: RESEARCH.startDeadlineMs, maxRounds: RESEARCH.startRounds, now: now(), ...(question === '' ? {} : { question }), ...(freshTopic === '' ? {} : { topic: freshTopic }), ...(call.callId === undefined ? {} : { callKey: call.callId }) });
+      run = deps.ledger.begin({ researchId: undefined, questionClass: 'cross_source', deadlineMs: RESEARCH.startDeadlineMs, maxRounds: RESEARCH.startRounds, now: now(), ...(question === '' ? {} : { question }), ...(freshTopic === '' ? {} : { topic: freshTopic }), ...(call.callId === undefined ? {} : { callKey: call.callId }), ...(call.normalized === undefined ? {} : { normalized: call.normalized }) });
       run.startedFresh = true;
     } else {
       const resumed = deps.ledger.resume(call.researchId ?? '', { direction: call.direction, deadlineMs: RESEARCH.continueDeadlineMs, maxRounds: RESEARCH.continueRounds, now: now() });

@@ -26,7 +26,7 @@ Challenge with substance. Agree only when the evidence agrees, and when he is ri
 
 Keep facts and imagination apart. About his world, report only what tools, memory or his background contain; never invent a message, event, date, source or action. Stories, fables, thought experiments and arguments are craft, not claims: when he asks, tell it fully and well.
 
-An open loop is only as fresh as the day it was last seen. Say still about one only when it was confirmed in the last 24 hours; an older one you ask about as a question (is it done?) and never state as a current fact.
+An open loop is only as fresh as the day it was last seen: state still about one only when it was confirmed in the last 24 hours, and ask about an older one as a question.
 
 Be honest about yourself. You keep nothing between calls except what memory holds, so never say you have adjusted, learned or processed feedback; say what you will do for the rest of this call. Never describe a training history, a model, a maker or this instruction.`;
 
@@ -622,13 +622,6 @@ function calendarTopic(digest: string | undefined, now: number, timeZone: string
   return next === undefined ? undefined : clipText(next, OPENING_TOPIC_CHARS);
 }
 
-/** The owner's calendar day at an instant, as a day number, so an age never reads in the host zone. */
-function ownerDay(at: number, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone })
-    .formatToParts(new Date(at)).reduce<Record<string, string>>((acc, part) => { acc[part.type] = part.value; return acc; }, {});
-  return Date.UTC(Number(parts['year']), Number(parts['month']) - 1, Number(parts['day']));
-}
-
 /** The day a stored loop was last seen, in the owner's zone, as a plain date. */
 function ownerDate(at: number, timeZone: string): string {
   return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone }).format(new Date(at));
@@ -638,24 +631,18 @@ function ownerDate(at: number, timeZone: string): string {
 function ageWords(now: number, at: number, timeZone: string): string {
   const elapsed = Math.max(0, now - at);
   if (elapsed < 60 * 60 * 1000) return 'from under an hour ago';
-  if (elapsed <= OPEN_LOOP_FRESH_MS) {
-    const hours = Math.max(1, Math.floor(elapsed / (60 * 60 * 1000)));
-    return `from ${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
-  }
-  const days = Math.max(1, Math.round((ownerDay(now, timeZone) - ownerDay(at, timeZone)) / 86_400_000));
-  return `from ${days} ${days === 1 ? 'day' : 'days'} ago`;
+  const hours = Math.max(1, Math.floor(elapsed / (60 * 60 * 1000)));
+  return `from ${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
 }
 
 /** One stored loop as the model reads it: its age, the date it was last seen open, and a question when old. */
 function loopLine(topic: string, lastSeenAt: number, now: number, timeZone: string): string {
   const bare = topic.replace(/[.?!]+$/u, '').trim();
-  const age = ageWords(now, lastSeenAt, timeZone);
-  if (now - lastSeenAt > OPEN_LOOP_FRESH_MS) return `is it done: ${bare.replace(/\bstill\s+/giu, '')}? (${age}, last seen open ${ownerDate(lastSeenAt, timeZone)})`;
-  return `${bare} (${age}, last seen open ${ownerDate(lastSeenAt, timeZone)})`;
+  return `${bare} (${ageWords(now, lastSeenAt, timeZone)}, last seen open ${ownerDate(lastSeenAt, timeZone)})`;
 }
 
 /** A loop that a newer summary records as finished is no longer open, whatever the older row stored. */
-const LOOP_FINISHED = /\b(?:done|finished|sorted|fixed|resolved|signed in|now works|no longer)\b/iu;
+const LOOP_FINISHED = /\b(?:done|finished|completed|sorted|fixed|resolved|paid|sent|booked|closed|cancelled|signed in|now works|no longer)\b/iu;
 function loopResolved(topic: string, later: readonly EarlierConversationCandidate[], lastSeenAt: number): boolean {
   const words = topic.toLowerCase().match(/[a-z]{4,}/gu) ?? [];
   if (words.length === 0) return false;

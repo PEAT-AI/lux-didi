@@ -15,7 +15,8 @@ import { runToolCalls } from '../tools/declarations.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import type { RunAcceptance, StageNotePort } from '../tools/types.js';
 import {
-  beginStage, composedAsk, confirmAsk, CONFIRM_MAX_TOKENS, CONFIRM_WINDOW_MS, currentOwnerTurn, freezeNote, NOTE_MAX_CHARS,
+  AUTHORIZATION_MISSING_GUIDANCE,
+  beginStage, composedAsk, confirmAsk, CONFIRM_MAX_TOKENS, CONFIRM_WINDOW_MS, currentOwnerTurn, freezeNote, NOTE_MAX_CHARS, OWNER_WINDOW_CHARS,
   noteOwnerFragment, noteOwnerUtterance, noteReadback, noteSegmentSignal, noteSettle, stageComposedNote, STAGE_NOTE_IDENTITY,
   validateStageNote, type PlaybackSignal, type ReadbackBinding,
 } from '../tools/lux-note.js';
@@ -201,12 +202,22 @@ test('an ask split across finalized mic fragments of this stretch is one authori
 });
 
 test('the composed stretch keeps the open guard bounds and never crosses its own window', () => {
+  const four = [turnRow(11, 'and also a card in Trello', 1_100), turnRow(12, 'save it to lux', 1_200),
+    turnRow(13, 'in Lux Knowledge', 1_300), turnRow(14, 'both of these', 1_400)];
+  const bounded = currentOwnerTurn(four, 1_000, true, 1_500);
+  assert.equal(bounded.state === 'owner_turn' ? bounded.text : '', 'save it to lux in Lux Knowledge both of these');
+  const long = currentOwnerTurn([turnRow(11, 'a'.repeat(300), 1_200), turnRow(12, 'b'.repeat(300), 1_300)], 1_000, true, 1_400);
+  assert.equal(long.state === 'owner_turn' ? long.text.length : 0, OWNER_WINDOW_CHARS);
   // A split from before this turn started, or from before the confirm window, is never composed.
   const before = currentOwnerTurn([turnRow(11, 'save it to lux', 900), turnRow(12, 'both of these', 1_400)], 1_000, true, 1_500);
   assert.equal(before.state === 'owner_turn' ? before.text : '', 'both of these');
   const stale = currentOwnerTurn([turnRow(11, 'save it to lux', 1_400 - CONFIRM_WINDOW_MS - 1), turnRow(12, 'both of these', 1_400)],
     undefined, true, 1_400);
   assert.equal(stale.state === 'owner_turn' ? stale.text : '', 'both of these');
+  // The model's own output ends the stretch: the owner's words before it never authorize.
+  const afterModel = currentOwnerTurn([turnRow(11, 'save it to lux', 1_300), turnRow(13, 'both of these', 1_400)],
+    1_000, true, 1_500, 12);
+  assert.equal(afterModel.state === 'owner_turn' ? afterModel.text : '', 'both of these');
 });
 
 // B2 (W6-R2): arming follows the read-back segment, never just any drained receipt.
@@ -354,6 +365,16 @@ test('the split-fragment save ask stages instead of refusing on its newest fragm
   assert.equal(outcome?.status, 'completed');
   const stages = h.store.transaction(tx => tx.all('SELECT state FROM lux_note_stages'));
   assert.deepEqual(stages.map(row => row['state']), ['staged']);
+});
+
+test('a stretch with no save ask refuses with plain guidance, never an authorization error', async t => {
+  const h = stageHarness(t, [['inputTranscription', 'what time is it', 0]]);
+  const outcome = await h.stage(STAGE_ARGS);
+  assert.equal(outcome?.status, 'completed');
+  const response = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT result_json FROM tool_calls')!['result_json'])) as Record<string, unknown>)['response'];
+  assert.deepEqual(response, { staged: false, code: 'authorization_missing', guidance: AUTHORIZATION_MISSING_GUIDANCE });
+  assert.doesNotMatch(AUTHORIZATION_MISSING_GUIDANCE, /authorization error|lux error/iu);
+  assert.equal(h.store.transaction(tx => tx.all('SELECT stage_id FROM lux_note_stages')).length, 0);
 });
 
 test('an ask from before this stretch, or from before the model answered, never authorizes the save', async t => {

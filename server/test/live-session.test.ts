@@ -5544,7 +5544,10 @@ test('mail body integration: full received text continues locally once with exac
   await settleLiveTool(h, 'body-start', 'research', { action: 'start', question: 'Read the full synthetic message', topic: 'Read the full synthetic message', lookups: [{ source: 'mail', mail: { id: 'full-message' } }] });
   assert(received.length > 22000, 'actual canonical producer must retain the acquired source text'); assert.match(received, /On Monday/);
   const calls = h.calls.filter(call => call.name === 'gmail_read_message'); assert.equal(calls.length, 1); assert.equal((calls[0]!.args as Record<string, unknown>)['format'], 'full');
-  const researchId = last()['researchId']; let joined = '', count = 0, next = last()['nextCursor'];
+  // W1-R4: a capped page names its pageCursor; the reply's own cursor is used only when a page names none.
+  const researchId = last()['researchId']; let joined = '', count = 0;
+  const nextPage = (): Record<string, unknown> => last()['pageCursor'] !== undefined
+    ? { pageCursor: last()['pageCursor'] } : { cursor: last()['nextCursor'] };
   for (;;) {
     const slices = last()['bodySlices'] as { text: string; offset: number; end: number; total: number; unit: string; source: string }[];
     assert(Array.isArray(slices) && slices.length > 0, 'the full acquired body must have an authorized local consumer');
@@ -5554,8 +5557,9 @@ test('mail body integration: full received text continues locally once with exac
     }
     assert.doesNotMatch(JSON.stringify(last()), /bodySha256|entitySha256|hostEvidenceRequired/);
     if (!last()['canContinue']) break;
-    assert.equal(typeof next, 'string'); assert(++count < 30, 'continuation must make bounded progress');
-    await settleLiveTool(h, `body-next-${count}`, 'research', { action: 'continue', researchId, cursor: next }); next = last()['nextCursor'];
+    assert.ok(last()['pageCursor'] !== undefined || last()['nextCursor'] !== undefined, 'the page names a way to read on');
+    assert(++count < 30, 'continuation must make bounded progress');
+    await settleLiveTool(h, `body-next-${count}`, 'research', { action: 'continue', researchId, ...nextPage() });
   }
   assert.equal(joined, received); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1, 'local body remainder must not re-fetch the message');
 });

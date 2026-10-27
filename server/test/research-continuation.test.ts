@@ -97,7 +97,7 @@ test('C-CONTINUITY T-11: a continue with that cursor pages the stored reply and 
     String((second['findings'] as { text: string }[])[0]!.text)];
   let page: Record<string, unknown> = second;
   let pages = 2;
-  while (page['canContinue'] === true && pages < 20) {
+  while (page['pageCursor'] !== undefined && pages < 20) {
     page = await runResearch(h.deps, { action: 'continue', researchId: 'r-1', pageCursor: String(page['pageCursor']) }, signal());
     assert.equal(page['error'], undefined, 'the next page is served');
     assert.ok(JSON.stringify(page).length <= RESEARCH.voiceReplyChars, 'every page obeys the cap');
@@ -143,7 +143,7 @@ test('C-CONTINUITY T-11: a body page is capped and pages its slices with exact o
   let reassembled = first.text;
   let current: Record<string, unknown> = page;
   let pages = 1;
-  while (current['canContinue'] === true && pages < 30) {
+  while (current['pageCursor'] !== undefined && pages < 30) {
     current = book.take(String(current['pageCursor']))!;
     assert.ok(current !== undefined, 'the next body page is held by the call');
     assert.ok(JSON.stringify(current).length <= RESEARCH.voiceReplyChars, 'every body page obeys the cap');

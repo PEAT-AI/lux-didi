@@ -5556,7 +5556,7 @@ test('mail body integration: full received text continues locally once with exac
       assert(!/[\uDC00-\uDFFF]/u.test(slice.text.slice(0, 1)), 'slice must not begin inside a surrogate pair'); assert(!/[\uD800-\uDBFF]/u.test(slice.text.slice(-1)), 'slice must not end inside a surrogate pair'); joined += slice.text;
     }
     assert.doesNotMatch(JSON.stringify(last()), /bodySha256|entitySha256|hostEvidenceRequired/);
-    if (!last()['canContinue']) break;
+    if (last()['pageCursor'] === undefined) break;
     assert.ok(last()['pageCursor'] !== undefined || last()['nextCursor'] !== undefined, 'the page names a way to read on');
     assert(++count < 30, 'continuation must make bounded progress');
     await settleLiveTool(h, `body-next-${count}`, 'research', { action: 'continue', researchId, ...nextPage() });
@@ -5681,7 +5681,7 @@ test('mail body integration: body consumption preserves simultaneous calendar ev
   for (;;) {
     for (const match of JSON.stringify(last()['findings'] ?? '').matchAll(/Body sibling event (\d+)/g)) seen.add(match[1]!);
     assert(JSON.stringify(last()).length <= 6000, 'combined actual model response respects its existing bound');
-    if (!last()['canContinue']) break; assert(++count < 20);
+    if (last()['pageCursor'] === undefined) break; assert(++count < 20);
     await settleLiveTool(h, `mixed-next-${count}`, 'research', { action: 'continue', researchId, ...(last()['nextCursor'] ? { ...(last()['pageCursor'] !== undefined ? { pageCursor: last()['pageCursor'] } : { cursor: last()['nextCursor'] ?? last()['cursor'] }) } : {}) });
   }
   assert.equal(seen.size, 12); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1); assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 1);
@@ -5700,7 +5700,7 @@ test('Lux body integration: exact received opaque content reaches its retained t
     const slices = last()['bodySlices'] as { source: string; text: string; offset: number; upstreamComplete: unknown; upstreamOmitted: unknown }[]; assert(Array.isArray(slices) && slices.length, JSON.stringify({ count, calls: h.calls, response: last() }).slice(0, 1800));
     for (const slice of slices) { assert.equal(slice.source, 'knowledge'); assert.equal(slice.offset, collected.length); assert.equal(slice.upstreamComplete, 'unknown'); assert.equal(slice.upstreamOmitted, 'unknown'); collected += slice.text; }
     assert.equal(last()['bodyProjection'], 'preview'); assert(JSON.stringify(last()).length <= 24000);
-    if (!last()['canContinue']) break; assert(++count < 25);
+    if (last()['pageCursor'] === undefined) break; assert(++count < 25);
     await settleLiveTool(h, `lux-next-${count}`, 'research', { action: 'continue', researchId, ...(last()['pageCursor'] !== undefined ? { pageCursor: last()['pageCursor'] } : { cursor: last()['nextCursor'] ?? last()['cursor'] }) });
   }
   assert.equal(collected, raw); assert.equal(last()['status'], 'partial', 'all received bytes does not prove upstream completeness'); assert.equal(h.calls.filter(call => call.name === 'get_insight').length, 1); assert.equal(h.calls.filter(call => call.name === 'search_knowledge').length, 0);
@@ -5728,7 +5728,7 @@ test('RUN-R11: a 16,800-character mail body arrives in at most eight replies, ev
       collected += slice.text;
     }
     assert.ok(JSON.stringify(last()).length <= RESEARCH.voiceReplyChars, 'every reply stays under the voice reply cap');
-    if (!last()['canContinue']) break;
+    if (last()['pageCursor'] === undefined) break;
     assert.ok(replies < 12, 'a 16,800 character body costs at most twelve replies at 3,000 characters each');
     replies += 1;
     await settleLiveTool(h, `long-next-${replies}`, 'research', { action: 'continue', researchId, ...(last()['pageCursor'] !== undefined ? { pageCursor: last()['pageCursor'] } : { cursor: last()['nextCursor'] ?? last()['cursor'] }) });

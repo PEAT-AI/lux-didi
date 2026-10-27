@@ -30,7 +30,7 @@ test('cold start: all three literal Mongoose catalogues connect', async t => {
   const address = server.address(); assert.ok(address && typeof address !== 'string');
   const root = mkdtempSync(join(tmpdir(), 'didi-cold-start-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const configDir = join(root, 'provider-config'); mkdirSync(configDir);
+  const configDir = join(root, 'provider-config'); mkdirSync(configDir, { mode: 0o700 });
   const endpoints = MONGOOSE_ENDPOINTS.map(endpoint => {
     const resource = `http://127.0.0.1:${address.port}/mcp/${endpoint}`;
     const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -40,12 +40,12 @@ test('cold start: all three literal Mongoose catalogues connect', async t => {
       tokenEndpoint: `${new URL(resource).origin}/oauth/token`, clientId: 'test', redirectPort: 8768,
       account: 'owner@example.test', accessToken: token, refreshToken: 'refresh-test',
       expiresAt: Date.now() + 3600000, consentStartedAt: Date.now(),
-    }));
+    }), { mode: 0o600 });
     return { id: `mongoose-${endpoint}`, connector: 'mongoose', transport: 'streamable-http', url: resource,
       account: 'owner@example.test', resource: `mongoose:${endpoint}`, credentialRef: `mongoose-${endpoint}`,
       enabled: true, allowEgress: true, unknownClass: 'ordinary' };
   });
-  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: 'owner@example.test', endpoints }));
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: 'owner@example.test', endpoints }), { mode: 0o600 });
   const store = new Store(join(root, 'data'), toolsMigrations); t.after(() => store.close());
   const connected: string[] = [];
   const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir,

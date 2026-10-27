@@ -13,7 +13,7 @@ import {
  */
 const NOW = Date.parse('2026-10-27T07:02:00Z');
 
-const CASES: readonly { question: string; start: string; end: string }[] = [
+const CASES: readonly { question: string; start: string; end: string; convention?: string }[] = [
   { question: 'how many users we had in Indonesia last month', start: '2026-09-01', end: '2026-09-30' },
   { question: 'how many users in Indonesia in September', start: '2026-09-01', end: '2026-09-30' },
   { question: 'how many users in Indonesia in September 2026', start: '2026-09-01', end: '2026-09-30' },
@@ -30,8 +30,9 @@ const CASES: readonly { question: string; start: string; end: string }[] = [
   { question: 'how many users we had year to date', start: '2026-01-01', end: '2026-10-27' },
   { question: 'how many users we had last year', start: '2025-01-01', end: '2025-12-31' },
   { question: 'how many users we had in 2025', start: '2025-01-01', end: '2025-12-31' },
-  { question: 'how many users in Indonesia last 3 months', start: '2026-07-27', end: '2026-10-27' },
-  { question: 'how many users in Indonesia last 30 days', start: '2026-09-28', end: '2026-10-27' },
+  // The month convention, stated where the window is asserted: N months back, same day-of-month, ending today.
+  { question: 'how many users in Indonesia last 3 months', start: '2026-07-27', end: '2026-10-27', convention: 'last N months ends today and starts the same day-of-month N months back' },
+  { question: 'how many users in Indonesia last 30 days', start: '2026-09-28', end: '2026-10-27', convention: 'last N days ends today and starts N-1 days back' },
   { question: 'how many users in Indonesia today', start: '2026-10-27', end: '2026-10-27' },
   { question: 'how many users in Indonesia yesterday', start: '2026-10-26', end: '2026-10-26' },
   { question: 'how many users in Indonesia this week', start: '2026-10-26', end: '2026-10-27' },
@@ -39,7 +40,7 @@ const CASES: readonly { question: string; start: string; end: string }[] = [
 ];
 
 for (const item of CASES) {
-  test(`the window of "${item.question}" is ${item.start}..${item.end}`, () => {
+  test(`the window of "${item.question}" is ${item.start}..${item.end}${item.convention === undefined ? '' : ` (${item.convention})`}`, () => {
     assert.deepEqual(metricWindow(item.question, NOW), { start: item.start, end: item.end });
   });
 }

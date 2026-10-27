@@ -3921,6 +3921,30 @@ test('3u: consecutive starts offer different stored open loops and record the pl
   assert.equal((plans[0]!['rotation'] as number) + 1, plans[1]!['rotation'], 'the persisted start counter advances by one');
 });
 
+// Release 7 W5: the loop renewal. A call that opens on a stored loop gets a summary that stores the same loop
+// again, so before this rule the next call opened on it once more, call after call. The plan each start recorded is
+// the record, so a loop a previous plan offered is not offered as an opener again; it stays in the earlier
+// conversations as context and only the owner raises it.
+test('W5: a stored open loop a previous call opened on is not offered again', async t => {
+  const h = await harness(t);
+  const loop = 'The owner said the company website lookup is still to be done.';
+  h.store.transaction(tx => seedSummary(tx, 'synthetic-loop-source', loop, NOW - 3_600_000, h.store.assistantId, NOW, loop));
+  const snapshot = (liveSessionId: string): string => {
+    const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [liveSessionId]))!;
+    return (JSON.parse(String(row['accepted_prompt_snapshot'])) as { system: string }).system;
+  };
+  const first = h.owner.create({ idempotencyKey: 'opener-once-1', inputClass: 'ordinary' }, h.ctx);
+  assert.match(snapshot(first.liveSessionId), /^- open loop: the company website lookup is still to be done /mu,
+    'the first call opens on the stored loop');
+  // The call that opened on it ends and its own summary stores the same loop again: the renewal.
+  h.store.transaction(tx => {
+    tx.run('DELETE FROM conversation_summaries WHERE live_session_id=?', [first.liveSessionId]);
+    summaries.insertSummary(tx, { liveSessionId: first.liveSessionId, status: 'complete', summary: loop, endedAt: NOW - 60_000, now: NOW, openLoop: loop });
+  });
+  const second = h.owner.create({ idempotencyKey: 'opener-once-2', inputClass: 'ordinary' }, h.ctx);
+  assert.equal(/^- open loop:/mu.test(snapshot(second.liveSessionId)), false, 'the loop a previous call opened on is not offered again');
+});
+
 test('1023-N8: a start right after a call that just ended names his last topic while the summary is pending', async t => {
   const h = await harness(t);
   const first = await attached(h, 'pending-summary-1');

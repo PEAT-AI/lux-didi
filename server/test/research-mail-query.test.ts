@@ -432,3 +432,94 @@ test('E6: the one broader retry drops a joined OR clause, never a sender filter'
   assert.equal(broaderMailQuery('in:inbox newer_than:14d offsite venue inspection budget OR review OR card'), 'in:inbox newer_than:14d offsite venue inspection');
   assert.equal(broaderMailQuery('from:thomas OR to:thomas pipeline newer_than:2d'), 'from:thomas OR to:thomas pipeline newer_than:7d', 'a sender OR is never dropped');
 });
+
+// --- C-MAILFROM: an organisation ask finds its mail, and an empty read says what was searched ----------
+// Gmail's `from:` matches whole tokens of the address and the display name, so a prefix of a domain
+// token does not match: `from:acme` never sees `news@acme-group.example`. The bare word as a full-text
+// term does reach that domain. Synthetic org and people only.
+const ORG_INBOX = [
+  { id: 'o1', from: 'Jane Roe <news@acme-group.example>', subject: 'Monthly update' },
+  { id: 'o2', from: 'Sam Poe <billing@acme-group.example>', subject: 'Invoice' },
+];
+
+/** Gmail's `from:` semantics: whole tokens of the address ('@' and '.' split it) and of the display name. */
+const gmailFromMatches = (word: string, sender: string): boolean => {
+  const addresses = sender.match(/<([^>]+)>/u)?.[1]?.toLowerCase() ?? '';
+  const name = sender.replace(/<[^>]*>/u, '').toLowerCase();
+  const tokens = [...addresses.split(/[@.]+/u), ...name.split(/\s+/u)];
+  return tokens.includes(word.toLowerCase());
+};
+
+/** A fake inbox read: `from:` is whole-token, a bare term is text Gmail finds inside the domain or body. */
+const fakeInbox = (query: string): readonly string[] => {
+  const tokens = query.split(/\s+/u).filter(Boolean);
+  const from = tokens.find(token => /^from:/iu.test(token))?.slice(5).toLowerCase();
+  const text = tokens.filter(token => !token.includes(':') && token !== 'OR').map(token => token.toLowerCase());
+  return ORG_INBOX.filter(message => {
+    const haystack = `${message.from} ${message.subject}`.toLowerCase();
+    if (from !== undefined && !gmailFromMatches(from, message.from)) return false;
+    return text.every(word => haystack.includes(word));
+  }).map(message => message.id);
+};
+
+test('#1027: a from: filter is a whole-token match, so an org word misses its sender domain', () => {
+  const q = compileMailQuery('any mail from Acme this week', undefined, NOW, ZONE);
+  assert.equal(q, 'from:acme OR to:acme newer_than:7d', 'the org word compiles to a sender filter');
+  assert.deepEqual(fakeInbox(q), [], 'and Gmail returns nothing for a prefix of acme-group.example');
+  assert.deepEqual(fakeInbox('acme newer_than:7d'), ['o1', 'o2'], 'while the bare word as text finds both threads');
+});
+
+test('#1027: an empty sender filter retries the word as a full-text term over the same window', () => {
+  assert.equal(broaderMailQuery('from:acme OR to:acme newer_than:7d'), 'acme newer_than:7d');
+  assert.equal(broaderMailQuery('from:acme newer_than:7d'), 'acme newer_than:7d', 'a lone sender filter is the same case');
+  assert.equal(broaderMailQuery('from:plantix'), undefined, 'no window, nothing to search again');
+  assert.equal(broaderMailQuery('from:thomas OR to:thomas pipeline newer_than:2d'), 'from:thomas OR to:thomas pipeline newer_than:7d', 'a term still drops first');
+});
+
+test('#1027: an org ask finds its mail on the one broader read and logs the step', async () => {
+  const sent: string[] = [];
+  const h = mailHarness(async subs => subs.map(call => {
+    if (call.name === 'gmail_search_messages') sent.push(String(call.args['q'] ?? call.name));
+    const q = String(call.args['q'] ?? '');
+    return { key: call.key, name: call.name, ok: true, ...mailPage(fakeInbox(q)) } as IntentSubResult;
+  }));
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'any mail from Acme this week', lookups: [{ source: 'mail', query: 'any mail from Acme this week' }],
+  }, new AbortController().signal);
+  assert.deepEqual(sent, ['from:acme OR to:acme newer_than:7d', 'acme newer_than:7d'], 'one empty read, then exactly one broader read');
+  const receipt = h.sources.filter(entry => entry.source === 'mail').at(-1)!;
+  assert.deepEqual(receipt.mail, {
+    terms: 0, operators: ['from', 'to', 'newer_than'], window: 'newer_than:7d',
+    retried: { terms: 1, operators: ['newer_than'], window: 'newer_than:7d' },
+  }, 'the retried shape names the step: the sender word is a term, and no from: filter is left');
+  assert.equal(safeEvent(receipt)?.['mail'] === undefined, false, 'and the host log admits it');
+  assert.match(String(reply['note'] ?? ''), /found/, 'the found threads are spoken');
+});
+
+test('#1027: a person whose display name matches is found on the first read, no retry', async () => {
+  const sent: string[] = [];
+  const h = mailHarness(async subs => subs.map(call => {
+    if (call.name === 'gmail_search_messages') sent.push(String(call.args['q'] ?? call.name));
+    const q = String(call.args['q'] ?? '');
+    const found = ORG_INBOX.filter(message => message.from.startsWith('Jane')).map(message => message.id);
+    return { key: call.key, name: call.name, ok: true, ...mailPage(/jane/u.test(q) ? found : []) } as IntentSubResult;
+  }));
+  await runResearch(h.deps, {
+    action: 'start', question: 'any mail from Jane Roe', lookups: [{ source: 'mail', query: 'any mail from Jane Roe' }],
+  }, new AbortController().signal);
+  assert.deepEqual(sent, ['from:jane OR to:jane'], 'the display name matches, so there is no second read');
+});
+
+test('#1027: two empty reads say what was searched and how to narrow it', async () => {
+  const h = mailHarness(async subs => subs.map(call => ({
+    key: call.key, name: call.name, ok: true, ...mailPage([]),
+  }) as IntentSubResult));
+  const reply = await runResearch(h.deps, {
+    action: 'start', question: 'any mail from Acme this week', lookups: [{ source: 'mail', query: 'any mail from Acme this week' }],
+  }, new AbortController().signal);
+  const note = String(reply['note'] ?? '');
+  assert.match(note, /acme/u, 'the phrase names the sender word it searched');
+  assert.match(note, /in the last week/u, 'and the window it used');
+  assert.match(note, /domain or a person's name/u, 'and says what would narrow it');
+  assert.match(note, /found nothing matching/u, 'never a bare no');
+});

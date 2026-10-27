@@ -12,7 +12,7 @@ import { createLiveSessionOwner, IDLE_RESET_CAUSES, isBareAcknowledgement, LIVE_
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { LIVE_REBUILD_TRIGGERS, safeEvent } from '../host/log.js';
-import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
+import { LIVE_MUTE_PICKUP } from '../prompt/live-persona.js';
 import { fakeLiveVoicePort, type FakeLiveVoice, type FakeLiveVoiceEvent } from './fixtures/fake-live-voice.js';
 import type { LiveVoiceEvent, LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
 import { pcm, ready as providerReady } from './live-voice-fixture.js';
@@ -142,9 +142,11 @@ test('a mute owner turn is nudged once and then recovered on a fresh seeded sess
   assert.ok((live.fake.requests.at(-1)!.history ?? []).length > 0, 'the fresh session carries the journal seed');
   assert.ok(live.receipts.some(record => record.event === 'live_recovery' && record.path === 'fresh_seeded' && record.reason === 'model_mute'),
     'the recovery is the fresh seeded path with reason model_mute');
-  // #591: owner speech asked for the answer, so the rebuild still announces itself and still carries the
-  // pickup instruction that lets her say she is back.
-  assert.equal(openingText(live), LIVE_RECOVERY_PICKUP, 'the owner asked for this answer, so the pickup stays');
+  // C-PICKUP: a mute is the model's silence, not a dropped line, so the owner is asked to wait in one short
+  // sentence instead of being told the call came back.
+  assert.equal(openingText(live), LIVE_MUTE_PICKUP, 'the model went mute, so the pickup names the silence');
+  assert.equal(live.receipts.filter(record => record.event === 'live_recovery').at(-1)?.pickup, 'mute',
+    'and the recovery line says which pickup it chose');
   assert.equal(live.fake.requests.at(-1)?.opening, 'model_first', 'and the rebuilt session is still asked to continue');
   assert.ok(continuityEvents(live).includes('rebuilding'), 'the reconnect ring and its chime are still requested');
   assert.deepEqual(rebuildTriggers(live), ['no_output_after_owner'], 'the rebuild names owner speech as its trigger');
@@ -182,6 +184,11 @@ test('the rebuild trigger is a closed set the host log accepts for every token',
     'a trigger outside the closed set never reaches the host log');
   assert.equal(safeEvent({ event: 'live_rebuild', cause: 'provider', liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }), undefined,
     'a rebuild with no trigger at all is not a rebuild');
+  // C-WATCH: every watchdog record says whether the wait it judged began at a tool result, and nothing else rides along.
+  assert.deepEqual(safeEvent({ event: 'live_watchdog', phase: 'settled', turnAgeMs: 20_538, generation: 3, sinceTool: true }),
+    { event: 'live_watchdog', phase: 'settled', turnAgeMs: 20_538, generation: 3, sinceTool: true }, 'a post-tool wait says so');
+  assert.equal(safeEvent({ event: 'live_watchdog', phase: 'settled', turnAgeMs: 20_538, generation: 3 }), undefined,
+    'a watchdog record with no sinceTool never reaches the host log');
   assert.equal(safeEvent({ event: 'live_rebuild', trigger: 'line_dropped', cause: 'the-internet', liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }), undefined,
     'a cause outside the closed set never reaches the host log');
 });
@@ -250,6 +257,8 @@ test('a second mute inside the window settles the call honestly instead of loopi
   assert.deepEqual(phases(live), ['armed', 'nudged', 'recovering', 'recovered', 'armed', 'nudged', 'settled']);
   assert.equal(live.owner.get(live.liveSessionId).terminal?.state, 'failed', 'a second mute inside the window settles');
   assert.equal(terminalCode(live), 'model_unresponsive');
+  assert.equal(live.receipts.filter(record => record.event === 'live_watchdog' && record.phase === 'settled')[0]?.['sinceTool'], false,
+    'an owner-turn wait says it did not begin at a tool result');
   assert.equal(live.fake.sessionsOpened, 2, 'a second mute inside the window opens no third session');
 });
 

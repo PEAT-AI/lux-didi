@@ -40,7 +40,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
-import { NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse, LiveToolSendOutcome } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -2456,6 +2456,9 @@ test('L14: non-lexical transcript tags never reach the journal, and other bracke
   assert.equal(stripNonLexicalTags('so [inhale'), 'so ');
   assert.equal(stripNonLexicalTags('a [breath] b [sigh] c'), 'a  b  c');
   assert.equal(stripNonLexicalTags('keep [the folder] and [2] as they are'), 'keep [the folder] and [2] as they are');
+  // C-PICKUP: every cue the model writes is a cue, and an ordinary bracket stays the owner's own.
+  assert.equal(stripNonLexicalTags('[chuckle] hi [Q3]'), ' hi [Q3]', 'a chuckle cue is stripped, a question number is not');
+  assert.equal(stripNonLexicalTags('a [chuckles] b [giggle] c [giggles] d [laughter] e [smile] f [smiles] g'), 'a  b  c  d  e  f  g');
   const h = await harness(t);
   const { session } = await attached(h, 'tags');
   h.f.send({ serverContent: { inputTranscription: { text: 'the plan holds [inhale' } } });
@@ -3909,6 +3912,9 @@ test('3u: consecutive starts offer different stored open loops and record the pl
     return (JSON.parse(String(row['accepted_prompt_snapshot'])) as { system: string }).system;
   };
   const first = h.owner.create({ idempotencyKey: 'opener-rotation-1', inputClass: 'ordinary' }, h.ctx);
+  // W5-R2: a start inside the 12 h cooldown after an offered open loop offers the kind not at all, so the second
+  // start is placed past it; the rotation still walks the stored loops, which is what this test is about.
+  h.advance(13 * 3_600_000);
   const second = h.owner.create({ idempotencyKey: 'opener-rotation-2', inputClass: 'ordinary' }, h.ctx);
   const loops = [first, second].map(session => /^- open loop: (.+)$/mu.exec(snapshot(session.liveSessionId))?.[1]);
   assert.ok(loops[0] !== undefined && loops[1] !== undefined, 'both starts compose an open loop from the stored column');
@@ -3919,6 +3925,60 @@ test('3u: consecutive starts offer different stored open loops and record the pl
   assert.deepEqual(plans.map(plan => plan['kinds']), [['recent-thread', 'open-loop'], ['recent-thread', 'open-loop']],
     'the newest call leads, the empty calendar offers no calendar kind');
   assert.equal((plans[0]!['rotation'] as number) + 1, plans[1]!['rotation'], 'the persisted start counter advances by one');
+});
+
+// Release 7 W5: the loop renewal. A call that opens on a stored loop gets a summary that stores the same loop
+// again, so before this rule the next call opened on it once more, call after call. The plan each start recorded is
+// the record, so a loop a previous plan offered is not offered as an opener again; it stays in the earlier
+// conversations as context and only the owner raises it.
+test('W5: a stored open loop a previous call opened on is not offered again', async t => {
+  const h = await harness(t);
+  const loop = 'The owner said the company website lookup is still to be done.';
+  h.store.transaction(tx => seedSummary(tx, 'synthetic-loop-source', loop, NOW - 3_600_000, h.store.assistantId, NOW, loop));
+  const snapshot = (liveSessionId: string): string => {
+    const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [liveSessionId]))!;
+    return (JSON.parse(String(row['accepted_prompt_snapshot'])) as { system: string }).system;
+  };
+  const first = h.owner.create({ idempotencyKey: 'opener-once-1', inputClass: 'ordinary' }, h.ctx);
+  assert.match(snapshot(first.liveSessionId), /^- open loop: the company website lookup is still to be done /mu,
+    'the first call opens on the stored loop');
+  // The call that opened on it ends and its own summary stores the same loop again: the renewal.
+  h.store.transaction(tx => {
+    tx.run('DELETE FROM conversation_summaries WHERE live_session_id=?', [first.liveSessionId]);
+    summaries.insertSummary(tx, { liveSessionId: first.liveSessionId, status: 'complete', summary: loop, endedAt: NOW - 60_000, now: NOW, openLoop: loop });
+  });
+  const second = h.owner.create({ idempotencyKey: 'opener-once-2', inputClass: 'ordinary' }, h.ctx);
+  assert.equal(/^- open loop:/mu.test(snapshot(second.liveSessionId)), false, 'the loop a previous call opened on is not offered again');
+});
+
+// W5-R2 (master review): the distillation re-words the loop between calls, so "website lookup for Acmeworks" comes
+// back as "find the Acmeworks homepage" and the exact-topic rule alone cannot see the same loop twice. A call whose
+// plan offered any open-loop option therefore starts no other call on one for 12 hours; other kinds are untouched.
+test('W5-R2: a call that offered an open loop cools every open-loop opener for 12 hours', async t => {
+  const h = await harness(t);
+  const first = 'The owner said the Acmeworks website lookup is still to be done.';
+  h.store.transaction(tx => seedSummary(tx, 'synthetic-cooldown-source', first, NOW - 3_600_000, h.store.assistantId, NOW, first));
+  const snapshot = (liveSessionId: string): string => {
+    const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [liveSessionId]))!;
+    return (JSON.parse(String(row['accepted_prompt_snapshot'])) as { system: string }).system;
+  };
+  const call1 = h.owner.create({ idempotencyKey: 'cooldown-1', inputClass: 'ordinary' }, h.ctx);
+  assert.match(snapshot(call1.liveSessionId), /^- open loop: /mu, 'the first call offers the stored loop');
+  // t = 20 min: the call that opened on it ends and its summary stores the same loop in other words.
+  h.advance(20 * 60_000);
+  const reworded = 'The owner said he still has to find the Acmeworks homepage.';
+  h.store.transaction(tx => {
+    tx.run('DELETE FROM conversation_summaries WHERE live_session_id=?', [call1.liveSessionId]);
+    summaries.insertSummary(tx, { liveSessionId: call1.liveSessionId, status: 'complete', summary: reworded, endedAt: NOW + 20 * 60_000 - 60_000, now: NOW + 20 * 60_000, openLoop: reworded });
+  });
+  const call2 = h.owner.create({ idempotencyKey: 'cooldown-2', inputClass: 'ordinary' }, h.ctx);
+  assert.equal(/^- open loop:/mu.test(snapshot(call2.liveSessionId)), false, 'inside the cooldown the re-worded loop is not offered');
+  // t = 13 h: the cooldown is over, so a stored loop is an opener again.
+  h.advance(13 * 3_600_000 - 20 * 60_000);
+  h.store.transaction(tx => seedSummary(tx, 'synthetic-cooldown-later', 'The owner said the Acmeworks invoice is still to be sent.',
+    NOW + 13 * 3_600_000 - 3_600_000, h.store.assistantId, NOW + 13 * 3_600_000));
+  const call3 = h.owner.create({ idempotencyKey: 'cooldown-3', inputClass: 'ordinary' }, h.ctx);
+  assert.match(snapshot(call3.liveSessionId), /^- open loop: /mu, 'past the cooldown a stored loop is offered again');
 });
 
 test('1023-N8: a start right after a call that just ended names his last topic while the summary is pending', async t => {
@@ -6645,6 +6705,13 @@ test('#656: a model silent after the read settles still rebuilds once, after the
   h.advance(RESPONSE_WATCHDOG_RECOVERY_MS + 1_000); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'the mute that outlives the read recovers');
   assert.equal(fake.sessionsOpened, 2);
+  // C-PICKUP: the model went quiet, nothing dropped, so no rebuilt session is told the call came back.
+  assert.equal(receipts.filter(entry => entry['event'] === 'live_recovery').at(-1)?.['pickup'], 'mute',
+    'the recovery line names the pickup kind it chose');
+  assert.equal(fake.requests.some(request => request.openingText === LIVE_RECOVERY_PICKUP), false,
+    'and no rebuilt session carries the connection pickup after a mute');
+  assert.ok(fake.requests.filter(request => request.openingText !== undefined)
+    .every(request => request.openingText === LIVE_MUTE_PICKUP), 'any pickup a mute rebuild sends is the mute one');
   // One rebuild per recovery window: the second silence inside it is not a second rebuild.
   h.advance(RESPONSE_WATCHDOG_WINDOW_MS / 2); scheduler.runDue(); await settlePort();
   const muteRebuilds = rebuildReceipts(receipts, 'live_rebuild')
@@ -6886,6 +6953,68 @@ test('#660: two refused deliveries end the turn with the closed reason instead o
   assert.deepEqual(failed.map(record => record['reason']), ['send_failed'], 'the turn ends with its closed reason');
   const composed = fake.commentary.filter(text => text === TURN_FAILED_LINE);
   assert.equal(composed.length, 1, 'and she says the one honest line');
+});
+
+test('W4-R1: a second mute 1.7 s after a tool result rebuilds the call instead of ending it', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => {
+    const record = raw as Record<string, unknown>;
+    if (record.event === 'live_watchdog') receipts.push(record);
+  } });
+  t.after(() => detach());
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { tools: true, port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 1_200_000 } });
+  const { session } = await openPort(h, 'watchdog-tool-window');
+  const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
+  // The fixture's event union predates the tool events the host already handles, so the shape is named here.
+  const note = (id: string) => fake.emit({ type: 'toolCall', calls: [{ id, name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } }] } as unknown as Parameters<typeof fake.emit>[0]);
+  // One mute is recovered at the start of the call, so the next one is the second mute inside the window.
+  await ownerInput(fake);
+  await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'recovered'));
+  assert.equal(fake.sessionsOpened, 2, 'the first mute was recovered on a fresh session');
+  // A lookup hands its result back, and the ladder spends its rung on that silence.
+  await ownerInput(fake);
+  note('cw1');
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the first lookup answered');
+  await advance(AUDIBLE_DEBT_RUNG_MS);
+  // The second result lands 1.7 s before the ladder's rebuild step, exactly as the report read.
+  await advance(RESPONSE_WATCHDOG_RECOVERY_MS - 1_700);
+  note('cw2');
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 2, 'the second lookup answered inside the ladder');
+  const seen = receipts.length;
+  await advance(1_700 + 1_000);
+  const judged = receipts.slice(seen);
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a mute judged 1.7 s after a tool result ends nothing');
+  assert.ok(judged.some(record => record.phase === 'recovering'), 'the step is the rebuild the first mute gets');
+  assert.equal(judged.some(record => record.phase === 'settled'), false, 'the call is not settled on a wait it never had');
+  assert.equal(fake.sessionsOpened, 3, 'the rebuild opened one fresh session');
+});
+
+test('W4-R1: a genuine second mute with no tool result still ends the call', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => {
+    const record = raw as Record<string, unknown>;
+    if (record.event === 'live_watchdog') receipts.push(record);
+  } });
+  t.after(() => detach());
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { tools: true, port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 1_200_000 } });
+  const { session } = await openPort(h, 'watchdog-note-window');
+  // No tool is called at all, so nothing forges a wait the model never had.
+  await ownerInput(fake);
+  await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'recovered'));
+  await ownerInput(fake);
+  await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'settled'));
+  const settled = receipts.find(record => record.phase === 'settled');
+  assert.equal(settled?.['sinceTool'], false, 'the owner-turn wait says it did not begin at a tool result');
+  assert.equal(settled?.['msSinceToolResult'], undefined, 'no tool result ever reached the model');
+  const terminal = h.owner.get(session.liveSessionId).terminal;
+  assert.equal(terminal !== null && 'code' in terminal ? terminal.code : undefined, 'model_unresponsive',
+    'a real repeated mute keeps its honest terminal');
 });
 
 test('#660: a stalled delegation with nothing in flight delivers the unspoken result once', async t => {

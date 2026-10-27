@@ -90,18 +90,49 @@ const isRecord = (value: unknown): value is Record<string, unknown> => value !==
 const str = (value: unknown, max: number): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= max;
 const only = (args: Args, allowed: readonly string[]): boolean => Object.keys(args).every(key => allowed.includes(key));
 
+/** The properties each read view uses. */
+const READ_USED: Readonly<Record<TrelloReadView, readonly string[]>> = {
+  overview: ['view'], recent: ['view'], list: ['view', 'list', 'offset', 'limit'],
+  search: ['view', 'query', 'limit'], due: ['view', 'window'], card: ['view', 'card'],
+};
+/** What a property holds when the model fills in one the chosen view does not use. */
+const UNUSED_DEFAULTS: Readonly<Record<string, unknown>> = { offset: 0, limit: 10 };
+/**
+ * C-ARGS: the provider schema leaves every property but view (or action) optional, and a model fills in the
+ * ones a view or action does not use (an empty string, 0 for offset, the default 10 for limit). Those are
+ * absent, not extra keys, so the shape check runs on a copy without them: a property the call does use is
+ * validated exactly as before, and a key the tool does not declare still refuses.
+ *
+ * The copy is deliberate. `call.args` itself is never mutated, because a refused call is logged afterwards
+ * (`declarations.ts` `logArgumentsRejected`) and the log must still name every key the provider sent: those
+ * empty keys are the evidence that the model fills the schema in.
+ */
+function withoutUnused(args: Args, used: readonly string[], declared: Record<string, unknown>): Args {
+  // A spread creates own data properties, so an own `__proto__` argument stays visible to `only()`; assigning
+  // key by key would hand it to the prototype setter and the unknown key would vanish instead of refusing.
+  const shaped: Args = { ...args };
+  for (const key of Object.keys(shaped)) {
+    if (used.includes(key) || !Object.hasOwn(declared, key)) continue;
+    const filler = Object.hasOwn(UNUSED_DEFAULTS, key) ? UNUSED_DEFAULTS[key] : '';
+    if (shaped[key] === filler) delete shaped[key];
+  }
+  return shaped;
+}
+
 /** Each view takes exactly its own arguments; anything else is an unusable shape, refused at the boundary. */
 export function validateTrelloRead(args: unknown): args is Args {
-  if (!isRecord(args) || typeof args.view !== 'string') return false;
-  const limit = args.limit === undefined || Number.isSafeInteger(args.limit) && (args.limit as number) >= 1 && (args.limit as number) <= TRELLO_PAGE_MAX;
-  const offset = args.offset === undefined || Number.isSafeInteger(args.offset) && (args.offset as number) >= 0 && (args.offset as number) <= 10_000;
+  if (!isRecord(args) || typeof args.view !== 'string' || !(TRELLO_READ_VIEWS as readonly string[]).includes(args.view)) return false;
+  const used = READ_USED[args.view as TrelloReadView];
+  const shaped = withoutUnused(args, used, TRELLO_READ_PARAMETERS.properties);
+  const limit = shaped.limit === undefined || Number.isSafeInteger(shaped.limit) && (shaped.limit as number) >= 1 && (shaped.limit as number) <= TRELLO_PAGE_MAX;
+  const offset = shaped.offset === undefined || Number.isSafeInteger(shaped.offset) && (shaped.offset as number) >= 0 && (shaped.offset as number) <= 10_000;
   if (!limit || !offset) return false;
   switch (args.view) {
-    case 'overview': case 'recent': return only(args, ['view']);
-    case 'list': return only(args, ['view', 'list', 'offset', 'limit']) && str(args.list, 120);
-    case 'search': return only(args, ['view', 'query', 'limit']) && str(args.query, 200);
-    case 'due': return only(args, ['view', 'window']) && (TRELLO_DUE_WINDOWS as readonly string[]).includes(String(args.window));
-    case 'card': return only(args, ['view', 'card']) && str(args.card, TRELLO_NAME_MAX);
+    case 'overview': case 'recent': return only(shaped, used);
+    case 'list': return only(shaped, used) && str(shaped.list, 120);
+    case 'search': return only(shaped, used) && str(shaped.query, 200);
+    case 'due': return only(shaped, used) && (TRELLO_DUE_WINDOWS as readonly string[]).includes(String(shaped.window));
+    case 'card': return only(shaped, used) && str(shaped.card, TRELLO_NAME_MAX);
     default: return false;
   }
 }
@@ -118,17 +149,49 @@ const WRITE_SHAPES: Readonly<Record<TrelloWriteAction, { required: readonly stri
   archive: { required: ['card'], optional: [] },
 };
 const WRITE_LIMITS: Readonly<Record<string, number>> = { card: TRELLO_NAME_MAX, list: 120, name: TRELLO_NAME_MAX, description: TRELLO_DESC_MAX, text: TRELLO_NOTE_MAX, item: 300, checklist: 120, due: 16, label: 60 };
+/** C-FILLER: every property a write shape can carry, so a normalised log line names a path and never a value. */
+export const TRELLO_WRITE_ARGUMENT_FIELDS: readonly string[] =
+  [...new Set(Object.values(WRITE_SHAPES).flatMap(shape => [...shape.required, ...shape.optional]))];
+
+/** C-FILLER: the value the voice model sends for a property the chosen action does not use. False, 0 and text are
+ *  real values, and a property the action does use keeps exactly today's validation. */
+const isFillerWriteArgument = (value: unknown): boolean => value === false || value === undefined || value === null || value === ''
+  || (Array.isArray(value) && value.length === 0) || (isRecord(value) && Object.keys(value).length === 0);
+
+/** C-FILLER (council 98187): drop the properties this action's shape does not take when they carry a filler value,
+ *  and name each one. Everything else, including an unknown property with a real value, is left to the validator. */
+export function normalizeTrelloWrite(args: unknown): { args: Args; normalized: string[] } {
+  if (!isRecord(args) || typeof args.action !== 'string' || !(TRELLO_WRITE_ACTIONS as readonly string[]).includes(args.action)) {
+    return { args: isRecord(args) ? args : {}, normalized: [] };
+  }
+  const shape = WRITE_SHAPES[args.action as TrelloWriteAction];
+  const used = ['action', ...shape.required, ...shape.optional];
+  const normalized: string[] = [];
+  const kept = Object.fromEntries(Object.entries(args).filter(([key, value]) => {
+    // Only a closed write property is ever named: an invented key with a filler value is left for the validator,
+    // so a log line can never carry text the model made up as a property name.
+    if (!TRELLO_WRITE_ARGUMENT_FIELDS.includes(key) || used.includes(key) || !isFillerWriteArgument(value)) return true;
+    normalized.push(key);
+    return false;
+  }));
+  return { args: kept, normalized };
+}
 
 export function validateTrelloWrite(args: unknown): args is Args {
-  if (!isRecord(args) || typeof args.action !== 'string' || !(TRELLO_WRITE_ACTIONS as readonly string[]).includes(args.action)) return false;
-  const shape = WRITE_SHAPES[args.action as TrelloWriteAction];
-  if (!only(args, ['action', ...shape.required, ...shape.optional]) || !shape.required.every(key => args[key] !== undefined)) return false;
-  for (const [key, value] of Object.entries(args)) {
+  const { args: clean } = normalizeTrelloWrite(args);
+  if (!isRecord(clean) || typeof clean.action !== 'string' || !(TRELLO_WRITE_ACTIONS as readonly string[]).includes(clean.action)) return false;
+  const shape = WRITE_SHAPES[clean.action as TrelloWriteAction];
+  // C-ARGS: the same rule as a read view. A model that fills in every declared property sends the ones this
+  // action does not require as an empty string, which is absent, not an extra key. A required property is
+  // never dropped here, a boolean is never dropped (false is a real request), and an undeclared key still refuses.
+  const shaped = withoutUnused(clean, ['action', ...shape.required], TRELLO_WRITE_PARAMETERS.properties);
+  if (!only(shaped, ['action', ...shape.required, ...shape.optional]) || !shape.required.every(key => shaped[key] !== undefined)) return false;
+  for (const [key, value] of Object.entries(shaped)) {
     if (key === 'action') continue;
     if (key === 'checked' || key === 'complete' || key === 'remove') { if (typeof value !== 'boolean') return false; continue; }
     if (!str(value, WRITE_LIMITS[key] ?? 0)) return false;
   }
-  if (args.action === 'update' && args.name === undefined && args.description === undefined) return false;
+  if (shaped.action === 'update' && shaped.name === undefined && shaped.description === undefined) return false;
   return true;
 }
 
@@ -300,7 +363,7 @@ export const TRELLO_GUIDANCE: Readonly<Record<string, string>> = {
   outcome_unknown: 'Naya is not sure the change landed. Say so and suggest he look at the card in Trello.',
 };
 
-export type TrelloLog = (event: { event: 'connector_call'; connector: 'trello'; tool: string; phase: 'admit' | 'dispatch' | 'settle'; outcome: 'ok' | 'refused' | 'failed' | 'unknown'; reason?: string }) => void;
+export type TrelloLog = (event: { event: 'connector_call'; connector: 'trello'; tool: string; phase: 'admit' | 'dispatch' | 'settle'; outcome: 'ok' | 'refused' | 'failed' | 'unknown'; reason?: string; /** C-FILLER: the write properties dropped as filler, names only. */ normalized?: readonly string[] }) => void;
 
 interface Snapshot { lists: TrelloList[]; labels: TrelloLabel[]; cards: TrelloCard[]; complete: boolean; at: number }
 interface Session {
@@ -388,8 +451,8 @@ export class TrelloBoard {
     return session;
   }
 
-  #emit(tool: string, phase: 'admit' | 'dispatch' | 'settle', outcome: 'ok' | 'refused' | 'failed' | 'unknown', reason?: string): void {
-    try { this.#log?.({ event: 'connector_call', connector: 'trello', tool, phase, outcome, ...(reason ? { reason } : {}) }); } catch { /* a log never changes a call */ }
+  #emit(tool: string, phase: 'admit' | 'dispatch' | 'settle', outcome: 'ok' | 'refused' | 'failed' | 'unknown', reason?: string, normalized?: readonly string[]): void {
+    try { this.#log?.({ event: 'connector_call', connector: 'trello', tool, phase, outcome, ...(reason ? { reason } : {}), ...(normalized?.length ? { normalized } : {}) }); } catch { /* a log never changes a call */ }
   }
 
   async #call(planned: TrelloPlannedCall, signal?: AbortSignal): Promise<unknown> {
@@ -542,10 +605,10 @@ export class TrelloBoard {
     throw new Refusal('card_unknown');
   }
 
-  #refusal(error: unknown, tool: string, phase: 'admit' | 'settle'): JsonObject {
+  #refusal(error: unknown, tool: string, phase: 'admit' | 'settle', normalized?: readonly string[]): JsonObject {
     const code = error instanceof Refusal ? error.code : 'unavailable';
     const extra = error instanceof Refusal ? error.extra : {};
-    this.#emit(tool, phase, 'refused', code);
+    this.#emit(tool, phase, 'refused', code, normalized);
     return { ok: false, code, guidance: TRELLO_GUIDANCE[code] ?? TRELLO_GUIDANCE.unavailable!, ...extra };
   }
 
@@ -643,21 +706,23 @@ export class TrelloBoard {
    * write in one session answers from its first receipt; the server is called once and never again.
    */
   async write(runId: string, args: Args, ownerWords: string, signal?: AbortSignal): Promise<JsonObject> {
-    const action = String(args.action) as TrelloWriteAction;
+    // C-FILLER: the unused properties the voice model sent as a filler value are absent before anything runs.
+    const { args: clean, normalized } = normalizeTrelloWrite(args);
+    const action = String(clean.action) as TrelloWriteAction;
     const tool = `write.${action}`;
-    if (!this.available()) return this.#refusal(new Refusal('not_configured'), tool, 'admit');
-    if (this.#boardName === undefined) return this.#refusal(new Refusal('not_configured'), tool, 'admit');
-    if (!ownerAskedForChange(ownerWords)) return this.#refusal(new Refusal('not_owner_requested'), tool, 'admit');
+    if (!this.available()) return this.#refusal(new Refusal('not_configured'), tool, 'admit', normalized);
+    if (this.#boardName === undefined) return this.#refusal(new Refusal('not_configured'), tool, 'admit', normalized);
+    if (!ownerAskedForChange(ownerWords)) return this.#refusal(new Refusal('not_owner_requested'), tool, 'admit', normalized);
     const session = this.#session(runId);
     let plan: WritePlan;
     let snapshot: Snapshot;
     try {
       snapshot = await this.#snapshot(session, signal);
-      plan = await this.#plan(session, snapshot, action, args, signal);
-    } catch (error) { return this.#refusal(error, tool, 'admit'); }
+      plan = await this.#plan(session, snapshot, action, clean, signal);
+    } catch (error) { return this.#refusal(error, tool, 'admit', normalized); }
     const replay = session.ledger.get(plan.key);
-    if (replay) { this.#emit(tool, 'admit', 'refused', 'replayed'); return { ...replay, replayed: true }; }
-    this.#emit(tool, 'admit', 'ok');
+    if (replay) { this.#emit(tool, 'admit', 'refused', 'replayed', normalized); return { ...replay, replayed: true }; }
+    this.#emit(tool, 'admit', 'ok', undefined, normalized);
     let last: unknown;
     const steps = [...plan.calls];
     for (let step = 0; step < steps.length + (plan.followUp ? 1 : 0); step++) {
@@ -666,19 +731,19 @@ export class TrelloBoard {
       if (!call || !allowed || !allowed.includes(String(call.args.action))) {
         // Nothing was sent for this step; a step after a sent one leaves the outcome open.
         const code = step === 0 ? 'unsupported' : 'outcome_unknown';
-        this.#emit(tool, 'settle', step === 0 ? 'refused' : 'unknown', code);
+        this.#emit(tool, 'settle', step === 0 ? 'refused' : 'unknown', code, normalized);
         session.snapshot = undefined;
         const receipt: JsonObject = { ok: false, code, guidance: TRELLO_GUIDANCE[code]! };
         if (step > 0) session.ledger.set(plan.key, receipt);
         return receipt;
       }
-      this.#emit(tool, 'dispatch', 'ok');
+      this.#emit(tool, 'dispatch', 'ok', undefined, normalized);
       const result = await this.#transport.call(call.tool, call.args, signal);
       if (!result.ok) {
         // A refused first step changed nothing; anything after a sent step is not known.
         const definite = step === 0 && (result.code === 'tool_error' || result.code === 'auth_failed' || result.code === 'credential_revoked' || result.code === 'credential_mismatch' || result.code === 'not_signed_in' || result.code === 'rate_limited' || result.code === 'unavailable' || result.code === 'not_allowed');
         const code = definite ? (result.code === 'auth_failed' || result.code === 'credential_revoked' || result.code === 'credential_mismatch' || result.code === 'not_signed_in' || result.code === 'rate_limited' || result.code === 'unavailable' ? result.code : 'write_failed') : 'outcome_unknown';
-        this.#emit(tool, 'settle', definite ? 'failed' : 'unknown', code);
+        this.#emit(tool, 'settle', definite ? 'failed' : 'unknown', code, normalized);
         session.snapshot = undefined;
         const receipt: JsonObject = { ok: false, code, guidance: TRELLO_GUIDANCE[code]! };
         if (!definite) session.ledger.set(plan.key, receipt);
@@ -695,12 +760,12 @@ export class TrelloBoard {
     if (!card && action !== 'checklist') {
       const receipt: JsonObject = { ok: false, code: 'outcome_unknown', guidance: TRELLO_GUIDANCE.outcome_unknown! };
       session.ledger.set(plan.key, receipt);
-      this.#emit(tool, 'settle', 'unknown', 'outcome_unknown');
+      this.#emit(tool, 'settle', 'unknown', 'outcome_unknown', normalized);
       return receipt;
     }
     const receipt: JsonObject = { ok: true, written: action, ...plan.describe(card, snapshot) };
     session.ledger.set(plan.key, receipt);
-    this.#emit(tool, 'settle', 'ok');
+    this.#emit(tool, 'settle', 'ok', undefined, normalized);
     return receipt;
   }
 

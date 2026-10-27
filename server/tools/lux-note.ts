@@ -27,8 +27,13 @@ export function validateStageNote(args: unknown): args is { title: string; body:
 export const NOTE_MAX_CHARS = 2000;
 /** What the model says when the host could not stage the note at all: a closed code in plain words. */
 export const STAGE_FAILED_GUIDANCE = 'The note was not staged. Tell the owner it was not saved and ask them to say it again in one sentence.';
+/** R7-W1: a refusal is never named as a Lux failure; she asks him for the words that stage it. */
+export const AUTHORIZATION_MISSING_GUIDANCE = "I did not hear a save request in your own words this turn; say 'save it to Lux' and I will stage it.";
 export const TITLE_MAX_CHARS = 120;
 export const CONFIRM_WINDOW_MS = 30_000;
+/** W1-R1: the open guard's bounds, on the journal rows of one owner stretch: six splits, 600 characters. */
+export const OWNER_WINDOW_TURNS = 6;
+export const OWNER_WINDOW_CHARS = 600;
 export const CONFIRM_SETTLE_MS = 1_500;
 export const CONFIRM_MAX_TOKENS = 6;
 const VAULT_TYPE = 'UNCATEGORIZED';
@@ -41,17 +46,36 @@ export type ComposedReason = 'negated' | 'reported' | 'quoted' | 'conditional' |
 export type ComposedAsk = { readonly decision: 'grant' } | { readonly decision: 'clarify'; readonly reason: ComposedReason }
   | { readonly decision: 'append' } | { readonly decision: 'none' };
 
-/** The verbs that can authorize a create, and the destinations that name lux and nothing else. */
-const ASK_VERB = /^(?:naya\s+)?(?:please\s+)?(?:save|remember|put|add|write|store)\b/u;
+/**
+ * The verbs that can authorize a create, and the destinations that name lux and nothing else. W1-R2: the
+ * ask can sit anywhere in a stretch he said in pieces, so the verb is a word, not a leading anchor.
+ */
+const ASK_WORD = /\b(?:save|remember|put|add|write|store)\b/u;
 const DESTINATION = /\b(?:to|in|into)\s+(?:my\s+|the\s+)?(?:lux(?:\s+knowledge)?|knowledge\s+base|vault)\b/u;
 const APPEND = /^(?:naya\s+)?(?:please\s+)?(?:add|append|update|change|overwrite|edit|delete|remove|archive|link|restore|replace)\b(?=[\s\S]*\b(?:note|insight|entry|record)\b)/u;
 const REPORTED = /^(?:say|says|according to)\b|\b(?:he|she|they|it|someone|rob|you|the [a-z]+)\s+(?:said|says|say|asked|asks|wrote|writes|mentioned|mentions|told|tells|wants|asked me)\b/u;
 const QUESTION = /\b(?:how (?:do|can|should|would) (?:i|you)|what(?:'s| is) the (?:way|phrase|command)|can you tell me how)\b/u;
 const CONDITIONAL = /^(?:if|when|whenever|unless|should|in case)\b/u;
-const NEGATION_LEAD = /^(?:no|not|never|don(?:'| )?t|do not)\b/u;
-const NEGATION = /(?:don(?:'| )?t|do not|never|not|no)\b/u;
-const ASK_WORD = /\b(?:save|remember|put|add|write|store)\b/u;
+/** W1-R4: a negation is a word, contractions included, and it governs across a short framing chain. */
+const NEGATION = /\b(?:(?:don|didn|doesn|won|wouldn|couldn|shouldn|isn|aren|wasn|weren|hasn|haven|ain|can)(?:'| )?t|cannot|not|never|no)\b/u;
+/** A token that a split contraction ends in: noteKey turns "don't" into "don t". */
+const CONTRACTION_TAIL = new Set(['don', 'didn', 'doesn', 'won', 'wouldn', 'couldn', 'shouldn', 'isn', 'aren', 'wasn', 'weren', 'hasn', 'haven', 'ain', 'can']);
+/** The auxiliaries and framing words a negation carries to its verb: "don't want to save" is a refusal. */
+const FRAMING = new Set(['want', 'wants', 'wanted', 'need', 'needs', 'needed', 'have', 'has', 'had', 'try', 'tries', 'tried',
+  'intend', 'intends', 'intended', 'mean', 'means', 'meant', 'ever', 'to', 'be', 'will', 'would', 'going', 'really', 'just']);
+const FRAMING_CHAIN = 6;
 const HEDGE = /\b(?:maybe|perhaps|probably|might|could|i think|i guess|possibly)\b/u;
+/** W1-R4: the words of the stretch, with a split contraction ("don t") kept as one token. */
+const askTokens = (key: string): string[] => {
+  const merged: string[] = [];
+  for (const token of key.split(' ')) {
+    const last = merged.length - 1;
+    if (token === 't' && last >= 0 && CONTRACTION_TAIL.has(merged[last]!)) merged[last] = `${merged[last]} t`;
+    else merged.push(token);
+  }
+  return merged;
+};
+
 /** A composed note about the conversation itself names its source where a dictation names a store. */
 const NOTE_SOURCE = /\b(?:note|summary)\b[^\p{L}\p{N}]+(?:about|from|of)\b[^\p{L}\p{N}]+(?:this|that|what we(?: just)? (?:discussed|talked about)|our (?:conversation|call|discussion))\b/u;
 
@@ -70,25 +94,32 @@ export function composedAsk(text: string): ComposedAsk {
   if (QUESTION.test(key)) return { decision: 'clarify', reason: 'reported' };
   if (REPORTED.test(key)) return { decision: 'clarify', reason: 'reported' };
   if (CONDITIONAL.test(key)) return { decision: 'clarify', reason: 'conditional' };
-  // A negation before the verb is the owner refusing, not asking, whatever verb order he used.
-  if (NEGATION_LEAD.test(key) && ASK_WORD.test(key) && DESTINATION.test(key)) return { decision: 'clarify', reason: 'negated' };
-  if (!ASK_VERB.test(key)) {
-    return HEDGE.test(key) && ASK_WORD.test(key) && DESTINATION.test(key) ? { decision: 'clarify', reason: 'ambiguous' } : { decision: 'none' };
+  // W1-R2: a save verb and a lux destination anywhere in the stretch are the ask.
+  if (!ASK_WORD.test(key)) {
+    return HEDGE.test(key) && DESTINATION.test(key) ? { decision: 'clarify', reason: 'ambiguous' } : { decision: 'none' };
   }
-  // A negation between the verb and the destination is still a refusal.
-  const verb = key.search(ASK_VERB);
   const destination = key.search(DESTINATION);
-  const negation = key.slice(verb).search(NEGATION);
-  if (negation >= 0 && negation < destination) return { decision: 'clarify', reason: 'negated' };
+  // W1-R4: every save verb before the destination is judged, and a negation governs across a short
+  // framing chain, so "don't want to save" refuses while a self-correction followed by an ask grants.
+  const tokens = askTokens(key);
+  const offsets: number[] = [];
+  let at = 0;
+  for (const token of tokens) { offsets.push(at); at += token.length + 1; }
+  const governed = (index: number): boolean => {
+    let before = index - 1;
+    for (let step = 0; before >= 0 && step < FRAMING_CHAIN && FRAMING.has(tokens[before]!); step += 1) before -= 1;
+    return before >= 0 && NEGATION.test(tokens[before]!);
+  };
+  const asked = tokens.some((token, index) => ASK_WORD.test(token)
+    && (destination < 0 || (offsets[index] ?? 0) < destination) && !governed(index));
   if (HEDGE.test(key) || /\b(?:or|either|and maybe)\b/u.test(key.slice(destination))) return { decision: 'clarify', reason: 'ambiguous' };
   if (destination < 0) {
     // A note about this conversation names its source instead of a store. Staging is still not saving:
     // the frozen read-back and his own confirmation are what authorize the write.
     if (!NOTE_SOURCE.test(key)) return { decision: 'none' };
-    if (negation >= 0) return { decision: 'clarify', reason: 'negated' };
-    return HEDGE.test(key) ? { decision: 'clarify', reason: 'ambiguous' } : { decision: 'grant' };
+    return asked ? { decision: 'grant' } : { decision: 'clarify', reason: 'negated' };
   }
-  return { decision: 'grant' };
+  return asked ? { decision: 'grant' } : { decision: 'clarify', reason: 'negated' };
 }
 
 const AFFIRM = new Set(['yes', 'yeah', 'yep', 'yup', 'correct', 'right', 'sure', 'ok', 'okay', 'exactly', 'perfect', 'confirm', 'affirmative', 'save', 'do', 'go']);
@@ -128,10 +159,32 @@ export type OwnerTurnRead = { readonly state: 'owner_turn'; readonly text: strin
   | { readonly state: 'refused'; readonly code: 'transcript_pending' | 'transcript_typed' };
 
 /**
+ * The owner's finalized mic rows of this one stretch, newest first: back to the turn start and the
+ * model's last output, under the open guard's bounds. A row outside the confirm window is never part
+ * of it, and a typed row never counts.
+ */
+function ownerStretch(mic: readonly OwnerTurnRow[], turnStartAt: number | undefined, now: number | undefined, spokenAfter: number | undefined): readonly OwnerTurnRow[] {
+  const stretch: OwnerTurnRow[] = [];
+  for (const row of mic) {
+    if (stretch.length === OWNER_WINDOW_TURNS) break;
+    if (turnStartAt !== undefined && row.finalizedAt < turnStartAt) break;
+    if (now !== undefined && now - row.finalizedAt > CONFIRM_WINDOW_MS) break;
+    if (spokenAfter !== undefined && row.journalId <= spokenAfter) break;
+    stretch.push(row);
+  }
+  return stretch;
+}
+
+/** Oldest to newest, because the ask is one sentence he said in pieces. */
+const composedText = (stretch: readonly OwnerTurnRow[]): string =>
+  stretch.map(row => row.text).reverse().join(' ').replace(/\s+/g, ' ').trim().slice(-OWNER_WINDOW_CHARS).trim();
+
+/**
  * W6-R2 B1: authorization is the owner's own finalized mic turn of THIS turn. Before its transcript
  * is finalized the stage refuses, and a newer-looking read never borrows the previous owner turn.
+ * R7-W1: that turn is the whole finalized stretch he said in pieces, not only its newest fragment.
  */
-export function currentOwnerTurn(rows: readonly OwnerTurnRow[], turnStartAt: number | undefined, inputFinal: boolean, now?: number): OwnerTurnRead {
+export function currentOwnerTurn(rows: readonly OwnerTurnRow[], turnStartAt: number | undefined, inputFinal: boolean, now?: number, spokenAfter?: number): OwnerTurnRead {
   const mic = rows.filter(row => row.finalOrigin !== 'typed').slice().sort((a, b) => b.journalId - a.journalId);
   const newest = mic[0];
   if (!newest) return { state: 'refused', code: rows.length > 0 ? 'transcript_typed' : 'transcript_pending' };
@@ -139,7 +192,8 @@ export function currentOwnerTurn(rows: readonly OwnerTurnRow[], turnStartAt: num
   if (turnStartAt !== undefined && newest.finalizedAt < turnStartAt) return { state: 'refused', code: 'transcript_pending' };
   // A turn flag that outlived its turn is not this turn: an old transcript is never authorization.
   if (now !== undefined && now - newest.finalizedAt > CONFIRM_WINDOW_MS) return { state: 'refused', code: 'transcript_pending' };
-  return { state: 'owner_turn', text: newest.text, evidence: new Set(mic.map(row => `journal:${row.journalId}`)) };
+  // R7-W1: a VAD split ask is one ask, so the whole finalized stretch of this turn authorizes it.
+  return { state: 'owner_turn', text: composedText(ownerStretch(mic, turnStartAt, now, spokenAfter)), evidence: new Set(mic.map(row => `journal:${row.journalId}`)) };
 }
 
 export type PlaybackSignalKind = 'received' | 'audible' | 'enqueued' | 'started' | 'drained' | 'interrupted' | 'terminated';
@@ -234,7 +288,9 @@ export function stageComposedNote(tx: Transaction, liveSessionId: string, args: 
     .map(row => ({ journalId: Number(row['journal_id']), text: String(row['text'] ?? ''),
       finalOrigin: String(row['final_origin'] ?? 'unknown'), finalizedAt: Number(row['finalized_at'] ?? 0) }));
   // W6-R2 B1: only this turn's finalized mic transcript can authorize, never the previous turn.
-  const read = currentOwnerTurn(rows, turn.inputAt, turn.inputFinal, now);
+  // R7-W1: his words before the model answered are an earlier stretch, never this ask.
+  const spoken = tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE live_session_id=? AND kind='outputTranscription' AND finished=1", [liveSessionId]);
+  const read = currentOwnerTurn(rows, turn.inputAt, turn.inputFinal, now, Number(spoken?.['id'] ?? 0) || undefined);
   if (read.state === 'refused') {
     hostLogEvent({ event: 'lux_note_stage', staged: false, code: read.code });
     return { staged: false, code: read.code };
@@ -243,7 +299,9 @@ export function stageComposedNote(tx: Transaction, liveSessionId: string, args: 
     title: args.title, body: args.body, evidence: args.evidenceRefs, heldEvidence: read.evidence, enabled, now });
   if (outcome.state === 'refused') {
     hostLogEvent({ event: 'lux_note_stage', staged: false, code: outcome.code });
-    return { staged: false, code: outcome.code };
+    return outcome.code === 'authorization_missing'
+      ? { staged: false, code: outcome.code, guidance: AUTHORIZATION_MISSING_GUIDANCE }
+      : { staged: false, code: outcome.code };
   }
   const note = outcome.note;
   saveNoteState(tx, note);

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, chatQuery, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, newestDatedFirst, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
-  validateResearch, worthContinuing, parseResearch, researchRepair, topicTerms, entityPreservedQuestion,
+  validateResearch, worthContinuing, parseResearch, researchRepair, topicTerms, entityPreservedQuestion, ResearchAdmission, RESEARCH_REFUSAL_REASONS, researchArgumentShape,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -615,7 +615,7 @@ test('the research declaration names only the configured sources and the valid h
 test('a rewrite that swaps the named person is refused and the original question stands', () => {
   const original = 'who reports to Korbi';
   const drifted = "Who are Rob's current direct reports according to Mongoose knowledge?";
-  assert.deepEqual(entityPreservedQuestion(original, drifted), { ok: false, reason: 'entity_rewrite', question: original });
+  assert.deepEqual(entityPreservedQuestion(original, drifted), { ok: false, reason: 'entity_rewrite', question: original, namesKept: 0, namesDropped: 1, namesAdded: 2 });
   // The same rule at the tool's own rewrite surface: the topic is the search text, so a topic about another
   // person is the drift and the call is refused before anything is read.
   const parsed = parseResearch({ action: 'start', question: original, topic: 'direct reports for Rob' });
@@ -625,6 +625,57 @@ test('a rewrite that swaps the named person is refused and the original question
   // A narrowing that keeps the owner's name is what the rule is for, so it is allowed.
   assert.deepEqual(entityPreservedQuestion(original, 'Korbi direct reports'), { ok: true, question: 'Korbi direct reports' });
   assert.deepEqual(entityPreservedQuestion(original, 'who reports to Korbi in Singapore'), { ok: true, question: 'who reports to Korbi in Singapore' });
+});
+
+// C-ENTITY (2026-10-27): five live refusals, four of them an honest rewrite refused because a place, a weekday
+// and a sentence-initial capital all counted as names. A capital is a name where the word is one, not where it sits.
+test('an honest rewrite is not refused for a sentence-initial capital and a real swap still is', () => {
+  // The owner named a company and a place; keeping the company is the narrowing the rule allows.
+  assert.deepEqual(entityPreservedQuestion('Find the homepage of Acmeworks in Lisbon', 'Acmeworks homepage'),
+    { ok: true, question: 'Acmeworks homepage' });
+  // No name dropped and none added: sentence-initial words, "I", weekdays and months name nobody.
+  for (const [question, topic] of [
+    ['Where is the nearest bakery open on Sunday', 'Nearest bakery open Sunday'],
+    ['Find the nearest bakery open on Sunday', 'Nearest bakery open Sunday'],
+    ['What did I ask about the Acmeworks pilot', 'Acmeworks pilot'],
+  ] as const) assert.deepEqual(entityPreservedQuestion(question, topic), { ok: true, question: topic });
+  // Every question name dropped and a new one added is the drift the guard exists for, counted but never quoted.
+  assert.deepEqual(entityPreservedQuestion('Find Acmeworks pricing', 'Globex pricing'),
+    { ok: false, reason: 'entity_rewrite', question: 'Find Acmeworks pricing', namesKept: 0, namesDropped: 1, namesAdded: 1 });
+  // Acronyms and mixed-case brands stay names, so a swap of one is still caught.
+  assert.equal(entityPreservedQuestion('who owns Acmeworks', 'API docs').ok, false);
+  assert.equal(entityPreservedQuestion('who owns eBay UK', 'eBay UK account').ok, true);
+});
+
+// C-ENTITY requirement 4: the owner never got the lookup because the model re-sent the same refused request
+// three times in six seconds. The second identical request in one owner turn is stopped, with the same code.
+test('the retry of a refused request is refused at once with the same code and the stop line', () => {
+  const input = { action: 'start', question: 'Find Acmeworks pricing', topic: 'Globex pricing' };
+  const first = parseResearch(input);
+  assert.equal(first.ok ? '' : first.reason, 'entity_rewrite');
+  const counts = (parsed: typeof first) => (parsed.ok ? {} : (({ namesKept, namesDropped, namesAdded }) => ({ namesKept, namesDropped, namesAdded }))(parsed.shape as unknown as Record<string, unknown>));
+  assert.deepEqual(counts(first), { namesKept: 0, namesDropped: 1, namesAdded: 1 });
+  const guidance = String(researchRepair('entity_rewrite')['guidance']);
+  assert.match(guidance, /keep the question's own names exactly/);
+  assert.match(guidance, /Do not retry the same request in this turn/);
+  assert.equal(guidance.startsWith('This exact request was already refused'), false, 'the first refusal is not told it repeated itself');
+  // The same bytes again, no owner turn in between: refused at once, same code, and it hears that it repeated.
+  assert.deepEqual(counts(parseResearch(input)), { namesKept: 0, namesDropped: 1, namesAdded: 1 });
+  assert.match(String(researchRepair('entity_rewrite')['guidance']), /^This exact request was already refused in this owner turn: /);
+  // A new owner turn forgets the refusal, and the same question rewritten around the owner's own name passes.
+  new ResearchAdmission().ownerTurn();
+  assert.match(String(researchRepair('entity_rewrite')['guidance']), /^The topic replaced a name/);
+  assert.equal(parseResearch({ action: 'start', question: 'Find Acmeworks pricing', topic: 'Acmeworks pricing' }).ok, true);
+});
+
+// C-ENTITY ruling W3-R1: the pre-owner-turn gate is a research refusal too, with its own closed reason and the
+// same logged shape. The gate itself is exercised in research-refusal.integration.mjs.
+test('the gate refusal has a closed reason code and leaves lengths, never words', () => {
+  assert.ok((RESEARCH_REFUSAL_REASONS as readonly string[]).includes('no_owner_input'));
+  const shape = researchArgumentShape({ action: 'start', question: 'synthetic question', topic: 'synthetic topic', lookups: [{ source: 'knowledge', query: 'synthetic' }] });
+  assert.deepEqual([shape.action, shape.topicChars, shape.questionChars, shape.lookupCount, shape.lookupSources],
+    ['start', 'synthetic topic'.length, 'synthetic question'.length, 1, ['knowledge']]);
+  assert.equal(JSON.stringify(shape).includes('synthetic'), false, 'the shape carries lengths and closed sources, never the words');
 });
 
 // --- Calendar merged read, window logging and knowledge carry (contract F4, #272) ---------------
@@ -2019,6 +2070,64 @@ test('TOPIC 2 (#565): a start without a topic is refused, and the repair line na
   assert.equal(tooLong.ok, false, 'a topic past eight words is refused');
   if (!tooLong.ok) assert.equal(tooLong.reason, 'topic_length');
   assert.equal(parseResearch({ action: 'continue', researchId: 'abc', topic: 'a topic' }).ok, true, 'a continuation needs no topic');
+});
+
+// C-FILLER: the voice model sends every declared property, unused ones as "", null, [] or {}. Those are absent.
+test('FILLER 1: the empty properties the voice model sends are absent, so the call is accepted', () => {
+  const args = {
+    action: 'start', question: 'what is on my calendar tomorrow', topic: 'calendar tomorrow', cursor: '', researchId: '',
+    lookups: [{ source: 'calendar', query: 'tomorrow', history: {}, mail: {} }],
+  };
+  const parsed = parseResearch(args);
+  assert.equal(parsed.ok, true, 'the filler shapes are not model errors');
+  if (!parsed.ok) return;
+  assert.deepEqual(parsed.normalized, ['cursor', 'researchId', 'lookups[0].history', 'lookups[0].mail']);
+  assert.deepEqual(parsed.call.lookups, [{ source: 'calendar', query: 'tomorrow' }], 'the empty objects never reach the read');
+  assert.equal(Object.hasOwn(parsed.call, 'cursor'), false, 'the empty cursor is absent, so it cannot conflict with the lookups');
+  assert.equal(validateResearch(args), true);
+
+  const refused = parseResearch({ action: 'start', question: 'what is the plan', topic: '' });
+  assert.equal(refused.ok, false);
+  if (refused.ok) return;
+  assert.equal(refused.reason, 'topic_required', 'a really missing topic still refuses');
+  assert.deepEqual(refused.shape.normalized, ['topic'], 'the refusal names the property it dropped');
+  const line = { event: 'research_refused', state: 'refused', sequence: 1, reason: refused.reason, ...refused.shape };
+  assert.equal(safeEvent(line)?.event, 'research_refused', 'the refusal line survives the host log with the normalised paths');
+  assert.equal(safeEvent({ ...line, normalized: ['topic=calendar'] }), undefined, 'a value never rides the log in a path');
+});
+
+// C-FILLER F1: the padded call is the whole point, so the log line must survive the path count it produces.
+test('FILLER 3: a call padded on every property still keeps its refusal line', () => {
+  const padded = {
+    action: 'start', question: 'test all tools', topic: 'tools', researchId: '', sources: '', direction: '',
+    cursor: '', pageCursor: '',
+    lookups: Array.from({ length: 9 }, () => ({ source: '', query: '', history: {}, mail: {} })),
+  };
+  const parsed = parseResearch(padded);
+  assert.equal(parsed.ok, false);
+  if (parsed.ok) return;
+  assert.equal(parsed.reason, 'lookup_source', 'an empty source is absent, so the entry has no source at all');
+  assert.equal(parsed.shape.normalized?.length, 5 + 9 * 4, 'five top-level paths and four in each of the nine entries');
+  const line = safeEvent({ event: 'research_refused', state: 'refused', sequence: 1, reason: parsed.reason, ...parsed.shape });
+  assert.equal(line?.event, 'research_refused', 'the refusal line survives the path count, not just the field');
+  assert.equal((line?.normalized as string[]).length, 41);
+});
+
+test('FILLER 2: a non-empty value and a real error still refuse, exactly as today', () => {
+  const unknown = parseResearch({ action: 'start', question: 'what is on my calendar', topic: 'calendar', lookups: [{ source: 'calendar', query: 'x', extra: 'y' }] });
+  assert.equal(unknown.ok, false);
+  if (!unknown.ok) assert.equal(unknown.reason, 'lookup_unknown_fields');
+  const empty = parseResearch({ action: 'start', question: '', topic: 'x' });
+  assert.equal(empty.ok, false, 'a start with no question still refuses');
+  if (!empty.ok) assert.equal(empty.reason, 'question_required');
+  const history = parseResearch({ action: 'start', question: 'q', topic: 't', lookups: [{ source: 'calendar', query: 'x', history: { topic: 'y' } }] });
+  assert.equal(history.ok, false, 'a non-empty history on a non-memory source still refuses');
+  if (!history.ok) assert.equal(history.reason, 'lookup_history');
+  assert.equal(parseResearch({ action: 'continue', researchId: 'abc', question: '', lookups: [] }).ok, true, 'the filler question and lookup list of a continuation are absent');
+  assert.equal(parseResearch({ action: 'stop', researchId: 'abc', lookups: [] }).ok, true, 'a stop with the filler lookup list is a stop');
+  const noId = parseResearch({ action: 'stop', lookups: [] });
+  assert.equal(noId.ok, false, 'a stop with no run named still refuses');
+  if (!noId.ok) assert.equal(noId.reason, 'research_id_required');
 });
 
 test('TOPIC 3 (#576): a spoken ask with no digits sends a query with no digit', async () => {

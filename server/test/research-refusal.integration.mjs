@@ -20,7 +20,10 @@ const detach=attachHostLogSink({event:raw=>{const safe=safeEvent(raw);if(safe)ev
 const schema=researchDeclaration().parameters,check=new AjvJsonSchemaValidator().getValidator(schema);
 // C-RESEARCH-CONTRACT: a start is declared to carry its topic (#565), so every valid start here carries one;
 // without it the published schema rejects the call before a turn is spent.
+// C-FILLER: the empty lookup list the voice model sends on a stop is a filler value, so it is absent, not a
+// lookups_stop refusal; a stop that names a real lookup still refuses.
 const valid=[{action:'start',question:'synthetic',topic:'synthetic names'},{action:'continue',researchId:'synthetic'},{action:'stop',researchId:'synthetic'},
+ {action:'stop',researchId:'synthetic',lookups:[]},
  {action:'start',question:'synthetic',topic:'synthetic names',sources:'gmail',direction:'synthetic direction'},
  {action:'start',question:'synthetic',topic:'synthetic names',lookups:[{source:'calendar',query:'today'}]},
  {action:'continue',researchId:'synthetic',cursor:'synthetic'},
@@ -31,11 +34,11 @@ for(const input of valid){assert.equal(check(input).valid,true);assert.equal(par
 const invalid=[['lookup_query_required',{action:'start',question:sentinel,topic:'synthetic',lookups:[{source:'knowledge'}]}],
  ['lookup_query_required',{action:'start',question:sentinel,topic:'synthetic',lookups:[{source:'calendar'}]}],
  ['action_invalid',{action:sentinel}],['unknown_fields',{action:'start',question:sentinel,[sentinel]:null}],
- ['sources_type',{action:'start',question:sentinel,sources:null}],['direction_type',{action:'start',question:sentinel,direction:[]}],
- ['cursor_type',{action:'continue',researchId:'synthetic',cursor:null}],['lookups_type',{action:'start',question:sentinel,topic:'synthetic',lookups:null}],
- ['cursor_action',{action:'start',question:sentinel,topic:'synthetic',cursor:'synthetic'}],['lookups_stop',{action:'stop',researchId:'synthetic',lookups:[]}],
- ['cursor_lookups_conflict',{action:'continue',researchId:'synthetic',cursor:'synthetic',lookups:[]}],
- ['lookup_history',{action:'start',question:sentinel,topic:'synthetic',lookups:[{source:'memory',history:null}]}],
+ ['sources_type',{action:'start',question:sentinel,sources:5}],['direction_type',{action:'start',question:sentinel,direction:5}],
+ ['cursor_type',{action:'continue',researchId:'synthetic',cursor:5}],['lookups_type',{action:'start',question:sentinel,topic:'synthetic',lookups:5}],
+ ['cursor_action',{action:'start',question:sentinel,topic:'synthetic',cursor:'synthetic'}],['lookups_stop',{action:'stop',researchId:'synthetic',lookups:[{source:'calendar',query:'synthetic'}]}],
+ ['cursor_lookups_conflict',{action:'continue',researchId:'synthetic',cursor:'synthetic',lookups:[{source:'memory',history:{query:'synthetic'}}]}],
+ ['lookup_history',{action:'start',question:sentinel,topic:'synthetic',lookups:[{source:'calendar',history:{topic:'synthetic'}}]}],
  ['lookup_mail',{action:'start',question:sentinel,topic:'synthetic',lookups:[{source:'mail',mail:{q:'synthetic',id:'synthetic'}}]}],
  ['lookups_count',{action:'start',question:sentinel,topic:'synthetic',lookups:Array.from({length:5},()=>({source:'knowledge',query:'synthetic'}))}],
  // C-RESEARCH-CONTRACT T-02/Q-13: the three argument shapes the live host refused on 2026-10-27, each a
@@ -59,7 +62,7 @@ assert.deepEqual(schema.anyOf?.[0]?.required,['question','topic'],'a start is de
 assert.deepEqual(schema.anyOf?.[1]?.required,['researchId'],'continue and stop are declared to carry the researchId');
 assert.equal(check({action:'start',question:'synthetic'}).valid,false,'a topicless start never reaches the host');
 
-async function fixture(routeClasses=classes){
+async function fixture(routeClasses=classes,speakAtStart=true){
  const dir=mkdtempSync(join(tmpdir(),'didi-research-refusal-')),configDir=join(dir,'config');mkdirSync(configDir,{mode:0o700});
  const store=new Store(join(dir,'data'),hostMigrations),cleanups=[],wire=await voiceFixture({after:fn=>cleanups.push(fn)}),sdkRows=[],calls=[];let runtime,service,dispatch;
  const definitions={
@@ -90,8 +93,10 @@ async function fixture(routeClasses=classes){
   // C-RESEARCH-CONTRACT: the host answers a research call made before the owner has spoken with the opener gate
   // (`no_owner_input`), so the fixture speaks one owner turn first: the adapter ends the episode after its 700 ms
   // quiet window, which is what grants the turn these refusals must be measured against.
-  wire.send({type:'session.input_transcript.delta',delta:'synthetic owner question'});
-  await new Promise(resolve=>setTimeout(resolve,800));
+  if(speakAtStart){
+   wire.send({type:'session.input_transcript.delta',delta:'synthetic owner question'});
+   await new Promise(resolve=>setTimeout(resolve,800));
+  }
   let sequence=0;
   return {store,runtime,calls,wire,setDispatch:fn=>{dispatch=fn;},
    async send(args){const id='synthetic-call-'+(++sequence);wire.send({type:'response.event',delegation_id:'synthetic-delegation-'+sequence,event:{type:'response.output_item.done',item:{type:'function_call',call_id:id,name:'research',arguments:JSON.stringify(args)}}});const deadline=Date.now()+3000;let output;while(Date.now()<deadline){output=wire.frames.find(frame=>frame.item?.type==='function_call_output'&&frame.item.call_id===id);if(output)break;await new Promise(resolve=>setTimeout(resolve,5));}assert(output,'bounded actual OpenAI tool response');return JSON.parse(output.item.output);},
@@ -114,6 +119,38 @@ try{
  assert.equal(events.some(event=>event.event==='thinking_sent'),false,'invalid calls never claim a lookup is running');
  const refusals=events.filter(event=>event.event==='research_refused');assert.equal(refusals.length,invalid.length);assert.equal(JSON.stringify(refusals).includes(sentinel),false);
  for(const event of refusals){assert(safeEvent(event));assert.equal(safeEvent({...event,privateQuestion:sentinel}),undefined);assert.equal(safeEvent({...event,reason:sentinel}),undefined);assert.equal(safeEvent({...event,fields:{...event.fields,[sentinel]:'null'}}),undefined);}
+ // C-ENTITY: the entity rewrite refusal logs its three name counts as numbers, and never the owner's words.
+ assert.equal(safeEvent({...refusals[0],namesKept:0}),undefined,'a closed reason without counts keeps the log free of them');
+ const swap={action:'start',question:'Find Acmeworks pricing',topic:'Globex pricing'};
+ const swapped=await positive.send(swap);
+ assert.equal(swapped.state,'refused');assert.equal(swapped.reason,'entity_rewrite');
+ assert.match(String(swapped.guidance),/keep the question's own names exactly/);
+ assert.match(String(swapped.guidance),/Do not retry the same request in this turn/);
+ assert.equal(String(swapped.guidance).startsWith('This exact request was already refused'),false,'the first refusal is not told it repeated itself');
+ const entityRefused=events.filter(event=>event.event==='research_refused'&&event.reason==='entity_rewrite');
+ assert.equal(entityRefused.length,1);
+ assert.deepEqual([entityRefused[0].namesKept,entityRefused[0].namesDropped,entityRefused[0].namesAdded],[0,1,1]);
+ assert.equal(JSON.stringify(entityRefused).includes('Acmeworks')||JSON.stringify(entityRefused).includes('Globex'),false,'the owner words never enter the log');
+ assert(safeEvent(entityRefused[0]),'the closed shape carries the counts');
+ assert.equal(safeEvent({...entityRefused[0],namesAdded:'Acmeworks'}),undefined,'a name is never a count');
+ // The same bytes again in the same owner turn: refused at once, same code, and told it already had this answer.
+ const retried=await positive.send(swap);
+ assert.equal(retried.state,'refused');assert.equal(retried.reason,'entity_rewrite');
+ assert.match(String(retried.guidance),/^This exact request was already refused in this owner turn: /);
+ assert.equal(events.filter(event=>event.event==='research_refused'&&event.reason==='entity_rewrite').length,2);
+ // C-ENTITY (ruling W3-R1): the pre-owner-turn gate was the one refusal that ended a run with no reason on
+ // the log. It now leaves a closed, shaped reason beside its refused run receipt, and no source runs.
+ const gated=await fixture(classes,false);
+ try{
+  const readsBefore=gated.calls.length;
+  const gatedAnswer=await gated.send({action:'start',question:'synthetic',topic:'synthetic names'});
+  assert.equal(gatedAnswer.reason,'no_owner_input');
+  const gateLines=events.filter(event=>event.event==='research_refused'&&event.reason==='no_owner_input');
+  assert.equal(gateLines.length,1,'the gate refusal names its reason');
+  assert.equal(gateLines[0].state,'refused');assert.equal(safeEvent(gateLines[0])!==undefined,true,'the gate refusal is a closed log line');
+  assert.equal(safeEvent({...gateLines[0],reason:'opener_not_fetched'}),undefined,'the gate reason is a closed code');
+  assert.equal(gated.calls.length,readsBefore,'the gate read nothing');
+ }finally{await gated.close();}
  // One owner turn grants one research operation, so the fixture speaks before each start it wants admitted.
 // One owner turn grants one research operation, so the fixture speaks before each start it wants admitted.
 const speakAt=async(handle)=>{handle.wire.send({type:'session.input_transcript.delta',delta:'synthetic owner question'});await new Promise(resolve=>setTimeout(resolve,800));};

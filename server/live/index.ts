@@ -15,7 +15,7 @@ import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
-import { admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook } from '../tools/research.js';
+import { admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -38,7 +38,7 @@ import { VoiceProfileMeter } from './voice-profile.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest, LiveToolResponse, LiveToolSendOutcome, TurnFailedReason } from '../adapters/live-voice/index.js';
 import type { DebtPhase, DebtReason } from '../trace/kinds.js';
-import { headAnchor, terminalAnchor, canonicalSpeechLanguage, effectiveLanguageCode, LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
+import { headAnchor, terminalAnchor, canonicalSpeechLanguage, effectiveLanguageCode, LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP } from '../prompt/live-persona.js';
 import { currentLiveAccent } from '../config/live.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
@@ -146,6 +146,34 @@ function recordedOptions(snapshot: unknown): readonly OpeningOption[] {
     return [];
   }
 }
+
+/**
+ * Release 7 W5: the open-loop topics a past call's own start plan offered, read off the plan that start
+ * recorded in its accepted prompt snapshot. An open loop offered as one call's opener stays in the earlier
+ * conversations as context and never opens another call; only the owner can raise it again. The record is the
+ * plan, so the comparison is the option's own topic, never a match on words the model chose later.
+ * W5-R2: `openedAt` is the latest start that offered any open-loop option, because the distillation re-words a
+ * loop between calls and the topic rule cannot see through that.
+ */
+function offeredOpenLoops(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[], now: number): { topics: readonly string[]; openedAt: number | undefined } {
+  const topics: string[] = [];
+  let openedAt: number | undefined;
+  const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
+  for (const row of tx.all("SELECT live_session_id, created_at, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? AND created_at>=? ORDER BY created_at DESC, rowid DESC", [assistantId, now - EARLIER_CONVERSATIONS_WINDOW_MS])) {
+    const source = historySessionEvidence(tx, String(row['live_session_id']), eligibility);
+    if (!source || !allowedClasses.includes(source.dataClass)) continue;
+    const loops = recordedOptions(row['accepted_prompt_snapshot']).filter(option => option.kind === 'open-loop');
+    if (loops.length === 0) continue;
+    for (const option of loops) topics.push(option.topic);
+    const startedAt = Number(row['created_at']);
+    if (openedAt === undefined || startedAt > openedAt) openedAt = startedAt;
+  }
+  return { topics, openedAt };
+}
+
+/** W5-R2: after a call offered an open loop, no start inside this window offers the kind at all, because the
+ *  re-worded loop a call's summary stores would otherwise walk straight past the exact-topic rule. */
+const OPEN_LOOP_OPENER_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 
 /**
  * Q5-R4: the three most recent earlier calls' opening utterances, read from the owner-local journal.
@@ -616,6 +644,10 @@ interface ActiveSession {
   /** 3j response watchdog: the silence clock of the turn that owes a reply, and the last watchdog recovery. */
   watchdogTimer?: ReturnType<JobTimer> | undefined; watchdogSince?: number | undefined;
   watchdogPhase?: 'armed' | 'nudged' | undefined; watchdogRecoveredAt?: number | undefined;
+  /** C-WATCH: the wait this silence is judged on began at a tool result, not at an owner turn. */
+  watchdogSinceTool?: boolean | undefined;
+  /** C-WATCH: when the last tool result was handed to the model, so a mute can be told from a wait it never had. */
+  lastToolResultAt?: number | undefined;
   /** #656: the rung stood down for a tool call in flight, so the clock re-anchors on that call's own output. */
   debtHeldForTool?: boolean | undefined;
   /** #656: owner audio held across a rebuild, oldest first, bounded by REBUILD_AUDIO_HOLD_BYTES. */
@@ -777,7 +809,7 @@ export type WarmPrewarmReceipt = { readonly ageBeforeMs: number | null; readonly
 
 /** L14: a breath is not a word. The provider's non-lexical tags never reach the journal or the script count;
  *  a closed list only, so any other bracketed text is the owner's own and stays untouched. */
-const NON_LEXICAL_TAG = /\[(?:breath|inhale|exhale|laugh|laughs|sigh|cough|noise|music|silence)\b[^\]\n]*\]?/gi;
+const NON_LEXICAL_TAG = /\[(?:breath|inhale|exhale|laugh|laughs|laughter|chuckle|chuckles|giggle|giggles|smile|smiles|sigh|cough|noise|music|silence)\b[^\]\n]*\]?/gi;
 export function stripNonLexicalTags(text: string): string { return text.replace(NON_LEXICAL_TAG, ''); }
 
 /** R7: the dropped-line opener is cancellable only until its own audio has started. */
@@ -1391,9 +1423,14 @@ export class LiveSessionOwner {
       const storedSummaries = summarySelection.candidates;
       const summaryGap = Object.values(summarySelection.coverage).some(count => count > 0);
       const freshThread = freshOwnerThread(tx, assistantId, this.#profile.route.dataClasses, now);
+      const offered = offeredOpenLoops(tx, assistantId, this.#profile.route.dataClasses, now);
+      // W5-R2: a start inside the cooldown offers no open-loop option at all, because a summary that re-words
+      // the loop would otherwise walk past the exact-topic rule. The other opener kinds are unaffected.
+      const openLoopCooling = offered.openedAt !== undefined && now - offered.openedAt <= OPEN_LOOP_OPENER_COOLDOWN_MS;
       const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone,
         ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
-        openLoops: storedOpenLoops(tx, this.#profile.route.dataClasses, now, staleRefusedNoteSessions(tx, assistantId)),
+        openLoops: openLoopCooling ? [] : storedOpenLoops(tx, this.#profile.route.dataClasses, now, staleRefusedNoteSessions(tx, assistantId)),
+        alreadyOffered: offered.topics,
         ...(freshThread === undefined ? {} : { freshThread }),
         ...(earlierOpeners[0] === undefined ? {} : { previousKinds: earlierOpeners[0].kinds }),
         rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });
@@ -2128,6 +2165,10 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // L-04: the wait that ends the next time she speaks followed a tool, which the heard-silence record names.
     handle.heardAfterTool = true;
     this.#armDebt(handle, outputs, 'tool_output');
+    // C-WATCH: the wait from here began at this result, so every record of it says so and a reader never mistakes a
+    // post-tool wait for the owner's turn. The terminal decision needs the time itself.
+    handle.watchdogSinceTool = true;
+    handle.lastToolResultAt = this.#now();
     if (outcome === 'failed') void this.#recreateForDeadAir(handle, 'send_failed').catch(() => { /* the recreate names its own failure */ });
   }
 
@@ -2440,9 +2481,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // receipt per chunk into the rotating host log.
     const wasArmed = handle.watchdogPhase === 'armed';
     handle.watchdogTimer?.cancel();
-    handle.watchdogSince ??= this.#now();
+    if (handle.watchdogSince === undefined) { handle.watchdogSince = this.#now(); handle.watchdogSinceTool = false; }
     handle.watchdogPhase = 'armed';
-    if (!wasArmed) hostLogEvent({ event: 'live_watchdog', phase: 'armed', turnAgeMs: this.#now() - handle.watchdogSince, generation: handle.generation });
+    if (!wasArmed) hostLogEvent({ event: 'live_watchdog', phase: 'armed', turnAgeMs: this.#now() - handle.watchdogSince, generation: handle.generation, sinceTool: handle.watchdogSinceTool === true });
     this.#scheduleWatchdog(handle, RESPONSE_WATCHDOG_NUDGE_MS, handle.generation, 'nudge');
   }
 
@@ -2451,6 +2492,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       if (this.#settled(handle) || generation !== handle.generation) return;
       if (handle.pendingCallIds.size > 0) return;
       const turnAgeMs = this.#now() - (handle.watchdogSince ?? this.#now());
+      const sinceTool = handle.watchdogSinceTool === true;
       if (step === 'nudge') {
         if (handle.watchdogPhase === 'nudged') return;
         // C-RECOVERY (d): the owner's last words were "Okay", not a question, so the silence after them is the
@@ -2458,7 +2500,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         if (this.#bareAcknowledgement(handle.liveSessionId)) {
           this.#closeTurn(handle, 'completed', 'silent');
           this.#cancelWatchdog(handle);
-          hostLogEvent({ event: 'live_watchdog', phase: 'closed', turnAgeMs, generation });
+          hostLogEvent({ event: 'live_watchdog', phase: 'closed', turnAgeMs, generation, sinceTool });
           return;
         }
         // #591: no tool result, no model output (audible or written) and no owner words since the model last
@@ -2468,7 +2510,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           && !this.#ownerWordsSinceModelOutput(handle.liveSessionId)) {
           this.#closeTurn(handle, 'completed', 'silent');
           this.#cancelWatchdog(handle);
-          hostLogEvent({ event: 'live_watchdog', phase: 'closed', turnAgeMs, generation });
+          hostLogEvent({ event: 'live_watchdog', phase: 'closed', turnAgeMs, generation, sinceTool });
           return;
         }
         // One stall receipt per nudged deadline: how long the answer has been owed and how long since any
@@ -2495,7 +2537,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         }
         // VOICE-R4 / C-LIVE: dead air stays silent on every provider: a "Continue." user message is a fake owner turn.
         handle.watchdogPhase = 'nudged';
-        hostLogEvent({ event: 'live_watchdog', phase: 'nudged', turnAgeMs, generation });
+        hostLogEvent({ event: 'live_watchdog', phase: 'nudged', turnAgeMs, generation, sinceTool });
         this.#scheduleWatchdog(handle, RESPONSE_WATCHDOG_RECOVERY_MS, generation, 'recover');
         return;
       }
@@ -2570,26 +2612,39 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     }
   }
 
+  /**
+   * C-WATCH: the model has not had the rung's silence after a tool result yet, so a mute now is not a mute. A result
+   * handed back and judged inside the eight seconds any other tool output gets is a wait it never had.
+   */
+  #toolWaitUnjudged(handle: ActiveSession): boolean {
+    return handle.lastToolResultAt !== undefined && this.#now() - handle.lastToolResultAt < AUDIBLE_DEBT_RUNG_MS;
+  }
+
   async #watchdogRecover(handle: ActiveSession, generation: number, turnAgeMs: number): Promise<void> {
     if (this.#settled(handle) || generation !== handle.generation || handle.pendingCallIds.size > 0) return;
     const previous = handle.watchdogRecoveredAt;
     // W3: the wait being judged started here, so a weak spell before it cannot relabel this timeout.
     const waitSince = handle.watchdogSince;
+    // C-WATCH: which wait this was survives the cancel below, so the receipt can say it.
+    const waitedAfterTool = handle.watchdogSinceTool === true;
     this.#cancelWatchdog(handle);
-    if (previous !== undefined && this.#now() - previous < RESPONSE_WATCHDOG_WINDOW_MS) {
+    // W4-R1: a second mute inside the window may end the call only when the model had the rung's silence after the
+    // last tool result. Otherwise the step is a rebuild, exactly the first-mute path, and the call keeps going.
+    if (previous !== undefined && this.#now() - previous < RESPONSE_WATCHDOG_WINDOW_MS && !this.#toolWaitUnjudged(handle)) {
       // A second mute inside the window would loop on the same broken provider: end the call honestly. When the
       // link was weak during this wait it is the internet, not the model, and the owner is told so.
       const weakAt = handle.session.diagnostics?.()?.connection?.weakAt;
       const starved = weakAt !== undefined && waitSince !== undefined && weakAt >= waitSince;
-      hostLogEvent({ event: 'live_watchdog', phase: 'settled', turnAgeMs, generation });
+      hostLogEvent({ event: 'live_watchdog', phase: 'settled', turnAgeMs, generation, sinceTool: waitedAfterTool,
+        ...(handle.lastToolResultAt === undefined ? {} : { msSinceToolResult: Math.max(0, this.#now() - handle.lastToolResultAt) }) });
       this.#settle(handle, { state: 'failed', code: starved ? 'uplink_starved' : 'model_unresponsive' }, false, 'ended', null);
       return;
     }
     // C-CONTINUITY R-10: the phase names what really happened, so `recovering` is written before the reopen and
     // `recovered` only once the provider says the new session is live.
-    hostLogEvent({ event: 'live_watchdog', phase: 'recovering', turnAgeMs, generation });
+    hostLogEvent({ event: 'live_watchdog', phase: 'recovering', turnAgeMs, generation, sinceTool: waitedAfterTool });
     if (await this.#recoverFromDrop(handle, undefined, true, 'model_mute')) {
-      hostLogEvent({ event: 'live_watchdog', phase: 'recovered', turnAgeMs, generation });
+      hostLogEvent({ event: 'live_watchdog', phase: 'recovered', turnAgeMs, generation, sinceTool: waitedAfterTool });
     }
   }
 
@@ -2982,10 +3037,14 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // #660: a result that returned unspoken is why this window exists, so the new session opens model-first and
     // speaks as soon as the delivery below lands, instead of waiting for the owner to ask again.
     const unspokenOpening = handle.unspoken !== undefined;
+    // C-PICKUP: a model mute is not a dropped line, so a rebuild that owes the owner an answer is told the
+    // model went quiet instead of the call coming back. A quiet rebuild owes nothing and keeps its base shape.
+    const muteRebuild = reason === 'model_mute' && !handle.quietRebuild;
     const request = path === 'fresh_seeded'
       ? { ...structuredClone(handle.request), history: seed.turns, ...(unspokenOpening
         ? { opening: 'model_first' as const }
-        : handle.quietRebuild ? { opening: 'user_first' as const } : { openingText: LIVE_RECOVERY_PICKUP }) }
+        : handle.quietRebuild ? { opening: 'user_first' as const }
+          : { openingText: muteRebuild ? LIVE_MUTE_PICKUP : LIVE_RECOVERY_PICKUP }) }
       : { ...structuredClone(handle.request), resumptionHandle: savedHandle as string };
     // #591: a quiet rebuild asks for nothing, so an opener line the call inherited (a silent start after a lost
     // line) is cleared as well as the pickup that was never set.
@@ -3047,6 +3106,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // reader knows how the previous session really ended instead of inferring it from the outcome code alone.
     const closeReason = handle.adapterOutcome?.upstream?.closeReason ?? '';
     hostLogEvent({ event: 'live_recovery', path, attempt: handle.recoveries + 1, code, cause: this.#upstreamCause(handle, reason), closeCode, closeReason, reason, seedTurns: seed.turns.length, seedChars: seed.chars,
+      // C-PICKUP: which pickup the rebuilt session was opened with, so a mute is never logged as a drop.
+      pickup: reason === 'model_mute' ? 'mute' : 'connection',
       msSinceDrop: handle.dropEpisodeAt === undefined ? 0 : Math.max(0, this.#now() - handle.dropEpisodeAt),
       liveSessionId: handle.liveSessionId, generation: handle.generation });
   }
@@ -3067,7 +3128,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // still mute under the new session is ended honestly instead of rebuilt a second time inside one research run.
     if (reasonOverride === 'model_mute') {
       const previous = handle.watchdogRecoveredAt;
-      if (previous !== undefined && now - previous < RESPONSE_WATCHDOG_WINDOW_MS) {
+      // W4-R1: the same exemption here, because this door is the rebuild too: a mute judged inside a tool wait it
+      // never had settles nothing.
+      if (previous !== undefined && now - previous < RESPONSE_WATCHDOG_WINDOW_MS && !this.#toolWaitUnjudged(handle)) {
         this.#settle(handle, { state: 'failed', code: 'model_unresponsive' }, false, 'ended', null);
         return false;
       }
@@ -3780,6 +3843,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // nobody asked for, and the opener cancels its own six calls. The first start is answered at once, no
     // source runs, and the model is told to ask again after the owner speaks.
     if (handle.inputAt === undefined) {
+      // C-ENTITY: this gate refused before any read, and its reason is a closed code on the refusal line too.
+      for (const call of event.calls) hostLogEvent({ event: 'research_refused', state: 'refused', sequence: event.sequence, reason: 'no_owner_input', ...researchArgumentShape(call.args) });
       hostLogEvent(refusedResearchRunLog());
       const gated: JsonObject = { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input',
         guidance: 'Nothing fetched yet. Do not retry before the owner speaks; ask this lookup again after their first turn.' };

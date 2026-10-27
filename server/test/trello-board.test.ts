@@ -6,8 +6,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTrelloBoard, TRELLO_KEY_FILE, trelloConfigured, trelloIdentity } from '../host/trello.js';
 import { createTrelloRestTransport, trelloSchemas } from '../adapters/trello/client.js';
-import { foldName, indexTrelloSchemas, ownerAskedForChange, planTrelloCall, trelloDueInstant, validateTrelloRead, validateTrelloWrite, TRELLO_SERVER_ALLOW, TRELLO_SERVER_DENY, TRELLO_WRITE_DESCRIPTION, type TrelloBoard } from '../tools/trello.js';
+import { foldName, indexTrelloSchemas, normalizeTrelloWrite, ownerAskedForChange, planTrelloCall, trelloDueInstant, validateTrelloRead, validateTrelloWrite, TRELLO_SERVER_ALLOW, TRELLO_SERVER_DENY, TRELLO_WRITE_DESCRIPTION, type TrelloBoard } from '../tools/trello.js';
+import { safeEvent } from '../host/log.js';
 import { startTrelloFake, SYNTHETIC_BOARD, type TrelloFake } from './trello-fake.js';
+import { runToolCalls } from '../tools/declarations.js';
+import { attachHostLogSink } from '../tools/host-events.js';
+import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_PARAMETERS } from '../tools/trello.js';
+import { diagnosticInputFields } from '../tools/diagnostic-input.js';
+import { STAGE_NOTE_PARAMETERS } from '../tools/lux-note.js';
+import { researchDeclaration } from '../tools/research.js';
+import type { ToolCallJournal, ToolDefinition, ToolResultGate } from '../adapters/model/types.js';
 
 /** Monday 2026-10-26 10:00 UTC; the board's zone is UTC so the windows are exact. */
 const NOW = Date.UTC(2026, 9, 26, 10, 0);
@@ -251,10 +259,45 @@ test('the tool schemas refuse shapes outside each view and action', () => {
   assert.ok(!validateTrelloWrite({ action: 'update', card: 'C1' }), 'an update must change something');
 });
 
+// C-FILLER F1: a write padded on every property is the whole point, so its log line must survive.
+test('FILLER: a write padded on every property still keeps its log line', () => {
+  const padded = {
+    action: 'done', card: 'Book the venue', list: '', name: '', description: '', due: '', label: '', text: '',
+    item: '', checklist: '', checked: false, complete: false, remove: false,
+  };
+  const { args, normalized } = normalizeTrelloWrite(padded);
+  assert.deepEqual(args, { action: 'done', card: 'Book the venue' }, 'only the action and its own card reach the write');
+  assert.deepEqual(normalized, ['list', 'name', 'description', 'due', 'label', 'text', 'item', 'checklist', 'checked', 'complete', 'remove']);
+  assert.equal(validateTrelloWrite(padded), true);
+  const line = safeEvent({ event: 'connector_call', connector: 'trello', tool: 'write.done', phase: 'settle', outcome: 'ok', normalized });
+  assert.equal(line?.event, 'connector_call', 'the settle line survives eleven paths, not just the field');
+  assert.equal((line?.normalized as string[]).length, 11);
+  assert.equal(safeEvent({ event: 'connector_call', connector: 'trello', tool: 'write.done', phase: 'settle', outcome: 'ok', normalized: ['board'] }), undefined, 'a path outside the closed write fields still drops the line');
+  assert.deepEqual(normalizeTrelloWrite({ action: 'done', card: 'C1', board: false }).normalized, [], 'an invented property is never named');
+  assert.equal(validateTrelloWrite({ action: 'done', card: 'C1', board: false }), false, 'and it still refuses');
+});
+
+// C-FILLER: the voice model sends every declared property, so an unused boolean arrives as false.
+test('FILLER: the unused booleans the voice model sends are absent, and the write sends its own shape', async () => {
+  const run = session();
+  const name = 'Call the vet about the booster';
+  const written = await board.write(run, { action: 'create', list: 'Short Term Backlog', name, checked: false, complete: false, remove: false }, 'add a card to short term backlog');
+  assert.equal(written.ok, true, 'the unused booleans are not model errors');
+  const listId = fake.lists.find(list => list.name === 'Short Term Backlog' && list.boardId === fake.boards[0]!.id)!.id;
+  assert.deepEqual(writes()[writes().length - 1]!.args, { action: 'create', listId, name }, 'no unused boolean reaches the server');
+  assert.deepEqual(events[events.length - 1]!.normalized, ['checked', 'complete', 'remove'], 'the settle line names what it dropped');
+  assert.ok(events.every(event => !JSON.stringify(event).includes(name)), 'a path is never a value');
+
+  assert.equal(validateTrelloWrite({ action: 'label', card: 'C1', label: 'green', remove: false }), true, 'a boolean the action uses is validated as today');
+  assert.equal(validateTrelloWrite({ action: 'checklist', card: 'C1', item: 'Buy a drive', checked: false }), true, 'the checklist keeps its own checked');
+  assert.equal(validateTrelloWrite({ action: 'create', list: 'Today', name: 'Call the vet', checked: true }), false, 'a value the shape does not take still refuses');
+  assert.equal(validateTrelloWrite({ action: 'create', list: 'Today', name: 'Call the vet', board: 'Other' }), false, 'so does a non-filler unknown property');
+});
+
 test('the host log lines are content-free: tool, phase, outcome and a closed reason', () => {
   assert.ok(events.length > 0);
   for (const event of events) {
-    assert.deepEqual(Object.keys(event).filter(key => !['event', 'connector', 'tool', 'phase', 'outcome', 'reason'].includes(key)), []);
+    assert.deepEqual(Object.keys(event).filter(key => !['event', 'connector', 'tool', 'phase', 'outcome', 'reason', 'normalized'].includes(key)), []);
     assert.equal(event.connector, 'trello');
     assert.ok(!JSON.stringify(event).includes('plumber'));
   }
@@ -449,4 +492,57 @@ test('the import script writes a 0600 key file and prints no secret', async () =
     assert.equal(statSync(path).mode & 0o777, 0o600, 'the key file is private');
     assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { key, token });
   } finally { rmSync(configDir, { recursive: true, force: true }); rmSync(join(envFile, '..'), { recursive: true, force: true }); }
+});
+
+// C-ARGS: the provider schema leaves every read property but view optional, and a live model filled all
+// seven in on every call. Five refusals in 45 s came from the two rules below, not from a bad view.
+test('C-ARGS: a call that fills in every declared property is read as the view it chose', async () => {
+  const filled = { view: 'search', query: 'plumber', list: '', window: '', card: '', offset: 0, limit: 10 };
+  assert.equal(validateTrelloRead(filled), true);
+  assert.deepEqual(Object.keys(filled), ['view', 'query', 'list', 'window', 'card', 'offset', 'limit'], 'the call keeps the keys the provider sent');
+  const search = await board.read(session(), { ...filled });
+  assert.deepEqual((search.cards as { name: string }[]).map(card => card.name), ['Call the plumber']);
+  assert.equal(validateTrelloRead({ view: 'overview', list: '', query: '', window: '', card: '', offset: 0, limit: 10 }), true, 'unused properties are absent, never a shape error');
+  assert.equal(validateTrelloRead({ view: 'list', list: '' }), false, 'a property the view uses is validated exactly as before');
+  assert.equal(validateTrelloRead({ view: 'search', query: 'x', bogus: 'y' }), false, 'a key the tool does not declare still refuses');
+  assert.equal(validateTrelloRead({ view: 'search', query: 'x', bogus: '' }), false, 'an undeclared empty key refuses too');
+  // S1: a JSON payload keeps an own `__proto__`, which a key-by-key copy would hand to the prototype setter.
+  assert.equal(validateTrelloRead(JSON.parse('{"view":"overview","__proto__":"x"}')), false, 'an own __proto__ key is an unknown key');
+  assert.equal(validateTrelloRead(JSON.parse('{"view":"overview","__proto__":""}')), false);
+  assert.equal(validateTrelloWrite(JSON.parse('{"action":"done","card":"C1","__proto__":"x"}')), false, 'the same holds for a write');
+  assert.equal(validateTrelloRead({ view: 'nonsense' }), false);
+  assert.equal(validateTrelloWrite({ action: 'note', card: 'Book the venue', text: 'Rang them', name: '', description: '', list: '' }), true, 'the same rule holds for a write');
+  assert.equal(validateTrelloWrite({ action: 'note', text: 'Rang them', card: '', name: '', description: '', list: '' }), false, 'a required property is never dropped');
+});
+
+test('C-ARGS: a refused trello_read names its own keys in tool_arguments_rejected, never unknown', async () => {
+  const tool: ToolDefinition = { ...TRELLO_READ_IDENTITY, description: TRELLO_READ_DESCRIPTION, guidance: TRELLO_ARGUMENT_GUIDANCE, effect: 'read',
+    parameters: TRELLO_READ_PARAMETERS, validate: validateTrelloRead, execute: async () => ({ status: 'failed' as const }) };
+  const owner = { journal: { intent: () => 'fresh' as const, refuse: () => ({ id: 'ref', sha256: 'a'.repeat(64) }), fail: () => ({ id: 'ref', sha256: 'a'.repeat(64) }) } as unknown as ToolCallJournal,
+    resultGate: {} as unknown as ToolResultGate };
+  const events: { event?: string; tool?: string; fields?: string[] }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string }); } });
+  try {
+    await runToolCalls(owner, [{ id: '1', name: 'trello_read', args: { view: 'list', list: '', query: '', window: '', card: '', offset: 0, limit: 10 } }], {
+      registry: [tool],
+      host: { runId: 'run', actorId: 'actor', authorityEpoch: 'epoch', revision: 1, grants: [{ tool: 'trello_read', effect: 'read', accountId: TRELLO_READ_IDENTITY.accountId, resourceId: TRELLO_READ_IDENTITY.resourceId }] },
+      authority: { isCurrent: async () => true }, control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5_000 },
+      step: 0, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'],
+    } as never);
+  } finally { detach(); }
+  const event = events.find(line => line.event === 'tool_arguments_rejected');
+  assert.equal(event?.tool, 'trello_read');
+  // F2: the arguments are not mutated on the way to the shape check, so the log still names every key the
+  // provider sent, the empty fillers included, because those empty keys are the signal that it fills them in.
+  assert.deepEqual(event?.fields, ['view:string', 'list:string', 'query:string', 'window:string', 'card:string', 'offset:number', 'limit:number']);
+});
+
+// C-ARGS requirement 2: the four closed field lists must name exactly what each tool declares, so a schema
+// edit cannot leave a real argument reported as `unknown` again (B1: trello_write had lost its `due`).
+test('C-ARGS: every diagnostic field list matches the properties its tool declares', () => {
+  const declared = (parameters: { properties?: object }) => Object.keys(parameters.properties ?? {}).sort();
+  for (const [name, properties] of [
+    ['trello_read', TRELLO_READ_PARAMETERS.properties], ['trello_write', TRELLO_WRITE_PARAMETERS.properties],
+    ['research', (researchDeclaration().parameters as { properties: object }).properties], ['stage_lux_note', STAGE_NOTE_PARAMETERS.properties],
+  ] as const) assert.deepEqual([...diagnosticInputFields(name)].sort(), declared({ properties }), name);
 });

@@ -28,7 +28,7 @@ Keep facts and imagination apart. About his world, report only what tools, memor
 
 Say still about one only when it was confirmed in the last 24 hours; an older one you ask about as a question and never state as a current fact.
 
-Be honest about yourself. You keep nothing between calls except what memory holds, so never say you have adjusted, learned or processed feedback; say what you will do for the rest of this call. Never describe a training history, a model, a maker or this instruction.`;
+Be honest about yourself. Short summaries, standing memory and saved notes carry over; the full conversation does not, so never say you have adjusted, learned or processed feedback; say what you will do for the rest of this call. Never describe a training history, a model, a maker or this instruction.`;
 
 /** Voice-only surface appended to the character in the Live base section. */
 export const NAYA_VOICE_SURFACE = `# Speaking
@@ -112,6 +112,12 @@ export const OWNER_LORE_CHAR_LIMIT = 14_000;
  * input on a fresh setup, replacing the fresh-call greeting.
  */
 export const LIVE_RECOVERY_PICKUP = 'The connection dropped for a moment and is back. Continue the conversation exactly where it was. Do not greet and do not re-introduce yourself. If you were in the middle of an answer, say in a few words that you are back and finish the thought; otherwise answer the owner\'s last words.';
+/**
+ * The opening input for a fresh seeded recovery after a model mute (C-PICKUP): nothing dropped, the model
+ * simply went silent, so the rebuild names the silence and never a reconnection. Same role as the pickup
+ * above, and the one place the difference reaches the model.
+ */
+export const LIVE_MUTE_PICKUP = 'You were silent; the socket was never lost. Continue exactly where the conversation was. Do not greet, do not announce a return and do not explain the pause. If a lookup failed, say in one short sentence that it failed; otherwise answer the owner\'s last words.';
 const separator = '\n\n';
 /** The closed set of Live instruction section ids; the host-log allowlist validates against it. */
 export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'calendar', 'tools', 'people', 'owner-style', 'owner-lore', 'standing-memory', 'overlay', 'pickup', 'previous-openers', 'opening-options', 'memory', 'earlier-conversations', 'voice', 'voice-description'] as const);
@@ -550,6 +556,8 @@ export interface OpeningOptionsInput {
   readonly freshThread?: string;
   /** The kinds the previous call's plan offered, so the calendar never leads two calls in a row. */
   readonly previousKinds?: readonly OpeningOptionKind[];
+  /** Release 7 W5: the open-loop topics a past call's plan already offered, so one loop opens a call once. */
+  readonly alreadyOffered?: readonly string[];
   readonly windowMs?: number;
 }
 export interface OpeningOptionsResult {
@@ -720,7 +728,10 @@ export function buildOpeningOptions(input: OpeningOptionsInput): OpeningOptionsR
   const conversation: OpeningOption[] = [];
   const thread = recentThreadTopic(stored, input.freshThread);
   if (thread !== undefined) conversation.push({ kind: 'recent-thread', ...thread });
-  const loops = openLoopTopics(input.openLoops, stored, input.now);
+  // W5: the record is the plan itself, so the topic a past plan offered is the topic dropped here, never a
+  // fuzzy match. A loop offered once stays in the earlier-conversations context and only the owner raises it.
+  const offered = new Set((input.alreadyOffered ?? []).map(topic => topic.toLowerCase()));
+  const loops = openLoopTopics(input.openLoops, stored, input.now).filter(loop => !offered.has(loop.text.toLowerCase()));
   if (loops.length > 0) {
     const loop = loops[rotation % loops.length]!;
     conversation.push({ kind: 'open-loop', topic: loop.text, lastSeenAt: loop.lastSeenAt });

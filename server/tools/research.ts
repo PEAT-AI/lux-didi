@@ -1110,6 +1110,19 @@ function termSalience(term: string): number {
   return term.length >= 5 ? 2 : 1;
 }
 
+/**
+ * #1027: the one word of a filter-only sender query, `from:acme` or `from:acme OR to:acme`. A query that
+ * still carries a content term is a keyword search, and never this case.
+ */
+function senderFilterWord(tokens: readonly string[]): string | undefined {
+  if (tokens.length === 0 || tokens.some(token => !isOperatorToken(token) && token !== 'OR')) return undefined;
+  const words = tokens.map(token => /^from:(\S+)$/iu.exec(token)?.[1]).filter((word): word is string => word !== undefined);
+  const word = words[0];
+  if (word === undefined || words.some(other => other !== word)) return undefined;
+  const otherRecipient = tokens.some(token => { const to = /^to:(\S+)$/iu.exec(token)?.[1]; return to !== undefined && to !== word; });
+  return otherRecipient ? undefined : word;
+}
+
 export function broaderMailQuery(q: string): string | undefined {
   const tokens = q.split(/\s+/).filter(Boolean);
   // E6 (#609): a joined OR clause is the least specific part of the query, so dropping it is the one
@@ -1120,6 +1133,13 @@ export function broaderMailQuery(q: string): string | undefined {
   const termIndexes = tokens.map((token, index) => isOperatorToken(token) ? -1 : index).filter(index => index >= 0);
   const windowIndex = tokens.findIndex(token => /^newer_than:[a-z0-9]+$/u.test(token));
   const step = windowIndex >= 0 ? WINDOW_STEPS[/^newer_than:(.+)$/u.exec(tokens[windowIndex]!)?.[1] ?? ''] : undefined;
+  // #1027: a lone sender filter carries a word Gmail matched as a whole token, so a prefix of a sender's
+  // domain never matched it; searched as text over the same window it does. Ordered before the term drop.
+  const sender = senderFilterWord(tokens);
+  if (sender !== undefined && windowIndex >= 0) {
+    const rest = tokens.filter(token => !/^(?:from|to):/iu.test(token) && token !== 'OR');
+    return [sender, ...rest].join(' ').slice(0, RESEARCH.queryLimitChars);
+  }
   // ROUTE-1022 K6: a query with no window to widen broadens by dropping its one term instead of
   // returning nothing, so a person-and-topic search still gets exactly one wider try.
   if (termIndexes.length > 1 || (termIndexes.length > 0 && step === undefined && windowIndex < 0)) {
@@ -4650,7 +4670,13 @@ function mailReceiptField(info: MailQueryInfo | undefined): { mail?: MailQuerySh
 function mailEmptyPhrase(info: MailQueryInfo | undefined, fallback: string): string {
   // #564: the triage scan names its own window and its own filter, never "nothing urgent".
   if (info?.q === TRIAGE_MAIL_QUERY) return ' for anything unread in the last two days';
-  return info === undefined ? fallback : mailSearchPhrase(info.retried ?? info.q);
+  if (info === undefined) return fallback;
+  // #1027: a sender word that found nothing was searched as a filter and then as text, so the phrase names
+  // the word and the window, and says what would narrow it. Never the owner's question.
+  const window = mailQueryShape(info.q).window;
+  const sender = senderFilterWord(info.q.split(/\s+/).filter(Boolean));
+  if (sender !== undefined && window !== undefined) return `${mailSearchPhrase(`${sender} ${window}`)} (a domain or a person's name would narrow it)`;
+  return mailSearchPhrase(info.retried ?? info.q);
 }
 
 /**
@@ -4679,8 +4705,9 @@ async function collectMailWithRetry(deps: ResearchDeps, run: RunState, reads: re
   const retries = reads.map(read => {
     if (read.messages.size > 0 || read.failed) return undefined;
     const q = read.args['q'];
-    // Only a keyword search is broadened: a bare filter has nothing further to ask.
-    if (typeof q !== 'string' || mailQueryShape(q).terms === 0) return undefined;
+    // Only a keyword search, or a lone sender filter whose word Gmail can also find as text, is broadened:
+    // any other bare filter has nothing further to ask.
+    if (typeof q !== 'string' || (mailQueryShape(q).terms === 0 && senderFilterWord(q.split(/\s+/).filter(Boolean)) === undefined)) return undefined;
     const broader = broaderMailQuery(q);
     if (broader === undefined || broader === q) return undefined;
     const retry = mailRead(run, { ...read.args, q: broader });

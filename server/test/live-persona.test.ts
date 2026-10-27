@@ -356,9 +356,9 @@ test('the public character, voice surface and tool conduct are the authored verb
   // TR3-R1: W15's people rule is the ruled 75-char sentence, so the two blocks carrying it are re-pinned.
   assert.equal(sha(NAYA_CHARACTER), '1b188117660fe12204cd542001b585fcce69add4f1cc6d27689720e193cac977');
   assert.equal(sha(NAYA_VOICE_SURFACE), '1cf4e572cd49ae7d8d7e16ee3c11b53c6dc652dc1511b8b5625d4a8a3bcb0768');
-  assert.equal(sha(NAYA_VOICE_TOOLS), '73c28c168340a22199b1dd5198c02227d6d47a48c04a5b734392852953b6d60c');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '1040683267e0695db42e121eccd622c98d257506f2adc643db5ba83667d20506');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '92c556c1112232a01b24e05964a29e2082c27a8e93b2610f83aa498ba5090669');
-  assert.equal(sha(NAYA_TOOLS), '6ac84a814e9316df7c9bc7d227b7cbeca78bfd99953eeae4ae9d0e8175ce3087');
+  assert.equal(sha(NAYA_TOOLS), '32b4082e3c56235711c664d617fd63b3b7bf5992373a3b3feeeb982af93469fc');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));
@@ -1387,6 +1387,9 @@ test('OPEN2-7: the open paragraph says she opens only a handle she was shown and
   assert.match(NAYA_OPEN_SURFACE, /say what opened from that title/);
   assert.match(NAYA_OPEN_SURFACE, /not what he asked for/);
   assert.match(NAYA_OPEN_SURFACE, /instead of claiming success/);
+  // C-OPEN: a failed open is never given an invented reason, and a repeated ask retries the same handle.
+  assert.match(NAYA_OPEN_SURFACE, /Never invent a failed-open reason/);
+  assert.match(NAYA_OPEN_SURFACE, /retry once with the same handle if he asks again/);
   assert.equal(NAYA_OPEN_SURFACE.length <= 844, true, 'the paragraph stays inside the frozen voice budget');
   assert.equal(/https?:|\/\/|\.com|\.google|\.ai/.test(NAYA_OPEN_SURFACE), false, 'the open paragraph carries no url or host');
 });

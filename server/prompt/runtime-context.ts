@@ -1,13 +1,12 @@
 /**
  * Host-generated Live runtime context. Built from the Mac's clock and timezone when a Live session
  * is created (and on each rebuild), never from the model. It carries no private content beyond the
- * session's own connected and unavailable group names.
+ * session's own connected group names and the state of its connectors.
  */
 export interface RuntimeContextInput {
   readonly now: Date;
   readonly timeZone: string;
   readonly connected: readonly string[];
-  readonly unavailable: readonly string[];
   /** W6 item 14: what this session may write to lux, as the host reads it, never as the model guesses. */
   readonly vault?: { readonly dictation: boolean; readonly composed: boolean };
   /** W4: the host's own endpoint rows for this call, so a sign-in is never claimed or denied from guesswork. */
@@ -19,12 +18,20 @@ export interface ConnectorStateInput {
   readonly connector: string;
   readonly state: string;
   readonly reasonCode?: string;
+  readonly error?: string;
   readonly configurationError?: string;
 }
 
-/** The closed reasons a connector is signed out or waiting on the owner, as the host and the browser report them. */
-const SIGNED_OUT = new Set(['needs_sign_in', 'not_signed_in', 'credential-missing', 'credential-refresh-failed', 'credential-consent-expired']);
-const NEEDS_APPROVAL = new Set(['owner-approval-required', 'ambiguous-legacy-policy']);
+/**
+ * The closed reasons a connector needs the owner before it can answer, in one list for every surface that reads
+ * them: the credential and identity codes the host reports (`server/host/runtime.ts` sign-in row reasons), both
+ * spellings of each, so a credential that failed identity proof reads as a sign-in and not as plain unavailability.
+ * A transport or discovery failure is not a sign-in, so it stays in the unavailable bucket.
+ */
+export const CONNECTOR_SIGN_IN_REASONS: ReadonlySet<string> = new Set(['needs_sign_in', 'not_signed_in', 'signin', 'sign_in',
+  'credential_missing', 'credential-missing', 'credential-refresh-failed', 'credential-consent-expired', 'credential-unavailable',
+  'credential-identity-mismatch', 'credential-identity-unverified', 'identity_mismatch']);
+export const CONNECTOR_APPROVAL_REASONS: ReadonlySet<string> = new Set(['owner-approval-required', 'ambiguous-legacy-policy']);
 
 /**
  * W4: one compact line of live connector state, per family, from the host's endpoint rows. A family with any
@@ -34,10 +41,10 @@ const NEEDS_APPROVAL = new Set(['owner-approval-required', 'ambiguous-legacy-pol
 export function connectorStateLine(connectors: readonly ConnectorStateInput[]): string | undefined {
   const families = new Map<string, string[]>();
   for (const row of connectors) {
-    const reason = String(row.reasonCode ?? row.configurationError ?? row.state);
+    const reason = String(row.reasonCode ?? row.error ?? row.configurationError ?? row.state);
     const phrase = row.state === 'connected' ? 'connected'
-      : SIGNED_OUT.has(reason) ? 'not signed in'
-        : NEEDS_APPROVAL.has(reason) ? 'needs approval' : 'unavailable';
+      : CONNECTOR_SIGN_IN_REASONS.has(reason) ? 'not signed in'
+        : CONNECTOR_APPROVAL_REASONS.has(reason) ? 'needs approval' : 'unavailable';
     for (const group of connectorGroupNames(row.connector)) families.set(group, [...(families.get(group) ?? []), phrase]);
   }
   if (families.size === 0) return undefined;
@@ -138,7 +145,6 @@ export function buildRuntimeContext(input: RuntimeContextInput): string {
   const weekYmd = (date: Date): string => ymd({ y: date.getUTCFullYear(), m: date.getUTCMonth() + 1, d: date.getUTCDate() });
   const weekOffset = (date: Date): string => offset(new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 12)), input.timeZone);
   const connected = input.connected.length ? input.connected.join(', ') : 'none';
-  const unavailable = input.unavailable.length ? input.unavailable.join(', ') : 'none';
   return [
     '# Runtime context',
     '',
@@ -146,7 +152,6 @@ export function buildRuntimeContext(input: RuntimeContextInput): string {
     `Today: ${label(now.y, now.m, now.d)}. Tomorrow: ${label(tomorrow.getUTCFullYear(), tomorrow.getUTCMonth() + 1, tomorrow.getUTCDate())}. Yesterday: ${label(yesterday.getUTCFullYear(), yesterday.getUTCMonth() + 1, yesterday.getUTCDate())}.`,
     `This week: ${weekYmd(monday)}T00:00:00${weekOffset(monday)} to ${weekYmd(sunday)}T23:59:59${weekOffset(sunday)}.`,
     `Connected now: ${connected}.`,
-    `Not available: ${unavailable}.`,
     ...(input.vault === undefined ? [] : [vaultCapabilityLine(input.vault)].filter((line): line is string => line !== undefined)),
     ...(input.connectors === undefined ? [] : [connectorStateLine(input.connectors)].filter((line): line is string => line !== undefined)),
     'Naya can read and search; she cannot send anything to anyone.',

@@ -189,6 +189,26 @@ test('a typed turn never authorizes, and the current finalized mic turn does', (
   assert.deepEqual([...read.evidence].sort(), ['journal:12']);
 });
 
+// R7-W1: a VAD split ask is one ask, so the whole finalized stretch of this turn authorizes it.
+test('an ask split across finalized mic fragments of this stretch is one authorization', () => {
+  const rows = [turnRow(21, 'you have my full permission to save it', 1_200), turnRow(22, 'in Lux Knowledge', 1_300),
+    turnRow(23, 'both of these things', 1_400)];
+  const read = currentOwnerTurn(rows, 1_000, true, 1_500);
+  assert.equal(read.state, 'owner_turn');
+  if (read.state !== 'owner_turn') return;
+  assert.equal(read.text, 'you have my full permission to save it in Lux Knowledge both of these things');
+  assert.deepEqual([...read.evidence].sort(), ['journal:21', 'journal:22', 'journal:23']);
+});
+
+test('the composed stretch keeps the open guard bounds and never crosses its own window', () => {
+  // A split from before this turn started, or from before the confirm window, is never composed.
+  const before = currentOwnerTurn([turnRow(11, 'save it to lux', 900), turnRow(12, 'both of these', 1_400)], 1_000, true, 1_500);
+  assert.equal(before.state === 'owner_turn' ? before.text : '', 'both of these');
+  const stale = currentOwnerTurn([turnRow(11, 'save it to lux', 1_400 - CONFIRM_WINDOW_MS - 1), turnRow(12, 'both of these', 1_400)],
+    undefined, true, 1_400);
+  assert.equal(stale.state === 'owner_turn' ? stale.text : '', 'both of these');
+});
+
 // B2 (W6-R2): arming follows the read-back segment, never just any drained receipt.
 const signal = (receipt: PlaybackSignal['receipt'], key: string, wallMs: number) => ({ receipt, key, wallMs });
 const bound = (stageId: string, key: string): ReadbackBinding => ({ stageId, key });
@@ -246,6 +266,8 @@ test('a restaged note in the same call arms on its own read-back segment, not th
 // four-field object, so every dispatch threw and rolled back with no note row and no log line.
 
 const VAULT_ACCOUNT = 'gateway:live-voice';
+/** One journal row of the fixture session: kind, text, and when it finalized relative to the harness clock. */
+type JournalSeed = readonly ['inputTranscription' | 'outputTranscription', string, number];
 const VAULT_RESOURCE = 'owner-vault';
 
 /** A realistic composed note body: synthetic prose, the length of the answer the owner asked to save. */
@@ -262,7 +284,12 @@ interface StageHarness {
   definitions(port: StageNotePort): readonly ToolDefinition[];
 }
 
-function stageHarness(t: TestContext): StageHarness {
+/** The default session: the owner asked a minute earlier, then asked to store this answer. */
+const DEFAULT_SEEDS: readonly JournalSeed[] = [
+  ['inputTranscription', 'Naya, what can you tell me about Rize', -60_000],
+  ['inputTranscription', 'store it in Lux Knowledge', 0]];
+
+function stageHarness(t: TestContext, seeds: readonly JournalSeed[] = DEFAULT_SEEDS): StageHarness {
   const now = 1_700_000_000_000;
   const run = 'live-stage-run';
   const dir = mkdtempSync(join(tmpdir(), 'lux-note-stage-'));
@@ -274,9 +301,9 @@ function stageHarness(t: TestContext): StageHarness {
         journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,'active',1,1,?,0,0,'attached',NULL,NULL,?,?)`,
       [run, store.assistantId, store.authorityEpoch, 'key-stage', 'fp-stage', 'client', 'audit', 'profile', 'prompt', 2, now, now]);
-    for (const text of ['Naya, what can you tell me about Rize', 'store it in Lux Knowledge']) {
+    for (const [kind, text, offset] of seeds) {
       tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, final_origin, finalized_at, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?,?,?)',
-        [run, 'inputTranscription', text, 1, 'app_model_start', now, text.length, now]);
+        [run, kind, text, 1, 'app_model_start', now + offset, text.length, now + offset]);
     }
   });
   const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'tester', runId: run,
@@ -318,6 +345,30 @@ test('the composed stage completes a real store write and leaves exactly one not
   assert.equal(stages.length, 1);
   assert.equal(stages[0]!['state'], 'staged');
   assert.equal(stages[0]!['body'], COMPOSED_BODY.replace(/\s+/g, ' ').trim());
+});
+
+test('the split-fragment save ask stages instead of refusing on its newest fragment alone', async t => {
+  const h = stageHarness(t, [['inputTranscription', 'you have my full permission to save it', 0],
+    ['inputTranscription', 'in Lux Knowledge', 4_000], ['inputTranscription', 'both of these things', 9_000]]);
+  const outcome = await h.stage(STAGE_ARGS);
+  assert.equal(outcome?.status, 'completed');
+  const stages = h.store.transaction(tx => tx.all('SELECT state FROM lux_note_stages'));
+  assert.deepEqual(stages.map(row => row['state']), ['staged']);
+});
+
+test('an ask from before this stretch, or from before the model answered, never authorizes the save', async t => {
+  const older = stageHarness(t, [['inputTranscription', 'save it to Lux', -600_000], ['inputTranscription', 'both of these', 0]]);
+  const refused = await older.stage(STAGE_ARGS);
+  assert.equal(refused?.status, 'completed');
+  const response = older.store.transaction(tx => JSON.parse(String(tx.get('SELECT result_json FROM tool_calls')!['result_json'])) as Record<string, unknown>)['response'];
+  assert.equal((response as Record<string, unknown>)['code'], 'authorization_missing');
+  const answered = stageHarness(t, [['inputTranscription', 'save it to Lux', 0],
+    ['outputTranscription', 'The lab asks for a property target and proposes candidate mixes.', 2_000],
+    ['inputTranscription', 'both of these', 4_000]]);
+  const afterModel = await answered.stage(STAGE_ARGS);
+  assert.equal(afterModel?.status, 'completed');
+  const after = answered.store.transaction(tx => JSON.parse(String(tx.get('SELECT result_json FROM tool_calls')!['result_json'])) as Record<string, unknown>)['response'];
+  assert.equal((after as Record<string, unknown>)['code'], 'authorization_missing');
 });
 
 test('a throwing composed stage is a bounded stage_failed result the model can speak, never unknown', async t => {

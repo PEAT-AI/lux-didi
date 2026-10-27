@@ -6096,12 +6096,14 @@ function voiceUnitsOf(reply: JsonObject): string[] {
 function pagesLeft(units: readonly unknown[]): number { return units.length; }
 
 /** How long one page is once serialized, at the width a real cursor takes. */
-function voicePageChars(envelope: JsonObject, lines: readonly string[], cursorChars: number): number {
+function voicePageChars(envelope: JsonObject, lines: readonly string[], cursorChars: number, remaining: number): number {
   // W1-R3: every control field of the reply rides the page, so the measurement carries them too. The page cursor
-  // and `canContinue: true` are the widest shape a page takes (the last page of a reply adds neither).
+  // and `canContinue: true` are the widest shape a page takes (the last page of a reply adds neither), and the
+  // remaining count is measured at the width it will really be written at, so a three-digit count cannot slip a
+  // page over its cap by the width of its own field.
   return JSON.stringify({
     ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT,
-    pageCursor: '0'.repeat(cursorChars), pagesRemaining: 99, canContinue: true,
+    pageCursor: '0'.repeat(cursorChars), pagesRemaining: remaining, canContinue: true,
   }).length;
 }
 
@@ -6121,13 +6123,13 @@ function voiceLinePrefix(unit: string, fits: (line: string) => boolean): string 
  * C-CONTINUITY T-11: one page of a reply, and the units a later page still owes. Whole lines are taken while
  * they fit; a single line wider than a page is cut at its last whole word and marked, so no page splits a word.
  */
-function takeVoiceUnits(envelope: JsonObject, units: readonly string[], cap: number, cursorChars: number):
-{ lines: string[]; rest: string[] } {
+function takeVoiceUnits(envelope: JsonObject, units: readonly string[], cap: number, cursorChars: number,
+  remaining: number): { lines: string[]; rest: string[] } {
   const lines: string[] = [];
   for (let index = 0; index < units.length; index += 1) {
     const unit = units[index]!;
-    if (voicePageChars(envelope, [...lines, unit], cursorChars) <= cap) { lines.push(unit); continue; }
-    const head = voiceLinePrefix(unit, kept => voicePageChars(envelope, [...lines, `${kept} \u2026`], cursorChars) <= cap);
+    if (voicePageChars(envelope, [...lines, unit], cursorChars, remaining) <= cap) { lines.push(unit); continue; }
+    const head = voiceLinePrefix(unit, kept => voicePageChars(envelope, [...lines, `${kept} \u2026`], cursorChars, remaining) <= cap);
     if (head === '') return { lines, rest: units.slice(index) };
     lines.push(`${head} \u2026`);
     return { lines, rest: [unit.slice(head.length).trimStart(), ...units.slice(index + 1)] };
@@ -6136,10 +6138,10 @@ function takeVoiceUnits(envelope: JsonObject, units: readonly string[], cap: num
 }
 
 /** How long one body page is once serialized, at the width a real cursor takes. */
-function voiceSliceChars(envelope: JsonObject, slices: readonly JsonObject[], cursorChars: number): number {
+function voiceSliceChars(envelope: JsonObject, slices: readonly JsonObject[], cursorChars: number, remaining: number): number {
   // Exactly the page this would emit, page cursor included, so the measurement is never optimistic.
   return JSON.stringify({ ...envelope, bodySlices: slices, cut: VOICE_REPLY_CUT,
-    pageCursor: '0'.repeat(cursorChars), pagesRemaining: 99, canContinue: true }).length;
+    pageCursor: '0'.repeat(cursorChars), pagesRemaining: remaining, canContinue: true }).length;
 }
 
 /**
@@ -6147,17 +6149,17 @@ function voiceSliceChars(envelope: JsonObject, slices: readonly JsonObject[], cu
  * a slice wider than a page is split at its last whole word, and the tail keeps its own offsets so the reader's
  * coordinates stay exact.
  */
-function takeVoiceSlices(envelope: JsonObject, slices: readonly JsonObject[], cap: number, cursorChars: number):
-{ kept: JsonObject[]; rest: JsonObject[] } {
+function takeVoiceSlices(envelope: JsonObject, slices: readonly JsonObject[], cap: number, cursorChars: number,
+  remaining: number): { kept: JsonObject[]; rest: JsonObject[] } {
   const kept: JsonObject[] = [];
   for (let index = 0; index < slices.length; index += 1) {
     const slice = slices[index]!;
-    if (voiceSliceChars(envelope, [...kept, slice], cursorChars) <= cap) { kept.push(slice); continue; }
+    if (voiceSliceChars(envelope, [...kept, slice], cursorChars, remaining) <= cap) { kept.push(slice); continue; }
     const text = typeof slice['text'] === 'string' ? slice['text'] : '';
     const offset = typeof slice['offset'] === 'number' ? slice['offset'] : 0;
     if (text === '') return { kept, rest: slices.slice(index) };
     const fits = (line: string): boolean => voiceSliceChars(envelope,
-      [...kept, { ...slice, text: line, end: offset + line.length, cut: VOICE_REPLY_CUT }], cursorChars) <= cap;
+      [...kept, { ...slice, text: line, end: offset + line.length, cut: VOICE_REPLY_CUT }], cursorChars, remaining) <= cap;
     const head = voiceLinePrefix(text, fits);
     if (head === '') return { kept, rest: slices.slice(index) };
     kept.push({ ...slice, text: head, end: offset + head.length, cut: VOICE_REPLY_CUT });
@@ -6165,6 +6167,31 @@ function takeVoiceSlices(envelope: JsonObject, slices: readonly JsonObject[], ca
     return { kept, rest: [{ ...slice, text: text.slice(head.length), offset: offset + head.length }, ...slices.slice(index + 1)] };
   }
   return { kept, rest: [] };
+}
+
+/**
+ * W1-R5: measure one page at the width of the remaining count it will really name. A wider count only ever makes
+ * the page smaller, so the settled answer is the first one whose count fits the width it was measured at.
+ */
+function fitUnits(envelope: JsonObject, units: readonly string[], cap: number, cursorChars: number): { lines: string[]; rest: string[] } {
+  let remaining = units.length + 1;
+  for (let pass = 0; pass < 6; pass += 1) {
+    const cut = takeVoiceUnits(envelope, units, cap, cursorChars, remaining);
+    if (String(cut.rest.length).length <= String(remaining).length) return cut;
+    remaining = cut.rest.length;
+  }
+  return takeVoiceUnits(envelope, units, cap, cursorChars, Number.MAX_SAFE_INTEGER);
+}
+
+/** The same settling for a body page, whose count is the slices still owed. */
+function fitSlices(envelope: JsonObject, slices: readonly JsonObject[], cap: number, cursorChars: number): { kept: JsonObject[]; rest: JsonObject[] } {
+  let remaining = slices.length + 1;
+  for (let pass = 0; pass < 6; pass += 1) {
+    const cut = takeVoiceSlices(envelope, slices, cap, cursorChars, remaining);
+    if (String(cut.rest.length).length <= String(remaining).length) return cut;
+    remaining = cut.rest.length;
+  }
+  return takeVoiceSlices(envelope, slices, cap, cursorChars, Number.MAX_SAFE_INTEGER);
 }
 
 /**
@@ -6208,13 +6235,13 @@ export class VoiceReplyBook {
     const envelope: JsonObject = { ...page.envelope, researchId: page.researchId };
     let emitted: JsonObject;
     if (page.slices.length > 0) {
-      const { kept, rest } = takeVoiceSlices(envelope, page.slices, cap, cursorChars);
+      const { kept, rest } = fitSlices(envelope, page.slices, cap, cursorChars);
       emitted = rest.length === 0
         ? { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT }
         : { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT, canContinue: true,
           pageCursor: this.keepSlices(page.researchId, page.envelope, rest), pagesRemaining: pagesLeft(rest) };
     } else {
-      const { lines, rest } = takeVoiceUnits(envelope, page.units, cap, cursorChars);
+      const { lines, rest } = fitUnits(envelope, page.units, cap, cursorChars);
       const findings = [{ text: lines.join('\n') }];
       if (rest.length > 0) {
         emitted = { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: true,
@@ -6257,7 +6284,7 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
   if (slices !== undefined && units.length > 0) {
     // W1-R2 / council lux 98136: findings first, the rest by cursor. The evidence lines are delivered inside the
     // cap, and the body page follows them as the next page through the same cursor, with no new search.
-    const { lines, rest } = takeVoiceUnits(envelope, units, cap, VOICE_CURSOR_PREFIX.length + 36);
+    const { lines, rest } = fitUnits(envelope, units, cap, VOICE_CURSOR_PREFIX.length + 36);
     const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
     const body = { ...reply, findings: [] };
     if (rest.length > 0) return { ...page, canContinue: true,
@@ -6265,7 +6292,7 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
     return capVoiceReply(body, book, cap);
   }
   if (slices !== undefined) {
-    const { kept, rest } = takeVoiceSlices(envelope, slices, cap, VOICE_CURSOR_PREFIX.length + 36);
+    const { kept, rest } = fitSlices(envelope, slices, cap, VOICE_CURSOR_PREFIX.length + 36);
     const page: JsonObject = { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT };
     // Every capped page states whether it continues, so a reader never has to read an absent field as false.
     if (rest.length === 0) return { ...page, canContinue: envelope['nextCursor'] !== undefined };
@@ -6273,7 +6300,7 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
     // on the body's own next page once the store's slices are spent.
     return { ...page, canContinue: true, pageCursor: book.keepSlices(researchId, envelope, rest), pagesRemaining: pagesLeft(rest) };
   }
-  const { lines, rest } = takeVoiceUnits(envelope, voiceUnitsOf(reply), cap, VOICE_CURSOR_PREFIX.length + 36);
+  const { lines, rest } = fitUnits(envelope, voiceUnitsOf(reply), cap, VOICE_CURSOR_PREFIX.length + 36);
   const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
   // W1-R3: the reply's own control fields stay as they are; a page only adds the cursor it needs to be read on.
   if (rest.length === 0) return page;

@@ -124,6 +124,31 @@ test('C-CONTINUITY T-11: a cursor this call does not hold is a closed error, nev
 
 // C-CONTINUITY T-11: a body page is a research result too, so it obeys the same cap. Its slices are cut at a whole
 // word, the reader's offsets stay exact, and the remainder is paged from the call's own store.
+test('C-CONTINUITY T-11: a body of more than a hundred pages never overruns the cap on any page', () => {
+  // W1-R5: the remaining count is measured at the width it will really be named at, so a count that grows past two
+  // digits can no longer push a page over its cap. This body is wide enough for well over a hundred pages.
+  const body = 'Lux received evidence. '.repeat(12_000) + 'LUX_LOCAL_TAIL';
+  const reply = { researchId: 'r-wide', status: 'partial', bodyProjection: 'preview', canContinue: true, cursor: 'wide-cursor',
+    bodySlices: [{ source: 'knowledge', tool: 'get_insight', text: body, offset: 0, end: body.length, total: body.length }] };
+  const book = new VoiceReplyBook();
+  let current = capVoiceReply(reply, book);
+  let joined = '', pages = 0;
+  for (;;) {
+    pages += 1;
+    assert.ok(JSON.stringify(current).length <= RESEARCH.voiceReplyChars,
+      `page ${pages} is ${JSON.stringify(current).length} characters, over the ${RESEARCH.voiceReplyChars} cap`);
+    for (const slice of (current['bodySlices'] as { text: string; offset: number; end: number }[])) {
+      assert.equal(slice.offset, joined.length, 'the pages are contiguous'); joined += slice.text;
+    }
+    const cursor = current['pageCursor'];
+    if (cursor === undefined) break;
+    assert(pages < 200, 'the body arrives in bounded pages');
+    current = book.take(String(cursor))!;
+  }
+  assert(pages > 100, `the body arrives in more than a hundred pages, and took ${pages}`);
+  assert.equal(joined, body, 'and every page together is the body, byte for byte');
+});
+
 test('C-CONTINUITY T-11: a body page is capped and pages its slices with exact offsets', () => {
   const body = 'Lux received evidence. '.repeat(1_400) + 'LUX_LOCAL_TAIL';
   const reply = { researchId: 'r-body', status: 'partial', bodyProjection: 'preview', canContinue: true, cursor: 'body-cursor',

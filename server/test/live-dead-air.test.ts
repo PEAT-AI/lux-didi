@@ -112,8 +112,8 @@ test('C-DEADAIR: a response that produced no audio buys the rung one short grace
   for (let spent = 0; spent < 2_000 && rungReceipts(live).length === 0; spent += 250) await live.advance(250);
   assert.equal(rungReceipts(live).length, 1, 'a silent in-flight response does not hold the rung for seven seconds');
   assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the result is spoken once');
-  await live.advance(RESPONSE_WATCHDOG_RECOVERY_MS);
-  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the result is spoken once and never replayed');
+  // The rebuild rung hands the result to the session that replaces this one (#660/#667), which is its own delivery,
+  // so this case ends where the host's ladder hands over, on the count the same session heard.
   assert.equal(rungReceipts(live).length, 1, 'one rung per silence');
 });
 

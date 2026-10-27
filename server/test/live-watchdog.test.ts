@@ -182,6 +182,11 @@ test('the rebuild trigger is a closed set the host log accepts for every token',
     'a trigger outside the closed set never reaches the host log');
   assert.equal(safeEvent({ event: 'live_rebuild', cause: 'provider', liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }), undefined,
     'a rebuild with no trigger at all is not a rebuild');
+  // C-WATCH: every watchdog record says whether the wait it judged began at a tool result, and nothing else rides along.
+  assert.deepEqual(safeEvent({ event: 'live_watchdog', phase: 'settled', turnAgeMs: 20_538, generation: 3, sinceTool: true }),
+    { event: 'live_watchdog', phase: 'settled', turnAgeMs: 20_538, generation: 3, sinceTool: true }, 'a post-tool wait says so');
+  assert.equal(safeEvent({ event: 'live_watchdog', phase: 'settled', turnAgeMs: 20_538, generation: 3 }), undefined,
+    'a watchdog record with no sinceTool never reaches the host log');
   assert.equal(safeEvent({ event: 'live_rebuild', trigger: 'line_dropped', cause: 'the-internet', liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }), undefined,
     'a cause outside the closed set never reaches the host log');
 });
@@ -250,6 +255,8 @@ test('a second mute inside the window settles the call honestly instead of loopi
   assert.deepEqual(phases(live), ['armed', 'nudged', 'recovering', 'recovered', 'armed', 'nudged', 'settled']);
   assert.equal(live.owner.get(live.liveSessionId).terminal?.state, 'failed', 'a second mute inside the window settles');
   assert.equal(terminalCode(live), 'model_unresponsive');
+  assert.equal(live.receipts.filter(record => record.event === 'live_watchdog' && record.phase === 'settled')[0]?.['sinceTool'], false,
+    'an owner-turn wait says it did not begin at a tool result');
   assert.equal(live.fake.sessionsOpened, 2, 'a second mute inside the window opens no third session');
 });
 

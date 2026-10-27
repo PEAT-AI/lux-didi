@@ -166,7 +166,8 @@ export function readOAuthRecord(configDir: string, reference: string, accept: (e
 export function writeOAuthRecord(configDir: string, reference: string, record: OAuthRecord): void {
   const target = join(configDir, `${reference}.json`);
   const temp = join(configDir, `.${reference}.json.${process.pid}.tmp`);
-  const data = Buffer.from(JSON.stringify(record), 'utf8');
+  // Exactly the closed key set every time: the claim is written empty when no token check proved one.
+  const data = Buffer.from(JSON.stringify({ ...record, identity: record.identity ?? '' }), 'utf8');
   let fd: number | undefined;
   try {
     fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);

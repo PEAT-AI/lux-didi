@@ -298,12 +298,12 @@ test('a completed CRM sign-in connects crm in place, logging connector_connected
   const fake = await syntheticMongoose();
   const store = new Store(join(dir, 'state'), toolsMigrations);
   const lifecycle: Record<string, unknown>[] = [];
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: OWNER_EMAIL, endpoints: syncCatalogue(fake.origin) }), { mode: 0o600 });
   const mcp = await composeMcpRuntime({
     store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, deferConnectors: true,
     lifecycleLog: event => lifecycle.push(event as unknown as Record<string, unknown>),
   });
   t.after(async () => { await mcp.close(); await fake.close(); rmSync(dir, { recursive: true, force: true }); });
-  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: OWNER_EMAIL, endpoints: syncCatalogue(fake.origin) }), { mode: 0o600 });
   const record = (endpoint: MongooseEndpoint): Record<string, unknown> => {
     const binding = mongooseBinding(`${fake.origin}/mcp/${endpoint}`, endpoint)!;
     return { schemaVersion: 3, endpoint, resource: binding.resource, issuer: binding.issuer, tokenEndpoint: `${fake.origin}/oauth/token`, clientId: 'synthetic', redirectPort: 8768, account: OWNER_EMAIL, accessToken: mintedToken(endpoint, OWNER_EMAIL), refreshToken: `refresh-${endpoint}`, expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now(), identity: OWNER_EMAIL };

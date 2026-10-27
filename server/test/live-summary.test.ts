@@ -337,9 +337,12 @@ test('a refused tool reaches the distillation input by its recorded code, not by
     seedConversation(h.store, 's-refused-tool');
     h.store.transaction(tx => tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,?,?)',
       ['s-refused-tool', 'outputTranscription', 'Lux threw an authorization error, so nothing was saved.', 56, SUMMARY_NOW]));
-    insertToolCall(h.store, 's-refused-tool', 'stage_lux_note', 'refused', { staged: false, code: 'authorization_missing' });
-    insertToolCall(h.store, 's-refused-tool', 'vault_search', 'failed', { code: 'upstream_timeout' }, 1);
-    insertToolCall(h.store, 's-refused-tool', 'calendar_read', 'completed', { events: [] }, 2);
+    // The three shapes the tools layer persists (persistTerminal): a gateway write that answers "not done" through
+    // the completed path, a failed dispatch whose code is the reason, and a pre-execution refusal.
+    insertToolCall(h.store, 's-refused-tool', 'stage_lux_note', 'completed', { staged: false, code: 'authorization_missing' });
+    insertToolCall(h.store, 's-refused-tool', 'vault_search', 'failed', { status: 'failed', reason: 'upstream_timeout' }, 1);
+    insertToolCall(h.store, 's-refused-tool', 'web_search', 'refused', { status: 'refused', reason: 'not_granted' }, 2);
+    insertToolCall(h.store, 's-refused-tool', 'calendar_read', 'completed', { events: [] }, 3);
     const requests: ModelRequest[] = [];
     const model: ModelPort = { generate: (request: ModelRequest) => { requests.push(request); return Promise.resolve(modelResult('complete', '{"skip": false, "summary": "the owner asked to save a note."}')); } };
     await worker(h.store, model, []).distill('s-refused-tool');
@@ -347,7 +350,8 @@ test('a refused tool reaches the distillation input by its recorded code, not by
     const text = requests[0]!.contents.flatMap(content => content.parts.map(part => typeof part['text'] === 'string' ? part['text'] : '')).join('\n');
     assert.ok(text.includes('Tool outcomes:'), 'the block is present');
     assert.ok(text.includes('stage_lux_note refused authorization_missing'), 'the record names the tool and its code');
-    assert.ok(text.includes('vault_search failed upstream_timeout'), 'a failed call carries its code');
+    assert.ok(text.includes('vault_search failed upstream_timeout'), 'a failed call carries its reason code');
+    assert.ok(text.includes('web_search refused not_granted'), 'a pre-execution refusal carries its reason code');
     assert.ok(text.includes('calendar_read succeeded'), 'a completed call reads as succeeded');
     assert.ok(requests[0]!.system.includes('Tool outcomes come only from the Tool outcomes block below'));
     assert.equal(storedRow(h.store, 's-refused-tool')!.status, 'complete', 'the summary is stored');

@@ -135,10 +135,6 @@ export type OwnerTurnRead = { readonly state: 'owner_turn'; readonly text: strin
   | { readonly state: 'refused'; readonly code: 'transcript_pending' | 'transcript_typed' };
 
 /**
- * W6-R2 B1: authorization is the owner's own finalized mic turn of THIS turn. Before its transcript
- * is finalized the stage refuses, and a newer-looking read never borrows the previous owner turn.
- */
-/**
  * The owner's finalized mic rows of this one stretch, newest first: back to the turn start and the
  * model's last output, under the open guard's bounds. A row outside the confirm window is never part
  * of it, and a typed row never counts.
@@ -159,6 +155,11 @@ function ownerStretch(mic: readonly OwnerTurnRow[], turnStartAt: number | undefi
 const composedText = (stretch: readonly OwnerTurnRow[]): string =>
   stretch.map(row => row.text).reverse().join(' ').replace(/\s+/g, ' ').trim().slice(-OWNER_WINDOW_CHARS).trim();
 
+/**
+ * W6-R2 B1: authorization is the owner's own finalized mic turn of THIS turn. Before its transcript
+ * is finalized the stage refuses, and a newer-looking read never borrows the previous owner turn.
+ * R7-W1: that turn is the whole finalized stretch he said in pieces, not only its newest fragment.
+ */
 export function currentOwnerTurn(rows: readonly OwnerTurnRow[], turnStartAt: number | undefined, inputFinal: boolean, now?: number, spokenAfter?: number): OwnerTurnRead {
   const mic = rows.filter(row => row.finalOrigin !== 'typed').slice().sort((a, b) => b.journalId - a.journalId);
   const newest = mic[0];

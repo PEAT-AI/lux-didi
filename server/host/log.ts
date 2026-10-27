@@ -1066,7 +1066,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'research_refused') {
     // C-RESEARCH-CONTRACT T-04: the refusal names the closed reason and the call's shape as lengths and closed
     // source names. Field text, question text and lookup values never enter a log line.
-    if (!closedKeys(value, ['event', 'state', 'sequence', 'reason', 'action', 'fields', 'unknownFieldCount', 'lookupCount', 'topicChars', 'questionChars', 'queryChars', 'lookupSources'])) return;
+    // C-ENTITY: an `entity_rewrite` refusal also carries the three name counts, numbers and never the words.
+    const counts = value.reason === 'entity_rewrite' ? ['namesKept', 'namesDropped', 'namesAdded'] : [];
+    if (!closedKeys(value, ['event', 'state', 'sequence', 'reason', 'action', 'fields', 'unknownFieldCount', 'lookupCount', 'topicChars', 'questionChars', 'queryChars', 'lookupSources', ...counts])) return;
+    if (!counts.every(key => isSafeCount(value[key]))) return;
     if (value.state !== 'refused' || !(value.sequence === null || isSafeCount(value.sequence))) return;
     if (!(RESEARCH_REFUSAL_REASONS as readonly unknown[]).includes(value.reason) || !['start', 'continue', 'stop', 'missing', 'invalid'].includes(String(value.action))) return;
     if (!isSafeCount(value.unknownFieldCount) || !isSafeCount(value.lookupCount)) return;
@@ -1082,7 +1085,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(fields, [...RESEARCH_ARGUMENT_FIELDS]) || !Object.values(fields).every(type => (RESEARCH_ARGUMENT_TYPES as readonly unknown[]).includes(type))) return;
     return { event: 'research_refused', state: 'refused', sequence: value.sequence, reason: value.reason, action: value.action,
       fields: Object.fromEntries(RESEARCH_ARGUMENT_FIELDS.map(key => [key, fields[key]])), unknownFieldCount: value.unknownFieldCount, lookupCount: value.lookupCount,
-      topicChars: value.topicChars, questionChars: value.questionChars, queryChars: [...value.queryChars], lookupSources: [...value.lookupSources] };
+      topicChars: value.topicChars, questionChars: value.questionChars, queryChars: [...value.queryChars], lookupSources: [...value.lookupSources],
+      ...(counts.length > 0 ? { namesKept: value.namesKept, namesDropped: value.namesDropped, namesAdded: value.namesAdded } : {}) };
   }
   if (value.event === 'live_tool_turn') {
     // O1/F6: per-turn tool metrics, tool names, millisecond latency and per-endpoint peak concurrency only.

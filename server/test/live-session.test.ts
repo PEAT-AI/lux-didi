@@ -6888,6 +6888,67 @@ test('#660: two refused deliveries end the turn with the closed reason instead o
   assert.equal(composed.length, 1, 'and she says the one honest line');
 });
 
+test('W4-R1: a second mute 1.7 s after a tool result rebuilds the call instead of ending it', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => {
+    const record = raw as Record<string, unknown>;
+    if (record.event === 'live_watchdog') receipts.push(record);
+  } });
+  t.after(() => detach());
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { tools: true, port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 1_200_000 } });
+  const { session } = await openPort(h, 'watchdog-tool-window');
+  const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
+  const note = (id: string) => fake.emit({ type: 'toolCall', calls: [{ id, name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } }] });
+  // One mute is recovered at the start of the call, so the next one is the second mute inside the window.
+  await ownerInput(fake);
+  await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'recovered'));
+  assert.equal(fake.sessionsOpened, 2, 'the first mute was recovered on a fresh session');
+  // A lookup hands its result back, and the ladder spends its rung on that silence.
+  await ownerInput(fake);
+  note('cw1');
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 1, 'the first lookup answered');
+  await advance(AUDIBLE_DEBT_RUNG_MS);
+  // The second result lands 1.7 s before the ladder's rebuild step, exactly as the report read.
+  await advance(RESPONSE_WATCHDOG_RECOVERY_MS - 1_700);
+  note('cw2');
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 2, 'the second lookup answered inside the ladder');
+  const seen = receipts.length;
+  await advance(1_700 + 1_000);
+  const judged = receipts.slice(seen);
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a mute judged 1.7 s after a tool result ends nothing');
+  assert.ok(judged.some(record => record.phase === 'recovering'), 'the step is the rebuild the first mute gets');
+  assert.equal(judged.some(record => record.phase === 'settled'), false, 'the call is not settled on a wait it never had');
+  assert.equal(fake.sessionsOpened, 3, 'the rebuild opened one fresh session');
+});
+
+test('W4-R1: a genuine second mute with no tool result still ends the call', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => {
+    const record = raw as Record<string, unknown>;
+    if (record.event === 'live_watchdog') receipts.push(record);
+  } });
+  t.after(() => detach());
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { tools: true, port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 1_200_000 } });
+  const { session } = await openPort(h, 'watchdog-note-window');
+  // No tool is called at all, so nothing forges a wait the model never had.
+  await ownerInput(fake);
+  await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'recovered'));
+  await ownerInput(fake);
+  await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'settled'));
+  const settled = receipts.find(record => record.phase === 'settled');
+  assert.equal(settled?.['sinceTool'], false, 'the owner-turn wait says it did not begin at a tool result');
+  assert.equal(settled?.['msSinceToolResult'], undefined, 'no tool result ever reached the model');
+  const terminal = h.owner.get(session.liveSessionId).terminal;
+  assert.equal(terminal !== null && 'code' in terminal ? terminal.code : undefined, 'model_unresponsive',
+    'a real repeated mute keeps its honest terminal');
+});
+
 test('#660: a stalled delegation with nothing in flight delivers the unspoken result once', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });

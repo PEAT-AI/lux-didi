@@ -75,7 +75,7 @@ test('C-CONTINUITY T-11: an 11,294-character reply delivers at most 3,000 charac
   assert.equal(String(page['researchId']), 'r-1', 'the envelope the caller reads is unchanged');
   assert.equal(page['status'], 'answered');
   assert.match(String((page['findings'] as { text: string }[])[0]!.text), /^knowledge: LAT-1023 /u, 'the findings come first');
-  assert.ok(typeof page['cursor'] === 'string' && page['cursor'] !== '', 'the cursor pages the rest');
+  assert.ok(typeof page['nextCursor'] === 'string' && page['nextCursor'] !== '', 'the page cursor reads the rest');
   const text = String((page['findings'] as { text: string }[])[0]!.text);
   assert.ok(!/\S\u2026/u.test(text) || /\s\u2026$/u.test(text), 'no cut lands mid-word');
 });
@@ -86,7 +86,7 @@ test('C-CONTINUITY T-11: a continue with that cursor pages the stored reply and 
   h.deps.voicePages = book;
   const reply = longReply();
   const first = capVoiceReply(reply, book);
-  const cursor = String(first['cursor']);
+  const cursor = String(first['nextCursor']);
   const before = h.executed.length;
   const second = await runResearch(h.deps, { action: 'continue', researchId: 'r-1', cursor }, signal());
   assert.equal(second['error'], undefined, 'the page is served');
@@ -98,7 +98,7 @@ test('C-CONTINUITY T-11: a continue with that cursor pages the stored reply and 
   let page: Record<string, unknown> = second;
   let pages = 2;
   while (page['canContinue'] === true && pages < 20) {
-    page = await runResearch(h.deps, { action: 'continue', researchId: 'r-1', cursor: String(page['cursor']) }, signal());
+    page = await runResearch(h.deps, { action: 'continue', researchId: 'r-1', cursor: String(page['nextCursor']) }, signal());
     assert.equal(page['error'], undefined, 'the next page is served');
     assert.ok(JSON.stringify(page).length <= RESEARCH.voiceReplyChars, 'every page obeys the cap');
     parts.push(String((page['findings'] as { text: string }[])[0]!.text));

@@ -6194,7 +6194,7 @@ export class VoiceReplyBook {
       const findings = [{ text: lines.join('\n') }];
       if (rest.length > 0) {
         emitted = { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: true,
-          cursor: this.keep(page.researchId, page.envelope, rest, page.then) };
+          nextCursor: this.keep(page.researchId, page.envelope, rest, page.then) };
       } else if (page.then !== undefined) {
         // The held lines are spent: a reply that still owes a body hands it back to the cap as its own page.
         emitted = capVoiceReply(page.then, this, cap);
@@ -6236,7 +6236,7 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
     const { lines, rest } = takeVoiceUnits(envelope, units, cap, VOICE_CURSOR_PREFIX.length + 36);
     const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
     const body = { ...reply, findings: [] };
-    if (rest.length > 0) return { ...page, canContinue: true, cursor: book.keep(researchId, envelope, rest, body) };
+    if (rest.length > 0) return { ...page, canContinue: true, nextCursor: book.keep(researchId, envelope, rest, body) };
     return capVoiceReply(body, book, cap);
   }
   if (slices !== undefined) {
@@ -6252,7 +6252,7 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
   const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
   // W1-R3: the reply's own control fields stay as they are; a page only adds the cursor it needs to be read on.
   if (rest.length === 0) return page;
-  return { ...page, canContinue: true, cursor: book.keep(researchId, envelope, rest) };
+  return { ...page, canContinue: true, nextCursor: book.keep(researchId, envelope, rest) };
 }
 
 /**

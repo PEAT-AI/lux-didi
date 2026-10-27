@@ -320,8 +320,13 @@ export const RESPONSE_WATCHDOG_RECOVERY_MS = 7_000;
 /** At most one watchdog recovery per window; a second mute inside it ends the call honestly instead of looping. */
 export const RESPONSE_WATCHDOG_WINDOW_MS = 120_000;
 /** #538: the audible debt rung. The clock is non-sliding: the first rung lands 8 s after the model began owing audio,
- *  whatever text it wrote in between. The rebuild rung is seven seconds later, which is AUDIBLE_DEBT_REBUILD_MS. */
+ *  whatever text it wrote in between. The rebuild rung is seven seconds later, which is AUDIBLE_DEBT_REBUILD_MS.
+ *  C-DEADAIR: the rung stays at 8 s because the fastest rescue is the response's own end (see #deliverAfterSilentText),
+ *  and shortening the rung on top of that broke the replay invariants that guard against double speaking. */
 export const AUDIBLE_DEBT_RUNG_MS = 8_000;
+/** L-04: a response the provider announced but has not made audible is not progress the owner can hear, so it buys
+ *  the rung one short grace and no more. Seven seconds of it was the C-DEADAIR 15 s wait. */
+export const DEAD_AIR_RESPONSE_GRACE_MS = 500;
 /** L-04: the shortest silence worth a `live_heard_silence` record. Below it the wait is the ordinary latency of one
  *  model turn, and reporting every such pause would bury the waits the owner actually sits through. */
 export const HEARD_SILENCE_MIN_MS = 1_000;
@@ -579,8 +584,14 @@ interface ActiveSession {
   /** #660: a stalled delegation with nothing in flight makes the owner's next status answer the host's to give. */
   hostStatusNote?: boolean | undefined;
   /** #538 R4: the provider has announced a response since the debt started, and that response is still in progress.
-   *  The 8 s rung never closes a session that has an answer in flight; it defers until the response ends. */
+   *  The rung never cuts off an answer the owner can hear; it grants it one short grace. */
   responseInProgress?: boolean | undefined; debtDeferred?: boolean | undefined;
+  /** C-DEADAIR: when the provider announced the response that owes this turn's answer, for the latency record. */
+  responseCreatedAt?: number | undefined;
+  /** C-DEADAIR: when the debt rung last named this silence, so the sliding watchdog does not name it a second time. */
+  deadAirNudgedAt?: number | undefined;
+  /** C-DEADAIR: the provider wrote text for this owed answer and the owner heard none of it. */
+  debtTextSeen?: boolean | undefined;
   /** D6: an open model turn holds SPEAKING until turnComplete or 1,500 ms of audible silence. */
   speakingHoldTimer?: ReturnType<JobTimer> | undefined;
   sessionTimer: ReturnType<JobTimer> | undefined; callTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
@@ -2083,17 +2094,18 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     if (handle.debtSince !== undefined) { handle.debtTimer?.cancel(); handle.debtTimer = undefined; }
     // A muted session hears nothing, so nothing is owed to it while the mute holds.
     if (handle.muted) return;
-    // L-04: the clock is anchored at the end of the last audible frame of this turn's own model speech, not at the
-    // tool output, so the provider latency the owner sat through after her preamble is part of the same silence and
-    // the rung lands 8 s after the last thing she heard. A turn that spoke no preamble has no such frame and keeps
-    // the old anchor at the tool output: a previous turn's audio is never this turn's silence. The rung's own
-    // action is unchanged.
+    // L-04: the clock is anchored at the last thing the owner heard, not at the tool output, so a slow lookup's
+    // provider time is part of the same silence. C-DEADAIR: the rung itself is four seconds, and the wait the owner
+    // actually sat through is recorded apart from the provider's share in `live_response_latency`.
     const lastAudible = handle.turnAudioAt ?? this.#now();
     handle.debtSince = lastAudible;
     handle.debtBargeIn = false;
     handle.debtDeferred = false;
     handle.debtHeldForTool = false;
     handle.responseInProgress = false;
+    handle.responseCreatedAt = undefined;
+    handle.deadAirNudgedAt = undefined;
+    handle.debtTextSeen = false;
     // One silence, one clock: the sliding watchdog stands down for the silence the debt clock now owns.
     this.#cancelWatchdog(handle);
     this.#noteDebt(handle, 'start', reason);
@@ -2197,13 +2209,12 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       this.#scheduleDebt(handle, AUDIBLE_DEBT_RUNG_MS, 'rung');
       return;
     }
-    // #538 R4: an answer in flight is never the ladder's to lose. A response the provider announced since the debt
-    // started holds the 8 s rung until it ends, and the 15 s rung stays armed as its bound.
+    // #538 R4: an answer in flight is never the ladder's to lose, but a response the owner cannot hear is not an
+    // answer she is listening to. It buys the rung DEAD_AIR_RESPONSE_GRACE_MS and no more: a response that produced
+    // no audio buys nothing, and a response that did has already cleared this debt.
     if (step === 'rung' && handle.responseInProgress === true && handle.debtDeferred !== true) {
-      // The response that holds the rung gets the seven seconds the existing nudge gave it; the rung comes back
-      // with the same work, and only then fires whether or not the provider is still writing.
       handle.debtDeferred = true;
-      this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rung');
+      this.#scheduleDebt(handle, DEAD_AIR_RESPONSE_GRACE_MS, 'rung');
       return;
     }
     this.#noteDebt(handle, 'rung', step === 'rung' ? 'dead_air' : 'rebuild');
@@ -2212,6 +2223,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     hostLogEvent({ event: 'live_dead_air', msSinceTool: turnAgeMs,
       msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
     hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: AUDIBLE_DEBT_RUNG_MS });
+    // One silence earns one nudge: the sliding watchdog's own receipt stays for the silences the debt clock never named.
+    handle.deadAirNudgedAt = this.#now();
     const stalledTurn = handle.connection.turnId;
     if (stalledTurn !== undefined) {
       this.#receipt(handle, 'live.dead_air_stalled', { turnId: stalledTurn }, {
@@ -2401,7 +2414,12 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         // audible output. Only the answer's own audio re-arms it, so a fill frame never writes a false healthy.
         // The owed answer is the tool result's own bookkeeping, so progress speech defers the clock without
         // erasing the obligation (amendment A).
-        if (handle.answerAt !== undefined) {
+        const rungNamedThisSilence = handle.deadAirNudgedAt !== undefined
+          && this.#now() - handle.deadAirNudgedAt < RESPONSE_WATCHDOG_NUDGE_MS;
+        if (handle.answerAt !== undefined && handle.debtSince === undefined && !rungNamedThisSilence) {
+          // C-DEADAIR: while the audible death clock owns this silence (#armDebt stands the sliding watchdog down),
+          // the debt rung is the one nudge. A second one here named the same wait twice and made the owner's first
+          // audible recovery look like two.
           hostLogEvent({ event: 'live_dead_air', msSinceTool: Math.max(0, this.#now() - (handle.answerAt ?? this.#now())),
             msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
           hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: DEAD_AIR_NUDGE_MS });
@@ -2439,7 +2457,14 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     if (type === 'audio' && event.audible === false) return;
     // #538 R4: the response the provider has announced, from the events it already surfaces. An announced response
     // holds the debt rung so an answer in flight is never closed under it.
-    if (type === 'modelTurnStarted' || type === 'modelText' || type === 'outputTranscription' || type === 'audio') handle.responseInProgress = true;
+    if (type === 'modelTurnStarted' || type === 'modelText' || type === 'outputTranscription' || type === 'audio') {
+      // C-DEADAIR: the provider's own latency is out of the host's hands, so it is measured apart from the wait the
+      // owner hears: the first announced response after an owed answer stamps owner final to response to first audio.
+      if (handle.responseInProgress !== true) handle.responseCreatedAt = this.#now();
+      handle.responseInProgress = true;
+      // C-DEADAIR: text the owner cannot hear, written while an answer is owed, is what the response-end rescue reads.
+      if (handle.debtSince !== undefined && (type === 'modelText' || type === 'outputTranscription')) handle.debtTextSeen = true;
+    }
     // #538: the audible debt clock clears on what the owner heard or did, never on what the model typed.
     if (type === 'audio') this.#clearDebt(handle, 'audible');
     if (type === 'interrupted') { handle.responseInProgress = false; handle.debtBargeIn = true; this.#clearDebt(handle, 'owner_barge_in'); }
@@ -2466,6 +2491,10 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       // the deferral held, which is the ruling's own order.
       if (handle.debtSince !== undefined) {
         if (handle.lastModelAudioAt !== undefined && handle.lastModelAudioAt >= handle.debtSince) this.#clearDebt(handle, 'turn_end');
+        // C-DEADAIR: a response that ended after writing text and never made a sound is the 2026-10-27 shape (112
+        // response tokens, nothing above -120 dB on the Mac). The model has nothing more to say in that response, so
+        // the held result goes out now instead of waiting out the ladder.
+        else if (handle.debtTextSeen === true) void this.#deliverUnspoken(handle).catch(() => { /* the rung settles its own failure */ });
         else this.#fireDeferredRung(handle);
       }
     }
@@ -3446,6 +3475,13 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
             hostLogEvent({ event: answer ? 'live_answer_audio' : 'live_first_audio', liveSessionId: handle.liveSessionId, generation, msSinceReady: sinceReady, msSinceOpen: sinceOpen });
             if (handle.inputFinalAt !== undefined) {
               hostLogEvent({ event: 'live_dead_air', deadAirMs: Math.max(0, handle.firstAudioAt - handle.inputFinalAt - handle.mutedMs) });
+              // C-DEADAIR: the provider's share of the wait, kept apart from the host's. Owner final words to the
+              // announced response is model latency, announced response to first audio is the provider's time to
+              // speak, and the tool-output offset is what the host's own ladder is measured against.
+              hostLogEvent({ event: 'live_response_latency', liveSessionId: handle.liveSessionId, generation,
+                msSinceOwnerFinal: Math.max(0, handle.firstAudioAt - handle.inputFinalAt - handle.mutedMs),
+                msSinceResponseCreated: handle.responseCreatedAt === undefined ? null : Math.max(0, handle.firstAudioAt - handle.responseCreatedAt),
+                msSinceToolOutput: handle.answerAt === undefined ? null : Math.max(0, handle.firstAudioAt - handle.answerAt) });
               handle.inputFinalAt = undefined;
             }
             // L-04: the wait the owner heard, measured from the last audible frame rather than from her turn's

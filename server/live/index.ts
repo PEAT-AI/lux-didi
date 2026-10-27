@@ -148,6 +148,23 @@ function recordedOptions(snapshot: unknown): readonly OpeningOption[] {
 }
 
 /**
+ * Release 7 W5: the open-loop topics a past call's own start plan offered, read off the plan that start
+ * recorded in its accepted prompt snapshot. An open loop offered as one call's opener stays in the earlier
+ * conversations as context and never opens another call; only the owner can raise it again. The record is the
+ * plan, so the comparison is the option's own topic, never a match on words the model chose later.
+ */
+function offeredOpenLoops(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[], now: number): readonly string[] {
+  const topics: string[] = [];
+  const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
+  for (const row of tx.all("SELECT live_session_id, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? AND created_at>=? ORDER BY created_at DESC, rowid DESC", [assistantId, now - EARLIER_CONVERSATIONS_WINDOW_MS])) {
+    const source = historySessionEvidence(tx, String(row['live_session_id']), eligibility);
+    if (!source || !allowedClasses.includes(source.dataClass)) continue;
+    for (const option of recordedOptions(row['accepted_prompt_snapshot'])) if (option.kind === 'open-loop') topics.push(option.topic);
+  }
+  return topics;
+}
+
+/**
  * Q5-R4: the three most recent earlier calls' opening utterances, read from the owner-local journal.
  * Release 3u: each one carries the topic its own start plan offered, so the anti-repeat note names a
  * subject as well as words. Nothing here reaches host.log.
@@ -1394,6 +1411,7 @@ export class LiveSessionOwner {
       const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone,
         ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
         openLoops: storedOpenLoops(tx, this.#profile.route.dataClasses, now, staleRefusedNoteSessions(tx, assistantId)),
+        alreadyOffered: offeredOpenLoops(tx, assistantId, this.#profile.route.dataClasses, now),
         ...(freshThread === undefined ? {} : { freshThread }),
         ...(earlierOpeners[0] === undefined ? {} : { previousKinds: earlierOpeners[0].kinds }),
         rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });

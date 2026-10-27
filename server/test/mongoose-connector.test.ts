@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { connectorDescriptor } from '../connectors/index.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -105,32 +106,7 @@ async function fixture(endpoint: MongooseEndpoint, options: FixtureOptions = {})
  * title, description, queryConfig{exploreName, metrics, dimensions, filters{dimensions[],metrics[],type},
  * sorts[], limit integer minimum 1}, and the filter rule {fieldId, operator enum, values[], settings}.
  */
-const PUBLISHED_METRIC_SCHEMA: Record<string, unknown> = {
-  type: 'object', additionalProperties: false, required: ['queryConfig'],
-  properties: {
-    title: { type: 'string' },
-    description: { type: 'string' },
-    queryConfig: {
-      type: 'object', additionalProperties: false, required: ['exploreName'],
-      properties: {
-        exploreName: { type: 'string' },
-        metrics: { type: 'array', items: { type: 'string' } },
-        dimensions: { type: 'array', items: { type: 'string' } },
-        filters: { type: 'object', additionalProperties: false, properties: {
-          dimensions: { type: 'array', items: { type: 'object', additionalProperties: false, properties: {
-            fieldId: { type: 'string' }, operator: { type: 'string', enum: ['equals', 'inThePast'] },
-            values: { type: 'array', items: { type: ['string', 'number'] } },
-            settings: { type: 'object', additionalProperties: false, properties: { unitOfTime: { type: 'string', enum: ['days'] }, completed: { type: 'boolean' } } },
-          } } },
-          metrics: { type: 'array', items: { type: 'object' } },
-          type: { type: 'string', enum: ['and'] },
-        } },
-        sorts: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { fieldId: { type: 'string' }, descending: { type: 'boolean' } } } },
-        limit: { type: 'integer', minimum: 1, maximum: 500 },
-      },
-    },
-  },
-};
+const PUBLISHED_METRIC_SCHEMA: Record<string, unknown> = JSON.parse(readFileSync(join(process.cwd(), 'server/test/fixtures/mongoose-tools-list-literal.json'), 'utf8')).data.find((tool: { name: string }) => tool.name === 'run_metric_query').inputSchema;
 
 /** One approved connection policy per Mongoose endpoint, enough to build the planner-facing table. */
 const MONGOOSE_POLICY: Readonly<Record<MongooseEndpoint, ConnectionPolicy>> = {

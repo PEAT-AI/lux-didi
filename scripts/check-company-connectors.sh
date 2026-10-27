@@ -36,6 +36,7 @@ cp "$root/server/host/mongoose-login.ts" "$out/source/host/"
 # server/tools imports the debug journal receipt and the memory read model: copy those modules too.
 cp "$root"/server/domain/*.ts "$out/source/domain/"
 cp "$root/server/test/mongoose-connector.test.ts" "$out/source/test/"
+cp "$root/server/test/research-data-route.test.ts" "$out/source/test/"
 cp "$root/server/test/mongoose-auth.test.ts" "$out/source/test/"
 # The sign-in contract: the real host login against a synthetic Mongoose that enforces the server's own rules.
 cp "$root/server/test/mongoose-signin-contract.test.ts" "$root/server/test/mongoose-contract-fake.ts" "$out/source/test/"

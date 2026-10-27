@@ -6146,15 +6146,15 @@ function takeVoiceSlices(envelope: JsonObject, slices: readonly JsonObject[], ca
  * at a time; the rest is still here, so a `continue` with its cursor reads on without a new search.
  */
 export class VoiceReplyBook {
-  #pages = new Map<string, { researchId: string; envelope: JsonObject; units: string[]; slices: JsonObject[] }>();
+  #pages = new Map<string, { researchId: string; envelope: JsonObject; units: string[]; slices: JsonObject[]; then?: JsonObject }>();
 
   get size(): number { return this.#pages.size; }
 
   holds(cursor: string): boolean { return this.#pages.has(cursor); }
 
   /** Keep one findings reply's remainder host-side and hand back the cursor that reads it. */
-  keep(researchId: string, envelope: JsonObject, units: readonly string[]): string {
-    return this.#hold({ researchId, envelope, units: [...units], slices: [] });
+  keep(researchId: string, envelope: JsonObject, units: readonly string[], then?: JsonObject): string {
+    return this.#hold({ researchId, envelope, units: [...units], slices: [], ...(then === undefined ? {} : { then }) });
   }
 
   /** Keep one body reply's remaining slices host-side and hand back the cursor that reads them. */
@@ -6162,7 +6162,7 @@ export class VoiceReplyBook {
     return this.#hold({ researchId, envelope, units: [], slices: slices.map(slice => ({ ...slice })) });
   }
 
-  #hold(page: { researchId: string; envelope: JsonObject; units: string[]; slices: JsonObject[] }): string {
+  #hold(page: { researchId: string; envelope: JsonObject; units: string[]; slices: JsonObject[]; then?: JsonObject }): string {
     const cursor = `${VOICE_CURSOR_PREFIX}${newResearchId()}`;
     this.#pages.set(cursor, page);
     return cursor;
@@ -6183,8 +6183,13 @@ export class VoiceReplyBook {
     }
     const { lines, rest } = takeVoiceUnits(envelope, page.units, cap, cursorChars);
     const findings = [{ text: lines.join('\n') }];
-    if (rest.length === 0) return { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: envelope['nextCursor'] !== undefined };
-    return { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: true, cursor: this.keep(page.researchId, page.envelope, rest) };
+    if (rest.length > 0) {
+      return { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: true,
+        cursor: this.keep(page.researchId, page.envelope, rest, page.then) };
+    }
+    // The held lines are spent: a reply that still owes a body is capped now, as its own page.
+    if (page.then !== undefined) return capVoiceReply(page.then, this, cap);
+    return { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: envelope['nextCursor'] !== undefined };
   }
 
   clear(): void { this.#pages.clear(); }
@@ -6202,6 +6207,16 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
   // A body page is a research result too, so it obeys the same cap: its slices are cut at a whole word and the
   // remainder is paged from the book with the reader's own offsets, so nothing is handed over uncapped.
   const slices = Array.isArray(reply['bodySlices']) ? (reply['bodySlices'] as JsonObject[]) : undefined;
+  // A reply that carries both evidence lines and a body page keeps its lines first: the calendar or mail findings
+  // the model asked for are not dropped, and the body follows them from the book.
+  const units = voiceUnitsOf(reply);
+  if (slices !== undefined && units.length > 0) {
+    const { lines, rest } = takeVoiceUnits(envelope, units, cap, VOICE_CURSOR_PREFIX.length + 36);
+    const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
+    if (rest.length > 0) return { ...page, canContinue: true, cursor: book.keep(researchId, envelope, rest, reply) };
+    // The lines all fitted, so what is left to cap is the body alone: it follows as its own page, never twice.
+    return capVoiceReply({ ...reply, findings: [] }, book, cap);
+  }
   if (slices !== undefined) {
     const { kept, rest } = takeVoiceSlices(envelope, slices, cap, VOICE_CURSOR_PREFIX.length + 36);
     const page: JsonObject = { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT };

@@ -98,32 +98,39 @@ const READ_USED: Readonly<Record<TrelloReadView, readonly string[]>> = {
 /** What a property holds when the model fills in one the chosen view does not use. */
 const UNUSED_DEFAULTS: Readonly<Record<string, unknown>> = { offset: 0, limit: 10 };
 /**
- * C-ARGS: the provider schema leaves every property but view optional, and a model fills in the ones a view
- * does not use (an empty string, 0 for offset, the default 10 for limit). Those are absent, not extra keys,
- * so they are dropped before the shape check: a property the view does use is validated exactly as before,
- * and a key the tool does not declare still refuses.
+ * C-ARGS: the provider schema leaves every property but view (or action) optional, and a model fills in the
+ * ones a view or action does not use (an empty string, 0 for offset, the default 10 for limit). Those are
+ * absent, not extra keys, so the shape check runs on a copy without them: a property the call does use is
+ * validated exactly as before, and a key the tool does not declare still refuses.
+ *
+ * The copy is deliberate. `call.args` itself is never mutated, because a refused call is logged afterwards
+ * (`declarations.ts` `logArgumentsRejected`) and the log must still name every key the provider sent: those
+ * empty keys are the evidence that the model fills the schema in.
  */
-function dropUnused(args: Args, used: readonly string[]): void {
-  for (const key of Object.keys(args)) {
-    if (used.includes(key) || !(key in TRELLO_READ_PARAMETERS.properties)) continue;
-    if (args[key] === (key in UNUSED_DEFAULTS ? UNUSED_DEFAULTS[key] : '')) delete args[key];
+function withoutUnused(args: Args, used: readonly string[], declared: Record<string, unknown>): Args {
+  const shaped: Args = {};
+  for (const [key, value] of Object.entries(args)) {
+    const filler = key in declared && value === (key in UNUSED_DEFAULTS ? UNUSED_DEFAULTS[key] : '');
+    if (!used.includes(key) && filler) continue;
+    shaped[key] = value;
   }
+  return shaped;
 }
 
 /** Each view takes exactly its own arguments; anything else is an unusable shape, refused at the boundary. */
 export function validateTrelloRead(args: unknown): args is Args {
   if (!isRecord(args) || typeof args.view !== 'string' || !(TRELLO_READ_VIEWS as readonly string[]).includes(args.view)) return false;
   const used = READ_USED[args.view as TrelloReadView];
-  dropUnused(args, used);
-  const limit = args.limit === undefined || Number.isSafeInteger(args.limit) && (args.limit as number) >= 1 && (args.limit as number) <= TRELLO_PAGE_MAX;
-  const offset = args.offset === undefined || Number.isSafeInteger(args.offset) && (args.offset as number) >= 0 && (args.offset as number) <= 10_000;
+  const shaped = withoutUnused(args, used, TRELLO_READ_PARAMETERS.properties);
+  const limit = shaped.limit === undefined || Number.isSafeInteger(shaped.limit) && (shaped.limit as number) >= 1 && (shaped.limit as number) <= TRELLO_PAGE_MAX;
+  const offset = shaped.offset === undefined || Number.isSafeInteger(shaped.offset) && (shaped.offset as number) >= 0 && (shaped.offset as number) <= 10_000;
   if (!limit || !offset) return false;
   switch (args.view) {
-    case 'overview': case 'recent': return only(args, used);
-    case 'list': return only(args, used) && str(args.list, 120);
-    case 'search': return only(args, used) && str(args.query, 200);
-    case 'due': return only(args, used) && (TRELLO_DUE_WINDOWS as readonly string[]).includes(String(args.window));
-    case 'card': return only(args, used) && str(args.card, TRELLO_NAME_MAX);
+    case 'overview': case 'recent': return only(shaped, used);
+    case 'list': return only(shaped, used) && str(shaped.list, 120);
+    case 'search': return only(shaped, used) && str(shaped.query, 200);
+    case 'due': return only(shaped, used) && (TRELLO_DUE_WINDOWS as readonly string[]).includes(String(shaped.window));
+    case 'card': return only(shaped, used) && str(shaped.card, TRELLO_NAME_MAX);
     default: return false;
   }
 }
@@ -147,17 +154,14 @@ export function validateTrelloWrite(args: unknown): args is Args {
   // C-ARGS: the same rule as a read view. A model that fills in every declared property sends the ones this
   // action does not require as an empty string, which is absent, not an extra key. A required property is
   // never dropped here, a boolean is never dropped (false is a real request), and an undeclared key still refuses.
-  for (const key of Object.keys(args)) {
-    if (key === 'action' || shape.required.includes(key) || !(key in TRELLO_WRITE_PARAMETERS.properties)) continue;
-    if (args[key] === '') delete args[key];
-  }
-  if (!only(args, ['action', ...shape.required, ...shape.optional]) || !shape.required.every(key => args[key] !== undefined)) return false;
-  for (const [key, value] of Object.entries(args)) {
+  const shaped = withoutUnused(args, ['action', ...shape.required], TRELLO_WRITE_PARAMETERS.properties);
+  if (!only(shaped, ['action', ...shape.required, ...shape.optional]) || !shape.required.every(key => shaped[key] !== undefined)) return false;
+  for (const [key, value] of Object.entries(shaped)) {
     if (key === 'action') continue;
     if (key === 'checked' || key === 'complete' || key === 'remove') { if (typeof value !== 'boolean') return false; continue; }
     if (!str(value, WRITE_LIMITS[key] ?? 0)) return false;
   }
-  if (args.action === 'update' && args.name === undefined && args.description === undefined) return false;
+  if (args.action === 'update' && shaped.name === undefined && shaped.description === undefined) return false;
   return true;
 }
 

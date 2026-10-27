@@ -10,7 +10,10 @@ import { foldName, indexTrelloSchemas, ownerAskedForChange, planTrelloCall, trel
 import { startTrelloFake, SYNTHETIC_BOARD, type TrelloFake } from './trello-fake.js';
 import { runToolCalls } from '../tools/declarations.js';
 import { attachHostLogSink } from '../tools/host-events.js';
-import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS } from '../tools/trello.js';
+import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_PARAMETERS } from '../tools/trello.js';
+import { diagnosticInputFields } from '../tools/diagnostic-input.js';
+import { STAGE_NOTE_PARAMETERS } from '../tools/lux-note.js';
+import { researchDeclaration } from '../tools/research.js';
 import type { ToolCallJournal, ToolDefinition, ToolResultGate } from '../adapters/model/types.js';
 
 /** Monday 2026-10-26 10:00 UTC; the board's zone is UTC so the windows are exact. */
@@ -460,6 +463,7 @@ test('the import script writes a 0600 key file and prints no secret', async () =
 test('C-ARGS: a call that fills in every declared property is read as the view it chose', async () => {
   const filled = { view: 'search', query: 'plumber', list: '', window: '', card: '', offset: 0, limit: 10 };
   assert.equal(validateTrelloRead(filled), true);
+  assert.deepEqual(Object.keys(filled), ['view', 'query', 'list', 'window', 'card', 'offset', 'limit'], 'the call keeps the keys the provider sent');
   const search = await board.read(session(), { ...filled });
   assert.deepEqual((search.cards as { name: string }[]).map(card => card.name), ['Call the plumber']);
   assert.equal(validateTrelloRead({ view: 'overview', list: '', query: '', window: '', card: '', offset: 0, limit: 10 }), true, 'unused properties are absent, never a shape error');
@@ -479,7 +483,7 @@ test('C-ARGS: a refused trello_read names its own keys in tool_arguments_rejecte
   const events: { event?: string; tool?: string; fields?: string[] }[] = [];
   const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string }); } });
   try {
-    await runToolCalls(owner, [{ id: '1', name: 'trello_read', args: { view: 'list', list: '', window: 'today', offset: 0 } }], {
+    await runToolCalls(owner, [{ id: '1', name: 'trello_read', args: { view: 'list', list: '', query: '', window: '', card: '', offset: 0, limit: 10 } }], {
       registry: [tool],
       host: { runId: 'run', actorId: 'actor', authorityEpoch: 'epoch', revision: 1, grants: [{ tool: 'trello_read', effect: 'read', accountId: TRELLO_READ_IDENTITY.accountId, resourceId: TRELLO_READ_IDENTITY.resourceId }] },
       authority: { isCurrent: async () => true }, control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5_000 },
@@ -488,5 +492,17 @@ test('C-ARGS: a refused trello_read names its own keys in tool_arguments_rejecte
   } finally { detach(); }
   const event = events.find(line => line.event === 'tool_arguments_rejected');
   assert.equal(event?.tool, 'trello_read');
-  assert.deepEqual(event?.fields, ['view:string', 'list:string', 'window:string', 'offset:number'], 'the real keys, and the unused ones still named');
+  // F2: the arguments are not mutated on the way to the shape check, so the log still names every key the
+  // provider sent, the empty fillers included, because those empty keys are the signal that it fills them in.
+  assert.deepEqual(event?.fields, ['view:string', 'list:string', 'query:string', 'window:string', 'card:string', 'offset:number', 'limit:number']);
+});
+
+// C-ARGS requirement 2: the four closed field lists must name exactly what each tool declares, so a schema
+// edit cannot leave a real argument reported as `unknown` again (B1: trello_write had lost its `due`).
+test('C-ARGS: every diagnostic field list matches the properties its tool declares', () => {
+  const declared = (parameters: { properties?: object }) => Object.keys(parameters.properties ?? {}).sort();
+  for (const [name, properties] of [
+    ['trello_read', TRELLO_READ_PARAMETERS.properties], ['trello_write', TRELLO_WRITE_PARAMETERS.properties],
+    ['research', (researchDeclaration().parameters as { properties: object }).properties], ['stage_lux_note', STAGE_NOTE_PARAMETERS.properties],
+  ] as const) assert.deepEqual([...diagnosticInputFields(name)].sort(), declared({ properties }), name);
 });

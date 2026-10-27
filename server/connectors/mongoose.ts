@@ -441,7 +441,7 @@ export class MongooseSchemaRefusal extends Error {
 const PROVIDER_KEYWORDS = new Set([
   'type', 'description', 'title', 'format', 'pattern', 'enum', 'properties', 'required', 'items',
   'additionalProperties', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf',
-  'minLength', 'maxLength', 'minItems', 'maxItems', 'default', 'const',
+  'minLength', 'maxLength', 'minItems', 'maxItems', 'default', 'const', 'anyOf', 'oneOf', 'allOf',
 ]);
 const INTEGER_KEYWORDS = new Set([
   'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf',
@@ -458,14 +458,32 @@ function sanitizedInteger(value: unknown, path: string): number {
 
 /**
  * V7: one published input schema in the shape the provider accepts. Integers only, no keyword the
- * provider rejects; an unreadable schema throws MongooseSchemaRefusal so the catalogue load fails loudly.
+ * provider rejects; an unreadable schema throws MongooseSchemaRefusal so the tool is excluded with a closed receipt.
  */
-export function mongooseSanitizeParameters(schema: unknown, path = 'schema'): Record<string, unknown> {
+export function mongooseSanitizeParameters(schema: unknown, path = 'schema', root: unknown = schema, refs: ReadonlySet<string> = new Set()): Record<string, unknown> {
   if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) throw new MongooseSchemaRefusal(path, 'not an object');
+  const row = schema as Record<string, unknown>;
+  if (Object.hasOwn(row, '$ref')) {
+    const ref = row['$ref'];
+    if (typeof ref !== 'string' || !ref.startsWith('#/') || refs.has(ref)) throw new MongooseSchemaRefusal(path, 'unresolvable reference');
+    let target: unknown = root;
+    for (const part of ref.slice(2).split('/').map(part => part.replace(/~1/g, '/').replace(/~0/g, '~'))) {
+      if (target === null || typeof target !== 'object' || !Object.hasOwn(target, part)) throw new MongooseSchemaRefusal(path, 'missing reference');
+      target = (target as Record<string, unknown>)[part];
+    }
+    const resolved = mongooseSanitizeParameters(target, path, root, new Set([...refs, ref]));
+    const siblings = Object.fromEntries(Object.entries(row).filter(([key]) => !['$ref', '$defs', '$schema'].includes(key)));
+    return Object.keys(siblings).length ? { allOf: [resolved, mongooseSanitizeParameters(siblings, path, root, refs)] } : resolved;
+  }
   const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(schema as Record<string, unknown>)) {
+  for (const [key, value] of Object.entries(row)) {
+    if (key === '$defs' || key === '$schema') continue;
     const at = `${path}.${key}`;
     if (!PROVIDER_KEYWORDS.has(key)) throw new MongooseSchemaRefusal(at, 'keyword the provider rejects');
+    if (key === 'anyOf' || key === 'oneOf' || key === 'allOf') {
+      if (!Array.isArray(value) || !value.length) throw new MongooseSchemaRefusal(at, 'not a list of schemas');
+      out[key] = value.map((member, index) => mongooseSanitizeParameters(member, `${at}.${index}`, root, refs)); continue;
+    }
     if (key === 'multipleOf') {
       // F4: truncating a bounded step to zero hands AJV an invalid keyword, so a fractional step is refused
       // loudly instead of being rounded into something the schema never said.
@@ -493,12 +511,12 @@ export function mongooseSanitizeParameters(schema: unknown, path = 'schema'): Re
     }
     if (key === 'properties') {
       if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new MongooseSchemaRefusal(at, 'not an object');
-      out[key] = Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([name, sub]) => [name, mongooseSanitizeParameters(sub, `${at}.${name}`)]));
+      out[key] = Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([name, sub]) => [name, mongooseSanitizeParameters(sub, `${at}.${name}`, root, refs)]));
       continue;
     }
-    if (key === 'items') { out[key] = mongooseSanitizeParameters(value, at); continue; }
+    if (key === 'items') { out[key] = mongooseSanitizeParameters(value, at, root, refs); continue; }
     if (key === 'additionalProperties') {
-      out[key] = typeof value === 'boolean' ? value : mongooseSanitizeParameters(value, at); continue;
+      out[key] = typeof value === 'boolean' ? value : mongooseSanitizeParameters(value, at, root, refs); continue;
     }
     if (key === 'default' || key === 'const') { out[key] = typeof value === 'number' ? Math.trunc(value) : value; continue; }
   }
@@ -507,13 +525,18 @@ export function mongooseSanitizeParameters(schema: unknown, path = 'schema'): Re
 
 /**
  * V7: one endpoint's published tool list becomes the planner-facing catalogue. Called once per connect
- * from the catalogue intake; a tool whose schema cannot be sanitized fails the whole load loudly.
+ * from the catalogue intake; a tool whose schema cannot be sanitized is excluded with one receipt.
  */
-export function mongoosePublishCatalogue(endpointId: string, tools: readonly ToolDefinition[]): void {
+export function mongoosePublishCatalogue(endpointId: string, tools: readonly ToolDefinition[], refused?: (tool: string) => void): void {
   const published = new Map<string, { description: string; parameters: Record<string, unknown> }>();
   for (const tool of tools) {
     const description = typeof tool.description === 'string' && tool.description.trim() !== '' ? tool.description : `Mongoose tool ${tool.name}`;
-    published.set(tool.name, { description, parameters: mongooseSanitizeParameters(tool.inputSchema, `${endpointId}.${tool.name}`) });
+    try {
+      published.set(tool.name, { description, parameters: mongooseSanitizeParameters(tool.inputSchema, `${endpointId}.${tool.name}`) });
+    } catch (error) {
+      if (!(error instanceof MongooseSchemaRefusal)) throw error;
+      refused?.(tool.name);
+    }
   }
   PUBLISHED_CATALOGUE.set(endpointId, published);
 }

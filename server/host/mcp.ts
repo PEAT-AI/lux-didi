@@ -7,7 +7,7 @@ import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '.
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter, type McpTransportState } from '../adapters/mcp/adapter.js';
-import { MongooseSchemaRefusal, MONGOOSE_SCHEMA_REFUSAL, mongooseCredentialAtStart, mongooseFailureStage, mongoosePublishCatalogue, mongooseReadOnly } from '../connectors/mongoose.js';
+import { mongooseCredentialAtStart, mongooseFailureStage, mongoosePublishCatalogue, mongoosePublishedTool, mongooseReadOnly } from '../connectors/mongoose.js';
 import { MongooseCredentialError, MONGOOSE_CONSENT_CAP_MS, mongooseAccessToken, mongooseCredentialPresent, mongooseEntryBinding, readMongooseOAuth } from './mongoose-auth.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
@@ -202,6 +202,7 @@ export function createRecoverySchedule(delays: readonly number[] = CONNECTOR_REC
  * code only, so no helper text, url or account ever reaches host.log.
  */
 export type ConnectorLifecycleEvent =
+  | { event: 'mongoose_tool_schema_refused'; endpointId: string; tool: string }
   | { event: 'connector_connected'; endpointId: string; connectMs: number }
   | { event: 'connector_recovered'; endpointId: string; attempts: number; connectMs: number }
   | { event: 'connector_recovery_exhausted'; endpointId: string; attempts: number; reason: string }
@@ -586,18 +587,13 @@ export async function composeMcpRuntime(options: {
       // V7: the published tool list is the planner's argument shape, so it is taken at intake. A schema
       // that cannot be sanitized fails this connect loudly with a closed code, never as an empty schema.
       if (entry.connector === 'mongoose') {
-        try {
-          mongoosePublishCatalogue(entry.id, discovery.tools);
-        } catch (error) {
-          const path = error instanceof MongooseSchemaRefusal ? error.path : undefined;
-          reportFailure(entry, 'handshake', attempt, MONGOOSE_SCHEMA_REFUSAL, path);
-          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: MONGOOSE_SCHEMA_REFUSAL });
-          return { retryable: false };
-        }
+        mongoosePublishCatalogue(entry.id, discovery.tools, tool => options.lifecycleLog?.({
+          event: 'mongoose_tool_schema_refused', endpointId: entry.id, tool,
+        }));
       }
       const accepts = readClassifiers[entry.connector] ?? (() => true);
       const names = grantMode === 'owner-trusted-reads'
-        ? discovery.tools.filter(tool => envelope.includes(tool.name) && accepts(tool)).map(tool => tool.name).sort()
+        ? discovery.tools.filter(tool => (entry.connector !== 'mongoose' || mongoosePublishedTool(entry.id, tool.name) !== undefined) && envelope.includes(tool.name) && accepts(tool)).map(tool => tool.name).sort()
         : [];
       // #604: a connector composite is granted under its own name, and only beside every child read
       // it stands on. It is never a published name, so the envelope above cannot carry it.
@@ -605,6 +601,7 @@ export async function composeMcpRuntime(options: {
       const granted = [...names, ...composed].sort();
       // Healthy discovery without an approved envelope is status-only, not an empty owner policy.
       if (!names.length) {
+        options.lifecycleLog?.({ event: 'connector_connected', endpointId: entry.id, connectMs: Math.max(0, now() - roundStarted) });
         everConnected.add(entry.id);
         reports.set(entry.id, { id: entry.id, state: 'connected', tools: 0, lastHandshakeAt: new Date(discovery.observedAt).toISOString() });
         return { retryable: false };

@@ -18,7 +18,7 @@ import {
   MONGOOSE_FAILURE_STAGES, mongooseCredentialAtStart, mongooseFailureStage, type MongooseEndpoint,
 } from '../connectors/index.js';
 import { projectMongooseResult, mongooseToolStatus, renderMongooseTool } from '../tools/mongoose.js';
-import { MongooseSchemaRefusal, mongoosePublishCatalogue, mongooseSanitizeParameters } from '../connectors/mongoose.js';
+import { MongooseSchemaRefusal, mongoosePublishCatalogue, mongoosePublishedTool, mongooseSanitizeParameters } from '../connectors/mongoose.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import { loadMcpEndpoints, mcpErrorCode } from '../config/mcp.js';
 
@@ -434,11 +434,26 @@ test('V7 (F4): a fractional multipleOf is refused, never truncated to an invalid
   );
 });
 
-test('V7: a keyword the provider rejects fails the catalogue load loudly', () => {
-  assert.throws(
-    () => mongoosePublishCatalogue('mongoose-data', [{ name: 'run_metric_query', description: 'x', inputSchema: { type: 'object', properties: { q: { type: 'string', oneOf: [{ type: 'string' }] } } } }]),
-    (error: unknown) => error instanceof MongooseSchemaRefusal && error.path.endsWith('properties.q.oneOf'),
-  );
+test('V7: an unreadable schema excludes only that tool and reports it once', () => {
+  const refused: string[] = [];
+  mongoosePublishCatalogue('mongoose-data', [
+    { name: 'run_metric_query', inputSchema: { type: 'object', unsupported: true } },
+    { name: 'search_fields', inputSchema: { type: 'object' } },
+  ], tool => refused.push(tool));
+  assert.deepEqual(refused, ['run_metric_query']);
+  assert.equal(mongoosePublishedTool('mongoose-data', 'run_metric_query'), undefined);
+  assert.ok(mongoosePublishedTool('mongoose-data', 'search_fields'));
+});
+
+test('local schema references and composition are resolved; cycles and missing refs are refused', () => {
+  for (const keyword of ['anyOf', 'oneOf', 'allOf']) {
+    const result = mongooseSanitizeParameters({ $schema: 'https://json-schema.org/draft/2020-12/schema',
+      $defs: { text: { type: 'string' } }, [keyword]: [{ $ref: '#/$defs/text' }, { type: 'null' }] });
+    assert.deepEqual(result, { [keyword]: [{ type: 'string' }, { type: 'null' }] });
+  }
+  assert.throws(() => mongooseSanitizeParameters({ $defs: { loop: { $ref: '#/$defs/loop' } }, $ref: '#/$defs/loop' }), MongooseSchemaRefusal);
+  assert.throws(() => mongooseSanitizeParameters({ $ref: '#/$defs/missing' }), MongooseSchemaRefusal);
+  assert.throws(() => mongooseSanitizeParameters({ $ref: 'https://remote.test/schema' }), MongooseSchemaRefusal);
 });
 
 test('V7: a forwarded tool is declared only with its published schema, never with an empty one', () => {

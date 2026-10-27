@@ -587,6 +587,8 @@ interface ActiveSession {
   responseInProgress?: boolean | undefined; debtDeferred?: boolean | undefined;
   /** C-DEADAIR: when the provider announced the response that owes this turn's answer, for the latency record. */
   responseCreatedAt?: number | undefined;
+  /** C-DEADAIR: when the debt rung last named this silence, so the sliding watchdog does not name it a second time. */
+  deadAirNudgedAt?: number | undefined;
   /** D6: an open model turn holds SPEAKING until turnComplete or 1,500 ms of audible silence. */
   speakingHoldTimer?: ReturnType<JobTimer> | undefined;
   sessionTimer: ReturnType<JobTimer> | undefined; callTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
@@ -2092,22 +2094,24 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     if (handle.debtSince !== undefined) { handle.debtTimer?.cancel(); handle.debtTimer = undefined; }
     // A muted session hears nothing, so nothing is owed to it while the mute holds.
     if (handle.muted) return;
-    // L-04: the clock is anchored at the end of the last audible frame of this turn's own model speech, not at the
-    // tool output, so the provider latency the owner sat through after her preamble is part of the same silence and
-    // the rung lands 8 s after the last thing she heard. A turn that spoke no preamble has no such frame and keeps
-    // the old anchor at the tool output: a previous turn's audio is never this turn's silence. The rung's own
-    // action is unchanged.
-    const lastAudible = handle.turnAudioAt ?? this.#now();
+    // L-04, C-DEADAIR: the receipt names the wait the owner sat through, anchored on her own final words or on the last
+    // audible audio of this turn when the model spoke a preamble after her (a previous turn's audio is never this
+    // turn's silence). The rung itself is scheduled from the result: four seconds from the last thing she heard is not
+    // four seconds from a result the model has not seen yet, and the old anchor fired the rung the instant a slow
+    // lookup returned.
+    const heard = Math.max(handle.turnAudioAt ?? 0, handle.inputFinalAt ?? 0);
+    const lastAudible = heard === 0 ? this.#now() : Math.min(heard, this.#now());
     handle.debtSince = lastAudible;
     handle.debtBargeIn = false;
     handle.debtDeferred = false;
     handle.debtHeldForTool = false;
     handle.responseInProgress = false;
     handle.responseCreatedAt = undefined;
+    handle.deadAirNudgedAt = undefined;
     // One silence, one clock: the sliding watchdog stands down for the silence the debt clock now owns.
     this.#cancelWatchdog(handle);
     this.#noteDebt(handle, 'start', reason);
-    this.#scheduleDebt(handle, Math.max(1, AUDIBLE_DEBT_RUNG_MS - (this.#now() - lastAudible)), 'rung');
+    this.#scheduleDebt(handle, AUDIBLE_DEBT_RUNG_MS, 'rung');
   }
 
   #scheduleDebt(handle: ActiveSession, delayMs: number, step: 'rung' | 'rebuild'): void {
@@ -2221,6 +2225,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     hostLogEvent({ event: 'live_dead_air', msSinceTool: turnAgeMs,
       msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
     hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: AUDIBLE_DEBT_RUNG_MS });
+    // One silence earns one nudge: the sliding watchdog's own receipt stays for the silences the debt clock never named.
+    handle.deadAirNudgedAt = this.#now();
     const stalledTurn = handle.connection.turnId;
     if (stalledTurn !== undefined) {
       this.#receipt(handle, 'live.dead_air_stalled', { turnId: stalledTurn }, {
@@ -2410,7 +2416,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         // audible output. Only the answer's own audio re-arms it, so a fill frame never writes a false healthy.
         // The owed answer is the tool result's own bookkeeping, so progress speech defers the clock without
         // erasing the obligation (amendment A).
-        if (handle.answerAt !== undefined && handle.debtSince === undefined) {
+        const rungNamedThisSilence = handle.deadAirNudgedAt !== undefined
+          && this.#now() - handle.deadAirNudgedAt < RESPONSE_WATCHDOG_NUDGE_MS;
+        if (handle.answerAt !== undefined && handle.debtSince === undefined && !rungNamedThisSilence) {
           // C-DEADAIR: while the audible death clock owns this silence (#armDebt stands the sliding watchdog down),
           // the debt rung is the one nudge. A second one here named the same wait twice and made the owner's first
           // audible recovery look like two.

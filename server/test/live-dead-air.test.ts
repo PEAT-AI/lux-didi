@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { createLiveSessionOwner, AUDIBLE_DEBT_RUNG_MS, DEAD_AIR_RESPONSE_GRACE_MS, liveMigrations, RESPONSE_WATCHDOG_RECOVERY_MS,
+import { createLiveSessionOwner, AUDIBLE_DEBT_RUNG_MS, liveMigrations, RESPONSE_WATCHDOG_RECOVERY_MS,
   validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -104,7 +104,7 @@ test('C-DEADAIR: a response that produced no audio buys the rung one short grace
   await live.emit(portEvent({ type: 'modelTurnStarted' }));
   await live.advance(AUDIBLE_DEBT_RUNG_MS - 500);
   assert.equal(live.fake.texts.length, live.sentTexts, 'the rung is not early');
-  await live.advance(DEAD_AIR_RESPONSE_GRACE_MS + 100);
+  await live.advance(1_200);
   assert.equal(live.fake.texts.length, live.sentTexts + 1, 'a silent in-flight response does not hold the answer for another seven seconds');
   await live.advance(RESPONSE_WATCHDOG_RECOVERY_MS);
   assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the result is spoken once');

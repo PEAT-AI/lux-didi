@@ -6201,7 +6201,6 @@ export class VoiceReplyBook {
     let emitted: JsonObject;
     if (page.slices.length > 0) {
       const { kept, rest } = takeVoiceSlices(envelope, page.slices, cap, cursorChars);
-      process.stderr.write(`TAKE in=${page.slices.length} kept=${kept.length} rest=${rest.length} keptChars=${(kept as JsonObject[]).reduce((n, s) => n + String(s['text']).length, 0)} restChars=${(rest as JsonObject[]).reduce((n, s) => n + String(s['text']).length, 0)}\n`);
       emitted = rest.length === 0
         ? { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT }
         : { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT, canContinue: true,
@@ -6259,7 +6258,6 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
   }
   if (slices !== undefined) {
     const { kept, rest } = takeVoiceSlices(envelope, slices, cap, VOICE_CURSOR_PREFIX.length + 36);
-    process.stderr.write(`CAP in=${slices.length} inChars=${slices.reduce((n, s) => n + String(s['text']).length, 0)} keptChars=${kept.reduce((n, s) => n + String(s['text']).length, 0)} restChars=${rest.reduce((n, s) => n + String(s['text']).length, 0)} cap=${cap}\n`);
     const page: JsonObject = { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT };
     // Every capped page states whether it continues, so a reader never has to read an absent field as false.
     if (rest.length === 0) return { ...page, canContinue: envelope['nextCursor'] !== undefined };

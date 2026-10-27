@@ -4827,6 +4827,9 @@ test('S4a-R2 (f): silence on the commentary channel never satisfies the answer w
   h.advance(8_000); scheduler.runDue(); await settlePort();
   assert.equal(nudges(), 1, 'the watchdog still escalated over the silent lookup');
   acked.attachment.close();
+  // C-DEADAIR: the faster ladder would reach this session's rebuild rung inside the next phase, so the call is ended
+  // here: one call's silence never counts against the next one.
+  h.owner.revoke(acked.session.liveSessionId);
   await settlePort();
 
   // The delivery path: the answer's own audible audio is the one thing that ends the debt, so no deadline escalates.
@@ -4887,7 +4890,7 @@ test('#538: model text never slides the audible debt, so the OpenAI rung hands o
   assert.equal(fake.closes, 0, 'the rung hands over the result before it rebuilds');
   h.advance(RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
   // #660: the held rung hands the model the result it never said, and never re-sends the retired call ids.
-  assert.equal(fake.closes, 0, 'the held rung puts the unspoken result in front of the live session');
+  assert.equal(fake.closes, 1, 'the rebuild rung replaces the session that never spoke');
   assert.equal(fake.textInputs.length, 1, 'the result reaches it as one text item');
   assert.equal(fake.toolResponses.length, 1, 'and the retired call ids are never re-sent');
   h.advance(RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();

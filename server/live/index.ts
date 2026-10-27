@@ -589,6 +589,8 @@ interface ActiveSession {
   responseCreatedAt?: number | undefined;
   /** C-DEADAIR: when the debt rung last named this silence, so the sliding watchdog does not name it a second time. */
   deadAirNudgedAt?: number | undefined;
+  /** C-DEADAIR: when the first rung spoke a holding line for this silence, so it is said once. */
+  holdingLineAt?: number | undefined;
   /** D6: an open model turn holds SPEAKING until turnComplete or 1,500 ms of audible silence. */
   speakingHoldTimer?: ReturnType<JobTimer> | undefined;
   sessionTimer: ReturnType<JobTimer> | undefined; callTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
@@ -2094,13 +2096,10 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     if (handle.debtSince !== undefined) { handle.debtTimer?.cancel(); handle.debtTimer = undefined; }
     // A muted session hears nothing, so nothing is owed to it while the mute holds.
     if (handle.muted) return;
-    // L-04, C-DEADAIR: the receipt names the wait the owner sat through, anchored on her own final words or on the last
-    // audible audio of this turn when the model spoke a preamble after her (a previous turn's audio is never this
-    // turn's silence). The rung itself is scheduled from the result: four seconds from the last thing she heard is not
-    // four seconds from a result the model has not seen yet, and the old anchor fired the rung the instant a slow
-    // lookup returned.
-    const heard = Math.max(handle.turnAudioAt ?? 0, handle.inputFinalAt ?? 0);
-    const lastAudible = heard === 0 ? this.#now() : Math.min(heard, this.#now());
+    // L-04: the clock is anchored at the last thing the owner heard, not at the tool output, so a slow lookup's
+    // provider time is part of the same silence. C-DEADAIR: the rung itself is four seconds, and the wait the owner
+    // actually sat through is recorded apart from the provider's share in `live_response_latency`.
+    const lastAudible = handle.turnAudioAt ?? this.#now();
     handle.debtSince = lastAudible;
     handle.debtBargeIn = false;
     handle.debtDeferred = false;
@@ -2108,10 +2107,11 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     handle.responseInProgress = false;
     handle.responseCreatedAt = undefined;
     handle.deadAirNudgedAt = undefined;
+    handle.holdingLineAt = undefined;
     // One silence, one clock: the sliding watchdog stands down for the silence the debt clock now owns.
     this.#cancelWatchdog(handle);
     this.#noteDebt(handle, 'start', reason);
-    this.#scheduleDebt(handle, AUDIBLE_DEBT_RUNG_MS, 'rung');
+    this.#scheduleDebt(handle, Math.max(1, AUDIBLE_DEBT_RUNG_MS - (this.#now() - lastAudible)), 'rung');
   }
 
   #scheduleDebt(handle: ActiveSession, delayMs: number, step: 'rung' | 'rebuild'): void {
@@ -2243,7 +2243,15 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // unspoken result goes to the live session first and only a model still mute seven seconds later is rebuilt, so
     // the answer the owner asked for is not made to wait for two provider recreates.
     if (handle.unspoken !== undefined && handle.unspokenDelivered !== true) {
-      if (!(await this.#deliverUnspoken(handle))) return;
+      // C-DEADAIR: the first rung is a holding line, not the answer. The provider was already asked for the answer
+      // and may still be writing it, so the four second rung fills the silence in her own persona voice instead of
+      // injecting a second copy of the result; the result itself goes out if she is still silent on the next rung.
+      if (handle.holdingLineAt === undefined && typeof handle.session.sendCommentary === 'function') {
+        let spoken = false;
+        try { spoken = handle.session.sendCommentary({ text: RESEARCH.stillSearchingLine }) !== false; } catch { spoken = false; }
+        if (spoken) handle.holdingLineAt = this.#now();
+      }
+      if (handle.holdingLineAt === undefined && !(await this.#deliverUnspoken(handle))) return;
       this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
       return;
     }

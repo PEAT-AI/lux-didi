@@ -152,6 +152,9 @@ test('C-CONTINUITY T-11: a body page is capped and pages its slices with exact o
     reassembled += slice.text;
     pages += 1;
   }
-  assert.equal(current['canContinue'], false, 'the last body page says the body is spent');
+  // W1-R3/R4: the reply's own canContinue is copied unchanged onto every page, so the page-level end of the
+  // body is the absence of the page pointer and of its remaining count, which is the field this page names.
+  assert.equal(current['pageCursor'], undefined, 'the last body page names no further page');
+  assert.equal(current['pagesRemaining'], undefined, 'and owes no further pages');
   assert.equal(reassembled, body, 'the whole body is readable through the pages, and nothing was handed over uncapped');
 });

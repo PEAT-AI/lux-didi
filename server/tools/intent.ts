@@ -142,6 +142,9 @@ export const INTERNAL = {
   chatRead: 'mattermost_chat',
   /** K6: the company knowledge base, read by the routed research path when the model names `company`. */
   mongooseSearch: 'search',
+  /** W3: the data endpoint's field search and its one metric query, the two calls a count needs. */
+  mongooseSearchFields: 'search_fields',
+  mongooseMetricQuery: 'run_metric_query',
   /** C-OPEN 2: the owner's Drive files by name, and one file again by the id a listing carried. */
   driveSearch: 'drive_search_files',
   driveGet: 'drive_get_file',

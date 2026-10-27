@@ -8,7 +8,7 @@ import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { createGoogleReader, GOOGLE_TOOLS } from './google.js';
 import type { DriveGetInput, DriveSearchInput, GcalCalendarsInput, GcalListInput, GmailListInput, GmailReadInput, GoogleFamily } from './google.js';
 import { GOOGLE_ERROR_TABLE, googleOwnerLine, googleToolStatus, projectGoogleResult } from '../tools/google.js';
-import { createMongooseReader, mongooseEndpointName, MONGOOSE_ENDPOINT_TOOLS, MONGOOSE_READ_TOOLS, type MongooseEndpoint, type SearchInput } from './mongoose.js';
+import { createMongooseReader, mongooseEndpointName, mongoosePublishedTool, MONGOOSE_ENDPOINT_TOOLS, MONGOOSE_READ_TOOLS, type MongooseEndpoint, type SearchInput } from './mongoose.js';
 import { createMattermostReader, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT, MATTERMOST_CHAT_TOOL, MATTERMOST_DEFAULTS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, type ChatReadInput } from './mattermost.js';
 import { createHash } from 'node:crypto';
 
@@ -353,7 +353,7 @@ const googleDescriptor: ConnectorDescriptor = {
 
 /** A local composition defect, distinct from a remote connector failure. */
 export class ConnectorCompositionError extends Error {
-  constructor(public readonly code: 'unknown_connector' | 'unknown_connector_tool' | 'ambiguous_model_tool_name', public readonly connectionId: string, public readonly connector: string) {
+  constructor(public readonly code: 'unknown_connector' | 'unknown_connector_tool' | 'ambiguous_model_tool_name' | 'published-schema-absent', public readonly connectionId: string, public readonly connector: string) {
     super(`Connector composition error: ${code} (${connectionId}, ${connector})`);
     this.name = 'ConnectorCompositionError';
   }
@@ -559,16 +559,21 @@ const mattermostDescriptor: ConnectorDescriptor = {
   identity() { return { tool: 'mattermost_whoami', args: {}, values: mattermostIdentityValues }; },
 };
 /**
- * One pass-through model declaration for a read tool this connector carries no typed shape for.
- * The argument schema belongs to the Mongoose server and the reader validates against it.
+ * V7: one pass-through model declaration, carrying the input schema and description Mongoose publishes
+ * for that tool. An endpoint whose catalogue is not loaded declares nothing: the empty schema this used
+ * to hand the planner told it nothing, and the refusal is loud where the catalogue is taken (host/mcp.ts,
+ * the closed code schema_unsanitizable), never here as a silently empty shape.
  */
-function mongooseForwardDeclaration(name: string): ConnectorToolDeclaration {
+function mongooseForwardDeclaration(name: string, endpointId: string): ConnectorToolDeclaration | undefined {
+  const published = mongoosePublishedTool(endpointId, name);
+  if (published === undefined) return undefined;
+  const validate = mongooseSchemaValidator.getValidator(published.parameters as Parameters<AjvJsonSchemaValidator['getValidator']>[0]);
   return {
     name,
-    description: `Read company knowledge with the Mongoose tool ${name}. Pass the arguments that tool defines.`,
+    description: published.description,
     effect: 'read',
-    parameters: { type: 'object', properties: {} },
-    validate(args) { return isRecord(args) && JSON.stringify(args).length <= 4000; },
+    parameters: published.parameters,
+    validate(args) { return isRecord(args) && JSON.stringify(args).length <= 4000 && validate(args).valid; },
   };
 }
 const mongooseSchemaValidator = new AjvJsonSchemaValidator();
@@ -614,7 +619,7 @@ const mongooseDescriptor: ConnectorDescriptor = {
     const typed = mongooseTypedDeclarations(endpoint, policy);
     const other = MONGOOSE_ENDPOINT_TOOLS[endpoint]
       .filter(name => !typed.some(declaration => declaration.name === name))
-      .map(name => mongooseForwardDeclaration(name));
+      .flatMap(name => { const declaration = mongooseForwardDeclaration(name, policy.endpoint.id); return declaration === undefined ? [] : [declaration]; });
     return [...typed, ...other];
   },
   createReader({ port, registry, endpoint, schemaDigest, generation, policy }) {

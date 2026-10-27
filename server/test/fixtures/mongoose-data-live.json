@@ -1,0 +1,25 @@
+{
+  "provenance": "Captured 2026-10-27 00:55Z by the Architect through the Mongoose data MCP endpoint (Claude Code connector, owner account), the same endpoint Didi reaches as mongoose-data. Literal tool schemas and result shapes; numbers are real DEV-visible Lightdash values and may be used in tests only as shape examples.",
+  "search_fields_call": {"name": "search_fields", "arguments": {"patterns": ["date|day"], "exploreName": "active_users_daily"}},
+  "search_fields_result": {"status": "ok", "fields": [
+    "active_users_daily/active_users_daily_event_date  [dimension date] Event date - Date the user_engagement events occurred.",
+    "active_users_daily/active_users_daily_event_date_day  [dimension date] Event date day - Date the user_engagement events occurred.",
+    "active_users_daily/active_users_daily_n_active_users  [metric number] Active Users - The number of unique users who triggered at least one user_engagement event on the Plantix App during the...(truncated)",
+    "active_users_daily/active_users_daily_total_place_days  [metric sum] Active Place-Days - Active users summed once per place per date. Additive over any combination of dimensions, unlike the acti...(truncated)"
+  ], "total": 8, "has_more": false, "format": "explore/fieldId  [kind type] label - description"},
+  "country_field_hit": "active_users_daily/active_users_daily_country  [dimension string] Country - OSM country the users were mapped to, falling back to the Google Analytics country, then to 'Unknown'.",
+  "run_metric_query_call": {"name": "run_metric_query", "arguments": {
+    "title": "Indonesia daily active users, last 7 days",
+    "description": "Daily active users in Indonesia per day over the last seven days.",
+    "queryConfig": {"exploreName": "active_users_daily", "metrics": ["active_users_daily_n_active_users"], "dimensions": ["active_users_daily_event_date_day"],
+      "filters": {"dimensions": [
+        {"fieldId": "active_users_daily_country", "operator": "equals", "values": ["Indonesia"]},
+        {"fieldId": "active_users_daily_event_date_day", "operator": "inThePast", "values": [7], "settings": {"unitOfTime": "days"}}], "type": "and"},
+      "sorts": [{"fieldId": "active_users_daily_event_date_day", "descending": true}], "limit": 10}}},
+  "run_metric_query_result": {"status": "ok", "queryUuid": "1f5a8dc8-aef2-46ff-b299-fb08be69c3a7",
+    "columns": [{"fieldId": "active_users_daily_event_date_day", "label": "Event date day", "type": "date"}, {"fieldId": "active_users_daily_n_active_users", "label": "Active Users", "type": "number"}],
+    "rows": [["2026-10-25T00:00:00Z", 2424], ["2026-10-24T00:00:00Z", 2179], ["2026-10-23T00:00:00Z", 2091], ["2026-10-22T00:00:00Z", 2156], ["2026-10-21T00:00:00Z", 1683], ["2026-10-20T00:00:00Z", 1372]],
+    "row_count": 6, "total_rows": 6, "limit_reached": false, "rows_truncated": false, "offset": 0, "available_rows": 6, "has_more": false, "upstream_truncated": false, "upstream_cap": null, "next_offset": null, "title": "Indonesia daily active users, last 7 days"},
+  "trap_observed": "The same metric with only the country filter and no date dimension returned 948541: the sum of daily distinct users over all time, which is not a user count. A count question must always carry a date window and a date dimension.",
+  "run_metric_query_input_schema_published_by_server": "Mongoose publishes a typed JSON schema for run_metric_query (title, description, queryConfig{exploreName required, metrics, dimensions, filters{dimensions[],metrics[],type}, sorts[], limit integer minimum 1, ...}, filter rule {fieldId, operator enum, values[], settings{unitOfTime enum, completed}}). No float literals in it. Didi must forward this published schema instead of an empty one."
+}

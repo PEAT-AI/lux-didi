@@ -1,4 +1,4 @@
-import { SOURCE_DISPATCH, type SourceDispatchEvidence } from '../adapters/mcp/port.js';
+import { SOURCE_DISPATCH, type SourceDispatchEvidence, type ToolDefinition } from '../adapters/mcp/port.js';
 import { tokenIdentity, type IdentityProof, type TokenClaimSpec } from './identity.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
 import type { CallRequest, CallResult, CompletedResult, McpPort, ReadGrant, ResultScope, StoredPayload } from '../adapters/mcp/port.js';
@@ -40,7 +40,7 @@ export function mongooseTokenIdentity(token: string, endpoint: MongooseEndpoint,
  */
 export const MONGOOSE_ENDPOINT_TOOLS: Readonly<Record<MongooseEndpoint, readonly string[]>> = {
   knowledge: ['search', 'read', 'list_companies', 'list_company_products', 'get_market_profile', 'get_commercial_paths', 'list_tickets', 'get_started'],
-  data: ['search_content', 'read_content', 'list_content', 'list_explores', 'get_data_context', 'get_metadata', 'list_verified_content', 'run_metric_query'],
+  data: ['search_content', 'read_content', 'list_content', 'list_explores', 'get_data_context', 'get_metadata', 'list_verified_content', 'run_metric_query', 'search_fields'],
   crm: ['get_company', 'list_inbound_leads', 'list_inbound_lead_events', 'summarize_email_engagements'],
 };
 
@@ -60,7 +60,7 @@ export const MONGOOSE_DENIED_TOOLS: readonly string[] = [
   'get_ticket', 'check_data_capability', 'get_efficacy_evidence', 'get_knowledge_graph', 'get_knowledge_item_schema',
   'get_reach', 'lint_knowledge', 'list_data_capabilities', 'list_knowledge_domains', 'list_knowledge_edges',
   'list_knowledge_item_versions', 'list_knowledge_items', 'list_markets', 'list_offerings', 'list_user_handles',
-  'get_query_result', 'resolve_url', 'search_field_values', 'search_fields', 'get_current_project', 'list_projects',
+  'get_query_result', 'resolve_url', 'search_field_values', 'get_current_project', 'list_projects',
   'get_service_version',
 ];
 
@@ -418,6 +418,109 @@ export function envelopeOf(decoded: unknown): Record<string, unknown> | undefine
     const parsed: unknown = JSON.parse(text);
     return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
   } catch { return undefined; }
+}
+
+/**
+ * V7: the published catalogue of one endpoint, as the planner sees it. Mongoose's own tool list carries
+the input schema and description of every tool; this connector forwards them instead of an empty
+schema, so a planner can build a real `run_metric_query` argument shape.
+ */
+const PUBLISHED_CATALOGUE = new Map<string, ReadonlyMap<string, { description: string; parameters: Record<string, unknown> }>>();
+
+/** The closed code a catalogue that cannot be sanitized fails with. Never a silent empty schema. */
+export const MONGOOSE_SCHEMA_REFUSAL = 'schema_unsanitizable';
+
+export class MongooseSchemaRefusal extends Error {
+  override readonly name = 'MongooseSchemaRefusal';
+  constructor(readonly path: string, readonly detail: string) {
+    super(`${MONGOOSE_SCHEMA_REFUSAL} at ${path}: ${detail}`);
+  }
+}
+
+/** The keywords the provider accepts. Anything else is refused, never dropped in silence. */
+const PROVIDER_KEYWORDS = new Set([
+  'type', 'description', 'title', 'format', 'pattern', 'enum', 'properties', 'required', 'items',
+  'additionalProperties', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf',
+  'minLength', 'maxLength', 'minItems', 'maxItems', 'default', 'const',
+]);
+const INTEGER_KEYWORDS = new Set([
+  'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf',
+  'minLength', 'maxLength', 'minItems', 'maxItems',
+]);
+const TEXT_KEYWORDS = new Set(['description', 'title', 'format', 'pattern']);
+const SCHEMA_TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null']);
+
+function sanitizedInteger(value: unknown, path: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new MongooseSchemaRefusal(path, 'not a number');
+  // The provider takes integers only: a float bound is rounded toward zero, never dropped.
+  return Math.trunc(value);
+}
+
+/**
+ * V7: one published input schema in the shape the provider accepts. Integers only, no keyword the
+ * provider rejects; an unreadable schema throws MongooseSchemaRefusal so the catalogue load fails loudly.
+ */
+export function mongooseSanitizeParameters(schema: unknown, path = 'schema'): Record<string, unknown> {
+  if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) throw new MongooseSchemaRefusal(path, 'not an object');
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(schema as Record<string, unknown>)) {
+    const at = `${path}.${key}`;
+    if (!PROVIDER_KEYWORDS.has(key)) throw new MongooseSchemaRefusal(at, 'keyword the provider rejects');
+    if (key === 'multipleOf') {
+      // F4: truncating a bounded step to zero hands AJV an invalid keyword, so a fractional step is refused
+      // loudly instead of being rounded into something the schema never said.
+      const step = sanitizedInteger(value, at);
+      if (typeof value !== 'number' || !Number.isInteger(value) || step < 1) throw new MongooseSchemaRefusal(at, 'multipleOf must be a whole number');
+      out[key] = step; continue;
+    }
+    if (INTEGER_KEYWORDS.has(key)) { out[key] = sanitizedInteger(value, at); continue; }
+    if (TEXT_KEYWORDS.has(key)) {
+      if (typeof value !== 'string') throw new MongooseSchemaRefusal(at, 'not a string');
+      out[key] = value; continue;
+    }
+    if (key === 'type') {
+      const types = Array.isArray(value) ? value : [value];
+      if (!types.length || types.some(entry => typeof entry !== 'string' || !SCHEMA_TYPES.has(entry))) throw new MongooseSchemaRefusal(at, 'unknown type');
+      out[key] = Array.isArray(value) ? types : types[0]; continue;
+    }
+    if (key === 'required') {
+      if (!Array.isArray(value) || value.some(entry => typeof entry !== 'string')) throw new MongooseSchemaRefusal(at, 'not a list of names');
+      out[key] = [...value]; continue;
+    }
+    if (key === 'enum') {
+      if (!Array.isArray(value) || !value.length || value.some(entry => typeof entry === 'object' && entry !== null)) throw new MongooseSchemaRefusal(at, 'not a list of literals');
+      out[key] = value.map(entry => typeof entry === 'number' ? Math.trunc(entry) : entry); continue;
+    }
+    if (key === 'properties') {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new MongooseSchemaRefusal(at, 'not an object');
+      out[key] = Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([name, sub]) => [name, mongooseSanitizeParameters(sub, `${at}.${name}`)]));
+      continue;
+    }
+    if (key === 'items') { out[key] = mongooseSanitizeParameters(value, at); continue; }
+    if (key === 'additionalProperties') {
+      out[key] = typeof value === 'boolean' ? value : mongooseSanitizeParameters(value, at); continue;
+    }
+    if (key === 'default' || key === 'const') { out[key] = typeof value === 'number' ? Math.trunc(value) : value; continue; }
+  }
+  return out;
+}
+
+/**
+ * V7: one endpoint's published tool list becomes the planner-facing catalogue. Called once per connect
+ * from the catalogue intake; a tool whose schema cannot be sanitized fails the whole load loudly.
+ */
+export function mongoosePublishCatalogue(endpointId: string, tools: readonly ToolDefinition[]): void {
+  const published = new Map<string, { description: string; parameters: Record<string, unknown> }>();
+  for (const tool of tools) {
+    const description = typeof tool.description === 'string' && tool.description.trim() !== '' ? tool.description : `Mongoose tool ${tool.name}`;
+    published.set(tool.name, { description, parameters: mongooseSanitizeParameters(tool.inputSchema, `${endpointId}.${tool.name}`) });
+  }
+  PUBLISHED_CATALOGUE.set(endpointId, published);
+}
+
+/** The published declaration of one tool, or undefined when this endpoint's catalogue is not loaded. */
+export function mongoosePublishedTool(endpointId: string, name: string): { description: string; parameters: Record<string, unknown> } | undefined {
+  return PUBLISHED_CATALOGUE.get(endpointId)?.get(name);
 }
 
 export { SOURCE_DISPATCH };

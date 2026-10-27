@@ -33,6 +33,10 @@ const GROUP_ADA_KIM = 'chanG02000000000000000000a';
 const BUILDER_FRIENDS = 'chanBuilderFriends0000000a';
 const BUILDERS = 'chanBuilders0000000000000a';
 const daysAgo = (days: number): string => new Date(Date.now() - days * DAY).toISOString().slice(0, 10);
+// X-R2: the person-overview window is measured from the fixture's own clock, never the wall clock: the
+// fixture is pinned to 2026-10-25, so a rolling 7-day window measured from today drifts past its oldest
+// post and the same read counts 16 instead of 17.
+const fixtureDaysAgo = (days: number): string => new Date(FIXTURE_NOW - days * DAY).toISOString().slice(0, 10);
 
 type Call = { name: string; arguments: Record<string, unknown> };
 
@@ -194,9 +198,7 @@ test('C-CHAT: a person nobody is called is said as such, never an empty success'
 
 test('C-CHAT person-overview: the direct messages, shared groups and shared channels in one read, with counts', async t => {
   const f = await setup(t, 'people');
-  // W4-R1: the fixture dates its posts from FIXTURE_NOW, so the week window is measured from the same
-  // instant; taken from the wall clock it drops the oldest fixture post every day that passes.
-  const from = new Date(FIXTURE_NOW - 7 * DAY).toISOString().slice(0, 10);
+  const from = fixtureDaysAgo(7);
   const result = await f.reader.chat({ intent: 'overview', person: 'Ada', from_date: from });
   const read = chatRead(result);
   assert.deepEqual(f.calls().find(call => call.name === 'mattermost_conversation_overview')?.arguments, { person: 'Ada', from_date: from, per_section_limit: 3 });

@@ -6047,9 +6047,10 @@ export const VOICE_CURSOR_ERROR = 'cursor_unavailable';
 function voiceEnvelopeOf(reply: JsonObject): JsonObject {
   const envelope: JsonObject = {};
   for (const [key, value] of Object.entries(reply)) {
-    // The bulk is paged and the continuation keys are rebuilt per page, so neither rides the envelope. Leaving the
-    // old cursor in would make a page's real cursor a lie about its own size.
-    if (key === 'findings' || key === 'bodySlices' || key === 'cursor' || key === 'canContinue') continue;
+    // W1-R3: the cap pages content and nothing else. Every control field the reply carries (status, canContinue,
+    // alreadyDelivered, its own cursor, closed codes, receipts) rides every page untouched, so a reader sees the
+    // same facts it would have seen from the whole reply.
+    if (key === 'findings' || key === 'bodySlices') continue;
     envelope[key] = value;
   }
   return envelope;
@@ -6072,6 +6073,8 @@ function voiceUnitsOf(reply: JsonObject): string[] {
 
 /** How long one page is once serialized, at the width a real cursor takes. */
 function voicePageChars(envelope: JsonObject, lines: readonly string[], cursorChars: number): number {
+  // W1-R3: every control field of the reply rides the page, so the measurement carries them too. The page cursor
+  // and `canContinue: true` are the widest shape a page takes (the last page of a reply adds neither).
   return JSON.stringify({
     ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT,
     cursor: '0'.repeat(cursorChars), canContinue: true,
@@ -6110,9 +6113,9 @@ function takeVoiceUnits(envelope: JsonObject, units: readonly string[], cap: num
 
 /** How long one body page is once serialized, at the width a real cursor takes. */
 function voiceSliceChars(envelope: JsonObject, slices: readonly JsonObject[], cursorChars: number): number {
-  // Exactly the page this would emit, cursor key included, so the measurement is never optimistic.
+  // Exactly the page this would emit, page cursor included, so the measurement is never optimistic.
   return JSON.stringify({ ...envelope, bodySlices: slices, cut: VOICE_REPLY_CUT,
-    nextCursor: '0'.repeat(cursorChars), canContinue: true }).length;
+    cursor: '0'.repeat(cursorChars), canContinue: true }).length;
 }
 
 /**
@@ -6146,6 +6149,8 @@ function takeVoiceSlices(envelope: JsonObject, slices: readonly JsonObject[], ca
  */
 export class VoiceReplyBook {
   #pages = new Map<string, { researchId: string; envelope: JsonObject; units: string[]; slices: JsonObject[]; then?: JsonObject }>();
+  #served = new Map<string, JsonObject>();
+  #servedOrder: string[] = [];
 
   get size(): number { return this.#pages.size; }
 
@@ -6169,29 +6174,47 @@ export class VoiceReplyBook {
 
   /** The next page for a cursor, or undefined when this call no longer holds one. */
   take(cursor: string, cap: number = RESEARCH.voiceReplyChars): JsonObject | undefined {
+    // W1-R3: a repeated page is the reply's own repeat receipt, exactly as the run answers a replayed body page.
+    const served = this.#served.get(cursor);
+    if (served !== undefined) return { ...served, alreadyDelivered: true };
     const page = this.#pages.get(cursor);
     if (page === undefined) return undefined;
     this.#pages.delete(cursor);
     const cursorChars = VOICE_CURSOR_PREFIX.length + 36;
-    const envelope: JsonObject = { ...page.envelope, researchId: page.researchId, status: 'partial' };
+    const envelope: JsonObject = { ...page.envelope, researchId: page.researchId };
+    let emitted: JsonObject;
     if (page.slices.length > 0) {
       const { kept, rest } = takeVoiceSlices(envelope, page.slices, cap, cursorChars);
-      if (rest.length === 0) return { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT, canContinue: envelope['nextCursor'] !== undefined };
-      return { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT, canContinue: true,
-        nextCursor: this.keepSlices(page.researchId, page.envelope, rest) };
+      emitted = rest.length === 0
+        ? { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT }
+        : { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT, canContinue: true,
+          nextCursor: this.keepSlices(page.researchId, page.envelope, rest) };
+    } else {
+      const { lines, rest } = takeVoiceUnits(envelope, page.units, cap, cursorChars);
+      const findings = [{ text: lines.join('\n') }];
+      if (rest.length > 0) {
+        emitted = { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: true,
+          cursor: this.keep(page.researchId, page.envelope, rest, page.then) };
+      } else if (page.then !== undefined) {
+        // The held lines are spent: a reply that still owes a body hands it back to the cap as its own page.
+        emitted = capVoiceReply(page.then, this, cap);
+      } else emitted = { ...envelope, findings, cut: VOICE_REPLY_CUT };
     }
-    const { lines, rest } = takeVoiceUnits(envelope, page.units, cap, cursorChars);
-    const findings = [{ text: lines.join('\n') }];
-    if (rest.length > 0) {
-      return { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: true,
-        cursor: this.keep(page.researchId, page.envelope, rest, page.then) };
-    }
-    // The held lines are spent: a reply that still owes a body hands it back to the cap as its own page.
-    if (page.then !== undefined) return capVoiceReply(page.then, this, cap);
-    return { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: envelope['nextCursor'] !== undefined };
+    this.#remember(cursor, emitted);
+    return emitted;
   }
 
-  clear(): void { this.#pages.clear(); }
+  /** Keep the last served pages, so a replayed cursor is answered as a repeat receipt rather than a lost cursor. */
+  #remember(cursor: string, page: JsonObject): void {
+    this.#served.set(cursor, page);
+    this.#servedOrder.push(cursor);
+    while (this.#servedOrder.length > 32) {
+      const oldest = this.#servedOrder.shift();
+      if (oldest !== undefined) this.#served.delete(oldest);
+    }
+  }
+
+  clear(): void { this.#pages.clear(); this.#served.clear(); this.#servedOrder = []; }
 }
 
 /**
@@ -6227,6 +6250,7 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
   }
   const { lines, rest } = takeVoiceUnits(envelope, voiceUnitsOf(reply), cap, VOICE_CURSOR_PREFIX.length + 36);
   const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
+  // W1-R3: the reply's own control fields stay as they are; a page only adds the cursor it needs to be read on.
   if (rest.length === 0) return page;
   return { ...page, canContinue: true, cursor: book.keep(researchId, envelope, rest) };
 }

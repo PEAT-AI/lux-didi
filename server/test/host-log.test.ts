@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { safeEvent } from '../host/log.js';
+import { severityOf } from '../host/events.js';
 import { createHostResourceSampler } from '../host/runtime.js';
 
 // The known Live instruction section ids, mirrored from ComposedSection.
@@ -558,4 +559,34 @@ test('W7: a Trello connector_call line keeps its closed shape and a Trello sign-
   assert.equal(safeEvent({ ...read, connector: 'mongoose' }), undefined);
   const hop = { event: 'signin_callback', endpoint: 'trello', attemptId: '0123456789abcdef', outcome: 'ok' };
   assert.deepEqual(safeEvent(hop), hop);
+});
+
+// C-CONTINUITY R-01/R-02: a planned research rebuild says what it is. The trigger is research_context, the cause
+// is host, and the network label is never written unless a transport receipt earned it.
+test('C-CONTINUITY R-01: a research rebuild logs trigger=research_context and cause=host, never cause=network', () => {
+  const rebuild = { event: 'live_rebuild', trigger: 'research_context', cause: 'host', liveSessionId: LIVE_SESSION_ID, generation: 2 };
+  assert.deepEqual(safeEvent(rebuild), rebuild);
+  // A drop still names the network, and now carries the socket's own close code and sanitized reason.
+  const drop = { event: 'live_rebuild', trigger: 'line_dropped', cause: 'network', liveSessionId: LIVE_SESSION_ID, generation: 3, closeCode: 1006, closeReason: 'upstream reset' };
+  assert.deepEqual(safeEvent(drop), drop);
+  assert.equal(safeEvent({ ...drop, closeReason: 'line one\nline two' }), undefined, 'a multi-line reason is refused');
+  assert.equal(safeEvent({ ...drop, trigger: 'made_up_trigger' }), undefined, 'the trigger stays a closed set');
+  assert.equal(safeEvent({ ...drop, cause: 'the-network-was-bad' }), undefined, 'the cause stays a closed set');
+});
+
+// C-CONTINUITY R-14: the planned rebuild's own line reaches host.log, with sizes only.
+test('C-CONTINUITY R-14: research_context_rebuild reaches host.log as sizes only', () => {
+  const line = { event: 'research_context_rebuild', retainedChars: 61_000, ledgerChars: 6_000, seedTranscriptChars: 8_000, rebuilds: 1, totalContextChars: 96_000 };
+  assert.deepEqual(safeEvent(line), line);
+  assert.equal(safeEvent({ event: 'research_context_rebuild', retainedChars: 1, ledgerChars: 1, seedTranscriptChars: 1, rebuilds: 1 }), undefined, 'a partial shape is refused');
+  assert.equal(safeEvent({ ...line, question: 'which company did we discuss' }), undefined, 'no text field can ride this line');
+});
+
+// C-CONTINUITY R-10: the attribution of a silence is its own `silence` field, so the line carries no static cause.
+test('C-CONTINUITY R-10: dead-air and heard-silence lines carry no static cause', () => {
+  assert.equal(severityOf('live_dead_air').cause, undefined);
+  assert.equal(severityOf('live_heard_silence').cause, undefined);
+  assert.equal(severityOf('live_rebuild').cause, undefined, 'a rebuild cause is the outcome\'s, not the map\'s');
+  assert.equal(severityOf('live_recovery').cause, undefined);
+  assert.deepEqual(safeEvent({ event: 'live_heard_silence', ms: 1_200, silence: 'provider' }), { event: 'live_heard_silence', ms: 1_200, silence: 'provider' });
 });

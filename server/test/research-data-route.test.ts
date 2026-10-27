@@ -53,7 +53,7 @@ function harness(execute: (subs: readonly IntentSubCall[]) => Promise<IntentSubR
 }
 
 /** The fake data endpoint: `search_fields` answers the live field list, `run_metric_query` the live rows. */
-function fakeDataEndpoint(calls: IntentSubCall[]): Promise<IntentSubResult[]> {
+function fakeDataEndpoint(calls: readonly IntentSubCall[]): Promise<IntentSubResult[]> {
   return Promise.resolve(calls.map(call => {
     if (call.name === 'search_fields') return sub(call.name, JSON.stringify(LIVE.search_fields_result), true, call.key);
     if (call.name === 'run_metric_query') return sub(call.name, JSON.stringify(LIVE.run_metric_query_result), true, call.key);

@@ -331,7 +331,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'mongoose_tool_schema_refused') {
     if (!closedKeys(value, ['event', 'endpointId', 'tool'])) return;
-    if (typeof value.endpointId !== 'string' || !/^mongoose-(knowledge|data|crm)$/.test(value.endpointId)) return;
+    if (!isSafeId(value.endpointId)) return;
     if (typeof value.tool !== 'string' || !/^[a-zA-Z0-9_]{1,128}$/.test(value.tool)) return;
     return { event: value.event, endpointId: value.endpointId, tool: value.tool };
   }

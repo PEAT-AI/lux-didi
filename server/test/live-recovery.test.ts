@@ -490,6 +490,10 @@ test('C-CONTINUITY R-02: a rebuild after a transport drop logs cause=network wit
   await flush();
   first.die({ errorKind: 'write_error', closeCode: 1006, closeReason: 'upstream reset', bufferedAmount: 0, writesFailed: 1, sessionMs: 900 });
   await flush();
+  // The recovery line is written once the new socket is live, so the fixture takes it past its ready event.
+  const second = await sessionAt(h, 1);
+  second?.live();
+  await flush();
   const rebuilds = h.receipts.filter(entry => entry['event'] === 'live_rebuild');
   assert.ok(rebuilds.length >= 1, 'the drop rebuilt the session');
   const rebuild = rebuilds[0]!;

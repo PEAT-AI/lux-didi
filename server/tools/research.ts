@@ -6111,8 +6111,9 @@ function takeVoiceUnits(envelope: JsonObject, units: readonly string[], cap: num
 
 /** How long one body page is once serialized, at the width a real cursor takes. */
 function voiceSliceChars(envelope: JsonObject, slices: readonly JsonObject[], cursorChars: number): number {
+  // Exactly the page this would emit, cursor key included, so the measurement is never optimistic.
   return JSON.stringify({ ...envelope, bodySlices: slices, cut: VOICE_REPLY_CUT,
-    cursor: '0'.repeat(cursorChars), canContinue: true }).length;
+    nextCursor: '0'.repeat(cursorChars), canContinue: true }).length;
 }
 
 /**
@@ -6133,8 +6134,8 @@ function takeVoiceSlices(envelope: JsonObject, slices: readonly JsonObject[], ca
     const head = voiceLinePrefix(text, fits);
     if (head === '') return { kept, rest: slices.slice(index) };
     kept.push({ ...slice, text: head, end: offset + head.length, cut: VOICE_REPLY_CUT });
-    return { kept, rest: [{ ...slice, text: text.slice(head.length).trimStart(),
-      offset: offset + head.length + (text.slice(head.length).length - text.slice(head.length).trimStart().length) }, ...slices.slice(index + 1)] };
+    // The tail keeps every character the head did not carry, so the pages rejoin byte for byte with no gap.
+    return { kept, rest: [{ ...slice, text: text.slice(head.length), offset: offset + head.length }, ...slices.slice(index + 1)] };
   }
   return { kept, rest: [] };
 }

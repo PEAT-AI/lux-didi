@@ -139,13 +139,14 @@ try{
  // the log. It now leaves a closed, shaped reason beside its refused run receipt, and no source runs.
  const gated=await fixture(classes,false);
  try{
+  const readsBefore=gated.calls.length;
   const gatedAnswer=await gated.send({action:'start',question:'synthetic',topic:'synthetic names'});
   assert.equal(gatedAnswer.reason,'no_owner_input');
   const gateLines=events.filter(event=>event.event==='research_refused'&&event.reason==='no_owner_input');
   assert.equal(gateLines.length,1,'the gate refusal names its reason');
   assert.equal(gateLines[0].state,'refused');assert.equal(safeEvent(gateLines[0])!==undefined,true,'the gate refusal is a closed log line');
   assert.equal(safeEvent({...gateLines[0],reason:'opener_not_fetched'}),undefined,'the gate reason is a closed code');
-  assert.equal(gated.calls.length,0,'the gate read nothing');
+  assert.equal(gated.calls.length,readsBefore,'the gate read nothing');
  }finally{await gated.close();}
  // One owner turn grants one research operation, so the fixture speaks before each start it wants admitted.
 // One owner turn grants one research operation, so the fixture speaks before each start it wants admitted.

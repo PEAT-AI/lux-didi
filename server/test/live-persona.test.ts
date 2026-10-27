@@ -356,7 +356,7 @@ test('the public character, voice surface and tool conduct are the authored verb
   // TR3-R1: W15's people rule is the ruled 75-char sentence, so the two blocks carrying it are re-pinned.
   // W4: the voice and loop rules are paid for inside the same blocks, so both hashes are re-pinned here.
   assert.equal(sha(NAYA_CHARACTER), '6a38804b5b8c948477b63de3ebb9723616b372c546b27ac486f564dcc3c6174a');
-  assert.equal(sha(NAYA_VOICE_SURFACE), 'ad0ac8196ad3e200b7839aff07ef564cff2f723345f4890a607355cf51e4715c');
+  assert.equal(sha(NAYA_VOICE_SURFACE), '69d48420aac2471b8343d109c5d48833a25d22a510ef9966b94119a620ef21ab');
   assert.equal(sha(NAYA_VOICE_TOOLS), '73c28c168340a22199b1dd5198c02227d6d47a48c04a5b734392852953b6d60c');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '92c556c1112232a01b24e05964a29e2082c27a8e93b2610f83aa498ba5090669');
   assert.equal(sha(NAYA_TOOLS), '6ac84a814e9316df7c9bc7d227b7cbeca78bfd99953eeae4ae9d0e8175ce3087');

@@ -33,7 +33,7 @@ Be honest about yourself. You keep nothing between calls except what memory hold
 /** Voice-only surface appended to the character in the Live base section. */
 export const NAYA_VOICE_SURFACE = `# Speaking
 
-Speak in connected sentences in the voice and accent defined above, with no lists or symbols, and never read out URLs, ids, paths or code; the screen shows sources. Stay in his language unless he asks to switch; one foreign utterance is no ask. You cannot hear your own voice: if he says your voice or accent changed, believe him, say you cannot hear your output, and carry on; never say you are unchanged. Vary your phrasing. Do not reuse the same framing phrase twice in one conversation.
+Speak in connected sentences in the voice and accent defined above, with no lists or symbols, and never read out URLs, ids, file paths or code; the screen shows sources. Stay in his language unless he asks to switch; one foreign utterance is no ask. You cannot hear your own voice: if he says your voice or accent changed, believe him, say you cannot hear your output, and carry on; never say you are unchanged. Vary your phrasing. Do not reuse the same framing phrase twice in one conversation.
 
 # Backchannel policy
 A pause inside his turn is not your turn: no "Hmm", "Yeah" or "Okay" while he is still speaking; after announcing a check, say what it found before the turn ends. End no answer with "okay?" as a reflex: once in a few answers at most. When that first line announces a lookup, name the sources you are reading in a few words, such as checking your mail or looking in your vault and calendar. Never fill the silence while a lookup runs.
@@ -627,26 +627,41 @@ function ownerDate(at: number, timeZone: string): string {
   return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone }).format(new Date(at));
 }
 
-/** The age of a stored loop in plain words, from the injected clock; only a loop under a day is ever an opener. */
-function ageWords(now: number, at: number): string {
+/** The owner's calendar day at an instant, as a day number, so an age never reads in the host zone. */
+function ownerDay(at: number, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone })
+    .formatToParts(new Date(at)).reduce<Record<string, string>>((acc, part) => { acc[part.type] = part.value; return acc; }, {});
+  return Date.UTC(Number(parts['year']), Number(parts['month']) - 1, Number(parts['day']));
+}
+
+/** The age of a stored loop in plain words, from the injected clock and the owner's zone. */
+function ageWords(now: number, at: number, timeZone: string): string {
   const elapsed = Math.max(0, now - at);
   if (elapsed < 60 * 60 * 1000) return 'from under an hour ago';
-  const hours = Math.max(1, Math.floor(elapsed / (60 * 60 * 1000)));
-  return `from ${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+  if (elapsed <= OPEN_LOOP_FRESH_MS) {
+    const hours = Math.max(1, Math.floor(elapsed / (60 * 60 * 1000)));
+    return `from ${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+  }
+  const days = Math.max(1, Math.round((ownerDay(now, timeZone) - ownerDay(at, timeZone)) / 86_400_000));
+  return `from ${days} ${days === 1 ? 'day' : 'days'} ago`;
 }
 
 /** One stored loop as the model reads it: its age, the date it was last seen open, and a question when old. */
 function loopLine(topic: string, lastSeenAt: number, now: number, timeZone: string): string {
   const bare = topic.replace(/[.?!]+$/u, '').trim();
-  return `${bare} (${ageWords(now, lastSeenAt)}, last seen open ${ownerDate(lastSeenAt, timeZone)})`;
+  return `${bare} (${ageWords(now, lastSeenAt, timeZone)}, last seen open ${ownerDate(lastSeenAt, timeZone)})`;
 }
 
 /** A loop that a newer summary records as finished is no longer open, whatever the older row stored. */
 const LOOP_FINISHED = /\b(?:done|finished|completed|sorted|fixed|resolved|paid|sent|booked|closed|cancelled|signed in|now works|no longer)\b/iu;
+/** A clause that still reads as open is dropped before the completion cue is looked for, so "still to be sent"
+ *  never counts as sent. */
+const LOOP_STILL_OPEN = /\b(?:still|yet|to be|has to|needs to)\b[^.]*/giu;
 function loopResolved(topic: string, later: readonly EarlierConversationCandidate[], lastSeenAt: number): boolean {
-  const words = topic.toLowerCase().match(/[a-z]{4,}/gu) ?? [];
+  const words = (topic.toLowerCase().match(/[a-z]{4,}/gu) ?? []).filter(word => word !== 'still');
   if (words.length === 0) return false;
-  return later.some(candidate => candidate.endedAt > lastSeenAt && LOOP_FINISHED.test(candidate.summary)
+  return later.some(candidate => candidate.endedAt > lastSeenAt
+    && LOOP_FINISHED.test(candidate.summary.replace(LOOP_STILL_OPEN, ''))
     && words.every(word => candidate.summary.toLowerCase().includes(word)));
 }
 

@@ -1,6 +1,7 @@
 import type { DataClass, ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
 import { deadlineAt } from '../adapters/model/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
+import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { HISTORY_CLASSES, historyForgotten, historySessionEvidence } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
 
@@ -83,14 +84,16 @@ function toolOutcomeOf(row: Record<string, unknown>): ToolOutcome | null {
   const name = row['name'];
   if (typeof name !== 'string' || !name) return null;
   const state = String(row['state']);
-  // A gateway write answers "not done" through the completed path: the stage and remember tools persist
-  // `{staged: false, code}` and `{remembered: false, code}` as a completed call, so the response outranks the state.
-  const refusedAnswer = row['staged'] === 0 || row['remembered'] === 0;
-  const outcome = state === 'failed' ? 'failed'
-    : state === 'refused' || (state === 'completed' && refusedAnswer) ? 'refused'
-    : state === 'completed' ? 'succeeded' : 'outcome unknown';
   const code = typeof row['code'] === 'string' && row['code'] ? row['code']
     : typeof row['reason'] === 'string' && row['reason'] ? row['reason'] : null;
+  // A tool answers "not done" through the completed path, so the sealed response outranks the state: the note and
+  // remember tools persist `{staged: false}` / `{remembered: false}`, the vault save `{saved: false}` (json_extract
+  // gives integer 0 for JSON false), and the open tools any receipt code other than `opened`.
+  const notDone = row['staged'] === 0 || row['remembered'] === 0 || row['saved'] === 0
+    || (OPEN_TOOL_NAMES.has(name) && row['code'] !== 'opened');
+  const outcome = state === 'failed' ? 'failed'
+    : state === 'refused' || (state === 'completed' && notDone) ? (code === 'failed' ? 'failed' : 'refused')
+    : state === 'completed' ? 'succeeded' : 'outcome unknown';
   return { name, outcome, code };
 }
 
@@ -126,7 +129,9 @@ export function buildDistillationInput(input: {
   const outcomes = input.toolOutcomes ?? [];
   if (outcomes.length) {
     parts.push('Tool outcomes:');
-    for (const item of outcomes.slice(0, TOOL_OUTCOME_MAX_LINES)) parts.push(`${item.name} ${item.outcome}${item.code ? ` ${item.code}` : ''}`);
+    for (const item of outcomes.slice(0, TOOL_OUTCOME_MAX_LINES)) {
+      parts.push(`${item.name} ${item.outcome}${item.code && item.outcome !== 'succeeded' ? ` ${item.code}` : ''}`);
+    }
   }
   return capDistillationInput(parts.join('\n'));
 }
@@ -136,7 +141,8 @@ export function readToolOutcomes(tx: Transaction, liveSessionId: string): readon
   if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='tool_calls'", [])) return [];
   const rows = tx.all(`SELECT json_extract(intent_json,'$.toolName') AS name, state,
       json_extract(result_json,'$.response.code') AS code, json_extract(result_json,'$.response.reason') AS reason,
-      json_extract(result_json,'$.response.staged') AS staged, json_extract(result_json,'$.response.remembered') AS remembered
+      json_extract(result_json,'$.response.staged') AS staged, json_extract(result_json,'$.response.remembered') AS remembered,
+      json_extract(result_json,'$.response.saved') AS saved
     FROM tool_calls WHERE run_id=? ORDER BY created_at, execution_id`, [liveSessionId]);
   return rows.flatMap(row => toolOutcomeOf(row) ?? []);
 }

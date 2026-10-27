@@ -530,9 +530,18 @@ export interface ReplayTools {
   close(): Promise<void>;
 }
 
+const string = { type: 'string' } as const;
+const integer = { type: 'integer' } as const;
 const SCHEMAS = [
-  { name: 'search_knowledge', inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer' } }, required: ['query', 'limit'], additionalProperties: false } },
-  { name: 'get_insight', inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' } }, include_links: { type: 'boolean' } }, required: ['ids', 'include_links'], additionalProperties: false } },
+  // The properties the real knowledge declarations carry, so the host's own research fan-out
+  // (`knowledgeSearchArgs` in server/tools/research.ts) is a legal call and not an argument error.
+  { name: 'search_knowledge', inputSchema: { type: 'object', properties: {
+    query: string, limit: integer, include_sensitive: { type: 'boolean' }, detail: string, max_chars: integer, snippet_chars: integer,
+    project_hint: string, meeting_date_from: string, meeting_date_to: string, deadline_ms: integer,
+  }, required: ['query', 'limit'], additionalProperties: false } },
+  { name: 'get_insight', inputSchema: { type: 'object', properties: {
+    ids: { type: 'array', items: integer }, id: integer, include_links: { type: 'boolean' }, detail: string, max_chars: integer, deadline_ms: integer,
+  }, required: ['ids', 'include_links'], additionalProperties: false } },
 ];
 
 export async function replayTools(t: TestContext, store: Store, clock: ReplayClock, routeIdentity: string): Promise<ReplayTools> {
@@ -587,7 +596,9 @@ export async function replayTools(t: TestContext, store: Store, clock: ReplayClo
     endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(SCHEMAS),
     sourcePolicy: { id: 'voice-replay', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
     route: { identity: routeIdentity, allowedClasses: ['ordinary'] },
-    bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 },
+    // The host's own research fan-out asks the knowledge read for six hits (`RESEARCH.knowledgeHits`), so
+    // a policy ceiling below that refuses the host's own call as an argument error.
+    bounds: { maxQueryChars: 80, maxSearchLimit: 6, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 },
   });
   if ((await port.discover(endpoint.id)).state !== 'discovered') throw new Error('replay tools failed to discover the synthetic endpoint');
   // Approve the connection's read grant: a projection without a current grant refuses every call, and a

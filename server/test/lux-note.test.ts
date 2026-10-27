@@ -69,6 +69,11 @@ test('an imperative with an explicit lux destination is the only form that autho
   for (const text of ['Bruno save it to Lux', 'the Reno property save it to Lux', 'we discussed the piano and you should save it to Lux']) {
     assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
   }
+  // W1-R3: a negation refuses only when it governs the save verb; an ordinary self-correction does not.
+  for (const text of ['no that is not right it is the second one save it to Lux knowledge',
+    'no I mean the other file save it to Lux knowledge']) {
+    assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
+  }
 });
 
 test('negated, reported, quoted, conditional and ambiguous save asks are refused with a clarification', () => {
@@ -87,6 +92,9 @@ test('negated, reported, quoted, conditional and ambiguous save asks are refused
     ["can't save it to Lux", 'negated'],
     ['not save it to Lux', 'negated'],
     ['Bruno cannot save it to Lux', 'negated'],
+    ['do not save it to Lux', 'negated'],
+    ["don't put it in Lux", 'negated'],
+    ['never save this to Lux', 'negated'],
   ];
   for (const [text, reason] of refusals) {
     assert.deepEqual(composedAsk(text), { decision: 'clarify', reason }, text);
@@ -386,6 +394,22 @@ test('the split-fragment save ask stages instead of refusing on its newest fragm
   assert.equal(outcome?.status, 'completed');
   const stages = h.store.transaction(tx => tx.all('SELECT state FROM lux_note_stages'));
   assert.deepEqual(stages.map(row => row['state']), ['staged']);
+});
+
+test('a self-correction before the ask does not stop it staging, and a negation of the verb does', async t => {
+  const corrected = stageHarness(t, [['inputTranscription', 'no that is not right it is the second one', 0],
+    ['inputTranscription', 'save it to Lux knowledge', 3_000]]);
+  const staged = await corrected.stage(STAGE_ARGS);
+  assert.equal(staged?.status, 'completed');
+  const rows = corrected.store.transaction(tx => tx.all('SELECT state FROM lux_note_stages'));
+  assert.deepEqual(rows.map(row => row['state']), ['staged']);
+  const refused = stageHarness(t, [['inputTranscription', 'no that is not right it is the second one', 0],
+    ['inputTranscription', 'do not save it to Lux knowledge', 3_000]]);
+  const outcome = await refused.stage(STAGE_ARGS);
+  assert.equal(outcome?.status, 'completed');
+  const response = refused.store.transaction(tx => JSON.parse(String(tx.get('SELECT result_json FROM tool_calls')!['result_json'])) as Record<string, unknown>)['response'];
+  assert.equal((response as Record<string, unknown>)['code'], 'authorization_refused');
+  assert.equal(refused.store.transaction(tx => tx.all('SELECT stage_id FROM lux_note_stages')).length, 0);
 });
 
 test('a stretch with no save ask refuses with plain guidance, never an authorization error', async t => {

@@ -30,7 +30,7 @@ for (const hang of [false, true]) test(hang ? 'hung handshake ends with connect_
     const endpoint = req.url!.split('/').at(-1)!;
     const result = message.method === 'initialize'
       ? { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mongoose-fixture', version: '1' } }
-      : message.method === 'tools/list' ? { tools: literal[endpoint] } : {};
+      : message.method === 'tools/list' ? { tools: literal[endpoint].map((tool: Record<string, unknown>) => ({ ...tool, annotations: { readOnlyHint: true } })) } : {};
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }));
   });
@@ -72,5 +72,6 @@ for (const hang of [false, true]) test(hang ? 'hung handshake ends with connect_
     for (let i = 0; i < 3; i++) await runtime.port.discover(`mongoose-${endpoint}`);
   }
   assert.deepEqual(identities.sort(), MONGOOSE_ENDPOINTS.map(endpoint => `mongoose-${endpoint}`).sort(), 'one identity receipt per endpoint, not per credential resolution');
+  assert.ok(runtime.status().endpoints.every(endpoint => endpoint.tools > 0), 'all endpoints publish nonempty granted catalogues');
   assert.deepEqual(connected.sort(), MONGOOSE_ENDPOINTS.map(endpoint => `mongoose-${endpoint}`).sort(), JSON.stringify(runtime.status()));
 });

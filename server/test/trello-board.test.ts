@@ -271,7 +271,7 @@ test('FILLER: the unused booleans the voice model sends are absent, and the writ
 test('the host log lines are content-free: tool, phase, outcome and a closed reason', () => {
   assert.ok(events.length > 0);
   for (const event of events) {
-    assert.deepEqual(Object.keys(event).filter(key => !['event', 'connector', 'tool', 'phase', 'outcome', 'reason'].includes(key)), []);
+    assert.deepEqual(Object.keys(event).filter(key => !['event', 'connector', 'tool', 'phase', 'outcome', 'reason', 'normalized'].includes(key)), []);
     assert.equal(event.connector, 'trello');
     assert.ok(!JSON.stringify(event).includes('plumber'));
   }

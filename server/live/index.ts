@@ -152,17 +152,28 @@ function recordedOptions(snapshot: unknown): readonly OpeningOption[] {
  * recorded in its accepted prompt snapshot. An open loop offered as one call's opener stays in the earlier
  * conversations as context and never opens another call; only the owner can raise it again. The record is the
  * plan, so the comparison is the option's own topic, never a match on words the model chose later.
+ * W5-R2: `openedAt` is the latest start that offered any open-loop option, because the distillation re-words a
+ * loop between calls and the topic rule cannot see through that.
  */
-function offeredOpenLoops(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[], now: number): readonly string[] {
+function offeredOpenLoops(tx: Transaction, assistantId: string, allowedClasses: readonly DataClass[], now: number): { topics: readonly string[]; openedAt: number | undefined } {
   const topics: string[] = [];
+  let openedAt: number | undefined;
   const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
-  for (const row of tx.all("SELECT live_session_id, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? AND created_at>=? ORDER BY created_at DESC, rowid DESC", [assistantId, now - EARLIER_CONVERSATIONS_WINDOW_MS])) {
+  for (const row of tx.all("SELECT live_session_id, created_at, accepted_prompt_snapshot FROM live_sessions WHERE owner_assistant_id=? AND created_at>=? ORDER BY created_at DESC, rowid DESC", [assistantId, now - EARLIER_CONVERSATIONS_WINDOW_MS])) {
     const source = historySessionEvidence(tx, String(row['live_session_id']), eligibility);
     if (!source || !allowedClasses.includes(source.dataClass)) continue;
-    for (const option of recordedOptions(row['accepted_prompt_snapshot'])) if (option.kind === 'open-loop') topics.push(option.topic);
+    const loops = recordedOptions(row['accepted_prompt_snapshot']).filter(option => option.kind === 'open-loop');
+    if (loops.length === 0) continue;
+    for (const option of loops) topics.push(option.topic);
+    const startedAt = Number(row['created_at']);
+    if (openedAt === undefined || startedAt > openedAt) openedAt = startedAt;
   }
-  return topics;
+  return { topics, openedAt };
 }
+
+/** W5-R2: after a call offered an open loop, no start inside this window offers the kind at all, because the
+ *  re-worded loop a call's summary stores would otherwise walk straight past the exact-topic rule. */
+const OPEN_LOOP_OPENER_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 
 /**
  * Q5-R4: the three most recent earlier calls' opening utterances, read from the owner-local journal.
@@ -1408,10 +1419,14 @@ export class LiveSessionOwner {
       const storedSummaries = summarySelection.candidates;
       const summaryGap = Object.values(summarySelection.coverage).some(count => count > 0);
       const freshThread = freshOwnerThread(tx, assistantId, this.#profile.route.dataClasses, now);
+      const offered = offeredOpenLoops(tx, assistantId, this.#profile.route.dataClasses, now);
+      // W5-R2: a start inside the cooldown offers no open-loop option at all, because a summary that re-words
+      // the loop would otherwise walk past the exact-topic rule. The other opener kinds are unaffected.
+      const openLoopCooling = offered.openedAt !== undefined && now - offered.openedAt <= OPEN_LOOP_OPENER_COOLDOWN_MS;
       const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone,
         ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
-        openLoops: storedOpenLoops(tx, this.#profile.route.dataClasses, now, staleRefusedNoteSessions(tx, assistantId)),
-        alreadyOffered: offeredOpenLoops(tx, assistantId, this.#profile.route.dataClasses, now),
+        openLoops: openLoopCooling ? [] : storedOpenLoops(tx, this.#profile.route.dataClasses, now, staleRefusedNoteSessions(tx, assistantId)),
+        alreadyOffered: offered.topics,
         ...(freshThread === undefined ? {} : { freshThread }),
         ...(earlierOpeners[0] === undefined ? {} : { previousKinds: earlierOpeners[0].kinds }),
         rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });

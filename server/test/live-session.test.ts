@@ -3909,6 +3909,9 @@ test('3u: consecutive starts offer different stored open loops and record the pl
     return (JSON.parse(String(row['accepted_prompt_snapshot'])) as { system: string }).system;
   };
   const first = h.owner.create({ idempotencyKey: 'opener-rotation-1', inputClass: 'ordinary' }, h.ctx);
+  // W5-R2: a start inside the 12 h cooldown after an offered open loop offers the kind not at all, so the second
+  // start is placed past it; the rotation still walks the stored loops, which is what this test is about.
+  h.advance(13 * 3_600_000);
   const second = h.owner.create({ idempotencyKey: 'opener-rotation-2', inputClass: 'ordinary' }, h.ctx);
   const loops = [first, second].map(session => /^- open loop: (.+)$/mu.exec(snapshot(session.liveSessionId))?.[1]);
   assert.ok(loops[0] !== undefined && loops[1] !== undefined, 'both starts compose an open loop from the stored column');

@@ -4,7 +4,7 @@ import { test } from 'node:test';
 // declaration, the description and the repair texts, and this file proves the three cannot drift apart.
 import {
   CURSOR_MAX_CHARS, LOOKUP_SOURCES, MAX_LOOKUPS, QUESTION_MAX_CHARS, RESEARCH_LIMITS, TOPIC_MAX_CHARS, TOPIC_MAX_WORDS,
-  parseResearch, researchDeclaration, researchDescription, researchRepair, statusAsk,
+  parseResearch, researchDeclaration, researchDescription, researchRepair, statusAsk, STATUS_ASK_LOOKUP_LIMIT,
 } from '../tools/research.js';
 import { safeEvent } from '../host/log.js';
 
@@ -79,15 +79,20 @@ test('a call that violates each limit is refused with the reason the schema pred
     const parsed = parseResearch(args);
     assert.equal(parsed.ok ? '' : parsed.reason, reason);
   }
-  // F1: the bound is unconditional. #657 let a status ask name more lookups than one batch holds, but the
-  // schema says maxItems MAX_LOOKUPS, so a provider would refuse that call before the host could batch it.
-  for (const question of ['status of everything', 'test all the sources now']) {
-    assert.equal(statusAsk(question), true, `the status-ask carve-out is exercised: ${question}`);
-    const many = { action: 'start', question, topic: 'names', lookups: Array.from({ length: MAX_LOOKUPS + 1 }, () => ({ source: 'knowledge', query: 'q' })) };
-    assert.equal(parseResearch(many).ok ? '' : (parseResearch(many) as { reason: string }).reason, 'lookups_count',
-      'a status ask is held to the published bound too');
-    assert.equal(declaration.validate(many), false);
-  }
+  // F1: the max-items keyword is the per-call limit, and the one carve-out #657 needs is a closed second bound
+  // that the declaration and the repair text state, so neither number is hidden from the model.
+  assert.match(parameters.properties['lookups']!.description ?? '', new RegExp(`up to ${STATUS_ASK_LOOKUP_LIMIT}`));
+  assert.match(String(researchRepair('lookups_count')['guidance']), new RegExp(`up to ${STATUS_ASK_LOOKUP_LIMIT}`));
+  const statusQuestion = 'test all tools';
+  assert.equal(statusAsk(statusQuestion), true, 'the status-ask case is the one #657 pins');
+  const atCarveOut = { action: 'start', question: statusQuestion, topic: 'names', lookups: Array.from({ length: STATUS_ASK_LOOKUP_LIMIT }, (_, n) => ({ source: LOOKUP_SOURCES[n]!, query: 'q' })) };
+  assert.equal(parseResearch(atCarveOut).ok, true, 'a status ask may name one lookup per source, as the declaration says');
+  const pastCarveOut = { ...atCarveOut, lookups: Array.from({ length: STATUS_ASK_LOOKUP_LIMIT + 1 }, () => ({ source: 'knowledge', query: 'q' })) };
+  assert.equal(parseResearch(pastCarveOut).ok ? '' : (parseResearch(pastCarveOut) as { reason: string }).reason, 'lookups_count', 'and no further');
+  // An ordinary ask is held to the keyword the declaration publishes.
+  const ordinary = { action: 'start', question: 'who reports to Korbi', topic: 'Korbi reports', lookups: Array.from({ length: MAX_LOOKUPS + 1 }, () => ({ source: 'knowledge', query: 'q' })) };
+  assert.equal(parseResearch(ordinary).ok ? '' : (parseResearch(ordinary) as { reason: string }).reason, 'lookups_count');
+  assert.equal(declaration.validate(ordinary), false, 'the provider refuses it before a turn is spent');
   assert.ok(JSON.stringify(parseResearch(refusedOntheDay[0]![1])).includes('"topicChars"'), 'the refusal carries lengths, not words');
   assert.equal(JSON.stringify(parseResearch(refusedOntheDay[0]![1])).includes('the last month'), false);
 });

@@ -253,12 +253,6 @@ export type LookupSource = 'memory' | 'knowledge' | 'company' | 'calendar' | 'ma
 export const LOOKUP_SOURCES: readonly LookupSource[] = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'drive', 'web'];
 /** At most four lookups per call; duplicates collapse, so one call is one short, wide read. */
 export const MAX_LOOKUPS = 4;
-
-/**
- * RESEARCHFIX-R1: the lookup limit and the allowed keys are stated once, and the number comes from the
- * constant, so the declaration, the repair text and the refusal can never drift apart.
- */
-const LOOKUP_LIMIT_TEXT = `at most ${MAX_LOOKUPS} lookups, each with source (${LOOKUP_SOURCES.slice(0, -1).join(', ')} or ${LOOKUP_SOURCES[LOOKUP_SOURCES.length - 1]}) plus one of query, mail or history`;
 /** C-RESEARCH-CONTRACT: the one text every surface prints for the lookup source set, so no list can drift. */
 export const LOOKUP_SOURCE_TEXT = `${LOOKUP_SOURCES.slice(0, -1).join(', ')} or ${LOOKUP_SOURCES[LOOKUP_SOURCES.length - 1]}`;
 /**
@@ -284,7 +278,25 @@ export const RESEARCH_LIMITS = Object.freeze({
   cursorMaxChars: 128,
   /** F5: how many per-lookup entries a refusal log line may carry, whatever the call named. */
   maxLoggedLookups: 64,
+  /** F1: the bound a status or test-all ask gets instead of the per-call limit, which the declaration states. */
+  statusAskLookups: 9,
 } as const);
+
+/**
+ * C-RESEARCH-CONTRACT F1: #657 serves a status or test-all ask in batches, so it may name one lookup per
+ * source. That is a closed bound of its own, published in the declaration beside the per-call limit, so the
+ * schema and the validator state the same two numbers.
+ */
+export const STATUS_ASK_LOOKUP_LIMIT = RESEARCH_LIMITS.statusAskLookups;
+
+
+/**
+ * RESEARCHFIX-R1: the lookup limit and the allowed keys are stated once, and the number comes from the
+ * constant, so the declaration, the repair text and the refusal can never drift apart.
+ */
+const LOOKUP_LIMIT_TEXT = `at most ${MAX_LOOKUPS} lookups, each with source (${LOOKUP_SOURCES.slice(0, -1).join(', ')} or ${LOOKUP_SOURCES[LOOKUP_SOURCES.length - 1]}) plus one of query, mail or history`;
+/** F1: the same rule in the words the declaration and the repair use, including the one published exception. */
+export const LOOKUP_COUNT_RULE = `${LOOKUP_LIMIT_TEXT}; a status or test-all ask may name one lookup per source, up to ${STATUS_ASK_LOOKUP_LIMIT}`;
 
 export type MailLookup = { id: string; format?: 'full' | 'metadata' } | { q: string; maxResults?: number };
 export interface ResearchLookup { source: LookupSource; query: string; history?: HistoryArguments; mail?: MailLookup }
@@ -2321,11 +2333,11 @@ export function parseResearch(args: unknown): ParsedResearch {
     // that page an already-answered run; every other lookup belongs to a start.
     if (action !== 'start' && !(action === 'continue' && historyLookupsOnly(record['lookups']))) return refuse('lookups_stop');
     if (!Array.isArray(record['lookups'])) return refuse('lookups_type');
-    // C-RESEARCH-CONTRACT F1: the published `maxItems` is the bound the validator applies, with no carve-out.
-    // #657 let a status ask name more lookups than one batch holds, but the schema the model is given says
-    // at most MAX_LOOKUPS, so a provider that validates it refuses that call before the host could batch it:
-    // one limit, enforced everywhere.
-    if (record['lookups'].length > MAX_LOOKUPS) return refuse('lookups_count');
+    // #657 item 1: a status or test-all ask names more sources than one batch holds, and the host serves it in
+    // batches, so its lookup list is never a count refusal. C-RESEARCH-CONTRACT F1: that carve-out is one
+    // closed, published bound, not an open one: the declaration states both the per-call limit and this one.
+    const batched = statusAsk(typeof record['question'] === 'string' ? record['question'] : '');
+    if (record['lookups'].length > (batched ? STATUS_ASK_LOOKUP_LIMIT : MAX_LOOKUPS)) return refuse('lookups_count');
     for (const entry of record['lookups']) {
       if (!isRecord(entry)) return refuse('lookup_type');
       if (!Object.keys(entry).every(key => key === 'source' || key === 'query' || key === 'history' || key === 'mail')) return refuse('lookup_unknown_fields');
@@ -2358,7 +2370,7 @@ const REPAIR_GUIDANCE: Partial<Record<ResearchRefusalReason, string>> = {
   lookup_query_required: 'This lookup needs a query: add {"source":"the source","query":"the words to search"}.',
   lookup_source: `The source must be one of ${LOOKUP_SOURCE_TEXT}; company is the owner's word for mongoose and is accepted too.`,
   lookup_history: 'A memory lookup is {"source":"memory","history":{"topic":"..."}}; the history fields are topic and optional limit.',
-  lookups_count: `Send ${LOOKUP_LIMIT_TEXT}; anything more cannot be read before the answer is due.`,
+  lookups_count: `Send ${LOOKUP_COUNT_RULE}; anything more cannot be read before the answer is due.`,
   unknown_fields: 'Remove the fields not in the tool schema; only action, question, topic, researchId, sources, direction, cursor and lookups exist.',
 };
 
@@ -2539,8 +2551,10 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
         cursor: { type: 'string', maxLength: CURSOR_MAX_CHARS, description: 'Consumer continuation copied from nextCursor on the same researchId. This is not a source-native page token. Omit lookups when using it.' },
         direction: { type: 'string', description: 'Optional steer for a continue, e.g. "look in mail".' },
         lookups: {
+          // C-RESEARCH-CONTRACT F1: the per-call limit is an unconditional schema keyword, and the one closed
+          // carve-out (#657, a status or test-all ask served in batches) is stated here beside it.
           type: 'array', maxItems: MAX_LOOKUPS,
-description: 'Optional: ' + LOOKUP_LIMIT_TEXT + '. When present the host skips its own source choice and reads every lookup in parallel; when absent the host selects the sources. memory: retained conversations, remembered notes and imported notes, within the accepted permissions. knowledge: his knowledge base of decisions, project status, technical notes, meeting transcripts and work sessions. company: permissioned company, product and commercial records; this does not guarantee directory coverage. calendar: primary calendar only; query must be today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD. Unknown or contradictory windows are unresolved, never widened. Calendar coverage separates received events, shown events, retained remainder, unread pages and truncated descriptions; continue returns retained remainder before reading more pages. mail: his mail; lookup.mail supports an exact Gmail q/maxResults search or exact id/format read. Search coverage counts received metadata messages, not full bodies or complete threads. Source order is preserved. continue returns retained metadata before requesting another page. An exact full-message read returns bodySlices with immutable UTF16 offsets, received total and separate upstream completeness. Continue nextCursor to consume received body remainder without another source read; quoted history remains included. Metadata format deliberately omits bodies. alreadyDelivered is a model-context receipt, not a claim that the owner heard it. chat: his team chat; keep the person, group or channel in the question as he said it (what a person wrote him, what he discussed with a person, the newest in a named channel, his group chat with some people), because the host resolves the name strictly and its reply names what it read, over which days, or asks which one he means. replies: what is waiting on him in the team chat. drive: his own Drive files by name, for a document, deck or sheet he wants opened; query id: and a returned file id reads that one file again.',
+description: 'Optional: ' + LOOKUP_COUNT_RULE + '. When present the host skips its own source choice and reads every lookup in parallel; when absent the host selects the sources. memory: retained conversations, remembered notes and imported notes, within the accepted permissions. knowledge: his knowledge base of decisions, project status, technical notes, meeting transcripts and work sessions. company: permissioned company, product and commercial records; this does not guarantee directory coverage. calendar: primary calendar only; query must be today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD. Unknown or contradictory windows are unresolved, never widened. Calendar coverage separates received events, shown events, retained remainder, unread pages and truncated descriptions; continue returns retained remainder before reading more pages. mail: his mail; lookup.mail supports an exact Gmail q/maxResults search or exact id/format read. Search coverage counts received metadata messages, not full bodies or complete threads. Source order is preserved. continue returns retained metadata before requesting another page. An exact full-message read returns bodySlices with immutable UTF16 offsets, received total and separate upstream completeness. Continue nextCursor to consume received body remainder without another source read; quoted history remains included. Metadata format deliberately omits bodies. alreadyDelivered is a model-context receipt, not a claim that the owner heard it. chat: his team chat; keep the person, group or channel in the question as he said it (what a person wrote him, what he discussed with a person, the newest in a named channel, his group chat with some people), because the host resolves the name strictly and its reply names what it read, over which days, or asks which one he means. replies: what is waiting on him in the team chat. drive: his own Drive files by name, for a document, deck or sheet he wants opened; query id: and a returned file id reads that one file again.',
           items: {
             type: 'object', additionalProperties: false, required: ['source'],
             anyOf: [

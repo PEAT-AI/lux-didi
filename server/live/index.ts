@@ -319,10 +319,11 @@ export const RESPONSE_WATCHDOG_NUDGE_MS = 8_000;
 export const RESPONSE_WATCHDOG_RECOVERY_MS = 7_000;
 /** At most one watchdog recovery per window; a second mute inside it ends the call honestly instead of looping. */
 export const RESPONSE_WATCHDOG_WINDOW_MS = 120_000;
-/** #538: the audible debt rung. The clock is non-sliding: the first rung lands 4 s after the model began owing audio,
- *  whatever text it wrote in between (L-04: the owner's wait is the wait she hears, and 8 s of it was the release 15
- *  complaint). The rebuild rung is seven seconds later, which is AUDIBLE_DEBT_REBUILD_MS. */
-export const AUDIBLE_DEBT_RUNG_MS = 4_000;
+/** #538: the audible debt rung. The clock is non-sliding: the first rung lands 8 s after the model began owing audio,
+ *  whatever text it wrote in between. The rebuild rung is seven seconds later, which is AUDIBLE_DEBT_REBUILD_MS.
+ *  C-DEADAIR: the rung stays at 8 s because the fastest rescue is the response's own end (see #deliverAfterSilentText),
+ *  and shortening the rung on top of that broke the replay invariants that guard against double speaking. */
+export const AUDIBLE_DEBT_RUNG_MS = 8_000;
 /** L-04: a response the provider announced but has not made audible is not progress the owner can hear, so it buys
  *  the rung one short grace and no more. Seven seconds of it was the C-DEADAIR 15 s wait. */
 export const DEAD_AIR_RESPONSE_GRACE_MS = 500;
@@ -589,6 +590,8 @@ interface ActiveSession {
   responseCreatedAt?: number | undefined;
   /** C-DEADAIR: when the debt rung last named this silence, so the sliding watchdog does not name it a second time. */
   deadAirNudgedAt?: number | undefined;
+  /** C-DEADAIR: the provider wrote text for this owed answer and the owner heard none of it. */
+  debtTextSeen?: boolean | undefined;
   /** D6: an open model turn holds SPEAKING until turnComplete or 1,500 ms of audible silence. */
   speakingHoldTimer?: ReturnType<JobTimer> | undefined;
   sessionTimer: ReturnType<JobTimer> | undefined; callTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
@@ -2105,6 +2108,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     handle.responseInProgress = false;
     handle.responseCreatedAt = undefined;
     handle.deadAirNudgedAt = undefined;
+    handle.debtTextSeen = false;
     // One silence, one clock: the sliding watchdog stands down for the silence the debt clock now owns.
     this.#cancelWatchdog(handle);
     this.#noteDebt(handle, 'start', reason);
@@ -2461,6 +2465,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       // owner hears: the first announced response after an owed answer stamps owner final to response to first audio.
       if (handle.responseInProgress !== true) handle.responseCreatedAt = this.#now();
       handle.responseInProgress = true;
+      // C-DEADAIR: text the owner cannot hear, written while an answer is owed, is what the response-end rescue reads.
+      if (handle.debtSince !== undefined && (type === 'modelText' || type === 'outputTranscription')) handle.debtTextSeen = true;
     }
     // #538: the audible debt clock clears on what the owner heard or did, never on what the model typed.
     if (type === 'audio') this.#clearDebt(handle, 'audible');
@@ -2488,6 +2494,10 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       // the deferral held, which is the ruling's own order.
       if (handle.debtSince !== undefined) {
         if (handle.lastModelAudioAt !== undefined && handle.lastModelAudioAt >= handle.debtSince) this.#clearDebt(handle, 'turn_end');
+        // C-DEADAIR: a response that ended after writing text and never made a sound is the 2026-10-27 shape (112
+        // response tokens, nothing above -120 dB on the Mac). The model has nothing more to say in that response, so
+        // the held result goes out now instead of waiting out the ladder.
+        else if (handle.debtTextSeen === true) void this.#deliverUnspoken(handle).catch(() => { /* the rung settles its own failure */ });
         else this.#fireDeferredRung(handle);
       }
     }

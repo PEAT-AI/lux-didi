@@ -51,7 +51,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, DEAD_AIR_RESPONSE_GRACE_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -3761,7 +3761,7 @@ test('an owner turn that ends arms the watchdog, and the next turn arms it again
   attachment.close();
 });
 
-test('a delegated response with no audible output is nudged after one short grace, and audible progress restarts the clock', async t => {
+test('a delegated response with no audible output is nudged, and audible progress restarts the clock', async t => {
   const receipts: Record<string, unknown>[] = [];
   const detach = attachHostLogSink({ event: raw => {
     const record = raw as Record<string, unknown>;
@@ -3787,18 +3787,15 @@ test('a delegated response with no audible output is nudged after one short grac
   for (let second = 0; second < 10; second += 1) await advance(1_000);
   // Amendment B: the result completed at t=0, so ten seconds of silence after it is the defect, not a slow
   // tool. The nudge is the first stage of the obligation, not a rebuild.
-  // #538 R4, C-DEADAIR: the provider announced a model turn and never made it audible, so the rung lands after the
-  // grace the contract allows it and no later.
-  // C-DEADAIR: an announced response the owner cannot hear buys the rung one short grace, not the seven seconds
-  // that made the 2026-10-27 calls wait fifteen.
-  assert.deepEqual(phases(), ['start', 'rung'], 'a silent announced response no longer holds the rung for seven seconds');
+  // #538 R4: the provider announced a model turn, so the 8 s rung holds until that response ends.
+  assert.deepEqual(phases(), ['start'], 'an announced response holds the rung');
   assert.equal(fake.sessionsOpened, 1, 'the working session is not rebuilt by a nudge');
   assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'the call is still up');
   // Audible output defers the deadline to 8 s from that frame (amendment A).
   fake.emit({ type: 'audio', pcm, rate: 24_000 });
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   for (let second = 0; second < 9; second += 1) await advance(1_000);
-  assert.deepEqual(phases(), ['start', 'rung', 'clear', 'armed', 'nudged'], 'a reply that went silent again is watched again, by the watchdog that owns a model turn');
+  assert.deepEqual(phases(), ['start', 'clear', 'armed', 'nudged'], 'a reply that went silent again is watched again, by the watchdog that owns a model turn');
   assert.equal(fake.sessionsOpened, 1, 'a nudge is not a recovery');
   attachment.close();
 });
@@ -4004,7 +4001,7 @@ const audibleFrame = { type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, 
 const portEvent = (event: unknown) => event as never;
 const settlePort = async (): Promise<void> => { for (let i = 0; i < 12; i++) await tick(); };
 
-test('D3: fill frames never clear the debt, so a tool result with no audible answer is nudged at 4 s and recovered at 11 s', async t => {
+test('D3: fill frames never clear the debt, so a tool result with no audible answer is nudged at 8 s and recovered at 15 s', async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-fill-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));
   t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
@@ -4024,10 +4021,10 @@ test('D3: fill frames never clear the debt, so a tool result with no audible ans
     h.advance(100);
     scheduler.runDue();
   }
-  assert.deepEqual(phasesOf(captureDir), ['start', 'rung', 'rung', 'recovering', 'recovered'], 'one clock: the rung at 4 s, the rebuild rung at 11 s, then the recovery');
+  assert.deepEqual(phasesOf(captureDir), ['start', 'rung', 'rung', 'recovering', 'recovered'], 'one clock: the rung at 8 s, the rebuild rung at 15 s, then the recovery');
   const stall = hostLines(captureDir).find(line => line.event === 'live_dead_air' && line.msSinceTool !== undefined);
   assert.ok(stall, 'the stall leaves a live_dead_air receipt');
-  assert.equal(stall!['msSinceTool'], AUDIBLE_DEBT_RUNG_MS, 'the answer had been owed for the whole four second rung');
+  assert.equal(stall!['msSinceTool'], 8_000, 'the answer had been owed for eight seconds');
   assert.equal(stall!['msSinceAudible'], null, 'and no audible frame had ever played');
   assert.equal(hostLines(captureDir).filter(line => line.event === 'live_dead_air_nudge').length, 1, 'exactly one nudge');
   assert.equal(fake.sessionsOpened, 2, 'the recovery opens one fresh session');
@@ -4827,9 +4824,6 @@ test('S4a-R2 (f): silence on the commentary channel never satisfies the answer w
   h.advance(8_000); scheduler.runDue(); await settlePort();
   assert.equal(nudges(), 1, 'the watchdog still escalated over the silent lookup');
   acked.attachment.close();
-  // C-DEADAIR: the faster ladder would reach this session's rebuild rung inside the next phase, so the call is ended
-  // here: one call's silence never counts against the next one.
-  h.owner.revoke(acked.session.liveSessionId);
   await settlePort();
 
   // The delivery path: the answer's own audible audio is the one thing that ends the debt, so no deadline escalates.
@@ -4885,12 +4879,12 @@ test('#538: model text never slides the audible debt, so the OpenAI rung hands o
     await settlePort();
   }
   assert.equal(fake.sessionsOpened, 1, 'text deltas never slide the debt clock');
-  // C-DEADAIR: the announced response is silent, so it buys the rung DEAD_AIR_RESPONSE_GRACE_MS, not seven seconds.
-  h.advance(DEAD_AIR_RESPONSE_GRACE_MS + 100); scheduler.runDue(); await settlePort();
-  assert.equal(fake.closes, 0, 'the rung hands over the result before it rebuilds');
-  h.advance(RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();
+  h.advance(2_000); scheduler.runDue(); await settlePort();
+  // DEADAIR-R4: the text announced a response, so the 8 s rung holds and the rung returns seven seconds later.
+  assert.equal(fake.closes, 0, 'an announced response is never closed under');
+  h.advance(7_000); scheduler.runDue(); await settlePort();
   // #660: the held rung hands the model the result it never said, and never re-sends the retired call ids.
-  assert.equal(fake.closes, 1, 'the rebuild rung replaces the session that never spoke');
+  assert.equal(fake.closes, 0, 'the held rung puts the unspoken result in front of the live session');
   assert.equal(fake.textInputs.length, 1, 'the result reaches it as one text item');
   assert.equal(fake.toolResponses.length, 1, 'and the retired call ids are never re-sent');
   h.advance(RESPONSE_WATCHDOG_RECOVERY_MS); scheduler.runDue(); await settlePort();

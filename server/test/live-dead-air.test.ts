@@ -86,35 +86,35 @@ async function openCall(t: TestContext): Promise<DeadAir> {
   };
 }
 
-test('C-DEADAIR: the first rung lands at 4 s of owner-heard silence and starts the rescue', async t => {
+test('C-DEADAIR: a response that ends after text and no audio hands the result over at once', async t => {
   const live = await openCall(t);
   await live.emit(ownerFinal('What did we decide about the bridge?'));
   await live.emit(toolCall('d1'));
   assert.equal(live.fake.toolResponses.length, 1, 'the lookup answered before the wait starts');
-  await live.advance(AUDIBLE_DEBT_RUNG_MS - 500);
-  assert.equal(rungReceipts(live).length, 0, 'no rung under four seconds of owner-heard silence');
-  await live.advance(1_000);
-  const rungs = rungReceipts(live);
-  assert.equal(rungs.length, 1, 'the first rung lands at four seconds');
-  assert.equal(rungs[0]?.['elapsedMs'], AUDIBLE_DEBT_RUNG_MS, 'the rung names the four second base, not the eight second one');
-  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the rung hands over the result the model never spoke');
+  // The 07:02:59Z shape: the provider writes the answer as text and never makes a sound.
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  await live.emit(portEvent({ type: 'modelText', text: 'The bridge reopens on Monday.', thought: false }));
+  assert.equal(live.fake.texts.length, live.sentTexts, 'nothing is injected while the response is still open');
+  await live.emit(portEvent({ type: 'turnComplete' }));
+  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the result goes out the moment the silent response ends');
+  assert.equal(rungReceipts(live).length, 0, 'no ladder wait was needed');
+  await live.advance(AUDIBLE_DEBT_RUNG_MS + RESPONSE_WATCHDOG_RECOVERY_MS);
+  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the result is delivered exactly once');
 });
 
-test('C-DEADAIR: a response that produced no audio buys the rung one short grace, never seven seconds', async t => {
+test('C-DEADAIR: the rung keeps its 8 s base and a silent in-flight response buys only the short grace', async t => {
   const live = await openCall(t);
   await live.emit(ownerFinal('When does the synthetic bridge reopen?'));
   await live.emit(toolCall('d2'));
-  // The 07:02:59Z shape: the provider announced a response and wrote text the owner never heard.
+  // A response the provider announced and never made audible, with no text at all: the ladder owns this one.
   await live.emit(portEvent({ type: 'modelTurnStarted' }));
   await live.advance(AUDIBLE_DEBT_RUNG_MS - 500);
   assert.equal(rungReceipts(live).length, 0, 'the rung is not early');
-  // The grace is one re-armed timer, so the clock is walked in bounded steps rather than asserting one instant.
   for (let spent = 0; spent < 2_000 && rungReceipts(live).length === 0; spent += 250) await live.advance(250);
-  assert.equal(rungReceipts(live).length, 1, 'a silent in-flight response does not hold the rung for seven seconds');
-  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the result is spoken once');
-  // The rebuild rung hands the result to the session that replaces this one (#660/#667), which is its own delivery,
-  // so this case ends where the host's ladder hands over, on the count the same session heard.
-  assert.equal(rungReceipts(live).length, 1, 'one rung per silence');
+  const rungs = rungReceipts(live);
+  assert.equal(rungs.length, 1, 'a silent in-flight response holds the rung for the grace, never seven seconds');
+  assert.equal(rungs[0]?.['elapsedMs'], AUDIBLE_DEBT_RUNG_MS, 'the rung still names the eight second base');
+  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'and it delivers the held result');
 });
 
 test('C-DEADAIR: a response the owner can hear clears the debt, so the rung never speaks over an answer', async t => {

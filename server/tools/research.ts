@@ -2321,7 +2321,7 @@ const optionalString = (value: unknown): string | undefined => typeof value === 
 
 export const RESEARCH_ARGUMENT_FIELDS = ['action', 'question', 'topic', 'researchId', 'sources', 'direction', 'lookups', 'cursor', 'pageCursor'] as const;
 export const RESEARCH_ARGUMENT_TYPES = ['absent', 'null', 'string', 'number', 'boolean', 'array', 'object', 'other'] as const;
-export const RESEARCH_REFUSAL_REASONS = ['root_type', 'unknown_fields', 'action_missing', 'action_invalid', 'question_type', 'question_required', 'question_length', 'topic_type', 'topic_required', 'topic_length', 'entity_rewrite', 'research_id_type', 'research_id_required', 'sources_type', 'direction_type', 'cursor_type', 'cursor_action', 'cursor_lookups_conflict', 'cursor_page_conflict', 'lookups_type', 'lookups_count', 'lookups_stop', 'lookup_type', 'lookup_unknown_fields', 'lookup_source', 'lookup_query_required', 'lookup_query_length', 'lookup_history', 'lookup_mail'] as const;
+export const RESEARCH_REFUSAL_REASONS = ['root_type', 'unknown_fields', 'action_missing', 'action_invalid', 'question_type', 'question_required', 'question_length', 'topic_type', 'topic_required', 'topic_length', 'entity_rewrite', 'research_id_type', 'research_id_required', 'sources_type', 'direction_type', 'cursor_type', 'cursor_action', 'cursor_lookups_conflict', 'cursor_page_conflict', 'lookups_type', 'lookups_count', 'lookups_stop', 'lookup_type', 'lookup_unknown_fields', 'lookup_source', 'lookup_query_required', 'lookup_query_length', 'lookup_history', 'lookup_mail', 'no_owner_input'] as const;
 export type ResearchRefusalReason = typeof RESEARCH_REFUSAL_REASONS[number];
 export interface ResearchArgumentShape {
   action: ResearchAction | 'missing' | 'invalid';
@@ -2348,14 +2348,17 @@ function argumentType(value: unknown, present: boolean): typeof RESEARCH_ARGUMEN
   return type === 'string' || type === 'number' || type === 'boolean' || type === 'object' ? type : 'other';
 }
 
-/** One parser owns validity and closed refusal metadata; submitted values never enter its diagnostic. */
-export function parseResearch(args: unknown): ParsedResearch {
+/**
+ * The closed shape a research_refused line carries: lengths, closed types and closed source names, never the
+ * words. One builder, so the pre-owner-turn gate and the parser refuse with the same shape.
+ */
+export function researchArgumentShape(args: unknown): ResearchArgumentShape {
   const given = isRecord(args) ? args : {};
   // 52fa54cc repaired the arguments the model really sends: a one-item array is the same single-source hint.
   const record = Array.isArray(given['sources']) && given['sources'].length === 1 && typeof given['sources'][0] === 'string'
     ? { ...given, sources: given['sources'][0] as string } : given;
   const action = record['action'];
-  const shape: ResearchArgumentShape = {
+  return {
     action: action === 'start' || action === 'continue' || action === 'stop' ? action : Object.hasOwn(record, 'action') ? 'invalid' : 'missing',
     fields: Object.fromEntries(RESEARCH_ARGUMENT_FIELDS.map(key => [key, argumentType(record[key], Object.hasOwn(record, key))])) as ResearchArgumentShape['fields'],
     unknownFieldCount: Object.keys(record).filter(key => !(RESEARCH_ARGUMENT_FIELDS as readonly string[]).includes(key)).length,
@@ -2369,6 +2372,16 @@ export function parseResearch(args: unknown): ParsedResearch {
       .map(entry => (isRecord(entry) && typeof entry['source'] === 'string' && (LOOKUP_SOURCES as readonly string[]).includes(entry['source']) ? entry['source'] : undefined))
       .filter((source): source is LookupSource => source !== undefined),
   };
+}
+
+/** One parser owns validity and closed refusal metadata; submitted values never enter its diagnostic. */
+export function parseResearch(args: unknown): ParsedResearch {
+  const given = isRecord(args) ? args : {};
+  // 52fa54cc repaired the arguments the model really sends: a one-item array is the same single-source hint.
+  const record = Array.isArray(given['sources']) && given['sources'].length === 1 && typeof given['sources'][0] === 'string'
+    ? { ...given, sources: given['sources'][0] as string } : given;
+  const action = record['action'];
+  const shape: ResearchArgumentShape = researchArgumentShape(record);
   const refuse = (reason: ResearchRefusalReason): ParsedResearch => ({ ok: false, reason, shape });
   if (!isRecord(args)) return refuse('root_type');
   if (shape.unknownFieldCount) return refuse('unknown_fields');

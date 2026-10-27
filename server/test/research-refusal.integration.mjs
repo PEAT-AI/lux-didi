@@ -59,7 +59,7 @@ assert.deepEqual(schema.anyOf?.[0]?.required,['question','topic'],'a start is de
 assert.deepEqual(schema.anyOf?.[1]?.required,['researchId'],'continue and stop are declared to carry the researchId');
 assert.equal(check({action:'start',question:'synthetic'}).valid,false,'a topicless start never reaches the host');
 
-async function fixture(routeClasses=classes){
+async function fixture(routeClasses=classes,speakAtStart=true){
  const dir=mkdtempSync(join(tmpdir(),'didi-research-refusal-')),configDir=join(dir,'config');mkdirSync(configDir,{mode:0o700});
  const store=new Store(join(dir,'data'),hostMigrations),cleanups=[],wire=await voiceFixture({after:fn=>cleanups.push(fn)}),sdkRows=[],calls=[];let runtime,service,dispatch;
  const definitions={
@@ -90,8 +90,10 @@ async function fixture(routeClasses=classes){
   // C-RESEARCH-CONTRACT: the host answers a research call made before the owner has spoken with the opener gate
   // (`no_owner_input`), so the fixture speaks one owner turn first: the adapter ends the episode after its 700 ms
   // quiet window, which is what grants the turn these refusals must be measured against.
-  wire.send({type:'session.input_transcript.delta',delta:'synthetic owner question'});
-  await new Promise(resolve=>setTimeout(resolve,800));
+  if(speakAtStart){
+   wire.send({type:'session.input_transcript.delta',delta:'synthetic owner question'});
+   await new Promise(resolve=>setTimeout(resolve,800));
+  }
   let sequence=0;
   return {store,runtime,calls,wire,setDispatch:fn=>{dispatch=fn;},
    async send(args){const id='synthetic-call-'+(++sequence);wire.send({type:'response.event',delegation_id:'synthetic-delegation-'+sequence,event:{type:'response.output_item.done',item:{type:'function_call',call_id:id,name:'research',arguments:JSON.stringify(args)}}});const deadline=Date.now()+3000;let output;while(Date.now()<deadline){output=wire.frames.find(frame=>frame.item?.type==='function_call_output'&&frame.item.call_id===id);if(output)break;await new Promise(resolve=>setTimeout(resolve,5));}assert(output,'bounded actual OpenAI tool response');return JSON.parse(output.item.output);},
@@ -133,6 +135,18 @@ try{
  assert.equal(retried.state,'refused');assert.equal(retried.reason,'entity_rewrite');
  assert.match(String(retried.guidance),/^This exact request was already refused in this owner turn: /);
  assert.equal(events.filter(event=>event.event==='research_refused'&&event.reason==='entity_rewrite').length,2);
+ // C-ENTITY (ruling W3-R1): the pre-owner-turn gate was the one refusal that ended a run with no reason on
+ // the log. It now leaves a closed, shaped reason beside its refused run receipt, and no source runs.
+ const gated=await fixture(classes,false);
+ try{
+  const gatedAnswer=await gated.send({action:'start',question:'synthetic',topic:'synthetic names'});
+  assert.equal(gatedAnswer.reason,'no_owner_input');
+  const gateLines=events.filter(event=>event.event==='research_refused'&&event.reason==='no_owner_input');
+  assert.equal(gateLines.length,1,'the gate refusal names its reason');
+  assert.equal(gateLines[0].state,'refused');assert.equal(safeEvent(gateLines[0])!==undefined,true,'the gate refusal is a closed log line');
+  assert.equal(safeEvent({...gateLines[0],reason:'opener_not_fetched'}),undefined,'the gate reason is a closed code');
+  assert.equal(gated.calls.length,0,'the gate read nothing');
+ }finally{await gated.close();}
  // One owner turn grants one research operation, so the fixture speaks before each start it wants admitted.
 // One owner turn grants one research operation, so the fixture speaks before each start it wants admitted.
 const speakAt=async(handle)=>{handle.wire.send({type:'session.input_transcript.delta',delta:'synthetic owner question'});await new Promise(resolve=>setTimeout(resolve,800));};

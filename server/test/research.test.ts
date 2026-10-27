@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, chatQuery, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, newestDatedFirst, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
-  validateResearch, worthContinuing, parseResearch, researchRepair, topicTerms, entityPreservedQuestion, ResearchAdmission,
+  validateResearch, worthContinuing, parseResearch, researchRepair, topicTerms, entityPreservedQuestion, ResearchAdmission, RESEARCH_REFUSAL_REASONS, researchArgumentShape,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -666,6 +666,16 @@ test('the retry of a refused request is refused at once with the same code and t
   new ResearchAdmission().ownerTurn();
   assert.match(String(researchRepair('entity_rewrite')['guidance']), /^The topic replaced a name/);
   assert.equal(parseResearch({ action: 'start', question: 'Find Acmeworks pricing', topic: 'Acmeworks pricing' }).ok, true);
+});
+
+// C-ENTITY ruling W3-R1: the pre-owner-turn gate is a research refusal too, with its own closed reason and the
+// same logged shape. The gate itself is exercised in research-refusal.integration.mjs.
+test('the gate refusal has a closed reason code and leaves lengths, never words', () => {
+  assert.ok((RESEARCH_REFUSAL_REASONS as readonly string[]).includes('no_owner_input'));
+  const shape = researchArgumentShape({ action: 'start', question: 'synthetic question', topic: 'synthetic topic', lookups: [{ source: 'knowledge', query: 'synthetic' }] });
+  assert.deepEqual([shape.action, shape.topicChars, shape.questionChars, shape.lookupCount, shape.lookupSources],
+    ['start', 'synthetic topic'.length, 'synthetic question'.length, 1, ['knowledge']]);
+  assert.equal(JSON.stringify(shape).includes('synthetic'), false, 'the shape carries lengths and closed sources, never the words');
 });
 
 // --- Calendar merged read, window logging and knowledge carry (contract F4, #272) ---------------

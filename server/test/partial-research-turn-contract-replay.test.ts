@@ -15,7 +15,7 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
-import { RESEARCH, RESEARCH_OPERATION, ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
+import { ADMISSION_DIRECTIVES, RESEARCH, RESEARCH_OPERATION, ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -36,7 +36,11 @@ import type { LiveToolResponse, LiveVoiceControl, LiveVoiceEvent, LiveVoiceOutco
 /** R1: the patience budget and the host grace, read from the one place that names them. */
 const OPERATION_DEADLINE_MS = RESEARCH_OPERATION.deadlineMs;
 const HOST_GRACE_MS = RESEARCH_OPERATION.hostGraceMs;
-const BLOCKED = { status: 'blocked', reason: 'owner_turn_required', directive: 'answer_existing_result', retry_without_new_owner_turn: false };
+// C-RESEARCH-CONTRACT T-03: the block reply names the closed reason actually applied, with its one-line
+// directive, so two different refusals read differently to the model. These replays pin the reason and the
+// directive that belong to them rather than one generic sentence.
+const BLOCKED = (reason: 'turn_spent' | 'no_turn_since_result' | 'no_owner_turn' | 'answer_already_given') =>
+  ({ status: 'blocked', reason, directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false });
 
 const NOW = 1_700_000_000_000;
 const flush = async (): Promise<void> => { for (let i = 0; i < 8; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
@@ -256,7 +260,7 @@ test('replay 1: the observed cascade, six model continues after one partial answ
     await research(h, `c${n}`, { action, researchId });
     const reply = await replyFor(h, `c${n}`);
     if (action === 'stop') { assert.notEqual(reply['status'], 'blocked', 'stop is always allowed'); continue; }
-    assert.deepEqual(reply, BLOCKED, `a model continue with no owner turn since the answer is refused (call c${n}): ${JSON.stringify(reply)}`);
+    assert.deepEqual(reply, BLOCKED('turn_spent'), `a model continue with no owner turn since the answer is refused (call c${n}): ${JSON.stringify(reply)}`);
     await h.advance(20);
   }
   assert.equal(h.dispatches.length, dispatched, 'no refused continue reached a source');
@@ -275,9 +279,9 @@ test('replay 2: a second start in the same owner turn is refused the same way an
   await replyFor(h, 's1');
   const dispatched = h.dispatches.length;
   await research(h, 's2', { action: 'start', question: 'and what about the budget', topic: 'budget' });
-  assert.deepEqual(await replyFor(h, 's2'), BLOCKED, 'one operation per owner turn');
+  assert.deepEqual(await replyFor(h, 's2'), BLOCKED('turn_spent'), 'one operation per owner turn');
   await research(h, 's3', { action: 'start', question: 'and the hiring plan', topic: 'hiring plan' });
-  assert.deepEqual(await replyFor(h, 's3'), BLOCKED, 'and every further call in that turn is refused too');
+  assert.deepEqual(await replyFor(h, 's3'), BLOCKED('turn_spent'), 'and every further call in that turn is refused too');
   assert.equal(h.dispatches.length, dispatched, 'no refused start reached a source');
 });
 
@@ -289,7 +293,7 @@ test('replay 3: a noncompliant provider that keeps calling cannot loop, and reco
   const dispatched = h.dispatches.length;
   for (let n = 1; n <= 20; n += 1) {
     await research(h, `n${n}`, { action: n % 2 === 0 ? 'start' : 'continue', researchId: first['researchId'], question: 'more', topic: 'plan' });
-    assert.deepEqual(await replyFor(h, `n${n}`), BLOCKED, `call n${n} is refused`);
+    assert.deepEqual(await replyFor(h, `n${n}`), BLOCKED('turn_spent'), `call n${n} is refused`);
     await h.advance(1_000);
   }
   assert.equal(h.dispatches.length, dispatched, 'twenty model calls dispatched nothing');
@@ -357,9 +361,9 @@ test('replay 6: results of an old provider generation reach no new session, and 
     'the old generation call is never answered into the new session');
   // The rebuilt model reaches for research on its own: nothing the owner said since grants it.
   await research(h, 'g2', { action: 'continue', researchId: '00000000-0000-4000-8000-000000000000' });
-  assert.deepEqual(await replyFor(h, 'g2'), BLOCKED, 'a rebuild is not an owner turn');
+  assert.deepEqual(await replyFor(h, 'g2'), BLOCKED('turn_spent'), 'a rebuild is not an owner turn');
   await research(h, 'g3', start);
-  assert.deepEqual(await replyFor(h, 'g3'), BLOCKED, 'and neither is a replayed opener');
+  assert.deepEqual(await replyFor(h, 'g3'), BLOCKED('turn_spent'), 'and neither is a replayed opener');
 });
 
 // ---- the bounded operation at the research layer: pages, totals and the deadline -------------------------

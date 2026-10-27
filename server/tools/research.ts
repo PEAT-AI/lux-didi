@@ -256,12 +256,50 @@ export type LookupSource = 'memory' | 'knowledge' | 'company' | 'data' | 'calend
 export const LOOKUP_SOURCES: readonly LookupSource[] = ['memory', 'knowledge', 'company', 'data', 'calendar', 'mail', 'chat', 'replies', 'drive', 'web'];
 /** At most four lookups per call; duplicates collapse, so one call is one short, wide read. */
 export const MAX_LOOKUPS = 4;
+/** C-RESEARCH-CONTRACT: the one text every surface prints for the lookup source set, so no list can drift. */
+export const LOOKUP_SOURCE_TEXT = `${LOOKUP_SOURCES.slice(0, -1).join(', ')} or ${LOOKUP_SOURCES[LOOKUP_SOURCES.length - 1]}`;
+/**
+ * C-RESEARCH-CONTRACT T-13: the value the owner and the planner say for Mongoose. It is an accepted
+ * spelling of the `mongoose` source everywhere a source is named, so a repair never points away from it.
+ */
+export const SOURCE_ALIASES: Readonly<Record<string, SourceKind>> = Object.freeze({ company: 'mongoose' });
+/** C-RESEARCH-CONTRACT: the single-source hint values the declaration publishes, aliases included. */
+// F6: the hint publishes the lookup enum's own spelling plus the owner's word for Mongoose, so a model that
+// copies a hint value into a lookup is never refused `lookup_source`.
+export const SOURCE_HINT_VALUES: readonly string[] = ['calendar', 'mail', 'chat', 'knowledge', 'company'];
+/**
+ * C-RESEARCH-CONTRACT: every limit the parser enforces, in one place. The declaration reads these for its
+ * `maxItems` and `maxLength` keywords and the repair texts read them, so the schema a provider validates
+ * and the refusals the host issues cannot disagree.
+ */
+export const RESEARCH_LIMITS = Object.freeze({
+  maxLookups: MAX_LOOKUPS,
+  topicMaxChars: 200,
+  topicMaxWords: 8,
+  questionMaxChars: 2_000,
+  queryMaxChars: RESEARCH.queryLimitChars,
+  cursorMaxChars: 128,
+  /** F5: how many per-lookup entries a refusal log line may carry, whatever the call named. */
+  maxLoggedLookups: 64,
+  /** F1: the bound a status or test-all ask gets instead of the per-call limit, which the declaration states. */
+  statusAskLookups: 9,
+} as const);
+
+/**
+ * C-RESEARCH-CONTRACT F1: #657 serves a status or test-all ask in batches, so it may name one lookup per
+ * source. That is a closed bound of its own, published in the declaration beside the per-call limit, so the
+ * schema and the validator state the same two numbers.
+ */
+export const STATUS_ASK_LOOKUP_LIMIT = RESEARCH_LIMITS.statusAskLookups;
+
 
 /**
  * RESEARCHFIX-R1: the lookup limit and the allowed keys are stated once, and the number comes from the
  * constant, so the declaration, the repair text and the refusal can never drift apart.
  */
 const LOOKUP_LIMIT_TEXT = `at most ${MAX_LOOKUPS} lookups, each with source (${LOOKUP_SOURCES.slice(0, -1).join(', ')} or ${LOOKUP_SOURCES[LOOKUP_SOURCES.length - 1]}) plus one of query, mail or history`;
+/** F1: the same rule in the words the declaration and the repair use, including the one published exception. */
+export const LOOKUP_COUNT_RULE = `${LOOKUP_LIMIT_TEXT}; a status or test-all ask may name one lookup per source, up to ${STATUS_ASK_LOOKUP_LIMIT}`;
 
 export type MailLookup = { id: string; format?: 'full' | 'metadata' } | { q: string; maxResults?: number };
 export interface ResearchLookup { source: LookupSource; query: string; history?: HistoryArguments; mail?: MailLookup }
@@ -361,6 +399,45 @@ export function requestedEntities(question: string): string[] {
     push(match[1] ?? '');
   }
   return found;
+}
+
+/**
+ * C-RESEARCH-CONTRACT Q-08: the names a question carries, sentence-initial ones included, because a topic is
+ * often nothing but a name. A possessive reduces to the name it belongs to.
+ */
+function namedWords(text: string): string[] {
+  const found: string[] = [];
+  for (const match of text.matchAll(CAPITALISED_ENTITY)) {
+    const word = (match[1] ?? '').replace(/['\u2019]s$/u, '');
+    if (word.length < 2 || ENTITY_STOP.has(word) || NOT_A_NAME.has(word.toLowerCase())) continue;
+    if (!found.includes(word.toLowerCase())) found.push(word.toLowerCase());
+  }
+  return found;
+}
+
+/**
+ * C-RESEARCH-CONTRACT T-03: a continue that only pages or narrows the run it names: it copies a cursor, or it
+ * carries the history-only lookups a narrowing turn adds. A bare continue is a re-ask, not a page, and it still
+ * needs an owner turn of its own.
+ */
+export function pagesCurrentRun(call: ResearchCall): boolean {
+  return call.cursor !== undefined || (Array.isArray(call.lookups) && call.lookups.length > 0);
+}
+
+/**
+ * C-RESEARCH-CONTRACT Q-08: a rewrite may narrow to the names the owner said, and may not answer about a
+ * different one. A rewrite that swaps Korbi for Rob is refused with the closed code `entity_rewrite` and the
+ * original question is what stands, so a search can never quietly be about another person.
+ */
+export function entityPreservedQuestion(original: string, rewritten: string):
+  { ok: true; question: string } | { ok: false; reason: 'entity_rewrite'; question: string } {
+  const before = namedWords(original);
+  if (before.length === 0) return { ok: true, question: rewritten };
+  const after = namedWords(rewritten);
+  const kept = before.filter(name => after.includes(name));
+  const added = after.filter(name => !before.includes(name));
+  if (kept.length === 0 && added.length > 0) return { ok: false, reason: 'entity_rewrite', question: original };
+  return { ok: true, question: rewritten };
 }
 
 /** C-DEPTH item 1: the tier an owner question asks for, classified before the run reads anything. */
@@ -841,8 +918,12 @@ export function mailHours(question: string): number | undefined {
  * July thread from a question that carried its own terms. Explicit Gmail syntax is never rewritten.
  */
 /** #565: the topic is names and nouns, at most eight words, as the declaration promises. */
-export const TOPIC_MAX_WORDS = 8;
-export const TOPIC_MAX_CHARS = 200;
+export const TOPIC_MAX_WORDS = RESEARCH_LIMITS.topicMaxWords;
+export const TOPIC_MAX_CHARS = RESEARCH_LIMITS.topicMaxChars;
+/** C-RESEARCH-CONTRACT: a start question is the owner's question in words, never a document. */
+export const QUESTION_MAX_CHARS = RESEARCH_LIMITS.questionMaxChars;
+/** C-RESEARCH-CONTRACT: the cursor a continue may copy is bounded, and the schema states the same bound. */
+export const CURSOR_MAX_CHARS = RESEARCH_LIMITS.cursorMaxChars;
 
 /**
  * #576: a number enters a query only when the owner said that number. `spokenWords` is what the owner
@@ -2189,13 +2270,18 @@ const optionalString = (value: unknown): string | undefined => typeof value === 
 
 export const RESEARCH_ARGUMENT_FIELDS = ['action', 'question', 'topic', 'researchId', 'sources', 'direction', 'lookups', 'cursor'] as const;
 export const RESEARCH_ARGUMENT_TYPES = ['absent', 'null', 'string', 'number', 'boolean', 'array', 'object', 'other'] as const;
-export const RESEARCH_REFUSAL_REASONS = ['root_type', 'unknown_fields', 'action_missing', 'action_invalid', 'question_type', 'question_required', 'topic_type', 'topic_required', 'topic_length', 'research_id_type', 'research_id_required', 'sources_type', 'direction_type', 'cursor_type', 'cursor_action', 'cursor_lookups_conflict', 'lookups_type', 'lookups_count', 'lookups_stop', 'lookup_type', 'lookup_unknown_fields', 'lookup_source', 'lookup_query_required', 'lookup_query_length', 'lookup_history', 'lookup_mail'] as const;
+export const RESEARCH_REFUSAL_REASONS = ['root_type', 'unknown_fields', 'action_missing', 'action_invalid', 'question_type', 'question_required', 'question_length', 'topic_type', 'topic_required', 'topic_length', 'entity_rewrite', 'research_id_type', 'research_id_required', 'sources_type', 'direction_type', 'cursor_type', 'cursor_action', 'cursor_lookups_conflict', 'lookups_type', 'lookups_count', 'lookups_stop', 'lookup_type', 'lookup_unknown_fields', 'lookup_source', 'lookup_query_required', 'lookup_query_length', 'lookup_history', 'lookup_mail'] as const;
 export type ResearchRefusalReason = typeof RESEARCH_REFUSAL_REASONS[number];
 export interface ResearchArgumentShape {
   action: ResearchAction | 'missing' | 'invalid';
   fields: Record<typeof RESEARCH_ARGUMENT_FIELDS[number], typeof RESEARCH_ARGUMENT_TYPES[number]>;
   unknownFieldCount: number;
   lookupCount: number;
+  /** C-RESEARCH-CONTRACT T-04: field-level shape as lengths and closed values, never the text itself. */
+  topicChars: number;
+  questionChars: number;
+  queryChars: readonly number[];
+  lookupSources: readonly LookupSource[];
 }
 export type ParsedResearch = { ok: true; call: ResearchCall } | { ok: false; reason: ResearchRefusalReason; shape: ResearchArgumentShape };
 
@@ -2219,6 +2305,14 @@ export function parseResearch(args: unknown): ParsedResearch {
     fields: Object.fromEntries(RESEARCH_ARGUMENT_FIELDS.map(key => [key, argumentType(record[key], Object.hasOwn(record, key))])) as ResearchArgumentShape['fields'],
     unknownFieldCount: Object.keys(record).filter(key => !(RESEARCH_ARGUMENT_FIELDS as readonly string[]).includes(key)).length,
     lookupCount: Array.isArray(record['lookups']) ? record['lookups'].length : 0,
+    // C-RESEARCH-CONTRACT T-04: a refused call leaves lengths and closed source names, never the words.
+    topicChars: typeof record['topic'] === 'string' ? record['topic'].length : 0,
+    questionChars: typeof record['question'] === 'string' ? record['question'].length : 0,
+    queryChars: (Array.isArray(record['lookups']) ? record['lookups'] : [])
+      .map(entry => (isRecord(entry) && typeof entry['query'] === 'string' ? entry['query'].length : 0)),
+    lookupSources: (Array.isArray(record['lookups']) ? record['lookups'] : [])
+      .map(entry => (isRecord(entry) && typeof entry['source'] === 'string' && (LOOKUP_SOURCES as readonly string[]).includes(entry['source']) ? entry['source'] : undefined))
+      .filter((source): source is LookupSource => source !== undefined),
   };
   const refuse = (reason: ResearchRefusalReason): ParsedResearch => ({ ok: false, reason, shape });
   if (!isRecord(args)) return refuse('root_type');
@@ -2231,12 +2325,18 @@ export function parseResearch(args: unknown): ParsedResearch {
   if (record['question'] !== undefined && optionalString(record['question']) === undefined) return refuse('question_required');
   if (record['researchId'] !== undefined && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
   if (action === 'start' && optionalString(record['question']) === undefined) return refuse('question_required');
+  // C-RESEARCH-CONTRACT: a question is the owner's question in words, and the schema states this bound.
+  if (typeof record['question'] === 'string' && record['question'].length > QUESTION_MAX_CHARS) return refuse('question_length');
   // #565: a start without a topic has no search text at all, so it is refused before it reads anything.
   if (action === 'start' && optionalString(record['topic']) === undefined) return refuse('topic_required');
+  // C-RESEARCH-CONTRACT Q-08: a topic that swaps one named person or company for another is a drift, not a
+  // narrowing, so the call is refused and the question's own names are what a retry must keep.
+  if (typeof record['question'] === 'string' && typeof record['topic'] === 'string'
+    && !entityPreservedQuestion(record['question'], record['topic']).ok) return refuse('entity_rewrite');
   if (record['topic'] !== undefined && (String(record['topic']).length > TOPIC_MAX_CHARS || String(record['topic']).trim().split(/\s+/u).filter(Boolean).length > TOPIC_MAX_WORDS)) return refuse('topic_length');
   if (action !== 'start' && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
   if (Object.hasOwn(record, 'cursor')) {
-    if (typeof record['cursor'] !== 'string' || !record['cursor'].length || record['cursor'].length > 128) return refuse('cursor_type');
+    if (typeof record['cursor'] !== 'string' || !record['cursor'].length || record['cursor'].length > CURSOR_MAX_CHARS) return refuse('cursor_type');
     if (action !== 'continue') return refuse('cursor_action');
     if (Object.hasOwn(record, 'lookups')) return refuse('cursor_lookups_conflict');
   }
@@ -2245,10 +2345,11 @@ export function parseResearch(args: unknown): ParsedResearch {
     // that page an already-answered run; every other lookup belongs to a start.
     if (action !== 'start' && !(action === 'continue' && historyLookupsOnly(record['lookups']))) return refuse('lookups_stop');
     if (!Array.isArray(record['lookups'])) return refuse('lookups_type');
-    // #657 item 1: a status or test-all ask names more sources than one batch holds, and the host serves
-    // it in batches, so its lookup list is never a count or unknown-field refusal.
-    const hostBatched = statusAsk(typeof record['question'] === 'string' ? record['question'] : '');
-    if (!hostBatched && record['lookups'].length > MAX_LOOKUPS) return refuse('lookups_count');
+    // #657 item 1: a status or test-all ask names more sources than one batch holds, and the host serves it in
+    // batches, so its lookup list is never a count refusal. C-RESEARCH-CONTRACT F1: that carve-out is one
+    // closed, published bound, not an open one: the declaration states both the per-call limit and this one.
+    const batched = statusAsk(typeof record['question'] === 'string' ? record['question'] : '');
+    if (record['lookups'].length > (batched ? STATUS_ASK_LOOKUP_LIMIT : MAX_LOOKUPS)) return refuse('lookups_count');
     for (const entry of record['lookups']) {
       if (!isRecord(entry)) return refuse('lookup_type');
       if (!Object.keys(entry).every(key => key === 'source' || key === 'query' || key === 'history' || key === 'mail')) return refuse('lookup_unknown_fields');
@@ -2270,15 +2371,18 @@ export function validateResearch(args: unknown): boolean { return parseResearch(
 
 /** F9: the one repair line a refused call gets, so a repeat attempt changes what was wrong, not just the words. */
 const REPAIR_GUIDANCE: Partial<Record<ResearchRefusalReason, string>> = {
-  topic_required: 'A start needs the topic: the names and nouns to search for, at most eight words, e.g. {"action":"start","question":"the question","topic":"Wilmar pilot"}. The question itself is never searched.',
-  topic_type: 'The topic is one short string of names and nouns, at most eight words.',
+  topic_required: `A start needs the topic: the names and nouns to search for, at most ${TOPIC_MAX_WORDS} words, e.g. {"action":"start","question":"the question","topic":"Wilmar pilot"}. The question itself is never searched.`,
+  topic_type: `The topic is one short string of names and nouns, at most ${TOPIC_MAX_WORDS} words.`,
+  // C-RESEARCH-CONTRACT Q-08: a rewrite may narrow the question, never answer about another person or company.
+  entity_rewrite: 'The topic replaced a name the question asks about with a different one: keep the question\'s own names in the topic and narrow only around them.',
+  question_length: `The question was too long: send the owner's question in at most ${QUESTION_MAX_CHARS} characters, not a document.`,
   topic_length: `The topic is at most ${TOPIC_MAX_WORDS} words: keep only the names and nouns, and shorten anything past ${TOPIC_MAX_CHARS} characters.`,
   lookup_query_length: `The query was too long: keep it under ${RESEARCH.queryLimitChars} characters and shorten the words after source.`,
   lookup_mail: 'A mail lookup is {"source":"mail","mail":{"q":"search words"}} or {"source":"mail","mail":{"id":"message id"}}, with maxResults 1 to 50 optional; a mail lookup carries no query.',
   lookup_query_required: 'This lookup needs a query: add {"source":"the source","query":"the words to search"}.',
-  lookup_source: 'The source must be one of knowledge, mail, chat, web, memory.',
+  lookup_source: `The source must be one of ${LOOKUP_SOURCE_TEXT}; company is the owner's word for mongoose and is accepted too.`,
   lookup_history: 'A memory lookup is {"source":"memory","history":{"topic":"..."}}; the history fields are topic and optional limit.',
-  lookups_count: `Send ${LOOKUP_LIMIT_TEXT}; anything more cannot be read before the answer is due.`,
+  lookups_count: `Send ${LOOKUP_COUNT_RULE}; anything more cannot be read before the answer is due.`,
   unknown_fields: 'Remove the fields not in the tool schema; only action, question, topic, researchId, sources, direction, cursor and lookups exist.',
 };
 
@@ -2441,7 +2545,7 @@ function sourceListText(sources: readonly SourceKind[]): string {
 
 /** The declaration description names the sources this session actually configured, never a source it lacks. */
 export function researchDescription(sources: readonly SourceKind[]): string {
-  return `One lookup of the owner's ${sourceListText(sources)}: at most ${MAX_LOOKUPS} lookups per call, each with a source (memory, knowledge, company, data, calendar, mail, chat, replies, drive or web) plus query, mail or history. Use it for evidence beyond the conversation. Call start with the question and a topic of names and nouns, at most eight words: only the topic is searched. Its result carries the researchId; continue and stop copy it.`;
+  return `One lookup of the owner's ${sourceListText(sources)}: at most ${MAX_LOOKUPS} lookups per call, each with a source (${LOOKUP_SOURCE_TEXT}). Use it when answering needs evidence beyond the conversation. Call start with the question and a topic of names and nouns, at most ${TOPIC_MAX_WORDS} words: only the topic is searched. Its result carries the researchId; continue and stop copy it. One owner turn grants one research operation.`;
 }
 
 export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH_SOURCES): { name: string; description: string; guidance: string; parameters: JsonObject; validate(args: unknown): boolean } {
@@ -2458,15 +2562,19 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
       ],
       properties: {
         action: { type: 'string', enum: ['start', 'continue', 'stop'], description: 'start requires question and topic; continue and stop require the researchId returned by start. Stop must omit lookups and cursor.' },
-        question: { type: 'string', minLength: 1, description: 'The owner question; required for start.' },
-        topic: { type: 'string', minLength: 1, maxLength: 200, description: 'Required for start. The names and nouns to search for, at most eight words, for example Wilmar pilot. Only these words become a search; the question never does.' },
+        question: { type: 'string', minLength: 1, maxLength: QUESTION_MAX_CHARS, description: 'The owner question; required for start.' },
+        topic: { type: 'string', minLength: 1, maxLength: TOPIC_MAX_CHARS, description: `Required for start. The names and nouns to search for, at most ${TOPIC_MAX_WORDS} words, for example Wilmar pilot. Only these words become a search; the question never does. Keep the question's own names.` },
         researchId: { type: 'string', minLength: 1, description: 'The id a previous reply carried; required for continue and stop.' },
-        sources: { type: 'string', description: 'Optional single-source hint; valid values: calendar, mail, chat, knowledge.' },
-        cursor: { type: 'string', maxLength: 128, description: 'Consumer continuation copied from nextCursor on the same researchId. This is not a source-native page token. Omit lookups when using it.' },
+        sources: { type: 'string', description: `Optional single-source hint; valid values: ${SOURCE_HINT_VALUES.join(', ')}.` },
+        cursor: { type: 'string', maxLength: CURSOR_MAX_CHARS, description: 'Consumer continuation copied from nextCursor on the same researchId. This is not a source-native page token. Omit lookups when using it.' },
         direction: { type: 'string', description: 'Optional steer for a continue, e.g. "look in mail".' },
         lookups: {
-          type: 'array', maxItems: MAX_LOOKUPS,
-description: 'Optional: ' + LOOKUP_LIMIT_TEXT + '. When present the host skips its own source choice and reads every lookup in parallel; when absent the host selects the sources. memory: retained conversations, remembered notes and imported notes, within the accepted permissions. knowledge: his knowledge base of decisions, project status, technical notes, meeting transcripts and work sessions. company: permissioned company, product and commercial records; this does not guarantee directory coverage. calendar: primary calendar only; query must be today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD. Unknown or contradictory windows are unresolved, never widened. Calendar coverage separates received events, shown events, retained remainder, unread pages and truncated descriptions; continue returns retained remainder before reading more pages. mail: his mail; lookup.mail supports an exact Gmail q/maxResults search or exact id/format read. Search coverage counts received metadata messages, not full bodies or complete threads. Source order is preserved. continue returns retained metadata before requesting another page. An exact full-message read returns bodySlices with immutable UTF16 offsets, received total and separate upstream completeness. Continue nextCursor to consume received body remainder without another source read; quoted history remains included. Metadata format deliberately omits bodies. alreadyDelivered is a model-context receipt, not a claim that the owner heard it. chat: his team chat; keep the person, group or channel in the question as he said it (what a person wrote him, what he discussed with a person, the newest in a named channel, his group chat with some people), because the host resolves the name strictly and its reply names what it read, over which days, or asks which one he means. replies: what is waiting on him in the team chat. drive: his own Drive files by name, for a document, deck or sheet he wants opened; query id: and a returned file id reads that one file again.',
+          // C-RESEARCH-CONTRACT F1 (review resolution A): the keyword is the outer bound the parser accepts, so
+          // every schema-valid call is one the host can serve. The per-call limit of MAX_LOOKUPS for an ordinary
+          // ask, and the one #657 exception for a status or test-all ask, are in the description below and in
+          // the `lookups_count` refusal, which is where a model reads the rule it is held to.
+          type: 'array', maxItems: STATUS_ASK_LOOKUP_LIMIT,
+description: 'Optional: ' + LOOKUP_COUNT_RULE + '. When present the host skips its own source choice and reads every lookup in parallel; when absent the host selects the sources. memory: retained conversations, remembered notes and imported notes, within the accepted permissions. knowledge: his knowledge base of decisions, project status, technical notes, meeting transcripts and work sessions. company: permissioned company, product and commercial records; this does not guarantee directory coverage. calendar: primary calendar only; query must be today, tomorrow, week (rolling seven days), this week (Monday start), next week, a weekday (next occurrence including today), next Wednesday (next Monday-start week), Wednesday this week (may be past), or a valid YYYY-MM-DD. Unknown or contradictory windows are unresolved, never widened. Calendar coverage separates received events, shown events, retained remainder, unread pages and truncated descriptions; continue returns retained remainder before reading more pages. mail: his mail; lookup.mail supports an exact Gmail q/maxResults search or exact id/format read. Search coverage counts received metadata messages, not full bodies or complete threads. Source order is preserved. continue returns retained metadata before requesting another page. An exact full-message read returns bodySlices with immutable UTF16 offsets, received total and separate upstream completeness. Continue nextCursor to consume received body remainder without another source read; quoted history remains included. Metadata format deliberately omits bodies. alreadyDelivered is a model-context receipt, not a claim that the owner heard it. chat: his team chat; keep the person, group or channel in the question as he said it (what a person wrote him, what he discussed with a person, the newest in a named channel, his group chat with some people), because the host resolves the name strictly and its reply names what it read, over which days, or asks which one he means. replies: what is waiting on him in the team chat. drive: his own Drive files by name, for a document, deck or sheet he wants opened; query id: and a returned file id reads that one file again.',
           items: {
             type: 'object', additionalProperties: false, required: ['source'],
             anyOf: [
@@ -2496,7 +2604,7 @@ function hintedSources(hint: unknown, configured: readonly SourceKind[]): Source
   if (typeof hint !== 'string') return [];
   const value = hint.trim().toLowerCase();
   if (!value) return [];
-  const aliases: Record<string, SourceKind> = { knowledge: 'knowledge', memory: 'knowledge', calendar: 'calendar', schedule: 'calendar', mail: 'mail', email: 'mail', gmail: 'mail', chat: 'chat', channel: 'chat', mattermost: 'chat', mongoose: 'mongoose' };
+  const aliases: Record<string, SourceKind> = { knowledge: 'knowledge', memory: 'knowledge', calendar: 'calendar', schedule: 'calendar', mail: 'mail', email: 'mail', gmail: 'mail', chat: 'chat', channel: 'chat', mattermost: 'chat', mongoose: 'mongoose', ...SOURCE_ALIASES };
   const matched = new Set<SourceKind>();
   for (const token of value.split(/[^a-z]+/)) { const source = aliases[token]; if (source) matched.add(source); }
   return [...matched].filter(source => configured.includes(source));
@@ -6380,11 +6488,21 @@ export const RESEARCH_OPERATION = Object.freeze({
   pageEstimateMs: Object.freeze({ mail: 2_000, calendar: 1_400 }),
 });
 
-/** C-LIVE behaviour 1: the reply to a research call no owner turn admitted. It reaches no source. */
-export const ADMISSION_BLOCKED: Readonly<JsonObject> = Object.freeze({
-  status: 'blocked', reason: 'owner_turn_required', directive: 'answer_existing_result', retry_without_new_owner_turn: false,
+/**
+ * C-RESEARCH-CONTRACT T-03: the one-line directive that goes with each closed block reason, so the model is told
+ * what to do about the rule that actually refused it, not a generic "the owner turn is required".
+ */
+export const ADMISSION_DIRECTIVES: Readonly<Record<AdmissionBlockReason, string>> = Object.freeze({
+  no_owner_turn: 'No owner turn has started, so answer from the conversation until the owner speaks.',
+  turn_spent: 'This owner turn already granted one research operation: answer with what its result holds, or continue that same researchId.',
+  no_turn_since_result: 'That result was already delivered: answer from it, and research again only after the owner speaks.',
+  answer_already_given: 'You already answered this owner turn: a new research needs a new turn from the owner.',
 });
-export const ADMISSION_BLOCK_REASONS = ['no_owner_turn', 'turn_spent', 'no_turn_since_result'] as const;
+/** C-RESEARCH-CONTRACT T-03: the reply to a research call no owner turn admitted, naming the reason applied. */
+export function admissionBlocked(reason: AdmissionBlockReason): JsonObject {
+  return { status: 'blocked', reason, directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false };
+}
+export const ADMISSION_BLOCK_REASONS = ['no_owner_turn', 'turn_spent', 'no_turn_since_result', 'answer_already_given'] as const;
 export type AdmissionBlockReason = typeof ADMISSION_BLOCK_REASONS[number];
 export type AdmissionVerdict = { admitted: true } | { admitted: false; reason: AdmissionBlockReason };
 
@@ -6400,22 +6518,42 @@ export class ResearchAdmission {
   #deliveredAt: number | undefined;
   /** R6: the one own-results continue this session may spend without a new owner turn. */
   #ownResults = false;
-  ownerTurn(): void { this.#turns += 1; this.#grant = this.#turns; }
+  /** C-RESEARCH-CONTRACT Q-08: the run this session last handed the model, so a continue can page it. */
+  #currentRun: string | undefined;
+  /** C-RESEARCH-CONTRACT Q-08: the model spoke after this turn's result, so the turn's answer is given. */
+  #answered = false;
+  ownerTurn(): void { this.#turns += 1; this.#grant = this.#turns; this.#answered = false; }
   /**
    * R6: `ownResults` is the model asking for the pending results of the research this same turn started, while that
    * research still has sources reading. That one continue spends no owner turn, and a second one is refused.
+   * C-RESEARCH-CONTRACT T-03: `sameRun` is a continue that pages or narrows the run this session already answered
+   * from. It spends the same grant instead of being refused, because it is not a second research operation.
    */
-  admit(action: ResearchAction, ownResults = false): AdmissionVerdict {
+  admit(action: ResearchAction, ownResults = false, sameRun = false): AdmissionVerdict {
     if (action === 'stop') return { admitted: true };
+    if (action === 'continue' && sameRun) return { admitted: true };
     if (ownResults && action === 'continue' && !this.#ownResults) { this.#ownResults = true; return { admitted: true }; }
     if (this.#turns === 0) return { admitted: false, reason: 'no_owner_turn' };
+    // C-RESEARCH-CONTRACT Q-08: a start after the answer was spoken is the orphan run, and it names its cause.
+    if (action === 'start' && this.#answered) return { admitted: false, reason: 'answer_already_given' };
     if (this.#grant !== this.#turns) return { admitted: false, reason: 'turn_spent' };
     if (action === 'continue' && this.#deliveredAt !== undefined && this.#turns <= this.#deliveredAt) return { admitted: false, reason: 'no_turn_since_result' };
     this.#grant = undefined;
     return { admitted: true };
   }
   /** An admitted research result was handed to the model. */
-  delivered(): void { this.#deliveredAt = this.#turns; }
+  delivered(researchId?: string): void {
+    this.#deliveredAt = this.#turns;
+    this.#answered = false;
+    if (researchId !== undefined && researchId !== '') this.#currentRun = researchId;
+  }
+  /** C-RESEARCH-CONTRACT Q-08: the run a paging or narrowing continue may name without a new owner turn. */
+  currentRun(): string | undefined { return this.#currentRun; }
+  /**
+   * C-RESEARCH-CONTRACT Q-08: the model spoke after this owner turn's result was delivered, so the owner has
+   * heard the answer for this turn and a new research run would be an orphan.
+   */
+  answered(): void { if (this.#deliveredAt !== undefined && this.#deliveredAt === this.#turns) this.#answered = true; }
 }
 
 /** C-LIVE behaviour 2: the reads whose next page can still finish before the operation must answer. */

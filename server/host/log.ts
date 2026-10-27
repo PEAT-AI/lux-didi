@@ -1,4 +1,4 @@
-import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
+import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_LIMITS, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { TRELLO_CALL_TOOLS } from '../tools/trello.js';
 import { clientDiagnostic } from '../http/routes.js';
@@ -999,15 +999,25 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: value.event, ms: value.ms };
   }
   if (value.event === 'research_refused') {
-    if (!closedKeys(value, ['event', 'state', 'sequence', 'reason', 'action', 'fields', 'unknownFieldCount', 'lookupCount'])) return;
+    // C-RESEARCH-CONTRACT T-04: the refusal names the closed reason and the call's shape as lengths and closed
+    // source names. Field text, question text and lookup values never enter a log line.
+    if (!closedKeys(value, ['event', 'state', 'sequence', 'reason', 'action', 'fields', 'unknownFieldCount', 'lookupCount', 'topicChars', 'questionChars', 'queryChars', 'lookupSources'])) return;
     if (value.state !== 'refused' || !(value.sequence === null || isSafeCount(value.sequence))) return;
     if (!(RESEARCH_REFUSAL_REASONS as readonly unknown[]).includes(value.reason) || !['start', 'continue', 'stop', 'missing', 'invalid'].includes(String(value.action))) return;
     if (!isSafeCount(value.unknownFieldCount) || !isSafeCount(value.lookupCount)) return;
+    if (!isSafeCount(value.topicChars) || !isSafeCount(value.questionChars)) return;
+    // F5: the shape carries one entry per lookup, and a refused call may name more than the limit allows, so the
+    // ceiling is the call's own lookup count (already closed and counted) rather than the limit it broke.
+    const entries = Math.min(value.lookupCount, RESEARCH_LIMITS.maxLoggedLookups);
+    if (!Array.isArray(value.queryChars) || value.queryChars.length > entries || !value.queryChars.every(isSafeCount)) return;
+    if (!Array.isArray(value.lookupSources) || value.lookupSources.length > entries) return;
+    if (!value.lookupSources.every(source => (LOOKUP_SOURCES as readonly unknown[]).includes(source))) return;
     if (!value.fields || typeof value.fields !== 'object' || Array.isArray(value.fields)) return;
     const fields = value.fields as Record<string, unknown>;
     if (!closedKeys(fields, [...RESEARCH_ARGUMENT_FIELDS]) || !Object.values(fields).every(type => (RESEARCH_ARGUMENT_TYPES as readonly unknown[]).includes(type))) return;
     return { event: 'research_refused', state: 'refused', sequence: value.sequence, reason: value.reason, action: value.action,
-      fields: Object.fromEntries(RESEARCH_ARGUMENT_FIELDS.map(key => [key, fields[key]])), unknownFieldCount: value.unknownFieldCount, lookupCount: value.lookupCount };
+      fields: Object.fromEntries(RESEARCH_ARGUMENT_FIELDS.map(key => [key, fields[key]])), unknownFieldCount: value.unknownFieldCount, lookupCount: value.lookupCount,
+      topicChars: value.topicChars, questionChars: value.questionChars, queryChars: [...value.queryChars], lookupSources: [...value.lookupSources] };
   }
   if (value.event === 'live_tool_turn') {
     // O1/F6: per-turn tool metrics, tool names, millisecond latency and per-endpoint peak concurrency only.

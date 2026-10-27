@@ -15,7 +15,7 @@ import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
-import { ADMISSION_BLOCKED, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention } from '../tools/research.js';
+import { admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -3356,6 +3356,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           }
           this.#cancelSpeakingHold(handle);
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
+          // C-RESEARCH-CONTRACT Q-08: audible words after this turn's research result are the answer to that turn,
+          // so a start that follows them is the orphan run the admission refuses by name.
+          handle.researchAdmission.answered();
           handle.turnAudioAt = handle.lastModelAudioAt;
           this.#noteState(handle, 'audio');
           if (handle.firstAudioAt === undefined) {
@@ -3666,7 +3669,10 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // message is refused exactly like a second start in one owner turn.
     const parsedCalls = event.calls.map(call => {
       const parsed = parseResearch(call.args);
-      const verdict = parsed.ok ? handle.researchAdmission.admit(parsed.call.action, parsed.ok && this.#ownPendingResults(handle, parsed.call.action, parsed.call.researchId)) : undefined;
+      // C-RESEARCH-CONTRACT T-03: a continue that names the run this session already answered from only pages or
+      // narrows it, so it spends that run's grant instead of needing an owner turn of its own.
+      const sameRun = parsed.ok && parsed.call.action === 'continue' && pagesCurrentRun(parsed.call) && parsed.call.researchId === handle.researchAdmission.currentRun();
+      const verdict = parsed.ok ? handle.researchAdmission.admit(parsed.call.action, this.#ownPendingResults(handle, parsed.call.action, parsed.call.researchId), sameRun) : undefined;
       return { call, parsed, verdict };
     });
     // F6: every research call in one model message runs concurrently; the adapter bounds each source.
@@ -3679,7 +3685,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         response = researchRepair(parsed.reason);
       } else if (verdict !== undefined && !verdict.admitted) {
         hostLogEvent({ event: 'research_blocked', liveSessionId: handle.liveSessionId, generation, action: parsed.call.action, reason: verdict.reason });
-        response = { ...ADMISSION_BLOCKED };
+        response = admissionBlocked(verdict.reason);
       } else {
         const firstStep = handle.toolStep;
         // R2: the one "still searching" line this call may earn, armed for its own 10 s and cancelled by its answer.
@@ -3692,7 +3698,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         // L8-Q01/Q05: the run this call started or continued, its question, and its first canonical execution
         // (only when this call ran alone, so a batch step is never credited to the wrong call).
         this.#linkResearchCall(handle, host, call.id, parsed.call.question, response, event.calls.length === 1 && handle.toolStep > firstStep ? firstStep : undefined);
-        if (response['error'] === undefined && parsed.call.action !== 'stop' && generation === handle.generation) handle.researchAdmission.delivered();
+        if (response['error'] === undefined && parsed.call.action !== 'stop' && generation === handle.generation) {
+          handle.researchAdmission.delivered(typeof response['researchId'] === 'string' ? response['researchId'] : parsed.call.researchId);
+        }
       }
       // R6: a reply that names sources still reading is the call's first answer point, so the late-findings
       // window and the one late commentary of this call both count from here.

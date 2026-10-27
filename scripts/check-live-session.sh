@@ -12,6 +12,9 @@ printf '# isolated global config\n' > "$work/npm-global"
 export npm_config_userconfig="$work/npm-user" npm_config_globalconfig="$work/npm-global"
 cd server
 npm run build
+# C-RESEARCH-CONTRACT F4: the refusal integration suite is the only proof that a refused argument shape and an
+# admission block reach the trace as `refused` and `blocked`, so it runs here against the build it just made.
+node test/research-refusal.integration.mjs
 # The new owner suite, the live summary suite (#363), the trace store suite, the warm-context pre-assembly
 # suite, the debug journal suites and the accepted Live adapter regression suite run together, with the
 # voice fault-replay scenarios (release gate F1): the real adapter and the real host, driven over a virtual clock.

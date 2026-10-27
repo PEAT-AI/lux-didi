@@ -1724,7 +1724,9 @@ export class LiveSessionOwner {
     }
     const deadLine = this.#deadLineBefore(liveSessionId);
     const seed = this.#seedHistory(liveSessionId, inputClass, deadLine);
-    const history = [...seed.turns, ...(this.#jobHistory(liveSessionId, inputClass) ?? [])];
+    // C-RECOVERY (a): an open is bounded exactly like a rebuild, so a long conversation cannot seed an
+    // over-ceiling request here either. The dropped-line opener keeps the one slot SEED_MESSAGE_LIMIT reserves.
+    const history = fitSeedTurns(seed.turns, this.#jobHistory(liveSessionId, inputClass) ?? []).turns;
     // Only the coarse intent tools (and remember) are declared to the model; the connector reads stay
     // dispatchable through the registry so the intent fan-out and the session cache keep working.
 const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'remember_note' || tool.name === 'save_to_vault' || tool.name === 'stage_lux_note' || OPEN_TOOL_NAMES.has(tool.name) || TRELLO_TOOL_NAMES.has(tool.name));

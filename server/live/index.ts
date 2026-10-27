@@ -2216,18 +2216,6 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       this.#scheduleDebt(handle, DEAD_AIR_RESPONSE_GRACE_MS, 'rung');
       return;
     }
-    // C-DEADAIR: the four second rung names the silence and starts the rescue, and the rescue itself lands on the
-    // next pass. The provider was asked for the answer already; a rung that injected the result at four seconds put a
-    // second copy of it in front of a model that was still writing the first.
-    if (step === 'rung' && handle.deadAirNudgedAt === undefined) {
-      handle.deadAirNudgedAt = this.#now();
-      this.#noteDebt(handle, 'rung', 'dead_air');
-      hostLogEvent({ event: 'live_dead_air', msSinceTool: turnAgeMs,
-        msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
-      hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: AUDIBLE_DEBT_RUNG_MS });
-      this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rung');
-      return;
-    }
     this.#noteDebt(handle, 'rung', step === 'rung' ? 'dead_air' : 'rebuild');
     if (step === 'rebuild') { await this.#watchdogRecover(handle, generation, turnAgeMs); return; }
     // The receipts the dead-air nudge has always written, whichever provider answers the rung.

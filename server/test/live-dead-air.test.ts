@@ -97,9 +97,7 @@ test('C-DEADAIR: the first rung lands at 4 s of owner-heard silence and starts t
   const rungs = rungReceipts(live);
   assert.equal(rungs.length, 1, 'the first rung lands at four seconds');
   assert.equal(rungs[0]?.['elapsedMs'], AUDIBLE_DEBT_RUNG_MS, 'the rung names the four second base, not the eight second one');
-  assert.equal(live.fake.texts.length, live.sentTexts, 'the rung never injects a second copy of the result at four seconds');
-  await live.advance(RESPONSE_WATCHDOG_RECOVERY_MS);
-  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the next rung hands over the result the model never spoke');
+  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the rung hands over the result the model never spoke');
 });
 
 test('C-DEADAIR: a response that produced no audio buys the rung one short grace, never seven seconds', async t => {
@@ -112,8 +110,9 @@ test('C-DEADAIR: a response that produced no audio buys the rung one short grace
   assert.equal(rungReceipts(live).length, 0, 'the rung is not early');
   await live.advance(1_200);
   assert.equal(rungReceipts(live).length, 1, 'a silent in-flight response does not hold the rung for seven seconds');
-  await live.advance(RESPONSE_WATCHDOG_RECOVERY_MS);
   assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the result is spoken once');
+  await live.advance(RESPONSE_WATCHDOG_RECOVERY_MS);
+  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the result is spoken once and never replayed');
   assert.equal(rungReceipts(live).length, 1, 'one rung per silence');
 });
 

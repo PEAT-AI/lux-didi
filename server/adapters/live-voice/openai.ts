@@ -211,6 +211,11 @@ function setupErrorReceipt(error: unknown): { type: string; code: string; param:
   const fields = object(error) ? error : {};
   return { type: setupErrorText(fields['type']), code: setupErrorText(fields['code']), param: setupErrorText(fields['param']), message: setupErrorText(fields['message']) };
 }
+/** C-CONTINUITY R-08: a socket close reason as a receipt: no URL, no token, one line, bounded. */
+function sanitizedCloseReason(reason: Buffer | string | undefined): string {
+  if (reason === undefined) return '';
+  return setupErrorText((Buffer.isBuffer(reason) ? reason.toString('utf8') : String(reason)).replace(/https?:\/\/\S+/giu, '[url]'));
+}
 function classList(value: unknown, code: LiveVoiceErrorCode): DataClass[] {
   if (!Array.isArray(value) || !value.length || value.some(item => !classes.includes(item as DataClass)) || new Set(value).size !== value.length) fail(code);
   return [...value] as DataClass[];
@@ -644,18 +649,25 @@ class Session implements LiveVoiceSession {
     this.finish('provider_setup_rejected');
     response.resume();
   };
-  private readonly onClose = (code: number) => {
-    if (this.upstreamDrop && this.upstreamDrop.closeCode === null) this.upstreamDrop.closeCode = code;
+  private readonly onClose = (code: number, reason?: Buffer | string) => {
+    const closeReason = sanitizedCloseReason(reason);
+    if (this.upstreamDrop) this.upstreamDrop = { ...this.upstreamDrop,
+      closeCode: this.upstreamDrop.closeCode ?? code,
+      closeReason: this.upstreamDrop.closeReason === '' ? closeReason : this.upstreamDrop.closeReason };
     if (this.terminal) { this.cleanup(); return; }
     // A close before the start barrier is a failed setup; after it, a recoverable drop.
     this.recoverable = this.isReady;
-    this.finish(this.isReady ? 'remote_closed' : 'provider_setup_rejected', this.upstreamDrop);
+    // C-CONTINUITY R-08: every provider socket close leaves its code and sanitized reason on the outcome, so the
+    // next rebuild or recovery line can say how the session really ended instead of guessing at the network.
+    const close: LiveVoiceUpstreamDrop = this.upstreamDrop ?? { errorKind: 'remote_close', closeCode: code, closeReason,
+      bufferedAmount: 0, writesFailed: this.diagnostic.localWriteCallbackErrorCalls, sessionMs: Math.max(0, Date.now() - this.startedAt) };
+    this.finish(this.isReady ? 'remote_closed' : 'provider_setup_rejected', close);
   };
 
   private dropUpstream(errorKind: string, socket: WebSocket): void {
     if (this.terminal) return;
     const errorKindValue = /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(errorKind) ? errorKind : 'write_error';
-    this.upstreamDrop = { errorKind: errorKindValue, closeCode: null, bufferedAmount: socket.bufferedAmount, writesFailed: this.diagnostic.localWriteCallbackErrorCalls, sessionMs: Math.max(0, Date.now() - this.startedAt) };
+    this.upstreamDrop = { errorKind: errorKindValue, closeCode: null, closeReason: '', bufferedAmount: socket.bufferedAmount, writesFailed: this.diagnostic.localWriteCallbackErrorCalls, sessionMs: Math.max(0, Date.now() - this.startedAt) };
     this.recoverable = true;
     this.finish('transport_error', this.upstreamDrop);
   }

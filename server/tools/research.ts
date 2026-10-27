@@ -150,8 +150,14 @@ export const RESEARCH = Object.freeze({
   sourceFloorChars: 1_000,
   /** C-DEPTH item 5: the extractive ledger that replaces the raw tool items on a rebuild, at most this long. */
   ledgerChars: 6_000,
-  /** C-DEPTH item 5: the retained research payload this call may hold before a rebuild is due. */
-  rebuildThresholdChars: 24_000,
+  /**
+   * C-CONTINUITY T-11: the most one research reply may be once it is serialized for a voice session, envelope
+   * and cursor included. The full reply stays host-side for the call, and a `continue` with the reply's cursor
+   * pages it, so a long answer costs turns instead of context the provider can never give back.
+   */
+  voiceReplyChars: 3_000,
+  /** C-CONTINUITY item 2: the delivered research payload this call may hold before a rebuild is due. */
+  rebuildThresholdChars: 60_000,
   /**
    * LAT-1023 ruling R1: a body the owner asked to read keeps its own page bound. The compaction targets
    * composed answers; paging a requested 16,800-char body at the Live budget would double the round trips
@@ -2116,6 +2122,11 @@ export interface ResearchDeps {
   /** C-DEPTH item 3 (W10-R6): the full entry read was cut, so the summaries are what shipped. */
   /** L11-03: the live call this research runs in. Its own rows are never memory, by identity. */
   liveSessionId?: string | undefined;
+  /**
+   * C-CONTINUITY T-11: the voice session's page book, so a `continue` that carries a reply cursor reads the
+   * stored answer instead of starting a new search. Absent means no reply was ever capped for this call.
+   */
+  voicePages?: VoiceReplyBook | undefined;
   /**
    * #565: one row per source call's query shape, so the next forensic review can prove what a search was
    * built from. The Live owner binds it to the trace store; absent means nothing is persisted.
@@ -5207,6 +5218,11 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       active.metaStartAsContinue = true;
     }
   }
+  // C-CONTINUITY T-11: a reply cursor pages the answer this call already had, so it never re-runs a search and a
+  // cursor it does not hold is a closed error instead of a fresh question the owner never asked.
+  if (call.cursor !== undefined && call.cursor.startsWith(VOICE_CURSOR_PREFIX)) {
+    return deps.voicePages?.take(call.cursor) ?? { researchId: call.researchId ?? '', error: VOICE_CURSOR_ERROR };
+  }
   let run: RunState;
   if (call.action === 'start') {
     deps.ledger.cancelActive();
@@ -6018,6 +6034,149 @@ export function researchLedgerOf(input: LedgerInput): string {
   ].filter(part => part !== '');
   const text = parts.join('\n');
   return text.length <= RESEARCH.ledgerChars ? text : `${text.slice(0, RESEARCH.ledgerChars - 1)}\u2026`;
+}
+
+/** C-CONTINUITY T-11: the mark a paged research reply carries, so a cut reply never reads as a whole one. */
+export const VOICE_REPLY_CUT = 'voice_reply_chars';
+/** C-CONTINUITY T-11: a voice page cursor is named by this prefix, so a stale one is a closed error. */
+export const VOICE_CURSOR_PREFIX = 'vpage-';
+/** C-CONTINUITY T-11: the closed error a `continue` gets for a cursor this call no longer holds. */
+export const VOICE_CURSOR_ERROR = 'cursor_unavailable';
+
+/** The envelope of a paged reply, kept exactly as the reply carried it: everything but the bulk it pages. */
+function voiceEnvelopeOf(reply: JsonObject): JsonObject {
+  const envelope: JsonObject = {};
+  for (const [key, value] of Object.entries(reply)) {
+    if (key === 'findings' || key === 'bodySlices') continue;
+    envelope[key] = value;
+  }
+  return envelope;
+}
+
+/** The one-line-units of a reply's bulk, in the order the provider read them: its findings first. */
+function voiceUnitsOf(reply: JsonObject): string[] {
+  const units: string[] = [];
+  const findings = reply['findings'];
+  if (Array.isArray(findings)) {
+    for (const finding of findings) {
+      const text = isRecord(finding) && typeof finding['text'] === 'string' ? finding['text'] : undefined;
+      if (text === undefined) { units.push(JSON.stringify(finding)); continue; }
+      for (const line of text.split('\n')) units.push(line);
+    }
+  }
+  const slices = reply['bodySlices'];
+  if (Array.isArray(slices)) for (const slice of slices) units.push(JSON.stringify(slice));
+  return units;
+}
+
+/** How long one page is once serialized, at the width a real cursor takes. */
+function voicePageChars(envelope: JsonObject, lines: readonly string[], cursorChars: number): number {
+  return JSON.stringify({
+    ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT,
+    cursor: '0'.repeat(cursorChars), canContinue: true,
+  }).length;
+}
+
+/** The longest prefix of one unit a page still holds, so a cut never lands mid-word. */
+function voiceLinePrefix(unit: string, fits: (line: string) => boolean): string {
+  let low = 0, high = unit.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (fits(unit.slice(0, middle))) low = middle; else high = middle - 1;
+  }
+  const kept = unit.slice(0, low);
+  const boundary = kept.search(/\s\S*$/u);
+  return boundary > 0 ? kept.slice(0, boundary) : kept;
+}
+
+/**
+ * C-CONTINUITY T-11: one page of a reply, and the units a later page still owes. Whole lines are taken while
+ * they fit; a single line wider than a page is cut at its last whole word and marked, so no page splits a word.
+ */
+function takeVoiceUnits(envelope: JsonObject, units: readonly string[], cap: number, cursorChars: number):
+{ lines: string[]; rest: string[] } {
+  const lines: string[] = [];
+  for (let index = 0; index < units.length; index += 1) {
+    const unit = units[index]!;
+    if (voicePageChars(envelope, [...lines, unit], cursorChars) <= cap) { lines.push(unit); continue; }
+    const head = voiceLinePrefix(unit, kept => voicePageChars(envelope, [...lines, `${kept}\u2026`], cursorChars) <= cap);
+    if (head === '') return { lines, rest: units.slice(index) };
+    lines.push(`${head}\u2026`);
+    return { lines, rest: [unit.slice(head.length).trimStart(), ...units.slice(index + 1)] };
+  }
+  return { lines, rest: [] };
+}
+
+/**
+ * C-CONTINUITY T-11: the full replies the voice cap paged, kept for this call only. The provider holds one page
+ * at a time; the rest is still here, so a `continue` with its cursor reads on without a new search.
+ */
+export class VoiceReplyBook {
+  #pages = new Map<string, { researchId: string; envelope: JsonObject; units: string[] }>();
+
+  get size(): number { return this.#pages.size; }
+
+  holds(cursor: string): boolean { return this.#pages.has(cursor); }
+
+  /** Keep one reply's remainder host-side and hand back the cursor that reads it. */
+  keep(researchId: string, envelope: JsonObject, units: readonly string[]): string {
+    const cursor = `${VOICE_CURSOR_PREFIX}${newResearchId()}`;
+    this.#pages.set(cursor, { researchId, envelope, units: [...units] });
+    return cursor;
+  }
+
+  /** The next page for a cursor, or undefined when this call no longer holds one. */
+  take(cursor: string, cap: number = RESEARCH.voiceReplyChars): JsonObject | undefined {
+    const page = this.#pages.get(cursor);
+    if (page === undefined) return undefined;
+    this.#pages.delete(cursor);
+    const cursorChars = VOICE_CURSOR_PREFIX.length + 36;
+    const { lines, rest } = takeVoiceUnits(page.envelope, page.units, cap, cursorChars);
+    const envelope: JsonObject = { ...page.envelope, researchId: page.researchId, status: 'partial' };
+    const findings = [{ text: lines.join('\n') }];
+    if (rest.length === 0) return { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: false };
+    return { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: true, cursor: this.keep(page.researchId, page.envelope, rest) };
+  }
+
+  clear(): void { this.#pages.clear(); }
+}
+
+/**
+ * C-CONTINUITY T-11: the one cap every research result delivered into a voice session obeys. A reply that fits
+ * is handed back untouched; a wider one becomes its first page, findings first, with the cursor that reads on.
+ * The full reply never leaves the host, and the caller keeps the same envelope keys it always read.
+ */
+export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook | undefined, cap: number = RESEARCH.voiceReplyChars): JsonObject {
+  if (JSON.stringify(reply).length <= cap) return reply;
+  if (book === undefined) return reply;
+  const researchId = typeof reply['researchId'] === 'string' ? reply['researchId'] : '';
+  const envelope = voiceEnvelopeOf(reply);
+  const { lines, rest } = takeVoiceUnits(envelope, voiceUnitsOf(reply), cap, VOICE_CURSOR_PREFIX.length + 36);
+  const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
+  if (rest.length === 0) return page;
+  return { ...page, canContinue: true, cursor: book.keep(researchId, envelope, rest) };
+}
+
+/**
+ * C-CONTINUITY item 4: the extractive ledger a call accumulates from every research batch it delivered, oldest
+ * record evicted first, at most `ledgerChars`. A refused or failed batch is never added, so the ledger can never
+ * lose what the owner already heard to a search that found nothing.
+ */
+export class ResearchLedgerLog {
+  #records: string[] = [];
+
+  get records(): number { return this.#records.length; }
+
+  add(record: string): void { const text = record.trim(); if (text !== '') this.#records.push(text); }
+
+  text(): string {
+    const kept = this.#records.slice();
+    while (kept.length > 1 && kept.join('\n\n').length > RESEARCH.ledgerChars) kept.shift();
+    const text = kept.join('\n\n');
+    return text.length <= RESEARCH.ledgerChars ? text : `${text.slice(0, RESEARCH.ledgerChars - 1)}\u2026`;
+  }
+
+  clear(): void { this.#records = []; }
 }
 
 export function knownReply(ledger: ResearchLedger, researchId: string, configured: readonly SourceKind[], status: 'answered' | 'partial' | 'stopped' | 'unavailable' = 'stopped', limit = RESEARCH.budgets.default): JsonObject {

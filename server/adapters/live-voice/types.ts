@@ -101,8 +101,9 @@ export type LiveVoiceErrorCode =
   | 'unsupported_provider';
 // Metadata of one upstream (host to provider) write drop, never audio, text or credentials.
 // closeCode is filled from the socket close event after the drop is detected, so it may be null until then.
+// C-CONTINUITY R-08: closeReason is that close event's own reason, stripped of URLs and tokens.
 export interface LiveVoiceUpstreamDrop {
-  errorKind: string; closeCode: number | null; bufferedAmount: number; writesFailed: number; sessionMs: number;
+  errorKind: string; closeCode: number | null; closeReason: string; bufferedAmount: number; writesFailed: number; sessionMs: number;
 }
 export interface LiveVoiceOutcome {
   recoverable?: boolean;

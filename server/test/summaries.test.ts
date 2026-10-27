@@ -109,6 +109,8 @@ test('the distillation prompt is the authored verbatim constant and output parse
   assert.ok(prompt.startsWith('You write a short private summary of one finished voice conversation between the owner and the assistant, whose name is Mira'));
   assert.ok(prompt.includes('{"skip": boolean, "summary": string, "openLoop": string | null}'));
   assert.ok(prompt.includes('the owner said'));
+  assert.ok(prompt.includes('Tool outcomes come only from the Tool outcomes block below'));
+  assert.ok(prompt.includes("never by Mira's spoken explanation of it"));
   assert.ok(prompt.endsWith('Set skip to true when nothing worth remembering happened.'));
   assert.deepEqual(parseDistillationResult('```json\n{"skip": false, "summary": "the owner said hello"}\n```'),
     { skip: false, summary: 'the owner said hello', openLoop: null });

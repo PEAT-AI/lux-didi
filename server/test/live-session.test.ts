@@ -2564,7 +2564,9 @@ test('L19: the first spoken reply of a call is never unjournalled without a rece
   }
   assert.ok(audible() > before, 'the reply was audible');
   h.f.send({ serverContent: { turnComplete: true } });
-  await tick(); await tick();
+  // The receipt is written from the provider's turn-complete path, so wait for the pump itself rather than for a
+  // fixed number of ticks: under a loaded host the two ticks used to arrive before the turn was handled.
+  for (let i = 0; i < 40 && events.every(entry => entry.event !== 'live_reply_unjournalled'); i++) await tick();
   // The reply is never unjournalled: its own row exists, so no reader has to infer what was said.
   const rows = h.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='outputTranscription'", [session.liveSessionId]));
   // The provider sent no output transcript at all: the reply is receipted, never silent.

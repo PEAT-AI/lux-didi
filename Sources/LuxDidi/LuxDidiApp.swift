@@ -1265,7 +1265,9 @@ struct RootView: View {
         case .ended:
             // #589: the owner's own sentence ended this call, so presence closes it as her voice stop and the
             // goodbye sounds. Any other ending is a session that ended, which presence records as it always has.
-            presence.endAfterHostTerminal(voiceStop: model.live?.hostVoiceStop == true, generation: generation)
+            presence.endAfterHostTerminal(voiceStop: model.live?.hostVoiceStop == true,
+                                          lostCall: model.live?.hostTerminalCode == "provider_recovery_exhausted",
+                                          generation: generation)
         case .uncertain:
             // #613: a socket that closed without a terminal frame leaves no live microphone, so presence
             // goes cold now. It never reconnects to find out what the host thinks.

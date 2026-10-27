@@ -1306,3 +1306,24 @@ test('the first boot bumps an installed release 8 policy to a grant and policy t
   assert.equal(restarted.registry.currentGrant('mattermost')!.generation, 3, 'the published grant follows the bump');
   assert.equal(restarted.owner.journal.intent(host.search(host.accept())), 'fresh', 'the installed owner first chat read after the bump is admitted');
 });
+
+// C-RECOVERY (f): a live write rejection reached host.log as a bare `class: Error` with nothing naming it. The
+// closed code the error carries now rides the same line, so the 2026-10-27 07:00:40.398Z host_error is explained.
+test('C-RECOVERY (f): a rejected live write is a host_error that names its closed code', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-host-error-code-'));
+  try {
+    const log = new HostLog(root);
+    const rejected = Object.assign(new Error('SECRET-journal-write'), { name: 'LiveError', code: 'persistence_failed' });
+    log.error(rejected);
+    log.error(new Error('SECRET unclassified'));
+    log.error(Object.assign(new Error('SECRET free text'), { code: 'NOT A CLOSED TOKEN' }));
+    const text = await readFile(join(root, 'logs', 'host.log'), 'utf8');
+    const records = text.trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(records.map(({ event, class: kind, code }) => ({ event, class: kind, ...(code === undefined ? {} : { code }) })), [
+      { event: 'host_error', class: 'Error', code: 'persistence_failed' },
+      { event: 'host_error', class: 'Error' },
+      { event: 'host_error', class: 'Error' },
+    ]);
+    assert.equal(text.includes('SECRET'), false, 'no message or stack ever reaches the log');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

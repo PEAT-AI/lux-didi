@@ -1528,8 +1528,11 @@ export class HostLog {
     } finally { clearLogContext(); }
   }
   error(error: unknown): void {
-    // Class is a closed token. Exception messages and stacks are deliberately never read.
-    this.append({ event: 'host_error', class: error instanceof ConfigError ? 'ConfigError' : 'Error', ...(error instanceof ConfigError ? { code: error.code } : {}) });
+    // Class is a closed token, and so is a code when the error carries one: a rejected live write names its own
+    // class instead of surfacing as a bare Error. Exception messages and stacks are deliberately never read.
+    const code = error instanceof ConfigError ? error.code : (error as { code?: unknown } | null | undefined)?.code;
+    const closed = typeof code === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(code) ? { code } : {};
+    this.append({ event: 'host_error', class: error instanceof ConfigError ? 'ConfigError' : 'Error', ...closed });
   }
   private append(event: Record<string, unknown>): void {
     // C-LOG-ENVELOPE: one envelope, written here and nowhere else. A field the event already carries keeps

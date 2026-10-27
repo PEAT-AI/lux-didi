@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
+import { createLiveSessionOwner, fitSeedTurns, LIVE_DROPPED_LINE_MARK, liveMigrations, SEED_CHAR_LIMIT, SEED_MESSAGE_LIMIT, SEED_TOKEN_PROXY_LIMIT, validateLiveProfile, type LiveContext, type LiveSessionOwner } from '../live/index.js';
+import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
 import type { LiveToolsComposition } from '../live/types.js';
 import { liveProfileIdentity } from '../live/config.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
@@ -58,14 +59,16 @@ function drivenPort() {
   let sequence = 0;
   /** C-LIVE R2: opens the provider refuses synchronously, the way the 2026-10-25 rebuild threw before its socket. */
   const refusals: Error[] = [];
+  const requests: LiveVoiceRequest[] = [];
   let opens = 0;
   const port = {
     capabilities: Object.freeze({ provider: 'gemini', supportsResumption: false, supportsGoAway: false, supportsInterruption: false,
       supportsServerVadConfig: false, inputRates: Object.freeze([8000]), outputRates: Object.freeze([24000]),
       outputModalities: Object.freeze(['audio', 'text'] as const), thinking: 'provider_default', supportsToolScheduling: false,
       toleratesEmptyReadyLifecycle: false }),
-    open(_request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession {
+    open(request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession {
       opens += 1;
+      requests.push(request);
       const refusal = refusals.shift();
       if (refusal !== undefined) throw refusal;
       let resolveReady: () => void = () => {};
@@ -104,7 +107,7 @@ function drivenPort() {
       return session;
     },
   } as unknown as LiveVoicePort;
-  return { port, sessions, openedAt, toolResponses, emit: (event: LiveVoiceEvent) => events({ ...event, sequence: ++sequence }),
+  return { port, sessions, openedAt, toolResponses, requests, emit: (event: LiveVoiceEvent) => events({ ...event, sequence: ++sequence }),
     refuse: (...errors: Error[]) => { refusals.push(...errors); }, get opens() { return opens; } };
 }
 
@@ -458,18 +461,18 @@ test('R2: when the fresh open fails too, the call ends as provider_recovery_exha
   (await sessionAt(h, 0))!.live();
   await attachment.ready;
   await flush();
-  h.port.refuse(new Error('synthetic open refused with words'), new TypeError('synthetic_open_refused'));
+  h.port.refuse(new Error('synthetic open refused with words'), new TypeError('synthetic_open_refused'),
+    new TypeError('synthetic_open_refused'));
   h.port.sessions[0]!.die();
   await flush();
-  await h.advance(2_000);
-  await h.advance(2_000);
+  for (let round = 0; round < 8; round += 1) await h.advance(2_000);
   const end = await ended(t, attachment as never);
   assert.deepEqual(end.terminal, { state: 'failed', code: 'provider_recovery_exhausted' }, 'the end names the exhausted recovery');
   assert.equal(end.terminalFrame, true, 'the client hears the terminal before the socket closes');
   const failures = h.receipts.filter(entry => entry['event'] === 'live_recovery_failed');
-  assert.equal(failures.length, 2, 'both refused opens are receipts');
+  assert.equal(failures.length, 3, 'every refused open is a receipt, the shrinking ladder included');
   assert.equal(failures[0]!['messageKey'], 'unrecognized', 'a free-text message never reaches the log');
-  assert.equal(h.port.opens, 3, 'the first open, the refused recovery and the one fresh retry: no loop');
+  assert.equal(h.port.opens, 4, 'the first open, the refused recovery, the smaller retry and the plain open: no loop');
   const next = h.owner.create({ idempotencyKey: 'r2-next', inputClass: 'ordinary' }, h.ctx);
   const again = h.owner.attach({ liveSessionId: next.liveSessionId }, h.ctx);
   (await sessionAt(h, 1))!.live();
@@ -507,4 +510,102 @@ test('C-CONTINUITY R-02: a rebuild after a transport drop logs cause=network wit
   assert.ok(recovery !== undefined, 'and the recovery line is written');
   assert.equal(recovery['cause'], 'network');
   assert.equal(recovery['closeReason'], 'upstream reset', 'the recovery line carries the same reason');
+});
+
+// C-RECOVERY (a): the seed is bounded before it ever reaches an adapter. A 300-fragment call, its ledger and the
+// dropped-line mark together still fit the adapter's message ceiling and its 8,192-token proxy.
+test('C-RECOVERY (a): a 300-fragment call plus ledger and dropped-line mark fits the adapter ceilings', () => {
+  const fragments = Array.from({ length: 300 }, (_, index) => ({
+    role: (index % 2 ? 'model' : 'user') as 'user' | 'model', text: `fragment ${index} ${'word '.repeat(8)}` }));
+  const ledger = { role: 'user' as const, text: `${'ledger finding '.repeat(200)}` };
+  const fitted = fitSeedTurns([...fragments, { role: 'user' as const, text: LIVE_DROPPED_LINE_MARK }], [ledger]);
+  assert.ok(fitted.turns.length <= SEED_MESSAGE_LIMIT, `the seed keeps the adapter's room for its opener: ${fitted.turns.length}`);
+  assert.ok(fitted.chars <= SEED_CHAR_LIMIT, `the seed plus the ledger stays inside the history budget: ${fitted.chars}`);
+  assert.ok(SEED_CHAR_LIMIT <= SEED_TOKEN_PROXY_LIMIT * 4, 'and that budget is the documented 8,192-token proxy');
+  assert.equal(fitted.turns.at(-1)!.text, ledger.text, 'the ledger always rides last');
+  assert.equal(fitted.turns.at(-2)!.text, LIVE_DROPPED_LINE_MARK, 'and the dropped-line mark closes the transcript');
+  assert.ok(fitted.condensed, 'the oldest turns were dropped, not kept whole');
+});
+
+// C-RECOVERY (b): a seed the provider refused is never resent unchanged: the first retry carries the newest half
+// of the conversation, and the last attempt is a plain open with only the summary context.
+test('C-RECOVERY (b): a refused seed is retried smaller, and the last attempt is a plain open', async t => {
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: 'recovery-shrink', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  (await sessionAt(h, 0))!.live();
+  await attachment.ready;
+  h.port.emit({ type: 'inputTranscription', text: 'what is on my plate', finished: true, sequence: 0 } as LiveVoiceEvent);
+  h.port.emit({ type: 'outputTranscription', text: 'three things today', finished: true, sequence: 0 } as LiveVoiceEvent);
+  await flush();
+  h.port.refuse(new TypeError('synthetic_open_refused'), new TypeError('synthetic_open_refused'));
+  h.port.sessions[0]!.die();
+  await flush();
+  for (let round = 0; round < 6; round += 1) await h.advance(2_000);
+  const [, firstRefused, smaller, plain] = h.port.requests;
+  assert.ok(firstRefused !== undefined && smaller !== undefined && plain !== undefined,
+    `a refused seed is followed by a smaller one and then a plain open: ${h.port.opens}`);
+  assert.equal((firstRefused!.history ?? []).length, 2, 'the refused open carried the whole conversation');
+  assert.ok((smaller!.history ?? []).length < (firstRefused!.history ?? []).length, 'the refused seed is retried smaller');
+  assert.deepEqual(plain!.history ?? [], [], 'the last attempt carries only the summary context');
+  assert.equal(plain!.openingText, LIVE_RECOVERY_PICKUP, 'and it is still an open the owner hears');
+  assert.equal(h.owner.get(created.liveSessionId).terminal, null, 'the call is back up on the plain open');
+});
+
+// C-RECOVERY (e): the diagnostics line names the code the call actually ended with, so a lost call is never silent
+// in the logs either. On base the line was written when the superseded generation ended, as `outcome_unknown`.
+test('C-RECOVERY (e): an exhausted recovery logs the real terminal code in live_session_diagnostics', async t => {
+  const diagnosticLines: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('live_session_diagnostics')) diagnosticLines.push(args[0]);
+  });
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: 'recovery-exhausted-code', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  (await sessionAt(h, 0))!.live();
+  await attachment.ready;
+  await flush();
+  h.port.refuse(new TypeError('synthetic_open_refused'), new TypeError('synthetic_open_refused'), new TypeError('synthetic_open_refused'));
+  h.port.sessions[0]!.die();
+  await flush();
+  for (let round = 0; round < 8; round += 1) await h.advance(2_000);
+  const end = await ended(t, attachment as never);
+  assert.deepEqual(end.terminal, { state: 'failed', code: 'provider_recovery_exhausted' }, 'the call ends as exhausted');
+  const line = diagnosticLines.map(raw => JSON.parse(raw) as Record<string, unknown>)
+    .find(value => value['terminalCode'] !== undefined);
+  assert.ok(line !== undefined, `the diagnostics line is written once for the call: ${diagnosticLines.length}`);
+  assert.equal(line!['terminalCode'], 'provider_recovery_exhausted', 'and it carries the settled terminal code');
+});
+
+// F1 (review): the ladder is bounded by its own rung count, not by the refusal counter. An open whose socket dies
+// before ready is not a refusal, so it must still advance to the plain summary open and then end the call typed.
+test('C-RECOVERY (b)/F1: an open that dies before ready still advances the ladder and then exhausts', async t => {
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: 'recovery-died-before-ready', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  (await sessionAt(h, 0))!.live();
+  await attachment.ready;
+  h.port.emit({ type: 'inputTranscription', text: 'what is on my plate', finished: true, sequence: 0 } as LiveVoiceEvent);
+  await flush();
+  h.port.refuse(new TypeError('synthetic_open_refused'));
+  h.port.sessions[0]!.die();
+  await flush();
+  for (let round = 0; round < 4; round += 1) await h.advance(2_000);
+  const smaller = await sessionAt(h, 1);
+  assert.ok(smaller !== undefined, `the smaller retry opened a session: ${h.port.opens}`);
+  smaller!.die();
+  await flush();
+  for (let round = 0; round < 4; round += 1) await h.advance(2_000);
+  const plain = await sessionAt(h, 2);
+  assert.ok(plain !== undefined, `the plain summary open was reached: ${h.port.opens}`);
+  plain!.die();
+  await flush();
+  for (let round = 0; round < 8; round += 1) await h.advance(2_000);
+  const end = await ended(t, attachment as never);
+  assert.deepEqual(end.terminal, { state: 'failed', code: 'provider_recovery_exhausted' },
+    'a dead socket never freezes the ladder, and the call ends provider_recovery_exhausted, not resume_failed');
+  assert.deepEqual((h.port.requests.at(-1)!.history ?? []), [], 'the last attempt is the plain summary open');
+  const codes = h.receipts.filter(entry => entry['event'] === 'live_recovery').map(entry => entry['code']);
+  assert.ok(codes.includes('open_refused'), `a refused open is still a refusal: ${codes}`);
+  assert.ok(codes.includes('open_failed'), `a socket that died before ready is a failure, not a refusal: ${codes}`);
 });

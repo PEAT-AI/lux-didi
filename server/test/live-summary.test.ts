@@ -342,7 +342,12 @@ test('a refused tool reaches the distillation input by its recorded code, not by
     insertToolCall(h.store, 's-refused-tool', 'stage_lux_note', 'completed', { staged: false, code: 'authorization_missing' });
     insertToolCall(h.store, 's-refused-tool', 'vault_search', 'failed', { status: 'failed', reason: 'upstream_timeout' }, 1);
     insertToolCall(h.store, 's-refused-tool', 'web_search', 'refused', { status: 'refused', reason: 'not_granted' }, 2);
-    insertToolCall(h.store, 's-refused-tool', 'calendar_read', 'completed', { events: [] }, 3);
+    // The vault save and the open tools answer "not done" on the completed path too: `{saved:false, code}` and a
+    // guard receipt code other than 'opened' (server/tools/vault-write.ts:62, server/tools/index.ts:695).
+    insertToolCall(h.store, 's-refused-tool', 'save_to_vault', 'completed', { saved: false, code: 'not_owner_requested', guidance: 'Ask him first.' }, 3);
+    insertToolCall(h.store, 's-refused-tool', 'open_app', 'completed', { code: 'no_open_intent', guidance: 'Nothing to open.' }, 4);
+    insertToolCall(h.store, 's-refused-tool', 'open_app', 'completed', { code: 'opened', kind: 'app', title: 'Maps' }, 5);
+    insertToolCall(h.store, 's-refused-tool', 'calendar_read', 'completed', { events: [] }, 6);
     const requests: ModelRequest[] = [];
     const model: ModelPort = { generate: (request: ModelRequest) => { requests.push(request); return Promise.resolve(modelResult('complete', '{"skip": false, "summary": "the owner asked to save a note."}')); } };
     await worker(h.store, model, []).distill('s-refused-tool');
@@ -352,6 +357,9 @@ test('a refused tool reaches the distillation input by its recorded code, not by
     assert.ok(text.includes('stage_lux_note refused authorization_missing'), 'the record names the tool and its code');
     assert.ok(text.includes('vault_search failed upstream_timeout'), 'a failed call carries its reason code');
     assert.ok(text.includes('web_search refused not_granted'), 'a pre-execution refusal carries its reason code');
+    assert.ok(text.includes('save_to_vault refused not_owner_requested'), 'a refused vault save reads refused, not succeeded');
+    assert.ok(text.includes('open_app refused no_open_intent'), 'an open guard refusal reads refused');
+    assert.ok(text.includes('open_app succeeded'), 'the opened ack still reads succeeded');
     assert.ok(text.includes('calendar_read succeeded'), 'a completed call reads as succeeded');
     assert.ok(requests[0]!.system.includes('Tool outcomes come only from the Tool outcomes block below'));
     assert.equal(storedRow(h.store, 's-refused-tool')!.status, 'complete', 'the summary is stored');

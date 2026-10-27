@@ -265,9 +265,11 @@ export const LOOKUP_SOURCE_TEXT = `${LOOKUP_SOURCES.slice(0, -1).join(', ')} or 
  * C-RESEARCH-CONTRACT T-13: the value the owner and the planner say for Mongoose. It is an accepted
  * spelling of the `mongoose` source everywhere a source is named, so a repair never points away from it.
  */
-export const SOURCE_ALIASES: Readonly<Record<string, string>> = Object.freeze({ company: 'mongoose' });
+export const SOURCE_ALIASES: Readonly<Record<string, SourceKind>> = Object.freeze({ company: 'mongoose' });
 /** C-RESEARCH-CONTRACT: the single-source hint values the declaration publishes, aliases included. */
-export const SOURCE_HINT_VALUES: readonly string[] = ['calendar', 'mail', 'chat', 'knowledge', 'mongoose', 'company'];
+// F6: the hint publishes the lookup enum's own spelling plus the owner's word for Mongoose, so a model that
+// copies a hint value into a lookup is never refused `lookup_source`.
+export const SOURCE_HINT_VALUES: readonly string[] = ['calendar', 'mail', 'chat', 'knowledge', 'company'];
 /**
  * C-RESEARCH-CONTRACT: every limit the parser enforces, in one place. The declaration reads these for its
  * `maxItems` and `maxLength` keywords and the repair texts read them, so the schema a provider validates
@@ -280,6 +282,8 @@ export const RESEARCH_LIMITS = Object.freeze({
   questionMaxChars: 2_000,
   queryMaxChars: RESEARCH.queryLimitChars,
   cursorMaxChars: 128,
+  /** F5: how many per-lookup entries a refusal log line may carry, whatever the call named. */
+  maxLoggedLookups: 64,
 } as const);
 
 export type MailLookup = { id: string; format?: 'full' | 'metadata' } | { q: string; maxResults?: number };
@@ -2566,7 +2570,7 @@ function hintedSources(hint: unknown, configured: readonly SourceKind[]): Source
   if (typeof hint !== 'string') return [];
   const value = hint.trim().toLowerCase();
   if (!value) return [];
-  const aliases: Record<string, SourceKind> = { knowledge: 'knowledge', memory: 'knowledge', calendar: 'calendar', schedule: 'calendar', mail: 'mail', email: 'mail', gmail: 'mail', chat: 'chat', channel: 'chat', mattermost: 'chat', mongoose: 'mongoose', company: 'mongoose' };
+  const aliases: Record<string, SourceKind> = { knowledge: 'knowledge', memory: 'knowledge', calendar: 'calendar', schedule: 'calendar', mail: 'mail', email: 'mail', gmail: 'mail', chat: 'chat', channel: 'chat', mattermost: 'chat', mongoose: 'mongoose', ...SOURCE_ALIASES };
   const matched = new Set<SourceKind>();
   for (const token of value.split(/[^a-z]+/)) { const source = aliases[token]; if (source) matched.add(source); }
   return [...matched].filter(source => configured.includes(source));

@@ -6,6 +6,7 @@ import {
   CURSOR_MAX_CHARS, LOOKUP_SOURCES, MAX_LOOKUPS, QUESTION_MAX_CHARS, RESEARCH_LIMITS, TOPIC_MAX_CHARS, TOPIC_MAX_WORDS,
   parseResearch, researchDeclaration, researchDescription, researchRepair, statusAsk,
 } from '../tools/research.js';
+import { safeEvent } from '../host/log.js';
 
 type Property = { type?: string; enum?: unknown[]; maxLength?: number; maxItems?: number; required?: string[]; properties?: Record<string, Property>; description?: string };
 const declaration = researchDeclaration();
@@ -89,4 +90,14 @@ test('a call that violates each limit is refused with the reason the schema pred
   }
   assert.ok(JSON.stringify(parseResearch(refusedOntheDay[0]![1])).includes('"topicChars"'), 'the refusal carries lengths, not words');
   assert.equal(JSON.stringify(parseResearch(refusedOntheDay[0]![1])).includes('the last month'), false);
+});
+
+test('a refusal that names more lookups than the limit still logs its shape (F5)', () => {
+  const parsed = parseResearch({ action: 'start', question: 'the question', topic: 'names', lookups: Array.from({ length: MAX_LOOKUPS + 2 }, () => ({ source: 'knowledge', query: 'q' })) });
+  assert.equal(parsed.ok ? '' : parsed.reason, 'lookups_count');
+  const shaped = safeEvent({ event: 'research_refused', state: 'refused', sequence: 1, reason: parsed.ok ? 'lookups_count' : parsed.reason, ...(parsed.ok ? {} : parsed.shape) });
+  assert.notEqual(shaped, undefined, 'the refused call logs its shape, not nothing');
+  assert.equal((shaped?.['queryChars'] as number[]).length, MAX_LOOKUPS + 2);
+  assert.equal((shaped?.['lookupSources'] as string[]).length, MAX_LOOKUPS + 2);
+  assert.equal((shaped?.['lookupCount'] as number), MAX_LOOKUPS + 2);
 });

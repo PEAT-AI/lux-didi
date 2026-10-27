@@ -931,8 +931,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!(RESEARCH_REFUSAL_REASONS as readonly unknown[]).includes(value.reason) || !['start', 'continue', 'stop', 'missing', 'invalid'].includes(String(value.action))) return;
     if (!isSafeCount(value.unknownFieldCount) || !isSafeCount(value.lookupCount)) return;
     if (!isSafeCount(value.topicChars) || !isSafeCount(value.questionChars)) return;
-    if (!Array.isArray(value.queryChars) || value.queryChars.length > RESEARCH_LIMITS.maxLookups + 1 || !value.queryChars.every(isSafeCount)) return;
-    if (!Array.isArray(value.lookupSources) || value.lookupSources.length > RESEARCH_LIMITS.maxLookups + 1) return;
+    // F5: the shape carries one entry per lookup, and a refused call may name more than the limit allows, so the
+    // ceiling is the call's own lookup count (already closed and counted) rather than the limit it broke.
+    const entries = Math.min(value.lookupCount, RESEARCH_LIMITS.maxLoggedLookups);
+    if (!Array.isArray(value.queryChars) || value.queryChars.length > entries || !value.queryChars.every(isSafeCount)) return;
+    if (!Array.isArray(value.lookupSources) || value.lookupSources.length > entries) return;
     if (!value.lookupSources.every(source => (LOOKUP_SOURCES as readonly unknown[]).includes(source))) return;
     if (!value.fields || typeof value.fields !== 'object' || Array.isArray(value.fields)) return;
     const fields = value.fields as Record<string, unknown>;

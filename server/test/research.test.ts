@@ -606,7 +606,7 @@ test('the research declaration names only the configured sources and the valid h
   const properties = (declaration.parameters as unknown as { properties: Record<string, { description: string }> }).properties;
   // C-RESEARCH-CONTRACT T-13: the hint values are published from one constant, so the owner's word for
   // Mongoose is advertised beside the source it maps to.
-  assert.match(properties['sources']!.description, /calendar, mail, chat, knowledge, mongoose, company\./);
+  assert.match(properties['sources']!.description, /calendar, mail, chat, knowledge, company\./);
 });
 
 // C-RESEARCH-CONTRACT Q-08: on 2026-10-27 a research about Korbi's reports was re-asked about Rob, and the

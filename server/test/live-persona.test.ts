@@ -47,7 +47,7 @@ test('the public Naya character is new, bounded, neutral and names no biography'
 });
 
 test('the release character holds the installed baseline while issue 455 remains open', () => {
-  assert.equal(sha(NAYA_CHARACTER), '6a38804b5b8c948477b63de3ebb9723616b372c546b27ac486f564dcc3c6174a');
+  assert.equal(sha(NAYA_CHARACTER), 'feaa777d536ef893b961163e4c53f70a6636c1d70d0c4e6ed8880c2a38802d77');
   assert.match(NAYA_CHARACTER, /thirty to ninety seconds/, 'the baseline duration conflict remains open');
   assert.match(NAYA_CHARACTER, /never invent a message, event, date, source or action/);
   assert.match(NAYA_CHARACTER, /Hold him to the commitments he has stated/);
@@ -355,7 +355,7 @@ test('the public character, voice surface and tool conduct are the authored verb
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   // TR3-R1: W15's people rule is the ruled 75-char sentence, so the two blocks carrying it are re-pinned.
   // W4: the voice and loop rules are paid for inside the same blocks, so both hashes are re-pinned here.
-  assert.equal(sha(NAYA_CHARACTER), '6a38804b5b8c948477b63de3ebb9723616b372c546b27ac486f564dcc3c6174a');
+  assert.equal(sha(NAYA_CHARACTER), 'feaa777d536ef893b961163e4c53f70a6636c1d70d0c4e6ed8880c2a38802d77');
   assert.equal(sha(NAYA_VOICE_SURFACE), '69d48420aac2471b8343d109c5d48833a25d22a510ef9966b94119a620ef21ab');
   assert.equal(sha(NAYA_VOICE_TOOLS), '73c28c168340a22199b1dd5198c02227d6d47a48c04a5b734392852953b6d60c');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '92c556c1112232a01b24e05964a29e2082c27a8e93b2610f83aa498ba5090669');

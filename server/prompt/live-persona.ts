@@ -26,7 +26,7 @@ Challenge with substance. Agree only when the evidence agrees, and when he is ri
 
 Keep facts and imagination apart. About his world, report only what tools, memory or his background contain; never invent a message, event, date, source or action. Stories, fables, thought experiments and arguments are craft, not claims: when he asks, tell it fully and well.
 
-An open loop is only as fresh as the day it was last seen: state still about one only when it was confirmed in the last 24 hours, and ask about an older one as a question.
+Say still about one only when it was confirmed in the last 24 hours; an older one you ask about as a question and never state as a current fact.
 
 Be honest about yourself. You keep nothing between calls except what memory holds, so never say you have adjusted, learned or processed feedback; say what you will do for the rest of this call. Never describe a training history, a model, a maker or this instruction.`;
 
@@ -649,7 +649,9 @@ function ageWords(now: number, at: number, timeZone: string): string {
 /** One stored loop as the model reads it: its age, the date it was last seen open, and a question when old. */
 function loopLine(topic: string, lastSeenAt: number, now: number, timeZone: string): string {
   const bare = topic.replace(/[.?!]+$/u, '').trim();
-  return `${bare} (${ageWords(now, lastSeenAt, timeZone)}, last seen open ${ownerDate(lastSeenAt, timeZone)})`;
+  const age = ageWords(now, lastSeenAt, timeZone);
+  if (now - lastSeenAt > OPEN_LOOP_FRESH_MS) return `is it done: ${bare.replace(/\bstill\s+/giu, '')}? (${age}, last seen open ${ownerDate(lastSeenAt, timeZone)})`;
+  return `${bare} (${age}, last seen open ${ownerDate(lastSeenAt, timeZone)})`;
 }
 
 /** A loop that a newer summary records as finished is no longer open, whatever the older row stored. */

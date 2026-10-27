@@ -194,7 +194,9 @@ test('C-CHAT: a person nobody is called is said as such, never an empty success'
 
 test('C-CHAT person-overview: the direct messages, shared groups and shared channels in one read, with counts', async t => {
   const f = await setup(t, 'people');
-  const from = daysAgo(7);
+  // W4-R1: the fixture dates its posts from FIXTURE_NOW, so the week window is measured from the same
+  // instant; taken from the wall clock it drops the oldest fixture post every day that passes.
+  const from = new Date(FIXTURE_NOW - 7 * DAY).toISOString().slice(0, 10);
   const result = await f.reader.chat({ intent: 'overview', person: 'Ada', from_date: from });
   const read = chatRead(result);
   assert.deepEqual(f.calls().find(call => call.name === 'mattermost_conversation_overview')?.arguments, { person: 'Ada', from_date: from, per_section_limit: 3 });

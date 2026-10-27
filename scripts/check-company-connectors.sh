@@ -12,7 +12,7 @@ if [[ ! -f "$deps/typescript/bin/tsc" || ! -d "$deps/@types/node" || ! -d "$deps
 fi
 out="$(mktemp -d "${TMPDIR:-/tmp}/didi-company.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
-mkdir -p "$out/source/"{tools,contracts,domain,runtime,connectors,test,config,host,adapters/model,adapters/mcp,adapters/live-voice,adapters/trello,trace}
+mkdir -p "$out/source/"{tools,contracts,domain,runtime,connectors,test,config,host,adapters/model,adapters/mcp,adapters/live-voice,adapters/trello,trace,live,prompt,http}
 cp "$root"/server/tools/*.ts "$out/source/tools/"
 cp "$root"/server/contracts/*.ts "$out/source/contracts/"
 cp "$root/server/runtime/store.ts" "$out/source/runtime/"
@@ -29,6 +29,12 @@ cp "$root"/server/config/{mcp,files}.ts "$out/source/config/"
 mkdir -p "$out/source/people"
 cp "$root"/server/people/*.ts "$out/source/people/"
 cp "$root/server/host/mcp.ts" "$out/source/host/"
+# C-FILLER: the trello suite asserts its padded-write log line survives safeEvent, so the host log and the
+# modules it closes over (its events, prompt, routes and stop-phrase imports) ride along.
+cp "$root/server/host/log.ts" "$root/server/host/events.ts" "$out/source/host/"
+cp "$root"/server/prompt/*.ts "$out/source/prompt/"
+cp "$root/server/http/routes.ts" "$out/source/http/"
+cp "$root/server/live/stop-phrase.ts" "$out/source/live/"
 # host/mcp.ts resolves the host-owned OAuth record for a Mongoose session.
 cp "$root/server/host/mongoose-auth.ts" "$out/source/host/"
 cp "$root/server/host/oauth-client.ts" "$out/source/host/"

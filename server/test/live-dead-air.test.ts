@@ -20,7 +20,7 @@ import { fakeLiveVoicePort, type FakeLiveVoice, type FakeLiveVoiceEvent } from '
  * and the provider latency record, all on the fake port with an injected clock: nothing sleeps.
  */
 
-const MODEL = 'models/live-dead-air-test';
+const MODEL = 'gpt-live-dead-air-test';
 const NOW = 1_700_000_000_000;
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 /** The port delivers on microtask boundaries, so every emitted event is settled before the clock moves. */

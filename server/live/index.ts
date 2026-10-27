@@ -2410,7 +2410,10 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         // audible output. Only the answer's own audio re-arms it, so a fill frame never writes a false healthy.
         // The owed answer is the tool result's own bookkeeping, so progress speech defers the clock without
         // erasing the obligation (amendment A).
-        if (handle.answerAt !== undefined) {
+        if (handle.answerAt !== undefined && handle.debtSince === undefined) {
+          // C-DEADAIR: while the audible death clock owns this silence (#armDebt stands the sliding watchdog down),
+          // the debt rung is the one nudge. A second one here named the same wait twice and made the owner's first
+          // audible recovery look like two.
           hostLogEvent({ event: 'live_dead_air', msSinceTool: Math.max(0, this.#now() - (handle.answerAt ?? this.#now())),
             msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
           hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: DEAD_AIR_NUDGE_MS });

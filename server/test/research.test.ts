@@ -2014,7 +2014,7 @@ test('TOPIC 2 (#565): a start without a topic is refused, and the repair line na
   assert.equal(refused.ok, false, 'a start with no topic is refused');
   if (!refused.ok) assert.equal(refused.reason, 'topic_required');
   assert.match(String(researchRepair('topic_required')['guidance']), /topic/iu, 'the repair line names the field to add');
-  assert.match(String(researchRepair('topic_required')['guidance']), /eight words/iu, 'and its budget');
+  assert.match(String(researchRepair('topic_required')['guidance']), /8 words/u, 'and its budget, generated from TOPIC_MAX_WORDS');
   const tooLong = parseResearch({ action: 'start', question: 'q', topic: 'one two three four five six seven eight nine' });
   assert.equal(tooLong.ok, false, 'a topic past eight words is refused');
   if (!tooLong.ok) assert.equal(tooLong.reason, 'topic_length');

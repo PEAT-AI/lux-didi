@@ -355,7 +355,8 @@ test('the public character, voice surface and tool conduct are the authored verb
   // Byte guards: a change to any authored block fails here until its hash is deliberately updated.
   // TR3-R1: W15's people rule is the ruled 75-char sentence, so the two blocks carrying it are re-pinned.
   // TR3-R1: W15's people rule is the ruled 75-char sentence, so the two blocks carrying it are re-pinned.
-  // W4 pays the voice and loop rules inside the same blocks and W1 moves the voice tools, so the train merge re-pins all three once.
+  // W4: the voice and loop rules are paid for inside the same blocks, so both hashes are re-pinned here.
+  // Train: W1 moved the voice-tools block too, so the merged sources re-pin all three at once.
   assert.equal(sha(NAYA_CHARACTER), 'feaa777d536ef893b961163e4c53f70a6636c1d70d0c4e6ed8880c2a38802d77');
   assert.equal(sha(NAYA_VOICE_SURFACE), '69d48420aac2471b8343d109c5d48833a25d22a510ef9966b94119a620ef21ab');
   assert.equal(sha(NAYA_VOICE_TOOLS), '1040683267e0695db42e121eccd622c98d257506f2adc643db5ba83667d20506');

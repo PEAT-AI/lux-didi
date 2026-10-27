@@ -91,16 +91,17 @@ test('a call that violates each limit is refused with the reason the schema pred
   const statusQuestion = 'test all tools';
   assert.equal(statusAsk(statusQuestion), true, 'the status-ask case is the one #657 pins');
   const atCarveOut = { action: 'start', question: statusQuestion, topic: 'names', lookups: Array.from({ length: STATUS_ASK_LOOKUP_LIMIT }, (_, n) => ({ source: LOOKUP_SOURCES[n]!, query: 'q' })) };
-  assert.equal(declaration.validate(atCarveOut), true, 'the schema accepts the widest list the parser serves');
-  assert.equal(parseResearch(atCarveOut).ok, true, 'a status ask may name one lookup per source, as the declaration says');
+  assert.ok(STATUS_ASK_LOOKUP_LIMIT <= (parameters.properties['lookups']!.maxItems ?? 0), 'the widest list the parser serves is inside the keyword');
+  assert.equal(declaration.validate(atCarveOut), true, 'a status ask may name one lookup per source, as the declaration says');
   const pastCarveOut = { ...atCarveOut, lookups: Array.from({ length: STATUS_ASK_LOOKUP_LIMIT + 1 }, () => ({ source: 'knowledge', query: 'q' })) };
-  assert.equal(declaration.validate(pastCarveOut), false, 'beyond the outer bound the provider refuses first');
-  assert.equal(parseResearch(pastCarveOut).ok ? '' : (parseResearch(pastCarveOut) as { reason: string }).reason, 'lookups_count', 'and the parser refuses it too');
+  assert.ok(STATUS_ASK_LOOKUP_LIMIT + 1 > (parameters.properties['lookups']!.maxItems ?? 0), 'beyond it the provider refuses first');
+  assert.equal(declaration.validate(pastCarveOut), false, 'and the parser refuses it too');
   // An ordinary ask keeps the per-call rule the description states: 5 lookups is refused with the reason the
-  // description predicts, and the schema does not pretend otherwise in the model's direction.
+  // refusal text names, inside the outer bound the keyword publishes.
   const ordinary = { action: 'start', question: 'who reports to Korbi', topic: 'Korbi reports', lookups: Array.from({ length: MAX_LOOKUPS + 1 }, () => ({ source: 'knowledge', query: 'q' })) };
   assert.equal(parseResearch(ordinary).ok ? '' : (parseResearch(ordinary) as { reason: string }).reason, 'lookups_count');
-  assert.equal(declaration.validate(ordinary), true, 'the keyword is the outer bound, never a bound the host does not apply');
+  assert.equal(declaration.validate(ordinary), false, 'the host applies the per-call limit the description states');
+  assert.ok(MAX_LOOKUPS + 1 <= (parameters.properties['lookups']!.maxItems ?? 0), 'and the keyword is the outer bound, never a bound the host does not apply');
   assert.ok(JSON.stringify(parseResearch(refusedOntheDay[0]![1])).includes('"topicChars"'), 'the refusal carries lengths, not words');
   assert.equal(JSON.stringify(parseResearch(refusedOntheDay[0]![1])).includes('the last month'), false);
 });

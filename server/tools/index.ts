@@ -22,7 +22,7 @@ import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, vali
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
-import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, ownerWords, validateOpen, type NativeActionCode } from './open.js';
+import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, ownerWords, validateOpen, type OpenReceiptCode } from './open.js';
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
@@ -676,7 +676,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const dispatched = 'target' in resolved ? resolved.target : undefined;
           // A guard refusal never reached the native side, so its receipt is the closed policy code, while the
           // model is told the reason the call was refused.
-          const code: NativeActionCode = dispatched === undefined ? (refused === 'not_found' ? 'not_found' : 'not_allowed') : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
+          const code: OpenReceiptCode = dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
           if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
           else nativeActionReceipt('open_url', code, openTool.name === 'open_home' ? 'home' : 'none');
           // Open2: the opened ack names what opened, and only an ack of `opened` becomes a turn receipt.

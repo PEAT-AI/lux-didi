@@ -5,7 +5,7 @@ import { recordHistorySession, historySessionEvidence, recordHistoryDependency }
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
-import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteOwnerWords, noteSpoken, openClaimCorrection } from '../tools/open.js';
+import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteModelOutput, noteOwnerWords, noteSpoken, openClaimCorrection } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
 import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
@@ -3281,7 +3281,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         }
         // A held answer stays for the offer. A cancelled opener stops applying on a barge-in as well as a
         // turn end (LIVE2-R8), so the answer to the owner's words is never silenced by it.
-        if (event.type === 'turnComplete' || event.type === 'interrupted') { handle.mutedResponse = false; handle.dropResponse = false; }
+        if (event.type === 'turnComplete' || event.type === 'interrupted') { handle.mutedResponse = false; handle.dropResponse = false; noteModelOutput(handle.liveSessionId); }
         if (event.type === 'turnComplete') handle.answerAt = undefined;
         if (event.type === 'modelTurnStarted') {
           // A trailing modelTurnStarted of the same batch never reopens a cancelled response (LIVE2-R6 F1).
@@ -4291,7 +4291,8 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       }
       if (kind === 'inputTranscription' && finished === 1) {
         const ownerTurn = finishedOwnerTurn(tx, handle.liveSessionId);
-        // #573: the open tools are checked against the words of the turn they answer.
+        // #573: the open tools are checked against the owner's words since the model last spoke, so a
+        // provider that finalizes one utterance as two turns still carries the whole ask.
         if (ownerTurn) noteOwnerWords(handle.liveSessionId, ownerTurn);
         if (ownerTurn && transcription?.finalOrigin !== 'typed') this.#vault.observe(tx, handle.liveSessionId, String(journalId), ownerTurn, previousOwnerTurn(tx, handle.liveSessionId));
         // W6 item 6: the composed note listens to the same finalized owner turn, and to nothing else.

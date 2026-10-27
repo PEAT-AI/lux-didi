@@ -81,6 +81,7 @@ const dist = process.argv[2];
 const persona = await import(pathToFileURL(`${dist}/prompt/live-persona.js`).href);
 const backend = await import(pathToFileURL(`${dist}/prompt/backend-procedure.js`).href);
 const research = await import(pathToFileURL(`${dist}/tools/research.js`).href);
+const open = await import(pathToFileURL(`${dist}/tools/open.js`).href);
 const voice = persona.NAYA_VOICE_TOOLS;
 const procedure = backend.NAYA_BACKEND_PROCEDURE;
 const everything = [persona.NAYA_LIVE_BASE, voice, procedure, persona.NAYA_TOOLS, JSON.stringify(research.RESEARCH)].join('\n');
@@ -109,6 +110,13 @@ for (const rule of [
 ]) assert.ok(procedure.includes(rule), `backend rule missing: ${rule}`);
 // The no-filler rule and the eight-line reply bound stay as they were.
 assert.ok(persona.NAYA_LIVE_BASE.includes('Never fill the silence while a lookup runs'), 'the no-filler rule is kept');
+// C-OPEN: a failed open is never given an invented reason, and the guidance names the real refusal.
+assert.ok(persona.NAYA_OPEN_SURFACE.includes('Never invent a failed-open reason'), 'the open surface bans an invented reason');
+assert.ok(persona.NAYA_OPEN_SURFACE.includes('retry once with the same handle'), 'the open surface retries on a repeated ask');
+for (const code of ['no_open_intent', 'not_allowed']) {
+  assert.ok(open.OPEN_GUIDANCE[code].includes('same handle'), `the ${code} guidance asks for the same handle on a retry`);
+}
+assert.equal(open.OPEN_GUIDANCE.no_open_intent.includes('did not hear an open request'), true, 'no_open_intent says she did not hear one');
 assert.ok(voice.includes('never use a stock waiting line'), 'the stock waiting line ban is kept');
 assert.equal(research.RESEARCH.mailLines, 8); assert.equal(research.RESEARCH.chatLines, 8);
 assert.equal(research.RESEARCH.moreAvailableNote, 'Partial: answer now, offer the rest; read on only if asked.');

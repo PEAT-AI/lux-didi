@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { safeEvent } from '../host/log.js';
-import { NativeActionBus, OPEN_GUIDANCE, OPEN_TOOLS, OPEN_TOOL_NAMES, exposeToolResults, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openParameters, openTarget, ownerWords, receiptDetail, validateOpen } from '../tools/open.js';
+import { NativeActionBus, OPEN_GUIDANCE, OPEN_RECEIPT_CODES, OPEN_TOOLS, OPEN_TOOL_NAMES, exposeToolResults, noteModelOutput, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openParameters, openTarget, ownerWords, receiptDetail, validateOpen } from '../tools/open.js';
 import { beginHandleSession, endHandleSession, exposeHandles, noteMattermostOrigin, openDestination, resolveHandle } from '../tools/open-handles.js';
 import { shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge } from '../tools/live-shape.js';
 
@@ -386,7 +386,8 @@ test('#573: an open call runs only on the owner own open intent', () => {
   const handle = /^open: (L\d+)/m.exec(shaped.text)![1]!;
   noteOwnerWords('live-open-guard-intent', 'search the web for the pricing page');
   assert.deepEqual(openTarget('open_source', { handle }, ownerWords('live-open-guard-intent')), { code: 'no_open_intent' }, 'nothing opens when he asked for a search');
-  assert.match(OPEN_GUIDANCE.no_open_intent, /did not ask me to open/);
+  assert.match(OPEN_GUIDANCE.no_open_intent, /did not hear an open request/);
+  assert.match(OPEN_GUIDANCE.no_open_intent, /same handle/, 'a repeated ask retries with the same handle');
   noteOwnerWords('live-open-guard-intent', 'zeig mir den Umsatz');
   assert.ok('target' in openTarget('open_source', { handle }, ownerWords('live-open-guard-intent')), 'a German open intent still opens');
   noteOwnerWords('live-open-guard-intent', 'pull up the notes');
@@ -418,4 +419,58 @@ test('#573: an app named by name opens through open_app with no lookup', () => {
   assert.equal(shown.target.action, 'open_app');
   assert.equal(shown.target.kind, 'app');
   assert.equal(shown.target.title, 'Mattermost');
+});
+
+test('C-OPEN: an ask the provider finalized as two turns still opens', () => {
+  const run = 'live-open-split-turn';
+  beginHandleSession(run);
+  const shaped = shapeGmailList({ messages: [{ id: 'm1', snippet: 'the pricing page deck' }] });
+  exposeHandles(shaped.text);
+  const handle = /^open: (L\d+)/m.exec(shaped.text)![1]!;
+  noteModelOutput(run);
+  noteOwnerWords(run, 'could you open it in my');
+  noteOwnerWords(run, 'browser');
+  assert.equal(ownerWords(run), 'could you open it in my browser', 'every finalized turn of the stretch judges the call');
+  const shown = openTarget('open_source', { handle }, ownerWords(run));
+  assert.ok('target' in shown, 'a lone "browser" after "open it in my" still opens the thread');
+  assert.equal(shown.target.kind, 'gmail');
+  endHandleSession(run);
+});
+
+test('C-OPEN: the intent window is the turns since the model last spoke, bounded', () => {
+  const run = 'live-open-window';
+  noteOwnerWords(run, 'open it');
+  assert.equal(ownerWords(run), 'open it');
+  noteModelOutput(run);
+  noteOwnerWords(run, 'what time is it');
+  assert.equal(ownerWords(run), 'what time is it', 'the next turn after model output starts a fresh window');
+  noteOwnerWords(run, 'and the weather');
+  noteOwnerWords(run, 'and my mail');
+  noteOwnerWords(run, 'and the news');
+  assert.equal(ownerWords(run).includes('what time is it'), false, 'only the last three finalized turns are kept');
+});
+
+test('C-OPEN: a stretch with no open verb refuses with its own real code', () => {
+  const run = 'live-open-no-intent';
+  beginHandleSession(run);
+  const shaped = shapeGmailList({ messages: [{ id: 'm1', snippet: 'the pricing page deck' }] });
+  exposeHandles(shaped.text);
+  const handle = /^open: (L\d+)/m.exec(shaped.text)![1]!;
+  noteModelOutput(run);
+  noteOwnerWords(run, 'what time is it');
+  const words = ownerWords(run);
+  assert.deepEqual(openTarget('open_source', { handle }, words), { code: 'no_open_intent' }, 'nothing opens when no turn asked to open');
+  assert.deepEqual(safeEvent({ event: 'native_action', action: 'open_url', code: 'no_open_intent', detail: 'none' }),
+    { event: 'native_action', action: 'open_url', code: 'no_open_intent', detail: 'none' }, 'the host receipt carries the guard code');
+  assert.deepEqual(safeEvent({ event: 'native_action', action: 'open_url', code: 'kind_mismatch', detail: 'none' }),
+    { event: 'native_action', action: 'open_url', code: 'kind_mismatch', detail: 'none' }, 'and so does a kind mismatch');
+  assert.equal(safeEvent({ event: 'native_action', action: 'open_url', code: 'refused', detail: 'none' }), undefined, 'the code set stays closed');
+  assert.deepEqual([...OPEN_RECEIPT_CODES].sort(), ['failed', 'kind_mismatch', 'no_open_intent', 'not_allowed', 'not_found', 'opened'], 'the receipt code set is the acks plus the guard codes');
+  // C-OPEN: the ask he repeats is his own open intent, so the same handle opens.
+  noteModelOutput(run);
+  noteOwnerWords(run, 'why can not you open it in my browser');
+  const retried = openTarget('open_source', { handle }, ownerWords(run));
+  assert.ok('target' in retried, 'the repeated ask opens the same handle');
+  assert.equal(retried.target.kind, 'gmail');
+  endHandleSession(run);
 });

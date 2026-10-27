@@ -286,7 +286,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const allowed = ['action', 'code', 'detail', 'event'];
     if (Object.keys(value).sort().join(',') !== allowed.join(',')) return;
     if (typeof value.action !== 'string' || !['open_url', 'open_file', 'open_app'].includes(value.action)) return;
-    if (typeof value.code !== 'string' || !['opened', 'not_allowed', 'not_found', 'failed'].includes(value.code)) return;
+    if (typeof value.code !== 'string' || !['opened', 'not_allowed', 'not_found', 'failed', 'no_open_intent', 'kind_mismatch'].includes(value.code)) return;
     if (typeof value.detail !== 'string' || !/^[a-z0-9]{1,16}$/.test(value.detail)) return;
     return { event: 'native_action', action: value.action, code: value.code, detail: value.detail };
   }

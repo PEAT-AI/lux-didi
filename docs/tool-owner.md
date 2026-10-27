@@ -28,7 +28,7 @@ An open action uses a handle derived from accepted source evidence, not a URL in
 
 One clear result can be opened. Ambiguous Drive matches require clarification and a fresh file read before opening the chosen result. Download/export URLs are not a substitute for an accepted viewer link. Gmail links use the connector's account evidence rather than assuming every mailbox is account zero.
 
-`Sources/LuxDidi/NativeActions.swift` enforces native destinations and uses `chromeBundleIdentifier` to prefer Chrome, with the default browser as fallback when Chrome is unavailable. An open receipt, not the model's sentence, determines whether the action succeeded. No AppleScript or keystroke automation is implied by this capability.
+`Sources/LuxDidi/NativeActions.swift` enforces native destinations and uses `chromeBundleIdentifier` to prefer Chrome, with the default browser as fallback when Chrome is unavailable. An open receipt, not the model's sentence, determines whether the action succeeded. The receipt carries the closed code the call ended on: a native ack (`opened`, `failed`), the allowlist's `not_allowed`, an unresolved handle's `not_found`, or the intent guard's `no_open_intent` / `kind_mismatch`. The guard reads every finalized owner turn since the model last spoke, so a provider that finalizes one utterance as two turns still carries the whole ask. No AppleScript or keystroke automation is implied by this capability.
 
 ## Local memory and Lux notes
 

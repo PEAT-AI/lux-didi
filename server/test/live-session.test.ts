@@ -5522,10 +5522,6 @@ test('mail integration: an unused cursor keeps its original message coordinates 
 });
 
 
-// W1-R3/W1-R4 diagnosis pass (temporary): what a page really carries, removed before the commit.
-const dbgPage = (tag: string, response: Record<string, unknown>): void => {
-  process.stderr.write(`DBG ${tag} ${JSON.stringify({ keys: Object.keys(response).sort(), findings: Array.isArray(response['findings']) ? (response['findings'] as unknown[]).length : 'none', slices: Array.isArray(response['bodySlices']) ? (response['bodySlices'] as unknown[]).length : 'none', pageCursor: typeof response['pageCursor'], pagesRemaining: response['pagesRemaining'] ?? 'none', canContinue: response['canContinue'] ?? 'none', status: response['status'] ?? 'none' })}\n`);
-};
 test('mail body integration: full received text continues locally once with exact UTF16 coordinates', async t => {
   const body = `Latest evidence.\nOn Monday, Synthetic Sender wrote:\n> ${'🍃'.repeat(11000)}\nFinal retained evidence.`;
   const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => ({ id: args['id'], format: args['format'], headers: { Subject: 'Synthetic full received body' }, body: args['format'] === 'metadata' ? null : body, bodyCoverage: { complete: true } }) });
@@ -5590,9 +5586,11 @@ test('mail body integration: immutable receipt, metadata opt-out and new-start c
     return frame.toolResponse.functionResponses[0]!.response;
   };
   await settleLiveTool(h, 'first-body', 'research', { action: 'start', question: 'Read full mail', topic: 'Read full mail', lookups: [{ source: 'mail', mail: { id: 'identity' } }] });
-  const researchId = last()['researchId'], cursor = last()['pageCursor'] ?? last()['nextCursor'] ?? last()['cursor']; assert(captured); const held = captured;
-  await settleLiveTool(h, 'next-body', 'research', { action: 'continue', researchId, cursor }); const nextCursor = last()['nextCursor'];
-  await settleLiveTool(h, 'replay-body', 'research', { action: 'continue', researchId, cursor });
+  // W1-R4: the rest of a capped reply is read with pageCursor; the research continuation stays in cursor.
+  const researchId = last()['researchId'], page = last()['pageCursor'];
+  const next = page !== undefined ? { pageCursor: String(page) } : { cursor: last()['nextCursor'] ?? last()['cursor'] }; assert(captured); const held = captured;
+  await settleLiveTool(h, 'next-body', 'research', { action: 'continue', researchId, ...next }); const nextCursor = last()['nextCursor'];
+  await settleLiveTool(h, 'replay-body', 'research', { action: 'continue', researchId, ...next });
   assert.equal(last()['alreadyDelivered'], true); assert.equal(last()['nextCursor'], nextCursor); assert.equal(last()['bodySlices'], undefined); assert.deepEqual(last()['findings'], []);
   await settleLiveTool(h, 'metadata-only', 'research', { action: 'start', question: 'Read metadata', topic: 'Read metadata', lookups: [{ source: 'mail', mail: { id: 'identity', format: 'metadata' } }] });
   assert.equal(last()['bodySlices'], undefined); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 2);
@@ -5657,11 +5655,13 @@ test('mail body integration: actual source expiry denies local continuation with
     return frame.toolResponse.functionResponses[0]!.response;
   };
   await settleLiveTool(h, 'expiry-start', 'research', { action: 'start', question: 'Read full message', topic: 'Read full message', lookups: [{ source: 'mail', mail: { id: 'expiring' } }] });
-  const researchId = last()['researchId'], cursor = last()['pageCursor'] ?? last()['nextCursor'] ?? last()['cursor']; assert(expiresAt > Date.now());
+  // W1-R4: the rest of a capped reply is read with pageCursor; the research continuation stays in cursor.
+  const researchId = last()['researchId'], page = last()['pageCursor'];
+  const next = page !== undefined ? { pageCursor: String(page) } : { cursor: last()['nextCursor'] ?? last()['cursor'] }; assert(expiresAt > Date.now());
   assert(captured); const changedClock = t.mock.method(Date, 'now', () => expiresAt + 1);
   assert.equal(h.toolOwner!.consumeEvidence(captured[0], captured[1].find(binding => binding.name === 'gmail_read_message')!, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
   changedClock.mock.restore();
-  await settleLiveTool(h, 'expiry-next', 'research', { action: 'continue', researchId, cursor });
+  await settleLiveTool(h, 'expiry-next', 'research', { action: 'continue', researchId, ...next });
   assert.equal(last()['bodySlices'], undefined); assert.equal(last()['canContinue'], false); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1);
 });
 
@@ -5675,11 +5675,10 @@ test('mail body integration: body consumption preserves simultaneous calendar ev
   await settleLiveTool(h, 'mixed-start', 'research', { action: 'start', question: 'Read full mail and calendar', topic: 'Read full mail and calendar', lookups: [{ source: 'mail', mail: { id: 'mixed' } }, { source: 'calendar', query: 'this week' }] });
   const seen = new Set<string>(), researchId = last()['researchId']; let count = 0;
   for (;;) {
-    dbgPage('631', last());
     for (const match of JSON.stringify(last()['findings'] ?? '').matchAll(/Body sibling event (\d+)/g)) seen.add(match[1]!);
     assert(JSON.stringify(last()).length <= 6000, 'combined actual model response respects its existing bound');
     if (!last()['canContinue']) break; assert(++count < 20);
-    await settleLiveTool(h, `mixed-next-${count}`, 'research', { action: 'continue', researchId, ...(last()['nextCursor'] ? { cursor: last()['pageCursor'] ?? last()['nextCursor'] ?? last()['cursor'] } : {}) });
+    await settleLiveTool(h, `mixed-next-${count}`, 'research', { action: 'continue', researchId, ...(last()['nextCursor'] ? { ...(last()['pageCursor'] !== undefined ? { pageCursor: last()['pageCursor'] } : { cursor: last()['nextCursor'] ?? last()['cursor'] }) } : {}) });
   }
   assert.equal(seen.size, 12); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1); assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 1);
 });
@@ -5698,7 +5697,7 @@ test('Lux body integration: exact received opaque content reaches its retained t
     for (const slice of slices) { assert.equal(slice.source, 'knowledge'); assert.equal(slice.offset, collected.length); assert.equal(slice.upstreamComplete, 'unknown'); assert.equal(slice.upstreamOmitted, 'unknown'); collected += slice.text; }
     assert.equal(last()['bodyProjection'], 'preview'); assert(JSON.stringify(last()).length <= 24000);
     if (!last()['canContinue']) break; assert(++count < 25);
-    await settleLiveTool(h, `lux-next-${count}`, 'research', { action: 'continue', researchId, cursor: last()['pageCursor'] ?? last()['nextCursor'] ?? last()['cursor'] });
+    await settleLiveTool(h, `lux-next-${count}`, 'research', { action: 'continue', researchId, ...(last()['pageCursor'] !== undefined ? { pageCursor: last()['pageCursor'] } : { cursor: last()['nextCursor'] ?? last()['cursor'] }) });
   }
   assert.equal(collected, raw); assert.equal(last()['status'], 'partial', 'all received bytes does not prove upstream completeness'); assert.equal(h.calls.filter(call => call.name === 'get_insight').length, 1); assert.equal(h.calls.filter(call => call.name === 'search_knowledge').length, 0);
 });
@@ -5718,7 +5717,6 @@ test('RUN-R11: a 16,800-character mail body arrives in at most eight replies, ev
   await settleLiveTool(h, 'long-start', 'research', { action: 'start', question: 'Read the full mail', topic: 'Read the full mail', lookups: [{ source: 'mail', mail: { id: 'long' } }] });
   const researchId = String(last()['researchId']); let collected = '', replies = 1, started = -1;
   for (;;) {
-    dbgPage('633', last());
     const slices = last()['bodySlices'] as { text: string; offset: number }[] | undefined;
     if (Array.isArray(slices)) for (const slice of slices) {
       if (started < 0) started = slice.offset;
@@ -5729,7 +5727,7 @@ test('RUN-R11: a 16,800-character mail body arrives in at most eight replies, ev
     if (!last()['canContinue']) break;
     assert.ok(replies < 12, 'a 16,800 character body costs at most twelve replies at 3,000 characters each');
     replies += 1;
-    await settleLiveTool(h, `long-next-${replies}`, 'research', { action: 'continue', researchId, cursor: last()['pageCursor'] ?? last()['nextCursor'] ?? last()['cursor'] });
+    await settleLiveTool(h, `long-next-${replies}`, 'research', { action: 'continue', researchId, ...(last()['pageCursor'] !== undefined ? { pageCursor: last()['pageCursor'] } : { cursor: last()['nextCursor'] ?? last()['cursor'] }) });
   }
   assert.equal(collected, `subject: ${subject}\n\n${body}`, 'the joined pages are the raw body, byte for byte');
 });

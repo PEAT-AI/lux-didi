@@ -6263,7 +6263,7 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
     if (rest.length === 0) return { ...page, canContinue: envelope['nextCursor'] !== undefined };
     // A body reader already follows `nextCursor`, so a paged body is read through that same field and lands back
     // on the body's own next page once the store's slices are spent.
-    return { ...page, canContinue: true, nextCursor: book.keepSlices(researchId, envelope, rest) };
+    return { ...page, canContinue: true, pageCursor: book.keepSlices(researchId, envelope, rest), pagesRemaining: pagesLeft(rest) };
   }
   const { lines, rest } = takeVoiceUnits(envelope, voiceUnitsOf(reply), cap, VOICE_CURSOR_PREFIX.length + 36);
   const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };

@@ -135,7 +135,9 @@ function rowLines(data: Record<string, unknown>): string[] | undefined {
     ? [row.map((cell, index) => `${labels[index] ?? index}: ${scalar(cell) ?? ''}`).join(' | ')]
     : []);
   if (!lines.length) return undefined;
-  return [...lines, 'latest day loaded: the first row, sorted newest first'];
+  // The rows keep their own dates and nothing more: which one is the latest is the research layer's call,
+  // read from the dates themselves, so no projection line claims an order the dispatch never asked for.
+  return lines;
 }
 
 /** The one owner line a closed state carries; absent when the answer is ordinary data. */

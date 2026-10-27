@@ -834,7 +834,10 @@ export async function composeMcpRuntime(options: {
         generations.set(id, token);
         recovery.stop(id);
         registry.suspend(id);
-        await settle(entry, token, 'refresh', identityOnce)
+        // C-SIGNIN-LIVE (R-12): a landed sign-in is this endpoint's first connect with a usable
+        // credential, so it writes connector_connected (or connector_failure with its closed code) and
+        // never a restart the owner has to do by hand.
+        await settle(entry, token, 'first-connect', identityOnce)
           .then(result => { if (result.retryable) scheduleRecovery(entry); })
           .catch(() => { /* the per-connector report already carries the failure */ });
       }));

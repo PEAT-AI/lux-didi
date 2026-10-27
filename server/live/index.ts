@@ -1345,7 +1345,7 @@ export class LiveSessionOwner {
       const freshThread = freshOwnerThread(tx, assistantId, this.#profile.route.dataClasses, now);
       const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone,
         ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
-        openLoops: storedOpenLoops(tx, this.#profile.route.dataClasses, now),
+        openLoops: storedOpenLoops(tx, this.#profile.route.dataClasses, now, staleRefusedNoteSessions(tx, assistantId)),
         ...(freshThread === undefined ? {} : { freshThread }),
         ...(earlierOpeners[0] === undefined ? {} : { previousKinds: earlierOpeners[0].kinds }),
         rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });

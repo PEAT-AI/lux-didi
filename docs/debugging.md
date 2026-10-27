@@ -80,7 +80,9 @@ A successful HTTP response alone does not prove an answer was spoken. A provider
 
 ## Logs are closed projections
 
-`safeEvent` in `server/host/log.ts` defines the accepted event fields. Keep new diagnostics as closed reason codes, IDs, counts and durations; never pass exception messages, tool arguments, query text, document titles or credential objects through a catch-all logger.
+`safeEvent` in `server/host/log.ts` defines the accepted event fields. Keep new diagnostics as closed reason codes, IDs, counts and durations; never pass exception messages, tool arguments, query text, document titles or credential objects through a catch-all logger. A test in `server/test/host-log.test.ts` enumerates every event literal handed to the emitter and fails when one has no branch, so an unrecognised event is a red build rather than a silently dropped line.
+
+A tool handler that throws after dispatch is never silent: `tool_handler_error` carries the tool name, the error class from a closed list (`Error`, `TypeError`, `SqliteError`, and `Unknown` for anything else) and the recorded closed reason. It never carries the error's message or stack, so a failing handler is diagnosable from `host.log` alone without leaking the note text, arguments or paths the handler was holding.
 
 The Live owner records `live_dead_air` evidence separately from the nudge/recovery actions. A busy tool and a silent provider are different failures; keep their attribution rather than labeling every delay a reconnect defect. `live_heard_silence` carries that attribution as `silence` (`tool` while a call is really in flight, `provider` while the model is generating, `owner` otherwise). Trace storage and correlation are owned by `server/trace/schema.ts`, `server/trace/record.ts` and `server/trace/timeline.ts`.
 

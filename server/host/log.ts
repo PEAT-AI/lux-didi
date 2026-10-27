@@ -143,6 +143,8 @@ const closedKeys = (value: Record<string, unknown>, keys: readonly string[]): bo
   Object.keys(value).sort().join(',') === [...keys].sort().join(',');
 /** #613: the launch paths the app can report, mirrored from LaunchKind, so no free text crosses. */
 const LAUNCH_KINDS = ['interactive', 'login_item', 'install_relaunch', 'installed_proof', 'self_check', 'ui_proof', 'verification'];
+/** W5: the closed error classes a thrown tool handler may name (tools/declarations.ts). */
+const TOOL_HANDLER_CLASSES = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'URIError', 'AggregateError', 'SqliteError', 'Unknown'];
 
 // Only the existing diagnostic schemas cross this boundary, never arbitrary console text.
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
@@ -191,6 +193,74 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'reason'])) return;
     if (typeof value.reason !== 'string' || !/^[a-z0-9_]{1,40}$/.test(value.reason)) return;
     return { event: 'people_invalid', reason: value.reason };
+  }
+  if (value.event === 'lux_note_stage') {
+    // W5: one composed-note stage receipt. The digest of the frozen payload, or the closed refusal
+    // code, and nothing of the note itself.
+    const hasDigest = value.digest !== undefined;
+    if (!closedKeys(value, ['event', 'staged', ...(hasDigest ? ['digest'] : ['code'])])) return;
+    if (typeof value.staged !== 'boolean') return;
+    if (value.staged === true && (typeof value.digest !== 'string' || !/^[a-f0-9]{12}$/.test(value.digest))) return;
+    if (value.staged === false && !isSafeToken(value.code)) return;
+    return value.staged === true
+      ? { event: 'lux_note_stage', staged: true, digest: value.digest }
+      : { event: 'lux_note_stage', staged: false, code: value.code };
+  }
+  if (value.event === 'lux_note_readback' || value.event === 'lux_note_confirm') {
+    // W5: the note's state machine and its closed reason code, never the note. An empty code is the
+    // confirm path's "no code yet" and keeps its own shape.
+    if (!closedKeys(value, ['code', 'event', 'state'])) return;
+    if (!isSafeToken(value.state)) return;
+    if (typeof value.code !== 'string' || (value.code !== '' && !isSafeToken(value.code))) return;
+    return { event: value.event, state: value.state, code: value.code };
+  }
+  if (value.event === 'lux_note_saved') {
+    // W5: whether the frozen payload reached the vault, and the closed code that says why not.
+    if (!closedKeys(value, ['code', 'event', 'saved'])) return;
+    if (typeof value.saved !== 'boolean' || !isSafeToken(value.code)) return;
+    return { event: 'lux_note_saved', saved: value.saved, code: value.code };
+  }
+  if (value.event === 'tool_handler_error') {
+    // W5: a handler threw after dispatch. A tool name, an error class from a closed list and the
+    // recorded closed reason; never the error's message, stack or a provider string.
+    if (!closedKeys(value, ['class', 'event', 'reason', 'tool'])) return;
+    if (!isSafeToken(value.tool) || !isSafeToken(value.reason)) return;
+    if (typeof value.class !== 'string' || !TOOL_HANDLER_CLASSES.includes(value.class)) return;
+    return { event: 'tool_handler_error', tool: value.tool, class: value.class, reason: value.reason };
+  }
+  if (value.event === 'research_context_rebuild') {
+    // W1/W5: a rebuild receipt in characters and a count, the same field names the rebuild emits.
+    if (!closedKeys(value, ['event', 'ledgerChars', 'rebuilds', 'retainedChars', 'seedTranscriptChars'])) return;
+    if (![value.retainedChars, value.ledgerChars, value.seedTranscriptChars, value.rebuilds].every(isSafeCount)) return;
+    return { event: 'research_context_rebuild', retainedChars: value.retainedChars, ledgerChars: value.ledgerChars,
+      seedTranscriptChars: value.seedTranscriptChars, rebuilds: value.rebuilds };
+  }
+  if (value.event === 'notes_export') {
+    // W5: the exporter's own counts and an 8 hex run id, never a note or a path.
+    if (!closedKeys(value, ['event', 'exported', 'failed', 'id', 'remaining', 'skipped', 'unknown'])) return;
+    if (![value.exported, value.skipped, value.failed, value.unknown, value.remaining].every(isSafeCount)) return;
+    if (typeof value.id !== 'string' || !/^[a-f0-9]{8}$/.test(value.id)) return;
+    return { event: 'notes_export', exported: value.exported, skipped: value.skipped, failed: value.failed,
+      unknown: value.unknown, remaining: value.remaining, id: value.id };
+  }
+  if (value.event === 'consumer_detach') {
+    // W5: the consumer's state, whether an answer was owed, and how many calls stayed open.
+    if (!closedKeys(value, ['awaitingAnswer', 'consumerState', 'event', 'openCalls'])) return;
+    if (!isSafeMember(value.consumerState, ['detached', 'attached', 'ended', 'backpressure'])) return;
+    if (typeof value.awaitingAnswer !== 'boolean' || !isSafeCount(value.openCalls)) return;
+    return { event: 'consumer_detach', consumerState: value.consumerState, awaitingAnswer: value.awaitingAnswer, openCalls: value.openCalls };
+  }
+  if (value.event === 'late_findings_sent') {
+    // W5: which delegation was late and the closed reason it was sent under.
+    if (!closedKeys(value, ['delegationKey', 'event', 'reason'])) return;
+    if (!isSafeId(value.delegationKey) || !isSafeToken(value.reason)) return;
+    return { event: 'late_findings_sent', delegationKey: value.delegationKey, reason: value.reason };
+  }
+  if (value.event === 'live_detach_write_failed') {
+    // W5: the session whose detach row failed to write, and the closed class of the failure.
+    if (!closedKeys(value, ['class', 'event', 'liveSessionId'])) return;
+    if (!isSafeId(value.liveSessionId) || !isSafeToken(value.class)) return;
+    return { event: 'live_detach_write_failed', liveSessionId: value.liveSessionId, class: value.class };
   }
   if (value.event === 'people_trimmed') {
     // W15: how many roster lines the section ceiling dropped, and how many of them were tier 2.

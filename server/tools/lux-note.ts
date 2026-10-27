@@ -23,6 +23,8 @@ export function validateStageNote(args: unknown): args is { title: string; body:
 
 /** A note is titled and bodied by the host; title plus body is never truncated, only refused. */
 export const NOTE_MAX_CHARS = 2000;
+/** What the model says when the host could not stage the note at all: a closed code in plain words. */
+export const STAGE_FAILED_GUIDANCE = 'The note was not staged. Tell the owner it was not saved and ask them to say it again in one sentence.';
 export const TITLE_MAX_CHARS = 120;
 export const CONFIRM_WINDOW_MS = 30_000;
 export const CONFIRM_SETTLE_MS = 1_500;

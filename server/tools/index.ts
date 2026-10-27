@@ -18,7 +18,7 @@ import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history
 import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
-import { STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, validateStageNote } from './lux-note.js';
+import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, validateStageNote } from './lux-note.js';
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
@@ -233,7 +233,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     }
     if (call.toolName === STAGE_NOTE_IDENTITY.name && call.accountId === STAGE_NOTE_IDENTITY.accountId && call.resourceId === STAGE_NOTE_IDENTITY.resourceId) {
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
-      return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 1024 } } };
+      // The stage result carries the frozen title, body and read-back line for the owner to hear, so the
+      // ceiling is the note's own limits, not the vault tool's small receipt. W5: 1024 refused every
+      // realistic note with model_snapshot_oversize after the row was already written and rolled back.
+      return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 65_536 } } };
     }
     if (call.toolName === REMEMBER_IDENTITY.name && call.accountId === REMEMBER_IDENTITY.accountId && call.resourceId === REMEMBER_IDENTITY.resourceId) {
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
@@ -608,18 +611,31 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           if (context.runId !== runId || !validateStageNote(args) || context.signal.aborted) return { status: 'failed' };
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' };
-          const result = store.transaction(tx => {
+          // The booked call this execute may complete, re-read inside whichever transaction uses it.
+          const booked = (tx: Transaction): ToolCallIntent => {
             const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
             if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
             const call = storedCall(tx, row);
-            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, executionId: context.executionId };
+            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision,
+              executionId: context.executionId, toolName: STAGE_NOTE_IDENTITY.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
+              accountId: STAGE_NOTE_IDENTITY.accountId, resourceId: STAGE_NOTE_IDENTITY.resourceId, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
             if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
-            const snapshot = validateCallRun(tx, call);
+            return call as ToolCallIntent;
+          };
+          try {
+            const result = store.transaction(tx => {
+              const call = booked(tx);
+              const snapshot = validateCallRun(tx, call);
             assertLiveIdentity(tx, call); target(snapshot, call, tx);
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-            return complete(call as ToolCallIntent, stageNote === undefined ? { staged: false, code: 'not_enabled' } : stageNote(tx, runId, args), ['ordinary'], tx);
-          });
-          return { status: 'completed', result };
+              return complete(call, stageNote === undefined ? { staged: false, code: 'not_enabled' } : stageNote(tx, runId, args), ['ordinary'], tx);
+            });
+            return { status: 'completed', result };
+          } catch {
+            // A stage that throws is a named refusal the model can speak, never an unknown write outcome.
+            const result = store.transaction(tx => complete(booked(tx), { staged: false, code: 'stage_failed', guidance: STAGE_FAILED_GUIDANCE }, ['ordinary'], tx));
+            return { status: 'completed', result };
+          }
         },
       });
       definitions.push({ ...VAULT_WRITE_IDENTITY, description: 'Save the note the owner just dictated to his Lux vault. Call it only after he says the save phrase and then the note.', effect: 'write', parameters: VAULT_WRITE_PARAMETERS, validate: validateVaultSave,
@@ -631,7 +647,9 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
             if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
             const call = storedCall(tx, row);
-            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, executionId: context.executionId };
+            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision,
+              executionId: context.executionId, toolName: VAULT_WRITE_IDENTITY.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
+              accountId: VAULT_WRITE_IDENTITY.accountId, resourceId: VAULT_WRITE_IDENTITY.resourceId, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
             if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
             const snapshot = validateCallRun(tx, call);
             assertLiveIdentity(tx, call); target(snapshot, call, tx);

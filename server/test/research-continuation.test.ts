@@ -144,7 +144,7 @@ test('C-CONTINUITY T-11: a body page is capped and pages its slices with exact o
   let current: Record<string, unknown> = page;
   let pages = 1;
   while (current['canContinue'] === true && pages < 30) {
-    current = book.take(String(current['cursor']))!;
+    current = book.take(String(current['nextCursor']))!;
     assert.ok(current !== undefined, 'the next body page is held by the call');
     assert.ok(JSON.stringify(current).length <= RESEARCH.voiceReplyChars, 'every body page obeys the cap');
     const slice = (current['bodySlices'] as { text: string; offset: number; end: number }[])[0]!;

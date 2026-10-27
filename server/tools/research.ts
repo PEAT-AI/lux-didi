@@ -156,11 +156,6 @@ export const RESEARCH = Object.freeze({
    * pages it, so a long answer costs turns instead of context the provider can never give back.
    */
   voiceReplyChars: 3_000,
-  /**
-   * C-CONTINUITY T-11: the widest body page a live session may be handed. A body page is a research result like
-   * any other, so its width is chosen here to fit the voice cap with the envelope, offsets and cursor included.
-   */
-  voiceBodyPageChars: 2_400,
   /** C-CONTINUITY item 2: the delivered research payload this call may hold before a rebuild is due. */
   rebuildThresholdChars: 60_000,
   /**
@@ -4772,7 +4767,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   for (const bucket of groups.values()) first.reading.add(bucket[0]!.read.source);
   // Q5-R1: a read of a named entry widens the reply to the connector's knowledge body cap, the same
   // way the selector path does, so a routed read is never trimmed to a search reply's length.
-  if ([...groups.values()].some(plans => plans.some(plan => plan.read.subs.some(sub => sub.name === INTERNAL.knowledgeRead)))) limit = Math.max(limit, bodyReplyLimit(deps));
+  if ([...groups.values()].some(plans => plans.some(plan => plan.read.subs.some(sub => sub.name === INTERNAL.knowledgeRead)))) limit = Math.max(limit, RESEARCH.readReplyChars);
   // R6: a layer is credited the moment it settles, so the first answer sees what is already in hand and a
   // layer that lands afterwards is reported late instead of waiting for the slowest one.
   const record = (batch: readonly RoutedOutcome[]): void => {
@@ -5182,23 +5177,12 @@ async function withFullEntries(
 }
 
 /** The loop behind a call: unchanged by the first answer point except for what it reports late. */
-/**
- * C-CONTINUITY T-11: the reply width a body read is built to. A live session is capped by `voiceReplyChars`, so a
- * body page is sized to fit under it instead of at the connector's own 24,000-char body bound; a non-live caller
- * keeps the full body bound.
- */
-function bodyReplyLimit(deps: ResearchDeps): number {
-  return deps.liveSessionId === undefined
-    ? RESEARCH.readReplyChars
-    : Math.min(RESEARCH.readReplyChars, RESEARCH.voiceBodyPageChars);
-}
-
 async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: AbortSignal, first: FirstAnswerState): Promise<JsonObject> {
   let limit = deps.replyLimit ?? budgetFor(call.question ?? '', call.topic ?? undefined);
   // Q5-R1: a read of a named entry widens the reply to the connector's knowledge body cap, so the
   // body the owner asked for is never trimmed away for the length of a search reply.
   const widenFor = (subs: readonly IntentSubCall[]): void => {
-    if (subs.some(sub => sub.name === INTERNAL.knowledgeRead)) limit = Math.max(limit, bodyReplyLimit(deps));
+    if (subs.some(sub => sub.name === INTERNAL.knowledgeRead)) limit = Math.max(limit, RESEARCH.readReplyChars);
   };
   const now = () => deps.now();
   const configured = [...new Set([...(deps.configuredNow ?? (() => deps.configured))(), ...(deps.web === undefined ? [] : ['web' as const])])];
@@ -6063,7 +6047,9 @@ export const VOICE_CURSOR_ERROR = 'cursor_unavailable';
 function voiceEnvelopeOf(reply: JsonObject): JsonObject {
   const envelope: JsonObject = {};
   for (const [key, value] of Object.entries(reply)) {
-    if (key === 'findings' || key === 'bodySlices') continue;
+    // The bulk is paged and the continuation keys are rebuilt per page, so neither rides the envelope. Leaving the
+    // old cursor in would make a page's real cursor a lie about its own size.
+    if (key === 'findings' || key === 'bodySlices' || key === 'cursor' || key === 'canContinue') continue;
     envelope[key] = value;
   }
   return envelope;
@@ -6189,13 +6175,13 @@ export class VoiceReplyBook {
     const envelope: JsonObject = { ...page.envelope, researchId: page.researchId, status: 'partial' };
     if (page.slices.length > 0) {
       const { kept, rest } = takeVoiceSlices(envelope, page.slices, cap, cursorChars);
-      if (rest.length === 0) return { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT, canContinue: false };
+      if (rest.length === 0) return { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT, canContinue: envelope['nextCursor'] !== undefined };
       return { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT, canContinue: true,
-        cursor: this.keepSlices(page.researchId, page.envelope, rest) };
+        nextCursor: this.keepSlices(page.researchId, page.envelope, rest) };
     }
     const { lines, rest } = takeVoiceUnits(envelope, page.units, cap, cursorChars);
     const findings = [{ text: lines.join('\n') }];
-    if (rest.length === 0) return { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: false };
+    if (rest.length === 0) return { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: envelope['nextCursor'] !== undefined };
     return { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: true, cursor: this.keep(page.researchId, page.envelope, rest) };
   }
 
@@ -6218,7 +6204,9 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
     const { kept, rest } = takeVoiceSlices(envelope, slices, cap, VOICE_CURSOR_PREFIX.length + 36);
     const page: JsonObject = { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT };
     if (rest.length === 0) return page;
-    return { ...page, canContinue: true, cursor: book.keepSlices(researchId, envelope, rest) };
+    // A body reader already follows `nextCursor`, so a paged body is read through that same field and lands back
+    // on the body's own next page once the store's slices are spent.
+    return { ...page, canContinue: true, nextCursor: book.keepSlices(researchId, envelope, rest) };
   }
   const { lines, rest } = takeVoiceUnits(envelope, voiceUnitsOf(reply), cap, VOICE_CURSOR_PREFIX.length + 36);
   const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };

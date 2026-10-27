@@ -57,7 +57,7 @@ import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-liv
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
-import { RESEARCH_OPERATION, RESEARCH_TOOL_NAME } from '../tools/research.js';
+import { RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 import { luxNoteMigrations } from '../tools/lux-note.js';
 import { notesExportMigrations } from '../tools/notes-export.js';
@@ -5698,7 +5698,9 @@ test('Lux body integration: exact received opaque content reaches its retained t
   assert.equal(collected, raw); assert.equal(last()['status'], 'partial', 'all received bytes does not prove upstream completeness'); assert.equal(h.calls.filter(call => call.name === 'get_insight').length, 1); assert.equal(h.calls.filter(call => call.name === 'search_knowledge').length, 0);
 });
 
-test('RUN-R11: a 16,800-character mail body arrives in at most four replies, every character once', async t => {
+// C-CONTINUITY T-11: with every research reply capped at 3,000 characters, a 16,800-character body costs more
+// replies than it used to, and every character still arrives exactly once.
+test('RUN-R11: a 16,800-character mail body arrives in at most eight replies, every character once', async t => {
   const subject = 'Long body';
   const body = 'Mail body evidence line. '.repeat(672);
   assert.equal(body.length, 16_800, 'the fixture body is the 16,800 characters the ruling names');
@@ -5717,9 +5719,9 @@ test('RUN-R11: a 16,800-character mail body arrives in at most four replies, eve
       assert.equal(slice.offset, started + collected.length, 'every slice continues where the last one stopped');
       collected += slice.text;
     }
-    assert.ok(JSON.stringify(last()).length <= 6000, 'every reply stays under the reply limit');
+    assert.ok(JSON.stringify(last()).length <= RESEARCH.voiceReplyChars, 'every reply stays under the voice reply cap');
     if (!last()['canContinue']) break;
-    assert.ok(replies < 4, 'a 16,800 character body costs at most four replies');
+    assert.ok(replies < 8, 'a 16,800 character body costs at most eight replies at 3,000 characters each');
     replies += 1;
     await settleLiveTool(h, `long-next-${replies}`, 'research', { action: 'continue', researchId, cursor: last()['nextCursor'] });
   }

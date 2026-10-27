@@ -59,6 +59,11 @@ test('C-CONTINUITY replay: the owner hears about a company, a rebuild follows, a
     }
   }
 
+  // C-CONTINUITY item 5: the counter is the delivered characters and nothing else, while the total context figure
+  // carries the refusal too. Both numbers exist, and they are different numbers.
+  assert.equal(retention.retainedChars, wireChars, 'the counter holds exactly the delivered characters');
+  assert.ok(refusedChars > 0, 'a refusal has a size, and it is counted in the total, not in the rebuild counter');
+  assert.ok(retention.retainedChars + refusedChars > retention.retainedChars, 'the totals really differ');
   assert.ok(researchRebuildDue(retention, RESEARCH.rebuildThresholdChars), 'the call really crossed the threshold');
   assert.equal(RESEARCH.rebuildThresholdChars, 60_000, 'the threshold is the 60,000 delivered chars the decision made');
 
@@ -85,9 +90,4 @@ test('C-CONTINUITY replay: the owner hears about a company, a rebuild follows, a
 
   assert.equal(answers.length, 1, 'exactly one refused batch rode this call');
   assert.ok(delivered.length === 26);
-  // C-CONTINUITY item 5: the counter is the delivered characters and nothing else, while the total context figure
-  // carries the refusal too. Both numbers exist, and they are different numbers.
-  assert.equal(retention.retainedChars, wireChars, 'the counter holds exactly the delivered characters');
-  assert.ok(refusedChars > 0, 'a refusal has a size, and it is counted in the total, not in the rebuild counter');
-  assert.ok(retention.retainedChars + refusedChars > retention.retainedChars, 'the totals really differ');
 });

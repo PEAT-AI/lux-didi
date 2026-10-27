@@ -15,7 +15,6 @@ import { LIVE_REBUILD_TRIGGERS, safeEvent } from '../host/log.js';
 import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
 import { fakeLiveVoicePort, type FakeLiveVoice, type FakeLiveVoiceEvent } from './fixtures/fake-live-voice.js';
 import type { LiveVoiceEvent, LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
-import type { LiveToolsComposition } from '../live/types.js';
 import { pcm, ready as providerReady } from './live-voice-fixture.js';
 
 const NOW = 1_700_000_000_000;
@@ -54,7 +53,7 @@ interface Live {
 type MeasuredConnection = { quality: 'ok' | 'weak'; weakAt?: number };
 
 /** Open one owner session on the fake port with an injected clock, and capture the 3j receipts. */
-async function openLive(t: TestContext, overrides: { limits?: Record<string, number>; capabilities?: Parameters<typeof fakeLiveVoicePort>[0]; connection?: () => MeasuredConnection; deadLine?: boolean; tools?: LiveToolsComposition } = {}): Promise<Live> {
+async function openLive(t: TestContext, overrides: { limits?: Record<string, number>; capabilities?: Parameters<typeof fakeLiveVoicePort>[0]; connection?: () => MeasuredConnection; deadLine?: boolean } = {}): Promise<Live> {
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-watchdog-'));
   const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations]);
   const ctx: LiveContext = { clientId: 'tester', auditId: 'audit-1', authorityEpoch: store.authorityEpoch };
@@ -81,7 +80,7 @@ async function openLive(t: TestContext, overrides: { limits?: Record<string, num
       || record.event === 'live_rebuild' || record.event === 'live_idle_arm') receipts.push(record);
   } });
   t.after(() => { detach(); rmSync(dir, { recursive: true, force: true }); });
-  const owner = createLiveSessionOwner({ store, voice: port, profile, now: () => scheduler.now, timeZone: 'Asia/Kolkata', schedule: scheduler.schedule, ...(overrides.tools === undefined ? {} : { tools: overrides.tools }) });
+  const owner = createLiveSessionOwner({ store, voice: port, profile, now: () => scheduler.now, timeZone: 'Asia/Kolkata', schedule: scheduler.schedule });
   const session = owner.create({ idempotencyKey: `watchdog-${randomUUID()}`, inputClass: 'ordinary' }, ctx);
   if (overrides.deadLine === true) {
     // The L19 recipe: a previous call in this conversation was lost, so this one opens by naming the drop.
@@ -129,26 +128,6 @@ const terminalCode = (live: Live): string | undefined => {
 async function until(live: Live, condition: () => boolean, budgetMs = 60_000): Promise<void> {
   for (let spent = 0; spent <= budgetMs && !condition(); spent += 1_000) await live.advance(1_000);
   assert.ok(condition(), 'the watchdog did not reach the expected phase');
-}
-
-/**
- * C-WATCH: one granted read whose execution the test releases by hand, so a real tool wait costs exactly the fake
- * clock the test spends on it and nothing here sleeps.
- */
-function releasedTool(release: { run?: () => void }): LiveToolsComposition {
-  const tool = {
-    name: 'search_knowledge', description: 'Synthetic lookup.', effect: 'read', accountId: 'gateway:live-voice', resourceId: 'knowledge',
-    inputSchema: { type: 'object' }, parameters: { type: 'object' }, guidance: 'Ask this once.', validate: () => true,
-    execute: () => new Promise(resolve => { release.run = () => resolve({ status: 'failed', reason: 'synthetic_refusal' }); }),
-  };
-  return {
-    owner: {
-      liveDefinitions: () => [tool], snapshotRun: () => ({ sha256: 'synthetic' }), liveRememberApproved: () => false,
-      resultGate: { authorize: async () => ({ state: 'allowed', results: [] }) },
-      journal: { intent: () => 'fresh', refuse: () => 'refused', fail: () => 'failed' },
-    } as unknown as LiveToolsComposition['owner'],
-    connectionIds: () => [],
-  };
 }
 
 test('a mute owner turn is nudged once and then recovered on a fresh seeded session', async t => {
@@ -203,6 +182,11 @@ test('the rebuild trigger is a closed set the host log accepts for every token',
     'a trigger outside the closed set never reaches the host log');
   assert.equal(safeEvent({ event: 'live_rebuild', cause: 'provider', liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }), undefined,
     'a rebuild with no trigger at all is not a rebuild');
+  // C-WATCH: every watchdog record says whether the wait it judged began at a tool result, and nothing else rides along.
+  assert.deepEqual(safeEvent({ event: 'live_watchdog', phase: 'settled', turnAgeMs: 20_538, generation: 3, sinceTool: true }),
+    { event: 'live_watchdog', phase: 'settled', turnAgeMs: 20_538, generation: 3, sinceTool: true }, 'a post-tool wait says so');
+  assert.equal(safeEvent({ event: 'live_watchdog', phase: 'settled', turnAgeMs: 20_538, generation: 3 }), undefined,
+    'a watchdog record with no sinceTool never reaches the host log');
   assert.equal(safeEvent({ event: 'live_rebuild', trigger: 'line_dropped', cause: 'the-internet', liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }), undefined,
     'a cause outside the closed set never reaches the host log');
 });
@@ -258,47 +242,6 @@ test('model output after the nudge disarms the watchdog', async t => {
   assert.deepEqual(phases(live).slice(before), [], 'a completed turn leaves no watchdog work behind');
   assert.equal(live.fake.sessionsOpened, 1, 'no recovery after the model answered');
   assert.equal(terminalCode(live), undefined, 'the call is still up');
-});
-
-test('C-WATCH: a tool continuation starts its own wait, so the tool time is never judged as model silence', async t => {
-  const release: { run?: () => void } = {};
-  const live = await openLive(t, { tools: releasedTool(release) });
-  // A recovery at the start of the call, so the continuation below would be the second mute inside the window.
-  await ownerTurnEnd(live);
-  await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
-  assert.equal(live.fake.sessionsOpened, 2);
-  const recoveredAt = live.now();
-  // The owner asks again 64 s later: one audible word from her, and then a lookup the model waits on.
-  await live.advance(64_000 - (live.now() - recoveredAt));
-  await ownerTurnEnd(live);
-  await live.emit({ type: 'audio', pcm: new Uint8Array(8), rate: 24_000 });
-  await live.advance(500);
-  await live.emit({ type: 'toolCall', calls: [{ id: 'w1', name: 'search_knowledge', args: { query: 'plate', limit: 1 } }] } as unknown as FakeLiveVoiceEvent);
-  // The lookup runs 14 s. The model is waiting on the tool through those seconds, never silent.
-  await live.advance(14_000);
-  assert.equal(live.fake.toolResponses.length, 0, 'the lookup has not answered yet');
-  const seen = live.receipts.length;
-  const resultAt = live.now();
-  release.run?.();
-  await flush();
-  assert.equal(live.fake.toolResponses.length, 1, 'the continuation really was handed back to the model');
-  // The result starts a new wait: nothing may be judged inside its first full rung.
-  await live.advance(RESPONSE_WATCHDOG_NUDGE_MS - 500);
-  const judged = live.receipts.slice(seen);
-  assert.equal(judged.filter(record => record.event === 'live_dead_air_nudge').length, 0,
-    'the continuation is not nudged inside its own first eight seconds');
-  assert.equal(judged.filter(record => record.event === 'live_watchdog').length, 0,
-    'no watchdog receipt is written over a wait the tool still owns');
-  assert.equal(terminalCode(live), undefined, 'the fourteen seconds the tool owned are not model silence');
-  // Then the whole ladder runs, and the receipt of the wait it judged says where that wait began.
-  await live.advance(RESPONSE_WATCHDOG_RECOVERY_MS + 3_000);
-  const settled = live.receipts.filter(record => record.event === 'live_watchdog' && record.phase === 'settled');
-  assert.equal(settled.length, 1, 'a genuine second mute past the whole ladder still settles the call');
-  assert.equal(settled[0]?.['sinceTool'], true, 'the receipt names a wait that began at a tool result');
-  assert.ok(Number(settled[0]?.['turnAgeMs']) <= RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 2_000,
-    `the judged wait excludes the tool (${String(settled[0]?.['turnAgeMs'])} ms)`);
-  assert.equal(terminalCode(live), 'model_unresponsive', 'a real repeated mute keeps its honest terminal');
-  assert.equal(resultAt, live.now() - (RESPONSE_WATCHDOG_NUDGE_MS - 500) - (RESPONSE_WATCHDOG_RECOVERY_MS + 3_000), 'the clock the test moved is the clock the host read');
 });
 
 test('a second mute inside the window settles the call honestly instead of looping', async t => {

@@ -927,11 +927,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       muted: value.muted, warm: value.warm, msSinceMute: value.msSinceMute };
   }
   if (value.event === 'live_watchdog') {
-    // 3j: the response watchdog, one record per phase change. Phase, turn age and connection generation only.
-    if (Object.keys(value).sort().join(',') !== ['event', 'generation', 'phase', 'turnAgeMs'].sort().join(',')) return;
+    // 3j: the response watchdog, one record per phase change. Phase, turn age, connection generation and whether
+    // the wait began at a tool result (C-WATCH), so a post-tool wait is never read as an owner-turn wait.
+    if (Object.keys(value).sort().join(',') !== ['event', 'generation', 'phase', 'turnAgeMs', 'sinceTool'].sort().join(',')) return;
     if (!isSafeMember(value.phase, ['armed', 'nudged', 'closed', 'recovering', 'recovered', 'settled'])) return;
-    if (!isSafeCount(value.turnAgeMs) || !isSafeCount(value.generation)) return;
-    return { event: 'live_watchdog', phase: value.phase, turnAgeMs: value.turnAgeMs, generation: value.generation };
+    if (!isSafeCount(value.turnAgeMs) || !isSafeCount(value.generation) || typeof value.sinceTool !== 'boolean') return;
+    return { event: 'live_watchdog', phase: value.phase, turnAgeMs: value.turnAgeMs, generation: value.generation, sinceTool: value.sinceTool };
   }
   if (value.event === 'live_debt') {
     // #538: the audible debt clock, one record per phase change. Enums only, so no duration, no text, no provider word.

@@ -15,7 +15,7 @@ import type { DataClass, ModelControl, ModelPort, ModelRequest, ModelResult, Tra
 import { GeminiAdapter } from '../adapters/model/index.js';
 import {
   OPEN_LOOP_MAX_CHARS, SUMMARY_MAX_RETRIES, SUMMARY_PROMPT_VERSION, SUMMARY_RECOVERY_LIMIT, buildDistillationInput, capDistillationInput,
-  createSummarizer, distillationPrompt, parseDistillationResult, type SummarizerOptions,
+  createSummarizer, distillationPrompt, parseDistillationResult, TOOL_OUTCOME_MAX_LINES, type SummarizerOptions,
 } from '../services/summarize.js';
 
 const NOW = 1_700_000_000_000;
@@ -124,6 +124,27 @@ test('the input cap keeps the first 4000 and last 20000 characters and marks the
   assert.ok(input.text.startsWith('Session date:'));
   assert.ok(input.text.includes('[... transcript shortened ...]'));
   assert.deepEqual(capDistillationInput('small'), { text: 'small', truncated: false });
+});
+
+test('the Tool outcomes block names each recorded state, oldest first, and stops at twenty lines', () => {
+  const outcomes = [
+    { name: 'calendar_read', outcome: 'succeeded' as const, code: null },
+    { name: 'search_web', outcome: 'failed' as const, code: 'upstream_timeout' },
+    { name: 'stage_lux_note', outcome: 'refused' as const, code: 'authorization_missing' },
+    { name: 'stage_lux_note', outcome: 'outcome unknown' as const, code: null },
+    ...[...Array(30).keys()].map(i => ({ name: `tool_${i}`, outcome: 'succeeded' as const, code: null })),
+  ];
+  const input = buildDistillationInput({ assistantName: 'Naya', turns: [{ speaker: 'owner', text: 'hello' }], toolNames: [], toolOutcomes: outcomes, dateMs: NOW, timeZone: 'UTC', injected: [] });
+  const lines = input.text.split('\n');
+  const start = lines.indexOf('Tool outcomes:');
+  assert.equal(start, lines.length - TOOL_OUTCOME_MAX_LINES - 1, 'the block is appended last');
+  assert.deepEqual(lines.slice(start + 1, start + 5),
+    ['calendar_read succeeded', 'search_web failed upstream_timeout', 'stage_lux_note refused authorization_missing', 'stage_lux_note outcome unknown']);
+});
+
+test('a session with no tool calls carries no Tool outcomes block', () => {
+  const input = buildDistillationInput({ assistantName: 'Naya', turns: [{ speaker: 'owner', text: 'hello' }], toolNames: [], dateMs: NOW, timeZone: 'UTC', injected: [] });
+  assert.equal(input.text.includes('Tool outcomes:'), false);
 });
 
 test('a complete distillation stores one row with the session provenance', async () => {

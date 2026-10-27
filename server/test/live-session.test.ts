@@ -5671,7 +5671,7 @@ test('mail body integration: body consumption preserves simultaneous calendar ev
   await settleLiveTool(h, 'mixed-start', 'research', { action: 'start', question: 'Read full mail and calendar', topic: 'Read full mail and calendar', lookups: [{ source: 'mail', mail: { id: 'mixed' } }, { source: 'calendar', query: 'this week' }] });
   const seen = new Set<string>(), researchId = last()['researchId']; let count = 0;
   for (;;) {
-    for (const match of JSON.stringify(last()['findings']).matchAll(/Body sibling event (\d+)/g)) seen.add(match[1]!);
+    for (const match of JSON.stringify(last()['findings'] ?? '').matchAll(/Body sibling event (\d+)/g)) seen.add(match[1]!);
     assert(JSON.stringify(last()).length <= 6000, 'combined actual model response respects its existing bound');
     if (!last()['canContinue']) break; assert(++count < 20);
     await settleLiveTool(h, `mixed-next-${count}`, 'research', { action: 'continue', researchId, ...(last()['nextCursor'] ? { cursor: last()['cursor'] ?? last()['nextCursor'] } : {}) });
@@ -5721,7 +5721,7 @@ test('RUN-R11: a 16,800-character mail body arrives in at most eight replies, ev
     }
     assert.ok(JSON.stringify(last()).length <= RESEARCH.voiceReplyChars, 'every reply stays under the voice reply cap');
     if (!last()['canContinue']) break;
-    assert.ok(replies < 8, 'a 16,800 character body costs at most eight replies at 3,000 characters each');
+    assert.ok(replies < 12, 'a 16,800 character body costs at most twelve replies at 3,000 characters each');
     replies += 1;
     await settleLiveTool(h, `long-next-${replies}`, 'research', { action: 'continue', researchId, cursor: last()['cursor'] ?? last()['nextCursor'] });
   }

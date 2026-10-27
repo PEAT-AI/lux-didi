@@ -6219,7 +6219,8 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
   if (slices !== undefined) {
     const { kept, rest } = takeVoiceSlices(envelope, slices, cap, VOICE_CURSOR_PREFIX.length + 36);
     const page: JsonObject = { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT };
-    if (rest.length === 0) return page;
+    // Every capped page states whether it continues, so a reader never has to read an absent field as false.
+    if (rest.length === 0) return { ...page, canContinue: envelope['nextCursor'] !== undefined };
     // A body reader already follows `nextCursor`, so a paged body is read through that same field and lands back
     // on the body's own next page once the store's slices are spent.
     return { ...page, canContinue: true, nextCursor: book.keepSlices(researchId, envelope, rest) };

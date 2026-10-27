@@ -436,13 +436,13 @@ test('V7 (F4): a fractional multipleOf is refused, never truncated to an invalid
 
 test('V7: an unreadable schema excludes only that tool and reports it once', () => {
   const refused: string[] = [];
-  mongoosePublishCatalogue('mongoose-data', [
+  mongoosePublishCatalogue('refused-fixture', [
     { name: 'run_metric_query', inputSchema: { type: 'object', unsupported: true } },
     { name: 'search_fields', inputSchema: { type: 'object' } },
   ], tool => refused.push(tool));
   assert.deepEqual(refused, ['run_metric_query']);
-  assert.equal(mongoosePublishedTool('mongoose-data', 'run_metric_query'), undefined);
-  assert.ok(mongoosePublishedTool('mongoose-data', 'search_fields'));
+  assert.equal(mongoosePublishedTool('refused-fixture', 'run_metric_query'), undefined);
+  assert.ok(mongoosePublishedTool('refused-fixture', 'search_fields'));
 });
 
 test('local schema references and composition are resolved; cycles and missing refs are refused', () => {

@@ -7,7 +7,7 @@ import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '.
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter, type McpTransportState } from '../adapters/mcp/adapter.js';
-import { mongooseCredentialAtStart, mongooseFailureStage, mongooseReadOnly } from '../connectors/mongoose.js';
+import { MongooseSchemaRefusal, MONGOOSE_SCHEMA_REFUSAL, mongooseCredentialAtStart, mongooseFailureStage, mongoosePublishCatalogue, mongooseReadOnly } from '../connectors/mongoose.js';
 import { MongooseCredentialError, MONGOOSE_CONSENT_CAP_MS, mongooseAccessToken, mongooseCredentialPresent, mongooseEntryBinding, readMongooseOAuth } from './mongoose-auth.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
@@ -575,6 +575,18 @@ export async function composeMcpRuntime(options: {
         return { retryable: stage === 'first_call' || discovery.reason === 'credential-refresh-unavailable' };
       }
       const envelope = connectionEnvelope(entry.connector, entry);
+      // V7: the published tool list is the planner's argument shape, so it is taken at intake. A schema
+      // that cannot be sanitized fails this connect loudly with a closed code, never as an empty schema.
+      if (entry.connector === 'mongoose') {
+        try {
+          mongoosePublishCatalogue(entry.id, discovery.tools);
+        } catch (error) {
+          const path = error instanceof MongooseSchemaRefusal ? error.path : undefined;
+          reportFailure(entry, 'handshake', attempt, MONGOOSE_SCHEMA_REFUSAL, path);
+          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: MONGOOSE_SCHEMA_REFUSAL });
+          return { retryable: false };
+        }
+      }
       const accepts = readClassifiers[entry.connector] ?? (() => true);
       const names = grantMode === 'owner-trusted-reads'
         ? discovery.tools.filter(tool => envelope.includes(tool.name) && accepts(tool)).map(tool => tool.name).sort()

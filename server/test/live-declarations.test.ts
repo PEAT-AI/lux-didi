@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CONNECTOR_DESCRIPTORS } from '../connectors/index.js';
+import { MONGOOSE_ENDPOINT_TOOLS, mongoosePublishCatalogue } from '../connectors/mongoose.js';
 import { declarationsFor } from '../tools/declarations.js';
 import { chatCapabilities } from '../chat/context.js';
 import { compilePrompt, validatePreferences, PROMPT_VERSION } from '../prompt/index.js';
@@ -22,6 +23,11 @@ function violations(schema: unknown, path: string): string[] {
 }
 
 test('every composed Live connector and built-in declaration conforms to provider schema dialect', () => {
+  // V7: a forwarded Mongoose tool carries the published schema its endpoint handed over at intake, so this
+  // test publishes one synthetic list first. Without it the declaration load refuses loudly by design.
+  mongoosePublishCatalogue('mongoose-knowledge', MONGOOSE_ENDPOINT_TOOLS.knowledge.map(name => ({
+    name, description: `The published ${name} read.`, inputSchema: { type: 'object', additionalProperties: false, properties: { query: { type: 'string' } } },
+  })));
   // A mongoose descriptor declares one endpoint's envelope, so the policy names a knowledge endpoint.
   const policy = { bounds: { maxQueryChars: 200, maxSearchLimit: 12, maxGetIds: 10, maxEntityBytes: 4096, maxResultBytes: 8192 },
     endpoint: { id: 'mongoose-knowledge', transport: 'streamable-http', url: 'https://synthetic.invalid/mcp/knowledge', account: 'synthetic', resource: 'mongoose:knowledge', credentialRef: 'mongoose-knowledge' } } as unknown as ConnectionPolicy;

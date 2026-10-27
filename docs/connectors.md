@@ -11,6 +11,17 @@ A connected source is an account or service Naya can consult through a host-appr
 | Mattermost | `server/connectors/mattermost.ts` | Read people, channels, threads and attention evidence |
 | Mongoose | `server/connectors/mongoose.ts` | Read the separately approved knowledge, data and CRM endpoints |
 
+Each Mongoose endpoint is its own connection, so one unsigned endpoint never hides another: `mongoose-knowledge`
+serves the research `company` source, `mongoose-data` serves the research `data` source (company numbers), and an
+unsigned `mongoose-crm` disables only the CRM reads.
+
+A forwarded Mongoose tool reaches the planner with the input schema and description the endpoint published in its
+own MCP tool list, sanitized for the provider (integer bounds only, no keyword the provider rejects). The catalogue
+is taken at connect time; a schema that cannot be sanitized fails that connect with the closed code
+`schema_unsanitizable`, never as an empty schema. A count read (`run_metric_query`) without a date dimension and a
+date filter is refused by the host with `count_needs_date_window`, because the undated query returns an all-time sum
+rather than a user count.
+
 `CONNECTOR_DESCRIPTORS` in `server/connectors/index.ts` is the registry. These descriptors are read-only: `ConnectorToolDeclaration.effect` is `'read'`. Do not infer that all host tools are read-only. Trello is a separate host gateway in `server/host/trello.ts`, with a privately configured board (`TRELLO_BOARD_FILE`), rather than another descriptor in this registry. Its write authority and the note-writing flows belong in [tool-owner.md](tool-owner.md).
 
 ## Add or change a descriptor

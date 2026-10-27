@@ -24,10 +24,10 @@ export const RESEARCH_TOOL_NAME = 'research';
 
 export type ResearchAction = 'start' | 'continue' | 'stop';
 export type QuestionClass = 'quick_fact' | 'cross_source' | 'explicit_continue';
-export type SourceKind = 'memory' | 'knowledge' | 'calendar' | 'mail' | 'chat' | 'mongoose' | 'web' | 'drive';
+export type SourceKind = 'memory' | 'knowledge' | 'calendar' | 'mail' | 'chat' | 'mongoose' | 'data' | 'web' | 'drive';
 export type CandidateKind =
   | 'knowledge_search' | 'calendar_window' | 'mail_search' | 'mail_open'
-  | 'chat_search' | 'chat_thread' | 'company_search' | 'web_search' | 'drive_search' | 'brief' | 'stop_answer' | 'stop_insufficient';
+  | 'chat_search' | 'chat_thread' | 'company_search' | 'company_metric' | 'web_search' | 'drive_search' | 'brief' | 'stop_answer' | 'stop_insufficient';
 
 /** The closed candidate set. A candidate reads exactly one internal action; nothing is invented. */
 export interface Candidate {
@@ -46,6 +46,9 @@ export const CANDIDATES: readonly Candidate[] = Object.freeze([
   { kind: 'chat_thread', source: 'chat', requires: 'chat_search' },
   // #639: the company read is one candidate, so a company ask reads Mongoose in the same loop as the rest.
   { kind: 'company_search', source: 'mongoose' },
+  // W3-R1: a number question is its own candidate. Its read is the data endpoint's field search and
+  // then one metric query, so a count never rides on a knowledge search.
+  { kind: 'company_metric', source: 'data' },
   { kind: 'web_search', source: 'web' },
   // C-OPEN 2: the owner's Drive files by name, offered only when a Drive endpoint is configured.
   { kind: 'drive_search', source: 'drive' },
@@ -108,7 +111,7 @@ export const RESEARCH = Object.freeze({
    * the exception and a late chat finding still lands the way mail's 12 s does.
    */
   sourceDeadline: Object.freeze({
-    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 10_000, mongoose: 12_000, web: WEB_DEADLINE_MS, drive: 12_000,
+    memory: 8_000, knowledge: 12_000, calendar: 12_000, mail: 12_000, chat: 10_000, mongoose: 12_000, data: 12_000, web: WEB_DEADLINE_MS, drive: 12_000,
   } as Record<SourceKind, number>),
   /** P5: a candidate that names no single source (`brief`) never gets less than the local reads. */
   defaultSourceDeadlineMs: 8_000,
@@ -243,14 +246,14 @@ export const RESEARCH = Object.freeze({
   generalKnowledgeNote: 'Anything you add about it yourself is general knowledge, so say so.',
 });
 
-export const RESEARCH_SOURCES: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'];
+export const RESEARCH_SOURCES: readonly SourceKind[] = ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'data', 'web'];
 
 /**
  * K6: the layers a routed start may name. `company` is the Mongoose organisation read and `replies`
  * is the Mattermost attention digest; `memory` is her own remembered conversations, read locally.
  */
-export type LookupSource = 'memory' | 'knowledge' | 'company' | 'calendar' | 'mail' | 'chat' | 'replies' | 'drive' | 'web';
-export const LOOKUP_SOURCES: readonly LookupSource[] = ['memory', 'knowledge', 'company', 'calendar', 'mail', 'chat', 'replies', 'drive', 'web'];
+export type LookupSource = 'memory' | 'knowledge' | 'company' | 'data' | 'calendar' | 'mail' | 'chat' | 'replies' | 'drive' | 'web';
+export const LOOKUP_SOURCES: readonly LookupSource[] = ['memory', 'knowledge', 'company', 'data', 'calendar', 'mail', 'chat', 'replies', 'drive', 'web'];
 /** At most four lookups per call; duplicates collapse, so one call is one short, wide read. */
 export const MAX_LOOKUPS = 4;
 
@@ -280,7 +283,7 @@ export interface ResearchRoutedLog {
  * time the source was actually allowed.
  */
 /** L8-Q07: the closed reasons a source receipt may give for a read that did not answer. */
-export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading', 'needs_clarification', 'name_not_found'] as const;
+export const RESEARCH_SOURCE_REASONS = ['no_query', 'never_ran', 'timed_out', 'not_connected', 'not_configured', 'grant_missing', 'provider_failed', 'skipped_by_route', 'channel_not_found', 'still_reading', 'needs_clarification', 'name_not_found', 'count_needs_date_window'] as const;
 export type ResearchSourceReason = (typeof RESEARCH_SOURCE_REASONS)[number];
 
 function sourceReasonOf(run: RunState, outcome: { source: SourceKind | 'memory'; outcome: LookupOutcome; mail?: MailQueryInfo | undefined }): ResearchSourceReason {
@@ -1644,6 +1647,15 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     catch { return []; }
     return [search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar }, 'cal0')];
   }
+  if (kind === 'company_metric') {
+    // W3-R1: a count question is the data endpoint's two calls, on the topic's words. A count the ask
+    // leaves undated is refused by the host, never dispatched as the all-time sum the fixture recorded.
+    const asked = config.query === undefined ? '' : withoutRouteWords(config.query, config.configured).trim();
+    const words = asked !== '' ? asked : (topicText ?? '').trim();
+    if (words === '' || !config.configured.includes('data')) return [];
+    const metric = companyMetricSubs(words, config.question, config.nowMs ?? Date.now());
+    return 'refusal' in metric ? [] : metric.subs;
+  }
   if (kind === 'company_search') {
     // #639: the company read is the typed lookup's own read, on the topic's words and its mode, so the
     // question-only path answers with the same entity read the model's `company` lookup answers with.
@@ -2307,13 +2319,14 @@ const SOURCE_LABELS: readonly (readonly [SourceKind, string])[] = [
   ['chat', 'team chat'],
   ['knowledge', 'knowledge base'],
   ['mongoose', 'company knowledge'],
+  ['data', 'company numbers'],
   ['drive', 'Drive files'],
   ['memory', 'memory'],
 ];
 
 /** The connector tool whose presence means a source is configured. Same four names the research loop fans out over. */
 const SOURCE_TOOLS: Readonly<Record<string, SourceKind>> = {
-  conversation_history: 'memory', search_knowledge: 'knowledge', search: 'mongoose', read: 'mongoose', calendar_list_events: 'calendar', gmail_search_messages: 'mail', mattermost_search: 'chat', drive_search_files: 'drive',
+  conversation_history: 'memory', search_knowledge: 'knowledge', search: 'mongoose', read: 'mongoose', search_fields: 'data', run_metric_query: 'data', calendar_list_events: 'calendar', gmail_search_messages: 'mail', mattermost_search: 'chat', drive_search_files: 'drive',
 };
 
 /** Map the tool names a session actually configured to the research sources they expose, in display order. */
@@ -2361,7 +2374,12 @@ export function researchSourcesFromToolNames(names: Iterable<string>): SourceKin
 }
 
 /** ROUTE-1022: the two Google endpoints the host registry keys, each serving its own source. */
-const ENDPOINT_SOURCES: Readonly<Record<string, readonly SourceKind[]>> = { gmail: ['mail'], calendar: ['calendar'], drive: ['drive'] };
+const ENDPOINT_SOURCES: Readonly<Record<string, readonly SourceKind[]>> = {
+  gmail: ['mail'], calendar: ['calendar'], drive: ['drive'],
+  // W3: the three Mongoose endpoints are three connections, so one unsigned endpoint hides only its
+  // own reads. crm carries no research source at all, and never stands for knowledge or data.
+  'mongoose-knowledge': ['mongoose'], 'mongoose-data': ['data'], 'mongoose-crm': [],
+};
 
 /**
  * ROUTE-1022: availability is per endpoint. gmail and the calendar are two endpoints on one connector,
@@ -2518,11 +2536,11 @@ function queryShapeOf(subs: readonly IntentSubCall[]): string {
 }
 
 const OMITTED_NOTE = /^\[omitted:/u;
-const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'company knowledge', web: 'the web', drive: 'Drive' };
+const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 'knowledge', calendar: 'calendar', mail: 'mail', chat: 'chat', mongoose: 'company knowledge', data: 'company numbers', web: 'the web', drive: 'Drive' };
 /** #635: the name a source is spoken by, so a clause says "team chat" and never the bare id. */
 const spokenLabelOf = (source: SourceKind): string => SOURCE_LABELS.find(([name]) => name === source)?.[1] ?? SOURCE_LABEL[source];
 /** Findings order: her own memory and the owner's knowledge base lead, company sources follow. */
-const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'drive', 'web'];
+const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'data', 'drive', 'web'];
 /** #621: the smallest room a floor clip may leave, so one source's last line always fits the bound. */
 const FLOOR_CLIP_CHARS = 8;
 const LINE_CAP: Partial<Record<CandidateKind, number>> = {
@@ -2549,7 +2567,7 @@ export function clip(text: string, max: number): string {
  */
 
 export type CoverageStatus = 'complete' | 'partial_timeout' | 'truncated_to_budget' | 'empty_after_retry' | 'partial_failed';
-export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'needs_clarification' | 'name_not_found' | 'never_ran';
+export type UnsearchedReason = 'not_connected' | 'not_configured' | 'grant_missing' | 'provider_failed' | 'skipped_by_route' | 'timed_out' | 'still_reading' | 'channel_not_found' | 'needs_clarification' | 'name_not_found' | 'never_ran' | 'count_needs_date_window';
 export interface CoverageSearched { source: SourceKind; status: CoverageStatus; shown: number; total: number; confidence?: string }
 export interface CoverageUnsearched { source: SourceKind; reason: UnsearchedReason }
 
@@ -2575,11 +2593,16 @@ const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: Source
   name_not_found: () => 'I do not know that name',
   // L8-13: the latest ask ran no new read of this source, so nothing about it took too long.
   never_ran: label => `I did not run a new ${label} read this time`,
+  // W3: a count without a date window is an all-time sum, which is not a user count. The repair is
+  // the line the planner needs, so it names the missing window and nothing else.
+  count_needs_date_window: label => `${label} refused this count: add a date window (a date dimension or an inThePast filter) and ask again`,
 };
 
 /** A not-searched reason code from the host, narrowed to the closed set the header publishes. */
 export function unsearchedReasonOf(code: string): UnsearchedReason {
   const text = code.toLowerCase();
+  // W3: the count guard's own code, before any spelling heuristic can read it as a failure.
+  if (text === 'count_needs_date_window') return 'count_needs_date_window';
   if (/grant|permission|scope|forbidden|unauthori[sz]ed|not_connected|signin|sign_in|sign-in|login|credential|token/u.test(text)) {
     return /not_connected|signin|sign_in|sign-in|login|credential|token|disconnect/u.test(text) ? 'not_connected' : 'grant_missing';
   }
@@ -2968,7 +2991,29 @@ function mailReplyNeed(messages: readonly MailMessage[]): (bullet: string) => nu
   };
 }
 
+/**
+ * W3: the dated rows of one metric query, newest first, as the reply voices them. The projection the
+ * connector built carries each row's own date, so the latest loaded day is read here, never inferred.
+ */
+const DATED_ROW = /(\d{4}-\d{2}-\d{2})(?:T[\d:.]+Z)?[^\n0-9]*(\d[\d,]*)/u;
+function metricRowLines(text: string): string[] {
+  const rows = text.split('\n').flatMap(line => {
+    const match = DATED_ROW.exec(line);
+    return match?.[1] === undefined || match[2] === undefined ? [] : [{ date: match[1], value: match[2] }];
+  });
+  if (rows.length === 0) return [];
+  const latest = rows.reduce((newest, row) => (row.date > newest.date ? row : newest));
+  return [`${latest.value} on ${latest.date}, the latest day loaded`];
+}
+
 export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResult[], zone?: string, options?: { newestFirst?: boolean }): { text: string; source: SourceKind | null; lines: string[]; total: number } {
+  if (kind === 'company_metric') {
+    // W3: a number never travels alone. The newest dated row leads, so the answer says "about 2,400 on
+    // 25 October, the latest day loaded" instead of a figure with no day under it.
+    const lines = results.filter(result => result.ok).flatMap(result => metricRowLines(result.text));
+    if (lines.length === 0) return { text: '', source: 'data', lines: [], total: 0 };
+    return { text: `${SOURCE_LABEL.data}: ${lines.join('; ')}`, source: 'data', lines, total: lines.length };
+  }
   if (kind === 'web_search') {
     const ok = results.filter(result => result.ok && result.text.trim());
     const lines = ok.flatMap(result => result.text.split('\n').filter(Boolean));
@@ -3165,6 +3210,9 @@ function sourceKindOfKindName(name: string): SourceKind | null {
     case INTERNAL.mailRead: return 'mail';
     case HISTORY_IDENTITY.name: return 'memory';
     case INTERNAL.mongooseSearch: return 'mongoose';
+    // W3: the data endpoint's two reads belong to the numbers source, never to company knowledge.
+    case INTERNAL.mongooseSearchFields:
+    case INTERNAL.mongooseMetricQuery: return 'data';
     case INTERNAL.driveSearch:
     case INTERNAL.driveGet: return 'drive';
     case INTERNAL.chatSearch:
@@ -3934,6 +3982,75 @@ export function companyLookupMode(query: string): 'answer' | 'browse' {
 }
 
 /**
+ * W3-R1: the count metrics the data endpoint serves, in the published shape the live fixture carries.
+ * A metric question is one `search_fields` for the field names and one `run_metric_query` for the rows.
+ */
+const COMPANY_METRICS: readonly {
+  words: RegExp; exploreName: string; metric: string; dateField: string; countryField: string;
+}[] = [{
+  words: /\b(?:active users?|users?|dau|daily active|monthly active)\b/iu,
+  exploreName: 'active_users_daily',
+  metric: 'active_users_daily_n_active_users',
+  dateField: 'active_users_daily_event_date_day',
+  countryField: 'active_users_daily_country',
+}];
+
+/** The country the owner named, spelled as the owner spelled it, or none when the ask names no place. */
+function metricCountryOf(question: string): string | undefined {
+  const match = /\bin ([\p{Lu}][\p{L}]+(?: [\p{Lu}][\p{L}]+)*)/u.exec(question);
+  return match?.[1]?.trim();
+}
+
+/**
+ * W3: the days the ask names. A count over no window is the all-time sum of daily distinct users, which
+ * the live endpoint answered with 948,541 and which is not a user count, so no window is a refusal.
+ */
+function metricWindowDays(question: string): number | undefined {
+  if (/\btoday\b/iu.test(question)) return 1;
+  if (/\byesterday\b/iu.test(question)) return 2;
+  const counted = /\b(?:last|past) (\d+) days?\b/iu.exec(question);
+  if (counted?.[1] !== undefined) {
+    const days = Number(counted[1]);
+    if (Number.isSafeInteger(days) && days >= 1 && days <= 90) return days;
+  }
+  if (/\b(?:this|last) week\b/iu.test(question)) return 7;
+  return undefined;
+}
+
+/**
+ * W3-R1: the data read of one count question. `search_fields` names the fields, `run_metric_query` asks
+ * for the rows, both in the exact published argument shape of the live fixture. A count with no date
+ * dimension and no date filter is refused here with the closed code, never dispatched as an all-time sum.
+ */
+export function companyMetricSubs(query: string, question: string, nowMs: number): { subs: IntentSubCall[] } | { refusal: 'count_needs_date_window' } {
+  const metric = COMPANY_METRICS.find(entry => entry.words.test(query) || entry.words.test(question)) ?? COMPANY_METRICS[0]!;
+  const days = metricWindowDays(question);
+  if (days === undefined) return { refusal: 'count_needs_date_window' };
+  const country = metricCountryOf(question);
+  const day = new Date(nowMs).toISOString().slice(0, 10);
+  const where = country ?? 'all countries';
+  const dimensions = [
+    ...(country === undefined ? [] : [{ fieldId: metric.countryField, operator: 'equals', values: [country] }]),
+    { fieldId: metric.dateField, operator: 'inThePast', values: [days], settings: { unitOfTime: 'days' } },
+  ];
+  return { subs: [
+    { key: 'm0', name: INTERNAL.mongooseSearchFields, args: { patterns: [query.trim()], exploreName: metric.exploreName } },
+    { key: 'm1', name: INTERNAL.mongooseMetricQuery, args: {
+      title: `${where} daily active users as of ${day}`,
+      description: `Daily active users ${country === undefined ? '' : `in ${country} `}per day over the last ${days} day${days === 1 ? '' : 's'}.`,
+      queryConfig: {
+        exploreName: metric.exploreName,
+        metrics: [metric.metric],
+        dimensions: [metric.dateField],
+        filters: { dimensions, type: 'and' },
+        sorts: [{ fieldId: metric.dateField, descending: true }],
+        limit: 10,
+      },
+    } },
+  ] };
+}
+
+/**
  * The company lookup: one search, and for a question one read of the top hit's ref, so the finding
  * carries the entity behind the answer instead of a title alone.
  */
@@ -3976,6 +4093,14 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
   const query = lookup.query;
   if (lookup.source === 'memory') return { source: 'memory', kind: 'memory_search', subs: [{ key: 'history', name: HISTORY_IDENTITY.name, args: { ...(lookup.history ?? { query }) } }] };
   if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: companySubs(query) };
+  if (lookup.source === 'data') {
+    // W3-R1: the numbers source is the data endpoint's field search and one metric query. A count with
+    // no date window settles refused under its own closed code and the one-line repair.
+    const metric = companyMetricSubs(query, context.question, context.now());
+    return 'refusal' in metric
+      ? { source: 'data', kind: 'company_metric', subs: [], unresolved: true, reason: metric.refusal }
+      : { source: 'data', kind: 'company_metric', subs: metric.subs };
+  }
   // The attention digest answers "what is waiting on him"; it takes no query of its own.
   if (lookup.source === 'replies') return { source: 'chat', kind: 'chat_search', subs: [{ key: 'at0', name: INTERNAL.chatAttention, args: {} as JsonObject }] };
   const subsConfig = { question: context.question, topic: context.topic, ownerWords: context.ownerWords, configured: context.configured, evidence: context.run.evidence, query, nowMs: context.now(), timeZone: context.timeZone };

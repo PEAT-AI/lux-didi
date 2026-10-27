@@ -91,6 +91,10 @@ function itemLine(item: Record<string, unknown>, group?: string): string[] {
   for (const key of ['snippet_truncated', 'name_truncated']) if (item[key] === true) fields.push(`${key}: true`);
   const snippet = scalar(item['snippet']) ?? scalar(item['excerpt']) ?? scalar(item['summary']);
   if (snippet) fields.push(snippet.replace(/\s+/gu, ' ').trim());
+  // Q-02: a ticket whose own text records a contradiction is voiced as a disagreement, never as a
+  // figure. The two figures it names travel with it, so the answer can lead with both sides.
+  const contradiction = contradictionOf(`${title} ${snippet ?? ''}`);
+  if (contradiction.flagged) fields.push('contradiction: true', ...(contradiction.values.length >= 2 ? [`values: ${contradiction.values[0]} / ${contradiction.values[1]}`] : []));
   const url = scalar(item['url']) ?? scalar(item['item_url']);
   return [`- ${title}${fields.length ? ` | ${fields.join(' | ')}` : ''}`, ...(url ? [`  source: ${url}`] : [])];
 }
@@ -107,6 +111,31 @@ function hitLines(data: Record<string, unknown>): string[] | undefined {
     }
   }
   return undefined;
+}
+
+/** Q-02: the words a contradiction ticket carries, and the two figures inside them. */
+const CONTRADICTION_IN_TEXT = /\bcontradiction\b/iu;
+function contradictionOf(text: string): { flagged: boolean; values: string[] } {
+  if (!CONTRADICTION_IN_TEXT.test(text)) return { flagged: false, values: [] };
+  // A year in brackets dates the figure, it is not one of the two sides of the disagreement.
+  const values = text.replace(/\(\d{4}\)/gu, ' ').match(/\d[\d,]*(?:\.\d+)?\s?[KkMm]?/gu) ?? [];
+  return { flagged: true, values: values.map(value => value.trim()) };
+}
+
+/**
+ * P-3: one metric query's rows, each with its own date, so the number never travels without the day it
+ * belongs to. Rows are the server's own [date, value] arrays under the columns it names.
+ */
+function rowLines(data: Record<string, unknown>): string[] | undefined {
+  const rows = data['rows'];
+  if (!Array.isArray(rows)) return undefined;
+  const columns = Array.isArray(data['columns']) ? data['columns'].filter(isRecord) : [];
+  const labels = columns.map(column => scalar(column['label']) ?? scalar(column['fieldId']) ?? '');
+  const lines = rows.flatMap(row => Array.isArray(row)
+    ? [row.map((cell, index) => `${labels[index] ?? index}: ${scalar(cell) ?? ''}`).join(' | ')]
+    : []);
+  if (!lines.length) return undefined;
+  return [...lines, 'latest day loaded: the first row, sorted newest first'];
 }
 
 /** The one owner line a closed state carries; absent when the answer is ordinary data. */
@@ -168,9 +197,16 @@ export function renderMongooseTool(data: unknown, followUp?: unknown): MongooseP
   if (owner !== undefined) return boundedProjection(owner);
   const restricted = restrictionText(data);
   const items = hitLines(data);
+  const rows = rowLines(data);
   const coverage = coverageLines(data);
   let text: string;
   if (items !== undefined && items.length) text = items.join('\n');
+  else if (rows !== undefined) text = rows.join('\n');
+  else if (data['outcome'] === 'no_match' && Array.isArray(data['suggestions']) && data['suggestions'].length)
+    // Q-02: a search that matched nothing but offers candidates is a pointer, never a failure.
+    text = `no direct answer, candidates: ${data['suggestions'].map(value => scalar(value) ?? '').filter(value => value !== '').join(', ')}`;
+  else if (data['outcome'] === 'no_match') text = 'no direct answer: nothing matched this ask';
+  else if (data['body'] === '') text = 'empty_body: true';
   else if (restricted !== undefined) text = restricted;
   else if (typeof data['body'] === 'string') text = data['body'];
   else if (typeof data['profile'] === 'string') text = data['profile'];

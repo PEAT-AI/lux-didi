@@ -597,7 +597,7 @@ export function liveTracePort(binding: LiveTraceBinding): LiveTracePort {
 }
 
 /** #565: the sources a query shape may name, closed so no other string can reach the row. */
-export const QUERY_SHAPE_SOURCES = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'replies', 'company', 'mongoose', 'web', 'drive'] as const;
+export const QUERY_SHAPE_SOURCES = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'replies', 'company', 'mongoose', 'data', 'web', 'drive'] as const;
 export type QueryShapeSource = (typeof QUERY_SHAPE_SOURCES)[number];
 export interface TraceQueryShape { source: QueryShapeSource; terms: number; operators: readonly string[]; topicWords: number }
 

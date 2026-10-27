@@ -93,7 +93,7 @@ test('a response that plays nothing reports nothing', () => {
   assert.equal(new VoiceProfileMeter().finish(), undefined);
 });
 
-test('a session whose second response changes pitch reports exactly one shift', () => {
+test('a two-response session reports the shift once, at the change', () => {
   const meter = new VoiceProfileMeter();
   play(meter, sine(220, 800));
   const first = meter.finish();
@@ -106,11 +106,24 @@ test('a session whose second response changes pitch reports exactly one shift', 
   assert.ok(second.shift, 'a 2x drop is the voice change the owner heard');
   assert.equal(second.shift.ratio, 0.5);
   assert.equal(second.shift.sessionMedianHz, 220);
-  // Two responses, two reports: the shift fires once and is never repeated for the same response.
-  play(meter, sine(110, 800));
-  const third = meter.finish();
-  assert.ok(third);
-  assert.equal(third.profile.f0Hz !== null, true);
+  // Exactly one shift across the two responses: the first has no baseline, the second is the change.
+  assert.equal([first.shift, second.shift].filter(shift => shift !== undefined).length, 1);
+});
+
+test('the shift compares against the running median, not a fixed baseline', () => {
+  const meter = new VoiceProfileMeter();
+  const reports = [220, 110, 110].map((hz) => {
+    play(meter, sine(hz, 800));
+    const report = meter.finish();
+    assert.ok(report);
+    return report;
+  });
+  assert.equal(reports[0]!.shift, undefined);
+  assert.equal(reports[1]!.shift?.ratio, 0.5);
+  // The medians so far are [220, 110], whose median is 165, so the third identical response is 1.5x away from
+  // the session and is reported: the contract asks for the running median, and this pins that it is genuinely
+  // running rather than a first-response baseline.
+  assert.equal(reports[2]!.shift?.ratio, 0.67);
 });
 
 test('a steady voice never shifts, and the ratio is configurable', () => {
@@ -131,8 +144,15 @@ test('the two pitch events cross the log boundary as closed shapes only', () => 
     audibleMs: 1400, f0Hz: 118, f0P10Hz: 96, f0P90Hz: 141, voicedRatio: 0.62, rmsDbfs: -21.4 });
   assert.deepEqual(profile, { event: 'live_voice_profile', liveSessionId: 'call-1', generation: 2, responseId: 'resp-3',
     audibleMs: 1400, f0Hz: 118, f0P10Hz: 96, f0P90Hz: 141, voicedRatio: 0.62, rmsDbfs: -21.4 });
+  // The guarantee is the rejection: one extra key, a free-text field or an out-of-band number drops the line.
   assert.equal(safeEvent({ event: 'live_voice_profile', liveSessionId: 'call-1', generation: 2, responseId: 'resp-3',
     audibleMs: 1400, f0Hz: 118, f0P10Hz: 96, f0P90Hz: 141, voicedRatio: 0.62, rmsDbfs: -21.4, transcript: 'hello' }), undefined);
+  assert.equal(safeEvent({ event: 'live_voice_profile', liveSessionId: 'call-1', generation: 2, responseId: 'Naya said hi',
+    audibleMs: 1400, f0Hz: 118, f0P10Hz: 96, f0P90Hz: 141, voicedRatio: 0.62, rmsDbfs: -21.4 }), undefined);
+  assert.equal(safeEvent({ event: 'live_voice_profile', liveSessionId: 'call-1', generation: 2, responseId: 'resp-3',
+    audibleMs: 1400, f0Hz: 0, f0P10Hz: 96, f0P90Hz: 141, voicedRatio: 0.62, rmsDbfs: -21.4 }), undefined);
+  assert.equal(safeEvent({ event: 'live_voice_shift', liveSessionId: 'call-1', generation: 2, responseId: 'resp-3',
+    ratio: 0.5, medianHz: 110, sessionMedianHz: 220, transcript: 'hello' }), undefined);
   const shift = safeEvent({ event: 'live_voice_shift', liveSessionId: 'call-1', generation: 2, responseId: 'resp-3',
     ratio: 0.5, medianHz: 110, sessionMedianHz: 220 });
   assert.deepEqual(shift, { event: 'live_voice_shift', liveSessionId: 'call-1', generation: 2, responseId: 'resp-3',

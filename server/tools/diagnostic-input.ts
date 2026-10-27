@@ -9,6 +9,8 @@ const fields: Readonly<Record<string, readonly string[]>> = {
   list_tickets: ['status','kind','mine','mentioning_handle','audience','company_name','tags','search','not_updated_in_days','owner_handle','limit','offset'],
   mattermost_whoami: [], mattermost_list_channels: ['limit'], mattermost_get_channel_history: ['channel','limit'], mattermost_get_thread: ['post_id','postId'], mattermost_search: ['query','limit','after','before','channel','offset'], mattermost_attention: ['days','limit'], mattermost_chat: ['intent','person','people','channel','query','from_date','to_date','sides','offset','limit'], mattermost_conversation_overview: ['person','from_date','to_date','per_section_limit'], mattermost_resolve_person: ['name'],
   conversation_history: ['query','recordRef','cursor','after','before','limit'], remember_note: ['text','kind'], open_source: ['handle'], open_home: ['app'], open_file: ['path'], open_app: ['name'],
+  trello_read: ['view','list','query','window','card','offset','limit'], trello_write: ['action','card','list','name','description','text','item','checklist','checked','complete','label','remove'],
+  research: ['action','question','topic','researchId','sources','cursor','pageCursor','direction','lookups'], stage_lux_note: ['title','body','evidenceRefs'],
 };
 function record(value: unknown): value is Record<string,unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function scalar(value: unknown): boolean { return value === null || typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)); }

@@ -90,18 +90,40 @@ const isRecord = (value: unknown): value is Record<string, unknown> => value !==
 const str = (value: unknown, max: number): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= max;
 const only = (args: Args, allowed: readonly string[]): boolean => Object.keys(args).every(key => allowed.includes(key));
 
+/** The properties each read view uses. */
+const READ_USED: Readonly<Record<TrelloReadView, readonly string[]>> = {
+  overview: ['view'], recent: ['view'], list: ['view', 'list', 'offset', 'limit'],
+  search: ['view', 'query', 'limit'], due: ['view', 'window'], card: ['view', 'card'],
+};
+/** What a property holds when the model fills in one the chosen view does not use. */
+const UNUSED_DEFAULTS: Readonly<Record<string, unknown>> = { offset: 0, limit: 10 };
+/**
+ * C-ARGS: the provider schema leaves every property but view optional, and a model fills in the ones a view
+ * does not use (an empty string, 0 for offset, the default 10 for limit). Those are absent, not extra keys,
+ * so they are dropped before the shape check: a property the view does use is validated exactly as before,
+ * and a key the tool does not declare still refuses.
+ */
+function dropUnused(args: Args, used: readonly string[]): void {
+  for (const key of Object.keys(args)) {
+    if (used.includes(key) || !(key in TRELLO_READ_PARAMETERS.properties)) continue;
+    if (args[key] === (key in UNUSED_DEFAULTS ? UNUSED_DEFAULTS[key] : '')) delete args[key];
+  }
+}
+
 /** Each view takes exactly its own arguments; anything else is an unusable shape, refused at the boundary. */
 export function validateTrelloRead(args: unknown): args is Args {
-  if (!isRecord(args) || typeof args.view !== 'string') return false;
+  if (!isRecord(args) || typeof args.view !== 'string' || !(TRELLO_READ_VIEWS as readonly string[]).includes(args.view)) return false;
+  const used = READ_USED[args.view as TrelloReadView];
+  dropUnused(args, used);
   const limit = args.limit === undefined || Number.isSafeInteger(args.limit) && (args.limit as number) >= 1 && (args.limit as number) <= TRELLO_PAGE_MAX;
   const offset = args.offset === undefined || Number.isSafeInteger(args.offset) && (args.offset as number) >= 0 && (args.offset as number) <= 10_000;
   if (!limit || !offset) return false;
   switch (args.view) {
-    case 'overview': case 'recent': return only(args, ['view']);
-    case 'list': return only(args, ['view', 'list', 'offset', 'limit']) && str(args.list, 120);
-    case 'search': return only(args, ['view', 'query', 'limit']) && str(args.query, 200);
-    case 'due': return only(args, ['view', 'window']) && (TRELLO_DUE_WINDOWS as readonly string[]).includes(String(args.window));
-    case 'card': return only(args, ['view', 'card']) && str(args.card, TRELLO_NAME_MAX);
+    case 'overview': case 'recent': return only(args, used);
+    case 'list': return only(args, used) && str(args.list, 120);
+    case 'search': return only(args, used) && str(args.query, 200);
+    case 'due': return only(args, used) && (TRELLO_DUE_WINDOWS as readonly string[]).includes(String(args.window));
+    case 'card': return only(args, used) && str(args.card, TRELLO_NAME_MAX);
     default: return false;
   }
 }
@@ -122,6 +144,13 @@ const WRITE_LIMITS: Readonly<Record<string, number>> = { card: TRELLO_NAME_MAX, 
 export function validateTrelloWrite(args: unknown): args is Args {
   if (!isRecord(args) || typeof args.action !== 'string' || !(TRELLO_WRITE_ACTIONS as readonly string[]).includes(args.action)) return false;
   const shape = WRITE_SHAPES[args.action as TrelloWriteAction];
+  // C-ARGS: the same rule as a read view. A model that fills in every declared property sends the ones this
+  // action does not require as an empty string, which is absent, not an extra key. A required property is
+  // never dropped here, a boolean is never dropped (false is a real request), and an undeclared key still refuses.
+  for (const key of Object.keys(args)) {
+    if (key === 'action' || shape.required.includes(key) || !(key in TRELLO_WRITE_PARAMETERS.properties)) continue;
+    if (args[key] === '') delete args[key];
+  }
   if (!only(args, ['action', ...shape.required, ...shape.optional]) || !shape.required.every(key => args[key] !== undefined)) return false;
   for (const [key, value] of Object.entries(args)) {
     if (key === 'action') continue;

@@ -8,6 +8,10 @@ import { createTrelloBoard, TRELLO_KEY_FILE, trelloConfigured, trelloIdentity } 
 import { createTrelloRestTransport, trelloSchemas } from '../adapters/trello/client.js';
 import { foldName, indexTrelloSchemas, ownerAskedForChange, planTrelloCall, trelloDueInstant, validateTrelloRead, validateTrelloWrite, TRELLO_SERVER_ALLOW, TRELLO_SERVER_DENY, TRELLO_WRITE_DESCRIPTION, type TrelloBoard } from '../tools/trello.js';
 import { startTrelloFake, SYNTHETIC_BOARD, type TrelloFake } from './trello-fake.js';
+import { runToolCalls } from '../tools/declarations.js';
+import { attachHostLogSink } from '../tools/host-events.js';
+import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS } from '../tools/trello.js';
+import type { ToolCallJournal, ToolDefinition, ToolResultGate } from '../adapters/model/types.js';
 
 /** Monday 2026-10-26 10:00 UTC; the board's zone is UTC so the windows are exact. */
 const NOW = Date.UTC(2026, 9, 26, 10, 0);
@@ -449,4 +453,40 @@ test('the import script writes a 0600 key file and prints no secret', async () =
     assert.equal(statSync(path).mode & 0o777, 0o600, 'the key file is private');
     assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { key, token });
   } finally { rmSync(configDir, { recursive: true, force: true }); rmSync(join(envFile, '..'), { recursive: true, force: true }); }
+});
+
+// C-ARGS: the provider schema leaves every read property but view optional, and a live model filled all
+// seven in on every call. Five refusals in 45 s came from the two rules below, not from a bad view.
+test('C-ARGS: a call that fills in every declared property is read as the view it chose', async () => {
+  const filled = { view: 'search', query: 'plumber', list: '', window: '', card: '', offset: 0, limit: 10 };
+  assert.equal(validateTrelloRead(filled), true);
+  const search = await board.read(session(), { ...filled });
+  assert.deepEqual((search.cards as { name: string }[]).map(card => card.name), ['Call the plumber']);
+  assert.equal(validateTrelloRead({ view: 'overview', list: '', query: '', window: '', card: '', offset: 0, limit: 10 }), true, 'unused properties are absent, never a shape error');
+  assert.equal(validateTrelloRead({ view: 'list', list: '' }), false, 'a property the view uses is validated exactly as before');
+  assert.equal(validateTrelloRead({ view: 'search', query: 'x', bogus: 'y' }), false, 'a key the tool does not declare still refuses');
+  assert.equal(validateTrelloRead({ view: 'search', query: 'x', bogus: '' }), false, 'an undeclared empty key refuses too');
+  assert.equal(validateTrelloRead({ view: 'nonsense' }), false);
+  assert.equal(validateTrelloWrite({ action: 'note', card: 'Book the venue', text: 'Rang them', name: '', description: '', list: '' }), true, 'the same rule holds for a write');
+  assert.equal(validateTrelloWrite({ action: 'note', text: 'Rang them', card: '', name: '', description: '', list: '' }), false, 'a required property is never dropped');
+});
+
+test('C-ARGS: a refused trello_read names its own keys in tool_arguments_rejected, never unknown', async () => {
+  const tool: ToolDefinition = { ...TRELLO_READ_IDENTITY, description: TRELLO_READ_DESCRIPTION, guidance: TRELLO_ARGUMENT_GUIDANCE, effect: 'read',
+    parameters: TRELLO_READ_PARAMETERS, validate: validateTrelloRead, execute: async () => ({ status: 'failed' as const }) };
+  const owner = { journal: { intent: () => 'fresh' as const, refuse: () => ({ id: 'ref', sha256: 'a'.repeat(64) }), fail: () => ({ id: 'ref', sha256: 'a'.repeat(64) }) } as unknown as ToolCallJournal,
+    resultGate: {} as unknown as ToolResultGate };
+  const events: { event?: string; tool?: string; fields?: string[] }[] = [];
+  const detach = attachHostLogSink({ event: raw => { events.push(raw as { event?: string }); } });
+  try {
+    await runToolCalls(owner, [{ id: '1', name: 'trello_read', args: { view: 'list', list: '', window: 'today', offset: 0 } }], {
+      registry: [tool],
+      host: { runId: 'run', actorId: 'actor', authorityEpoch: 'epoch', revision: 1, grants: [{ tool: 'trello_read', effect: 'read', accountId: TRELLO_READ_IDENTITY.accountId, resourceId: TRELLO_READ_IDENTITY.resourceId }] },
+      authority: { isCurrent: async () => true }, control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5_000 },
+      step: 0, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'],
+    } as never);
+  } finally { detach(); }
+  const event = events.find(line => line.event === 'tool_arguments_rejected');
+  assert.equal(event?.tool, 'trello_read');
+  assert.deepEqual(event?.fields, ['view:string', 'list:string', 'window:string', 'offset:number'], 'the real keys, and the unused ones still named');
 });

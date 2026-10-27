@@ -65,6 +65,10 @@ test('an imperative with an explicit lux destination is the only form that autho
   for (const text of ['both of these things', 'both of these in Lux Knowledge', 'you have my full permission to save it and also a card in Trello']) {
     assert.deepEqual(composedAsk(text), { decision: 'none' }, text);
   }
+  // W7-R1 F5: a word that merely ends in "no" is not a negation, so the ask stands.
+  for (const text of ['Bruno save it to Lux', 'the Reno property save it to Lux', 'we discussed the piano and you should save it to Lux']) {
+    assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
+  }
 });
 
 test('negated, reported, quoted, conditional and ambiguous save asks are refused with a clarification', () => {
@@ -79,6 +83,10 @@ test('negated, reported, quoted, conditional and ambiguous save asks are refused
     ['maybe save that to lux', 'ambiguous'],
     ['save that to lux or to memory', 'ambiguous'],
     ['how do I save something to lux', 'reported'],
+    ['cannot save it to Lux', 'negated'],
+    ["can't save it to Lux", 'negated'],
+    ['not save it to Lux', 'negated'],
+    ['Bruno cannot save it to Lux', 'negated'],
   ];
   for (const [text, reason] of refusals) {
     assert.deepEqual(composedAsk(text), { decision: 'clarify', reason }, text);

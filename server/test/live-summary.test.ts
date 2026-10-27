@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
 import { liveMigrations } from '../live/schema.js';
+import { toolsMigrations } from '../tools/schema.js';
 import { historySessionEvidence, recordHistorySession } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
 import {
@@ -113,7 +114,7 @@ test('a disabled or missing Live profile answers 200 with profileEnabled false a
 });
 
 test('the distiller is given the persona name this route reports, from one owner snapshot', () => {
-  // The summary prompt takes the assistant name as a parameter (conversation-summary-v3), so both surfaces
+  // The summary prompt takes the assistant name as a parameter (conversation-summary-v4), so both surfaces
   // must read it from the owner profile rather than from a literal.
   const runtime = readFileSync(new URL('../../host/runtime.ts', import.meta.url), 'utf8');
   assert.match(runtime, /assistantName: owner\.snapshot\.displayName/);
@@ -127,7 +128,7 @@ const SUMMARY_NOW = 1_700_000_000_000;
 
 function summarizerFixture(): { store: Store; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-summary-worker-'));
-  const store = new Store(dir, [...domainMigrations, ...liveMigrations]);
+  const store = new Store(dir, [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
   return { store, cleanup: () => { store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
@@ -315,5 +316,52 @@ test('a legacy failed row with the old error class is requeued once at the next 
     assert.deepEqual(waits, [SUMMARY_BOOT_REQUEUE_DELAY_MS], 'the boot requeue waits out the start-up window');
     assert.equal(model.calls, 1, 'the legacy row is distilled once');
     assert.equal(storedRow(h.store, 's-legacy-error')!.status, 'complete', 'and it reaches memory');
+  } finally { h.cleanup(); }
+});
+
+/** One sealed tool call, in the shape the tools layer writes it: the name in the intent, the code in the response. */
+function insertToolCall(store: Store, runId: string, toolName: string, state: 'completed' | 'refused' | 'failed' | 'unknown',
+                        response: Record<string, unknown>, ordinal = 0): void {
+  const executionId = `run:${runId}:${ordinal}`;
+  store.transaction(tx => tx.run(`INSERT INTO tool_calls (owner_id,run_id,execution_id,call_id,intent_json,state,result_id,result_json,result_sha256,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`, [store.assistantId, runId, executionId, `call-${ordinal}`,
+    JSON.stringify({ runId, actorId: 'owner', authorityEpoch: store.authorityEpoch, revision: 1, executionId, toolName, argumentsHash: 'a'.repeat(64) }),
+    state, `result-${ordinal}`, JSON.stringify({ response, dataClasses: [] }), 'b'.repeat(64), SUMMARY_NOW + ordinal]));
+}
+
+// Contract C-SUMMARY: the recorded tool outcome reaches the distiller even when the assistant spoke a different
+// cause, so the stored summary cannot carry the invented explanation into later calls.
+test('a refused tool reaches the distillation input by its recorded code, not by the spoken explanation', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-refused-tool');
+    h.store.transaction(tx => tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,?,?)',
+      ['s-refused-tool', 'outputTranscription', 'Lux threw an authorization error, so nothing was saved.', 56, SUMMARY_NOW]));
+    // The three shapes the tools layer persists (persistTerminal): a gateway write that answers "not done" through
+    // the completed path, a failed dispatch whose code is the reason, and a pre-execution refusal.
+    insertToolCall(h.store, 's-refused-tool', 'stage_lux_note', 'completed', { staged: false, code: 'authorization_missing' });
+    insertToolCall(h.store, 's-refused-tool', 'vault_search', 'failed', { status: 'failed', reason: 'upstream_timeout' }, 1);
+    insertToolCall(h.store, 's-refused-tool', 'web_search', 'refused', { status: 'refused', reason: 'not_granted' }, 2);
+    // The vault save and the open tools answer "not done" on the completed path too: `{saved:false, code}` and a
+    // guard receipt code other than 'opened' (server/tools/vault-write.ts:62, server/tools/index.ts:695).
+    insertToolCall(h.store, 's-refused-tool', 'save_to_vault', 'completed', { saved: false, code: 'not_owner_requested', guidance: 'Ask him first.' }, 3);
+    insertToolCall(h.store, 's-refused-tool', 'open_app', 'completed', { code: 'no_open_intent', guidance: 'Nothing to open.' }, 4);
+    insertToolCall(h.store, 's-refused-tool', 'open_app', 'completed', { code: 'opened', kind: 'app', title: 'Maps' }, 5);
+    insertToolCall(h.store, 's-refused-tool', 'calendar_read', 'completed', { events: [] }, 6);
+    const requests: ModelRequest[] = [];
+    const model: ModelPort = { generate: (request: ModelRequest) => { requests.push(request); return Promise.resolve(modelResult('complete', '{"skip": false, "summary": "the owner asked to save a note."}')); } };
+    await worker(h.store, model, []).distill('s-refused-tool');
+    assert.equal(requests.length, 1, 'the distiller made one model call');
+    const text = requests[0]!.contents.flatMap(content => content.parts.map(part => typeof part['text'] === 'string' ? part['text'] : '')).join('\n');
+    assert.ok(text.includes('Tool outcomes:'), 'the block is present');
+    assert.ok(text.includes('stage_lux_note refused authorization_missing'), 'the record names the tool and its code');
+    assert.ok(text.includes('vault_search failed upstream_timeout'), 'a failed call carries its reason code');
+    assert.ok(text.includes('web_search refused not_granted'), 'a pre-execution refusal carries its reason code');
+    assert.ok(text.includes('save_to_vault refused not_owner_requested'), 'a refused vault save reads refused, not succeeded');
+    assert.ok(text.includes('open_app refused no_open_intent'), 'an open guard refusal reads refused');
+    assert.ok(text.includes('open_app succeeded'), 'the opened ack still reads succeeded');
+    assert.ok(text.includes('calendar_read succeeded'), 'a completed call reads as succeeded');
+    assert.ok(requests[0]!.system.includes('Tool outcomes come only from the Tool outcomes block below'));
+    assert.equal(storedRow(h.store, 's-refused-tool')!.status, 'complete', 'the summary is stored');
   } finally { h.cleanup(); }
 });

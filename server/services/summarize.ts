@@ -1,6 +1,7 @@
 import type { DataClass, ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
 import { deadlineAt } from '../adapters/model/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
+import { OPEN_TOOL_NAMES } from '../tools/open.js';
 import { HISTORY_CLASSES, historyForgotten, historySessionEvidence } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
 
@@ -10,7 +11,7 @@ import * as summaries from '../domain/summaries.js';
  * domain owns the durable row.
  */
 
-export const SUMMARY_PROMPT_VERSION = 'conversation-summary-v3';
+export const SUMMARY_PROMPT_VERSION = 'conversation-summary-v4';
 /** The distiller uses the text model the host already configures for chat and tools, never the Live voice model. */
 export const SUMMARY_TEMPERATURE = 0.2;
 export const DISTILLATION_INPUT_MAX_CHARS = 24_000;
@@ -51,6 +52,9 @@ the owner explicitly said was still to do. Attribute every claim: "the owner sai
 calendar", "${assistantName} could not find". Never present something ${assistantName} said as a fact the owner confirmed; a short
 "yes" or "okay" from the owner confirms nothing.
 
+Tool outcomes come only from the Tool outcomes block below: name a failed or refused tool by the code that block
+records, never by ${assistantName}'s spoken explanation of it.
+
 Set openLoop to at most ${OPEN_LOOP_MAX_CHARS} characters naming only something the owner explicitly said was still to do,
 or null when the owner named nothing. A request of his that failed or came back empty, an ask left unanswered, and a
 complaint about the assistant's own voice, accent or answers are still to do, so each one belongs in openLoop.
@@ -64,6 +68,34 @@ how the app or the assistant works. Set skip to true when nothing worth remember
 }
 
 export interface DistillationTurn { readonly speaker: 'owner' | 'assistant'; readonly text: string }
+
+/** How many tool-call records the Tool outcomes block may show. */
+export const TOOL_OUTCOME_MAX_LINES = 20;
+
+/** One terminal tool call as the records hold it: never the assistant's spoken account of it. */
+export interface ToolOutcome {
+  readonly name: string;
+  readonly outcome: 'succeeded' | 'refused' | 'failed' | 'outcome unknown';
+  readonly code: string | null;
+}
+
+/** The call's terminal class and code, read from the record the tools layer sealed. */
+function toolOutcomeOf(row: Record<string, unknown>): ToolOutcome | null {
+  const name = row['name'];
+  if (typeof name !== 'string' || !name) return null;
+  const state = String(row['state']);
+  const code = typeof row['code'] === 'string' && row['code'] ? row['code']
+    : typeof row['reason'] === 'string' && row['reason'] ? row['reason'] : null;
+  // A tool answers "not done" through the completed path, so the sealed response outranks the state: the note and
+  // remember tools persist `{staged: false}` / `{remembered: false}`, the vault save `{saved: false}` (json_extract
+  // gives integer 0 for JSON false), and the open tools any receipt code other than `opened`.
+  const notDone = row['staged'] === 0 || row['remembered'] === 0 || row['saved'] === 0
+    || (OPEN_TOOL_NAMES.has(name) && row['code'] !== 'opened');
+  const outcome = state === 'failed' ? 'failed'
+    : state === 'refused' || (state === 'completed' && notDone) ? (code === 'failed' ? 'failed' : 'refused')
+    : state === 'completed' ? 'succeeded' : 'outcome unknown';
+  return { name, outcome, code };
+}
 
 /** Keep the first 4 000 and the last 20 000 characters, marking the cut. */
 export function capDistillationInput(text: string): { text: string; truncated: boolean } {
@@ -81,6 +113,7 @@ export function buildDistillationInput(input: {
   readonly assistantName: string;
   readonly turns: readonly DistillationTurn[];
   readonly toolNames: readonly string[];
+  readonly toolOutcomes?: readonly ToolOutcome[];
   readonly dateMs: number;
   readonly timeZone: string;
   readonly injected: readonly { readonly id: string; readonly summary: string }[];
@@ -93,7 +126,25 @@ export function buildDistillationInput(input: {
   if (input.toolNames.length) parts.push(`Tools ${input.assistantName} used: ${[...new Set(input.toolNames)].join(', ')}`);
   parts.push('Transcript:');
   for (const turn of input.turns) parts.push(`${turn.speaker === 'owner' ? 'Owner' : input.assistantName}: ${turn.text}`);
+  const outcomes = input.toolOutcomes ?? [];
+  if (outcomes.length) {
+    parts.push('Tool outcomes:');
+    for (const item of outcomes.slice(0, TOOL_OUTCOME_MAX_LINES)) {
+      parts.push(`${item.name} ${item.outcome}${item.code && item.outcome !== 'succeeded' ? ` ${item.code}` : ''}`);
+    }
+  }
   return capDistillationInput(parts.join('\n'));
+}
+
+/** Read the session's tool calls, oldest first, as name, terminal class and code (never arguments or result bodies). */
+export function readToolOutcomes(tx: Transaction, liveSessionId: string): readonly ToolOutcome[] {
+  if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='tool_calls'", [])) return [];
+  const rows = tx.all(`SELECT json_extract(intent_json,'$.toolName') AS name, state,
+      json_extract(result_json,'$.response.code') AS code, json_extract(result_json,'$.response.reason') AS reason,
+      json_extract(result_json,'$.response.staged') AS staged, json_extract(result_json,'$.response.remembered') AS remembered,
+      json_extract(result_json,'$.response.saved') AS saved
+    FROM tool_calls WHERE run_id=? ORDER BY created_at, execution_id`, [liveSessionId]);
+  return rows.flatMap(row => toolOutcomeOf(row) ?? []);
 }
 
 export interface SessionTranscript {
@@ -235,14 +286,15 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
       // distilled again. Every other skip reason and every complete or failed row stays sealed.
       if (existing && !(options.model && summaries.reopenNoModelSkip(tx, liveSessionId))) return null;
       const transcript = readSessionTranscript(tx, liveSessionId);
+      const toolOutcomes = readToolOutcomes(tx, liveSessionId);
       const source = historySessionEvidence(tx, liveSessionId);
       const injectedIds = summaries.injectedSummaryIdsForSession(tx, liveSessionId);
       const selected = source ? summaries.injectionCandidates(tx, HISTORY_CLASSES.filter(value => HISTORY_CLASSES.indexOf(value) <= HISTORY_CLASSES.indexOf(source.dataClass))) : [];
       const injected = injectedIds.flatMap(id => selected.filter(row => row.id === id).map(row => ({ id: row.id, summary: row.summary })));
-      return { transcript, injected, source: injected.length === injectedIds.length ? source : null };
+      return { transcript, toolOutcomes, injected, source: injected.length === injectedIds.length ? source : null };
     });
     if (!prepared) return;
-    const { transcript, injected, source } = prepared;
+    const { transcript, toolOutcomes, injected, source } = prepared;
     const endedAt = transcript.endedAt ?? options.now();
     if (!source) {
       options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'skipped', skipReason: 'history_provenance_unavailable', endedAt, now: options.now() }));
@@ -272,7 +324,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
     }
     // The in-flight row: a host that exits during the model call leaves it for the next start to retry.
     options.store.transaction(tx => summaries.markSummaryPending(tx, liveSessionId, options.now(), provenance));
-    const input = buildDistillationInput({ assistantName: options.assistantName, turns: transcript.turns, toolNames: transcript.toolNames, dateMs: endedAt, timeZone: options.timeZone, injected });
+    const input = buildDistillationInput({ assistantName: options.assistantName, turns: transcript.turns, toolNames: transcript.toolNames, toolOutcomes, dateMs: endedAt, timeZone: options.timeZone, injected });
     const truncated = input.truncated || !!runOptions.deadHost;
     options.log({ event: 'conversation_summary_started', liveSessionId, inputChars: input.text.length, truncated });
     const startedAt = options.now();

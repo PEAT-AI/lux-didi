@@ -610,6 +610,7 @@ test('the new receipt events keep their closed shape and drop anything else', ()
   assert.equal(safeEvent({ event: 'tool_handler_error', tool: 'stage_lux_note', class: 'TypeError', reason: 'handler_outcome', message: 'boom' }), undefined);
   assert.deepEqual(safeEvent({ event: 'research_context_rebuild', retainedChars: 10, ledgerChars: 20, seedTranscriptChars: 30, rebuilds: 1 }),
     { event: 'research_context_rebuild', retainedChars: 10, ledgerChars: 20, seedTranscriptChars: 30, rebuilds: 1 });
+});
 
 // C-CONTINUITY R-01/R-02: a planned research rebuild says what it is. The trigger is research_context, the cause
 // is host, and the network label is never written unless a transport receipt earned it.

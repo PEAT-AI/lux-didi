@@ -111,11 +111,28 @@ export function vaultTitle(content: string): string {
 const INSIGHT_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 export const validInsightId = (value: unknown): value is string => typeof value === 'string' && INSIGHT_ID.test(value);
 
+/**
+ * W5 (Q-05): the whole words of a request, none of it content. The transcriber split one ask across
+ * two turns ("Can you, can you" then "store it in Lux Knowledge"), and the old rule took the first
+ * half as the note. A turn built only from these words is a request fragment, never a referent.
+ */
+const REQUEST_WORDS = new Set(['can', 'could', 'would', 'will', 'you', 'please', 'naya', 'just', 'okay', 'ok', 'right', 'now',
+  'so', 'and', 'then', 'uh', 'um', 'er', 'hey', 'hi', 'yes', 'no', 'let', 'us', 'we', 'go', 'ahead',
+  'save', 'remember', 'put', 'add', 'write', 'store', 'note', 'keep', 'this', 'that', 'it', 'these', 'those', 'them',
+  'to', 'in', 'into', 'my', 'the', 'for', 'me', 'lux', 'knowledge', 'base', 'vault', 'memory', 'didi']);
+const requestFragment = (text: string): boolean => {
+  const words = vaultContentKey(text).split(' ').filter(word => word.length > 0);
+  return words.length === 0 || words.every(word => REQUEST_WORDS.has(word));
+};
+
 /** A final owner utterance minted this single-use authorization, or nothing at all. */
 export function mintVaultAuthorization(tx: Transaction, options: { liveSessionId: string; utteranceId: string; text: string; priorText?: string; now: number }): string | undefined {
   const parsed = parseSaveCommand(options.text);
   if (!parsed) return undefined;
   const content = parsed.refers ? (options.priorText ?? '').replace(/\s+/g, ' ').trim() : parsed.content;
+  // W5: a referential ask whose referent is itself part of the request authorizes nothing. The referent
+  // is the answer she gave, which the composed-note path stages and reads back; the host never writes.
+  if (parsed.refers && requestFragment(content)) return undefined;
   if (vaultContentKey(content).length < 2) return undefined;
   const opId = randomUUID();
   tx.run('INSERT OR IGNORE INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES (?,?,?,?,?,?,?,?,?)',

@@ -44,6 +44,12 @@ const validRef = (ref: ToolResultRef | undefined): ref is ToolResultRef =>
   !!ref && typeof ref.id === 'string' && !!ref.id && typeof ref.sha256 === 'string' && /^[a-f0-9]{64}$/.test(ref.sha256);
 
 const invalidAttempts = new WeakMap<Set<string>, Map<string, number>>();
+/** The closed set an error class may name in host.log: a class, never a message or a stack. */
+const HANDLER_ERROR_CLASSES = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'URIError', 'AggregateError', 'SqliteError'];
+const handlerErrorClass = (error: unknown): string => {
+  const name = error instanceof Error ? error.constructor.name : '';
+  return HANDLER_ERROR_CLASSES.includes(name) ? name : 'Unknown';
+};
 function recordInvalidAttempt(seenIds: Set<string>, key: string): number {
   let counts = invalidAttempts.get(seenIds);
   if (counts === undefined) { counts = new Map(); invalidAttempts.set(seenIds, counts); }
@@ -136,6 +142,11 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
         record.reason = dispatched
           ? (error instanceof Interrupted ? 'handler_interrupted_or_failed' : code)
           : (error instanceof Interrupted ? (error.status === 'deadline' ? 'round_deadline' : 'round_cancelled') : record.reason);
+        // W5: a handler that throws is never silent. One closed-shape line, the tool name and the error
+        // class from a closed list, never a message, a stack or a provider string.
+        if (!(error instanceof Interrupted)) {
+          hostLogEvent({ event: 'tool_handler_error', tool: call.name, class: handlerErrorClass(error), reason: record.reason });
+        }
         if (error instanceof Interrupted) interrupted = error;
       }
       if (journalState === 'failed') return { record, fatal: { status: 'error', reason: 'tool_journal_failed' } };

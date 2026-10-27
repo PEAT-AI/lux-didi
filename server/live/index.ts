@@ -9,7 +9,7 @@ import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteOwnerWords, no
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
 import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
-import { beginStage, currentOwnerTurn, freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, type PlaybackSignalKind } from '../tools/lux-note.js';
+import { freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, stageComposedNote, type PlaybackSignalKind } from '../tools/lux-note.js';
 import { NotesExporter } from '../tools/notes-export.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
@@ -178,15 +178,26 @@ const FRESH_THREAD_WINDOW_MS = 2 * 60 * 1000;
 /** The closed set of past calls the open-loop option may draw on, newest first. */
 const OPEN_LOOP_SOURCES = 3;
 
+/** W5 (Q-06): the calls whose model note was refused for not matching the owner's words. A refusal
+ *  closed that loop, so the call start must not offer it again: only the owner can raise it. */
+export function staleRefusedNoteSessions(tx: Transaction, ownerId: string): ReadonlySet<string> {
+  if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='tool_calls'", [])) return new Set();
+  return new Set(tx.all(`SELECT DISTINCT run_id FROM tool_calls WHERE owner_id=?
+    AND json_extract(intent_json,'$.toolName')='remember_note'
+    AND json_extract(result_json,'$.response.code')='owner_text_mismatch'`, [ownerId]).map(row => String(row['run_id'])));
+}
+
 /** Contract 1023 N8: the stored open_loop column of the eligible past calls, newest first. The summary text is
  *  never mined for a cue word, so a call whose distillation stored no loop offers none. */
-function storedOpenLoops(tx: Transaction, allowedClasses: readonly DataClass[], now: number): { text: string; lastSeenAt: number }[] {
+export function storedOpenLoops(tx: Transaction, allowedClasses: readonly DataClass[], now: number, refused: ReadonlySet<string> = new Set()): { text: string; lastSeenAt: number }[] {
   const rows = tx.all(`SELECT s.live_session_id AS id, s.open_loop AS loop, s.ended_at AS seen_at FROM conversation_summaries s
     WHERE s.status='complete' AND s.open_loop IS NOT NULL AND s.ended_at IS NOT NULL AND s.ended_at<=? AND s.ended_at>=?
     ORDER BY s.ended_at DESC,s.rowid DESC LIMIT 12`, [now, now - EARLIER_CONVERSATIONS_WINDOW_MS]);
   const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
   const loops: { text: string; lastSeenAt: number }[] = [];
   for (const row of rows) {
+    // W5 (Q-06): a call whose note was refused is never offered as an open loop again.
+    if (refused.has(String(row['id']))) continue;
     const source = historySessionEvidence(tx, String(row['id']), eligibility);
     if (!source || !allowedClasses.includes(source.dataClass)) continue;
     loops.push({ text: String(row['loop']), lastSeenAt: Number(row['seen_at']) });
@@ -1311,7 +1322,7 @@ export class LiveSessionOwner {
       const freshThread = freshOwnerThread(tx, assistantId, this.#profile.route.dataClasses, now);
       const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone,
         ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
-        openLoops: storedOpenLoops(tx, this.#profile.route.dataClasses, now),
+        openLoops: storedOpenLoops(tx, this.#profile.route.dataClasses, now, staleRefusedNoteSessions(tx, assistantId)),
         ...(freshThread === undefined ? {} : { freshThread }),
         ...(earlierOpeners[0] === undefined ? {} : { previousKinds: earlierOpeners[0].kinds }),
         rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });
@@ -1768,34 +1779,12 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
   /** W6 item 12: the notes exporter's own switch, on unless live.json turns it off. */
   #notesExport(): boolean { return this.#profile.features?.notesExport !== false; }
 
-  /**
-   * W6 items 1 to 4: the model stages a composed note and nothing more. The owner's own finalized
-   * microphone turn is the only authorization, the evidence refs must name journal rows this session
-   * holds, and the whole payload is frozen here, before any read-back.
-   */
+  /** The composed stage itself is `stageComposedNote`; this keeps the session's own note bookkeeping. */
   #stageComposedNote(tx: Transaction, liveSessionId: string, args: { title: string; body: string; evidenceRefs: string[] }, handle: ActiveSession | undefined): JsonObject {
-    const rows = tx.all("SELECT journal_id,text,final_origin,finalized_at FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND finished=1 ORDER BY journal_id DESC LIMIT 50", [liveSessionId])
-      .map(row => ({ journalId: Number(row['journal_id']), text: String(row['text'] ?? ''),
-        finalOrigin: String(row['final_origin'] ?? 'unknown'), finalizedAt: Number(row['finalized_at'] ?? 0) }));
-    // W6-R2 B1: only this turn's finalized mic transcript can authorize, never the previous turn.
-    const read = currentOwnerTurn(rows, handle?.inputAt, handle?.inputFinal === true, this.#now());
-    if (read.state === 'refused') {
-      hostLogEvent({ event: 'lux_note_stage', staged: false, code: read.code });
-      return { staged: false, code: read.code };
-    }
-    const now = this.#now();
-    const outcome = beginStage({ stageId: randomUUID(), sessionId: liveSessionId, ownerText: read.text,
-      title: args.title, body: args.body, evidence: args.evidenceRefs, heldEvidence: read.evidence, enabled: this.#composedNotes(), now });
-    if (outcome.state === 'refused') {
-      hostLogEvent({ event: 'lux_note_stage', staged: false, code: outcome.code });
-      return { staged: false, code: outcome.code };
-    }
-    const note = outcome.note;
-    saveNoteState(tx, note);
-    this.#noteSessions.add(liveSessionId);
-    hostLogEvent({ event: 'lux_note_stage', staged: true, digest: note.payloadSha.slice(0, 12) });
-    return { staged: true, stageId: note.stageId, title: note.title, body: note.body,
-      readBack: `Read the note back exactly, then wait for the owner: ${note.title}. ${note.body}` };
+    const result = stageComposedNote(tx, liveSessionId, args,
+      { inputAt: handle?.inputAt, inputFinal: handle?.inputFinal === true }, this.#now(), this.#composedNotes());
+    if (result['staged'] === true) this.#noteSessions.add(liveSessionId);
+    return result;
   }
 
   /** W6 item 5: only the app's own drained receipt arms the confirmation; an interruption kills the stage. */

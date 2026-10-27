@@ -88,7 +88,7 @@ test('C-CONTINUITY T-11: a continue with that cursor pages the stored reply and 
   const first = capVoiceReply(reply, book);
   const cursor = String(first['pageCursor']);
   const before = h.executed.length;
-  const second = await runResearch(h.deps, { action: 'continue', researchId: 'r-1', cursor }, signal());
+  const second = await runResearch(h.deps, { action: 'continue', researchId: 'r-1', pageCursor: cursor }, signal());
   assert.equal(second['error'], undefined, 'the page is served');
   assert.equal(h.executed.length, before, 'paging the stored answer dispatched no read and no new search');
   assert.ok(JSON.stringify(second).length <= RESEARCH.voiceReplyChars, 'every page obeys the cap');
@@ -98,7 +98,7 @@ test('C-CONTINUITY T-11: a continue with that cursor pages the stored reply and 
   let page: Record<string, unknown> = second;
   let pages = 2;
   while (page['canContinue'] === true && pages < 20) {
-    page = await runResearch(h.deps, { action: 'continue', researchId: 'r-1', cursor: String(page['pageCursor']) }, signal());
+    page = await runResearch(h.deps, { action: 'continue', researchId: 'r-1', pageCursor: String(page['pageCursor']) }, signal());
     assert.equal(page['error'], undefined, 'the next page is served');
     assert.ok(JSON.stringify(page).length <= RESEARCH.voiceReplyChars, 'every page obeys the cap');
     parts.push(String((page['findings'] as { text: string }[])[0]!.text));
@@ -117,7 +117,7 @@ test('C-CONTINUITY T-11: a cursor this call does not hold is a closed error, nev
   const h = continuationFixture();
   h.deps.voicePages = new VoiceReplyBook();
   const before = h.executed.length;
-  const reply = await runResearch(h.deps, { action: 'continue', researchId: 'r-1', cursor: 'vpage-00000000-0000-0000-0000-000000000000' }, signal());
+  const reply = await runResearch(h.deps, { action: 'continue', researchId: 'r-1', pageCursor: 'vpage-00000000-0000-0000-0000-000000000000' }, signal());
   assert.equal(reply['error'], VOICE_CURSOR_ERROR, 'the error is closed and named');
   assert.equal(h.executed.length, before, 'an expired cursor starts nothing');
 });

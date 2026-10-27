@@ -56,7 +56,6 @@ const APPEND = /^(?:naya\s+)?(?:please\s+)?(?:add|append|update|change|overwrite
 const REPORTED = /^(?:say|says|according to)\b|\b(?:he|she|they|it|someone|rob|you|the [a-z]+)\s+(?:said|says|say|asked|asks|wrote|writes|mentioned|mentions|told|tells|wants|asked me)\b/u;
 const QUESTION = /\b(?:how (?:do|can|should|would) (?:i|you)|what(?:'s| is) the (?:way|phrase|command)|can you tell me how)\b/u;
 const CONDITIONAL = /^(?:if|when|whenever|unless|should|in case)\b/u;
-const NEGATION_LEAD = /^(?:no|not|never|don(?:'| )?t|do not)\b/u;
 const NEGATION = /\b(?:don(?:'| )?t|cannot|can(?:'| )?t|do not|never|not|no)\b/u;
 const HEDGE = /\b(?:maybe|perhaps|probably|might|could|i think|i guess|possibly)\b/u;
 /** A composed note about the conversation itself names its source where a dictation names a store. */
@@ -77,22 +76,19 @@ export function composedAsk(text: string): ComposedAsk {
   if (QUESTION.test(key)) return { decision: 'clarify', reason: 'reported' };
   if (REPORTED.test(key)) return { decision: 'clarify', reason: 'reported' };
   if (CONDITIONAL.test(key)) return { decision: 'clarify', reason: 'conditional' };
-  // A negation before the verb is the owner refusing, not asking, whatever verb order he used.
-  if (NEGATION_LEAD.test(key) && ASK_WORD.test(key) && DESTINATION.test(key)) return { decision: 'clarify', reason: 'negated' };
   // W1-R2: a save verb and a lux destination anywhere in the stretch are the ask.
   if (!ASK_WORD.test(key)) {
     return HEDGE.test(key) && DESTINATION.test(key) ? { decision: 'clarify', reason: 'ambiguous' } : { decision: 'none' };
   }
   const destination = key.search(DESTINATION);
-  // A negation anywhere before the destination is the owner refusing, not asking.
-  const negation = key.search(NEGATION);
-  if (negation >= 0 && negation < destination) return { decision: 'clarify', reason: 'negated' };
+  // W1-R3: a negation refuses only when it governs the save verb, so a self-correction is not one.
+  const negated = NEGATION.test(key.slice(0, key.search(ASK_WORD)).trimEnd().split(' ').slice(-3).join(' '));
+  if (negated) return { decision: 'clarify', reason: 'negated' };
   if (HEDGE.test(key) || /\b(?:or|either|and maybe)\b/u.test(key.slice(destination))) return { decision: 'clarify', reason: 'ambiguous' };
   if (destination < 0) {
     // A note about this conversation names its source instead of a store. Staging is still not saving:
     // the frozen read-back and his own confirmation are what authorize the write.
     if (!NOTE_SOURCE.test(key)) return { decision: 'none' };
-    if (negation >= 0) return { decision: 'clarify', reason: 'negated' };
     return HEDGE.test(key) ? { decision: 'clarify', reason: 'ambiguous' } : { decision: 'grant' };
   }
   return { decision: 'grant' };

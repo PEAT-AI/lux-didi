@@ -615,7 +615,7 @@ test('the research declaration names only the configured sources and the valid h
 test('a rewrite that swaps the named person is refused and the original question stands', () => {
   const original = 'who reports to Korbi';
   const drifted = "Who are Rob's current direct reports according to Mongoose knowledge?";
-  assert.deepEqual(entityPreservedQuestion(original, drifted), { ok: false, reason: 'entity_rewrite', question: original, namesKept: 0, namesDropped: 1, namesAdded: 1 });
+  assert.deepEqual(entityPreservedQuestion(original, drifted), { ok: false, reason: 'entity_rewrite', question: original, namesKept: 0, namesDropped: 1, namesAdded: 2 });
   // The same rule at the tool's own rewrite surface: the topic is the search text, so a topic about another
   // person is the drift and the call is refused before anything is read.
   const parsed = parseResearch({ action: 'start', question: original, topic: 'direct reports for Rob' });

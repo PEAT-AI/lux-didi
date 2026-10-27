@@ -412,17 +412,18 @@ export function requestedEntities(question: string): string[] {
 }
 
 /**
- * C-RESEARCH-CONTRACT Q-08: the names a text carries. A possessive reduces to the name it belongs to, and a
- * capital that comes only from where a word sits is not a name, so an honest rewrite is not refused for it.
+ * C-RESEARCH-CONTRACT Q-08: the names a text carries, and a possessive reduces to the name it belongs to. A
+ * question is a sentence, so a capital that comes only from where its first word sits is typography there; a
+ * topic is a search phrase, not a sentence, so its first capital is a candidate name like any other.
  */
-function namedWords(text: string): string[] {
+function namedWords(text: string, question = false): string[] {
   const found: string[] = [];
   for (const match of text.matchAll(NAME_CANDIDATE)) {
     const word = (match[1] ?? '').replace(/['\u2019]s$/u, '');
     if (word.length < 2 || !/[A-Z]/u.test(word) || ENTITY_STOP.has(word) || NOT_A_NAME.has(word.toLowerCase())) continue;
-    // A capital on the first letter alone is typography when the word opens the text or a sentence; a capital
-    // inside the word (eBay) or an acronym (IBM) is a name wherever it sits.
-    if (!/[A-Z]/u.test(word.slice(1)) && SENTENCE_START.test(text.slice(0, match.index ?? 0))) continue;
+    // A capital on the first letter alone is typography when the word opens a question or its sentence; a
+    // capital inside the word (eBay) or an acronym (IBM) is a name wherever it sits.
+    if (question && !/[A-Z]/u.test(word.slice(1)) && SENTENCE_START.test(text.slice(0, match.index ?? 0))) continue;
     if (!found.includes(word.toLowerCase())) found.push(word.toLowerCase());
   }
   return found;
@@ -447,7 +448,7 @@ export type EntityVerdict = { ok: true; question: string } | ({ ok: false; reaso
  * original question is what stands, so a search can never quietly be about another person.
  */
 export function entityPreservedQuestion(original: string, rewritten: string): EntityVerdict {
-  const before = namedWords(original);
+  const before = namedWords(original, true);
   // Rule: refuse only a rewrite that drops every name the question had and adds one of its own; a question
   // naming nobody has no name to drop, so its topic is free to name the thing to search for.
   if (before.length === 0) return { ok: true, question: rewritten };

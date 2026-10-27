@@ -2441,7 +2441,7 @@ function sourceListText(sources: readonly SourceKind[]): string {
 
 /** The declaration description names the sources this session actually configured, never a source it lacks. */
 export function researchDescription(sources: readonly SourceKind[]): string {
-  return `One lookup of the owner's ${sourceListText(sources)}: at most ${MAX_LOOKUPS} lookups per call, each with a source (memory, knowledge, company, data, calendar, mail, chat, replies, drive or web) plus query, mail or history. Use it when answering needs evidence beyond the conversation. Call start with the question and a topic of names and nouns, at most eight words: only the topic is searched. Its result carries the researchId; continue and stop copy it.`;
+  return `One lookup of the owner's ${sourceListText(sources)}: at most ${MAX_LOOKUPS} lookups per call, each with a source (memory, knowledge, company, data, calendar, mail, chat, replies, drive or web) plus query, mail or history. Use it for evidence beyond the conversation. Call start with the question and a topic of names and nouns, at most eight words: only the topic is searched. Its result carries the researchId; continue and stop copy it.`;
 }
 
 export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH_SOURCES): { name: string; description: string; guidance: string; parameters: JsonObject; validate(args: unknown): boolean } {

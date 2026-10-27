@@ -137,7 +137,9 @@ export function normalizeTrelloWrite(args: unknown): { args: Args; normalized: s
   const used = ['action', ...shape.required, ...shape.optional];
   const normalized: string[] = [];
   const kept = Object.fromEntries(Object.entries(args).filter(([key, value]) => {
-    if (used.includes(key) || !isFillerWriteArgument(value)) return true;
+    // Only a closed write property is ever named: an invented key with a filler value is left for the validator,
+    // so a log line can never carry text the model made up as a property name.
+    if (!TRELLO_WRITE_ARGUMENT_FIELDS.includes(key) || used.includes(key) || !isFillerWriteArgument(value)) return true;
     normalized.push(key);
     return false;
   }));

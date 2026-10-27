@@ -144,9 +144,12 @@ const rejectResearchId = (event: string): Record<string, unknown> => ({ event: '
  * Names only: a value never rides this line, so an entry that carries one is dropped whole.
  */
 const NORMALIZED_PATH = /^(?:question|topic|researchId|sources|direction|cursor|pageCursor|lookups)(?:\[\d{1,2}\])?(?:\.(?:source|query|history|mail))?$/u;
-const isNormalizedPaths = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0 && value.length <= 32
+/** A padded call names more paths than any one line wants, so a closed maximum is kept and the rest is dropped: the
+ *  whole line is never lost, and every kept entry is still a name from a closed list. */
+const RESEARCH_NORMALIZED_MAX = RESEARCH_ARGUMENT_FIELDS.length - 1 + 4 * RESEARCH_LIMITS.maxLoggedLookups;
+const isNormalizedPaths = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0
   && value.every(path => typeof path === 'string' && NORMALIZED_PATH.test(path));
-const isTrelloNormalizedPaths = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0 && value.length <= 8
+const isTrelloNormalizedPaths = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0
   && value.every(path => typeof path === 'string' && TRELLO_WRITE_ARGUMENT_FIELDS.includes(path));
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
 /** C-PITCH: a fundamental frequency in Hz, or null when the response had no voiced frames. */
@@ -570,7 +573,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeMember(value.phase, ['admit', 'dispatch', 'settle']) || !isSafeMember(value.outcome, ['ok', 'refused', 'failed', 'unknown'])) return;
     if (hasReason && !isSafeMember(value.reason, TRELLO_CALL_REASONS)) return;
     return { event: 'connector_call', connector: 'trello', tool: value.tool, phase: value.phase, outcome: value.outcome, ...(hasReason ? { reason: value.reason } : {}),
-      ...(normalized === undefined ? {} : { normalized: [...normalized] }) };
+      ...(normalized === undefined ? {} : { normalized: normalized.slice(0, TRELLO_WRITE_ARGUMENT_FIELDS.length) }) };
   }
   if (value.event === 'vault_write') {
     // Closed shape: the attempt outcome, the closed failure code, the vault's own insight id on a confirmed save, and the wire latency. Never text.
@@ -1100,7 +1103,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'research_refused', state: 'refused', sequence: value.sequence, reason: value.reason, action: value.action,
       fields: Object.fromEntries(RESEARCH_ARGUMENT_FIELDS.map(key => [key, fields[key]])), unknownFieldCount: value.unknownFieldCount, lookupCount: value.lookupCount,
       topicChars: value.topicChars, questionChars: value.questionChars, queryChars: [...value.queryChars], lookupSources: [...value.lookupSources],
-      ...(normalized === undefined ? {} : { normalized: [...normalized] }) };
+      ...(normalized === undefined ? {} : { normalized: normalized.slice(0, RESEARCH_NORMALIZED_MAX) }) };
   }
   if (value.event === 'live_tool_turn') {
     // O1/F6: per-turn tool metrics, tool names, millisecond latency and per-endpoint peak concurrency only.
@@ -1233,7 +1236,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!Array.isArray(value.outcomes) || value.outcomes.length !== value.sources.length || !isSafeMembers(value.outcomes, ROUTED_OUTCOMES)) return;
     if (!Array.isArray(value.ms) || value.ms.length !== value.sources.length || value.ms.some(ms => !isSafeCount(ms))) return;
     return { event: 'research_routed', researchId: value.researchId, ...(routedCall ? { callKey: value.callKey } : {}), sources: value.sources, lookups: value.lookups, ms: value.ms, outcomes: value.outcomes,
-      ...(normalized === undefined ? {} : { normalized: [...normalized] }) };
+      ...(normalized === undefined ? {} : { normalized: normalized.slice(0, RESEARCH_NORMALIZED_MAX) }) };
   }
   if (value.event === 'research_source') {
     // N3/P5: one receipt per source read: the layer, its outcome, its wall time and the deadline it was

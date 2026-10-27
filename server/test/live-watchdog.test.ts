@@ -12,7 +12,7 @@ import { createLiveSessionOwner, IDLE_RESET_CAUSES, isBareAcknowledgement, LIVE_
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { LIVE_REBUILD_TRIGGERS, safeEvent } from '../host/log.js';
-import { LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP } from '../prompt/live-persona.js';
+import { LIVE_MUTE_PICKUP } from '../prompt/live-persona.js';
 import { fakeLiveVoicePort, type FakeLiveVoice, type FakeLiveVoiceEvent } from './fixtures/fake-live-voice.js';
 import type { LiveVoiceEvent, LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
 import { pcm, ready as providerReady } from './live-voice-fixture.js';

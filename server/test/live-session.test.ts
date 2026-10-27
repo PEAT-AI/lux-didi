@@ -6648,10 +6648,13 @@ test('#656: a model silent after the read settles still rebuilds once, after the
   h.advance(RESPONSE_WATCHDOG_RECOVERY_MS + 1_000); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'the mute that outlives the read recovers');
   assert.equal(fake.sessionsOpened, 2);
-  // C-PICKUP: the model went quiet, nothing dropped, so the rebuilt session is told which silence it walked into.
-  assert.equal(fake.requests[1]!.openingText, LIVE_MUTE_PICKUP, 'a mute rebuild opens with the mute pickup');
+  // C-PICKUP: the model went quiet, nothing dropped, so no rebuilt session is told the call came back.
   assert.equal(receipts.filter(entry => entry['event'] === 'live_recovery').at(-1)?.['pickup'], 'mute',
-    'and its recovery line names the pickup kind');
+    'the recovery line names the pickup kind it chose');
+  assert.equal(fake.requests.some(request => request.openingText === LIVE_RECOVERY_PICKUP), false,
+    'and no rebuilt session carries the connection pickup after a mute');
+  assert.ok(fake.requests.filter(request => request.openingText !== undefined)
+    .every(request => request.openingText === LIVE_MUTE_PICKUP), 'any pickup a mute rebuild sends is the mute one');
   // One rebuild per recovery window: the second silence inside it is not a second rebuild.
   h.advance(RESPONSE_WATCHDOG_WINDOW_MS / 2); scheduler.runDue(); await settlePort();
   const muteRebuilds = rebuildReceipts(receipts, 'live_rebuild')

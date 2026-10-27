@@ -196,8 +196,8 @@ test('an open model turn that emits one chunk and then nothing is nudged once an
   await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
   assert.deepEqual(phases(live), ['armed', 'nudged', 'recovering', 'recovered'], 'a turn that opens and goes quiet is watched to recovery');
   assert.equal(live.fake.sessionsOpened, 2);
-  // C-PICKUP: the model spoke, but the owner never did, so nothing is owed and the rebuild asks for no answer.
-  assert.equal(openingText(live), LIVE_MUTE_PICKUP, 'no owner words since the model spoke, so the mute pickup says nothing happened to the call');
+  // W7-R1: a quiet rebuild asks for nothing, so it stays byte-identical to base: no pickup at all.
+  assert.equal(openingText(live), undefined, 'a quiet mute rebuild carries no pickup to answer');
   assert.equal(live.fake.requests.at(-1)?.opening, 'user_first', 'and nothing instructs the rebuilt session to open');
   assert.deepEqual(continuityEvents(live), [], 'and no reconnect marker for the native ring to chime on');
   assert.deepEqual(rebuildTriggers(live), ['no_output_after_ambient'], 'the rebuild names the silence it walked into');
@@ -223,7 +223,7 @@ test('#591: a quiet rebuild drops the dropped-line opener the call inherited fro
   await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
   assert.equal(live.fake.sessionsOpened, 2, 'the stalled turn was rebuilt');
   assert.deepEqual(rebuildTriggers(live), ['no_output_after_ambient'], 'the rebuild is the quiet one');
-  assert.equal(live.fake.requests.at(-1)?.openingText, LIVE_MUTE_PICKUP, 'and the pickup never inherits the dropped-line line');
+  assert.equal(live.fake.requests.at(-1)?.openingText, undefined, 'W7-R1: a quiet rebuild carries no pickup and never inherits the dropped-line one');
   assert.equal(live.fake.requests.at(-1)?.opening, 'user_first', 'nor an instruction to open');
 });
 

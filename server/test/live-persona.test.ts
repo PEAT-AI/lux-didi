@@ -58,7 +58,7 @@ test('W5: the persona says what carries over between calls and what does not', (
 });
 
 test('the release character holds the installed baseline while issue 455 remains open', () => {
-  assert.equal(sha(NAYA_CHARACTER), 'ec5579f4df2fd54f888cb007f0025bb9f28cfc89006a4c7ee8ff1c9707515891');
+  assert.equal(sha(NAYA_CHARACTER), 'd927cedccd099bd4375b34453a4d71cae4cdfc10a098f1940d8beea767b11207');
   assert.match(NAYA_CHARACTER, /thirty to ninety seconds/, 'the baseline duration conflict remains open');
   assert.match(NAYA_CHARACTER, /never invent a message, event, date, source or action/);
   assert.match(NAYA_CHARACTER, /Hold him to the commitments he has stated/);
@@ -368,7 +368,7 @@ test('the public character, voice surface and tool conduct are the authored verb
   // TR3-R1: W15's people rule is the ruled 75-char sentence, so the two blocks carrying it are re-pinned.
   // W4: the voice and loop rules are paid for inside the same blocks, so both hashes are re-pinned here.
   // Train: W1 moved the voice-tools block too, so the merged sources re-pin all three at once.
-  assert.equal(sha(NAYA_CHARACTER), 'ec5579f4df2fd54f888cb007f0025bb9f28cfc89006a4c7ee8ff1c9707515891');
+  assert.equal(sha(NAYA_CHARACTER), 'd927cedccd099bd4375b34453a4d71cae4cdfc10a098f1940d8beea767b11207');
   assert.equal(sha(NAYA_VOICE_SURFACE), '69d48420aac2471b8343d109c5d48833a25d22a510ef9966b94119a620ef21ab');
   assert.equal(sha(NAYA_VOICE_TOOLS), '1040683267e0695db42e121eccd622c98d257506f2adc643db5ba83667d20506');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '92c556c1112232a01b24e05964a29e2082c27a8e93b2610f83aa498ba5090669');

@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTrelloBoard, TRELLO_KEY_FILE, trelloConfigured, trelloIdentity } from '../host/trello.js';
 import { createTrelloRestTransport, trelloSchemas } from '../adapters/trello/client.js';
-import { foldName, indexTrelloSchemas, ownerAskedForChange, planTrelloCall, trelloDueInstant, validateTrelloRead, validateTrelloWrite, TRELLO_SERVER_ALLOW, TRELLO_SERVER_DENY, TRELLO_WRITE_DESCRIPTION, type TrelloBoard } from '../tools/trello.js';
+import { foldName, indexTrelloSchemas, normalizeTrelloWrite, ownerAskedForChange, planTrelloCall, trelloDueInstant, validateTrelloRead, validateTrelloWrite, TRELLO_SERVER_ALLOW, TRELLO_SERVER_DENY, TRELLO_WRITE_DESCRIPTION, type TrelloBoard } from '../tools/trello.js';
+import { safeEvent } from '../host/log.js';
 import { startTrelloFake, SYNTHETIC_BOARD, type TrelloFake } from './trello-fake.js';
 
 /** Monday 2026-10-26 10:00 UTC; the board's zone is UTC so the windows are exact. */
@@ -249,6 +250,24 @@ test('the tool schemas refuse shapes outside each view and action', () => {
   assert.ok(!validateTrelloWrite({ action: 'create', list: 'Sprint', name: 'x', board: 'Other' }));
   assert.ok(!validateTrelloWrite({ action: 'delete', card: 'C1' }), 'there is no delete');
   assert.ok(!validateTrelloWrite({ action: 'update', card: 'C1' }), 'an update must change something');
+});
+
+// C-FILLER F1: a write padded on every property is the whole point, so its log line must survive.
+test('FILLER: a write padded on every property still keeps its log line', () => {
+  const padded = {
+    action: 'done', card: 'Book the venue', list: '', name: '', description: '', due: '', label: '', text: '',
+    item: '', checklist: '', checked: false, complete: false, remove: false,
+  };
+  const { args, normalized } = normalizeTrelloWrite(padded);
+  assert.deepEqual(args, { action: 'done', card: 'Book the venue' }, 'only the action and its own card reach the write');
+  assert.deepEqual(normalized, ['list', 'name', 'description', 'due', 'label', 'text', 'item', 'checklist', 'checked', 'complete', 'remove']);
+  assert.equal(validateTrelloWrite(padded), true);
+  const line = safeEvent({ event: 'connector_call', connector: 'trello', tool: 'write.done', phase: 'settle', outcome: 'ok', normalized });
+  assert.equal(line?.event, 'connector_call', 'the settle line survives eleven paths, not just the field');
+  assert.equal((line?.normalized as string[]).length, 11);
+  assert.equal(safeEvent({ event: 'connector_call', connector: 'trello', tool: 'write.done', phase: 'settle', outcome: 'ok', normalized: ['board'] }), undefined, 'a path outside the closed write fields still drops the line');
+  assert.deepEqual(normalizeTrelloWrite({ action: 'done', card: 'C1', board: false }).normalized, [], 'an invented property is never named');
+  assert.equal(validateTrelloWrite({ action: 'done', card: 'C1', board: false }), false, 'and it still refuses');
 });
 
 // C-FILLER: the voice model sends every declared property, so an unused boolean arrives as false.

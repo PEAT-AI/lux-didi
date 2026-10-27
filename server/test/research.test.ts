@@ -2045,6 +2045,23 @@ test('FILLER 1: the empty properties the voice model sends are absent, so the ca
   assert.equal(safeEvent({ ...line, normalized: ['topic=calendar'] }), undefined, 'a value never rides the log in a path');
 });
 
+// C-FILLER F1: the padded call is the whole point, so the log line must survive the path count it produces.
+test('FILLER 3: a call padded on every property still keeps its refusal line', () => {
+  const padded = {
+    action: 'start', question: 'test all tools', topic: 'tools', researchId: '', sources: '', direction: '',
+    cursor: '', pageCursor: '',
+    lookups: Array.from({ length: 9 }, () => ({ source: '', query: '', history: {}, mail: {} })),
+  };
+  const parsed = parseResearch(padded);
+  assert.equal(parsed.ok, false);
+  if (parsed.ok) return;
+  assert.equal(parsed.reason, 'lookup_source', 'an empty source is absent, so the entry has no source at all');
+  assert.equal(parsed.shape.normalized?.length, 5 + 9 * 4, 'five top-level paths and four in each of the nine entries');
+  const line = safeEvent({ event: 'research_refused', state: 'refused', sequence: 1, reason: parsed.reason, ...parsed.shape });
+  assert.equal(line?.event, 'research_refused', 'the refusal line survives the path count, not just the field');
+  assert.equal((line?.normalized as string[]).length, 41);
+});
+
 test('FILLER 2: a non-empty value and a real error still refuse, exactly as today', () => {
   const unknown = parseResearch({ action: 'start', question: 'what is on my calendar', topic: 'calendar', lookups: [{ source: 'calendar', query: 'x', extra: 'y' }] });
   assert.equal(unknown.ok, false);

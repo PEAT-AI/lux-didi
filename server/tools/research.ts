@@ -153,8 +153,14 @@ export const RESEARCH = Object.freeze({
   sourceFloorChars: 1_000,
   /** C-DEPTH item 5: the extractive ledger that replaces the raw tool items on a rebuild, at most this long. */
   ledgerChars: 6_000,
-  /** C-DEPTH item 5: the retained research payload this call may hold before a rebuild is due. */
-  rebuildThresholdChars: 24_000,
+  /**
+   * C-CONTINUITY T-11: the most one research reply may be once it is serialized for a voice session, envelope
+   * and cursor included. The full reply stays host-side for the call, and a `continue` with the reply's cursor
+   * pages it, so a long answer costs turns instead of context the provider can never give back.
+   */
+  voiceReplyChars: 3_000,
+  /** C-CONTINUITY item 2: the delivered research payload this call may hold before a rebuild is due. */
+  rebuildThresholdChars: 60_000,
   /**
    * LAT-1023 ruling R1: a body the owner asked to read keeps its own page bound. The compaction targets
    * composed answers; paging a requested 16,800-char body at the Live budget would double the round trips
@@ -2210,6 +2216,11 @@ export interface ResearchDeps {
   /** L11-03: the live call this research runs in. Its own rows are never memory, by identity. */
   liveSessionId?: string | undefined;
   /**
+   * C-CONTINUITY T-11: the voice session's page book, so a `continue` that carries a reply cursor reads the
+   * stored answer instead of starting a new search. Absent means no reply was ever capped for this call.
+   */
+  voicePages?: VoiceReplyBook | undefined;
+  /**
    * #565: one row per source call's query shape, so the next forensic review can prove what a search was
    * built from. The Live owner binds it to the trace store; absent means nothing is persisted.
    */
@@ -2262,15 +2273,16 @@ export interface ResearchDeps {
   memo?: ResearchMemo | undefined;
 }
 
-export interface ResearchCall { cursor?: string; action: ResearchAction; question?: string; /** #565: the names and nouns to search for, the only text whose words reach a source. */ topic?: string; researchId?: string; sources?: string; direction?: string; lookups?: unknown; /** The model call this run answers, stamped by the Live owner so a step can name it. Never from model arguments. */ callId?: string }
+export interface ResearchCall { cursor?: string; /** W1-R4: the page pointer of a capped reply, never the research
+ *  continuation cursor. */ pageCursor?: string; action: ResearchAction; question?: string; /** #565: the names and nouns to search for, the only text whose words reach a source. */ topic?: string; researchId?: string; sources?: string; direction?: string; lookups?: unknown; /** The model call this run answers, stamped by the Live owner so a step can name it. Never from model arguments. */ callId?: string }
 
 
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const optionalString = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value : undefined;
 
-export const RESEARCH_ARGUMENT_FIELDS = ['action', 'question', 'topic', 'researchId', 'sources', 'direction', 'lookups', 'cursor'] as const;
+export const RESEARCH_ARGUMENT_FIELDS = ['action', 'question', 'topic', 'researchId', 'sources', 'direction', 'lookups', 'cursor', 'pageCursor'] as const;
 export const RESEARCH_ARGUMENT_TYPES = ['absent', 'null', 'string', 'number', 'boolean', 'array', 'object', 'other'] as const;
-export const RESEARCH_REFUSAL_REASONS = ['root_type', 'unknown_fields', 'action_missing', 'action_invalid', 'question_type', 'question_required', 'question_length', 'topic_type', 'topic_required', 'topic_length', 'entity_rewrite', 'research_id_type', 'research_id_required', 'sources_type', 'direction_type', 'cursor_type', 'cursor_action', 'cursor_lookups_conflict', 'lookups_type', 'lookups_count', 'lookups_stop', 'lookup_type', 'lookup_unknown_fields', 'lookup_source', 'lookup_query_required', 'lookup_query_length', 'lookup_history', 'lookup_mail'] as const;
+export const RESEARCH_REFUSAL_REASONS = ['root_type', 'unknown_fields', 'action_missing', 'action_invalid', 'question_type', 'question_required', 'question_length', 'topic_type', 'topic_required', 'topic_length', 'entity_rewrite', 'research_id_type', 'research_id_required', 'sources_type', 'direction_type', 'cursor_type', 'cursor_action', 'cursor_lookups_conflict', 'cursor_page_conflict', 'lookups_type', 'lookups_count', 'lookups_stop', 'lookup_type', 'lookup_unknown_fields', 'lookup_source', 'lookup_query_required', 'lookup_query_length', 'lookup_history', 'lookup_mail'] as const;
 export type ResearchRefusalReason = typeof RESEARCH_REFUSAL_REASONS[number];
 export interface ResearchArgumentShape {
   action: ResearchAction | 'missing' | 'invalid';
@@ -2335,6 +2347,14 @@ export function parseResearch(args: unknown): ParsedResearch {
     && !entityPreservedQuestion(record['question'], record['topic']).ok) return refuse('entity_rewrite');
   if (record['topic'] !== undefined && (String(record['topic']).length > TOPIC_MAX_CHARS || String(record['topic']).trim().split(/\s+/u).filter(Boolean).length > TOPIC_MAX_WORDS)) return refuse('topic_length');
   if (action !== 'start' && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
+  // W1-R4: the page pointer is its own argument. It pages the stored reply, so it is continue-only and it never
+  // shares a call with the research continuation cursor: one call reads one of the two.
+  if (Object.hasOwn(record, 'pageCursor')) {
+    if (typeof record['pageCursor'] !== 'string' || !record['pageCursor'].length || record['pageCursor'].length > 128) return refuse('cursor_type');
+    if (action !== 'continue') return refuse('cursor_action');
+    if (Object.hasOwn(record, 'cursor')) return refuse('cursor_page_conflict');
+    if (Object.hasOwn(record, 'lookups')) return refuse('cursor_lookups_conflict');
+  }
   if (Object.hasOwn(record, 'cursor')) {
     if (typeof record['cursor'] !== 'string' || !record['cursor'].length || record['cursor'].length > CURSOR_MAX_CHARS) return refuse('cursor_type');
     if (action !== 'continue') return refuse('cursor_action');
@@ -2567,6 +2587,7 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
         researchId: { type: 'string', minLength: 1, description: 'The id a previous reply carried; required for continue and stop.' },
         sources: { type: 'string', description: `Optional single-source hint; valid values: ${SOURCE_HINT_VALUES.join(', ')}.` },
         cursor: { type: 'string', maxLength: CURSOR_MAX_CHARS, description: 'Consumer continuation copied from nextCursor on the same researchId. This is not a source-native page token. Omit lookups when using it.' },
+        pageCursor: { type: 'string', maxLength: 128, description: 'Reads the rest of a capped reply: copied from pageCursor on the page just delivered; use cursor or nextCursor for the research continuation.' },
         direction: { type: 'string', description: 'Optional steer for a continue, e.g. "look in mail".' },
         lookups: {
           // C-RESEARCH-CONTRACT F1 (review resolution A): the keyword is the outer bound the parser accepts, so
@@ -5440,6 +5461,19 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       active.metaStartAsContinue = true;
     }
   }
+  // C-CONTINUITY T-11: a reply cursor pages the answer this call already had, so it never re-runs a search and a
+  // cursor it does not hold is a closed error instead of a fresh question the owner never asked.
+  if (call.pageCursor !== undefined) {
+    // A page is read from this call's own store, but it is still the run's evidence: once the run is stopped or its
+    // body evidence has expired, the page is denied exactly as any other local continuation is, never served locally.
+    const prior = deps.ledger.find(call.researchId ?? '');
+    if (prior !== undefined && (prior.stopped || prior.cancelled)) {
+      return { researchId: call.researchId ?? '', error: 'continuation_unavailable', findings: [], canContinue: false };
+    }
+    // The page is the run's evidence, so it answers to the same gate as any other local continuation.
+    if (prior !== undefined && !evidenceAllowed(deps, prior, signal)) return deniedEvidence(deps, prior);
+    return deps.voicePages?.take(call.pageCursor) ?? { researchId: call.researchId ?? '', error: VOICE_CURSOR_ERROR };
+  }
   let run: RunState;
   if (call.action === 'start') {
     deps.ledger.cancelActive();
@@ -6251,6 +6285,281 @@ export function researchLedgerOf(input: LedgerInput): string {
   ].filter(part => part !== '');
   const text = parts.join('\n');
   return text.length <= RESEARCH.ledgerChars ? text : `${text.slice(0, RESEARCH.ledgerChars - 1)}\u2026`;
+}
+
+/** C-CONTINUITY T-11: the mark a paged research reply carries, so a cut reply never reads as a whole one. */
+export const VOICE_REPLY_CUT = 'voice_reply_chars';
+/** C-CONTINUITY T-11: a voice page cursor is named by this prefix, so a stale one is a closed error. */
+export const VOICE_CURSOR_PREFIX = 'vpage-';
+/** C-CONTINUITY T-11: the closed error a `continue` gets for a cursor this call no longer holds. */
+export const VOICE_CURSOR_ERROR = 'cursor_unavailable';
+
+/** The envelope of a paged reply, kept exactly as the reply carried it: everything but the bulk it pages. */
+function voiceEnvelopeOf(reply: JsonObject): JsonObject {
+  const envelope: JsonObject = {};
+  for (const [key, value] of Object.entries(reply)) {
+    // W1-R3: the cap pages content and nothing else. Every control field the reply carries (status, canContinue,
+    // alreadyDelivered, its own cursor, closed codes, receipts) rides every page untouched, so a reader sees the
+    // same facts it would have seen from the whole reply.
+    if (key === 'findings' || key === 'bodySlices') continue;
+    envelope[key] = value;
+  }
+  return envelope;
+}
+
+/** The one-line-units of a reply's bulk, in the order the provider read them: its findings first. */
+function voiceUnitsOf(reply: JsonObject): string[] {
+  const units: string[] = [];
+  const findings = reply['findings'];
+  if (Array.isArray(findings)) {
+    for (const finding of findings) {
+      const text = isRecord(finding) && typeof finding['text'] === 'string' ? finding['text'] : undefined;
+      if (text === undefined) { units.push(JSON.stringify(finding)); continue; }
+      for (const line of text.split('\n')) units.push(line);
+    }
+  }
+  // A body page is paged as slices, never as lines: its text is cut by offsets, not by meaning.
+  return units;
+}
+
+/**
+ * W1-R4: how many pages of this reply still remain. A held unit is at least one page, and a wide unit is more, so
+ * the count is the number of held units and never a claim about their size.
+ */
+function pagesLeft(units: readonly unknown[]): number { return units.length; }
+
+/** How long one page is once serialized, at the width a real cursor takes. */
+function voicePageChars(envelope: JsonObject, lines: readonly string[], cursorChars: number, remaining: number): number {
+  // W1-R3: every control field of the reply rides the page, so the measurement carries them too. The page cursor
+  // and `canContinue: true` are the widest shape a page takes (the last page of a reply adds neither), and the
+  // remaining count is measured at the width it will really be written at, so a three-digit count cannot slip a
+  // page over its cap by the width of its own field.
+  return JSON.stringify({
+    ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT,
+    pageCursor: '0'.repeat(cursorChars), pagesRemaining: remaining, canContinue: true,
+  }).length;
+}
+
+/** The longest prefix of one unit a page still holds, so a cut never lands mid-word. */
+function voiceLinePrefix(unit: string, fits: (line: string) => boolean): string {
+  let low = 0, high = unit.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (fits(unit.slice(0, middle))) low = middle; else high = middle - 1;
+  }
+  const kept = unit.slice(0, low);
+  const boundary = kept.search(/\s\S*$/u);
+  return boundary > 0 ? kept.slice(0, boundary) : kept;
+}
+
+/**
+ * C-CONTINUITY T-11: one page of a reply, and the units a later page still owes. Whole lines are taken while
+ * they fit; a single line wider than a page is cut at its last whole word and marked, so no page splits a word.
+ */
+function takeVoiceUnits(envelope: JsonObject, units: readonly string[], cap: number, cursorChars: number,
+  remaining: number): { lines: string[]; rest: string[] } {
+  const lines: string[] = [];
+  for (let index = 0; index < units.length; index += 1) {
+    const unit = units[index]!;
+    if (voicePageChars(envelope, [...lines, unit], cursorChars, remaining) <= cap) { lines.push(unit); continue; }
+    const head = voiceLinePrefix(unit, kept => voicePageChars(envelope, [...lines, `${kept} \u2026`], cursorChars, remaining) <= cap);
+    if (head === '') return { lines, rest: units.slice(index) };
+    lines.push(`${head} \u2026`);
+    return { lines, rest: [unit.slice(head.length).trimStart(), ...units.slice(index + 1)] };
+  }
+  return { lines, rest: [] };
+}
+
+/** How long one body page is once serialized, at the width a real cursor takes. */
+function voiceSliceChars(envelope: JsonObject, slices: readonly JsonObject[], cursorChars: number, remaining: number): number {
+  // Exactly the page this would emit, page cursor included, so the measurement is never optimistic.
+  return JSON.stringify({ ...envelope, bodySlices: slices, cut: VOICE_REPLY_CUT,
+    pageCursor: '0'.repeat(cursorChars), pagesRemaining: remaining, canContinue: true }).length;
+}
+
+/**
+ * C-CONTINUITY T-11: one body page, and the slices a later page still owes. Whole slices are taken while they fit;
+ * a slice wider than a page is split at its last whole word, and the tail keeps its own offsets so the reader's
+ * coordinates stay exact.
+ */
+function takeVoiceSlices(envelope: JsonObject, slices: readonly JsonObject[], cap: number, cursorChars: number,
+  remaining: number): { kept: JsonObject[]; rest: JsonObject[] } {
+  const kept: JsonObject[] = [];
+  for (let index = 0; index < slices.length; index += 1) {
+    const slice = slices[index]!;
+    if (voiceSliceChars(envelope, [...kept, slice], cursorChars, remaining) <= cap) { kept.push(slice); continue; }
+    const text = typeof slice['text'] === 'string' ? slice['text'] : '';
+    const offset = typeof slice['offset'] === 'number' ? slice['offset'] : 0;
+    if (text === '') return { kept, rest: slices.slice(index) };
+    const fits = (line: string): boolean => voiceSliceChars(envelope,
+      [...kept, { ...slice, text: line, end: offset + line.length, cut: VOICE_REPLY_CUT }], cursorChars, remaining) <= cap;
+    const head = voiceLinePrefix(text, fits);
+    if (head === '') return { kept, rest: slices.slice(index) };
+    kept.push({ ...slice, text: head, end: offset + head.length, cut: VOICE_REPLY_CUT });
+    // The tail keeps every character the head did not carry, so the pages rejoin byte for byte with no gap.
+    return { kept, rest: [{ ...slice, text: text.slice(head.length), offset: offset + head.length }, ...slices.slice(index + 1)] };
+  }
+  return { kept, rest: [] };
+}
+
+/**
+ * W1-R5: measure one page at the width of the remaining count it will really name. A wider count only ever makes
+ * the page smaller, so the settled answer is the first one whose count fits the width it was measured at.
+ */
+function fitUnits(envelope: JsonObject, units: readonly string[], cap: number, cursorChars: number): { lines: string[]; rest: string[] } {
+  let remaining = units.length + 1;
+  for (let pass = 0; pass < 6; pass += 1) {
+    const cut = takeVoiceUnits(envelope, units, cap, cursorChars, remaining);
+    if (String(cut.rest.length).length <= String(remaining).length) return cut;
+    remaining = cut.rest.length;
+  }
+  return takeVoiceUnits(envelope, units, cap, cursorChars, Number.MAX_SAFE_INTEGER);
+}
+
+/** The same settling for a body page, whose count is the slices still owed. */
+function fitSlices(envelope: JsonObject, slices: readonly JsonObject[], cap: number, cursorChars: number): { kept: JsonObject[]; rest: JsonObject[] } {
+  let remaining = slices.length + 1;
+  for (let pass = 0; pass < 6; pass += 1) {
+    const cut = takeVoiceSlices(envelope, slices, cap, cursorChars, remaining);
+    if (String(cut.rest.length).length <= String(remaining).length) return cut;
+    remaining = cut.rest.length;
+  }
+  return takeVoiceSlices(envelope, slices, cap, cursorChars, Number.MAX_SAFE_INTEGER);
+}
+
+/**
+ * C-CONTINUITY T-11: the full replies the voice cap paged, kept for this call only. The provider holds one page
+ * at a time; the rest is still here, so a `continue` with its cursor reads on without a new search.
+ */
+export class VoiceReplyBook {
+  #pages = new Map<string, { researchId: string; envelope: JsonObject; units: string[]; slices: JsonObject[]; then?: JsonObject }>();
+  #served = new Map<string, JsonObject>();
+  #servedOrder: string[] = [];
+
+  get size(): number { return this.#pages.size; }
+
+  holds(cursor: string): boolean { return this.#pages.has(cursor); }
+
+  /** Keep one findings reply's remainder host-side and hand back the cursor that reads it. */
+  keep(researchId: string, envelope: JsonObject, units: readonly string[], then?: JsonObject): string {
+    return this.#hold({ researchId, envelope, units: [...units], slices: [], ...(then === undefined ? {} : { then }) });
+  }
+
+  /** Keep one body reply's remaining slices host-side and hand back the cursor that reads them. */
+  keepSlices(researchId: string, envelope: JsonObject, slices: readonly JsonObject[]): string {
+    return this.#hold({ researchId, envelope, units: [], slices: slices.map(slice => ({ ...slice })) });
+  }
+
+  #hold(page: { researchId: string; envelope: JsonObject; units: string[]; slices: JsonObject[]; then?: JsonObject }): string {
+    const cursor = `${VOICE_CURSOR_PREFIX}${newResearchId()}`;
+    this.#pages.set(cursor, page);
+    return cursor;
+  }
+
+  /** The next page for a cursor, or undefined when this call no longer holds one. */
+  take(cursor: string, cap: number = RESEARCH.voiceReplyChars): JsonObject | undefined {
+    // W1-R3: a repeated page is the reply's own repeat receipt, exactly as the run answers a replayed body page.
+    const served = this.#served.get(cursor);
+    if (served !== undefined) return { ...voiceEnvelopeOf(served), findings: [], alreadyDelivered: true };
+    const page = this.#pages.get(cursor);
+    if (page === undefined) return undefined;
+    this.#pages.delete(cursor);
+    const cursorChars = VOICE_CURSOR_PREFIX.length + 36;
+    const envelope: JsonObject = { ...page.envelope, researchId: page.researchId };
+    let emitted: JsonObject;
+    if (page.slices.length > 0) {
+      const { kept, rest } = fitSlices(envelope, page.slices, cap, cursorChars);
+      emitted = rest.length === 0
+        ? { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT }
+        : { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT, canContinue: true,
+          pageCursor: this.keepSlices(page.researchId, page.envelope, rest), pagesRemaining: pagesLeft(rest) };
+    } else {
+      const { lines, rest } = fitUnits(envelope, page.units, cap, cursorChars);
+      const findings = [{ text: lines.join('\n') }];
+      if (rest.length > 0) {
+        emitted = { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: true,
+          pageCursor: this.keep(page.researchId, page.envelope, rest, page.then), pagesRemaining: pagesLeft(rest) };
+      } else if (page.then !== undefined) {
+        // The held lines are spent: a reply that still owes a body hands it back to the cap as its own page.
+        emitted = capVoiceReply(page.then, this, cap);
+      } else emitted = { ...envelope, findings, cut: VOICE_REPLY_CUT };
+    }
+    this.#remember(cursor, emitted);
+    return emitted;
+  }
+
+  /** Keep the last served pages, so a replayed cursor is answered as a repeat receipt rather than a lost cursor. */
+  #remember(cursor: string, page: JsonObject): void {
+    this.#served.set(cursor, page);
+    this.#servedOrder.push(cursor);
+    while (this.#servedOrder.length > 32) {
+      const oldest = this.#servedOrder.shift();
+      if (oldest !== undefined) this.#served.delete(oldest);
+    }
+  }
+
+  clear(): void { this.#pages.clear(); this.#served.clear(); this.#servedOrder = []; }
+}
+
+/**
+ * C-CONTINUITY T-11: the one cap every research result delivered into a voice session obeys. A reply that fits
+ * is handed back untouched; a wider one becomes its first page, findings first, with the cursor that reads on.
+ * The full reply never leaves the host, and the caller keeps the same envelope keys it always read.
+ */
+export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: number = RESEARCH.voiceReplyChars): JsonObject {
+  if (JSON.stringify(reply).length <= cap) return reply;
+  const researchId = typeof reply['researchId'] === 'string' ? reply['researchId'] : '';
+  const envelope = voiceEnvelopeOf(reply);
+  // A body page is a research result too, so it obeys the same cap: its slices are cut at a whole word and the
+  // remainder is paged from the book with the reader's own offsets, so nothing is handed over uncapped.
+  const slices = Array.isArray(reply['bodySlices']) ? (reply['bodySlices'] as JsonObject[]) : undefined;
+  const units = voiceUnitsOf(reply);
+  if (slices !== undefined && units.length > 0) {
+    // W1-R2 / council lux 98136: findings first, the rest by cursor. The evidence lines are delivered inside the
+    // cap, and the body page follows them as the next page through the same cursor, with no new search.
+    const { lines, rest } = fitUnits(envelope, units, cap, VOICE_CURSOR_PREFIX.length + 36);
+    const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
+    const body = { ...reply, findings: [] };
+    if (rest.length > 0) return { ...page, canContinue: true,
+      pageCursor: book.keep(researchId, envelope, rest, body), pagesRemaining: pagesLeft(rest) };
+    return capVoiceReply(body, book, cap);
+  }
+  if (slices !== undefined) {
+    const { kept, rest } = fitSlices(envelope, slices, cap, VOICE_CURSOR_PREFIX.length + 36);
+    const page: JsonObject = { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT };
+    // Every capped page states whether it continues, so a reader never has to read an absent field as false.
+    if (rest.length === 0) return { ...page, canContinue: envelope['nextCursor'] !== undefined };
+    // A body reader already follows `nextCursor`, so a paged body is read through that same field and lands back
+    // on the body's own next page once the store's slices are spent.
+    return { ...page, canContinue: true, pageCursor: book.keepSlices(researchId, envelope, rest), pagesRemaining: pagesLeft(rest) };
+  }
+  const { lines, rest } = fitUnits(envelope, voiceUnitsOf(reply), cap, VOICE_CURSOR_PREFIX.length + 36);
+  const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
+  // W1-R3: the reply's own control fields stay as they are; a page only adds the cursor it needs to be read on.
+  if (rest.length === 0) return page;
+  return { ...page, canContinue: true, pageCursor: book.keep(researchId, envelope, rest), pagesRemaining: pagesLeft(rest) };
+}
+
+/**
+ * C-CONTINUITY item 4: the extractive ledger a call accumulates from every research batch it delivered, oldest
+ * record evicted first, at most `ledgerChars`. A refused or failed batch is never added, so the ledger can never
+ * lose what the owner already heard to a search that found nothing.
+ */
+export class ResearchLedgerLog {
+  #records: string[] = [];
+
+  get records(): number { return this.#records.length; }
+
+  add(record: string): void { const text = record.trim(); if (text !== '') this.#records.push(text); }
+
+  text(): string {
+    const kept = this.#records.slice();
+    while (kept.length > 1 && kept.join('\n\n').length > RESEARCH.ledgerChars) kept.shift();
+    const text = kept.join('\n\n');
+    return text.length <= RESEARCH.ledgerChars ? text : `${text.slice(0, RESEARCH.ledgerChars - 1)}\u2026`;
+  }
+
+  clear(): void { this.#records = []; }
 }
 
 export function knownReply(ledger: ResearchLedger, researchId: string, configured: readonly SourceKind[], status: 'answered' | 'partial' | 'stopped' | 'unavailable' = 'stopped', limit = RESEARCH.budgets.default): JsonObject {

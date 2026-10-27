@@ -7,7 +7,7 @@ import { TURN_FAILED_REASONS } from '../adapters/live-voice/types.js';
 import { DEBT_PHASES, DEBT_REASONS } from '../trace/kinds.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { ConfigError } from '../config/files.js';
-import { clearLogContext, envelopeContext, monoMilliseconds, nextSeq, severityOf } from './events.js';
+import { LOG_CAUSES, clearLogContext, envelopeContext, monoMilliseconds, nextSeq, severityOf } from './events.js';
 import { LIVE_INSTRUCTION_SECTION_IDS } from '../prompt/live-persona.js';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -45,7 +45,7 @@ export const LIVE_STATE_CAUSES = ['created', 'input', 'model_turn_start', 'audio
   'tool', 'settle', 'rebuild', 'poll', 'ready'] as const;
 /** #591: why a provider session was rebuilt, a closed set. The two watchdog tokens split a silent model from a
  *  model that owes the owner an answer; the other two name the transport causes that rebuild on their own. */
-export const LIVE_REBUILD_TRIGGERS = ['no_output_after_ambient', 'no_output_after_owner', 'line_dropped', 'session_window'] as const;
+export const LIVE_REBUILD_TRIGGERS = ['no_output_after_ambient', 'no_output_after_owner', 'line_dropped', 'session_window', 'research_context'] as const;
 /** C-HEADPHONES 5: the native app's closed `live_end` reasons, verbatim from NativeLiveJournal. A Stop
  *  carries one and this log repeats it, so an audio route change is never written down as the owner's
  *  own stop. A closed set: the log never prints a word the app did not send. */
@@ -139,6 +139,12 @@ const isSafeId = (value: unknown): value is string => typeof value === 'string' 
  */
 const rejectResearchId = (event: string): Record<string, unknown> => ({ event: 'research_id_rejected', kind: event, field: 'researchId' });
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+/** C-CONTINUITY R-09: a socket close code, the range the protocol allows, or null before the socket answered. */
+const isSafeCloseCode = (value: unknown): value is number | null =>
+  value === null || (Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 65535);
+/** C-CONTINUITY R-09: a sanitized close reason: one bounded line of ordinary text, never free payload. */
+const isSafeCloseReason = (value: unknown): value is string =>
+  typeof value === 'string' && value.length <= 300 && !/[\u0000-\u001f\u007f]/u.test(value);
 /** A provider frame name: lowercase dots and underscores, as the Live reference writes them, never free text. */
 const UNKNOWN_FRAME_TYPE = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/;
 const isSafeMember = (value: unknown, allowed: readonly string[]): value is string => typeof value === 'string' && allowed.includes(value);
@@ -232,13 +238,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeToken(value.tool) || !isSafeToken(value.reason)) return;
     if (typeof value.class !== 'string' || !TOOL_HANDLER_CLASSES.includes(value.class)) return;
     return { event: 'tool_handler_error', tool: value.tool, class: value.class, reason: value.reason };
-  }
-  if (value.event === 'research_context_rebuild') {
-    // W1/W5: a rebuild receipt in characters and a count, the same field names the rebuild emits.
-    if (!closedKeys(value, ['event', 'ledgerChars', 'rebuilds', 'retainedChars', 'seedTranscriptChars'])) return;
-    if (![value.retainedChars, value.ledgerChars, value.seedTranscriptChars, value.rebuilds].every(isSafeCount)) return;
-    return { event: 'research_context_rebuild', retainedChars: value.retainedChars, ledgerChars: value.ledgerChars,
-      seedTranscriptChars: value.seedTranscriptChars, rebuilds: value.rebuilds };
   }
   if (value.event === 'notes_export') {
     // W5: the exporter's own counts and an 8 hex run id, never a note or a path.
@@ -649,17 +648,20 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'live_recovery') {
     // Closed shape: one metadata-only record per recovery attempt. Never audio, text or a provider payload;
     // seedTurns/seedChars are the rebuilt journal seed's size, path is the transport chosen.
-    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'closeCode', 'reason', 'seedTurns', 'seedChars', 'msSinceDrop', 'liveSessionId', 'generation'].sort().join(',')) return;
+    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'cause', 'closeCode', 'closeReason', 'reason', 'seedTurns', 'seedChars', 'msSinceDrop', 'liveSessionId', 'generation'].sort().join(',')) return;
     if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
     if (!isSafeCount(value.generation)) return;
     if (!isSafeMember(value.path, ['resume', 'fresh_seeded'])) return;
     if (!isSafeCount(value.attempt) || Number(value.attempt) < 1) return;
     if (!isSafeCount(value.msSinceDrop)) return;
     if (!isSafeToken(value.code)) return;
+    // C-CONTINUITY R-02/R-10: the cause is the outcome's, never the event name's static label.
+    if (!isSafeMember(value.cause, LOG_CAUSES)) return;
     if (!(value.closeCode === null || (Number.isSafeInteger(value.closeCode) && Number(value.closeCode) >= 0 && Number(value.closeCode) <= 65535))) return;
     if (!(value.reason === null || isSafeToken(value.reason))) return;
+    if (!isSafeCloseReason(value.closeReason)) return;
     if (!isSafeCount(value.seedTurns) || !isSafeCount(value.seedChars)) return;
-    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, closeCode: value.closeCode, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, msSinceDrop: value.msSinceDrop, liveSessionId: value.liveSessionId, generation: value.generation };
+    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, cause: value.cause, closeCode: value.closeCode, closeReason: value.closeReason, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, msSinceDrop: value.msSinceDrop, liveSessionId: value.liveSessionId, generation: value.generation };
   }
   if (value.event === 'live_provider_open' || value.event === 'live_provider_ready') {
     // Closed shape: which session and generation the provider socket was opened for, how big the setup was
@@ -884,7 +886,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'live_watchdog') {
     // 3j: the response watchdog, one record per phase change. Phase, turn age and connection generation only.
     if (Object.keys(value).sort().join(',') !== ['event', 'generation', 'phase', 'turnAgeMs'].sort().join(',')) return;
-    if (!isSafeMember(value.phase, ['armed', 'nudged', 'closed', 'recovered', 'settled'])) return;
+    if (!isSafeMember(value.phase, ['armed', 'nudged', 'closed', 'recovering', 'recovered', 'settled'])) return;
     if (!isSafeCount(value.turnAgeMs) || !isSafeCount(value.generation)) return;
     return { event: 'live_watchdog', phase: value.phase, turnAgeMs: value.turnAgeMs, generation: value.generation };
   }
@@ -901,11 +903,31 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'turn_failed', reason: value.reason };
   }
   if (value.event === 'live_rebuild') {
-    // #591: every rebuild names its trigger from the closed set, so a silent model and a quiet room are told apart.
-    if (!closedKeys(value, ['event', 'trigger', 'liveSessionId', 'generation'])) return;
+    // #591: every rebuild names its trigger from the closed set, so a silent model and a quiet room are told
+    // apart. C-CONTINUITY R-01/R-02: the trigger and the cause are the outcome's, and a transport receipt's close
+    // code and sanitized reason ride along when the socket left one. Metadata only, never owner text.
+    const keys = ['event', 'trigger', 'liveSessionId', 'generation', 'cause'];
+    const extended = Object.hasOwn(value, 'closeCode') ? [...keys, 'closeCode', 'closeReason'] : keys;
+    if (!closedKeys(value, extended)) return;
     if (!isSafeMember(value.trigger, LIVE_REBUILD_TRIGGERS)) return;
+    if (!isSafeMember(value.cause, LOG_CAUSES)) return;
     if (!isSafeId(value.liveSessionId) || !isSafeCount(value.generation)) return;
-    return { event: 'live_rebuild', trigger: value.trigger, liveSessionId: value.liveSessionId, generation: value.generation };
+    if (Object.hasOwn(value, 'closeCode')) {
+      if (!isSafeCloseCode(value.closeCode) || !isSafeCloseReason(value.closeReason)) return;
+      return { event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId,
+        generation: value.generation, closeCode: value.closeCode, closeReason: value.closeReason };
+    }
+    return { event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId, generation: value.generation };
+  }
+  if (value.event === 'research_context_rebuild') {
+    // C-CONTINUITY R-14: the planned rebuild reaches host.log with sizes only: what the call had retained, what the
+    // ledger kept, how much transcript the seed carried, and the call's total context, refusals included.
+    if (!closedKeys(value, ['event', 'retainedChars', 'ledgerChars', 'seedTranscriptChars', 'rebuilds', 'totalContextChars'])) return;
+    for (const field of ['retainedChars', 'ledgerChars', 'seedTranscriptChars', 'rebuilds', 'totalContextChars']) {
+      if (!isSafeCount(value[field])) return;
+    }
+    return { event: 'research_context_rebuild', retainedChars: value.retainedChars, ledgerChars: value.ledgerChars,
+      seedTranscriptChars: value.seedTranscriptChars, rebuilds: value.rebuilds, totalContextChars: value.totalContextChars };
   }
   if (value.event === 'live_turn_script') {
     // E1: which script the model spoke this turn, in closed buckets and code-point counts. Never text.

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { safeEvent } from '../host/log.js';
+import { severityOf } from '../host/events.js';
 import { createHostResourceSampler } from '../host/runtime.js';
 
 // The known Live instruction section ids, mirrored from ComposedSection.
@@ -143,13 +144,17 @@ test('research_subcall keeps a real error code but drops a free-text one', () =>
   assert.equal(safeEvent({ ...base, errorCode: 'invalid_arguments' })?.errorCode, 'invalid_arguments');
   assert.equal(safeEvent({ ...base, errorCode: 'has space' }), undefined);
 });
-const RECOVERY = { event: 'live_recovery', path: 'fresh_seeded', attempt: 1, code: 'opened', closeCode: null, reason: 'transport_error', seedTurns: 3, seedChars: 120, msSinceDrop: 21_000, liveSessionId: LIVE_SESSION_ID, generation: 4 };
+// C-CONTINUITY R-02/R-09: the recovery line carries the cause its outcome earned and the socket's own close
+// code and sanitized reason beside the seed size.
+const RECOVERY = { event: 'live_recovery', path: 'fresh_seeded', attempt: 1, code: 'opened', cause: 'network', closeCode: 1006, closeReason: 'upstream reset', reason: 'transport_error', seedTurns: 3, seedChars: 120, msSinceDrop: 21_000, liveSessionId: LIVE_SESSION_ID, generation: 4 };
 test('live_recovery keeps a closed metadata-only shape', () => {
   assert.deepEqual(safeEvent(RECOVERY), RECOVERY);
   assert.equal(safeEvent({ ...RECOVERY, extra: 1 }), undefined, 'an extra key fails closed');
   assert.equal(safeEvent({ ...RECOVERY, path: 'carrier_pigeon' }), undefined, 'an unknown path is refused');
   assert.equal(safeEvent({ ...RECOVERY, closeCode: 70000 }), undefined, 'an out-of-range close code is refused');
   assert.equal(safeEvent({ ...RECOVERY, seedChars: -1 }), undefined, 'a negative seed size is refused');
+  assert.equal(safeEvent({ ...RECOVERY, cause: 'the-network-was-bad' }), undefined, 'the cause stays a closed set');
+  assert.equal(safeEvent({ ...RECOVERY, closeReason: 'line one\nline two' }), undefined, 'a multi-line close reason is refused');
   assert.equal(safeEvent({ ...RECOVERY, liveSessionId: 'nope' }), undefined, 'a recovery line names a real session (#527)');
 });
 test('the timing waterfall lines keep closed, count-only shapes (#451)', () => {
@@ -605,4 +610,33 @@ test('the new receipt events keep their closed shape and drop anything else', ()
   assert.equal(safeEvent({ event: 'tool_handler_error', tool: 'stage_lux_note', class: 'TypeError', reason: 'handler_outcome', message: 'boom' }), undefined);
   assert.deepEqual(safeEvent({ event: 'research_context_rebuild', retainedChars: 10, ledgerChars: 20, seedTranscriptChars: 30, rebuilds: 1 }),
     { event: 'research_context_rebuild', retainedChars: 10, ledgerChars: 20, seedTranscriptChars: 30, rebuilds: 1 });
+
+// C-CONTINUITY R-01/R-02: a planned research rebuild says what it is. The trigger is research_context, the cause
+// is host, and the network label is never written unless a transport receipt earned it.
+test('C-CONTINUITY R-01: a research rebuild logs trigger=research_context and cause=host, never cause=network', () => {
+  const rebuild = { event: 'live_rebuild', trigger: 'research_context', cause: 'host', liveSessionId: LIVE_SESSION_ID, generation: 2 };
+  assert.deepEqual(safeEvent(rebuild), rebuild);
+  // A drop still names the network, and now carries the socket's own close code and sanitized reason.
+  const drop = { event: 'live_rebuild', trigger: 'line_dropped', cause: 'network', liveSessionId: LIVE_SESSION_ID, generation: 3, closeCode: 1006, closeReason: 'upstream reset' };
+  assert.deepEqual(safeEvent(drop), drop);
+  assert.equal(safeEvent({ ...drop, closeReason: 'line one\nline two' }), undefined, 'a multi-line reason is refused');
+  assert.equal(safeEvent({ ...drop, trigger: 'made_up_trigger' }), undefined, 'the trigger stays a closed set');
+  assert.equal(safeEvent({ ...drop, cause: 'the-network-was-bad' }), undefined, 'the cause stays a closed set');
+});
+
+// C-CONTINUITY R-14: the planned rebuild's own line reaches host.log, with sizes only.
+test('C-CONTINUITY R-14: research_context_rebuild reaches host.log as sizes only', () => {
+  const line = { event: 'research_context_rebuild', retainedChars: 61_000, ledgerChars: 6_000, seedTranscriptChars: 8_000, rebuilds: 1, totalContextChars: 96_000 };
+  assert.deepEqual(safeEvent(line), line);
+  assert.equal(safeEvent({ event: 'research_context_rebuild', retainedChars: 1, ledgerChars: 1, seedTranscriptChars: 1, rebuilds: 1 }), undefined, 'a partial shape is refused');
+  assert.equal(safeEvent({ ...line, question: 'which company did we discuss' }), undefined, 'no text field can ride this line');
+});
+
+// C-CONTINUITY R-10: the attribution of a silence is its own `silence` field, so the line carries no static cause.
+test('C-CONTINUITY R-10: dead-air and heard-silence lines carry no static cause', () => {
+  assert.equal(severityOf('live_dead_air').cause, undefined);
+  assert.equal(severityOf('live_heard_silence').cause, undefined);
+  assert.equal(severityOf('live_rebuild').cause, undefined, 'a rebuild cause is the outcome\'s, not the map\'s');
+  assert.equal(severityOf('live_recovery').cause, undefined);
+  assert.deepEqual(safeEvent({ event: 'live_heard_silence', ms: 1_200, silence: 'provider' }), { event: 'live_heard_silence', ms: 1_200, silence: 'provider' });
 });

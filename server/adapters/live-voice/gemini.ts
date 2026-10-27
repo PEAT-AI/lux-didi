@@ -331,7 +331,7 @@ class Session implements LiveVoiceSession {
   // outcome to the owner resumption path; shutdownSocket closes the dead socket.
   private dropUpstream(errorKind: string, socket: WebSocket): void {
     if (this.terminal) return;
-    this.upstreamDrop = { errorKind, closeCode: null, bufferedAmount: socket.bufferedAmount, writesFailed: this.diagnostic.localWriteCallbackErrorCalls, sessionMs: Math.max(0, Date.now() - this.startedAt) };
+    this.upstreamDrop = { errorKind, closeCode: null, closeReason: '', bufferedAmount: socket.bufferedAmount, writesFailed: this.diagnostic.localWriteCallbackErrorCalls, sessionMs: Math.max(0, Date.now() - this.startedAt) };
     this.finish('transport_error', this.upstreamDrop);
   }
   private watchUpstreamStall(socket: WebSocket): void {

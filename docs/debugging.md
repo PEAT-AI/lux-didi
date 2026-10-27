@@ -57,6 +57,10 @@ Every host.log line carries the same envelope, so a call can be assembled withou
 | `pid`, `seq` | the process, and this process's line counter: a gap is a lost line, not a gap in time |
 | `level` | `debug`, `info`, `warn` or `error`, from the event name, never from the caller |
 | `cause` | `tool`, `provider`, `owner`, `network`, `audio`, `host`, `connector` or `config`, on the lines whose name states a domain |
+
+A `live_rebuild` and a `live_recovery` line read their `cause` off the outcome, never off the event name. `network` needs a transport receipt: an upstream drop, a missing pong, a stall, a socket error. A planned research rebuild is `cause=host`. A model that went quiet, and the recovery that follows it, are `cause=provider`. The `trigger` is a closed set too, and `line_dropped` is no longer a default: a research rebuild is `trigger=research_context`, a silent model is `no_output_after_owner` or `no_output_after_ambient`, a window end is `session_window`, and a reason the host does not recognise is a typed error rather than a guess.
+
+The silence lines carry no static `cause` at all: `live_heard_silence` and `live_dead_air` name what really owned the silence in their own `silence` field (`tool`, `provider` or `owner`). When a socket closes, its close code and a sanitized reason (no URLs, no tokens) sit on that session's outcome and on the next `live_rebuild` or `live_recovery` line, so "the provider dropped us" is a receipt and not an inference.
 | `liveSessionId`, `generation` | the call every live line belongs to, and the provider session inside it |
 | `runId`, `researchId`, `endpointId`, `attempt` | the same joins on chat, research and connector lines |
 

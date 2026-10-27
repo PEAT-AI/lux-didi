@@ -5231,6 +5231,12 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   // C-CONTINUITY T-11: a reply cursor pages the answer this call already had, so it never re-runs a search and a
   // cursor it does not hold is a closed error instead of a fresh question the owner never asked.
   if (call.pageCursor !== undefined) {
+    // A page is read from this call's own store, but it is still the run's evidence: once the run is stopped or its
+    // body evidence has expired, the page is denied exactly as any other local continuation is, never served locally.
+    const prior = deps.ledger.find(call.researchId ?? '');
+    if (!prior || prior.stopped || prior.cancelled) {
+      return { researchId: call.researchId ?? '', error: 'continuation_unavailable', findings: [], canContinue: false };
+    }
     return deps.voicePages?.take(call.pageCursor) ?? { researchId: call.researchId ?? '', error: VOICE_CURSOR_ERROR };
   }
   let run: RunState;
@@ -6192,7 +6198,7 @@ export class VoiceReplyBook {
   take(cursor: string, cap: number = RESEARCH.voiceReplyChars): JsonObject | undefined {
     // W1-R3: a repeated page is the reply's own repeat receipt, exactly as the run answers a replayed body page.
     const served = this.#served.get(cursor);
-    if (served !== undefined) return { ...served, alreadyDelivered: true };
+    if (served !== undefined) return { ...voiceEnvelopeOf(served), findings: [], alreadyDelivered: true };
     const page = this.#pages.get(cursor);
     if (page === undefined) return undefined;
     this.#pages.delete(cursor);

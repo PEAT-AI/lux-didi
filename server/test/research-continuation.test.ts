@@ -121,3 +121,37 @@ test('C-CONTINUITY T-11: a cursor this call does not hold is a closed error, nev
   assert.equal(reply['error'], VOICE_CURSOR_ERROR, 'the error is closed and named');
   assert.equal(h.executed.length, before, 'an expired cursor starts nothing');
 });
+
+// C-CONTINUITY T-11: a body page is a research result too, so it obeys the same cap. Its slices are cut at a whole
+// word, the reader's offsets stay exact, and the remainder is paged from the call's own store.
+test('C-CONTINUITY T-11: a body page is capped and pages its slices with exact offsets', () => {
+  const body = 'Lux received evidence. '.repeat(1_400) + 'LUX_LOCAL_TAIL';
+  const reply = { researchId: 'r-body', status: 'partial', bodyProjection: 'preview', canContinue: true, cursor: 'body-cursor',
+    bodySlices: [{ source: 'knowledge', tool: 'get_insight', text: body, offset: 0, end: body.length, total: body.length }] };
+  assert.ok(JSON.stringify(reply).length > RESEARCH.voiceReplyChars, 'the fixture is wider than the cap');
+  const book = new VoiceReplyBook();
+  const page = capVoiceReply(reply, book);
+  assert.ok(JSON.stringify(page).length <= RESEARCH.voiceReplyChars, `the body page is ${JSON.stringify(page).length} characters`);
+  assert.equal(page['bodyProjection'], 'preview', 'the shape a body reader expects is kept');
+  assert.equal(String(page['researchId']), 'r-body');
+  assert.ok(Array.isArray(page['bodySlices']), 'the slices survive the cap');
+  const first = (page['bodySlices'] as { text: string; offset: number; end: number }[])[0]!;
+  assert.equal(first.offset, 0, 'the first slice still starts at the top of the body');
+  assert.ok(first.end <= body.length, 'and it ends where it says it does');
+  assert.equal(body.slice(first.offset, first.end), first.text, 'the coordinates are the body’s own');
+  // The rest is read from the store, one page at a time, and the text reassembles byte for byte.
+  let reassembled = first.text;
+  let current: Record<string, unknown> = page;
+  let pages = 1;
+  while (current['canContinue'] === true && pages < 30) {
+    current = book.take(String(current['cursor']))!;
+    assert.ok(current !== undefined, 'the next body page is held by the call');
+    assert.ok(JSON.stringify(current).length <= RESEARCH.voiceReplyChars, 'every body page obeys the cap');
+    const slice = (current['bodySlices'] as { text: string; offset: number; end: number }[])[0]!;
+    assert.equal(body.slice(slice.offset, slice.end), slice.text, 'the offsets stay exact from page to page');
+    reassembled += slice.text;
+    pages += 1;
+  }
+  assert.equal(current['canContinue'], false, 'the last body page says the body is spent');
+  assert.equal(reassembled, body, 'the whole body is readable through the pages, and nothing was handed over uncapped');
+});

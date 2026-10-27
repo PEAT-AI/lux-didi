@@ -2928,6 +2928,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // open changes nothing, so the call cannot lose the rebuild it still owes.
     handle.researchRetention = { retainedChars: 0, rebuilds: handle.researchRetention.rebuilds };
     handle.researchRebuildSeed = undefined;
+    // C-CONTINUITY R-02: the drop receipt that caused this reopen is spent. A later mute must not inherit it, or
+    // its rebuild would be logged as a network event it never was.
+    handle.adapterOutcome = undefined;
     return true;
   }
 
@@ -2957,6 +2960,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    * episode's time budget, backoff is 0/2/4/8 s, and the current session deadline does not move.
    */
   async #recoverFromDrop(handle: ActiveSession, outcome: LiveVoiceOutcome | undefined, forceFresh = false, reasonOverride?: string): Promise<boolean> {
+    // C-CONTINUITY R-02/R-08/R-09: the outcome the call is recovering from is kept on the handle, so the rebuild
+    // and recovery lines read their cause and their socket close code and reason off a receipt instead of a guess.
+    if (outcome !== undefined) handle.adapterOutcome = outcome;
     const now = this.#now();
     // #656: one model-mute rebuild per recovery window, on the same watchdogRecoveredAt stamp and
     // RESPONSE_WATCHDOG_WINDOW_MS the sliding watchdog keeps. Every model-mute route passes this door, so a model
@@ -3805,7 +3811,6 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     const research = responses.filter(entry => entry.name === RESEARCH_TOOL_NAME).map(entry => entry.response);
     const deliveredReplies = research.filter(reply => reply['error'] === undefined);
     const answerChars = deliveredReplies.reduce((sum, reply) => sum + JSON.stringify(reply).length, 0);
-    handle.contextToolChars += research.reduce((sum, reply) => sum + JSON.stringify(reply).length, 0);
     handle.researchRetention = retainedAfterSend(handle.researchRetention, answerChars);
     // C-CONTINUITY item 4: the ledger takes one record per delivered batch, so a later refusal can never replace
     // what the owner already heard with an empty header, and the threshold is read against the whole call.
@@ -4227,6 +4232,9 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         if (responses.length) {
           // OPEN2-R4: the one exposure point, on the text these results deliver after every trim.
           exposeToolResults(responses);
+          // C-CONTINUITY item 5: the total-context figure counts every tool payload this call hands the provider,
+          // research and intent alike, refusals and errors included, so the number it reports is really the total.
+          handle.contextToolChars += responses.reduce((sum, entry) => sum + JSON.stringify(entry.response ?? {}).length, 0);
           // #538: what the write did is the host's to read, not a receipt to log and then forget.
           const outcome = handle.session.sendToolResponse({ responses });
           // #451: the function_call_output write itself, measured from the frame that asked for it.

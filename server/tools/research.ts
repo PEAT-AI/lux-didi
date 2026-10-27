@@ -156,6 +156,11 @@ export const RESEARCH = Object.freeze({
    * pages it, so a long answer costs turns instead of context the provider can never give back.
    */
   voiceReplyChars: 3_000,
+  /**
+   * C-CONTINUITY T-11: the widest body page a live session may be handed. A body page is a research result like
+   * any other, so its width is chosen here to fit the voice cap with the envelope, offsets and cursor included.
+   */
+  voiceBodyPageChars: 2_400,
   /** C-CONTINUITY item 2: the delivered research payload this call may hold before a rebuild is due. */
   rebuildThresholdChars: 60_000,
   /**
@@ -4767,7 +4772,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   for (const bucket of groups.values()) first.reading.add(bucket[0]!.read.source);
   // Q5-R1: a read of a named entry widens the reply to the connector's knowledge body cap, the same
   // way the selector path does, so a routed read is never trimmed to a search reply's length.
-  if ([...groups.values()].some(plans => plans.some(plan => plan.read.subs.some(sub => sub.name === INTERNAL.knowledgeRead)))) limit = Math.max(limit, RESEARCH.readReplyChars);
+  if ([...groups.values()].some(plans => plans.some(plan => plan.read.subs.some(sub => sub.name === INTERNAL.knowledgeRead)))) limit = Math.max(limit, bodyReplyLimit(deps));
   // R6: a layer is credited the moment it settles, so the first answer sees what is already in hand and a
   // layer that lands afterwards is reported late instead of waiting for the slowest one.
   const record = (batch: readonly RoutedOutcome[]): void => {
@@ -5177,12 +5182,23 @@ async function withFullEntries(
 }
 
 /** The loop behind a call: unchanged by the first answer point except for what it reports late. */
+/**
+ * C-CONTINUITY T-11: the reply width a body read is built to. A live session is capped by `voiceReplyChars`, so a
+ * body page is sized to fit under it instead of at the connector's own 24,000-char body bound; a non-live caller
+ * keeps the full body bound.
+ */
+function bodyReplyLimit(deps: ResearchDeps): number {
+  return deps.liveSessionId === undefined
+    ? RESEARCH.readReplyChars
+    : Math.min(RESEARCH.readReplyChars, RESEARCH.voiceBodyPageChars);
+}
+
 async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: AbortSignal, first: FirstAnswerState): Promise<JsonObject> {
   let limit = deps.replyLimit ?? budgetFor(call.question ?? '', call.topic ?? undefined);
   // Q5-R1: a read of a named entry widens the reply to the connector's knowledge body cap, so the
   // body the owner asked for is never trimmed away for the length of a search reply.
   const widenFor = (subs: readonly IntentSubCall[]): void => {
-    if (subs.some(sub => sub.name === INTERNAL.knowledgeRead)) limit = Math.max(limit, RESEARCH.readReplyChars);
+    if (subs.some(sub => sub.name === INTERNAL.knowledgeRead)) limit = Math.max(limit, bodyReplyLimit(deps));
   };
   const now = () => deps.now();
   const configured = [...new Set([...(deps.configuredNow ?? (() => deps.configured))(), ...(deps.web === undefined ? [] : ['web' as const])])];
@@ -6107,21 +6123,60 @@ function takeVoiceUnits(envelope: JsonObject, units: readonly string[], cap: num
   return { lines, rest: [] };
 }
 
+/** How long one body page is once serialized, at the width a real cursor takes. */
+function voiceSliceChars(envelope: JsonObject, slices: readonly JsonObject[], cursorChars: number): number {
+  return JSON.stringify({ ...envelope, bodySlices: slices, cut: VOICE_REPLY_CUT,
+    cursor: '0'.repeat(cursorChars), canContinue: true }).length;
+}
+
+/**
+ * C-CONTINUITY T-11: one body page, and the slices a later page still owes. Whole slices are taken while they fit;
+ * a slice wider than a page is split at its last whole word, and the tail keeps its own offsets so the reader's
+ * coordinates stay exact.
+ */
+function takeVoiceSlices(envelope: JsonObject, slices: readonly JsonObject[], cap: number, cursorChars: number):
+{ kept: JsonObject[]; rest: JsonObject[] } {
+  const kept: JsonObject[] = [];
+  for (let index = 0; index < slices.length; index += 1) {
+    const slice = slices[index]!;
+    if (voiceSliceChars(envelope, [...kept, slice], cursorChars) <= cap) { kept.push(slice); continue; }
+    const text = typeof slice['text'] === 'string' ? slice['text'] : '';
+    const offset = typeof slice['offset'] === 'number' ? slice['offset'] : 0;
+    if (text === '') return { kept, rest: slices.slice(index) };
+    const fits = (line: string): boolean => voiceSliceChars(envelope, [...kept, { ...slice, text: line, end: offset + line.length }], cursorChars) <= cap;
+    const head = voiceLinePrefix(text, fits);
+    if (head === '') return { kept, rest: slices.slice(index) };
+    kept.push({ ...slice, text: head, end: offset + head.length, cut: VOICE_REPLY_CUT });
+    return { kept, rest: [{ ...slice, text: text.slice(head.length).trimStart(),
+      offset: offset + head.length + (text.slice(head.length).length - text.slice(head.length).trimStart().length) }, ...slices.slice(index + 1)] };
+  }
+  return { kept, rest: [] };
+}
+
 /**
  * C-CONTINUITY T-11: the full replies the voice cap paged, kept for this call only. The provider holds one page
  * at a time; the rest is still here, so a `continue` with its cursor reads on without a new search.
  */
 export class VoiceReplyBook {
-  #pages = new Map<string, { researchId: string; envelope: JsonObject; units: string[] }>();
+  #pages = new Map<string, { researchId: string; envelope: JsonObject; units: string[]; slices: JsonObject[] }>();
 
   get size(): number { return this.#pages.size; }
 
   holds(cursor: string): boolean { return this.#pages.has(cursor); }
 
-  /** Keep one reply's remainder host-side and hand back the cursor that reads it. */
+  /** Keep one findings reply's remainder host-side and hand back the cursor that reads it. */
   keep(researchId: string, envelope: JsonObject, units: readonly string[]): string {
+    return this.#hold({ researchId, envelope, units: [...units], slices: [] });
+  }
+
+  /** Keep one body reply's remaining slices host-side and hand back the cursor that reads them. */
+  keepSlices(researchId: string, envelope: JsonObject, slices: readonly JsonObject[]): string {
+    return this.#hold({ researchId, envelope, units: [], slices: slices.map(slice => ({ ...slice })) });
+  }
+
+  #hold(page: { researchId: string; envelope: JsonObject; units: string[]; slices: JsonObject[] }): string {
     const cursor = `${VOICE_CURSOR_PREFIX}${newResearchId()}`;
-    this.#pages.set(cursor, { researchId, envelope, units: [...units] });
+    this.#pages.set(cursor, page);
     return cursor;
   }
 
@@ -6131,8 +6186,14 @@ export class VoiceReplyBook {
     if (page === undefined) return undefined;
     this.#pages.delete(cursor);
     const cursorChars = VOICE_CURSOR_PREFIX.length + 36;
-    const { lines, rest } = takeVoiceUnits(page.envelope, page.units, cap, cursorChars);
     const envelope: JsonObject = { ...page.envelope, researchId: page.researchId, status: 'partial' };
+    if (page.slices.length > 0) {
+      const { kept, rest } = takeVoiceSlices(envelope, page.slices, cap, cursorChars);
+      if (rest.length === 0) return { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT, canContinue: false };
+      return { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT, canContinue: true,
+        cursor: this.keepSlices(page.researchId, page.envelope, rest) };
+    }
+    const { lines, rest } = takeVoiceUnits(envelope, page.units, cap, cursorChars);
     const findings = [{ text: lines.join('\n') }];
     if (rest.length === 0) return { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: false };
     return { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: true, cursor: this.keep(page.researchId, page.envelope, rest) };
@@ -6146,14 +6207,19 @@ export class VoiceReplyBook {
  * is handed back untouched; a wider one becomes its first page, findings first, with the cursor that reads on.
  * The full reply never leaves the host, and the caller keeps the same envelope keys it always read.
  */
-export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook | undefined, cap: number = RESEARCH.voiceReplyChars): JsonObject {
+export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: number = RESEARCH.voiceReplyChars): JsonObject {
   if (JSON.stringify(reply).length <= cap) return reply;
-  if (book === undefined) return reply;
-  // A body page is its own channel with its own bound (`readReplyChars`) and its own cursor: the owner asked for
-  // that text, and it already arrives one page at a time, so the findings cap leaves its envelope alone.
-  if (reply['bodySlices'] !== undefined || reply['bodyProjection'] !== undefined) return reply;
   const researchId = typeof reply['researchId'] === 'string' ? reply['researchId'] : '';
   const envelope = voiceEnvelopeOf(reply);
+  // A body page is a research result too, so it obeys the same cap: its slices are cut at a whole word and the
+  // remainder is paged from the book with the reader's own offsets, so nothing is handed over uncapped.
+  const slices = Array.isArray(reply['bodySlices']) ? (reply['bodySlices'] as JsonObject[]) : undefined;
+  if (slices !== undefined) {
+    const { kept, rest } = takeVoiceSlices(envelope, slices, cap, VOICE_CURSOR_PREFIX.length + 36);
+    const page: JsonObject = { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT };
+    if (rest.length === 0) return page;
+    return { ...page, canContinue: true, cursor: book.keepSlices(researchId, envelope, rest) };
+  }
   const { lines, rest } = takeVoiceUnits(envelope, voiceUnitsOf(reply), cap, VOICE_CURSOR_PREFIX.length + 36);
   const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
   if (rest.length === 0) return page;

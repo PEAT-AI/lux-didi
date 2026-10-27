@@ -26,10 +26,13 @@ function refuse(): Record<string, unknown> {
 test('C-CONTINUITY replay: the owner hears about a company, a rebuild follows, and the company survives it', () => {
   const book = new VoiceReplyBook();
   const ledger = new ResearchLedgerLog();
+  let refusedChars = 0;
   let retention: ResearchRetention = { retainedChars: 0, rebuilds: 0 };
   let seed: string | undefined;
   const delivered: Record<string, unknown>[] = [];
   const answers: Record<string, unknown>[] = [];
+  // The one independent count of what the provider was really handed, so the refusal assertion below can fail.
+  let wireChars = 0;
 
   // The first answer names the company, and from then on every batch is capped and counted as delivered.
   for (let index = 0; index < 26; index += 1) {
@@ -43,10 +46,16 @@ test('C-CONTINUITY replay: the owner hears about a company, a rebuild follows, a
     ledger.add(researchLedgerOf({ question: `tell me about ${COMPANY}`,
       findings: page['findings'] as { source?: string; text?: string }[], cursors: [] }));
     retention = retainedAfterSend(retention, wire.length);
-    // A refused batch lands on the crossing: it adds nothing to the counter and nothing to the ledger.
+    wireChars += wire.length;
+    // A refused batch lands on the crossing: it adds nothing to the counter, nothing to the ledger, and the whole
+    // reply it would have sent is still counted in the call's total context figure.
     if (index === 12) {
-      answers.push(refuse());
-      assert.equal(retention.retainedChars, retention.retainedChars, 'a refusal changes no counter');
+      const refused = refuse();
+      answers.push(refused);
+      refusedChars += JSON.stringify(refused).length;
+      assert.equal(typeof refused['error'], 'string', 'the fixture really is a refusal');
+      assert.equal(retention.retainedChars, wireChars, 'the refusal added nothing to the research counter');
+      assert.equal(ledger.records, index + 1, 'and nothing to the ledger, which holds one record per delivered batch');
     }
   }
 
@@ -76,4 +85,9 @@ test('C-CONTINUITY replay: the owner hears about a company, a rebuild follows, a
 
   assert.equal(answers.length, 1, 'exactly one refused batch rode this call');
   assert.ok(delivered.length === 26);
+  // C-CONTINUITY item 5: the counter is the delivered characters and nothing else, while the total context figure
+  // carries the refusal too. Both numbers exist, and they are different numbers.
+  assert.equal(retention.retainedChars, wireChars, 'the counter holds exactly the delivered characters');
+  assert.ok(refusedChars > 0, 'a refusal has a size, and it is counted in the total, not in the rebuild counter');
+  assert.ok(retention.retainedChars + refusedChars > retention.retainedChars, 'the totals really differ');
 });

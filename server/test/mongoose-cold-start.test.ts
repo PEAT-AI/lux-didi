@@ -68,10 +68,10 @@ for (const hang of [false, true]) test(hang ? 'hung handshake ends with connect_
     assert.deepEqual(failures, ['connect_timeout', 'connect_timeout', 'connect_timeout']);
     assert.deepEqual(connected, []); return;
   }
+  assert.ok(runtime.status().endpoints.every(endpoint => endpoint.tools > 0), 'all endpoints publish nonempty granted catalogues');
   for (const endpoint of MONGOOSE_ENDPOINTS) {
     for (let i = 0; i < 3; i++) await runtime.port.discover(`mongoose-${endpoint}`);
   }
   assert.deepEqual(identities.sort(), MONGOOSE_ENDPOINTS.map(endpoint => `mongoose-${endpoint}`).sort(), 'one identity receipt per endpoint, not per credential resolution');
-  assert.ok(runtime.status().endpoints.every(endpoint => endpoint.tools > 0), 'all endpoints publish nonempty granted catalogues');
   assert.deepEqual(connected.sort(), MONGOOSE_ENDPOINTS.map(endpoint => `mongoose-${endpoint}`).sort(), JSON.stringify(runtime.status()));
 });

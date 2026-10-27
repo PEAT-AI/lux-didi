@@ -12,12 +12,21 @@ import { MONGOOSE_ENDPOINTS, MONGOOSE_ENDPOINT_AUDIENCES } from '../connectors/m
 
 const literal = JSON.parse(readFileSync(join(process.cwd(), 'server/test/fixtures/mongoose-tools-list-literal.json'), 'utf8'));
 
-test('cold start: all three literal Mongoose catalogues connect', async t => {
+for (const hang of [false, true]) test(hang ? 'hung handshake ends with connect_timeout' : 'cold start: all three literal Mongoose catalogues connect', async t => {
+  const deadlines: AbortController[] = [];
+  if (hang) t.mock.method(AbortSignal, 'timeout', (ms: number) => {
+    assert.ok(ms > 0 && ms <= 30000, 'connect work uses a finite deadline');
+    const controller = new AbortController(); deadlines.push(controller); return controller.signal;
+  });
   const server = createServer(async (req, res) => {
     if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
     const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
     const message = JSON.parse(Buffer.concat(chunks).toString());
     if (message.id === undefined) { res.writeHead(202); res.end(); return; }
+    if (hang && message.method === 'initialize') {
+      for (const controller of deadlines.splice(0)) controller.abort(new DOMException('deadline', 'TimeoutError'));
+      return;
+    }
     const endpoint = req.url!.split('/').at(-1)!;
     const result = message.method === 'initialize'
       ? { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mongoose-fixture', version: '1' } }
@@ -49,11 +58,16 @@ test('cold start: all three literal Mongoose catalogues connect', async t => {
   const store = new Store(join(root, 'data'), toolsMigrations); t.after(() => store.close());
   const connected: string[] = [];
   const identities: string[] = [];
+  const failures: string[] = [];
   const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir,
-    lookupAuthority: async () => null, identityLog: (_connector, _proven, _match, endpointId) => { identities.push(endpointId!); }, recoveryDelaysMs: [], lifecycleLog: event => {
+    lookupAuthority: async () => null, connectorLog: (_connector, _stage, detail) => { if (detail?.reason) failures.push(detail.reason); }, identityLog: (_connector, _proven, _match, endpointId) => { identities.push(endpointId!); }, recoveryDelaysMs: [], lifecycleLog: event => {
       if (event.event === 'connector_connected') connected.push(event.endpointId);
     } });
   t.after(() => runtime.close());
+  if (hang) {
+    assert.deepEqual(failures, ['connect_timeout', 'connect_timeout', 'connect_timeout']);
+    assert.deepEqual(connected, []); return;
+  }
   for (const endpoint of MONGOOSE_ENDPOINTS) {
     for (let i = 0; i < 3; i++) await runtime.port.discover(`mongoose-${endpoint}`);
   }

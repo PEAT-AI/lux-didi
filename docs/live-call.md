@@ -39,6 +39,10 @@ Admitted paging is host-owned and bounded. Partial coverage remains partial; rec
 
 `LiveSessionOwner` distinguishes pending tool work from an answer the provider owes after a result. Dead-air recovery must not rebuild over an admitted operation within its deadline, and a stuck operation must not suppress recovery forever. `live_heard_silence` now names what owned the silence (`tool`, `provider` or `owner`) instead of a boolean that read `tool` whenever the turn had followed a tool output. `live_dead_air` receipts describe observed timing; they are not proof that audio was audible on the Mac. Use the trace playback evidence described in [diagnostic-store.md](diagnostic-store.md).
 
+### A silent text response never outlives its own end (C-DEADAIR)
+
+A post-tool continuation asks the provider for a response with a bare `response.create`: no output modalities, no instructions, no voice. The delegated backend can answer that request with text and no audio at all (2026-10-27 07:02:59Z: 112 response tokens, `delegation_closed`, `playback_level` at -120 dB, and no `session.output_audio.delta`), and the adapter has no path for a delegated response's text, so the answer is generated and never spoken. The host cannot make the provider speak, so it notices the shape: when a response ends after writing text for an owed answer and no audible frame arrived, `#deliverUnspoken` hands the result to the live session at that end, exactly once, with no ladder wait. `live_response_latency` records the provider's share of the wait separately (owner final words, response announced, first audio). The audible-debt rung stays at 8 s, and a response the owner cannot hear buys it `DEAD_AIR_RESPONSE_GRACE_MS` (500 ms) instead of the seven seconds that made the 2026-10-27 calls wait 15 s.
+
 ## Recovery is not replay
 
 Provider-drop handling is implemented by `#recoverFromDrop` and `#openRecovery` inside `LiveSessionOwner`. Failed resumption can fall back to a fresh open; exhausted recovery settles with `provider_recovery_exhausted`. Neither path grants another research operation or permission to replay an uncertain remote write.

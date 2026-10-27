@@ -6077,7 +6077,7 @@ function voicePageChars(envelope: JsonObject, lines: readonly string[], cursorCh
   // and `canContinue: true` are the widest shape a page takes (the last page of a reply adds neither).
   return JSON.stringify({
     ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT,
-    cursor: '0'.repeat(cursorChars), canContinue: true,
+    nextCursor: '0'.repeat(cursorChars), canContinue: true,
   }).length;
 }
 
@@ -6115,7 +6115,7 @@ function takeVoiceUnits(envelope: JsonObject, units: readonly string[], cap: num
 function voiceSliceChars(envelope: JsonObject, slices: readonly JsonObject[], cursorChars: number): number {
   // Exactly the page this would emit, page cursor included, so the measurement is never optimistic.
   return JSON.stringify({ ...envelope, bodySlices: slices, cut: VOICE_REPLY_CUT,
-    cursor: '0'.repeat(cursorChars), canContinue: true }).length;
+    nextCursor: '0'.repeat(cursorChars), canContinue: true }).length;
 }
 
 /**

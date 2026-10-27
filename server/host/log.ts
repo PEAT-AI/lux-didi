@@ -928,11 +928,16 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'live_watchdog') {
     // 3j: the response watchdog, one record per phase change. Phase, turn age, connection generation and whether
-    // the wait began at a tool result (C-WATCH), so a post-tool wait is never read as an owner-turn wait.
-    if (Object.keys(value).sort().join(',') !== ['event', 'generation', 'phase', 'turnAgeMs', 'sinceTool'].sort().join(',')) return;
+    // the wait began at a tool result (C-WATCH), so a post-tool wait is never read as an owner-turn wait. A settle
+    // that knows the last tool result also carries its age, which is the decision W4-R1 turns on.
+    const keys = ['event', 'generation', 'phase', 'turnAgeMs', 'sinceTool'];
+    const extended = Object.hasOwn(value, 'msSinceToolResult') ? [...keys, 'msSinceToolResult'] : keys;
+    if (Object.keys(value).sort().join(',') !== [...extended].sort().join(',')) return;
     if (!isSafeMember(value.phase, ['armed', 'nudged', 'closed', 'recovering', 'recovered', 'settled'])) return;
     if (!isSafeCount(value.turnAgeMs) || !isSafeCount(value.generation) || typeof value.sinceTool !== 'boolean') return;
-    return { event: 'live_watchdog', phase: value.phase, turnAgeMs: value.turnAgeMs, generation: value.generation, sinceTool: value.sinceTool };
+    if (Object.hasOwn(value, 'msSinceToolResult') && !isSafeCount(value.msSinceToolResult)) return;
+    return { event: 'live_watchdog', phase: value.phase, turnAgeMs: value.turnAgeMs, generation: value.generation, sinceTool: value.sinceTool,
+      ...(Object.hasOwn(value, 'msSinceToolResult') ? { msSinceToolResult: value.msSinceToolResult } : {}) };
   }
   if (value.event === 'live_debt') {
     // #538: the audible debt clock, one record per phase change. Enums only, so no duration, no text, no provider word.

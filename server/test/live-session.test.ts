@@ -6900,7 +6900,8 @@ test('W4-R1: a second mute 1.7 s after a tool result rebuilds the call instead o
   const h = await harness(t, { tools: true, port: fake.port, scheduler, limits: { idleMs: 600_000, sessionMs: 1_200_000 } });
   const { session } = await openPort(h, 'watchdog-tool-window');
   const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
-  const note = (id: string) => fake.emit({ type: 'toolCall', calls: [{ id, name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } }] });
+  // The fixture's event union predates the tool events the host already handles, so the shape is named here.
+  const note = (id: string) => fake.emit({ type: 'toolCall', calls: [{ id, name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } }] } as unknown as Parameters<typeof fake.emit>[0]);
   // One mute is recovered at the start of the call, so the next one is the second mute inside the window.
   await ownerInput(fake);
   await advanceUntil(ms => h.advance(ms), scheduler, () => receipts.some(record => record.phase === 'recovered'));

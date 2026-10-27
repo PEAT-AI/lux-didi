@@ -618,6 +618,8 @@ interface ActiveSession {
   watchdogPhase?: 'armed' | 'nudged' | undefined; watchdogRecoveredAt?: number | undefined;
   /** C-WATCH: the wait this silence is judged on began at a tool result, not at an owner turn. */
   watchdogSinceTool?: boolean | undefined;
+  /** C-WATCH: when the last tool result was handed to the model, so a mute can be told from a wait it never had. */
+  lastToolResultAt?: number | undefined;
   /** #656: the rung stood down for a tool call in flight, so the clock re-anchors on that call's own output. */
   debtHeldForTool?: boolean | undefined;
   /** #656: owner audio held across a rebuild, oldest first, bounded by REBUILD_AUDIO_HOLD_BYTES. */
@@ -2131,8 +2133,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     handle.heardAfterTool = true;
     this.#armDebt(handle, outputs, 'tool_output');
     // C-WATCH: the wait from here began at this result, so every record of it says so and a reader never mistakes a
-    // post-tool wait for the owner's turn.
+    // post-tool wait for the owner's turn. The terminal decision needs the time itself.
     handle.watchdogSinceTool = true;
+    handle.lastToolResultAt = this.#now();
     if (outcome === 'failed') void this.#recreateForDeadAir(handle, 'send_failed').catch(() => { /* the recreate names its own failure */ });
   }
 
@@ -2576,6 +2579,14 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     }
   }
 
+  /**
+   * C-WATCH: the model has not had the rung's silence after a tool result yet, so a mute now is not a mute. A result
+   * handed back and judged inside the eight seconds any other tool output gets is a wait it never had.
+   */
+  #toolWaitUnjudged(handle: ActiveSession): boolean {
+    return handle.lastToolResultAt !== undefined && this.#now() - handle.lastToolResultAt < AUDIBLE_DEBT_RUNG_MS;
+  }
+
   async #watchdogRecover(handle: ActiveSession, generation: number, turnAgeMs: number): Promise<void> {
     if (this.#settled(handle) || generation !== handle.generation || handle.pendingCallIds.size > 0) return;
     const previous = handle.watchdogRecoveredAt;
@@ -2584,12 +2595,15 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // C-WATCH: which wait this was survives the cancel below, so the receipt can say it.
     const waitedAfterTool = handle.watchdogSinceTool === true;
     this.#cancelWatchdog(handle);
-    if (previous !== undefined && this.#now() - previous < RESPONSE_WATCHDOG_WINDOW_MS) {
+    // W4-R1: a second mute inside the window may end the call only when the model had the rung's silence after the
+    // last tool result. Otherwise the step is a rebuild, exactly the first-mute path, and the call keeps going.
+    if (previous !== undefined && this.#now() - previous < RESPONSE_WATCHDOG_WINDOW_MS && !this.#toolWaitUnjudged(handle)) {
       // A second mute inside the window would loop on the same broken provider: end the call honestly. When the
       // link was weak during this wait it is the internet, not the model, and the owner is told so.
       const weakAt = handle.session.diagnostics?.()?.connection?.weakAt;
       const starved = weakAt !== undefined && waitSince !== undefined && weakAt >= waitSince;
-      hostLogEvent({ event: 'live_watchdog', phase: 'settled', turnAgeMs, generation, sinceTool: waitedAfterTool });
+      hostLogEvent({ event: 'live_watchdog', phase: 'settled', turnAgeMs, generation, sinceTool: waitedAfterTool,
+        ...(handle.lastToolResultAt === undefined ? {} : { msSinceToolResult: Math.max(0, this.#now() - handle.lastToolResultAt) }) });
       this.#settle(handle, { state: 'failed', code: starved ? 'uplink_starved' : 'model_unresponsive' }, false, 'ended', null);
       return;
     }
@@ -3075,7 +3089,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // still mute under the new session is ended honestly instead of rebuilt a second time inside one research run.
     if (reasonOverride === 'model_mute') {
       const previous = handle.watchdogRecoveredAt;
-      if (previous !== undefined && now - previous < RESPONSE_WATCHDOG_WINDOW_MS) {
+      // W4-R1: the same exemption here, because this door is the rebuild too: a mute judged inside a tool wait it
+      // never had settles nothing.
+      if (previous !== undefined && now - previous < RESPONSE_WATCHDOG_WINDOW_MS && !this.#toolWaitUnjudged(handle)) {
         this.#settle(handle, { state: 'failed', code: 'model_unresponsive' }, false, 'ended', null);
         return false;
       }

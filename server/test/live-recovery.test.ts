@@ -461,18 +461,18 @@ test('R2: when the fresh open fails too, the call ends as provider_recovery_exha
   (await sessionAt(h, 0))!.live();
   await attachment.ready;
   await flush();
-  h.port.refuse(new Error('synthetic open refused with words'), new TypeError('synthetic_open_refused'));
+  h.port.refuse(new Error('synthetic open refused with words'), new TypeError('synthetic_open_refused'),
+    new TypeError('synthetic_open_refused'));
   h.port.sessions[0]!.die();
   await flush();
-  await h.advance(2_000);
-  await h.advance(2_000);
+  for (let round = 0; round < 8; round += 1) await h.advance(2_000);
   const end = await ended(t, attachment as never);
   assert.deepEqual(end.terminal, { state: 'failed', code: 'provider_recovery_exhausted' }, 'the end names the exhausted recovery');
   assert.equal(end.terminalFrame, true, 'the client hears the terminal before the socket closes');
   const failures = h.receipts.filter(entry => entry['event'] === 'live_recovery_failed');
-  assert.equal(failures.length, 2, 'both refused opens are receipts');
+  assert.equal(failures.length, 3, 'every refused open is a receipt, the shrinking ladder included');
   assert.equal(failures[0]!['messageKey'], 'unrecognized', 'a free-text message never reaches the log');
-  assert.equal(h.port.opens, 3, 'the first open, the refused recovery and the one fresh retry: no loop');
+  assert.equal(h.port.opens, 4, 'the first open, the refused recovery, the smaller retry and the plain open: no loop');
   const next = h.owner.create({ idempotencyKey: 'r2-next', inputClass: 'ordinary' }, h.ctx);
   const again = h.owner.attach({ liveSessionId: next.liveSessionId }, h.ctx);
   (await sessionAt(h, 1))!.live();

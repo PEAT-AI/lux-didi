@@ -257,7 +257,7 @@ function recoveryBackoffMs(index: number): number { return RECOVERY_BACKOFF_MS[M
 /** C-RECOVERY (d): the closed words that acknowledge a turn instead of asking one. A bare acknowledgement owes the
  *  model no reply, so the watchdog must never rebuild a call because the owner said one. */
 const ACKNOWLEDGEMENT_WORDS = new Set([
-  'okay', 'ok', 'okey', 'mhm', 'mm', 'hmm', 'right', 'yeah', 'yep', 'yup', 'sure', 'alright', 'cool', 'thanks',
+  'okay', 'ok', 'okey', 'mhm', 'mm', 'hmm', 'right', 'yeah', 'yep', 'yup', 'sure', 'all', 'alright', 'cool', 'thanks',
   'thank', 'you', 'got', 'it', 'then', 'bye', 'great', 'nice', 'perfect',
 ]);
 /** C-RECOVERY (d): up to three words, every one of them an acknowledgement, and never a question. */
@@ -278,24 +278,32 @@ export const SEED_MESSAGE_LIMIT = 127;
 export const SEED_TOKEN_PROXY_LIMIT = 8_192;
 export const SEED_TOKEN_PROXY_CHARS = SEED_TOKEN_PROXY_LIMIT * 4;
 interface SeedTurnLike { role: 'user' | 'model'; text: string }
-/** C-RECOVERY (a): the one bound every seeded open passes through. The newest finished turns are kept, adjacent
- *  same-role turns never survive it, and the history plus every appended turn stays inside the adapter's message
- *  ceiling and its token proxy, so a large conversation shrinks instead of being refused. */
+/** C-RECOVERY (a): the one bound every seeded open passes through. The seed is grouped into exchanges at
+ *  finished-turn boundaries, the oldest whole exchange goes first, the latest exchange is never dropped, and the
+ *  history plus every appended turn stays inside the adapter's message ceiling and its token proxy, so a large
+ *  conversation shrinks instead of being refused. */
 export function fitSeedTurns<T extends SeedTurnLike>(transcript: readonly T[], appended: readonly T[] = []): { turns: T[]; chars: number; condensed: boolean } {
-  const room = Math.max(0, SEED_MESSAGE_LIMIT - appended.length);
-  let kept = transcript.slice(Math.max(0, transcript.length - room));
-  let condensed = kept.length < transcript.length;
-  const total = (turns: readonly T[]): number => turns.reduce((sum, turn) => sum + turn.text.length, 0)
-    + appended.reduce((sum, turn) => sum + turn.text.length, 0);
-  while (kept.length > 1 && total(kept) > SEED_CHAR_LIMIT) { kept = kept.slice(1); condensed = true; }
-  if (kept.length > 0 && total(kept) > SEED_CHAR_LIMIT) {
-    const last = kept[kept.length - 1]!;
-    const roomLeft = Math.max(0, SEED_CHAR_LIMIT - (total(kept) - last.text.length));
+  const exchanges: T[][] = [];
+  for (const turn of [...transcript, ...appended]) {
+    if (turn.role === 'user' || exchanges.length === 0) exchanges.push([turn]);
+    else exchanges[exchanges.length - 1]!.push(turn);
+  }
+  const count = (groups: readonly T[][]): number => groups.reduce((sum, group) => sum + group.length, 0);
+  const total = (groups: readonly T[][]): number => groups.reduce((sum, group) => sum + group.reduce((chars, turn) => chars + turn.text.length, 0), 0);
+  let kept = exchanges;
+  let condensed = false;
+  while (kept.length > 1 && (count(kept) > SEED_MESSAGE_LIMIT || total(kept) > SEED_CHAR_LIMIT)) { kept = kept.slice(1); condensed = true; }
+  let turns = kept.flat();
+  // One exchange larger than the message ceiling still has to fit it, so the ceiling wins over the pairing.
+  if (turns.length > SEED_MESSAGE_LIMIT) { turns = turns.slice(turns.length - SEED_MESSAGE_LIMIT); condensed = true; }
+  if (turns.length > 0 && total([turns]) > SEED_CHAR_LIMIT) {
+    const last = turns[turns.length - 1]!;
+    const roomLeft = Math.max(0, SEED_CHAR_LIMIT - (total([turns]) - last.text.length));
     const keep = Math.max(roomLeft - 3, 0);
-    kept = [...kept.slice(0, -1), { ...last, text: keep > 0 ? `...${last.text.slice(last.text.length - keep)}` : '...' }];
+    turns = [...turns.slice(0, -1), { ...last, text: keep > 0 ? `...${last.text.slice(last.text.length - keep)}` : '...' }];
     condensed = true;
   }
-  return { turns: [...kept, ...appended], chars: total(kept), condensed };
+  return { turns, chars: total([turns]), condensed };
 }
 /**
  * C-CONTINUITY item 3: the header the research ledger rides under. The ledger is the host's own extractive

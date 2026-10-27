@@ -32,7 +32,9 @@ const ADA_DM = 'chanDzz000000000000000000a';
 const GROUP_ADA_KIM = 'chanG02000000000000000000a';
 const BUILDER_FRIENDS = 'chanBuilderFriends0000000a';
 const BUILDERS = 'chanBuilders0000000000000a';
-const daysAgo = (days: number): string => new Date(Date.now() - days * DAY).toISOString().slice(0, 10);
+// X-R2: the window is measured from the fixture's own clock, not the wall clock, or the pinned fixture
+// drifts out of a rolling window as the calendar moves and the same read counts 16 posts instead of 17.
+const daysAgo = (days: number): string => new Date(FIXTURE_NOW - days * DAY).toISOString().slice(0, 10);
 
 type Call = { name: string; arguments: Record<string, unknown> };
 

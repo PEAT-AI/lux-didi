@@ -5234,7 +5234,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     // A page is read from this call's own store, but it is still the run's evidence: once the run is stopped or its
     // body evidence has expired, the page is denied exactly as any other local continuation is, never served locally.
     const prior = deps.ledger.find(call.researchId ?? '');
-    if (!prior || prior.stopped || prior.cancelled) {
+    if (prior !== undefined && (prior.stopped || prior.cancelled)) {
       return { researchId: call.researchId ?? '', error: 'continuation_unavailable', findings: [], canContinue: false };
     }
     return deps.voicePages?.take(call.pageCursor) ?? { researchId: call.researchId ?? '', error: VOICE_CURSOR_ERROR };

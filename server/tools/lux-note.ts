@@ -48,8 +48,11 @@ export type ComposedAsk = { readonly decision: 'grant' } | { readonly decision: 
 
 /** The verbs that can authorize a create, and the destinations that name lux and nothing else. */
 const ASK_VERB = /^(?:naya\s+)?(?:please\s+)?(?:save|remember|put|add|write|store)\b/u;
-/** A permission granted in his own words is the same ask: "you have my full permission to save it in Lux". */
-const PERMISSION = /\b(?:you\s+(?:have|ve|got)|i\s+give\s+you|give\s+you)\s+(?:my\s+|your\s+)?(?:full\s+|explicit\s+|standing\s+)?permission\b/u;
+/**
+ * R7-W1: a stretch he said in pieces opens with its own frame ("can you, can you", "you have my full
+ * permission to"), so the ask verb stands at the start of the clause after that frame, not of the turn.
+ */
+const ASK_LEAD = /^(?:(?:ok|okay|yes|yeah|so|and|also|then|naya|please|can you|could you|would you|will you|you have my full permission to|you have my permission to)\s+)*/u;
 const DESTINATION = /\b(?:to|in|into)\s+(?:my\s+|the\s+)?(?:lux(?:\s+knowledge)?|knowledge\s+base|vault)\b/u;
 const APPEND = /^(?:naya\s+)?(?:please\s+)?(?:add|append|update|change|overwrite|edit|delete|remove|archive|link|restore|replace)\b(?=[\s\S]*\b(?:note|insight|entry|record)\b)/u;
 const REPORTED = /^(?:say|says|according to)\b|\b(?:he|she|they|it|someone|rob|you|the [a-z]+)\s+(?:said|says|say|asked|asks|wrote|writes|mentioned|mentions|told|tells|wants|asked me)\b/u;
@@ -79,12 +82,13 @@ export function composedAsk(text: string): ComposedAsk {
   if (CONDITIONAL.test(key)) return { decision: 'clarify', reason: 'conditional' };
   // A negation before the verb is the owner refusing, not asking, whatever verb order he used.
   if (NEGATION_LEAD.test(key) && ASK_WORD.test(key) && DESTINATION.test(key)) return { decision: 'clarify', reason: 'negated' };
-  // R7-W1: a split ask is judged on the words he said in pieces, so a permission grant counts too.
-  const verb = ASK_VERB.test(key) ? key.search(ASK_VERB) : PERMISSION.test(key) && ASK_WORD.test(key) ? key.search(ASK_WORD) : -1;
-  if (verb < 0) {
+  // R7-W1: the ask is judged from the start of its clause, past the frame a split stretch opens with.
+  const lead = ASK_LEAD.exec(key)?.[0] ?? '';
+  if (!ASK_VERB.test(key.slice(lead.length))) {
     return HEDGE.test(key) && ASK_WORD.test(key) && DESTINATION.test(key) ? { decision: 'clarify', reason: 'ambiguous' } : { decision: 'none' };
   }
   // A negation between the verb and the destination is still a refusal.
+  const verb = lead.length;
   const destination = key.search(DESTINATION);
   const negation = key.slice(verb).search(NEGATION);
   if (negation >= 0 && negation < destination) return { decision: 'clarify', reason: 'negated' };

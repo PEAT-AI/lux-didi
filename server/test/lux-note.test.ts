@@ -15,7 +15,8 @@ import { runToolCalls } from '../tools/declarations.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import type { RunAcceptance, StageNotePort } from '../tools/types.js';
 import {
-  beginStage, composedAsk, confirmAsk, CONFIRM_MAX_TOKENS, CONFIRM_WINDOW_MS, currentOwnerTurn, freezeNote, NOTE_MAX_CHARS,
+  AUTHORIZATION_MISSING_GUIDANCE,
+  beginStage, composedAsk, confirmAsk, CONFIRM_MAX_TOKENS, CONFIRM_WINDOW_MS, currentOwnerTurn, freezeNote, NOTE_MAX_CHARS, OWNER_WINDOW_CHARS,
   noteOwnerFragment, noteOwnerUtterance, noteReadback, noteSegmentSignal, noteSettle, stageComposedNote, STAGE_NOTE_IDENTITY,
   validateStageNote, type PlaybackSignal, type ReadbackBinding,
 } from '../tools/lux-note.js';
@@ -51,6 +52,32 @@ test('an imperative with an explicit lux destination is the only form that autho
   for (const text of ['do not save a note about what we just discussed', 'he said save a note about our conversation']) {
     assert.notDeepEqual(composedAsk(text), { decision: 'grant' }, text);
   }
+  // R7-W1: the frame a split stretch opens with is not the ask; the clause after it is.
+  for (const text of ['you have my full permission to save it in Lux Knowledge', 'can you, can you store it in Lux Knowledge']) {
+    assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
+  }
+  // W1-R2: a save verb and a lux destination anywhere in the stretch are the ask, whatever leads it.
+  for (const text of ['naya what can you tell me about rize store it in lux knowledge',
+    'you have my full permission to save it in Lux Knowledge and also a card in Trello both of these things']) {
+    assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
+  }
+  // No save verb, or no lux destination, is still no authorization.
+  for (const text of ['both of these things', 'both of these in Lux Knowledge', 'you have my full permission to save it and also a card in Trello']) {
+    assert.deepEqual(composedAsk(text), { decision: 'none' }, text);
+  }
+  // W7-R1 F5: a word that merely ends in "no" is not a negation, so the ask stands.
+  for (const text of ['Bruno save it to Lux', 'the Reno property save it to Lux', 'we discussed the piano and you should save it to Lux']) {
+    assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
+  }
+  // W1-R3: a negation refuses only when it governs the save verb; an ordinary self-correction does not.
+  for (const text of ['no that is not right it is the second one save it to Lux knowledge',
+    'no I mean the other file save it to Lux knowledge']) {
+    assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
+  }
+  // W1-R4 F10: every save verb is judged, so an ask after a report of not saving still grants.
+  for (const text of ['I did not save it, but save it to Lux', 'I never saved it, save it to Lux knowledge']) {
+    assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
+  }
 });
 
 test('negated, reported, quoted, conditional and ambiguous save asks are refused with a clarification', () => {
@@ -65,6 +92,19 @@ test('negated, reported, quoted, conditional and ambiguous save asks are refused
     ['maybe save that to lux', 'ambiguous'],
     ['save that to lux or to memory', 'ambiguous'],
     ['how do I save something to lux', 'reported'],
+    ['cannot save it to Lux', 'negated'],
+    ["can't save it to Lux", 'negated'],
+    ['not save it to Lux', 'negated'],
+    ['Bruno cannot save it to Lux', 'negated'],
+    ['do not save it to Lux', 'negated'],
+    ["don't put it in Lux", 'negated'],
+    ['never save this to Lux', 'negated'],
+    // W1-R4 F9: a negation governs across a short auxiliary chain, and a contraction is one token.
+    ["I don't want to save it to Lux", 'negated'],
+    ["I didn't want to save it to Lux", 'negated'],
+    ["I won't need to save it to Lux", 'negated'],
+    ['I do not intend to save it to Lux', 'negated'],
+    ["I can't just save it to Lux", 'negated'],
   ];
   for (const [text, reason] of refusals) {
     assert.deepEqual(composedAsk(text), { decision: 'clarify', reason }, text);
@@ -189,6 +229,35 @@ test('a typed turn never authorizes, and the current finalized mic turn does', (
   assert.deepEqual([...read.evidence].sort(), ['journal:12']);
 });
 
+// R7-W1: a VAD split ask is one ask, so the whole finalized stretch of this turn authorizes it.
+test('the exact four-fragment incident ask composes into one authorization', () => {
+  const rows = [turnRow(21, 'you have my full permission to save it', 1_200), turnRow(22, 'in Lux Knowledge', 1_300),
+    turnRow(23, 'and also a card in Trello', 1_400), turnRow(24, 'both of these things', 1_500)];
+  const read = currentOwnerTurn(rows, 1_000, true, 1_600);
+  assert.equal(read.state, 'owner_turn');
+  if (read.state !== 'owner_turn') return;
+  assert.equal(read.text, 'you have my full permission to save it in Lux Knowledge and also a card in Trello both of these things');
+  assert.deepEqual([...read.evidence].sort(), ['journal:21', 'journal:22', 'journal:23', 'journal:24']);
+});
+
+test('the composed stretch keeps the open guard bounds and never crosses its own window', () => {
+  const seven = [11, 12, 13, 14, 15, 16, 17].map((id, index) => turnRow(id, `fragment ${id}`, 1_100 + index * 10));
+  const bounded = currentOwnerTurn(seven, 1_000, true, 1_500);
+  assert.equal(bounded.state === 'owner_turn' ? bounded.text : '', 'fragment 12 fragment 13 fragment 14 fragment 15 fragment 16 fragment 17');
+  const long = currentOwnerTurn([turnRow(11, 'a'.repeat(400), 1_200), turnRow(12, 'b'.repeat(400), 1_300)], 1_000, true, 1_400);
+  assert.equal(long.state === 'owner_turn' ? long.text.length : 0, OWNER_WINDOW_CHARS);
+  // A split from before this turn started, or from before the confirm window, is never composed.
+  const before = currentOwnerTurn([turnRow(11, 'save it to lux', 900), turnRow(12, 'both of these', 1_400)], 1_000, true, 1_500);
+  assert.equal(before.state === 'owner_turn' ? before.text : '', 'both of these');
+  const stale = currentOwnerTurn([turnRow(11, 'save it to lux', 1_400 - CONFIRM_WINDOW_MS - 1), turnRow(12, 'both of these', 1_400)],
+    undefined, true, 1_400);
+  assert.equal(stale.state === 'owner_turn' ? stale.text : '', 'both of these');
+  // The model's own output ends the stretch: the owner's words before it never authorize.
+  const afterModel = currentOwnerTurn([turnRow(11, 'save it to lux', 1_300), turnRow(13, 'both of these', 1_400)],
+    1_000, true, 1_500, 12);
+  assert.equal(afterModel.state === 'owner_turn' ? afterModel.text : '', 'both of these');
+});
+
 // B2 (W6-R2): arming follows the read-back segment, never just any drained receipt.
 const signal = (receipt: PlaybackSignal['receipt'], key: string, wallMs: number) => ({ receipt, key, wallMs });
 const bound = (stageId: string, key: string): ReadbackBinding => ({ stageId, key });
@@ -246,6 +315,8 @@ test('a restaged note in the same call arms on its own read-back segment, not th
 // four-field object, so every dispatch threw and rolled back with no note row and no log line.
 
 const VAULT_ACCOUNT = 'gateway:live-voice';
+/** One journal row of the fixture session: kind, text, and when it finalized relative to the harness clock. */
+type JournalSeed = readonly ['inputTranscription' | 'outputTranscription', string, number];
 const VAULT_RESOURCE = 'owner-vault';
 
 /** A realistic composed note body: synthetic prose, the length of the answer the owner asked to save. */
@@ -262,7 +333,12 @@ interface StageHarness {
   definitions(port: StageNotePort): readonly ToolDefinition[];
 }
 
-function stageHarness(t: TestContext): StageHarness {
+/** The default session: the owner asked, then asked to store this answer, both in the same stretch. */
+const DEFAULT_SEEDS: readonly JournalSeed[] = [
+  ['inputTranscription', 'Naya, what can you tell me about Rize', 0],
+  ['inputTranscription', 'store it in Lux Knowledge', 0]];
+
+function stageHarness(t: TestContext, seeds: readonly JournalSeed[] = DEFAULT_SEEDS): StageHarness {
   const now = 1_700_000_000_000;
   const run = 'live-stage-run';
   const dir = mkdtempSync(join(tmpdir(), 'lux-note-stage-'));
@@ -274,9 +350,9 @@ function stageHarness(t: TestContext): StageHarness {
         journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,'active',1,1,?,0,0,'attached',NULL,NULL,?,?)`,
       [run, store.assistantId, store.authorityEpoch, 'key-stage', 'fp-stage', 'client', 'audit', 'profile', 'prompt', 2, now, now]);
-    for (const text of ['Naya, what can you tell me about Rize', 'store it in Lux Knowledge']) {
+    for (const [kind, text, offset] of seeds) {
       tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, final_origin, finalized_at, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?,?,?)',
-        [run, 'inputTranscription', text, 1, 'app_model_start', now, text.length, now]);
+        [run, kind, text, 1, 'app_model_start', now + offset, text.length, now + offset]);
     }
   });
   const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'tester', runId: run,
@@ -318,6 +394,57 @@ test('the composed stage completes a real store write and leaves exactly one not
   assert.equal(stages.length, 1);
   assert.equal(stages[0]!['state'], 'staged');
   assert.equal(stages[0]!['body'], COMPOSED_BODY.replace(/\s+/g, ' ').trim());
+});
+
+test('the split-fragment save ask stages instead of refusing on its newest fragment alone', async t => {
+  const h = stageHarness(t, [['inputTranscription', 'you have my full permission to save it', 0],
+    ['inputTranscription', 'in Lux Knowledge', 4_000], ['inputTranscription', 'and also a card in Trello', 6_000],
+    ['inputTranscription', 'both of these things', 9_000]]);
+  const outcome = await h.stage(STAGE_ARGS);
+  assert.equal(outcome?.status, 'completed');
+  const stages = h.store.transaction(tx => tx.all('SELECT state FROM lux_note_stages'));
+  assert.deepEqual(stages.map(row => row['state']), ['staged']);
+});
+
+test('a self-correction before the ask does not stop it staging, and a negation of the verb does', async t => {
+  const corrected = stageHarness(t, [['inputTranscription', 'no that is not right it is the second one', 0],
+    ['inputTranscription', 'save it to Lux knowledge', 3_000]]);
+  const staged = await corrected.stage(STAGE_ARGS);
+  assert.equal(staged?.status, 'completed');
+  const rows = corrected.store.transaction(tx => tx.all('SELECT state FROM lux_note_stages'));
+  assert.deepEqual(rows.map(row => row['state']), ['staged']);
+  const refused = stageHarness(t, [['inputTranscription', 'no that is not right it is the second one', 0],
+    ['inputTranscription', 'do not save it to Lux knowledge', 3_000]]);
+  const outcome = await refused.stage(STAGE_ARGS);
+  assert.equal(outcome?.status, 'completed');
+  const response = refused.store.transaction(tx => JSON.parse(String(tx.get('SELECT result_json FROM tool_calls')!['result_json'])) as Record<string, unknown>)['response'];
+  assert.equal((response as Record<string, unknown>)['code'], 'authorization_refused');
+  assert.equal(refused.store.transaction(tx => tx.all('SELECT stage_id FROM lux_note_stages')).length, 0);
+});
+
+test('a stretch with no save ask refuses with plain guidance, never an authorization error', async t => {
+  const h = stageHarness(t, [['inputTranscription', 'what time is it', 0]]);
+  const outcome = await h.stage(STAGE_ARGS);
+  assert.equal(outcome?.status, 'completed');
+  const response = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT result_json FROM tool_calls')!['result_json'])) as Record<string, unknown>)['response'];
+  assert.deepEqual(response, { staged: false, code: 'authorization_missing', guidance: AUTHORIZATION_MISSING_GUIDANCE });
+  assert.doesNotMatch(AUTHORIZATION_MISSING_GUIDANCE, /authorization error|lux error/iu);
+  assert.equal(h.store.transaction(tx => tx.all('SELECT stage_id FROM lux_note_stages')).length, 0);
+});
+
+test('an ask from before this stretch, or from before the model answered, never authorizes the save', async t => {
+  const older = stageHarness(t, [['inputTranscription', 'save it to Lux', -600_000], ['inputTranscription', 'both of these', 0]]);
+  const refused = await older.stage(STAGE_ARGS);
+  assert.equal(refused?.status, 'completed');
+  const response = older.store.transaction(tx => JSON.parse(String(tx.get('SELECT result_json FROM tool_calls')!['result_json'])) as Record<string, unknown>)['response'];
+  assert.equal((response as Record<string, unknown>)['code'], 'authorization_missing');
+  const answered = stageHarness(t, [['inputTranscription', 'save it to Lux', 0],
+    ['outputTranscription', 'The lab asks for a property target and proposes candidate mixes.', 2_000],
+    ['inputTranscription', 'both of these', 4_000]]);
+  const afterModel = await answered.stage(STAGE_ARGS);
+  assert.equal(afterModel?.status, 'completed');
+  const after = answered.store.transaction(tx => JSON.parse(String(tx.get('SELECT result_json FROM tool_calls')!['result_json'])) as Record<string, unknown>)['response'];
+  assert.equal((after as Record<string, unknown>)['code'], 'authorization_missing');
 });
 
 test('a throwing composed stage is a bounded stage_failed result the model can speak, never unknown', async t => {

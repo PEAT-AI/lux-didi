@@ -20,7 +20,10 @@ const detach=attachHostLogSink({event:raw=>{const safe=safeEvent(raw);if(safe)ev
 const schema=researchDeclaration().parameters,check=new AjvJsonSchemaValidator().getValidator(schema);
 // C-RESEARCH-CONTRACT: a start is declared to carry its topic (#565), so every valid start here carries one;
 // without it the published schema rejects the call before a turn is spent.
+// C-FILLER: the empty lookup list the voice model sends on a stop is a filler value, so it is absent, not a
+// lookups_stop refusal; a stop that names a real lookup still refuses.
 const valid=[{action:'start',question:'synthetic',topic:'synthetic names'},{action:'continue',researchId:'synthetic'},{action:'stop',researchId:'synthetic'},
+ {action:'stop',researchId:'synthetic',lookups:[]},
  {action:'start',question:'synthetic',topic:'synthetic names',sources:'gmail',direction:'synthetic direction'},
  {action:'start',question:'synthetic',topic:'synthetic names',lookups:[{source:'calendar',query:'today'}]},
  {action:'continue',researchId:'synthetic',cursor:'synthetic'},
@@ -33,7 +36,7 @@ const invalid=[['lookup_query_required',{action:'start',question:sentinel,topic:
  ['action_invalid',{action:sentinel}],['unknown_fields',{action:'start',question:sentinel,[sentinel]:null}],
  ['sources_type',{action:'start',question:sentinel,sources:null}],['direction_type',{action:'start',question:sentinel,direction:[]}],
  ['cursor_type',{action:'continue',researchId:'synthetic',cursor:null}],['lookups_type',{action:'start',question:sentinel,topic:'synthetic',lookups:null}],
- ['cursor_action',{action:'start',question:sentinel,topic:'synthetic',cursor:'synthetic'}],['lookups_stop',{action:'stop',researchId:'synthetic',lookups:[]}],
+ ['cursor_action',{action:'start',question:sentinel,topic:'synthetic',cursor:'synthetic'}],['lookups_stop',{action:'stop',researchId:'synthetic',lookups:[{source:'calendar',query:'synthetic'}]}],
  ['cursor_lookups_conflict',{action:'continue',researchId:'synthetic',cursor:'synthetic',lookups:[]}],
  ['lookup_history',{action:'start',question:sentinel,topic:'synthetic',lookups:[{source:'memory',history:null}]}],
  ['lookup_mail',{action:'start',question:sentinel,topic:'synthetic',lookups:[{source:'mail',mail:{q:'synthetic',id:'synthetic'}}]}],

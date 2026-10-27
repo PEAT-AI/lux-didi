@@ -2056,7 +2056,10 @@ test('FILLER 2: a non-empty value and a real error still refuse, exactly as toda
   assert.equal(history.ok, false, 'a non-empty history on a non-memory source still refuses');
   if (!history.ok) assert.equal(history.reason, 'lookup_history');
   assert.equal(parseResearch({ action: 'continue', researchId: 'abc', question: '', lookups: [] }).ok, true, 'the filler question and lookup list of a continuation are absent');
-  assert.equal(parseResearch({ action: 'stop', lookups: [] }).ok, true, 'a stop with the filler lookup list is a stop');
+  assert.equal(parseResearch({ action: 'stop', researchId: 'abc', lookups: [] }).ok, true, 'a stop with the filler lookup list is a stop');
+  const noId = parseResearch({ action: 'stop', lookups: [] });
+  assert.equal(noId.ok, false, 'a stop with no run named still refuses');
+  if (!noId.ok) assert.equal(noId.reason, 'research_id_required');
 });
 
 test('TOPIC 3 (#576): a spoken ask with no digits sends a query with no digit', async () => {

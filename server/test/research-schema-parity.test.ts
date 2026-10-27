@@ -4,7 +4,7 @@ import { test } from 'node:test';
 // declaration, the description and the repair texts, and this file proves the three cannot drift apart.
 import {
   CURSOR_MAX_CHARS, LOOKUP_SOURCES, MAX_LOOKUPS, QUESTION_MAX_CHARS, RESEARCH_LIMITS, TOPIC_MAX_CHARS, TOPIC_MAX_WORDS,
-  parseResearch, researchDeclaration, researchDescription, researchRepair,
+  parseResearch, researchDeclaration, researchDescription, researchRepair, statusAsk,
 } from '../tools/research.js';
 
 type Property = { type?: string; enum?: unknown[]; maxLength?: number; maxItems?: number; required?: string[]; properties?: Record<string, Property>; description?: string };
@@ -77,6 +77,15 @@ test('a call that violates each limit is refused with the reason the schema pred
   for (const [reason, args] of refusedOntheDay) {
     const parsed = parseResearch(args);
     assert.equal(parsed.ok ? '' : parsed.reason, reason);
+  }
+  // F1: the bound is unconditional. #657 let a status ask name more lookups than one batch holds, but the
+  // schema says maxItems MAX_LOOKUPS, so a provider would refuse that call before the host could batch it.
+  for (const question of ['status of everything', 'test all the sources now']) {
+    assert.equal(statusAsk(question), true, `the status-ask carve-out is exercised: ${question}`);
+    const many = { action: 'start', question, topic: 'names', lookups: Array.from({ length: MAX_LOOKUPS + 1 }, () => ({ source: 'knowledge', query: 'q' })) };
+    assert.equal(parseResearch(many).ok ? '' : (parseResearch(many) as { reason: string }).reason, 'lookups_count',
+      'a status ask is held to the published bound too');
+    assert.equal(declaration.validate(many), false);
   }
   assert.ok(JSON.stringify(parseResearch(refusedOntheDay[0]![1])).includes('"topicChars"'), 'the refusal carries lengths, not words');
   assert.equal(JSON.stringify(parseResearch(refusedOntheDay[0]![1])).includes('the last month'), false);

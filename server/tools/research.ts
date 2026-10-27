@@ -2317,10 +2317,11 @@ export function parseResearch(args: unknown): ParsedResearch {
     // that page an already-answered run; every other lookup belongs to a start.
     if (action !== 'start' && !(action === 'continue' && historyLookupsOnly(record['lookups']))) return refuse('lookups_stop');
     if (!Array.isArray(record['lookups'])) return refuse('lookups_type');
-    // #657 item 1: a status or test-all ask names more sources than one batch holds, and the host serves
-    // it in batches, so its lookup list is never a count or unknown-field refusal.
-    const hostBatched = statusAsk(typeof record['question'] === 'string' ? record['question'] : '');
-    if (!hostBatched && record['lookups'].length > MAX_LOOKUPS) return refuse('lookups_count');
+    // C-RESEARCH-CONTRACT F1: the published `maxItems` is the bound the validator applies, with no carve-out.
+    // #657 let a status ask name more lookups than one batch holds, but the schema the model is given says
+    // at most MAX_LOOKUPS, so a provider that validates it refuses that call before the host could batch it:
+    // one limit, enforced everywhere.
+    if (record['lookups'].length > MAX_LOOKUPS) return refuse('lookups_count');
     for (const entry of record['lookups']) {
       if (!isRecord(entry)) return refuse('lookup_type');
       if (!Object.keys(entry).every(key => key === 'source' || key === 'query' || key === 'history' || key === 'mail')) return refuse('lookup_unknown_fields');

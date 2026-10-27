@@ -563,14 +563,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // W7: one line per Trello board call phase: Didi's own tool and action, the phase and a closed outcome. Never card text.
     const hasReason = value.reason !== undefined;
     // C-FILLER: a normalised line names the write properties it dropped; a name is never a value.
-    const hasNormalized = value.normalized !== undefined;
-    if (!closedKeys(value, ['event', 'connector', 'tool', 'phase', 'outcome', ...(hasReason ? ['reason'] : []), ...(hasNormalized ? ['normalized'] : [])])) return;
-    if (hasNormalized && !isTrelloNormalizedPaths(value.normalized)) return;
+    const normalized = value.normalized === undefined ? undefined : value.normalized;
+    if (!closedKeys(value, ['event', 'connector', 'tool', 'phase', 'outcome', ...(hasReason ? ['reason'] : []), ...(normalized === undefined ? [] : ['normalized'])])) return;
+    if (normalized !== undefined && !isTrelloNormalizedPaths(normalized)) return;
     if (typeof value.tool !== 'string' || !TRELLO_CALL_TOOL.test(value.tool)) return;
     if (!isSafeMember(value.phase, ['admit', 'dispatch', 'settle']) || !isSafeMember(value.outcome, ['ok', 'refused', 'failed', 'unknown'])) return;
     if (hasReason && !isSafeMember(value.reason, TRELLO_CALL_REASONS)) return;
     return { event: 'connector_call', connector: 'trello', tool: value.tool, phase: value.phase, outcome: value.outcome, ...(hasReason ? { reason: value.reason } : {}),
-      ...(hasNormalized ? { normalized: [...value.normalized] } : {}) };
+      ...(normalized === undefined ? {} : { normalized: [...normalized] }) };
   }
   if (value.event === 'vault_write') {
     // Closed shape: the attempt outcome, the closed failure code, the vault's own insight id on a confirmed save, and the wire latency. Never text.
@@ -1222,10 +1222,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'research_routed') {
     // K6: which layers the model named, how many lookups, per-source ms and outcome. Never a query.
     const routedCall = Object.prototype.hasOwnProperty.call(value, 'callKey');
-    const hasNormalized = Object.prototype.hasOwnProperty.call(value, 'normalized');
-    const keys = [...['event', 'researchId', 'sources', 'lookups', 'ms', 'outcomes'], ...(routedCall ? ['callKey'] : []), ...(hasNormalized ? ['normalized'] : [])];
+    const normalized = value.normalized === undefined ? undefined : value.normalized;
+    const keys = [...['event', 'researchId', 'sources', 'lookups', 'ms', 'outcomes'], ...(routedCall ? ['callKey'] : []), ...(normalized === undefined ? [] : ['normalized'])];
     if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
-    if (hasNormalized && !isNormalizedPaths(value.normalized)) return;
+    if (normalized !== undefined && !isNormalizedPaths(normalized)) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_routed');
     if (routedCall && !isSafeId(value.callKey)) return;
     if (!isSafeCount(value.lookups)) return;
@@ -1233,7 +1233,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!Array.isArray(value.outcomes) || value.outcomes.length !== value.sources.length || !isSafeMembers(value.outcomes, ROUTED_OUTCOMES)) return;
     if (!Array.isArray(value.ms) || value.ms.length !== value.sources.length || value.ms.some(ms => !isSafeCount(ms))) return;
     return { event: 'research_routed', researchId: value.researchId, ...(routedCall ? { callKey: value.callKey } : {}), sources: value.sources, lookups: value.lookups, ms: value.ms, outcomes: value.outcomes,
-      ...(hasNormalized ? { normalized: [...value.normalized] } : {}) };
+      ...(normalized === undefined ? {} : { normalized: [...normalized] }) };
   }
   if (value.event === 'research_source') {
     // N3/P5: one receipt per source read: the layer, its outcome, its wall time and the deadline it was

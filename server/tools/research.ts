@@ -1936,6 +1936,8 @@ export interface RunState {
   calendar: Map<string, CalendarRead>; calendarDelivered: Set<string>; calendarScope?: CalendarScope;
 
   researchId: string; runId: number; questionClass: QuestionClass; direction: string | undefined;
+  /** C-FILLER: the property paths the parser dropped as filler on the call that opened this run, names only. */
+  normalized?: readonly string[];
   /** #565: the call signatures whose query shape was already recorded, so one call is one row. */
   shaped: Set<string>;
   /** #565: the names and nouns this run was opened with, and the only text whose words reach a source. */

@@ -270,7 +270,9 @@ async function syntheticMongoose(): Promise<{ origin: string; close(): Promise<v
   const endpoint = createServer(async (req, res) => {
     const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
     if (!/^Bearer .+$/.test(String(req.headers.authorization ?? ''))) { res.writeHead(401).end(); return; }
-    const message = JSON.parse(Buffer.concat(chunks).toString()) as { id?: unknown; method: string };
+    const raw = Buffer.concat(chunks).toString();
+    if (raw.length === 0) { res.writeHead(202).end(); return; }
+    const message = JSON.parse(raw) as { id?: unknown; method: string };
     if (message.id === undefined) { res.writeHead(202).end(); return; }
     const name = mongooseEndpointName(String(req.url)) ?? 'crm';
     const tools = MONGOOSE_ENDPOINT_TOOLS[name].map(tool => ({ name: tool, inputSchema: { type: 'object', properties: {}, additionalProperties: true }, annotations: { readOnlyHint: true } }));

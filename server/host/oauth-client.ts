@@ -159,7 +159,7 @@ export function readOAuthRecord(configDir: string, reference: string, accept: (e
   if (!timestamp(expiresAt) || !timestamp(consentStartedAt)) return undefined;
   // The claim is the owner's address or nothing: a malformed one is a malformed record.
   if (typeof identity !== 'string' || identity.length > 254) return undefined;
-  return { schemaVersion: OAUTH_RECORD_SCHEMA, endpoint, resource, issuer, tokenEndpoint: tokenEndpoint as string, clientId, redirectPort: redirectPort as number, account, accessToken, refreshToken, expiresAt: expiresAt as number, consentStartedAt: consentStartedAt as number, ...(identity.length > 0 ? { identity } : {}) };
+  return { schemaVersion: OAUTH_RECORD_SCHEMA, endpoint, resource, issuer, tokenEndpoint: tokenEndpoint as string, clientId, redirectPort: redirectPort as number, account, accessToken, refreshToken, expiresAt: expiresAt as number, consentStartedAt: consentStartedAt as number, identity };
 }
 
 /** Atomic replace: a private temp file in the same directory, then one rename. */

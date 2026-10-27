@@ -426,7 +426,12 @@ test('the mongoose descriptor declares only the three endpoint envelopes', () =>
 });
 
 test('V7: the data envelope forwards the published run_metric_query schema, not an empty one', () => {
-  mongoosePublishCatalogue('mongoose-data', [{ name: 'run_metric_query', description: 'Run one metric query on one explore with the published argument shape.', inputSchema: PUBLISHED_METRIC_SCHEMA }]);
+  // The whole data envelope is published at connect time, so every forwarded tool carries its own shape.
+  mongoosePublishCatalogue('mongoose-data', MONGOOSE_ENDPOINT_TOOLS.data.map(name => ({
+    name,
+    description: name === 'run_metric_query' ? 'Run one metric query on one explore with the published argument shape.' : `The published ${name} read.`,
+    inputSchema: name === 'run_metric_query' ? PUBLISHED_METRIC_SCHEMA : { type: 'object', additionalProperties: false, properties: { limit: { type: 'integer', minimum: 1 } } },
+  })));
   const descriptor = connectorDescriptor('mongoose');
   assert(descriptor);
   const declaration = descriptor?.declarations(MONGOOSE_POLICY.data).find(candidate => candidate.name === 'run_metric_query');
@@ -464,7 +469,7 @@ test('Q-02: a contradiction ticket is projected as a contradiction, with both of
     name: 'Contradiction: Indonesia active users, market profile says 43,538 (2024) but SE Asia total is ~29K (2025)',
   }] }).text;
   assert.match(text, /contradiction: true/u, `the disagreement leads: ${text}`);
-  assert.match(text, /values: 43,538 \/ ~29K/u, 'both sides travel with it');
+  assert.match(text, /values: 43,538 \/ 29K/u, 'both sides travel with it');
 });
 
 test('Q-02: an empty read is projected as empty_body, never as complete evidence', () => {

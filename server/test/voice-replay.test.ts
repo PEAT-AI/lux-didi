@@ -282,3 +282,19 @@ test('invariant 6 refuses every silent terminal word the host really emits and a
   assert.deepEqual(probe(1, { state: 'deadline', code: 'deadline' }, false), [], 'a deadline with a code is a typed failure');
   assert.deepEqual(probe(1, undefined, true), [], 'audible output ends the turn correctly');
 });
+
+/** The owner-facing transcript the app reads: the journal rows the host persisted, in provider order. */
+const transcriptOf = (played: Played, kind: 'inputTranscription' | 'outputTranscription'): string =>
+  played.replay.store.transaction(tx => tx.all(
+    'SELECT text FROM live_journal WHERE live_session_id=? AND kind=? ORDER BY journal_id',
+    [played.replay.liveSessionId, kind]).map(row => String(row['text'] ?? '')).join(''));
+
+test('scenario 20: a non-verbal bracket cue never reaches the owner transcript', async t => {
+  const played = await play(t, 'scenario-20-bracket-cues');
+  invariants(played);
+  const said = transcriptOf(played, 'outputTranscription');
+  // A citation in brackets is the words: only the recorded non-verbal cue list is dropped (C-CUES).
+  assert.equal(said.includes('chuckle'), false, `a non-verbal cue reached the owner transcript: ${JSON.stringify(said)}`);
+  assert.equal(said, ' okay [Q3]', `the owner transcript is the spoken words and the citation: ${JSON.stringify(said)}`);
+  await played.replay.release();
+});

@@ -108,11 +108,13 @@ const UNUSED_DEFAULTS: Readonly<Record<string, unknown>> = { offset: 0, limit: 1
  * empty keys are the evidence that the model fills the schema in.
  */
 function withoutUnused(args: Args, used: readonly string[], declared: Record<string, unknown>): Args {
-  const shaped: Args = {};
-  for (const [key, value] of Object.entries(args)) {
-    const filler = key in declared && value === (key in UNUSED_DEFAULTS ? UNUSED_DEFAULTS[key] : '');
-    if (!used.includes(key) && filler) continue;
-    shaped[key] = value;
+  // A spread creates own data properties, so an own `__proto__` argument stays visible to `only()`; assigning
+  // key by key would hand it to the prototype setter and the unknown key would vanish instead of refusing.
+  const shaped: Args = { ...args };
+  for (const key of Object.keys(shaped)) {
+    if (used.includes(key) || !Object.hasOwn(declared, key)) continue;
+    const filler = Object.hasOwn(UNUSED_DEFAULTS, key) ? UNUSED_DEFAULTS[key] : '';
+    if (shaped[key] === filler) delete shaped[key];
   }
   return shaped;
 }

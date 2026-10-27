@@ -470,6 +470,10 @@ test('C-ARGS: a call that fills in every declared property is read as the view i
   assert.equal(validateTrelloRead({ view: 'list', list: '' }), false, 'a property the view uses is validated exactly as before');
   assert.equal(validateTrelloRead({ view: 'search', query: 'x', bogus: 'y' }), false, 'a key the tool does not declare still refuses');
   assert.equal(validateTrelloRead({ view: 'search', query: 'x', bogus: '' }), false, 'an undeclared empty key refuses too');
+  // S1: a JSON payload keeps an own `__proto__`, which a key-by-key copy would hand to the prototype setter.
+  assert.equal(validateTrelloRead(JSON.parse('{"view":"overview","__proto__":"x"}')), false, 'an own __proto__ key is an unknown key');
+  assert.equal(validateTrelloRead(JSON.parse('{"view":"overview","__proto__":""}')), false);
+  assert.equal(validateTrelloWrite(JSON.parse('{"action":"done","card":"C1","__proto__":"x"}')), false, 'the same holds for a write');
   assert.equal(validateTrelloRead({ view: 'nonsense' }), false);
   assert.equal(validateTrelloWrite({ action: 'note', card: 'Book the venue', text: 'Rang them', name: '', description: '', list: '' }), true, 'the same rule holds for a write');
   assert.equal(validateTrelloWrite({ action: 'note', text: 'Rang them', card: '', name: '', description: '', list: '' }), false, 'a required property is never dropped');

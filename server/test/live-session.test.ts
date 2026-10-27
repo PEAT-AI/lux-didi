@@ -4019,7 +4019,7 @@ test('D3: fill frames never clear the debt, so a tool result with no audible ans
     h.advance(100);
     scheduler.runDue();
   }
-  assert.deepEqual(phasesOf(captureDir), ['start', 'rung', 'rung', 'recovered'], 'one clock: the rung at 8 s, the rebuild rung at 15 s, then the recovery');
+  assert.deepEqual(phasesOf(captureDir), ['start', 'rung', 'rung', 'recovering', 'recovered'], 'one clock: the rung at 8 s, the rebuild rung at 15 s, then the recovery');
   const stall = hostLines(captureDir).find(line => line.event === 'live_dead_air' && line.msSinceTool !== undefined);
   assert.ok(stall, 'the stall leaves a live_dead_air receipt');
   assert.equal(stall!['msSinceTool'], 8_000, 'the answer had been owed for eight seconds');
@@ -4050,7 +4050,7 @@ test('D3: one audible frame restarts the deadline from that frame, never from th
   const nudges = hostLines(captureDir).filter(line => line.event === 'live_dead_air');
   assert.equal(nudges.length, 1, 'one stall receipt for the one nudge');
   assert.equal(nudges[0]!['msSinceTool'], 11_000, 'the clock runs from the audible frame at 3 s');
-  assert.deepEqual(phasesOf(captureDir), ['start', 'clear', 'armed', 'nudged', 'recovered'], 'the audible frame clears the debt, and the watchdog owns the silence after it');
+  assert.deepEqual(phasesOf(captureDir), ['start', 'clear', 'armed', 'nudged', 'recovering', 'recovered'], 'the audible frame clears the debt, and the watchdog owns the silence after it');
   assert.equal(fake.sessionsOpened, 2);
   attachment.close();
 });
@@ -4182,7 +4182,7 @@ test('D3: an audible frame followed by silence still recovers on the same clock'
   const stall = hostLines(captureDir).find(line => line.event === 'live_dead_air' && line.msSinceTool !== undefined);
   assert.ok(stall, 'audible output is not fulfilment, so the stall is still witnessed');
   assert.equal(stall!['msSinceAudible'], 8_000, 'the receipt counts the audible frame');
-  assert.deepEqual(phasesOf(captureDir), ['start', 'clear', 'armed', 'nudged', 'recovered'], 'the deadline still ends in the fresh-seeded recovery');
+  assert.deepEqual(phasesOf(captureDir), ['start', 'clear', 'armed', 'nudged', 'recovering', 'recovered'], 'the deadline still ends in the fresh-seeded recovery');
   assert.equal(fake.sessionsOpened, 2);
   attachment.close();
 });

@@ -91,20 +91,26 @@ test('C-CONTINUITY T-11: a continue with that cursor pages the stored reply and 
   const second = await runResearch(h.deps, { action: 'continue', researchId: 'r-1', cursor }, signal());
   assert.equal(second['error'], undefined, 'the page is served');
   assert.equal(h.executed.length, before, 'paging the stored answer dispatched no read and no new search');
-  const text = String((second['findings'] as { text: string }[])[0]!.text);
-  assert.ok(text.includes('LAT-1023'), 'the second page continues where the first stopped');
   assert.ok(JSON.stringify(second).length <= RESEARCH.voiceReplyChars, 'every page obeys the cap');
   // Every page reads on until the answer is spent, and each one stays inside the cap.
+  const parts = [String((first['findings'] as { text: string }[])[0]!.text),
+    String((second['findings'] as { text: string }[])[0]!.text)];
   let page: Record<string, unknown> = second;
-  let pages = 1;
+  let pages = 2;
   while (page['canContinue'] === true && pages < 20) {
     page = await runResearch(h.deps, { action: 'continue', researchId: 'r-1', cursor: String(page['cursor']) }, signal());
     assert.equal(page['error'], undefined, 'the next page is served');
     assert.ok(JSON.stringify(page).length <= RESEARCH.voiceReplyChars, 'every page obeys the cap');
+    parts.push(String((page['findings'] as { text: string }[])[0]!.text));
     pages += 1;
   }
   assert.equal(h.executed.length, before, 'the whole answer was paged from the host, never re-researched');
   assert.equal(page['canContinue'], false, 'the last page says the answer is spent');
+  const whole = parts.join('\n');
+  const original = String(((reply['findings'] as { text: string }[])[0]!).text);
+  assert.ok(whole.includes('LAT-1023'), 'the answer starts where it started');
+  const lastLine = original.split('\n').pop()!;
+  assert.ok(whole.includes(lastLine), 'and it reads all the way to the last line the host stored');
 });
 
 test('C-CONTINUITY T-11: a cursor this call does not hold is a closed error, never a new search', async () => {

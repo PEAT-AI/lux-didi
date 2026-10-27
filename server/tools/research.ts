@@ -6099,9 +6099,9 @@ function takeVoiceUnits(envelope: JsonObject, units: readonly string[], cap: num
   for (let index = 0; index < units.length; index += 1) {
     const unit = units[index]!;
     if (voicePageChars(envelope, [...lines, unit], cursorChars) <= cap) { lines.push(unit); continue; }
-    const head = voiceLinePrefix(unit, kept => voicePageChars(envelope, [...lines, `${kept}\u2026`], cursorChars) <= cap);
+    const head = voiceLinePrefix(unit, kept => voicePageChars(envelope, [...lines, `${kept} \u2026`], cursorChars) <= cap);
     if (head === '') return { lines, rest: units.slice(index) };
-    lines.push(`${head}\u2026`);
+    lines.push(`${head} \u2026`);
     return { lines, rest: [unit.slice(head.length).trimStart(), ...units.slice(index + 1)] };
   }
   return { lines, rest: [] };
@@ -6149,6 +6149,9 @@ export class VoiceReplyBook {
 export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook | undefined, cap: number = RESEARCH.voiceReplyChars): JsonObject {
   if (JSON.stringify(reply).length <= cap) return reply;
   if (book === undefined) return reply;
+  // A body page is its own channel with its own bound (`readReplyChars`) and its own cursor: the owner asked for
+  // that text, and it already arrives one page at a time, so the findings cap leaves its envelope alone.
+  if (reply['bodySlices'] !== undefined || reply['bodyProjection'] !== undefined) return reply;
   const researchId = typeof reply['researchId'] === 'string' ? reply['researchId'] : '';
   const envelope = voiceEnvelopeOf(reply);
   const { lines, rest } = takeVoiceUnits(envelope, voiceUnitsOf(reply), cap, VOICE_CURSOR_PREFIX.length + 36);

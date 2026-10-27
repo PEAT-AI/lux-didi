@@ -2800,8 +2800,13 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
   #rebuildTrigger(handle: ActiveSession, reason: string | null): (typeof LIVE_REBUILD_TRIGGERS)[number] {
     if (reason === 'model_mute') return this.#ownerWordsSinceModelOutput(handle.liveSessionId) ? 'no_output_after_owner' : 'no_output_after_ambient';
     if (reason === 'research_context') return 'research_context';
-    if (reason === 'session_deadline' || reason === 'session_timeout' || reason === 'deadline') return 'session_window';
-    if (reason === 'line_dropped' || reason === 'transport_error' || reason === 'remote_closed') return 'line_dropped';
+    if (reason === 'session_deadline' || reason === 'deadline' || reason === 'session_timeout' || reason === 'idle_timeout'
+      || reason === 'handshake_timeout') return 'session_window';
+    if (reason === 'line_dropped' || reason === 'transport_error' || reason === 'remote_closed' || reason === 'protocol_error'
+      || reason === 'provider_setup_rejected' || reason === 'unsupported_provider' || reason === 'go_away'
+      || reason === 'backpressure' || reason === 'event_limit' || reason === 'incoming_limit' || reason === 'outgoing_limit'
+      || reason === 'provider_error' || reason === 'closed') return 'line_dropped';
+    // A reason outside the adapter's own closed error set is a typed error, never a guess that blames the network.
     throw new TypeError(`live_rebuild_reason_unknown:${String(reason)}`);
   }
 

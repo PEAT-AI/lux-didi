@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+// W3: the count windows are their own suite, and the acceptance check runs only the files it lists, so this
+// file registers it. Without this line a new suite would be a silent green (the #340 failure mode).
+import './research-window.test.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';

@@ -2750,7 +2750,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     return isBareAcknowledgement(typeof row?.['text'] === 'string' ? String(row['text']) : '');
   }
 
-  #seedHistory(liveSessionId: string, inputClass: DataClass, deadLine = false): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number; condensed: boolean } {
+  #seedHistory(liveSessionId: string, inputClass: DataClass, deadLine = false): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number } {
     const conversationId = this.#conversationOf(liveSessionId);
     const rows = this.#store.transaction(tx => tx.all(
       "SELECT j.kind AS kind,j.text AS text,j.finished AS finished FROM live_journal j JOIN live_sessions s ON s.live_session_id=j.live_session_id JOIN live_session_conversations c ON c.live_session_id=s.live_session_id WHERE c.conversation_id=? AND j.kind IN ('inputTranscription','outputTranscription') AND j.text IS NOT NULL ORDER BY s.created_at, s.rowid, j.journal_id",
@@ -2779,7 +2779,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     const turns = merged.map(run => ({ role: run.role, text: run.text, dataClass: inputClass }));
     // L19: the dead call's last answer was never heard, so the seed closes it as heard instead of leaving it open.
     if (deadLine && turns.length > 0 && turns[turns.length - 1]!.role === 'model') turns.push({ role: 'user', text: LIVE_DROPPED_LINE_MARK, dataClass: inputClass });
-    return { turns, chars: turns.reduce((sum, turn) => sum + turn.text.length, 0), condensed: false };
+    return { turns, chars: turns.reduce((sum, turn) => sum + turn.text.length, 0) };
   }
 
   /**

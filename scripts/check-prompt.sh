@@ -122,3 +122,31 @@ assert.equal(research.RESEARCH.mailLines, 8); assert.equal(research.RESEARCH.cha
 assert.equal(research.RESEARCH.moreAvailableNote, 'Partial: answer now, offer the rest; read on only if asked.');
 console.log(JSON.stringify({ case: 'partial_result_rules', removed: 6, voiceRules: 8, backendRules: 3 }));
 NODE
+# W4 (truth about her own state): the connector line is host-computed, and the persona is bound to it, so a
+# sign-in is never claimed or denied from guesswork. The voice rules for a changed voice and the "okay?" tag
+# are pinned here, beside the ceiling they are paid for.
+node --input-type=module - "$out/dist" <<'NODE'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const dist = process.argv[2];
+const persona = await import(pathToFileURL(`${dist}/prompt/live-persona.js`).href);
+const runtime = await import(pathToFileURL(`${dist}/prompt/runtime-context.js`).href);
+const state = runtime.buildRuntimeContext({ now: new Date('2026-10-27T12:00:00Z'), timeZone: 'UTC',
+  connected: ['company knowledge'],
+  connectors: [{ connector: 'mongoose', state: 'connected' }, { connector: 'google', state: 'error', reasonCode: 'not_signed_in' }] });
+assert.match(state, /^Connectors: company knowledge connected; calendar not signed in; mail not signed in\. Never deny or claim a sign-in or a capability without this line or a live tool check\.$/mu,
+  'the runtime line carries the live state and the no-denial rule');
+assert.doesNotMatch(runtime.buildRuntimeContext({ now: new Date('2026-10-27T12:00:00Z'), timeZone: 'UTC', connected: [] }), /^Connectors:/mu,
+  'no connector line without host rows');
+// W4 F7: the bucket comes from the host's own sign-in codes, so a credential that failed identity proof is a
+// sign-in and not plain unavailability; a transport failure stays unavailable.
+for (const reasonCode of ['credential_missing', 'credential-unavailable', 'credential-identity-mismatch', 'credential-identity-unverified', 'identity_mismatch']) {
+  const one = runtime.buildRuntimeContext({ now: new Date('2026-10-27T12:00:00Z'), timeZone: 'UTC', connected: [],
+    connectors: [{ connector: 'mongoose', state: 'error', reasonCode }] });
+  assert.match(one, /^Connectors: company knowledge not signed in\./mu, `host sign-in code classified as a sign-in: ${reasonCode}`);
+}
+for (const rule of ['say you cannot hear your output', 'never say you are unchanged', 'End no answer with "okay?" as a reflex']) {
+  assert.ok(persona.NAYA_VOICE_SURFACE.includes(rule), `the voice surface states the truth rule: ${rule}`);
+}
+console.log(JSON.stringify({ case: 'own_state_truth', connectorLine: true, noDenialRule: true, voiceRules: 3 }));
+NODE

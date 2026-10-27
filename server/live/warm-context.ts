@@ -8,6 +8,7 @@
  * assembly has a ten-minute lifetime. Nothing here talks to a model.
  */
 import { localDayWindow, type CalendarDigestReadResult, type CalendarDigestReadState } from '../connectors/google.js';
+import { CONNECTOR_SIGN_IN_REASONS } from '../prompt/runtime-context.js';
 
 export const warmContextMaxAgeMs = 10 * 60 * 1000;
 
@@ -54,11 +55,13 @@ export function withProvenance(next: WarmContextSections, previous: WarmContextS
   return { ...next, summaryIds: [...previous.summaryIds], summaryOmitted: [...previous.summaryOmitted] };
 }
 
+/** The one closed set the runtime line and this note share, so the two can never name different codes. */
+export const SIGN_IN_REASONS = CONNECTOR_SIGN_IN_REASONS;
+
 /**
  * The one line at call start when a connector waits on a sign-in only the owner can finish. It is said
  * once, in the instruction, so a later turn never repeats it.
  */
-export const SIGN_IN_REASONS = new Set(['needs_sign_in', 'not_signed_in', 'credential-missing', 'credential-refresh-failed', 'credential-consent-expired']);
 export function signInNote(endpoints: readonly unknown[]): string | undefined {
   const waiting = endpoints.some(value => {
     const row = value && typeof value === 'object' ? value as Record<string, unknown> : {};

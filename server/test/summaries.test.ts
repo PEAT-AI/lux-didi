@@ -438,6 +438,24 @@ test('another persona name never leaks the default name into a summary', async (
   } finally { h.cleanup(); }
 });
 
+test('W4: a failed request, an unanswered ask and a complaint about her own voice are stored as the open loop', async () => {
+  const h = open();
+  try {
+    withTurns(h.store, 's-failed');
+    seedTurn(h.store, 's-failed', 'outputTranscription', 'The owner asked for the Freiburg numbers and the lookup failed.');
+    const loop = 'The owner asked for the Freiburg numbers; the lookup failed.';
+    const model = new RecordingModel(JSON.stringify({ skip: false, summary: 'The owner asked for the Freiburg numbers; Mira could not find them.', openLoop: loop }));
+    await summarizer(h.store, model).distill('s-failed');
+    const row = h.store.transaction(tx => summaries.getBySession(tx, 's-failed'))!;
+    assert.equal(row.status, 'complete');
+    assert.equal(row.openLoop, loop, 'the failed request is the stored open loop');
+    const system = model.requests[0]!.system;
+    for (const rule of ['failed or came back empty', 'ask left unanswered', "complaint about the assistant's own voice"]) {
+      assert.ok(system.includes(rule), `the prompt names the open loop the call left: ${rule}`);
+    }
+  } finally { h.cleanup(); }
+});
+
 test('an unchanged transcript keeps the same sentence count and attribution whatever the name', async () => {
   const h = open();
   try {

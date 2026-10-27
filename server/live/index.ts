@@ -24,7 +24,7 @@ import { isToolFailureCode } from '../adapters/model/types.js';
 import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
-import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, connectorGroupNames, toolGroupNames, type OpeningOption, type OpeningOptionKind } from '../prompt/index.js';
+import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningOption, type OpeningOptionKind } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, recordCallLink, recordCallResult, recordQueryShape, recordResearchText, recordSourceRead, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
@@ -1201,11 +1201,8 @@ export class LiveSessionOwner {
   #liveRuntimeContext(toolNames: readonly string[], timeZone: string): string {
     const connected = toolGroupNames(this.#researchWeb === undefined ? toolNames : [...toolNames, WEB_SEARCH_ACTION]);
     const endpoints = this.#tools?.status?.().endpoints ?? [];
-    const unavailable = endpoints.filter(endpoint => endpoint.state !== 'connected')
-      .flatMap(endpoint => connectorGroupNames(endpoint.connector))
-      .filter((group, index, all) => all.indexOf(group) === index && !connected.includes(group));
-    const context = buildRuntimeContext({ now: new Date(this.#now()), timeZone, connected, unavailable,
-      vault: { dictation: true, composed: this.#composedNotes() } });
+    const context = buildRuntimeContext({ now: new Date(this.#now()), timeZone, connected,
+      vault: { dictation: true, composed: this.#composedNotes() }, connectors: endpoints });
     const signIn = signInNote(endpoints);
     // C-SIGNIN-LIVE: the one sentence about a connector that just came up, said on this call only.
     const note = this.#connectorNotes.take(endpoints);

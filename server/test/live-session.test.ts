@@ -1332,7 +1332,10 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
   assert.ok(frozen.system.length > 4_096 && frozen.system.length <= LIVE_INSTRUCTION_HARD_LIMIT, 'the frozen system is dense but inside the hard limit');
   assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ['knowledge base', 'memory'], unavailable: [], vault: { dictation: true, composed: false } }) }).text);
+    // W4: the runtime context now names the live connector state, so the expectation carries the
+    // one endpoint this harness publishes.
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ['knowledge base', 'memory'],
+      vault: { dictation: true, composed: false }, connectors: [{ connector: 'lux-knowledge', state: 'connected' }] }) }).text);
   assert.equal(frozen.system.split(style).length - 1, 1);
   assert.equal(frozen.system.split(lore).length - 1, 1);
   assert.deepEqual(frozen.dataClasses, ['ordinary', 'private', 'sensitive']);
@@ -2171,7 +2174,7 @@ test('Live attach setup carries the composed Naya instruction and the bare langu
   await h.f.frame(1);
   const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
   const expectedWithRuntime = composeLiveSessionInstruction({ text: composed.text, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], unavailable: [], vault: { dictation: true, composed: false } }) }).text;
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], vault: { dictation: true, composed: false } }) }).text;
   assert.equal(frame.setup.systemInstruction.parts[0].text, expectedWithRuntime);
   assert.equal(frame.setup.generationConfig.speechConfig.languageCode, 'de');
   attachment.close();
@@ -2257,7 +2260,7 @@ test('configured owner system survives CREATE and attach open byte for byte befo
   const created = first.create({ idempotencyKey: 'owner-create', inputClass: 'ordinary' }, context(store));
   const persisted = store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
   const expectedWithRuntime = composeLiveSessionInstruction({ text: expected, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], unavailable: [], vault: { dictation: true, composed: false } }) }).text;
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], vault: { dictation: true, composed: false } }) }).text;
   assert.equal(persisted.system, expectedWithRuntime); assert.deepEqual(persisted.dataClasses, ['ordinary', 'private']);
   const attachment = first.attach({ liveSessionId: created.liveSessionId }, context(store));
   await f.frame(1);

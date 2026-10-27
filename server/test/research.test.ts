@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, chatQuery, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, newestDatedFirst, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
-  validateResearch, worthContinuing, parseResearch, researchRepair, topicTerms,
+  validateResearch, worthContinuing, parseResearch, researchRepair, topicTerms, entityPreservedQuestion,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -604,7 +604,27 @@ test('the research declaration names only the configured sources and the valid h
   assert.equal(declaration.name, 'research');
   assert.equal(declaration.description, description);
   const properties = (declaration.parameters as unknown as { properties: Record<string, { description: string }> }).properties;
-  assert.match(properties['sources']!.description, /calendar, mail, chat, knowledge\./);
+  // C-RESEARCH-CONTRACT T-13: the hint values are published from one constant, so the owner's word for
+  // Mongoose is advertised beside the source it maps to.
+  assert.match(properties['sources']!.description, /calendar, mail, chat, knowledge, mongoose, company\./);
+});
+
+// C-RESEARCH-CONTRACT Q-08: on 2026-10-27 a research about Korbi's reports was re-asked about Rob, and the
+// answer to the owner's actual question never came. A rewrite may narrow to the owner's own names, never
+// swap them for another one, and the original question is what stands when it does.
+test('a rewrite that swaps the named person is refused and the original question stands', () => {
+  const original = 'who reports to Korbi';
+  const drifted = "Who are Rob's current direct reports according to Mongoose knowledge?";
+  assert.deepEqual(entityPreservedQuestion(original, drifted), { ok: false, reason: 'entity_rewrite', question: original });
+  // The same rule at the tool's own rewrite surface: the topic is the search text, so a topic about another
+  // person is the drift and the call is refused before anything is read.
+  const parsed = parseResearch({ action: 'start', question: original, topic: 'direct reports for Rob' });
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.ok ? '' : parsed.reason, 'entity_rewrite');
+  assert.match(String(researchRepair('entity_rewrite')['guidance']), /keep the question's own names/);
+  // A narrowing that keeps the owner's name is what the rule is for, so it is allowed.
+  assert.deepEqual(entityPreservedQuestion(original, 'Korbi direct reports'), { ok: true, question: 'Korbi direct reports' });
+  assert.deepEqual(entityPreservedQuestion(original, 'who reports to Korbi in Singapore'), { ok: true, question: 'who reports to Korbi in Singapore' });
 });
 
 // --- Calendar merged read, window logging and knowledge carry (contract F4, #272) ---------------

@@ -57,7 +57,7 @@ import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-liv
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
-import { RESEARCH_OPERATION, RESEARCH_TOOL_NAME } from '../tools/research.js';
+import { ADMISSION_BLOCK_REASONS, ADMISSION_DIRECTIVES, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, admissionBlocked } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 import { luxNoteMigrations } from '../tools/lux-note.js';
 import { notesExportMigrations } from '../tools/notes-export.js';
@@ -6874,4 +6874,39 @@ test('#660: a status question with nothing running is answered from host truth, 
   // The owner asks where it stands.
   await ownerInput(fake);
   assert.equal(fake.commentary.filter(text => /no lookup is running/i.test(text)).length, 1, 'the host note says nothing is running');
+});
+
+// C-RESEARCH-CONTRACT (T-03, T-04, Q-08): the block reply names the closed reason the admission applied, a
+// continue that pages the run the session already answered from spends that run's grant, and a start after the
+// answer was spoken is the orphan run, refused by name rather than as one more spent turn.
+test('research admission names its closed reason and admits a paging continue of the current run', () => {
+  const admission = new ResearchAdmission();
+  assert.deepEqual(admission.admit('start'), { admitted: false, reason: 'no_owner_turn' });
+  assert.deepEqual(admission.admit('stop'), { admitted: true }, 'stop is always allowed');
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start'), { admitted: true });
+  admission.delivered('run-1');
+  assert.equal(admission.currentRun(), 'run-1');
+  assert.deepEqual(admission.admit('continue', false, true), { admitted: true }, 'paging the current run is not a second operation');
+  assert.deepEqual(admission.admit('start'), { admitted: false, reason: 'turn_spent' });
+  admission.answered();
+  assert.deepEqual(admission.admit('start'), { admitted: false, reason: 'answer_already_given' }, 'no orphan run after the answer');
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start'), { admitted: true }, 'a new owner turn clears the answer');
+  // Every reason reaches the model verbatim, with the directive that belongs to that reason.
+  for (const reason of ADMISSION_BLOCK_REASONS) {
+    const reply = admissionBlocked(reason);
+    assert.equal(reply['status'], 'blocked');
+    assert.equal(reply['reason'], reason);
+    assert.equal(reply['directive'], ADMISSION_DIRECTIVES[reason]);
+    assert.equal(reply['retry_without_new_owner_turn'], false);
+    assert.equal(typeof ADMISSION_DIRECTIVES[reason], 'string');
+  }
+  assert.notEqual(ADMISSION_DIRECTIVES['turn_spent'], ADMISSION_DIRECTIVES['no_turn_since_result'], 'a refusal is distinguishable from a block');
+  // A continue made after an own-results delivery, with the grant still unspent, is the no_turn_since_result case.
+  const second = new ResearchAdmission();
+  second.ownerTurn();
+  assert.deepEqual(second.admit('continue', true), { admitted: true }, 'the own-results continue spends no owner turn');
+  second.delivered('run-2');
+  assert.deepEqual(second.admit('continue'), { admitted: false, reason: 'no_turn_since_result' });
 });

@@ -35,8 +35,21 @@ const invalid=[['lookup_query_required',{action:'start',question:sentinel,lookup
  ['cursor_lookups_conflict',{action:'continue',researchId:'synthetic',cursor:'synthetic',lookups:[]}],
  ['lookup_history',{action:'start',question:sentinel,lookups:[{source:'memory',history:null}]}],
  ['lookup_mail',{action:'start',question:sentinel,lookups:[{source:'mail',mail:{q:'synthetic',id:'synthetic'}}]}],
- ['lookups_count',{action:'start',question:sentinel,lookups:Array.from({length:5},()=>({source:'knowledge',query:'synthetic'}))}]];
+ ['lookups_count',{action:'start',question:sentinel,lookups:Array.from({length:5},()=>({source:'knowledge',query:'synthetic'}))}],
+ // C-RESEARCH-CONTRACT T-02/Q-13: the three argument shapes the live host refused on 2026-10-27, each a
+ // wasted round trip: history as the wrong type, a topic over the word limit, and five lookups.
+ ['lookup_history',{action:'start',question:sentinel,topic:'synthetic',lookups:[{source:'memory',history:'the last month'}]}],
+ ['topic_length',{action:'start',question:sentinel,topic:'who reports to whom in the singapore entity after the june org correction'}],
+ ['lookups_count',{action:'start',question:sentinel,topic:'synthetic',lookups:Array.from({length:5},()=>({source:'knowledge',query:'synthetic'}))}]];
 for(const [reason,input] of invalid){const parsed=parseResearch(input);assert.equal(parsed.ok,false);assert.equal(parsed.reason,reason);assert.equal(JSON.stringify(parsed).includes(sentinel),false);}
+// C-RESEARCH-CONTRACT T-04: the refusal carries field-level shape as lengths and closed source names.
+for(const [reason,input] of invalid){const shape=parseResearch(input).shape;
+ assert(Number.isSafeInteger(shape.topicChars)&&Number.isSafeInteger(shape.questionChars),reason+' carries lengths');
+ assert(Array.isArray(shape.queryChars)&&shape.queryChars.every(Number.isSafeInteger),reason+' carries query lengths');
+ assert(Array.isArray(shape.lookupSources)&&shape.lookupSources.every(source=>['memory','knowledge','company','calendar','mail','chat','replies','drive','web'].includes(source)),reason+' carries closed sources');
+}
+assert.equal(parseResearch(invalid.at(-2)[1]).shape.topicChars,String(invalid.at(-2)[1].topic).length,'the over-long topic leaves its length, never its words');
+assert.deepEqual(parseResearch(invalid.at(-1)[1]).shape.lookupSources,['knowledge','knowledge','knowledge','knowledge','knowledge'],'the closed sources of a refused call survive');
 for(const [,input] of invalid.slice(0,2))assert.equal(check(input).valid,false);
 assert.equal(schema.anyOf,undefined,'action conditions stay in canonical parser and explicit guidance, without unsupported root union');
 

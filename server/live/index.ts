@@ -3753,7 +3753,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       const parsed = parseResearch(call.args);
       // C-CONTINUITY T-11: reading the next page of an answer this call already has is not a new search, so it
       // spends no admission turn and cannot be refused for want of a fresh owner turn.
-      const pages = parsed.ok && parsed.call.cursor !== undefined && handle.voicePages.holds(parsed.call.cursor);
+      const pages = parsed.ok && parsed.call.pageCursor !== undefined && handle.voicePages.holds(parsed.call.pageCursor);
       const verdict = parsed.ok && !pages ? handle.researchAdmission.admit(parsed.call.action, parsed.ok && this.#ownPendingResults(handle, parsed.call.action, parsed.call.researchId)) : undefined;
       return { call, parsed, verdict };
     });

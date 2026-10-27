@@ -2180,15 +2180,16 @@ export interface ResearchDeps {
   memo?: ResearchMemo | undefined;
 }
 
-export interface ResearchCall { cursor?: string; action: ResearchAction; question?: string; /** #565: the names and nouns to search for, the only text whose words reach a source. */ topic?: string; researchId?: string; sources?: string; direction?: string; lookups?: unknown; /** The model call this run answers, stamped by the Live owner so a step can name it. Never from model arguments. */ callId?: string }
+export interface ResearchCall { cursor?: string; /** W1-R4: the page pointer of a capped reply, never the research
+ *  continuation cursor. */ pageCursor?: string; action: ResearchAction; question?: string; /** #565: the names and nouns to search for, the only text whose words reach a source. */ topic?: string; researchId?: string; sources?: string; direction?: string; lookups?: unknown; /** The model call this run answers, stamped by the Live owner so a step can name it. Never from model arguments. */ callId?: string }
 
 
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const optionalString = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value : undefined;
 
-export const RESEARCH_ARGUMENT_FIELDS = ['action', 'question', 'topic', 'researchId', 'sources', 'direction', 'lookups', 'cursor'] as const;
+export const RESEARCH_ARGUMENT_FIELDS = ['action', 'question', 'topic', 'researchId', 'sources', 'direction', 'lookups', 'cursor', 'pageCursor'] as const;
 export const RESEARCH_ARGUMENT_TYPES = ['absent', 'null', 'string', 'number', 'boolean', 'array', 'object', 'other'] as const;
-export const RESEARCH_REFUSAL_REASONS = ['root_type', 'unknown_fields', 'action_missing', 'action_invalid', 'question_type', 'question_required', 'topic_type', 'topic_required', 'topic_length', 'research_id_type', 'research_id_required', 'sources_type', 'direction_type', 'cursor_type', 'cursor_action', 'cursor_lookups_conflict', 'lookups_type', 'lookups_count', 'lookups_stop', 'lookup_type', 'lookup_unknown_fields', 'lookup_source', 'lookup_query_required', 'lookup_query_length', 'lookup_history', 'lookup_mail'] as const;
+export const RESEARCH_REFUSAL_REASONS = ['root_type', 'unknown_fields', 'action_missing', 'action_invalid', 'question_type', 'question_required', 'topic_type', 'topic_required', 'topic_length', 'research_id_type', 'research_id_required', 'sources_type', 'direction_type', 'cursor_type', 'cursor_action', 'cursor_lookups_conflict', 'cursor_page_conflict', 'lookups_type', 'lookups_count', 'lookups_stop', 'lookup_type', 'lookup_unknown_fields', 'lookup_source', 'lookup_query_required', 'lookup_query_length', 'lookup_history', 'lookup_mail'] as const;
 export type ResearchRefusalReason = typeof RESEARCH_REFUSAL_REASONS[number];
 export interface ResearchArgumentShape {
   action: ResearchAction | 'missing' | 'invalid';
@@ -2234,6 +2235,14 @@ export function parseResearch(args: unknown): ParsedResearch {
   if (action === 'start' && optionalString(record['topic']) === undefined) return refuse('topic_required');
   if (record['topic'] !== undefined && (String(record['topic']).length > TOPIC_MAX_CHARS || String(record['topic']).trim().split(/\s+/u).filter(Boolean).length > TOPIC_MAX_WORDS)) return refuse('topic_length');
   if (action !== 'start' && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
+  // W1-R4: the page pointer is its own argument. It pages the stored reply, so it is continue-only and it never
+  // shares a call with the research continuation cursor: one call reads one of the two.
+  if (Object.hasOwn(record, 'pageCursor')) {
+    if (typeof record['pageCursor'] !== 'string' || !record['pageCursor'].length || record['pageCursor'].length > 128) return refuse('cursor_type');
+    if (action !== 'continue') return refuse('cursor_action');
+    if (Object.hasOwn(record, 'cursor')) return refuse('cursor_page_conflict');
+    if (Object.hasOwn(record, 'lookups')) return refuse('cursor_lookups_conflict');
+  }
   if (Object.hasOwn(record, 'cursor')) {
     if (typeof record['cursor'] !== 'string' || !record['cursor'].length || record['cursor'].length > 128) return refuse('cursor_type');
     if (action !== 'continue') return refuse('cursor_action');
@@ -2456,6 +2465,7 @@ export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH
         researchId: { type: 'string', minLength: 1, description: 'The id a previous reply carried; required for continue and stop.' },
         sources: { type: 'string', description: 'Optional single-source hint; valid values: calendar, mail, chat, knowledge.' },
         cursor: { type: 'string', maxLength: 128, description: 'Consumer continuation copied from nextCursor on the same researchId. This is not a source-native page token. Omit lookups when using it.' },
+        pageCursor: { type: 'string', maxLength: 128, description: 'Reads the rest of a capped reply: copied from pageCursor on the page just delivered; use cursor or nextCursor for the research continuation.' },
         direction: { type: 'string', description: 'Optional steer for a continue, e.g. "look in mail".' },
         lookups: {
           type: 'array', maxItems: MAX_LOOKUPS,
@@ -5220,8 +5230,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   }
   // C-CONTINUITY T-11: a reply cursor pages the answer this call already had, so it never re-runs a search and a
   // cursor it does not hold is a closed error instead of a fresh question the owner never asked.
-  if (call.cursor !== undefined && call.cursor.startsWith(VOICE_CURSOR_PREFIX)) {
-    return deps.voicePages?.take(call.cursor) ?? { researchId: call.researchId ?? '', error: VOICE_CURSOR_ERROR };
+  if (call.pageCursor !== undefined) {
+    return deps.voicePages?.take(call.pageCursor) ?? { researchId: call.researchId ?? '', error: VOICE_CURSOR_ERROR };
   }
   let run: RunState;
   if (call.action === 'start') {
@@ -6071,13 +6081,19 @@ function voiceUnitsOf(reply: JsonObject): string[] {
   return units;
 }
 
+/**
+ * W1-R4: how many pages of this reply still remain. A held unit is at least one page, and a wide unit is more, so
+ * the count is the number of held units and never a claim about their size.
+ */
+function pagesLeft(units: readonly unknown[]): number { return units.length; }
+
 /** How long one page is once serialized, at the width a real cursor takes. */
 function voicePageChars(envelope: JsonObject, lines: readonly string[], cursorChars: number): number {
   // W1-R3: every control field of the reply rides the page, so the measurement carries them too. The page cursor
   // and `canContinue: true` are the widest shape a page takes (the last page of a reply adds neither).
   return JSON.stringify({
     ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT,
-    nextCursor: '0'.repeat(cursorChars), canContinue: true,
+    pageCursor: '0'.repeat(cursorChars), pagesRemaining: 99, canContinue: true,
   }).length;
 }
 
@@ -6115,7 +6131,7 @@ function takeVoiceUnits(envelope: JsonObject, units: readonly string[], cap: num
 function voiceSliceChars(envelope: JsonObject, slices: readonly JsonObject[], cursorChars: number): number {
   // Exactly the page this would emit, page cursor included, so the measurement is never optimistic.
   return JSON.stringify({ ...envelope, bodySlices: slices, cut: VOICE_REPLY_CUT,
-    nextCursor: '0'.repeat(cursorChars), canContinue: true }).length;
+    pageCursor: '0'.repeat(cursorChars), pagesRemaining: 99, canContinue: true }).length;
 }
 
 /**
@@ -6188,13 +6204,13 @@ export class VoiceReplyBook {
       emitted = rest.length === 0
         ? { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT }
         : { ...envelope, bodySlices: kept, cut: VOICE_REPLY_CUT, canContinue: true,
-          nextCursor: this.keepSlices(page.researchId, page.envelope, rest) };
+          pageCursor: this.keepSlices(page.researchId, page.envelope, rest), pagesRemaining: pagesLeft(rest) };
     } else {
       const { lines, rest } = takeVoiceUnits(envelope, page.units, cap, cursorChars);
       const findings = [{ text: lines.join('\n') }];
       if (rest.length > 0) {
         emitted = { ...envelope, findings, cut: VOICE_REPLY_CUT, canContinue: true,
-          nextCursor: this.keep(page.researchId, page.envelope, rest, page.then) };
+          pageCursor: this.keep(page.researchId, page.envelope, rest, page.then), pagesRemaining: pagesLeft(rest) };
       } else if (page.then !== undefined) {
         // The held lines are spent: a reply that still owes a body hands it back to the cap as its own page.
         emitted = capVoiceReply(page.then, this, cap);
@@ -6236,7 +6252,8 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
     const { lines, rest } = takeVoiceUnits(envelope, units, cap, VOICE_CURSOR_PREFIX.length + 36);
     const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
     const body = { ...reply, findings: [] };
-    if (rest.length > 0) return { ...page, canContinue: true, nextCursor: book.keep(researchId, envelope, rest, body) };
+    if (rest.length > 0) return { ...page, canContinue: true,
+      pageCursor: book.keep(researchId, envelope, rest, body), pagesRemaining: pagesLeft(rest) };
     return capVoiceReply(body, book, cap);
   }
   if (slices !== undefined) {
@@ -6252,7 +6269,7 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
   const page: JsonObject = { ...envelope, findings: [{ text: lines.join('\n') }], cut: VOICE_REPLY_CUT };
   // W1-R3: the reply's own control fields stay as they are; a page only adds the cursor it needs to be read on.
   if (rest.length === 0) return page;
-  return { ...page, canContinue: true, nextCursor: book.keep(researchId, envelope, rest) };
+  return { ...page, canContinue: true, pageCursor: book.keep(researchId, envelope, rest), pagesRemaining: pagesLeft(rest) };
 }
 
 /**

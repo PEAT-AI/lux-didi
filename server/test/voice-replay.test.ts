@@ -298,3 +298,22 @@ test('scenario 20: a non-verbal bracket cue never reaches the owner transcript',
   assert.equal(said, ' okay [Q3]', `the owner transcript is the spoken words and the citation: ${JSON.stringify(said)}`);
   await played.replay.release();
 });
+
+test('scenario 17: a research start filled with the voice model\'s filler values is routed', async t => {
+  const played = await play(t, 'scenario-17-research-filler', { tools: true, scripts: [{ latencyMs: 200 }] });
+  const { replay } = played;
+  invariants(played);
+  const events = replay.hostEvents.map(entry => String(entry['event']));
+  const rejected = replay.hostEvents.filter(entry => entry['event'] === 'tool_arguments_rejected');
+  assert.deepEqual(rejected, [], `a filler value was read as an invalid argument shape: ${JSON.stringify(rejected)}`);
+  assert.equal(events.includes('research_refused'), false, `the filled-in start was refused instead of routed: ${JSON.stringify(events)}`);
+  const routed = replay.hostEvents.find(entry => entry['event'] === 'research_routed');
+  assert.ok(routed, `the run never routed to a source: ${JSON.stringify(events)}`);
+  // C-FILLER: every property the model filled in and did not use is named, so the log says what was dropped.
+  const normalized = (routed['normalized'] ?? []) as string[];
+  for (const path of ['cursor', 'lookups[0].history', 'lookups[0].mail']) {
+    assert.equal(normalized.includes(path), true, `the dropped filler path ${path} is not named: ${JSON.stringify(normalized)}`);
+  }
+  assert.equal(outputOf(played, 'call_1').length > 0, true, `the routed run submitted no output: ${describe(replay)}`);
+  await replay.release();
+});

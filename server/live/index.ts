@@ -2928,9 +2928,6 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // open changes nothing, so the call cannot lose the rebuild it still owes.
     handle.researchRetention = { retainedChars: 0, rebuilds: handle.researchRetention.rebuilds };
     handle.researchRebuildSeed = undefined;
-    // C-CONTINUITY R-02: the drop receipt that caused this reopen is spent. A later mute must not inherit it, or
-    // its rebuild would be logged as a network event it never was.
-    handle.adapterOutcome = undefined;
     return true;
   }
 
@@ -2960,9 +2957,10 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    * episode's time budget, backoff is 0/2/4/8 s, and the current session deadline does not move.
    */
   async #recoverFromDrop(handle: ActiveSession, outcome: LiveVoiceOutcome | undefined, forceFresh = false, reasonOverride?: string): Promise<boolean> {
-    // C-CONTINUITY R-02/R-08/R-09: the outcome the call is recovering from is kept on the handle, so the rebuild
-    // and recovery lines read their cause and their socket close code and reason off a receipt instead of a guess.
-    if (outcome !== undefined) handle.adapterOutcome = outcome;
+    // C-CONTINUITY R-02/R-08/R-09: the outcome this recovery is for is kept on the handle, so the rebuild and
+    // recovery lines read their cause and their socket close code and reason off a receipt instead of a guess. A
+    // reopen with no outcome behind it (a mute, a provider window) clears a spent one rather than inheriting it.
+    handle.adapterOutcome = outcome;
     const now = this.#now();
     // #656: one model-mute rebuild per recovery window, on the same watchdogRecoveredAt stamp and
     // RESPONSE_WATCHDOG_WINDOW_MS the sliding watchdog keeps. Every model-mute route passes this door, so a model

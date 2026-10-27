@@ -395,7 +395,7 @@ export async function runOAuthLogin(options: OAuthLoginOptions): Promise<OAuthRe
     const refreshToken = granted?.['refresh_token'];
     const expiresIn = granted?.['expires_in'];
     if (!secret(accessToken) || !secret(refreshToken) || !Number.isSafeInteger(expiresIn) || (expiresIn as number) < 1) return fail({ hop: 'token', outcome: 'refused' }, 'token-refused');
-    const proof = options.verifyToken?.(accessToken);
+    const proof = options.verifyToken?.(accessToken, false);
     if (proof && !proof.ok) return fail({ hop: 'token', outcome: proof.code }, proof.code === 'identity_mismatch' ? 'identity-mismatch' : 'identity-unverified');
     hop({ hop: 'token', outcome: 'ok' });
     stage = 'stored';

@@ -5687,6 +5687,7 @@ test('mail body integration: body consumption preserves simultaneous calendar ev
   await settleLiveTool(h, 'mixed-start', 'research', { action: 'start', question: 'Read full mail and calendar', topic: 'Read full mail and calendar', lookups: [{ source: 'mail', mail: { id: 'mixed' } }, { source: 'calendar', query: 'this week' }] });
   const seen = new Set<string>(), researchId = last()['researchId'], used = new Set<string>(); let count = 0;
   for (;;) {
+    process.stderr.write(`DBG631 findings=${JSON.stringify(last()['findings'] ?? null).slice(0, 160)} keys=${Object.keys(last()).sort().join(',')}\n`);
     for (const match of JSON.stringify(last()['findings'] ?? '').matchAll(/Body sibling event (\d+)/g)) seen.add(match[1]!);
     assert(JSON.stringify(last()).length <= 6000, 'combined actual model response respects its existing bound');
     const step = pageStep(last(), used); if (step === undefined) break; assert(++count < 20);

@@ -451,6 +451,13 @@ test('V7: a float literal is sanitized to an integer, never forwarded', () => {
   assert.equal(properties['limit']?.['maximum'], 9);
 });
 
+test('V7 (F4): a fractional multipleOf is refused, never truncated to an invalid zero', () => {
+  assert.throws(
+    () => mongooseSanitizeParameters({ type: 'object', properties: { q: { type: 'integer', multipleOf: 0.5 } } }),
+    (error: unknown) => error instanceof MongooseSchemaRefusal && error.path.endsWith('properties.q.multipleOf'),
+  );
+});
+
 test('V7: a keyword the provider rejects fails the catalogue load loudly', () => {
   assert.throws(
     () => mongoosePublishCatalogue('mongoose-data', [{ name: 'run_metric_query', description: 'x', inputSchema: { type: 'object', properties: { q: { type: 'string', oneOf: [{ type: 'string' }] } } } }]),

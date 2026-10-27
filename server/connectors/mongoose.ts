@@ -466,6 +466,13 @@ export function mongooseSanitizeParameters(schema: unknown, path = 'schema'): Re
   for (const [key, value] of Object.entries(schema as Record<string, unknown>)) {
     const at = `${path}.${key}`;
     if (!PROVIDER_KEYWORDS.has(key)) throw new MongooseSchemaRefusal(at, 'keyword the provider rejects');
+    if (key === 'multipleOf') {
+      // F4: truncating a bounded step to zero hands AJV an invalid keyword, so a fractional step is refused
+      // loudly instead of being rounded into something the schema never said.
+      const step = sanitizedInteger(value, at);
+      if (typeof value !== 'number' || !Number.isInteger(value) || step < 1) throw new MongooseSchemaRefusal(at, 'multipleOf must be a whole number');
+      out[key] = step; continue;
+    }
     if (INTEGER_KEYWORDS.has(key)) { out[key] = sanitizedInteger(value, at); continue; }
     if (TEXT_KEYWORDS.has(key)) {
       if (typeof value !== 'string') throw new MongooseSchemaRefusal(at, 'not a string');

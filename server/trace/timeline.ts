@@ -128,12 +128,15 @@ function continuationDecisions(read: TraceRead, liveSessionId: string): Map<stri
 /** L8-Q04: the failure receipts of one call: rejected commands, stalls, failed responses and failed calls. */
 const FAILED_RESPONSE_REASONS = new Set(['failed', 'provider_error', 'timeout']);
 const FAILED_CALL_OUTCOMES = new Set(['failed', 'timeout', 'aborted']);
+/** C-RESEARCH-CONTRACT T-04: a call the admission refused reached no source, so it is its own receipt, not a failure. */
+const BLOCKED_CALL_OUTCOMES = new Set(['blocked']);
 function callFailuresOf(read: TraceRead, liveSessionId: string, responses: readonly ResponseView[], calls: readonly CallView[]): { count: number; kinds: Record<string, number> } {
   const kinds: Record<string, number> = {};
   const add = (kind: string): void => { kinds[kind] = (kinds[kind] ?? 0) + 1; };
   for (const row of read.all("SELECT kind FROM trace_event WHERE live_session_id=? AND kind IN ('command.rejected','live.dead_air_stalled') ORDER BY seq", [liveSessionId])) add(String(row.kind));
   for (const response of responses) if (response.terminalReason !== null && FAILED_RESPONSE_REASONS.has(response.terminalReason)) add(`response.${response.terminalReason}`);
   for (const call of calls) if (FAILED_CALL_OUTCOMES.has(call.outcome)) add(`call.${call.outcome}`);
+  for (const call of calls) if (BLOCKED_CALL_OUTCOMES.has(call.outcome)) add(`call.${call.outcome}`);
   return { count: Object.values(kinds).reduce((sum, n) => sum + n, 0), kinds };
 }
 

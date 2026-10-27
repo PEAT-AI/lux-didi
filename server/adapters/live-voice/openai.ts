@@ -1410,7 +1410,9 @@ class Session implements LiveVoiceSession {
       }
       const writtenAt = this.clock.now();
       this.receipt('call.output_written', this.callIds(call.id), {
-        outputWrittenAt: writtenAt, outcome: call.name === 'research' && response.error === 'invalid_research_arguments' && response.state === 'refused' ? 'refused' : 'completed', ms: writtenAt - (this.callOrigins.get(call.id)?.at ?? writtenAt),
+        // C-RESEARCH-CONTRACT T-04: a refused argument shape and an admission block are their own outcomes, so a
+        // blocked call is never read back as one that answered.
+        outputWrittenAt: writtenAt, outcome: call.name === 'research' && response.error === 'invalid_research_arguments' && response.state === 'refused' ? 'refused' : call.name === 'research' && response.status === 'blocked' ? 'blocked' : 'completed', ms: writtenAt - (this.callOrigins.get(call.id)?.at ?? writtenAt),
         resultChars: JSON.stringify(response).length,
       });
       written.push(call.id);

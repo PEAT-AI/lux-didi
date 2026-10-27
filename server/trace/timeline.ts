@@ -456,6 +456,7 @@ export interface CallStory {
 const LOG_EVENT_KIND: Record<string, CallEntryKind> = {
   live_state: 'state', audio_owned: 'state', audio_released: 'state', audio_started: 'state', live_interrupted: 'state',
   live_first_audio: 'model', live_answer_audio: 'model', gptlive_turn_complete: 'model', live_turn_script: 'model',
+  live_voice_profile: 'model', live_voice_shift: 'model',
   live_handshake: 'model', live_provider_open: 'model', live_provider_ready: 'model',
   live_tool_turn: 'tool', tool_output_sent: 'tool', gptlive_tool_output: 'tool',
   live_dead_air: 'silence', live_heard_silence: 'silence', live_watchdog: 'silence', playback_underrun: 'silence',
@@ -469,6 +470,8 @@ const LOG_DETAIL_KEYS = [
   'state', 'from', 'cause', 'connector', 'reason', 'phase', 'outcome', 'code', 'endpointId', 'proven', 'match',
   'researchId', 'sources', 'tools', 'calls', 'ms', 'msSinceReady', 'msSinceOpen', 'msSinceArrived', 'deadAirMs',
   'queuedMs', 'toolPending', 'failureClass', 'closeReason', 'terminalReason',
+  // C-PITCH: the voice column, so one call's responses read as a pitch line and a shift stands out.
+  'f0Hz', 'f0P10Hz', 'f0P90Hz', 'voicedRatio', 'responseId',
 ] as const;
 
 function logEntryText(line: LogLine): string[] {

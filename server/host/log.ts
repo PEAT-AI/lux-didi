@@ -139,6 +139,12 @@ const isSafeId = (value: unknown): value is string => typeof value === 'string' 
  */
 const rejectResearchId = (event: string): Record<string, unknown> => ({ event: 'research_id_rejected', kind: event, field: 'researchId' });
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+/** C-PITCH: a fundamental frequency in Hz, or null when the response had no voiced frames. */
+const isSafeHz = (value: unknown): value is number | null =>
+  value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 20 && value <= 2000);
+/** C-PITCH: a measurement ratio (voiced frames over analyzed frames, a pitch over a pitch). */
+const isSafeRatio = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 10000;
 /** C-CONTINUITY R-09: a socket close code, the range the protocol allows, or null before the socket answered. */
 const isSafeCloseCode = (value: unknown): value is number | null =>
   value === null || (Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 65535);
@@ -847,6 +853,26 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.keys(value).sort().join(',') !== ['event', 'deadAirMs'].sort().join(',')) return;
     if (!isSafeCount(value.deadAirMs)) return;
     return { event: 'live_dead_air', deadAirMs: value.deadAirMs };
+  }
+  if (value.event === 'live_voice_profile') {
+    // C-PITCH: the voice the owner just heard, per response, measured on the output PCM the host already
+    // forwarded to playback: a closed response id, audible milliseconds, the median F0 and its 10th and 90th
+    // percentile, the voiced-frame ratio and the RMS level. Never the audio, never a word of it.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'responseId', 'audibleMs', 'f0Hz', 'f0P10Hz', 'f0P90Hz', 'voicedRatio', 'rmsDbfs'])) return;
+    if (!isSafeId(value.liveSessionId) || !isSafeId(value.responseId)) return;
+    if (!isSafeCount(value.generation) || !isSafeCount(value.audibleMs)) return;
+    if (!isSafeHz(value.f0Hz) || !isSafeHz(value.f0P10Hz) || !isSafeHz(value.f0P90Hz)) return;
+    if (!isSafeRatio(value.voicedRatio)) return;
+    if (typeof value.rmsDbfs !== 'number' || !Number.isFinite(value.rmsDbfs) || value.rmsDbfs > 0 || value.rmsDbfs < -200) return;
+    return { event: 'live_voice_profile', liveSessionId: value.liveSessionId, generation: value.generation, responseId: value.responseId, audibleMs: value.audibleMs, f0Hz: value.f0Hz, f0P10Hz: value.f0P10Hz, f0P90Hz: value.f0P90Hz, voicedRatio: value.voicedRatio, rmsDbfs: value.rmsDbfs };
+  }
+  if (value.event === 'live_voice_shift') {
+    // C-PITCH: this response's median F0 sits beyond the configured ratio from the session's running median.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'responseId', 'ratio', 'medianHz', 'sessionMedianHz'])) return;
+    if (!isSafeId(value.liveSessionId) || !isSafeId(value.responseId)) return;
+    if (!isSafeCount(value.generation)) return;
+    if (!isSafeRatio(value.ratio) || !isSafeHz(value.medianHz) || !isSafeHz(value.sessionMedianHz)) return;
+    return { event: 'live_voice_shift', liveSessionId: value.liveSessionId, generation: value.generation, responseId: value.responseId, ratio: value.ratio, medianHz: value.medianHz, sessionMedianHz: value.sessionMedianHz };
   }
   if (value.event === 'live_heard_silence') {
     // L-04/R7: the silence the owner heard, from the end of the last audible frame to the next model audio, with

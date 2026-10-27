@@ -48,10 +48,15 @@ test('cold start: all three literal Mongoose catalogues connect', async t => {
   writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: 'owner@example.test', endpoints }), { mode: 0o600 });
   const store = new Store(join(root, 'data'), toolsMigrations); t.after(() => store.close());
   const connected: string[] = [];
+  const identities: string[] = [];
   const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir,
-    lookupAuthority: async () => null, recoveryDelaysMs: [], lifecycleLog: event => {
+    lookupAuthority: async () => null, identityLog: (_connector, _proven, _match, endpointId) => { identities.push(endpointId!); }, recoveryDelaysMs: [], lifecycleLog: event => {
       if (event.event === 'connector_connected') connected.push(event.endpointId);
     } });
   t.after(() => runtime.close());
+  for (const endpoint of MONGOOSE_ENDPOINTS) {
+    for (let i = 0; i < 3; i++) await runtime.port.discover(`mongoose-${endpoint}`);
+  }
+  assert.deepEqual(identities.sort(), MONGOOSE_ENDPOINTS.map(endpoint => `mongoose-${endpoint}`).sort(), 'one identity receipt per endpoint, not per credential resolution');
   assert.deepEqual(connected.sort(), MONGOOSE_ENDPOINTS.map(endpoint => `mongoose-${endpoint}`).sort(), JSON.stringify(runtime.status()));
 });

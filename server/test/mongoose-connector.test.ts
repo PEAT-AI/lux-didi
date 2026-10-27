@@ -416,8 +416,8 @@ test('V7: the data envelope forwards the published run_metric_query schema, not 
   assert.deepEqual(declaration.parameters, mongooseSanitizeParameters(PUBLISHED_METRIC_SCHEMA), 'exactly the sanitized published schema');
   assert.equal(declaration.description, 'Run one metric query on one explore with the published argument shape.', 'the published description, not the forwarded text');
   // The planner can build the real shape, so the published schema really reached it.
-  assert.equal(declaration.validate({ queryConfig: { exploreName: 'active_users_daily', metrics: ['active_users_daily_n_active_users'], limit: 10 } }), true);
-  assert.equal(declaration.validate({ queryConfig: { limit: 10 } }), false, 'exploreName stays required');
+  assert.equal(declaration.validate({ title: 'Users', description: 'Daily active users', queryConfig: { exploreName: 'active_users_daily', metrics: ['active_users_daily_n_active_users'], limit: 10 } }), true);
+  assert.equal(declaration.validate({ title: 'Users', description: 'Daily active users', queryConfig: { limit: 10 } }), false, 'exploreName stays required');
 });
 
 test('V7: a float literal is sanitized to an integer, never forwarded', () => {

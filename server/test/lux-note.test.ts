@@ -52,6 +52,11 @@ test('an imperative with an explicit lux destination is the only form that autho
   for (const text of ['do not save a note about what we just discussed', 'he said save a note about our conversation']) {
     assert.notDeepEqual(composedAsk(text), { decision: 'grant' }, text);
   }
+  // R7-W1: the frame a split stretch opens with is not the ask; the clause after it is.
+  for (const text of ['you have my full permission to save it in Lux Knowledge', 'can you, can you store it in Lux Knowledge']) {
+    assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
+  }
+  assert.deepEqual(composedAsk('both of these things'), { decision: 'none' });
 });
 
 test('negated, reported, quoted, conditional and ambiguous save asks are refused with a clarification', () => {

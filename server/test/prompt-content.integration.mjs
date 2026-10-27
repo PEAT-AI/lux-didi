@@ -36,7 +36,7 @@ const ownerText=prompt.compilePrompt({...input,ownerProfile});
 const frozen=prompt.composeLiveInstruction({base:prompt.NAYA_LIVE_BASE,language:'en'});
 const fullLive=openAiInstructions(prompt.composeLiveSessionInstruction({text:frozen.text,tools:['research'],delegatedBackend:true,records:[],trustedChars:60000}).text);
 const excluded=JSON.parse(readFileSync(new URL('./fixtures/prompt-character-excluded.json',import.meta.url)));
-assert.equal(createHash('sha256').update(prompt.NAYA_CHARACTER).digest('hex'),'1b188117660fe12204cd542001b585fcce69add4f1cc6d27689720e193cac977',"release character must match the accepted bytes; to repin run in server/: node --input-type=module -e \"import {createHash} from 'node:crypto';import * as p from './dist/prompt/index.js';console.log(createHash('sha256').update(p.NAYA_CHARACTER).digest('hex'))\"");
+assert.equal(createHash('sha256').update(prompt.NAYA_CHARACTER).digest('hex'),'feaa777d536ef893b961163e4c53f70a6636c1d70d0c4e6ed8880c2a38802d77',"release character must match the accepted bytes; to repin run in server/: node --input-type=module -e \"import {createHash} from 'node:crypto';import * as p from './dist/prompt/index.js';console.log(createHash('sha256').update(p.NAYA_CHARACTER).digest('hex'))\"");
 assert.notEqual(prompt.NAYA_CHARACTER,excluded.NAYA_CHARACTER);
 for(const system of [ownerText.system,fullLive,openAiInstructions(none.text)]){
  assert.equal(system.split(prompt.NAYA_CHARACTER).length-1,1);

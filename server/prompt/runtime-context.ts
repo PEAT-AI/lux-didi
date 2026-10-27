@@ -10,6 +10,42 @@ export interface RuntimeContextInput {
   readonly unavailable: readonly string[];
   /** W6 item 14: what this session may write to lux, as the host reads it, never as the model guesses. */
   readonly vault?: { readonly dictation: boolean; readonly composed: boolean };
+  /** W4: the host's own endpoint rows for this call, so a sign-in is never claimed or denied from guesswork. */
+  readonly connectors?: readonly ConnectorStateInput[];
+}
+
+/** One connector endpoint exactly as the host reports it: no field here is written by a model. */
+export interface ConnectorStateInput {
+  readonly connector: string;
+  readonly state: string;
+  readonly reasonCode?: string;
+  readonly configurationError?: string;
+}
+
+/** The closed reasons a connector is signed out or waiting on the owner, as the host and the browser report them. */
+const SIGNED_OUT = new Set(['needs_sign_in', 'not_signed_in', 'credential-missing', 'credential-refresh-failed', 'credential-consent-expired']);
+const NEEDS_APPROVAL = new Set(['owner-approval-required', 'ambiguous-legacy-policy']);
+
+/**
+ * W4: one compact line of live connector state, per family, from the host's endpoint rows. A family with any
+ * connected endpoint reads connected; otherwise the closed reason decides between signed out, approval and
+ * unavailable. Claiming or denying a sign-in without this line cost a whole call (2026-10-27 afternoon).
+ */
+export function connectorStateLine(connectors: readonly ConnectorStateInput[]): string | undefined {
+  const families = new Map<string, string[]>();
+  for (const row of connectors) {
+    const reason = String(row.reasonCode ?? row.configurationError ?? row.state);
+    const phrase = row.state === 'connected' ? 'connected'
+      : SIGNED_OUT.has(reason) ? 'not signed in'
+        : NEEDS_APPROVAL.has(reason) ? 'needs approval' : 'unavailable';
+    for (const group of connectorGroupNames(row.connector)) families.set(group, [...(families.get(group) ?? []), phrase]);
+  }
+  if (families.size === 0) return undefined;
+  const rank = (phrases: readonly string[]): string => phrases.includes('connected') ? 'connected'
+    : phrases.includes('not signed in') ? 'not signed in'
+      : phrases.includes('needs approval') ? 'needs approval' : 'unavailable';
+  const said = [...families].map(([group, phrases]) => `${group} ${rank(phrases)}`);
+  return `Connectors: ${said.join('; ')}. Never deny or claim a sign-in or a capability without this line or a live tool check.`;
 }
 
 /** The exact vault-write capability fact, so no answer blames a connector for a write that is off. */
@@ -112,6 +148,7 @@ export function buildRuntimeContext(input: RuntimeContextInput): string {
     `Connected now: ${connected}.`,
     `Not available: ${unavailable}.`,
     ...(input.vault === undefined ? [] : [vaultCapabilityLine(input.vault)].filter((line): line is string => line !== undefined)),
+    ...(input.connectors === undefined ? [] : [connectorStateLine(input.connectors)].filter((line): line is string => line !== undefined)),
     'Naya can read and search; she cannot send anything to anyone.',
   ].join('\n');
 }

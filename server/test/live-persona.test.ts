@@ -10,7 +10,7 @@ import {
   PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
   validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS, earlierConversationsBudget,
   LIVE_ACCENTS, LIVE_DEFAULT_ACCENT, LIVE_ACCENT_PRESETS, accentPreset, type PersonaOverlay,
-  buildOpeningOptions, openingOptionsTopics, OPENING_OPTIONS_TITLE, OPENING_OPTIONS_CHARS, OPENING_OPTION_KINDS, EARLIER_CONVERSATIONS_TITLE,
+  buildOpeningOptions, openingOptionsTopics, OPENING_OPTIONS_TITLE, OPENING_OPTIONS_CHARS, OPENING_OPTION_KINDS, EARLIER_CONVERSATIONS_TITLE, type EarlierConversationCandidate,
 } from '../prompt/live-persona.js';
 import { safeEvent } from '../host/log.js';
 import type { OwnerProfileSnapshot } from '../prompt/types.js';
@@ -568,7 +568,7 @@ const DAY = 24 * 60 * 60 * 1000;
 
 test('the earlier-conversations header is the authored verbatim constant', () => {
   assert.equal(EARLIER_CONVERSATIONS_HEADER,
-    "Short summaries of earlier conversations, written automatically. Use them as background when they are relevant; do not bring them up unprompted, do not say that you remember, and do not ask the owner to confirm them. They can be wrong; the owner's words now win.");
+    "Short summaries of earlier conversations, written automatically. Use them as background when they are relevant; do not bring them up unprompted, do not say that you remember, and do not ask the owner to confirm them. Never speak one of these lines unless it answers what he just asked. They can be wrong; the owner's words now win.");
 });
 
 test('earlier-conversations fills the space left under the budget, newest first, whole summaries only', () => {
@@ -1120,6 +1120,27 @@ test('1023-N8: the open loop is the stored column, never a cue word in a summary
   assert.equal(optionOf(stored, 'open-loop')?.topic, 'the deposit is still to be paid', 'the stored loop is offered as written');
   const none = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', rotation: 0 });
   assert.equal(optionOf(none, 'open-loop'), undefined, 'a summary sentence is never promoted to a loop');
+});
+
+test('W4: a loop older than a day, or one a later summary finished, is never the opener', () => {
+  const candidates = [pastSummary(0, 'The owner said the invoice is still to be sent.')];
+  const stale = buildOpeningOptions({ candidates, openLoops: [storedLoop('The owner said the economist sign-in is still to be done.', 48)],
+    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.equal(optionOf(stale, 'open-loop'), undefined, 'a two-day-old loop opens no call');
+  const fresh = buildOpeningOptions({ candidates, openLoops: [storedLoop('The owner said the deposit is still to be paid.', 2)],
+    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.equal(optionOf(fresh, 'open-loop')?.topic, 'the deposit is still to be paid', 'a fresh loop is still offered');
+  const finished: EarlierConversationCandidate[] = [{ id: 's-later', endedAt: NOW_3U - 3_600_000,
+    summary: 'Mira found the deposit was paid on Friday.' }];
+  const resolved = buildOpeningOptions({ candidates: finished, openLoops: [storedLoop('The owner said the deposit is still to be paid.', 2)],
+    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.equal(optionOf(resolved, 'open-loop'), undefined, 'a loop a later summary finished is dropped');
+});
+
+test('W4: the opening rule forbids crediting a past failure to the owner', () => {
+  const plan = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said the deposit is still to be paid.')],
+    now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.ok(plan.section.includes('Never say he failed, forgot or left something waiting'), 'the plan names the blame rule');
 });
 
 test('1023-N8: a narration sentence about the call itself is never an option', () => {

@@ -34,14 +34,29 @@ test('a DST boundary week carries each endpoint day’s own offset', () => {
 });
 
 test('the runtime block carries only the named fields, never an owner line or private content', () => {
-  const text = buildRuntimeContext({ now: new Date('2026-10-14T12:35:00Z'), timeZone: 'UTC', connected: ['mail'], unavailable: [] });
+  const text = buildRuntimeContext({ now: new Date('2026-10-14T12:35:00Z'), timeZone: 'UTC', connected: ['mail'], unavailable: [],
+    connectors: [{ connector: 'mongoose', state: 'connected' }] });
   const lines = text.split('\n').filter(line => line.length);
-  for (const prefix of ['Now:', 'Today:', 'This week:', 'Connected now:', 'Not available:']) {
+  for (const prefix of ['Now:', 'Today:', 'This week:', 'Connected now:', 'Not available:', 'Connectors:']) {
     assert.equal(lines.filter(line => line.startsWith(prefix)).length, 1, `exactly one ${prefix} line`);
   }
   assert.ok(!/^Owner:/m.test(text), 'no owner line');
-  assert.ok(lines.every(line => line.startsWith('# Runtime context') || /^(Now|Today|This week|Connected now|Not available):/.test(line)
+  assert.ok(lines.every(line => line.startsWith('# Runtime context') || /^(Now|Today|This week|Connected now|Not available|Connectors):/.test(line)
     || line === 'Naya can read and search; she cannot send anything to anyone.'));
+});
+
+test('W4: the runtime context carries one live connector line and the no-denial-without-a-check rule', () => {
+  const text = buildRuntimeContext({ now: new Date('2026-10-27T12:00:00Z'), timeZone: 'UTC', connected: ['company knowledge'], unavailable: [],
+    connectors: [
+      { connector: 'mongoose', state: 'connected' },
+      { connector: 'google', state: 'error', reasonCode: 'not_signed_in' },
+      { connector: 'mattermost', state: 'error', configurationError: 'owner-approval-required' },
+    ] });
+  const lines = text.split('\n').filter(line => line.startsWith('Connectors:'));
+  assert.equal(lines.length, 1, 'exactly one connector line');
+  assert.equal(lines[0], 'Connectors: company knowledge connected; calendar not signed in; mail not signed in; team chat needs approval. Never deny or claim a sign-in or a capability without this line or a live tool check.');
+  const quiet = buildRuntimeContext({ now: new Date('2026-10-27T12:00:00Z'), timeZone: 'UTC', connected: [], unavailable: [] });
+  assert.doesNotMatch(quiet, /^Connectors:/mu, 'no connector line without host rows');
 });
 
 test('tool and connector names map to the human group names', () => {

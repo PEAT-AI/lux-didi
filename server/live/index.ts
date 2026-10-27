@@ -1205,7 +1205,7 @@ export class LiveSessionOwner {
       .flatMap(endpoint => connectorGroupNames(endpoint.connector))
       .filter((group, index, all) => all.indexOf(group) === index && !connected.includes(group));
     const context = buildRuntimeContext({ now: new Date(this.#now()), timeZone, connected, unavailable,
-      vault: { dictation: true, composed: this.#composedNotes() } });
+      vault: { dictation: true, composed: this.#composedNotes() }, connectors: endpoints });
     const signIn = signInNote(endpoints);
     // C-SIGNIN-LIVE: the one sentence about a connector that just came up, said on this call only.
     const note = this.#connectorNotes.take(endpoints);

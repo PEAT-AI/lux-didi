@@ -316,8 +316,11 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
     };
     checkClass(request.system.dataClass);
     const supplied = request.history ?? [];
-    if (supplied.length > settings.limits.maxHistoryTurns || supplied.length > SEED_MESSAGE_LIMIT) fail('invalid_request');
-    const history = supplied.map((turn): { role: 'user' | 'model'; text: string } => {
+    // C-RECOVERY (a): a history over the ceiling loses its oldest turns instead of refusing the open, so a long
+    // call still reconnects. The shape and data class of every turn that is used are still enforced.
+    const ceiling = Math.min(SEED_MESSAGE_LIMIT, settings.limits.maxHistoryTurns);
+    const suppliedKept = supplied.length > ceiling ? supplied.slice(-ceiling) : supplied;
+    const history = suppliedKept.map((turn): { role: 'user' | 'model'; text: string } => {
       if (!object(turn) || (turn.role !== 'user' && turn.role !== 'model') || typeof turn.text !== 'string' || !turn.text.length) fail('invalid_request');
       checkClass(turn.dataClass);
       return { role: turn.role, text: turn.text };
@@ -364,8 +367,19 @@ export class OpenAiLiveVoiceAdapter implements LiveVoicePort {
     const items: JsonObject[] = [];
     let characters = 0;
     const freshOpening = request.openingText === undefined && request.opening === 'model_first';
-    // The 128-message ceiling is the provider's: the opening directive takes one slot, so the oldest turn goes.
-    const kept = freshOpening ? history.slice(-(SEED_MESSAGE_LIMIT - 1)) : history;
+    // C-RECOVERY (a): the seed plus every line appended after it stays inside both provider ceilings. The oldest
+    // turns go first and the newest turn is condensed, so a 300-fragment call opens instead of being refused.
+    const appendedChars = request.openingText !== undefined ? request.openingText.length : freshOpening ? FRESH_OPENING.length : 0;
+    const room = Math.max(0, SEED_MESSAGE_LIMIT - (appendedChars > 0 ? 1 : 0));
+    let kept = history.slice(Math.max(0, history.length - room));
+    const totalOf = (turns: readonly { text: string }[]): number => turns.reduce((sum, turn) => sum + turn.text.length, 0) + appendedChars;
+    while (kept.length > 1 && totalOf(kept) > SEED_CHAR_LIMIT) kept = kept.slice(1);
+    if (kept.length > 0 && totalOf(kept) > SEED_CHAR_LIMIT) {
+      const last = kept[kept.length - 1]!;
+      const roomLeft = Math.max(0, SEED_CHAR_LIMIT - (totalOf(kept) - last.text.length));
+      const keep = Math.max(roomLeft - 3, 0);
+      kept = [...kept.slice(0, -1), { ...last, text: keep > 0 ? `...${last.text.slice(last.text.length - keep)}` : '...' }];
+    }
     for (const turn of kept) {
       characters += turn.text.length;
       items.push({ type: 'message', role: turn.role === 'model' ? 'assistant' : 'user',

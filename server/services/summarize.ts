@@ -10,7 +10,7 @@ import * as summaries from '../domain/summaries.js';
  * domain owns the durable row.
  */
 
-export const SUMMARY_PROMPT_VERSION = 'conversation-summary-v2';
+export const SUMMARY_PROMPT_VERSION = 'conversation-summary-v3';
 /** The distiller uses the text model the host already configures for chat and tools, never the Live voice model. */
 export const SUMMARY_TEMPERATURE = 0.2;
 export const DISTILLATION_INPUT_MAX_CHARS = 24_000;
@@ -52,7 +52,9 @@ calendar", "${assistantName} could not find". Never present something ${assistan
 "yes" or "okay" from the owner confirms nothing.
 
 Set openLoop to at most ${OPEN_LOOP_MAX_CHARS} characters naming only something the owner explicitly said was still to do,
-or null when the owner named nothing. Never infer a to-do the owner did not say, and never restate the summary.
+or null when the owner named nothing. A request of his that failed or came back empty, an ask left unanswered, and a
+complaint about the assistant's own voice, accent or answers are still to do, so each one belongs in openLoop.
+Never infer a to-do the owner did not say, and never restate the summary.
 
 The transcript is automatic speech recognition of an owner who speaks English as a second language: names and
 numbers may be misheard. If a name looks garbled, describe the person or thing by role instead of guessing a

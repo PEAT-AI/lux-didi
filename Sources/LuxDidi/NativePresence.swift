@@ -142,9 +142,12 @@ final class NativePresence {
     /// #589: the host's end frame decided the call is over. A voice_stop terminal is the owner's own
     /// sentence, so the goodbye sounds and the receipt names his words; any other end is the session
     /// ending as it always has.
-    func endAfterHostTerminal(voiceStop: Bool, generation: UInt64) {
+    func endAfterHostTerminal(voiceStop: Bool, lostCall: Bool = false, generation: UInt64) {
         guard generation == self.generation else { return }
         if voiceStop { stop(.voice); return }
+        // C-RECOVERY (e): recovery gave up on a call the owner still had open, so the existing goodbye tone says the
+        // call ended instead of the room going quiet with the orb still up.
+        if lostCall { effects.goodbyeTone() }
         sessionEnded(generation)
     }
 

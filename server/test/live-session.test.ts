@@ -1332,7 +1332,10 @@ test('tool-enabled Live CREATE freezes an expanded classified owner system byte 
   const frozen = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
   assert.ok(frozen.system.length > 4_096 && frozen.system.length <= LIVE_INSTRUCTION_HARD_LIMIT, 'the frozen system is dense but inside the hard limit');
   assert.equal(frozen.system, composeLiveSessionInstruction({ text: expectedSystem, tools: ['search_knowledge', 'get_insight'], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ['knowledge base', 'memory'], unavailable: [], vault: { dictation: true, composed: false } }) }).text);
+    // W4: the runtime context now names the live connector state, so the expectation carries the
+    // one endpoint this harness publishes.
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: ['knowledge base', 'memory'],
+      vault: { dictation: true, composed: false }, connectors: [{ connector: 'lux-knowledge', state: 'connected' }] }) }).text);
   assert.equal(frozen.system.split(style).length - 1, 1);
   assert.equal(frozen.system.split(lore).length - 1, 1);
   assert.deepEqual(frozen.dataClasses, ['ordinary', 'private', 'sensitive']);
@@ -2070,6 +2073,30 @@ test('a tool result after a barge-in interruption is sent once and recorded afte
   h.owner.revoke(session.liveSessionId);
 });
 
+test('a response the owner barges in on is measured on its own, so two voices never mix (#1027 F1)', async t => {
+  const events: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(() => sink());
+  const h = await harness(t, {});
+  const { session, attachment } = await attached(h);
+  void (async () => { for await (const _chunk of attachment.output) { /* drain playback */ } })();
+  // 2000 samples of a 110 Hz tone at 24 kHz: a real voiced frame, not the 8-byte stub.
+  const samples = new Int16Array(2000);
+  for (let index = 0; index < samples.length; index += 1) samples[index] = Math.round(0.4 * 32767 * Math.sin((2 * Math.PI * 110 * index) / 24000));
+  const voiced = { inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(samples.buffer).toString('base64') } };
+  const handled = h.owner.get(session.liveSessionId).journal.events;
+  h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [voiced] } } });
+  h.f.send({ serverContent: { interrupted: true } });
+  h.f.send({ serverContent: { outputTranscription: { text: 'after the barge-in', finished: true } } });
+  await drain(h, session.liveSessionId, handled + 2);
+  const profiles = events.filter(line => line.event === 'live_voice_profile');
+  assert.equal(profiles.length, 1, 'the interrupted response logged its own profile');
+  assert.equal(profiles[0]!.responseId, 'resp-1');
+  assert.ok(Number(profiles[0]!.audibleMs) > 0, `audible ms ${String(profiles[0]!.audibleMs)}`);
+  assert.ok(Math.abs(Number(profiles[0]!.f0Hz) - 110) < 5, `measured ${String(profiles[0]!.f0Hz)} Hz`);
+  h.owner.revoke(session.liveSessionId);
+});
+
 test('Live accepts a frozen real tool snapshot and projects only result-gated Markdown', async t => {
   const h = await harness(t, { tools: true });
   const { session, attachment } = await attached(h);
@@ -2171,7 +2198,7 @@ test('Live attach setup carries the composed Naya instruction and the bare langu
   await h.f.frame(1);
   const frame = JSON.parse(JSON.stringify(h.f.frames[0]));
   const expectedWithRuntime = composeLiveSessionInstruction({ text: composed.text, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], unavailable: [], vault: { dictation: true, composed: false } }) }).text;
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], vault: { dictation: true, composed: false } }) }).text;
   assert.equal(frame.setup.systemInstruction.parts[0].text, expectedWithRuntime);
   assert.equal(frame.setup.generationConfig.speechConfig.languageCode, 'de');
   attachment.close();
@@ -2257,7 +2284,7 @@ test('configured owner system survives CREATE and attach open byte for byte befo
   const created = first.create({ idempotencyKey: 'owner-create', inputClass: 'ordinary' }, context(store));
   const persisted = store.transaction(tx => JSON.parse(String(tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [created.liveSessionId])!['accepted_prompt_snapshot'])));
   const expectedWithRuntime = composeLiveSessionInstruction({ text: expected, tools: [], records: [], trustedChars: TRUSTED_SYSTEM_CODE_UNIT_LIMIT,
-    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], unavailable: [], vault: { dictation: true, composed: false } }) }).text;
+    runtimeContext: buildRuntimeContext({ now: new Date(NOW), timeZone: 'Asia/Kolkata', connected: [], vault: { dictation: true, composed: false } }) }).text;
   assert.equal(persisted.system, expectedWithRuntime); assert.deepEqual(persisted.dataClasses, ['ordinary', 'private']);
   const attachment = first.attach({ liveSessionId: created.liveSessionId }, context(store));
   await f.frame(1);
@@ -3787,15 +3814,15 @@ test('a delegated response with no audible output is nudged, and audible progres
   for (let second = 0; second < 10; second += 1) await advance(1_000);
   // Amendment B: the result completed at t=0, so ten seconds of silence after it is the defect, not a slow
   // tool. The nudge is the first stage of the obligation, not a rebuild.
-  // #538 R4: the provider announced a model turn, so the 8 s rung holds until that response ends.
-  assert.deepEqual(phases(), ['start'], 'an announced response holds the rung');
+  // C-DEADAIR: an announced response the owner cannot hear buys the rung DEAD_AIR_RESPONSE_GRACE_MS, not seven seconds.
+  assert.deepEqual(phases(), ['start', 'rung'], 'a silent announced response no longer holds the rung for seven seconds');
   assert.equal(fake.sessionsOpened, 1, 'the working session is not rebuilt by a nudge');
   assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'the call is still up');
   // Audible output defers the deadline to 8 s from that frame (amendment A).
   fake.emit({ type: 'audio', pcm, rate: 24_000 });
   for (let attempt = 0; attempt < 6; attempt += 1) await tick();
   for (let second = 0; second < 9; second += 1) await advance(1_000);
-  assert.deepEqual(phases(), ['start', 'clear', 'armed', 'nudged'], 'a reply that went silent again is watched again, by the watchdog that owns a model turn');
+  assert.deepEqual(phases(), ['start', 'rung', 'clear', 'armed', 'nudged'], 'a reply that went silent again is watched again, by the watchdog that owns a model turn');
   assert.equal(fake.sessionsOpened, 1, 'a nudge is not a recovery');
   attachment.close();
 });

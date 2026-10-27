@@ -66,6 +66,8 @@ enum State: String, CaseIterable {
     private var pendingEndReason: NativeLiveEndReason?
     /// #589: the host's terminal code was a voice stop, so presence closes the call as the owner's own.
     private(set) var hostVoiceStop = false
+    /// C-RECOVERY (e): the host's last terminal code, so presence can sound the lost-call cue when recovery gave up.
+    private(set) var hostTerminalCode: String?
     /// Z2: when the one automatic restart after an unrequested capture interruption last ran.
     private var lastAutomaticRestartAt: Date?
     private var muteTask: Task<Void, Never>?
@@ -195,6 +197,7 @@ enum State: String, CaseIterable {
         failure = nil; state = .connecting; muted = false; speaking = false; endRecorded = false
         pendingEndReason = nil
         hostVoiceStop = false
+        hostTerminalCode = nil
         observer?.cancel()
         observer = Task { [weak self, coordinator] in
             await self?.startTask?.value
@@ -216,6 +219,7 @@ enum State: String, CaseIterable {
                         self.state = Self.continuityPresentation(event, muted: self.muted)!
                     }
                 case .terminal(let outcome):
+                    self.hostTerminalCode = outcome.code
                     // #589: the host's voice stop is the owner's own sentence, so this end is presented as
                     // her stop. The app closes it through presence.stop(.voice), never as a session ending.
                     if outcome.code == "voice_stop" { self.noteHostVoiceStop() }

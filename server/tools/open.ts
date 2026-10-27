@@ -9,13 +9,16 @@ export type NativeAction = (typeof OPEN_ACTIONS)[number];
 /** The closed set of ack codes; anything else from the native side is reported as failed. */
 export const NATIVE_ACTION_CODES = ['opened', 'not_allowed', 'not_found', 'failed'] as const;
 export type NativeActionCode = (typeof NATIVE_ACTION_CODES)[number];
+/** A receipt code: a native ack, or the guard code a refused call never sent to the native side. */
+export const OPEN_RECEIPT_CODES = [...NATIVE_ACTION_CODES, 'no_open_intent', 'kind_mismatch'] as const;
+export type OpenReceiptCode = (typeof OPEN_RECEIPT_CODES)[number];
 /** What the model sees; `open_url` is only the internal transport for the two item tools. */
 export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_source', 'open_home', 'open_file', 'open_app']);
 /** The one sentence the model says when an item open is refused or unknown. */
 export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch', string> = {
   not_found: 'I could not find that item. Look it up again and use the handle the result gives you.',
-  not_allowed: 'That link is not one I am allowed to open. Tell him plainly and offer the app home page instead.',
-  no_open_intent: 'He did not ask me to open anything this turn. Nothing is open; say so if asked and never claim it.',
+  not_allowed: 'That link is not one I am allowed to open. Tell him plainly which link failed and offer the app home page instead; if he asks again, call open again with the same handle.',
+  no_open_intent: 'I did not hear an open request in his words. Say plainly that I did not hear one and that nothing is open; when he asks again, call open again with the same handle, never invent a reason.',
   kind_mismatch: 'That item is not the kind he asked for. Say what it actually is and ask before opening it.',
 };
 /** A control frame and its ack, exactly as they cross the local Live socket. */
@@ -57,7 +60,7 @@ export function receiptDetail(action: NativeAction, target: string): string {
 }
 
 /** The one receipt the host writes per action: action, code and a scheme or extension, never the target. */
-export function nativeActionReceipt(action: NativeAction, code: NativeActionCode, detail: string): void {
+export function nativeActionReceipt(action: NativeAction, code: OpenReceiptCode, detail: string): void {
   hostLogEvent({ event: 'native_action', action, code, detail: /^[a-z0-9]{1,16}$/.test(detail) ? detail : 'none' });
 }
 
@@ -101,13 +104,26 @@ const CLAIMED_KINDS: readonly { words: RegExp; kind: OpenKind }[] = [
   { words: /\b(?:file|folder|document on disk)\b/, kind: 'file' },
 ];
 
-/** The owner's own words for the turn an open call answers, so a call is checked against the ask. */
-const ownerTurn = new Map<string, string>();
+/**
+ * The owner's own words for the stretch an open call answers, so a call is checked against the ask: every
+ * finalized turn since the model last spoke, because a provider may finalize one utterance in two turns.
+ */
+const INTENT_TURNS = 3;
+const INTENT_CHARS = 400;
+interface IntentWindow { turns: string[]; modelSpoke: boolean }
+const ownerTurn = new Map<string, IntentWindow>();
 export function noteOwnerWords(runId: string, text: string): void {
-  ownerTurn.set(runId, text.slice(-2000));
+  const window = ownerTurn.get(runId) ?? { turns: [], modelSpoke: false };
+  const turns = window.modelSpoke ? [] : window.turns;
+  ownerTurn.set(runId, { turns: [...turns, text.slice(-INTENT_CHARS)].slice(-INTENT_TURNS), modelSpoke: false });
+}
+/** The model produced output: the next finalized owner turn opens a fresh intent window. */
+export function noteModelOutput(runId: string): void {
+  const window = ownerTurn.get(runId);
+  if (window) window.modelSpoke = true;
 }
 export function ownerWords(runId: string): string {
-  return ownerTurn.get(runId) ?? '';
+  return (ownerTurn.get(runId)?.turns ?? []).join(' ').slice(-INTENT_CHARS);
 }
 
 /** What she said this turn, so the claim check reads her own words and never the owner's. */

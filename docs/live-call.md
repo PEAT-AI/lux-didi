@@ -39,6 +39,10 @@ Admitted paging is host-owned and bounded. Partial coverage remains partial; rec
 
 `LiveSessionOwner` distinguishes pending tool work from an answer the provider owes after a result. Dead-air recovery must not rebuild over an admitted operation within its deadline, and a stuck operation must not suppress recovery forever. `live_heard_silence` now names what owned the silence (`tool`, `provider` or `owner`) instead of a boolean that read `tool` whenever the turn had followed a tool output. `live_dead_air` receipts describe observed timing; they are not proof that audio was audible on the Mac. Use the trace playback evidence described in [diagnostic-store.md](diagnostic-store.md).
 
+### A silent text response never outlives its own end (C-DEADAIR)
+
+A post-tool continuation asks the provider for a response with a bare `response.create`: no output modalities, no instructions, no voice. The delegated backend can answer that request with text and no audio at all (2026-10-27 07:02:59Z: 112 response tokens, `delegation_closed`, `playback_level` at -120 dB, and no `session.output_audio.delta`), and the adapter has no path for a delegated response's text, so the answer is generated and never spoken. The host cannot make the provider speak, so it notices the shape: when a response ends after writing text for an owed answer and no audible frame arrived, `#deliverUnspoken` hands the result to the live session at that end, exactly once, with no ladder wait. `live_response_latency` records the provider's share of the wait separately (owner final words, response announced, first audio). The audible-debt rung stays at 8 s, and a response the owner cannot hear buys it `DEAD_AIR_RESPONSE_GRACE_MS` (500 ms) instead of the seven seconds that made the 2026-10-27 calls wait 15 s.
+
 ## Recovery is not replay
 
 Provider-drop handling is implemented by `#recoverFromDrop` and `#openRecovery` inside `LiveSessionOwner`. Failed resumption can fall back to a fresh open; exhausted recovery settles with `provider_recovery_exhausted`. Neither path grants another research operation or permission to replay an uncertain remote write.
@@ -47,11 +51,19 @@ The public `LiveSessionOwner.recover()` method has a different purpose: it sweep
 
 Native capture recovery is another boundary again. Diagnose native audio, transport, provider and host-lifecycle failures separately rather than attaching one "reconnect" explanation to all of them. A terminal connection-lost state requires an explicit owner reconnect; it is not a successful answer.
 
+The seed a rebuild opens with is built from finished-turn boundaries, with adjacent same-role runs merged, and it is bounded before it reaches an adapter (`fitSeedTurns`): the history owns at most 127 messages, every appended turn (ledger, dropped-line mark, pickup line) is counted, and the whole seed stays inside `SEED_CHAR_LIMIT`, which is under the adapter's 8,192-token proxy. An adapter given a longer history trims its oldest turns instead of refusing the open, and its validation covers the turns it keeps. A locally refused seed is never resent unchanged: the first retry carries the newest half of the conversation and the last attempt is a plain open with only the summary context. The old provider session is closed only after the new one opened, so a refusal leaves the call on the session it already had.
+
+Two silences are not failures. A bare acknowledgement after the model spoke ("okay", "ok", "mhm", "right", "yeah", "thanks", up to three words and never a question) closes the turn at the watchdog instead of spending a rebuild. When recovery does give up, the call settles `provider_recovery_exhausted`, the native app sounds the existing goodbye tone, and the one `live_session_diagnostics` line for the call is written at settle so its `terminalCode` is the code the call actually ended with, never the field default. A rejected journal write is logged as `host_error` with its closed code (`persistence_failed`), not as a bare `Error`.
+
 ## Notes and deletion
 
 Voice can save local memories and owner-requested Lux notes. Composed Lux notes are gated off by default and require staged readback and confirmation; a tool call alone is not a save. Trello card writes have their own board-scoped authority. [Privacy and authority](privacy-and-authority.md) owns these distinctions.
 
 Deleting a local memory can scrub later accepted/rebuilt context, but cannot remove bytes already held by an open provider connection. Stop and restart the call when discarding that current context matters.
+
+## Truth about her own state
+
+The runtime context carries one compact line of live connector state per family, connected or not signed in or needs approval, rebuilt at every call start and after any sign-in, and Naya may deny or claim a sign-in or a capability only from that line or a live tool check. An open loop older than 24 hours, or one a later summary records as finished, is never an opening option, and an opener never credits a past failure to the owner. When the owner says her voice or accent changed she believes him, says she cannot hear her own output and offers to keep going, never that she is still the same. A line from an earlier conversation's summary is spoken only when it answers what he just asked, and the "okay?" tag is limited to once in a few answers. The summary prompt records a failed request, an unanswered ask and a complaint about Naya herself as open loops.
 
 ## Research context rebuild
 

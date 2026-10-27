@@ -4,7 +4,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import {
-  ResearchLedger, companyMetricSubs, configuredSourcesForEndpoints, researchSourcesForEndpoint, runResearch, shapeBlock,
+  ResearchLedger, candidateSubs, companyMetricSubs, configuredSourcesForEndpoints, fallbackSelection, metricWindow, requiredSources,
+  researchSourcesForEndpoint, routedSelection, runResearch, shapeBlock,
   type ConfiguredEndpointStatus, type ResearchDeps, type ResearchSourceLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -24,6 +25,11 @@ const LIVE = JSON.parse(readFileSync(FIXTURE, 'utf8')) as {
   run_metric_query_result: Record<string, unknown>;
   trap_observed: string;
 };
+
+/** The endpoint's own filter operator enum, from the tool list it published (captured 2026-10-27). */
+const PUBLISHED_OPERATORS: readonly string[] = (JSON.parse(readFileSync(join(process.cwd(), 'server/test/fixtures/mongoose-tools-list-literal.json'), 'utf8')) as {
+  data: { name: string; inputSchema: { $defs: Record<string, { properties: { operator: { enum: string[] } } }> } }[];
+}).data.find(tool => tool.name === 'run_metric_query')?.inputSchema.$defs['s57dd195e34']?.properties.operator.enum ?? [];
 
 /** 26 Oct 2026, the morning after the last day the fixture loaded (25 Oct). */
 const NOW = Date.UTC(2026, 9, 26, 9, 0, 0);
@@ -80,7 +86,10 @@ test('a number question runs search_fields then run_metric_query on the data end
   const country = filters.dimensions?.find(entry => entry.fieldId === 'active_users_daily_country');
   const window = filters.dimensions?.find(entry => entry.fieldId === 'active_users_daily_event_date_day');
   assert.ok(country && country.operator === 'equals' && country.values.includes('Indonesia'), 'the country filter');
-  assert.ok(window && window.operator === 'inThePast', 'the date window');
+  assert.ok(window && window.operator === 'inBetween', `the date window is the resolved between filter: ${JSON.stringify(window)}`);
+  assert.ok(PUBLISHED_OPERATORS.includes(window.operator),
+    `the operator the endpoint published: ${window.operator} of ${PUBLISHED_OPERATORS.join(', ')}`);
+  assert.deepEqual(window.values, ['2026-10-25', '2026-10-25'], 'yesterday, as the inclusive day the ask named');
   assert.match(JSON.stringify(reply['findings']), /2026-10-25/u, 'the spoken result carries the latest loaded day');
 });
 
@@ -96,7 +105,9 @@ test('an undated count is refused with count_needs_date_window, never dispatched
     'the undated all-time sum never reaches the endpoint');
   const spoken = JSON.stringify(reply);
   assert.match(spoken, /count_needs_date_window/u, `the closed code: ${spoken}`);
-  assert.match(spoken, /date window/u, 'and the one-line repair');
+  assert.match(spoken, /ask the owner which window to use/u, 'the repair asks the owner for a window she can express');
+  assert.match(spoken, /last month/u, 'and names the windows she can use');
+  assert.match(spoken, /year to date/u);
 });
 
 test('the count guard refuses an undated metric query at the argument boundary', () => {
@@ -138,4 +149,124 @@ test('a connecting knowledge endpoint leaves data available, and the reverse hol
     endpoint('mongoose-knowledge', 'connected'), endpoint('mongoose-data', 'configured', 'not_signed_in'),
   ]);
   assert.deepEqual(dataDown.map(entry => entry.source), ['data'], 'only data is unreachable');
+});
+
+/**
+ * The count windows, asserted on one fixed `now`: the moment the owner's failed ask ran. The dates are the
+ * inclusive days the data endpoint's `inBetween` filter takes.
+ */
+const WINDOW_NOW = Date.parse('2026-10-27T07:02:00Z');
+
+const CASES: readonly { question: string; start: string; end: string; convention?: string }[] = [
+  { question: 'how many users we had in Indonesia last month', start: '2026-09-01', end: '2026-09-30' },
+  { question: 'how many users in Indonesia in September', start: '2026-09-01', end: '2026-09-30' },
+  { question: 'how many users in Indonesia in September 2026', start: '2026-09-01', end: '2026-09-30' },
+  { question: 'how many users in Indonesia in September 2025', start: '2025-09-01', end: '2025-09-30' },
+  { question: 'how many users in Indonesia in Sept', start: '2026-09-01', end: '2026-09-30' },
+  // `may` and `march` are ordinary English words: a preposition or a year is what makes them a month.
+  { question: 'how many users in Indonesia in May', start: '2026-05-01', end: '2026-05-31' },
+  { question: 'how many users in Indonesia in May 2025', start: '2025-05-01', end: '2025-05-31' },
+  { question: 'how many users in Indonesia in March', start: '2026-03-01', end: '2026-03-31' },
+  // A month with no year that has not begun yet means last year's occurrence.
+  { question: 'how many users in Indonesia in December', start: '2025-12-01', end: '2025-12-31' },
+  { question: 'how many users in Indonesia this month', start: '2026-10-01', end: '2026-10-27' },
+  { question: 'how many users in Indonesia last quarter', start: '2026-07-01', end: '2026-09-30' },
+  { question: 'how many users in Indonesia this quarter', start: '2026-10-01', end: '2026-10-27' },
+  { question: 'how many users in Indonesia in Q1 2026', start: '2026-01-01', end: '2026-03-31' },
+  { question: 'how many users in Indonesia in Q4', start: '2026-10-01', end: '2026-10-27' },
+  { question: 'how many users we had this year', start: '2026-01-01', end: '2026-10-27' },
+  { question: 'how many users we had year to date', start: '2026-01-01', end: '2026-10-27' },
+  { question: 'how many users we had last year', start: '2025-01-01', end: '2025-12-31' },
+  { question: 'how many users we had in 2025', start: '2025-01-01', end: '2025-12-31' },
+  // The month convention, stated where the window is asserted: N months back, same day-of-month, ending today.
+  { question: 'how many users in Indonesia last 3 months', start: '2026-07-27', end: '2026-10-27', convention: 'last N months ends today and starts the same day-of-month N months back' },
+  { question: 'how many users in Indonesia last 30 days', start: '2026-09-28', end: '2026-10-27', convention: 'last N days ends today and starts N-1 days back' },
+  { question: 'how many users in Indonesia today', start: '2026-10-27', end: '2026-10-27' },
+  { question: 'how many users in Indonesia yesterday', start: '2026-10-26', end: '2026-10-26' },
+  { question: 'how many users in Indonesia this week', start: '2026-10-26', end: '2026-10-27' },
+  { question: 'how many users in Indonesia last week', start: '2026-10-19', end: '2026-10-25' },
+];
+
+for (const item of CASES) {
+  test(`the window of "${item.question}" is ${item.start}..${item.end}${item.convention === undefined ? '' : ` (${item.convention})`}`, () => {
+    assert.deepEqual(metricWindow(item.question, WINDOW_NOW), { start: item.start, end: item.end });
+  });
+}
+
+test('a count with no readable window resolves to nothing, so the count is refused', () => {
+  assert.equal(metricWindow('how many users in Indonesia', WINDOW_NOW), undefined);
+  assert.equal(metricWindow('how many users in Indonesia ever', WINDOW_NOW), undefined);
+  assert.equal(metricWindow('how many users in Indonesia all time', WINDOW_NOW), undefined);
+});
+
+test('an ambiguous month word that names no month resolves to no window, so the ask is refused', () => {
+  // At base both asks were refused; a confident May or March here would be a number nobody asked for.
+  assert.equal(metricWindow('how many users may we have in Indonesia', WINDOW_NOW), undefined);
+  assert.equal(metricWindow('how many users march through onboarding in Indonesia', WINDOW_NOW), undefined);
+  assert.deepEqual(companyMetricSubs('active users Indonesia', 'how many users may we have in Indonesia', WINDOW_NOW),
+    { refusal: 'count_needs_date_window' });
+});
+
+test('an out-of-range day count is no window, never a silent read of today', () => {
+  assert.equal(metricWindow('how many users in Indonesia last 400 days', WINDOW_NOW), undefined);
+  assert.equal(metricWindow('how many users in Indonesia last 0 days', WINDOW_NOW), undefined);
+});
+
+test('the last month count is the published inBetween filter the live fixture carries', () => {
+  const subs = companyMetricSubs('active users Indonesia last month', 'how many users we had in Indonesia last month', WINDOW_NOW);
+  assert.ok('subs' in subs, 'the count is dispatched');
+  const metric = subs.subs.find(call => call.name === 'run_metric_query');
+  const config = (metric?.args['queryConfig'] ?? {}) as Record<string, unknown>;
+  const filters = (config['filters'] ?? {}) as { dimensions?: { fieldId: string; operator: string; values: unknown[] }[]; type?: string };
+  assert.equal(filters.type, 'and', 'the fixture filter shape');
+  const country = filters.dimensions?.find(entry => entry.fieldId === 'active_users_daily_country');
+  assert.deepEqual(country, { fieldId: 'active_users_daily_country', operator: 'equals', values: ['Indonesia'] });
+  const window = filters.dimensions?.find(entry => entry.fieldId === 'active_users_daily_event_date_day');
+  assert.deepEqual(window, {
+    fieldId: 'active_users_daily_event_date_day', operator: 'inBetween', values: ['2026-09-01', '2026-09-30'],
+  }, 'the September window, in the shape the endpoint published');
+});
+
+test('an undated count is the closed refusal, and nothing reaches the endpoint', () => {
+  const refused = companyMetricSubs('active users Indonesia', 'how many users in Indonesia without a date', WINDOW_NOW);
+  assert.deepEqual(refused, { refusal: 'count_needs_date_window' });
+});
+
+test('a count question naming users is routed to the data endpoint', () => {
+  const question = 'how many users we had in Indonesia last month';
+  assert.deepEqual(requiredSources(question), ['data'], 'the data route, not the knowledge default');
+  const configured: readonly SourceKind[] = ['knowledge', 'data'];
+  const selection = routedSelection(question, configured, WINDOW_NOW);
+  assert.ok(selection, 'the route is deterministic');
+  assert.ok(selection.actions.some(action => action.kind === 'company_metric'), `the count candidate: ${JSON.stringify(selection.actions)}`);
+  const fallback = fallbackSelection(question, configured, WINDOW_NOW);
+  assert.ok(fallback.actions.some(action => action.kind === 'company_metric'), 'and the keyword fallback offers it too');
+});
+
+test('the contract\'s own phrasing, "users in Indonesia last month", reaches the data route and dispatches September', () => {
+  // The word "users" plus a window the resolver reads is a count ask, whether or not it says "how many".
+  for (const question of ['users in Indonesia last month', "what's the number of users in Indonesia last month"]) {
+    assert.deepEqual(requiredSources(question), ['data'], `the data route: ${question}`);
+    const configured: readonly SourceKind[] = ['knowledge', 'data'];
+    const selection = routedSelection(question, configured, WINDOW_NOW);
+    assert.ok(selection?.actions.some(action => action.kind === 'company_metric'), `the count candidate: ${question}`);
+    assert.ok(fallbackSelection(question, configured, WINDOW_NOW).actions
+      .some(action => action.kind === 'company_metric'), `and the keyword fallback: ${question}`);
+  }
+  const subs = candidateSubs('company_metric', {
+    question: 'users in Indonesia last month', topic: 'users Indonesia last month', configured: ['data'],
+    evidence: new Map(), nowMs: WINDOW_NOW,
+  });
+  assert.deepEqual(subs.map(call => call.name), ['search_fields', 'run_metric_query'], 'the two calls the endpoint answers');
+  const config = (subs[1]?.args['queryConfig'] ?? {}) as { filters?: { dimensions?: { fieldId: string; operator: string; values: unknown[] }[] } };
+  const window = config.filters?.dimensions?.find(entry => entry.fieldId === 'active_users_daily_event_date_day');
+  assert.deepEqual(window, {
+    fieldId: 'active_users_daily_event_date_day', operator: 'inBetween', values: ['2026-09-01', '2026-09-30'],
+  }, 'the September window the ask named');
+});
+
+test('a knowledge ask about numbers still reads knowledge, which the count route does not claim', () => {
+  assert.deepEqual(requiredSources('what did we decide about the user growth plan'), []);
+  assert.ok(fallbackSelection('what did we decide about the user growth plan', ['knowledge']).actions
+    .some(action => action.kind === 'knowledge_search'));
 });

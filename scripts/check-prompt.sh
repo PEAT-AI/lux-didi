@@ -32,7 +32,7 @@ cp server/tools/vault-write.ts "$out/source/tools/"
 # W7: the Trello tool descriptions are voice content too.
 cp server/tools/trello.ts "$out/source/tools/"
 cp server/tools/redact.ts "$out/source/tools/"
-cp server/tools/declarations.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts server/tools/open-handles.ts server/tools/types.ts server/tools/history.ts server/tools/diagnostic-input.ts server/tools/canonical.ts server/tools/received-body.ts server/tools/remember.ts server/tools/calendar-window.ts server/tools/web-search.ts server/tools/chat-intent.ts "$out/source/tools/"
+cp server/tools/declarations.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts server/tools/open-handles.ts server/tools/open.ts server/tools/types.ts server/tools/history.ts server/tools/diagnostic-input.ts server/tools/canonical.ts server/tools/received-body.ts server/tools/remember.ts server/tools/calendar-window.ts server/tools/web-search.ts server/tools/chat-intent.ts "$out/source/tools/"
 cp server/prompt/*.ts "$out/source/prompt/"
 # W15: the persona, the tools and the connectors resolve people through the host snapshot, so the
 # staging tree carries that module and its import closure too.
@@ -81,6 +81,7 @@ const dist = process.argv[2];
 const persona = await import(pathToFileURL(`${dist}/prompt/live-persona.js`).href);
 const backend = await import(pathToFileURL(`${dist}/prompt/backend-procedure.js`).href);
 const research = await import(pathToFileURL(`${dist}/tools/research.js`).href);
+const open = await import(pathToFileURL(`${dist}/tools/open.js`).href);
 const voice = persona.NAYA_VOICE_TOOLS;
 const procedure = backend.NAYA_BACKEND_PROCEDURE;
 const everything = [persona.NAYA_LIVE_BASE, voice, procedure, persona.NAYA_TOOLS, JSON.stringify(research.RESEARCH)].join('\n');
@@ -109,8 +110,43 @@ for (const rule of [
 ]) assert.ok(procedure.includes(rule), `backend rule missing: ${rule}`);
 // The no-filler rule and the eight-line reply bound stay as they were.
 assert.ok(persona.NAYA_LIVE_BASE.includes('Never fill the silence while a lookup runs'), 'the no-filler rule is kept');
+// C-OPEN: a failed open is never given an invented reason, and the guidance names the real refusal.
+assert.ok(persona.NAYA_OPEN_SURFACE.includes('Never invent a failed-open reason'), 'the open surface bans an invented reason');
+assert.ok(persona.NAYA_OPEN_SURFACE.includes('retry once with the same handle'), 'the open surface retries on a repeated ask');
+for (const code of ['no_open_intent', 'not_allowed']) {
+  assert.ok(open.OPEN_GUIDANCE[code].includes('same handle'), `the ${code} guidance asks for the same handle on a retry`);
+}
+assert.equal(open.OPEN_GUIDANCE.no_open_intent.includes('did not hear an open request'), true, 'no_open_intent says she did not hear one');
 assert.ok(voice.includes('never use a stock waiting line'), 'the stock waiting line ban is kept');
 assert.equal(research.RESEARCH.mailLines, 8); assert.equal(research.RESEARCH.chatLines, 8);
 assert.equal(research.RESEARCH.moreAvailableNote, 'Partial: answer now, offer the rest; read on only if asked.');
 console.log(JSON.stringify({ case: 'partial_result_rules', removed: 6, voiceRules: 8, backendRules: 3 }));
+NODE
+# W4 (truth about her own state): the connector line is host-computed, and the persona is bound to it, so a
+# sign-in is never claimed or denied from guesswork. The voice rules for a changed voice and the "okay?" tag
+# are pinned here, beside the ceiling they are paid for.
+node --input-type=module - "$out/dist" <<'NODE'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const dist = process.argv[2];
+const persona = await import(pathToFileURL(`${dist}/prompt/live-persona.js`).href);
+const runtime = await import(pathToFileURL(`${dist}/prompt/runtime-context.js`).href);
+const state = runtime.buildRuntimeContext({ now: new Date('2026-10-27T12:00:00Z'), timeZone: 'UTC',
+  connected: ['company knowledge'],
+  connectors: [{ connector: 'mongoose', state: 'connected' }, { connector: 'google', state: 'error', reasonCode: 'not_signed_in' }] });
+assert.match(state, /^Connectors: company knowledge connected; calendar not signed in; mail not signed in\. Never deny or claim a sign-in or a capability without this line or a live tool check\.$/mu,
+  'the runtime line carries the live state and the no-denial rule');
+assert.doesNotMatch(runtime.buildRuntimeContext({ now: new Date('2026-10-27T12:00:00Z'), timeZone: 'UTC', connected: [] }), /^Connectors:/mu,
+  'no connector line without host rows');
+// W4 F7: the bucket comes from the host's own sign-in codes, so a credential that failed identity proof is a
+// sign-in and not plain unavailability; a transport failure stays unavailable.
+for (const reasonCode of ['credential_missing', 'credential-unavailable', 'credential-identity-mismatch', 'credential-identity-unverified', 'identity_mismatch']) {
+  const one = runtime.buildRuntimeContext({ now: new Date('2026-10-27T12:00:00Z'), timeZone: 'UTC', connected: [],
+    connectors: [{ connector: 'mongoose', state: 'error', reasonCode }] });
+  assert.match(one, /^Connectors: company knowledge not signed in\./mu, `host sign-in code classified as a sign-in: ${reasonCode}`);
+}
+for (const rule of ['say you cannot hear your output', 'never say you are unchanged', 'End no answer with "okay?" as a reflex']) {
+  assert.ok(persona.NAYA_VOICE_SURFACE.includes(rule), `the voice surface states the truth rule: ${rule}`);
+}
+console.log(JSON.stringify({ case: 'own_state_truth', connectorLine: true, noDenialRule: true, voiceRules: 3 }));
 NODE

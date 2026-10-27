@@ -139,6 +139,12 @@ const isSafeId = (value: unknown): value is string => typeof value === 'string' 
  */
 const rejectResearchId = (event: string): Record<string, unknown> => ({ event: 'research_id_rejected', kind: event, field: 'researchId' });
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+/** C-PITCH: a fundamental frequency in Hz, or null when the response had no voiced frames. */
+const isSafeHz = (value: unknown): value is number | null =>
+  value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 20 && value <= 2000);
+/** C-PITCH: a measurement ratio (voiced frames over analyzed frames, a pitch over a pitch). */
+const isSafeRatio = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 10000;
 /** C-CONTINUITY R-09: a socket close code, the range the protocol allows, or null before the socket answered. */
 const isSafeCloseCode = (value: unknown): value is number | null =>
   value === null || (Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 65535);
@@ -286,7 +292,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const allowed = ['action', 'code', 'detail', 'event'];
     if (Object.keys(value).sort().join(',') !== allowed.join(',')) return;
     if (typeof value.action !== 'string' || !['open_url', 'open_file', 'open_app'].includes(value.action)) return;
-    if (typeof value.code !== 'string' || !['opened', 'not_allowed', 'not_found', 'failed'].includes(value.code)) return;
+    if (typeof value.code !== 'string' || !['opened', 'not_allowed', 'not_found', 'failed', 'no_open_intent', 'kind_mismatch'].includes(value.code)) return;
     if (typeof value.detail !== 'string' || !/^[a-z0-9]{1,16}$/.test(value.detail)) return;
     return { event: 'native_action', action: value.action, code: value.code, detail: value.detail };
   }
@@ -848,6 +854,26 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.deadAirMs)) return;
     return { event: 'live_dead_air', deadAirMs: value.deadAirMs };
   }
+  if (value.event === 'live_voice_profile') {
+    // C-PITCH: the voice the owner just heard, per response, measured on the output PCM the host already
+    // forwarded to playback: a closed response id, audible milliseconds, the median F0 and its 10th and 90th
+    // percentile, the voiced-frame ratio and the RMS level. Never the audio, never a word of it.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'responseId', 'audibleMs', 'f0Hz', 'f0P10Hz', 'f0P90Hz', 'voicedRatio', 'rmsDbfs'])) return;
+    if (!isSafeId(value.liveSessionId) || !isSafeId(value.responseId)) return;
+    if (!isSafeCount(value.generation) || !isSafeCount(value.audibleMs)) return;
+    if (!isSafeHz(value.f0Hz) || !isSafeHz(value.f0P10Hz) || !isSafeHz(value.f0P90Hz)) return;
+    if (!isSafeRatio(value.voicedRatio)) return;
+    if (typeof value.rmsDbfs !== 'number' || !Number.isFinite(value.rmsDbfs) || value.rmsDbfs > 0 || value.rmsDbfs < -200) return;
+    return { event: 'live_voice_profile', liveSessionId: value.liveSessionId, generation: value.generation, responseId: value.responseId, audibleMs: value.audibleMs, f0Hz: value.f0Hz, f0P10Hz: value.f0P10Hz, f0P90Hz: value.f0P90Hz, voicedRatio: value.voicedRatio, rmsDbfs: value.rmsDbfs };
+  }
+  if (value.event === 'live_voice_shift') {
+    // C-PITCH: this response's median F0 sits beyond the configured ratio from the session's running median.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'responseId', 'ratio', 'medianHz', 'sessionMedianHz'])) return;
+    if (!isSafeId(value.liveSessionId) || !isSafeId(value.responseId)) return;
+    if (!isSafeCount(value.generation)) return;
+    if (!isSafeRatio(value.ratio) || !isSafeHz(value.medianHz) || !isSafeHz(value.sessionMedianHz)) return;
+    return { event: 'live_voice_shift', liveSessionId: value.liveSessionId, generation: value.generation, responseId: value.responseId, ratio: value.ratio, medianHz: value.medianHz, sessionMedianHz: value.sessionMedianHz };
+  }
   if (value.event === 'live_heard_silence') {
     // L-04/R7: the silence the owner heard, from the end of the last audible frame to the next model audio, with
     // what really owned it: a tool call, the provider generating, or the owner. A duration and one word, never
@@ -855,6 +881,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.keys(value).sort().join(',') !== ['event', 'ms', 'silence'].sort().join(',')) return;
     if (!isSafeCount(value.ms) || !SILENCE_OWNERS.includes(String(value.silence))) return;
     return { event: 'live_heard_silence', ms: value.ms, silence: value.silence as string };
+  }
+  if (value.event === 'live_response_latency') {
+    // C-DEADAIR: the provider's share of a wait, kept apart from the host's dead-air clock. Three durations and
+    // the session they belong to, never any turn content.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'msSinceOwnerFinal', 'msSinceResponseCreated', 'msSinceToolOutput'])) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
+    if (!isSafeCount(value.generation) || !isSafeCount(value.msSinceOwnerFinal)) return;
+    if (!(value.msSinceResponseCreated === null || isSafeCount(value.msSinceResponseCreated))) return;
+    if (!(value.msSinceToolOutput === null || isSafeCount(value.msSinceToolOutput))) return;
+    return { event: 'live_response_latency', liveSessionId: value.liveSessionId, generation: value.generation,
+      msSinceOwnerFinal: value.msSinceOwnerFinal, msSinceResponseCreated: value.msSinceResponseCreated, msSinceToolOutput: value.msSinceToolOutput };
   }
   if (value.event === 'live_turn_open') {
     // #303: the provider streamed model audio and then went quiet without a turnComplete.
@@ -1491,8 +1528,11 @@ export class HostLog {
     } finally { clearLogContext(); }
   }
   error(error: unknown): void {
-    // Class is a closed token. Exception messages and stacks are deliberately never read.
-    this.append({ event: 'host_error', class: error instanceof ConfigError ? 'ConfigError' : 'Error', ...(error instanceof ConfigError ? { code: error.code } : {}) });
+    // Class is a closed token, and so is a code when the error carries one: a rejected live write names its own
+    // class instead of surfacing as a bare Error. Exception messages and stacks are deliberately never read.
+    const code = error instanceof ConfigError ? error.code : (error as { code?: unknown } | null | undefined)?.code;
+    const closed = typeof code === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(code) ? { code } : {};
+    this.append({ event: 'host_error', class: error instanceof ConfigError ? 'ConfigError' : 'Error', ...closed });
   }
   private append(event: Record<string, unknown>): void {
     // C-LOG-ENVELOPE: one envelope, written here and nowhere else. A field the event already carries keeps

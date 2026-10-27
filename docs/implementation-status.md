@@ -17,7 +17,7 @@ This page describes the first stable release merged by [PR #683](https://github.
 ## What the stable-release train changed
 
 - Mongoose sign-in and renewal are handled per endpoint, rather than treating one token as authority for every resource (`server/host/mongoose-login.ts`, `server/host/mongoose-auth.ts`).
-- Open-in-Chrome and Drive lookup paths provide a way to act on a found result. Drive remains a separately configured and consented Google family, not an implied part of Gmail access.
+- Open-in-Chrome and Drive lookup paths provide a way to act on a found result. An open runs through the intent guard in `server/tools/open.ts` and the allowlist in `server/tools/open-handles.ts`. Drive remains a separately configured and consented Google family, not an implied part of Gmail access.
 - Mattermost person and conversation capabilities are used when the child advertises and the connection grants them. Missing capabilities remain visible limitations.
 - Voice recovery includes provider-drop handling in `LiveSessionOwner` (`server/live/index.ts`). Its public `recover()` method instead sweeps interrupted durable sessions at host startup. A release containing recovery code is not a guarantee that a network or provider cannot fail.
 - Trello is a host-owned board gateway, not an unrestricted write connector.

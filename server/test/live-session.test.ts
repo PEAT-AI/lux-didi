@@ -5687,6 +5687,7 @@ test('mail body integration: body consumption preserves simultaneous calendar ev
   assert.equal(seen.size, 12); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1); assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 1);
 });
 
+const dbg2 = (tag: string, r: Record<string, unknown>): void => { process.stderr.write(`DBG2 ${tag} ${JSON.stringify({ keys: Object.keys(r).sort(), slices: Array.isArray(r['bodySlices']) ? (r['bodySlices'] as { text: string; offset: number }[]).map(s => [s.offset, s.text.length]) : 'none', pc: r['pageCursor'] ?? 'none', pr: r['pagesRemaining'] ?? 'none' })}\n`); };
 test('Lux body integration: exact received opaque content reaches its retained tail without another get', async t => {
   const raw = JSON.stringify({ id: 42, title: 'Synthetic Lux body', content: 'Lux received evidence. '.repeat(1400) + 'LUX_LOCAL_TAIL' });
   const h = await harness(t, { tools: true, knowledgeContent: raw }); await attached(h, 'lux-local-tail');
@@ -5697,6 +5698,7 @@ test('Lux body integration: exact received opaque content reaches its retained t
   await settleLiveTool(h, 'lux-start', 'research', { action: 'start', question: 'Read full insight 42', topic: 'Read full insight 42', lookups: [{ source: 'knowledge', query: 'Read full insight 42' }] });
   const researchId = last()['researchId']; let collected = '', count = 0;
   for (;;) {
+    dbg2('632', last());
     const slices = last()['bodySlices'] as { source: string; text: string; offset: number; upstreamComplete: unknown; upstreamOmitted: unknown }[]; assert(Array.isArray(slices) && slices.length, JSON.stringify({ count, calls: h.calls, response: last() }).slice(0, 1800));
     for (const slice of slices) { assert.equal(slice.source, 'knowledge'); assert.equal(slice.offset, collected.length); assert.equal(slice.upstreamComplete, 'unknown'); assert.equal(slice.upstreamOmitted, 'unknown'); collected += slice.text; }
     assert.equal(last()['bodyProjection'], 'preview'); assert(JSON.stringify(last()).length <= 24000);

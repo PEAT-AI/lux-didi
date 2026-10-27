@@ -141,13 +141,17 @@ test('research_subcall keeps a real error code but drops a free-text one', () =>
   assert.equal(safeEvent({ ...base, errorCode: 'invalid_arguments' })?.errorCode, 'invalid_arguments');
   assert.equal(safeEvent({ ...base, errorCode: 'has space' }), undefined);
 });
-const RECOVERY = { event: 'live_recovery', path: 'fresh_seeded', attempt: 1, code: 'opened', closeCode: null, reason: 'transport_error', seedTurns: 3, seedChars: 120, msSinceDrop: 21_000, liveSessionId: LIVE_SESSION_ID, generation: 4 };
+// C-CONTINUITY R-02/R-09: the recovery line carries the cause its outcome earned and the socket's own close
+// code and sanitized reason beside the seed size.
+const RECOVERY = { event: 'live_recovery', path: 'fresh_seeded', attempt: 1, code: 'opened', cause: 'network', closeCode: 1006, closeReason: 'upstream reset', reason: 'transport_error', seedTurns: 3, seedChars: 120, msSinceDrop: 21_000, liveSessionId: LIVE_SESSION_ID, generation: 4 };
 test('live_recovery keeps a closed metadata-only shape', () => {
   assert.deepEqual(safeEvent(RECOVERY), RECOVERY);
   assert.equal(safeEvent({ ...RECOVERY, extra: 1 }), undefined, 'an extra key fails closed');
   assert.equal(safeEvent({ ...RECOVERY, path: 'carrier_pigeon' }), undefined, 'an unknown path is refused');
   assert.equal(safeEvent({ ...RECOVERY, closeCode: 70000 }), undefined, 'an out-of-range close code is refused');
   assert.equal(safeEvent({ ...RECOVERY, seedChars: -1 }), undefined, 'a negative seed size is refused');
+  assert.equal(safeEvent({ ...RECOVERY, cause: 'the-network-was-bad' }), undefined, 'the cause stays a closed set');
+  assert.equal(safeEvent({ ...RECOVERY, closeReason: 'line one\nline two' }), undefined, 'a multi-line close reason is refused');
   assert.equal(safeEvent({ ...RECOVERY, liveSessionId: 'nope' }), undefined, 'a recovery line names a real session (#527)');
 });
 test('the timing waterfall lines keep closed, count-only shapes (#451)', () => {

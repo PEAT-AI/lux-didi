@@ -576,3 +576,36 @@ test('C-RECOVERY (e): an exhausted recovery logs the real terminal code in live_
   assert.ok(line !== undefined, `the diagnostics line is written once for the call: ${diagnosticLines.length}`);
   assert.equal(line!['terminalCode'], 'provider_recovery_exhausted', 'and it carries the settled terminal code');
 });
+
+// F1 (review): the ladder is bounded by its own rung count, not by the refusal counter. An open whose socket dies
+// before ready is not a refusal, so it must still advance to the plain summary open and then end the call typed.
+test('C-RECOVERY (b)/F1: an open that dies before ready still advances the ladder and then exhausts', async t => {
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: 'recovery-died-before-ready', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  (await sessionAt(h, 0))!.live();
+  await attachment.ready;
+  h.port.emit({ type: 'inputTranscription', text: 'what is on my plate', finished: true, sequence: 0 } as LiveVoiceEvent);
+  await flush();
+  h.port.refuse(new TypeError('synthetic_open_refused'));
+  h.port.sessions[0]!.die();
+  await flush();
+  for (let round = 0; round < 4; round += 1) await h.advance(2_000);
+  const smaller = await sessionAt(h, 1);
+  assert.ok(smaller !== undefined, `the smaller retry opened a session: ${h.port.opens}`);
+  smaller!.die();
+  await flush();
+  for (let round = 0; round < 4; round += 1) await h.advance(2_000);
+  const plain = await sessionAt(h, 2);
+  assert.ok(plain !== undefined, `the plain summary open was reached: ${h.port.opens}`);
+  plain!.die();
+  await flush();
+  for (let round = 0; round < 8; round += 1) await h.advance(2_000);
+  const end = await ended(t, attachment as never);
+  assert.deepEqual(end.terminal, { state: 'failed', code: 'provider_recovery_exhausted' },
+    'a dead socket never freezes the ladder, and the call ends provider_recovery_exhausted, not resume_failed');
+  assert.deepEqual((h.port.requests.at(-1)!.history ?? []), [], 'the last attempt is the plain summary open');
+  const codes = h.receipts.filter(entry => entry['event'] === 'live_recovery').map(entry => entry['code']);
+  assert.ok(codes.includes('open_refused'), `a refused open is still a refusal: ${codes}`);
+  assert.ok(codes.includes('open_failed'), `a socket that died before ready is a failure, not a refusal: ${codes}`);
+});

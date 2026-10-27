@@ -3092,19 +3092,23 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       const turns = from.turns.slice(-Math.max(1, Math.ceil(from.turns.length / 2)));
       return { turns, chars: turns.reduce((sum, turn) => sum + turn.text.length, 0) };
     };
+    // The attempt that brought the ladder here was refused on its own path, so that is a true receipt.
+    this.#logRecovery(handle, path, 'open_refused', closeCode, reason, seed);
     let attempt = seed;
-    for (;;) {
-      this.#logRecovery(handle, path, 'open_refused', closeCode, reason, attempt);
-      if ((handle.recoveryRefusals ?? 0) > 2) return exhausted();
+    // C-RECOVERY (b): the ladder is bounded by its own rung count, never by a counter that only a synchronous
+    // refusal moves: an open whose socket dies before its ready event is not a refusal, and it must still advance
+    // to the plain summary open and then to the typed end instead of stalling the loop.
+    for (let rung = 1; rung <= 2; rung += 1) {
       await this.#delay(RECOVERY_REFUSED_BACKOFF_MS);
       if (this.#settled(handle)) return false;
       // The call's own budget still bounds the retry: an exhausted session or idle window is not a provider refusal.
       const now = this.#now();
       const left = handle.deadlineAt - now, idleLeft = handle.idleAt - now;
       if (left <= 0 || idleLeft <= 0 || remaining <= 0) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
-      attempt = (handle.recoveryRefusals ?? 0) >= 2
-        ? this.#seedWithLedger(handle.liveSessionId, handle.inputClass, handle.researchLedgerLog.text(), false, false)
-        : shrink(attempt);
+      attempt = rung === 1
+        ? shrink(attempt)
+        : this.#seedWithLedger(handle.liveSessionId, handle.inputClass, handle.researchLedgerLog.text(), false, false);
+      handle.recoveryRefused = false;
       const opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, Math.min(remaining, left), idleLeft, window, attempt, reason);
       if (opened) {
         handle.recoveryRefusals = 0;
@@ -3113,7 +3117,10 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         return true;
       }
       if (this.#settled(handle)) return false;
+      // The receipt names what actually ended the attempt, so a dead socket is never written up as a refusal.
+      this.#logRecovery(handle, 'fresh_seeded', handle.recoveryRefused ? 'open_refused' : 'open_failed', closeCode, reason, attempt);
     }
+    return exhausted();
   }
 
   /**

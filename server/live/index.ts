@@ -589,8 +589,6 @@ interface ActiveSession {
   responseCreatedAt?: number | undefined;
   /** C-DEADAIR: when the debt rung last named this silence, so the sliding watchdog does not name it a second time. */
   deadAirNudgedAt?: number | undefined;
-  /** C-DEADAIR: when the first rung spoke a holding line for this silence, so it is said once. */
-  holdingLineAt?: number | undefined;
   /** D6: an open model turn holds SPEAKING until turnComplete or 1,500 ms of audible silence. */
   speakingHoldTimer?: ReturnType<JobTimer> | undefined;
   sessionTimer: ReturnType<JobTimer> | undefined; callTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
@@ -2107,7 +2105,6 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     handle.responseInProgress = false;
     handle.responseCreatedAt = undefined;
     handle.deadAirNudgedAt = undefined;
-    handle.holdingLineAt = undefined;
     // One silence, one clock: the sliding watchdog stands down for the silence the debt clock now owns.
     this.#cancelWatchdog(handle);
     this.#noteDebt(handle, 'start', reason);
@@ -2219,6 +2216,18 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       this.#scheduleDebt(handle, DEAD_AIR_RESPONSE_GRACE_MS, 'rung');
       return;
     }
+    // C-DEADAIR: the four second rung names the silence and starts the rescue, and the rescue itself lands on the
+    // next pass. The provider was asked for the answer already; a rung that injected the result at four seconds put a
+    // second copy of it in front of a model that was still writing the first.
+    if (step === 'rung' && handle.deadAirNudgedAt === undefined) {
+      handle.deadAirNudgedAt = this.#now();
+      this.#noteDebt(handle, 'rung', 'dead_air');
+      hostLogEvent({ event: 'live_dead_air', msSinceTool: turnAgeMs,
+        msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
+      hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: AUDIBLE_DEBT_RUNG_MS });
+      this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rung');
+      return;
+    }
     this.#noteDebt(handle, 'rung', step === 'rung' ? 'dead_air' : 'rebuild');
     if (step === 'rebuild') { await this.#watchdogRecover(handle, generation, turnAgeMs); return; }
     // The receipts the dead-air nudge has always written, whichever provider answers the rung.
@@ -2243,15 +2252,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // unspoken result goes to the live session first and only a model still mute seven seconds later is rebuilt, so
     // the answer the owner asked for is not made to wait for two provider recreates.
     if (handle.unspoken !== undefined && handle.unspokenDelivered !== true) {
-      // C-DEADAIR: the first rung is a holding line, not the answer. The provider was already asked for the answer
-      // and may still be writing it, so the four second rung fills the silence in her own persona voice instead of
-      // injecting a second copy of the result; the result itself goes out if she is still silent on the next rung.
-      if (handle.holdingLineAt === undefined && typeof handle.session.sendCommentary === 'function') {
-        let spoken = false;
-        try { spoken = handle.session.sendCommentary({ text: RESEARCH.stillSearchingLine }) !== false; } catch { spoken = false; }
-        if (spoken) handle.holdingLineAt = this.#now();
-      }
-      if (handle.holdingLineAt === undefined && !(await this.#deliverUnspoken(handle))) return;
+      if (!(await this.#deliverUnspoken(handle))) return;
       this.#scheduleDebt(handle, RESPONSE_WATCHDOG_RECOVERY_MS, 'rebuild');
       return;
     }

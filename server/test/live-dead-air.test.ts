@@ -51,6 +51,9 @@ const ownerFinal = (text: string) => portEvent({ type: 'inputTranscription', tex
 const toolCall = (id: string) => portEvent({ type: 'toolCall', calls: [{ id, name: 'search_knowledge', args: { query: 'bridge', limit: 1 } }] });
 const audible = () => portEvent({ type: 'audio', pcm: new Uint8Array(4_800), rate: 24_000, audible: true, rmsDbfs: -14 });
 
+/** The dead-air rungs this call has recorded, in order. */
+const rungReceipts = (live: DeadAir): Record<string, unknown>[] => live.receipts.filter(record => record.event === 'live_dead_air_nudge');
+
 interface DeadAir {
   owner: LiveSessionOwner; fake: FakeLiveVoice; receipts: Record<string, unknown>[]; scheduler: DeadlineClock;
   emit(event: FakeLiveVoiceEvent): Promise<void>; advance(ms: number): Promise<void>; sentTexts: number;
@@ -83,17 +86,20 @@ async function openCall(t: TestContext): Promise<DeadAir> {
   };
 }
 
-test('C-DEADAIR: the first rung lands at 4 s of owner-heard silence and delivers the result the model never spoke', async t => {
+test('C-DEADAIR: the first rung lands at 4 s of owner-heard silence and starts the rescue', async t => {
   const live = await openCall(t);
   await live.emit(ownerFinal('What did we decide about the bridge?'));
   await live.emit(toolCall('d1'));
   assert.equal(live.fake.toolResponses.length, 1, 'the lookup answered before the wait starts');
   await live.advance(AUDIBLE_DEBT_RUNG_MS - 500);
-  assert.equal(live.fake.texts.length, live.sentTexts, 'nothing is injected under four seconds of owner-heard silence');
+  assert.equal(rungReceipts(live).length, 0, 'no rung under four seconds of owner-heard silence');
   await live.advance(1_000);
-  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the first rung delivers the held result');
-  const nudge = live.receipts.find(record => record.event === 'live_dead_air_nudge');
-  assert.equal(nudge?.['elapsedMs'], AUDIBLE_DEBT_RUNG_MS, 'the rung names the four second base, not the eight second one');
+  const rungs = rungReceipts(live);
+  assert.equal(rungs.length, 1, 'the first rung lands at four seconds');
+  assert.equal(rungs[0]?.['elapsedMs'], AUDIBLE_DEBT_RUNG_MS, 'the rung names the four second base, not the eight second one');
+  assert.equal(live.fake.texts.length, live.sentTexts, 'the rung never injects a second copy of the result at four seconds');
+  await live.advance(RESPONSE_WATCHDOG_RECOVERY_MS);
+  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the next rung hands over the result the model never spoke');
 });
 
 test('C-DEADAIR: a response that produced no audio buys the rung one short grace, never seven seconds', async t => {
@@ -103,11 +109,12 @@ test('C-DEADAIR: a response that produced no audio buys the rung one short grace
   // The 07:02:59Z shape: the provider announced a response and wrote text the owner never heard.
   await live.emit(portEvent({ type: 'modelTurnStarted' }));
   await live.advance(AUDIBLE_DEBT_RUNG_MS - 500);
-  assert.equal(live.fake.texts.length, live.sentTexts, 'the rung is not early');
+  assert.equal(rungReceipts(live).length, 0, 'the rung is not early');
   await live.advance(1_200);
-  assert.equal(live.fake.texts.length, live.sentTexts + 1, 'a silent in-flight response does not hold the answer for another seven seconds');
+  assert.equal(rungReceipts(live).length, 1, 'a silent in-flight response does not hold the rung for seven seconds');
   await live.advance(RESPONSE_WATCHDOG_RECOVERY_MS);
   assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the result is spoken once');
+  assert.equal(rungReceipts(live).length, 1, 'one rung per silence');
 });
 
 test('C-DEADAIR: a response the owner can hear clears the debt, so the rung never speaks over an answer', async t => {

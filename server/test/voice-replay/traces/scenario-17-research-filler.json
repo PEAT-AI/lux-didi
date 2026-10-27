@@ -64,7 +64,7 @@
             "type": "function_call",
             "call_id": "call_1",
             "name": "research",
-            "arguments": "{\"action\": \"start\", \"question\": \"synthetic question\", \"cursor\": \"\", \"lookups\": [{\"source\": \"knowledge\", \"query\": \"synthetic question\", \"history\": {}, \"mail\": {}}]}"
+            "arguments": "{\"action\": \"start\", \"question\": \"synthetic question\", \"topic\": \"synthetic topic\", \"cursor\": \"\", \"lookups\": [{\"source\": \"knowledge\", \"query\": \"synthetic question\", \"history\": {}, \"mail\": {}}]}"
           }
         }
       }

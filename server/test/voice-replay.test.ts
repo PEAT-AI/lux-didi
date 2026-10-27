@@ -306,7 +306,8 @@ test('scenario 17: a research start filled with the voice model\'s filler values
   const events = replay.hostEvents.map(entry => String(entry['event']));
   const rejected = replay.hostEvents.filter(entry => entry['event'] === 'tool_arguments_rejected');
   assert.deepEqual(rejected, [], `a filler value was read as an invalid argument shape: ${JSON.stringify(rejected)}`);
-  assert.equal(events.includes('research_refused'), false, `the filled-in start was refused instead of routed: ${JSON.stringify(events)}`);
+  const refused = replay.hostEvents.find(entry => entry['event'] === 'research_refused');
+  assert.equal(refused, undefined, `the filled-in start was refused instead of routed: ${JSON.stringify(refused)}`);
   const routed = replay.hostEvents.find(entry => entry['event'] === 'research_routed');
   assert.ok(routed, `the run never routed to a source: ${JSON.stringify(events)}`);
   // C-FILLER: every property the model filled in and did not use is named, so the log says what was dropped.

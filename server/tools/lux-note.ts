@@ -56,8 +56,26 @@ const APPEND = /^(?:naya\s+)?(?:please\s+)?(?:add|append|update|change|overwrite
 const REPORTED = /^(?:say|says|according to)\b|\b(?:he|she|they|it|someone|rob|you|the [a-z]+)\s+(?:said|says|say|asked|asks|wrote|writes|mentioned|mentions|told|tells|wants|asked me)\b/u;
 const QUESTION = /\b(?:how (?:do|can|should|would) (?:i|you)|what(?:'s| is) the (?:way|phrase|command)|can you tell me how)\b/u;
 const CONDITIONAL = /^(?:if|when|whenever|unless|should|in case)\b/u;
-const NEGATION = /\b(?:don(?:'| )?t|cannot|can(?:'| )?t|do not|never|not|no)\b/u;
+/** W1-R4: a negation is a word, contractions included, and it governs across a short framing chain. */
+const NEGATION = /\b(?:(?:don|didn|doesn|won|wouldn|couldn|shouldn|isn|aren|wasn|weren|hasn|haven|ain|can)(?:'| )?t|cannot|not|never|no)\b/u;
+/** A token that a split contraction ends in: noteKey turns "don't" into "don t". */
+const CONTRACTION_TAIL = new Set(['don', 'didn', 'doesn', 'won', 'wouldn', 'couldn', 'shouldn', 'isn', 'aren', 'wasn', 'weren', 'hasn', 'haven', 'ain', 'can']);
+/** The auxiliaries and framing words a negation carries to its verb: "don't want to save" is a refusal. */
+const FRAMING = new Set(['want', 'wants', 'wanted', 'need', 'needs', 'needed', 'have', 'has', 'had', 'try', 'tries', 'tried',
+  'intend', 'intends', 'intended', 'mean', 'means', 'meant', 'ever', 'to', 'be', 'will', 'would', 'going', 'really', 'just']);
+const FRAMING_CHAIN = 6;
 const HEDGE = /\b(?:maybe|perhaps|probably|might|could|i think|i guess|possibly)\b/u;
+/** W1-R4: the words of the stretch, with a split contraction ("don t") kept as one token. */
+const askTokens = (key: string): string[] => {
+  const merged: string[] = [];
+  for (const token of key.split(' ')) {
+    const last = merged.length - 1;
+    if (token === 't' && last >= 0 && CONTRACTION_TAIL.has(merged[last]!)) merged[last] = `${merged[last]} t`;
+    else merged.push(token);
+  }
+  return merged;
+};
+
 /** A composed note about the conversation itself names its source where a dictation names a store. */
 const NOTE_SOURCE = /\b(?:note|summary)\b[^\p{L}\p{N}]+(?:about|from|of)\b[^\p{L}\p{N}]+(?:this|that|what we(?: just)? (?:discussed|talked about)|our (?:conversation|call|discussion))\b/u;
 
@@ -81,17 +99,27 @@ export function composedAsk(text: string): ComposedAsk {
     return HEDGE.test(key) && DESTINATION.test(key) ? { decision: 'clarify', reason: 'ambiguous' } : { decision: 'none' };
   }
   const destination = key.search(DESTINATION);
-  // W1-R3: a negation refuses only when it governs the save verb, so a self-correction is not one.
-  const negated = NEGATION.test(key.slice(0, key.search(ASK_WORD)).trimEnd().split(' ').slice(-3).join(' '));
-  if (negated) return { decision: 'clarify', reason: 'negated' };
+  // W1-R4: every save verb before the destination is judged, and a negation governs across a short
+  // framing chain, so "don't want to save" refuses while a self-correction followed by an ask grants.
+  const tokens = askTokens(key);
+  const offsets: number[] = [];
+  let at = 0;
+  for (const token of tokens) { offsets.push(at); at += token.length + 1; }
+  const governed = (index: number): boolean => {
+    let before = index - 1;
+    for (let step = 0; before >= 0 && step < FRAMING_CHAIN && FRAMING.has(tokens[before]!); step += 1) before -= 1;
+    return before >= 0 && NEGATION.test(tokens[before]!);
+  };
+  const asked = tokens.some((token, index) => ASK_WORD.test(token)
+    && (destination < 0 || (offsets[index] ?? 0) < destination) && !governed(index));
   if (HEDGE.test(key) || /\b(?:or|either|and maybe)\b/u.test(key.slice(destination))) return { decision: 'clarify', reason: 'ambiguous' };
   if (destination < 0) {
     // A note about this conversation names its source instead of a store. Staging is still not saving:
     // the frozen read-back and his own confirmation are what authorize the write.
     if (!NOTE_SOURCE.test(key)) return { decision: 'none' };
-    return HEDGE.test(key) ? { decision: 'clarify', reason: 'ambiguous' } : { decision: 'grant' };
+    return asked ? { decision: 'grant' } : { decision: 'clarify', reason: 'negated' };
   }
-  return { decision: 'grant' };
+  return asked ? { decision: 'grant' } : { decision: 'clarify', reason: 'negated' };
 }
 
 const AFFIRM = new Set(['yes', 'yeah', 'yep', 'yup', 'correct', 'right', 'sure', 'ok', 'okay', 'exactly', 'perfect', 'confirm', 'affirmative', 'save', 'do', 'go']);

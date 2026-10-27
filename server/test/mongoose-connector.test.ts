@@ -475,6 +475,14 @@ test('Q-02: a contradiction ticket is projected as a contradiction, with both of
   assert.match(text, /values: 43,538 \/ ~29K/u, 'both sides travel with it, in the source\'s own spelling');
 });
 
+test('Q-02 (F3): a ticket id ahead of the contradiction is not one of the two sides', () => {
+  const text = renderMongooseTool({ outcome: 'ok', items: [{
+    type: 'ticket', ref: 'ticket:122',
+    name: 'Ticket 45231 Contradiction: Indonesia active users, market profile says 43,538 (2024) but SE Asia total is ~29K (2025)',
+  }] }).text;
+  assert.match(text, /values: 43,538 \/ ~29K/u, `the two sides, never the id: ${text}`);
+});
+
 test('Q-02: an empty read is projected as empty_body, never as complete evidence', () => {
   assert.match(renderMongooseTool({ outcome: 'ok', complete: true, body: '' }).text, /empty_body: true/u);
 });

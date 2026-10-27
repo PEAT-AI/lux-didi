@@ -116,11 +116,15 @@ function hitLines(data: Record<string, unknown>): string[] | undefined {
 /** Q-02: the words a contradiction ticket carries, and the two figures inside them. */
 const CONTRADICTION_IN_TEXT = /\bcontradiction\b/iu;
 function contradictionOf(text: string): { flagged: boolean; values: string[] } {
-  if (!CONTRADICTION_IN_TEXT.test(text)) return { flagged: false, values: [] };
+  const at = text.search(CONTRADICTION_IN_TEXT);
+  if (at < 0) return { flagged: false, values: [] };
+  // F3: only the ticket's own description names the two sides. An id or an unrelated count ahead of the
+  // contradiction word is not one of them, so the figures are read from the marker on.
+  const sides = text.slice(at);
   // A year in brackets dates the figure, it is not one of the two sides of the disagreement. A marker the
   // source attached to a figure ("~29K") is part of that figure: an approximation spoken as an exact
   // number is the failure this projection exists to prevent.
-  const values = text.replace(/\(\d{4}\)/gu, ' ').match(/[~≈<>+±]?\s?\d[\d,]*(?:\.\d+)?\s?[KkMm]?/gu) ?? [];
+  const values = sides.replace(/\(\d{4}\)/gu, ' ').match(/[~≈<>+±]?\s?\d[\d,]*(?:\.\d+)?\s?[KkMm]?/gu) ?? [];
   return { flagged: true, values: values.map(value => value.trim()) };
 }
 

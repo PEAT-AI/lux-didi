@@ -175,7 +175,7 @@ export function mongooseFailureStage(reason: string, exceptionCode?: string): Mo
   const token = exceptionCode ?? reason;
   if (token.includes('credential')) return 'credential';
   if (token === 'child_exited' || token === 'pipe_closed' || token === 'transport' || token === 'invalid-endpoint-config') return 'spawn';
-  if (token === 'discovery-required' || token === 'discovery-unavailable' || token.includes('handshake')) return 'handshake';
+  if (token === 'discovery-required' || token === 'discovery-unavailable' || token.includes('handshake') || token === 'connect_timeout') return 'handshake';
   return 'first_call';
 }
 

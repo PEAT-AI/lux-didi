@@ -581,7 +581,7 @@ export async function composeMcpRuntime(options: {
         // credential or configuration error is stable and a later refresh still reconnects it.
         // A refresh the transport could not reach is a network blip, not a refusal: the bounded round
         // is scheduled for it, and a real 4xx refusal keeps its own park-for-sign-in behaviour.
-        return { retryable: stage === 'first_call' || discovery.reason === 'credential-refresh-unavailable' };
+        return { retryable: discovery.reason === 'connect_timeout' || stage === 'first_call' || discovery.reason === 'credential-refresh-unavailable' };
       }
       const envelope = connectionEnvelope(entry.connector, entry);
       // V7: the published tool list is the planner's argument shape, so it is taken at intake. A schema

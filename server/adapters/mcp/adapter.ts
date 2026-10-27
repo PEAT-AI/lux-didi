@@ -450,6 +450,11 @@ export function createMcpAdapter(options: McpAdapterOptions): McpPort & { retire
         const localCodes = ['discovery-invalidated', 'source-egress-not-approved', 'invalid-endpoint-config', 'unknown-endpoint'];
         if (credential !== undefined) return { state: 'unavailable', reason: credential, exception: { class: 'CredentialError', code: credential } };
         if (error instanceof ConnectorStartFailure) return { state: 'unavailable', reason: 'connector-unavailable', exception: { class: error.className, code: error.code } };
+        if ((error instanceof PolicyError && error.reason === 'timeout-or-cancelled')
+            || (error instanceof SdkError && error.code === SdkErrorCode.RequestTimeout)
+            || (error instanceof Error && error.name === 'TimeoutError')) {
+          return { state: 'unavailable', reason: 'connect_timeout', exception: { class: className, code: 'connect_timeout' } };
+        }
         const code = error instanceof PolicyError ? error.reason
           : error instanceof Error && error.constructor === Error && localCodes.includes(error.message) ? error.message : 'unknown';
         return { state: 'unavailable', reason: error instanceof PolicyError ? error.reason : 'discovery-unavailable', exception: { class: className, code } };

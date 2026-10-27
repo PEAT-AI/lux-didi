@@ -856,6 +856,17 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.ms) || !SILENCE_OWNERS.includes(String(value.silence))) return;
     return { event: 'live_heard_silence', ms: value.ms, silence: value.silence as string };
   }
+  if (value.event === 'live_response_latency') {
+    // C-DEADAIR: the provider's share of a wait, kept apart from the host's dead-air clock. Three durations and
+    // the session they belong to, never any turn content.
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'msSinceOwnerFinal', 'msSinceResponseCreated', 'msSinceToolOutput'])) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
+    if (!isSafeCount(value.generation) || !isSafeCount(value.msSinceOwnerFinal)) return;
+    if (!(value.msSinceResponseCreated === null || isSafeCount(value.msSinceResponseCreated))) return;
+    if (!(value.msSinceToolOutput === null || isSafeCount(value.msSinceToolOutput))) return;
+    return { event: 'live_response_latency', liveSessionId: value.liveSessionId, generation: value.generation,
+      msSinceOwnerFinal: value.msSinceOwnerFinal, msSinceResponseCreated: value.msSinceResponseCreated, msSinceToolOutput: value.msSinceToolOutput };
+  }
   if (value.event === 'live_turn_open') {
     // #303: the provider streamed model audio and then went quiet without a turnComplete.
     // One duration, never any turn content.

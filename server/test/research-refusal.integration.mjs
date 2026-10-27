@@ -114,6 +114,25 @@ try{
  assert.equal(events.some(event=>event.event==='thinking_sent'),false,'invalid calls never claim a lookup is running');
  const refusals=events.filter(event=>event.event==='research_refused');assert.equal(refusals.length,invalid.length);assert.equal(JSON.stringify(refusals).includes(sentinel),false);
  for(const event of refusals){assert(safeEvent(event));assert.equal(safeEvent({...event,privateQuestion:sentinel}),undefined);assert.equal(safeEvent({...event,reason:sentinel}),undefined);assert.equal(safeEvent({...event,fields:{...event.fields,[sentinel]:'null'}}),undefined);}
+ // C-ENTITY: the entity rewrite refusal logs its three name counts as numbers, and never the owner's words.
+ assert.equal(safeEvent({...refusals[0],namesKept:0}),undefined,'a closed reason without counts keeps the log free of them');
+ const swap={action:'start',question:'Find Acmeworks pricing',topic:'Globex pricing'};
+ const swapped=await positive.send(swap);
+ assert.equal(swapped.state,'refused');assert.equal(swapped.reason,'entity_rewrite');
+ assert.match(String(swapped.guidance),/keep the question's own names exactly/);
+ assert.match(String(swapped.guidance),/Do not retry the same request in this turn/);
+ assert.equal(String(swapped.guidance).startsWith('This exact request was already refused'),false,'the first refusal is not told it repeated itself');
+ const entityRefused=events.filter(event=>event.event==='research_refused'&&event.reason==='entity_rewrite');
+ assert.equal(entityRefused.length,1);
+ assert.deepEqual([entityRefused[0].namesKept,entityRefused[0].namesDropped,entityRefused[0].namesAdded],[0,1,1]);
+ assert.equal(JSON.stringify(entityRefused).includes('Acmeworks')||JSON.stringify(entityRefused).includes('Globex'),false,'the owner words never enter the log');
+ assert(safeEvent(entityRefused[0]),'the closed shape carries the counts');
+ assert.equal(safeEvent({...entityRefused[0],namesAdded:'Acmeworks'}),undefined,'a name is never a count');
+ // The same bytes again in the same owner turn: refused at once, same code, and told it already had this answer.
+ const retried=await positive.send(swap);
+ assert.equal(retried.state,'refused');assert.equal(retried.reason,'entity_rewrite');
+ assert.match(String(retried.guidance),/^This exact request was already refused in this owner turn: /);
+ assert.equal(events.filter(event=>event.event==='research_refused'&&event.reason==='entity_rewrite').length,2);
  // One owner turn grants one research operation, so the fixture speaks before each start it wants admitted.
 // One owner turn grants one research operation, so the fixture speaks before each start it wants admitted.
 const speakAt=async(handle)=>{handle.wire.send({type:'session.input_transcript.delta',delta:'synthetic owner question'});await new Promise(resolve=>setTimeout(resolve,800));};

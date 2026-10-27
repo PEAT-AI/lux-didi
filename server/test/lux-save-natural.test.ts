@@ -9,7 +9,7 @@ import { createLuxWriteTransport } from '../adapters/lux-write/client.js';
 import { chatMigrations } from '../chat/index.js';
 import { CONNECTOR_ENVELOPES } from '../connectors/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveContext } from '../live/index.js';
+import { createLiveSessionOwner, liveMigrations, stageComposedNote, validateLiveProfile, type LiveContext } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { beginStage, composedAsk, confirmAsk } from '../tools/lux-note.js';
 import { VAULT_PROJECT, VAULT_REMOTE_TOOL, VaultWriter, vaultContentKey, type VaultReceipt } from '../tools/vault-write.js';
@@ -23,7 +23,7 @@ const NOTE = 'the survey boat is moored at pontoon three';
  * C-LUX-SAVE: the owner's own words, replayed through the shipped voice boundary. His notation is a
  * dictation turn and then a natural save ask, and the save must reach the fake lux-knowledge MCP child.
  */
-interface Replay { store: Store; sessionId: string; speak: (text: string) => Promise<void> }
+interface Replay { store: Store; sessionId: string; speak: (text: string) => Promise<void>; say: (text: string) => Promise<void> }
 
 async function replay(t: TestContext): Promise<Replay> {
   const dir = mkdtempSync(join(tmpdir(), 'lux-save-natural-'));
@@ -53,7 +53,12 @@ async function replay(t: TestContext): Promise<Replay> {
     fake.emit({ type: 'inputTranscription', text: '', finished: true });
     await flush();
   };
-  return { store, sessionId: session.liveSessionId, speak };
+  // One finalized owner turn, the shape a provider that sends a whole turn (not deltas) writes.
+  const say = async (text: string): Promise<void> => {
+    fake.emit({ type: 'inputTranscription', text, finished: true });
+    await flush();
+  };
+  return { store, sessionId: session.liveSessionId, speak, say };
 }
 
 async function claimAndSave(store: Store, url: string, sessionId: string, content: string): Promise<VaultReceipt> {
@@ -121,4 +126,23 @@ test('a note about the conversation needs the ask and then his fresh confirmatio
   const off = beginStage({ stageId: 'stage-2', sessionId: 'live-1', ownerText: 'save a note about what we just discussed',
     title: 'Pontoon', body: NOTE, evidence: ['journal:1'], heldEvidence: held, enabled: false, now: NOW });
   assert.deepEqual(off, { state: 'refused', code: 'not_enabled' });
+});
+
+// W5 (C-LUX-SAVE-LANDS Q-05): the owner's ask arrived as two transcribed fragments. Nothing of the
+// request may become the note; after she answers, "store it" stages HER ANSWER through the composed
+// path, and the dictation ledger never holds the request's own words.
+test('the split ask stages the answer she just gave, never the request fragments', async t => {
+  const r = await replay(t);
+  await r.say('Can you, can you');
+  await r.say('store it in Lux Knowledge');
+  const answer = 'Rize is a materials research company: its platform automates formulation and testing of new polymer blends.';
+  const staged = r.store.transaction(tx => stageComposedNote(tx, r.sessionId,
+    { title: 'Rize materials research', body: answer, evidenceRefs: ['journal:1', 'journal:2'] },
+    { inputAt: NOW, inputFinal: true }, NOW, true));
+  assert.equal(staged['staged'], true, `staged: ${JSON.stringify(staged)}`);
+  assert.equal(staged['body'], answer);
+  const rows = r.store.transaction(tx => tx.all('SELECT body,title FROM lux_note_stages'));
+  assert.deepEqual(rows.map(row => [row['title'], row['body']]), [['Rize materials research', answer]]);
+  const writes = r.store.transaction(tx => tx.all('SELECT content,title FROM vault_writes'));
+  assert.equal(writes.some(row => String(row['content']).includes('Can you') || String(row['title']).includes('Can you')), false);
 });

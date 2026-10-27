@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { safeEvent } from '../host/log.js';
 import { createHostResourceSampler } from '../host/runtime.js';
 
@@ -558,4 +561,48 @@ test('W7: a Trello connector_call line keeps its closed shape and a Trello sign-
   assert.equal(safeEvent({ ...read, connector: 'mongoose' }), undefined);
   const hop = { event: 'signin_callback', endpoint: 'trello', attemptId: '0123456789abcdef', outcome: 'ok' };
   assert.deepEqual(safeEvent(hop), hop);
+});
+
+// W5 (C-LUX-SAVE-LANDS): the whitelist must be exhaustive. A host diagnostic whose event has no
+// `safeEvent` branch is dropped by the sink, which is how `lux_note_stage`, `tool_handler_error` and
+// `research_context_rebuild` never reached the owner's log even though the emitter was handed them.
+// This test walks the built sources, collects every event name given to `hostLogEvent`, and requires
+// the event's own literal to appear in the whitelist that decides whether it survives.
+test('every event handed to the host-log emitter has a safeEvent branch', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) { if (entry.name !== 'test' && entry.name !== 'node_modules') walk(path); }
+      else if (entry.name.endsWith('.js')) files.push(path);
+    }
+  };
+  walk(root);
+  const events = new Map<string, string>();
+  for (const path of files) {
+    const source = readFileSync(path, 'utf8');
+    for (const call of source.matchAll(/hostLogEvent\(\{/g)) {
+      const window = source.slice(call.index ?? 0, (call.index ?? 0) + 400);
+      const named = /event: '([a-z0-9_]+)'/.exec(window);
+      if (named?.[1] !== undefined) events.set(named[1], path.slice(root.length));
+    }
+  }
+  assert.ok(events.size > 60, `the scan found the emitters, got ${events.size}`);
+  const log = readFileSync(join(root, 'host', 'log.js'), 'utf8');
+  const missing = [...events.keys()].filter(event => !log.includes(`'${event}'`));
+  assert.deepEqual(missing, [], `events handed to the emitter with no safeEvent branch: ${missing.join(', ')}`);
+});
+
+test('the new receipt events keep their closed shape and drop anything else', () => {
+  assert.deepEqual(safeEvent({ event: 'lux_note_stage', staged: true, digest: 'a1b2c3d4e5f6' }),
+    { event: 'lux_note_stage', staged: true, digest: 'a1b2c3d4e5f6' });
+  assert.deepEqual(safeEvent({ event: 'lux_note_stage', staged: false, code: 'transcript_pending' }),
+    { event: 'lux_note_stage', staged: false, code: 'transcript_pending' });
+  assert.equal(safeEvent({ event: 'lux_note_stage', staged: true, digest: 'a1b2c3d4e5f6', title: 'Rize' }), undefined);
+  assert.deepEqual(safeEvent({ event: 'tool_handler_error', tool: 'stage_lux_note', class: 'TypeError', reason: 'handler_outcome' }),
+    { event: 'tool_handler_error', tool: 'stage_lux_note', class: 'TypeError', reason: 'handler_outcome' });
+  assert.equal(safeEvent({ event: 'tool_handler_error', tool: 'stage_lux_note', class: 'TypeError', reason: 'handler_outcome', message: 'boom' }), undefined);
+  assert.deepEqual(safeEvent({ event: 'research_context_rebuild', retainedChars: 10, ledgerChars: 20, seedTranscriptChars: 30, rebuilds: 1 }),
+    { event: 'research_context_rebuild', retainedChars: 10, ledgerChars: 20, seedTranscriptChars: 30, rebuilds: 1 });
 });

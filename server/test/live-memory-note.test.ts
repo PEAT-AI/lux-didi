@@ -9,7 +9,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { chatMigrations } from '../chat/index.js';
-import { liveMigrations, rememberOwnerNote } from '../live/index.js';
+import { liveMigrations, rememberOwnerNote, staleRefusedNoteSessions, storedOpenLoops } from '../live/index.js';
+import { toolsMigrations } from '../tools/index.js';
 import * as memory from '../domain/memory.js';
 import { safeEvent } from '../host/log.js';
 import { openMemoryFixture } from './memory-context-process.js';
@@ -274,4 +275,50 @@ test('a note keeping under a fifth of a long request returns partial and says wh
   assert.equal(result.status, 'partial', 'two words of a long request is a fragment');
   assert.match(String(result.guidance), /blue folder/);
   assert.match(String(result.guidance), /one sentence/i);
+});
+
+// W5 (C-LUX-SAVE-LANDS Q-06, V12): a note refused `owner_text_mismatch` in an earlier call was reopened
+// and retried at the start of the next one, and refused again. A refusal closes its loop: the session
+// that carried it is never offered as an open loop again, so only the owner can raise it.
+const REFUSED = 'session-refused-note';
+const FRESH = 'session-fresh-thread';
+const REFUSED_LOOP = 'save the note about the Mongoose mint that was never written';
+const FRESH_LOOP = 'ask about the Lisbon survey boat';
+
+function liveSessionRow(store: Store, id: string, endedAt: number): void {
+  store.transaction(tx => tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key,
+      fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events,
+      journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,'terminal',1,1,0,0,1,'ended','completed',?,?,?)`,
+  [id, store.assistantId, store.authorityEpoch, `key-${id}`, `fp-${id}`, 'client', 'audit', 'profile', 'prompt', endedAt, endedAt, endedAt]));
+}
+
+function summaryRow(store: Store, id: string, loop: string, endedAt: number): void {
+  store.transaction(tx => {
+    tx.run('INSERT INTO history_sessions (live_session_id, data_class, revision) VALUES (?,?,?)', [id, 'ordinary', 1]);
+    tx.run(`INSERT INTO conversation_summaries (id, live_session_id, status, summary, open_loop, input_truncated,
+        injected_summary_ids, retry_count, created_at, ended_at) VALUES (?,?,'complete',?,?,0,'[]',0,?,?)`,
+    [`summary-${id}`, id, 'synthetic summary', loop, endedAt, endedAt]);
+  });
+}
+
+test('a note refused in an earlier call is not re-offered at the next call start', async t => {
+  const path = dir(t);
+  const store = openMemoryFixture(path, model, {}, [...chatMigrations, ...liveMigrations, ...toolsMigrations]).store;
+  t.after(() => store.close());
+  liveSessionRow(store, REFUSED, NOW - 2 * MINUTE);
+  liveSessionRow(store, FRESH, NOW - MINUTE);
+  summaryRow(store, REFUSED, REFUSED_LOOP, NOW - 2 * MINUTE);
+  summaryRow(store, FRESH, FRESH_LOOP, NOW - MINUTE);
+  // The stored refusal: the tool call the owner heard as "the note was not saved".
+  store.transaction(tx => tx.run(`INSERT INTO tool_calls (owner_id,run_id,execution_id,call_id,intent_json,state,result_id,result_json,result_sha256)
+    VALUES (?,?,?,?,?,'completed',?,?,?)`, [store.assistantId, REFUSED, 'run:1:0', 'call-1',
+    JSON.stringify({ runId: REFUSED, actorId: 'owner', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: 'remember_note', argumentsHash: 'a'.repeat(64) }),
+    'result-1', JSON.stringify({ response: { remembered: false, code: 'owner_text_mismatch' }, dataClasses: [] }), 'b'.repeat(64)]));
+
+  assert.deepEqual([...store.transaction(tx => staleRefusedNoteSessions(tx, store.assistantId))], [REFUSED]);
+  const loops = store.transaction(tx => storedOpenLoops(tx, ['ordinary'], NOW));
+  const texts = loops.map(loop => loop.text);
+  assert.equal(texts.includes(REFUSED_LOOP), false, 'the refused note is never offered again');
+  assert.equal(texts.includes(FRESH_LOOP), true, 'an ordinary open loop still is');
 });

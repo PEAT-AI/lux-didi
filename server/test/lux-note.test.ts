@@ -1,8 +1,25 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import type { TestContext } from 'node:test';
+import { McpRegistry } from '../adapters/mcp/registry.js';
+import type { McpPort } from '../adapters/mcp/port.js';
+import type { JsonObject, ToolCallIntent, ToolDefinition, ToolOutcome } from '../adapters/model/types.js';
+import { chatMigrations } from '../chat/index.js';
+import { domainMigrations } from '../domain/schema.js';
+import { attachHostLogSink } from '../tools/host-events.js';
+import { safeEvent } from '../host/log.js';
+import { liveMigrations, stageComposedNote } from '../live/index.js';
+import { Store } from '../runtime/store.js';
+import { runToolCalls } from '../tools/declarations.js';
+import { createToolsOwner, toolsMigrations } from '../tools/index.js';
+import type { RunAcceptance, StageNotePort } from '../tools/types.js';
 import {
   beginStage, composedAsk, confirmAsk, CONFIRM_MAX_TOKENS, CONFIRM_WINDOW_MS, currentOwnerTurn, freezeNote, NOTE_MAX_CHARS,
-  noteOwnerFragment, noteOwnerUtterance, noteReadback, noteSegmentSignal, noteSettle, validateStageNote,
+  noteOwnerFragment, noteOwnerUtterance, noteReadback, noteSegmentSignal, noteSettle, STAGE_NOTE_IDENTITY, validateStageNote,
   type PlaybackSignal, type ReadbackBinding,
 } from '../tools/lux-note.js';
 
@@ -222,4 +239,118 @@ test('a restaged note in the same call arms on its own read-back segment, not th
   assert.deepEqual(secondOpened.binding, bound('stage-2', 'instance:4'), 'the new stage adopts its own segment');
   const secondArmed = noteSegmentSignal(secondOpened.note, secondOpened.binding, signal('drained', 'instance:4', 3_100));
   assert.equal(secondArmed.note.state, 'armed');
+});
+
+// --- The stage tool itself, over a real store and the real state schema (C-LUX-SAVE-LANDS W5) ---
+//
+// `liveDefinitions(... composedNotes: true)` is the shipped wiring: the composed tool exists only while
+// the switch is on, its execute books the intent, and the host's own composed stage freezes the payload.
+// Neither could ever complete before this change: the intent check compared the booked call against a
+// four-field object, so every dispatch threw and rolled back with no note row and no log line.
+
+const VAULT_ACCOUNT = 'gateway:live-voice';
+const VAULT_RESOURCE = 'owner-vault';
+
+/** A realistic composed note body: synthetic prose, the length of the answer the owner asked to save. */
+const COMPOSED_BODY = ('Rize is a materials research company: its platform automates the formulation and testing of '
+  + 'new polymer blends, so a lab asks for a property target and the system proposes candidate mixes. ').repeat(9).slice(0, 1100);
+
+interface StageHarness {
+  store: Store;
+  owner: ReturnType<typeof createToolsOwner>;
+  run: string;
+  now: number;
+  stage(args: Record<string, unknown>): Promise<ToolOutcome | undefined>;
+  stageWith(port: StageNotePort, args: Record<string, unknown>): Promise<ToolOutcome | undefined>;
+  definitions(port: StageNotePort): readonly ToolDefinition[];
+}
+
+function stageHarness(t: TestContext): StageHarness {
+  const now = 1_700_000_000_000;
+  const run = 'live-stage-run';
+  const dir = mkdtempSync(join(tmpdir(), 'lux-note-stage-'));
+  const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations]);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  store.transaction(tx => {
+    tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
+        client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events,
+        journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,'active',1,1,?,0,0,'attached',NULL,NULL,?,?)`,
+      [run, store.assistantId, store.authorityEpoch, 'key-stage', 'fp-stage', 'client', 'audit', 'profile', 'prompt', 2, now, now]);
+    for (const text of ['Naya, what can you tell me about Rize', 'store it in Lux Knowledge']) {
+      tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, final_origin, finalized_at, payload_bytes, arrived_at) VALUES (?,?,?,?,?,?,?,?)',
+        [run, 'inputTranscription', text, 1, 'app_model_start', now, text.length, now]);
+    }
+  });
+  const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'tester', runId: run,
+    authorityEpoch: store.authorityEpoch, revision: 1,
+    route: { identity: 'route-stage', provider: 'gemini', modelId: 'models/lux-note-stage', allowedClasses: ['ordinary'] },
+    allowedClasses: ['ordinary'], connectionIds: [] };
+  let acceptedRunHash = '';
+  const owner = createToolsOwner({ store, ownerId: store.assistantId, registry: new McpRegistry(),
+    port: { readSlice: () => ({ state: 'unavailable' }) } as unknown as McpPort,
+    lookupAuthority: async () => ({ ...acceptance, acceptedRunHash }), grantMode: 'owner-trusted-reads' });
+  store.transaction(tx => { acceptedRunHash = owner.snapshotRun(tx, acceptance).sha256; });
+  const realStage: StageNotePort = (tx, sessionId, args) =>
+    stageComposedNote(tx, sessionId, args, { inputAt: now, inputFinal: true }, now, true);
+  const definitions = (port: StageNotePort) => owner.liveDefinitions(run, () => ({ remembered: false }), undefined, port, true);
+  const receive = async (port: StageNotePort, args: Record<string, unknown>, executionId: string): Promise<ToolOutcome | undefined> => {
+    const call: ToolCallIntent = { runId: run, actorId: 'tester', authorityEpoch: store.authorityEpoch, revision: 1, executionId,
+      toolName: STAGE_NOTE_IDENTITY.name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
+      callId: `call-${executionId}`, accountId: VAULT_ACCOUNT, resourceId: VAULT_RESOURCE };
+    assert.equal(owner.journal.intent(call, args), 'fresh');
+    const tool = definitions(port).find(definition => definition.name === STAGE_NOTE_IDENTITY.name);
+    assert.ok(tool, 'the composed stage tool is declared while the switch is on');
+    return tool.execute(args, { runId: run, actorId: 'tester', authorityEpoch: store.authorityEpoch, revision: 1,
+      executionId, accountId: VAULT_ACCOUNT, resourceId: VAULT_RESOURCE, signal: new AbortController().signal });
+  };
+  return { store, owner, run, now, definitions,
+    stage: args => receive(realStage, args, 'run:1:0'),
+    stageWith: (port, args) => receive(port, args, 'run:1:1') };
+}
+
+const STAGE_ARGS = { title: 'Rize materials research', body: COMPOSED_BODY, evidenceRefs: ['journal:1', 'journal:2'] };
+
+test('the composed stage completes a real store write and leaves exactly one note row', async t => {
+  const h = stageHarness(t);
+  const outcome = await h.stage(STAGE_ARGS);
+  assert.equal(outcome?.status, 'completed');
+  const calls = h.store.transaction(tx => tx.all('SELECT state FROM tool_calls'));
+  assert.deepEqual(calls.map(row => row['state']), ['completed']);
+  const stages = h.store.transaction(tx => tx.all('SELECT state,body,title FROM lux_note_stages'));
+  assert.equal(stages.length, 1);
+  assert.equal(stages[0]!['state'], 'staged');
+  assert.equal(stages[0]!['body'], COMPOSED_BODY.replace(/\s+/g, ' ').trim());
+});
+
+test('a throwing composed stage is a bounded stage_failed result the model can speak, never unknown', async t => {
+  const h = stageHarness(t);
+  const outcome = await h.stageWith(() => { throw new Error('synthetic stage failure'); }, STAGE_ARGS);
+  assert.equal(outcome?.status, 'completed');
+  const response = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT result_json FROM tool_calls')!['result_json'])) as Record<string, unknown>)['response'];
+  assert.deepEqual(response, { staged: false, code: 'stage_failed', guidance: 'The note was not staged. Tell the owner it was not saved and ask them to say it again in one sentence.' });
+  assert.equal(h.store.transaction(tx => tx.all('SELECT stage_id FROM lux_note_stages')).length, 0);
+});
+
+test('a handler that throws outside its own catch writes one closed tool_handler_error line', async t => {
+  const h = stageHarness(t);
+  const lines: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { const safe = safeEvent(raw); if (safe) lines.push(safe); } });
+  t.after(detach);
+  const throwing = h.definitions(() => ({ staged: false, code: 'not_enabled' })).map(tool => tool.name === STAGE_NOTE_IDENTITY.name
+    ? { ...tool, async execute(): Promise<ToolOutcome> { throw new TypeError('synthetic handler failure'); } }
+    : tool);
+  const call: ToolCallIntent = { runId: h.run, actorId: 'tester', authorityEpoch: h.store.authorityEpoch, revision: 1, executionId: 'run:2:0',
+    toolName: STAGE_NOTE_IDENTITY.name, argumentsHash: createHash('sha256').update(JSON.stringify(STAGE_ARGS)).digest('hex'),
+    callId: 'call-handler', accountId: VAULT_ACCOUNT, resourceId: VAULT_RESOURCE };
+  assert.equal(h.owner.journal.intent(call, STAGE_ARGS), 'fresh');
+  const batch = await runToolCalls(h.owner, [{ id: 'call-handler', name: STAGE_NOTE_IDENTITY.name, args: STAGE_ARGS as unknown as JsonObject }], {
+    registry: throwing, host: { runId: h.run, actorId: 'tester', authorityEpoch: h.store.authorityEpoch, revision: 1,
+      grants: [{ tool: STAGE_NOTE_IDENTITY.name, effect: 'write', accountId: VAULT_ACCOUNT, resourceId: VAULT_RESOURCE }] },
+    authority: { isCurrent: async () => true }, control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5_000 },
+    step: 1, contentIndex: 0, seenIds: new Set(), baseClasses: ['ordinary'], authorize: true });
+  assert.equal(batch.tools[0]?.status, 'unknown');
+  const logged = lines.filter(line => line['event'] === 'tool_handler_error');
+  assert.equal(logged.length, 1);
+  assert.deepEqual(logged[0], { event: 'tool_handler_error', tool: 'stage_lux_note', class: 'TypeError', reason: 'handler_outcome' });
 });

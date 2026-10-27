@@ -248,3 +248,33 @@ test('the adapter-shaped transcript mints the authorization from the assembled o
   attachment.close();
   await drained;
 });
+
+// W5 (C-LUX-SAVE-LANDS Q-05): the owner's ask and its referent arrived as two transcribed fragments
+// ("Can you, can you" / "store it in Lux Knowledge"), and the old referent rule took the request's own
+// words as the note. A request fragment is never content, and with no referent nothing is authorized.
+test('a request fragment is never the referent of a save ask', async t => {
+  const fake = await fakeLux(t, 'inserted');
+  const h = harness(t, fake.url);
+  speak(h, '41', 'Can you, can you');
+  speak(h, '42', 'store it in Lux Knowledge', 'Can you, can you');
+  assert.equal(h.store.transaction(tx => tx.all('SELECT content FROM vault_writes')).length, 0, 'no note row was authorized');
+  assert.deepEqual(await save(h, 'Can you, can you'), { saved: false, code: 'not_owner_requested', guidance: 'say: save this to lux, then the note' });
+  assert.equal(fake.calls.length, 0, 'nothing was sent to the vault');
+});
+
+test('the first half of one split save ask is not a referent either', async t => {
+  const fake = await fakeLux(t, 'inserted');
+  const h = harness(t, fake.url);
+  speak(h, '43', 'Naya, can you please save this to lux');
+  speak(h, '44', 'store it in Lux Knowledge', 'Naya, can you please save this to lux');
+  assert.equal(h.store.transaction(tx => tx.all('SELECT content FROM vault_writes')).length, 0);
+});
+
+test('the words he actually dictated are still a referent', async t => {
+  const fake = await fakeLux(t, 'inserted');
+  const h = harness(t, fake.url);
+  speak(h, '45', 'the survey boat is moored at pontoon three');
+  speak(h, '46', 'store it in Lux Knowledge', 'the survey boat is moored at pontoon three');
+  const rows = h.store.transaction(tx => tx.all('SELECT content FROM vault_writes'));
+  assert.deepEqual(rows.map(row => row['content']), ['the survey boat is moored at pontoon three']);
+});

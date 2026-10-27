@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { connectorDescriptor } from '../connectors/index.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,7 +18,7 @@ import {
   MONGOOSE_FAILURE_STAGES, mongooseCredentialAtStart, mongooseFailureStage, type MongooseEndpoint,
 } from '../connectors/index.js';
 import { projectMongooseResult, mongooseToolStatus, renderMongooseTool } from '../tools/mongoose.js';
-import { MongooseSchemaRefusal, mongoosePublishCatalogue, mongooseSanitizeParameters } from '../connectors/mongoose.js';
+import { MongooseSchemaRefusal, mongoosePublishCatalogue, mongoosePublishedTool, mongooseSanitizeParameters } from '../connectors/mongoose.js';
 import type { ConnectionPolicy } from '../tools/types.js';
 import { loadMcpEndpoints, mcpErrorCode } from '../config/mcp.js';
 
@@ -105,32 +106,7 @@ async function fixture(endpoint: MongooseEndpoint, options: FixtureOptions = {})
  * title, description, queryConfig{exploreName, metrics, dimensions, filters{dimensions[],metrics[],type},
  * sorts[], limit integer minimum 1}, and the filter rule {fieldId, operator enum, values[], settings}.
  */
-const PUBLISHED_METRIC_SCHEMA: Record<string, unknown> = {
-  type: 'object', additionalProperties: false, required: ['queryConfig'],
-  properties: {
-    title: { type: 'string' },
-    description: { type: 'string' },
-    queryConfig: {
-      type: 'object', additionalProperties: false, required: ['exploreName'],
-      properties: {
-        exploreName: { type: 'string' },
-        metrics: { type: 'array', items: { type: 'string' } },
-        dimensions: { type: 'array', items: { type: 'string' } },
-        filters: { type: 'object', additionalProperties: false, properties: {
-          dimensions: { type: 'array', items: { type: 'object', additionalProperties: false, properties: {
-            fieldId: { type: 'string' }, operator: { type: 'string', enum: ['equals', 'inThePast'] },
-            values: { type: 'array', items: { type: ['string', 'number'] } },
-            settings: { type: 'object', additionalProperties: false, properties: { unitOfTime: { type: 'string', enum: ['days'] }, completed: { type: 'boolean' } } },
-          } } },
-          metrics: { type: 'array', items: { type: 'object' } },
-          type: { type: 'string', enum: ['and'] },
-        } },
-        sorts: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { fieldId: { type: 'string' }, descending: { type: 'boolean' } } } },
-        limit: { type: 'integer', minimum: 1, maximum: 500 },
-      },
-    },
-  },
-};
+const PUBLISHED_METRIC_SCHEMA: Record<string, unknown> = JSON.parse(readFileSync(join(process.cwd(), 'server/test/fixtures/mongoose-tools-list-literal.json'), 'utf8')).data.find((tool: { name: string }) => tool.name === 'run_metric_query').inputSchema;
 
 /** One approved connection policy per Mongoose endpoint, enough to build the planner-facing table. */
 const MONGOOSE_POLICY: Readonly<Record<MongooseEndpoint, ConnectionPolicy>> = {
@@ -440,8 +416,8 @@ test('V7: the data envelope forwards the published run_metric_query schema, not 
   assert.deepEqual(declaration.parameters, mongooseSanitizeParameters(PUBLISHED_METRIC_SCHEMA), 'exactly the sanitized published schema');
   assert.equal(declaration.description, 'Run one metric query on one explore with the published argument shape.', 'the published description, not the forwarded text');
   // The planner can build the real shape, so the published schema really reached it.
-  assert.equal(declaration.validate({ queryConfig: { exploreName: 'active_users_daily', metrics: ['active_users_daily_n_active_users'], limit: 10 } }), true);
-  assert.equal(declaration.validate({ queryConfig: { limit: 10 } }), false, 'exploreName stays required');
+  assert.equal(declaration.validate({ title: 'Users', description: 'Daily active users', queryConfig: { exploreName: 'active_users_daily', metrics: ['active_users_daily_n_active_users'], limit: 10 } }), true);
+  assert.equal(declaration.validate({ title: 'Users', description: 'Daily active users', queryConfig: { limit: 10 } }), false, 'exploreName stays required');
 });
 
 test('V7: a float literal is sanitized to an integer, never forwarded', () => {
@@ -458,11 +434,26 @@ test('V7 (F4): a fractional multipleOf is refused, never truncated to an invalid
   );
 });
 
-test('V7: a keyword the provider rejects fails the catalogue load loudly', () => {
-  assert.throws(
-    () => mongoosePublishCatalogue('mongoose-data', [{ name: 'run_metric_query', description: 'x', inputSchema: { type: 'object', properties: { q: { type: 'string', oneOf: [{ type: 'string' }] } } } }]),
-    (error: unknown) => error instanceof MongooseSchemaRefusal && error.path.endsWith('properties.q.oneOf'),
-  );
+test('V7: an unreadable schema excludes only that tool and reports it once', () => {
+  const refused: string[] = [];
+  mongoosePublishCatalogue('refused-fixture', [
+    { name: 'run_metric_query', inputSchema: { type: 'object', unsupported: true } },
+    { name: 'search_fields', inputSchema: { type: 'object' } },
+  ], tool => refused.push(tool));
+  assert.deepEqual(refused, ['run_metric_query']);
+  assert.equal(mongoosePublishedTool('refused-fixture', 'run_metric_query'), undefined);
+  assert.ok(mongoosePublishedTool('refused-fixture', 'search_fields'));
+});
+
+test('local schema references and composition are resolved; cycles and missing refs are refused', () => {
+  for (const keyword of ['anyOf', 'oneOf', 'allOf']) {
+    const result = mongooseSanitizeParameters({ $schema: 'https://json-schema.org/draft/2020-12/schema',
+      $defs: { text: { type: 'string' } }, [keyword]: [{ $ref: '#/$defs/text' }, { type: 'null' }] });
+    assert.deepEqual(result, { [keyword]: [{ type: 'string' }, { type: 'null' }] });
+  }
+  assert.throws(() => mongooseSanitizeParameters({ $defs: { loop: { $ref: '#/$defs/loop' } }, $ref: '#/$defs/loop' }), MongooseSchemaRefusal);
+  assert.throws(() => mongooseSanitizeParameters({ $ref: '#/$defs/missing' }), MongooseSchemaRefusal);
+  assert.throws(() => mongooseSanitizeParameters({ $ref: 'https://remote.test/schema' }), MongooseSchemaRefusal);
 });
 
 test('V7: a forwarded tool is declared only with its published schema, never with an empty one', () => {

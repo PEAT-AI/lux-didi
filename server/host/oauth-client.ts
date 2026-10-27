@@ -231,7 +231,7 @@ export interface OAuthLoginOptions {
    */
   expectedEmail?: string;
   /** Prove a minted access token names the owner account; a refusal stores nothing. */
-  verifyToken?: (accessToken: string) => { ok: true; identity?: string } | { ok: false; code: 'identity_mismatch' | 'identity_unverified' };
+  verifyToken?: (accessToken: string, refreshed: boolean) => { ok: true; identity?: string } | { ok: false; code: 'identity_mismatch' | 'identity_unverified' };
   /** The one identity this sign-in binds, from trusted configuration; undefined refuses at discovery. */
   binding: OAuthBinding | undefined;
   configDir: string;
@@ -395,7 +395,7 @@ export async function runOAuthLogin(options: OAuthLoginOptions): Promise<OAuthRe
     const refreshToken = granted?.['refresh_token'];
     const expiresIn = granted?.['expires_in'];
     if (!secret(accessToken) || !secret(refreshToken) || !Number.isSafeInteger(expiresIn) || (expiresIn as number) < 1) return fail({ hop: 'token', outcome: 'refused' }, 'token-refused');
-    const proof = options.verifyToken?.(accessToken);
+    const proof = options.verifyToken?.(accessToken, false);
     if (proof && !proof.ok) return fail({ hop: 'token', outcome: proof.code }, proof.code === 'identity_mismatch' ? 'identity-mismatch' : 'identity-unverified');
     hop({ hop: 'token', outcome: 'ok' });
     stage = 'stored';
@@ -480,7 +480,7 @@ export interface OAuthTokenPolicy {
    * OAuthCredentialError for a token that names another account, so a bad refresh is never written; an
    * accepted proof may carry the owner claim it proved, which the record keeps for Settings.
    */
-  verifyToken?: (accessToken: string) => { ok: true; identity?: string } | { ok: false; code: string } | void;
+  verifyToken?: (accessToken: string, refreshed: boolean) => { ok: true; identity?: string } | { ok: false; code: string } | void;
   consentCapMs?: number;
   consentWarnMs?: number;
 }
@@ -511,8 +511,8 @@ const bound = (record: OAuthRecord, binding: OAuthBinding): boolean =>
   record.endpoint === binding.endpoint && record.resource === binding.resource && record.issuer === binding.issuer;
 
 /** Prove one token with the policy's own check: a refusal keeps its closed credential code. */
-function verify(policy: OAuthTokenPolicy, accessToken: string): { ok: true; identity?: string } | undefined {
-  const proof = policy.verifyToken?.(accessToken);
+function verify(policy: OAuthTokenPolicy, accessToken: string, refreshed = false): { ok: true; identity?: string } | undefined {
+  const proof = policy.verifyToken?.(accessToken, refreshed);
   if (proof !== undefined && !proof.ok) {
     throw new OAuthCredentialError(proof.code === 'identity_mismatch' ? 'credential-identity-mismatch' : 'credential-identity-unverified');
   }
@@ -543,7 +543,7 @@ async function resolveToken(configDir: string, reference: string, binding: OAuth
     catch (error) { options.notify?.('refresh-failed'); throw error; }
     // A refreshed token that names another account is discarded: nothing is written, and the endpoint
     // parks on a new sign-in instead of reading with the wrong account.
-    const proven = verify(policy, next.accessToken);
+    const proven = verify(policy, next.accessToken, true);
     // The refreshed record keeps the claim this connect proved, so Settings can name the account.
     writeOAuthRecord(configDir, reference, proven !== undefined && proven.identity ? { ...next, identity: proven.identity } : next);
     if (policy.consentCapMs !== undefined && policy.consentWarnMs !== undefined && !warned.has(key) && now() >= next.consentStartedAt + policy.consentCapMs - policy.consentWarnMs) {

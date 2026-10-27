@@ -103,7 +103,7 @@ const SIGNIN_OUTCOMES: Record<string, readonly string[]> = {
   // reason is the endpoint row's own closed code, never free text, so a relaunch is never silent.
   signin_needs_restart: ['not_signed_in', 'needs_sign_in', 'credential_missing', 'credential-missing', 'credential-refresh-failed',
     'credential-consent-expired', 'credential-unavailable', 'credential-identity-mismatch', 'credential-identity-unverified',
-    'identity_mismatch', 'handshake_failed', 'discovery_failed', 'unreachable', 'transport_unavailable', 'not_connected'],
+    'identity_mismatch', 'handshake_failed', 'discovery_failed', 'unreachable', 'transport_unavailable', 'not_connected', 'schema_unsanitizable', 'connect_timeout'],
 };
 const SIGNIN_OAUTH_ERRORS = ['invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client', 'unsupported_grant_type', 'invalid_scope', 'invalid_target', 'access_denied'];
 /**
@@ -328,6 +328,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.keys(value).sort().join(',') !== ['code', 'event', 'kind'].sort().join(',')) return;
     if (!isSafeToken(value.kind) || !isSafeToken(value.code)) return;
     return { event: 'live_trace_rejected', kind: value.kind, code: value.code };
+  }
+  if (value.event === 'mongoose_tool_schema_refused') {
+    if (!closedKeys(value, ['event', 'endpointId', 'tool'])) return;
+    if (!isSafeId(value.endpointId)) return;
+    if (typeof value.tool !== 'string' || !/^[a-zA-Z0-9_]{1,128}$/.test(value.tool)) return;
+    return { event: value.event, endpointId: value.endpointId, tool: value.tool };
   }
   if (value.event === 'connector_failure') {
     // Closed connect-time stage only, never a message, a URL or a credential value. The diagnostic

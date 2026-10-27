@@ -344,3 +344,9 @@ test('#696: a pedro@ token logs match=false and refuses the endpoint until the o
     assert.deepEqual(seen, [{ proven: true, match: false }]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('Mongoose schema refusal receipts accept configured endpoint ids and reject unsafe ids', () => {
+  const event = { event: 'mongoose_tool_schema_refused', endpointId: 'work-knowledge', tool: 'read' };
+  assert.deepEqual(safeEvent(event), event);
+  assert.equal(safeEvent({ ...event, endpointId: 'unsafe endpoint\nsecret' }), undefined);
+});

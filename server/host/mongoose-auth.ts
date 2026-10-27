@@ -128,7 +128,7 @@ export interface MongooseAuthOptions extends OAuthTokenOptions {
    * The one receipt per token check (#696): proven, matched and a closed code, never the claim itself.
    * It runs at the first connect and after every refresh, from the JWT check this module already does.
    */
-  onIdentity?: (proof: IdentityProof) => void;
+  onIdentity?: (proof: IdentityProof, refreshed: boolean) => void;
 }
 
 /**
@@ -145,10 +145,10 @@ export function mongooseAccessToken(configDir: string, reference: string, bindin
     // another account, or for another endpoint's audience, is never used and never stored. With no
     // ownerIdentity configured there is nothing to compare, which is the catalogue's explicit
     // no-comparison policy, not a fallback: the token is still decoded and its audience checked.
-    verifyToken: accessToken => {
+    verifyToken: (accessToken, refreshed) => {
       if (endpoint === undefined) return undefined;
       const proof = mongooseTokenIdentity(accessToken, endpoint, expected);
-      options.onIdentity?.(proof);
+      options.onIdentity?.(proof, refreshed);
       if (proof.match === false) return { ok: false as const, code: 'identity_mismatch' as const };
       if (!proof.proven && expected.length > 0) return { ok: false as const, code: 'identity_unverified' as const };
       // The claim the issuer minted is what the sign-in record keeps, so Settings can name the account.

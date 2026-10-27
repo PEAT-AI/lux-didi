@@ -15,7 +15,10 @@ const parameters = declaration.parameters as unknown as { required?: string[]; a
 test('every validator limit has the schema keyword that states it', () => {
   assert.deepEqual(parameters.required, ['action']);
   const lookups = parameters.properties['lookups']!;
-  assert.equal(lookups.maxItems, MAX_LOOKUPS);
+  // F1 (review resolution A): the keyword is the outer bound the parser accepts, so no schema-valid call is one
+  // the host refuses; the per-call limit for an ordinary ask is stated in the description and the refusal.
+  assert.equal(lookups.maxItems, STATUS_ASK_LOOKUP_LIMIT);
+  assert.equal(STATUS_ASK_LOOKUP_LIMIT, RESEARCH_LIMITS.statusAskLookups);
   assert.equal(MAX_LOOKUPS, RESEARCH_LIMITS.maxLookups);
   const items = (lookups as unknown as { items: { properties: Record<string, Property> } }).items.properties;
   assert.deepEqual(items['source']!.enum, [...LOOKUP_SOURCES], 'the lookup source enum is the set the parser accepts');
@@ -79,20 +82,25 @@ test('a call that violates each limit is refused with the reason the schema pred
     const parsed = parseResearch(args);
     assert.equal(parsed.ok ? '' : parsed.reason, reason);
   }
-  // F1: the max-items keyword is the per-call limit, and the one carve-out #657 needs is a closed second bound
-  // that the declaration and the repair text state, so neither number is hidden from the model.
+  // F1 (review resolution A): the keyword publishes the outer bound, the description and the refusal publish the
+  // per-call rule, and the invariant between them is one way: a call the schema accepts is a call the parser can
+  // serve, so a provider that validates never rejects work the host would have done.
+  assert.match(parameters.properties['lookups']!.description ?? '', new RegExp(`at most ${MAX_LOOKUPS} lookups`));
   assert.match(parameters.properties['lookups']!.description ?? '', new RegExp(`up to ${STATUS_ASK_LOOKUP_LIMIT}`));
   assert.match(String(researchRepair('lookups_count')['guidance']), new RegExp(`up to ${STATUS_ASK_LOOKUP_LIMIT}`));
   const statusQuestion = 'test all tools';
   assert.equal(statusAsk(statusQuestion), true, 'the status-ask case is the one #657 pins');
   const atCarveOut = { action: 'start', question: statusQuestion, topic: 'names', lookups: Array.from({ length: STATUS_ASK_LOOKUP_LIMIT }, (_, n) => ({ source: LOOKUP_SOURCES[n]!, query: 'q' })) };
+  assert.equal(declaration.validate(atCarveOut), true, 'the schema accepts the widest list the parser serves');
   assert.equal(parseResearch(atCarveOut).ok, true, 'a status ask may name one lookup per source, as the declaration says');
   const pastCarveOut = { ...atCarveOut, lookups: Array.from({ length: STATUS_ASK_LOOKUP_LIMIT + 1 }, () => ({ source: 'knowledge', query: 'q' })) };
-  assert.equal(parseResearch(pastCarveOut).ok ? '' : (parseResearch(pastCarveOut) as { reason: string }).reason, 'lookups_count', 'and no further');
-  // An ordinary ask is held to the keyword the declaration publishes.
+  assert.equal(declaration.validate(pastCarveOut), false, 'beyond the outer bound the provider refuses first');
+  assert.equal(parseResearch(pastCarveOut).ok ? '' : (parseResearch(pastCarveOut) as { reason: string }).reason, 'lookups_count', 'and the parser refuses it too');
+  // An ordinary ask keeps the per-call rule the description states: 5 lookups is refused with the reason the
+  // description predicts, and the schema does not pretend otherwise in the model's direction.
   const ordinary = { action: 'start', question: 'who reports to Korbi', topic: 'Korbi reports', lookups: Array.from({ length: MAX_LOOKUPS + 1 }, () => ({ source: 'knowledge', query: 'q' })) };
   assert.equal(parseResearch(ordinary).ok ? '' : (parseResearch(ordinary) as { reason: string }).reason, 'lookups_count');
-  assert.equal(declaration.validate(ordinary), false, 'the provider refuses it before a turn is spent');
+  assert.equal(declaration.validate(ordinary), true, 'the keyword is the outer bound, never a bound the host does not apply');
   assert.ok(JSON.stringify(parseResearch(refusedOntheDay[0]![1])).includes('"topicChars"'), 'the refusal carries lengths, not words');
   assert.equal(JSON.stringify(parseResearch(refusedOntheDay[0]![1])).includes('the last month'), false);
 });

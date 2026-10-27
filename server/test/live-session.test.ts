@@ -57,7 +57,7 @@ import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-liv
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
-import { ADMISSION_BLOCK_REASONS, ADMISSION_DIRECTIVES, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, admissionBlocked } from '../tools/research.js';
+import { ADMISSION_BLOCK_REASONS, ADMISSION_DIRECTIVES, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, admissionBlocked, pagesCurrentRun } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 import { luxNoteMigrations } from '../tools/lux-note.js';
 import { notesExportMigrations } from '../tools/notes-export.js';
@@ -6887,6 +6887,10 @@ test('research admission names its closed reason and admits a paging continue of
   assert.deepEqual(admission.admit('start'), { admitted: true });
   admission.delivered('run-1');
   assert.equal(admission.currentRun(), 'run-1');
+  // A page copies a cursor or narrows with history lookups; a bare continue is a re-ask and is not a page.
+  assert.equal(pagesCurrentRun({ action: 'continue', researchId: 'run-1', cursor: 'c1' }), true);
+  assert.equal(pagesCurrentRun({ action: 'continue', researchId: 'run-1', lookups: [{ source: 'memory', history: { topic: 't' } }] }), true);
+  assert.equal(pagesCurrentRun({ action: 'continue', researchId: 'run-1' }), false, 'a bare continue is a re-ask');
   assert.deepEqual(admission.admit('continue', false, true), { admitted: true }, 'paging the current run is not a second operation');
   assert.deepEqual(admission.admit('start'), { admitted: false, reason: 'turn_spent' });
   admission.answered();

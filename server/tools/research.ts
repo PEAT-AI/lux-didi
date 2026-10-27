@@ -397,6 +397,15 @@ function namedWords(text: string): string[] {
 }
 
 /**
+ * C-RESEARCH-CONTRACT T-03: a continue that only pages or narrows the run it names: it copies a cursor, or it
+ * carries the history-only lookups a narrowing turn adds. A bare continue is a re-ask, not a page, and it still
+ * needs an owner turn of its own.
+ */
+export function pagesCurrentRun(call: ResearchCall): boolean {
+  return call.cursor !== undefined || (Array.isArray(call.lookups) && call.lookups.length > 0);
+}
+
+/**
  * C-RESEARCH-CONTRACT Q-08: a rewrite may narrow to the names the owner said, and may not answer about a
  * different one. A rewrite that swaps Korbi for Rob is refused with the closed code `entity_rewrite` and the
  * original question is what stands, so a search can never quietly be about another person.

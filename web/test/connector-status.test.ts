@@ -87,7 +87,7 @@ test('a drive consent proof reads as needs-consent with its own one-time action'
 // --- C-SIGNIN-LIVE: a Mongoose row says who the endpoint is signed in as. ---
 test('the Mongoose rows say "signed in as" the proven account, and the other connectors stay connected', () => {
   const row = (id: string, identity: unknown) => connectorState({ id, state: 'connected', tools: 2, lastHandshakeAt: '2026-10-12T14:52:00Z', identity });
-  assert.equal(row('mongoose-crm', { proven: true, match: true, value: OWNER })?.identity, `Signed in as ${OWNER}`);
+  assert.equal(row('mongoose-crm', { proven: true, match: true, value: OWNER })?.identity, `Signed in as ${OWNER} \u2713`);
   assert.equal(row('mongoose-data', { proven: true, match: false, value: 'other@example.test' })?.identity, 'Signed in as a different account');
   assert.equal(row('mongoose-knowledge', { proven: false, match: null, value: null })?.identity, 'Account not verified');
   assert.equal(row('gmail', { proven: true, match: true, value: OWNER })?.identity, `Connected as ${OWNER}`);

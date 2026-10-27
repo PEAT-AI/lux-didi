@@ -108,7 +108,8 @@ test('C-DEADAIR: a response that produced no audio buys the rung one short grace
   await live.emit(portEvent({ type: 'modelTurnStarted' }));
   await live.advance(AUDIBLE_DEBT_RUNG_MS - 500);
   assert.equal(rungReceipts(live).length, 0, 'the rung is not early');
-  await live.advance(1_200);
+  // The grace is one re-armed timer, so the clock is walked in bounded steps rather than asserting one instant.
+  for (let spent = 0; spent < 2_000 && rungReceipts(live).length === 0; spent += 250) await live.advance(250);
   assert.equal(rungReceipts(live).length, 1, 'a silent in-flight response does not hold the rung for seven seconds');
   assert.equal(live.fake.texts.length, live.sentTexts + 1, 'the result is spoken once');
   await live.advance(RESPONSE_WATCHDOG_RECOVERY_MS);

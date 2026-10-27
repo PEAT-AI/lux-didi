@@ -40,7 +40,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLiveConfig, liveSetupLanguage } from '../config/live.js';
-import { NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
+import { NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 import { GeminiLiveVoiceAdapter } from '../adapters/live-voice/index.js';
 import type { LiveVoiceAdapterOptions, LiveVoiceControl, LiveVoiceEvent, LiveVoiceLimits, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession, LiveToolResponse, LiveToolSendOutcome } from '../adapters/live-voice/index.js';
 import { chatMigrations } from '../chat/index.js';
@@ -2456,6 +2456,9 @@ test('L14: non-lexical transcript tags never reach the journal, and other bracke
   assert.equal(stripNonLexicalTags('so [inhale'), 'so ');
   assert.equal(stripNonLexicalTags('a [breath] b [sigh] c'), 'a  b  c');
   assert.equal(stripNonLexicalTags('keep [the folder] and [2] as they are'), 'keep [the folder] and [2] as they are');
+  // C-PICKUP: every cue the model writes is a cue, and an ordinary bracket stays the owner's own.
+  assert.equal(stripNonLexicalTags('[chuckle] hi [Q3]'), ' hi [Q3]', 'a chuckle cue is stripped, a question number is not');
+  assert.equal(stripNonLexicalTags('a [chuckles] b [giggle] c [giggles] d [laughter] e [smile] f [smiles] g'), 'a  b  c  d  e  f  g');
   const h = await harness(t);
   const { session } = await attached(h, 'tags');
   h.f.send({ serverContent: { inputTranscription: { text: 'the plan holds [inhale' } } });
@@ -6702,6 +6705,13 @@ test('#656: a model silent after the read settles still rebuilds once, after the
   h.advance(RESPONSE_WATCHDOG_RECOVERY_MS + 1_000); scheduler.runDue(); await settlePort();
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 1, 'the mute that outlives the read recovers');
   assert.equal(fake.sessionsOpened, 2);
+  // C-PICKUP: the model went quiet, nothing dropped, so no rebuilt session is told the call came back.
+  assert.equal(receipts.filter(entry => entry['event'] === 'live_recovery').at(-1)?.['pickup'], 'mute',
+    'the recovery line names the pickup kind it chose');
+  assert.equal(fake.requests.some(request => request.openingText === LIVE_RECOVERY_PICKUP), false,
+    'and no rebuilt session carries the connection pickup after a mute');
+  assert.ok(fake.requests.filter(request => request.openingText !== undefined)
+    .every(request => request.openingText === LIVE_MUTE_PICKUP), 'any pickup a mute rebuild sends is the mute one');
   // One rebuild per recovery window: the second silence inside it is not a second rebuild.
   h.advance(RESPONSE_WATCHDOG_WINDOW_MS / 2); scheduler.runDue(); await settlePort();
   const muteRebuilds = rebuildReceipts(receipts, 'live_rebuild')

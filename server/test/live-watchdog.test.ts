@@ -12,7 +12,7 @@ import { createLiveSessionOwner, IDLE_RESET_CAUSES, isBareAcknowledgement, LIVE_
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { LIVE_REBUILD_TRIGGERS, safeEvent } from '../host/log.js';
-import { LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
+import { LIVE_MUTE_PICKUP } from '../prompt/live-persona.js';
 import { fakeLiveVoicePort, type FakeLiveVoice, type FakeLiveVoiceEvent } from './fixtures/fake-live-voice.js';
 import type { LiveVoiceEvent, LiveVoicePort, LiveVoiceSession } from '../adapters/live-voice/index.js';
 import { pcm, ready as providerReady } from './live-voice-fixture.js';
@@ -142,9 +142,11 @@ test('a mute owner turn is nudged once and then recovered on a fresh seeded sess
   assert.ok((live.fake.requests.at(-1)!.history ?? []).length > 0, 'the fresh session carries the journal seed');
   assert.ok(live.receipts.some(record => record.event === 'live_recovery' && record.path === 'fresh_seeded' && record.reason === 'model_mute'),
     'the recovery is the fresh seeded path with reason model_mute');
-  // #591: owner speech asked for the answer, so the rebuild still announces itself and still carries the
-  // pickup instruction that lets her say she is back.
-  assert.equal(openingText(live), LIVE_RECOVERY_PICKUP, 'the owner asked for this answer, so the pickup stays');
+  // C-PICKUP: a mute is the model's silence, not a dropped line, so the owner is asked to wait in one short
+  // sentence instead of being told the call came back.
+  assert.equal(openingText(live), LIVE_MUTE_PICKUP, 'the model went mute, so the pickup names the silence');
+  assert.equal(live.receipts.filter(record => record.event === 'live_recovery').at(-1)?.pickup, 'mute',
+    'and the recovery line says which pickup it chose');
   assert.equal(live.fake.requests.at(-1)?.opening, 'model_first', 'and the rebuilt session is still asked to continue');
   assert.ok(continuityEvents(live).includes('rebuilding'), 'the reconnect ring and its chime are still requested');
   assert.deepEqual(rebuildTriggers(live), ['no_output_after_owner'], 'the rebuild names owner speech as its trigger');

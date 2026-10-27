@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   NAYA_CHARACTER, NAYA_VOICE_SURFACE, NAYA_LIVE_BASE, NAYA_TOOLS, NAYA_VOICE_TOOLS, NAYA_BACKEND_PROCEDURE, MEMORY_SECTION_CHAR_LIMIT, STANDING_MEMORY_CHAR_LIMIT, STANDING_MEMORY_PREFACE, LIVE_INSTRUCTION_HARD_LIMIT, LIVE_INSTRUCTION_TARGET_CHARS, OWNER_LORE_CHAR_LIMIT,
-  LIVE_RECOVERY_PICKUP,
+  LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP,
   PersonaOverlayError, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, canonicalSpeechLanguage, composeLiveInstruction, composeLiveSessionInstruction, loadPersonaOverlay,
   validatePersonaOverlay, withToolsSection, buildEarlierConversationsSection, EARLIER_CONVERSATIONS_HEADER, ownerProfileSections, LIVE_INSTRUCTION_SECTION_IDS, earlierConversationsBudget,
   LIVE_ACCENTS, LIVE_DEFAULT_ACCENT, LIVE_ACCENT_PRESETS, accentPreset, type PersonaOverlay,
@@ -656,6 +656,12 @@ test('the earlier-conversations section sits right after # Memory and yields bef
 
 test('the recovery pickup line is the exact fixed text of release 3g-c', () => {
   assert.equal(LIVE_RECOVERY_PICKUP, "The connection dropped for a moment and is back. Continue the conversation exactly where it was. Do not greet and do not re-introduce yourself. If you were in the middle of an answer, say in a few words that you are back and finish the thought; otherwise answer the owner's last words.");
+});
+test('C-PICKUP: the mute pickup names the silence, never a dropped connection', () => {
+  assert.equal(LIVE_MUTE_PICKUP, "You were silent; the socket was never lost. Continue exactly where the conversation was. Do not greet, do not announce a return and do not explain the pause. If a lookup failed, say in one short sentence that it failed; otherwise answer the owner's last words.");
+  for (const word of ['dropped', 'back', 'connection']) {
+    assert.equal(LIVE_MUTE_PICKUP.toLowerCase().includes(word), false, `the mute pickup never says ${word}`);
+  }
 });
 test('tool conduct retrieves relevant past context and distinguishes missing evidence', () => {
   const wrapper = `${NAYA_LIVE_BASE}\n\n${NAYA_TOOLS}`;

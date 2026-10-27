@@ -38,7 +38,7 @@ import { VoiceProfileMeter } from './voice-profile.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest, LiveToolResponse, LiveToolSendOutcome, TurnFailedReason } from '../adapters/live-voice/index.js';
 import type { DebtPhase, DebtReason } from '../trace/kinds.js';
-import { headAnchor, terminalAnchor, canonicalSpeechLanguage, effectiveLanguageCode, LIVE_RECOVERY_PICKUP } from '../prompt/live-persona.js';
+import { headAnchor, terminalAnchor, canonicalSpeechLanguage, effectiveLanguageCode, LIVE_RECOVERY_PICKUP, LIVE_MUTE_PICKUP } from '../prompt/live-persona.js';
 import { currentLiveAccent } from '../config/live.js';
 import type { SQLRow, Transaction } from '../contracts/storage.js';
 import { liveProfileIdentity, validateLiveProfile } from './config.js';
@@ -809,7 +809,7 @@ export type WarmPrewarmReceipt = { readonly ageBeforeMs: number | null; readonly
 
 /** L14: a breath is not a word. The provider's non-lexical tags never reach the journal or the script count;
  *  a closed list only, so any other bracketed text is the owner's own and stays untouched. */
-const NON_LEXICAL_TAG = /\[(?:breath|inhale|exhale|laugh|laughs|sigh|cough|noise|music|silence)\b[^\]\n]*\]?/gi;
+const NON_LEXICAL_TAG = /\[(?:breath|inhale|exhale|laugh|laughs|laughter|chuckle|chuckles|giggle|giggles|smile|smiles|sigh|cough|noise|music|silence)\b[^\]\n]*\]?/gi;
 export function stripNonLexicalTags(text: string): string { return text.replace(NON_LEXICAL_TAG, ''); }
 
 /** R7: the dropped-line opener is cancellable only until its own audio has started. */
@@ -3037,10 +3037,14 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // #660: a result that returned unspoken is why this window exists, so the new session opens model-first and
     // speaks as soon as the delivery below lands, instead of waiting for the owner to ask again.
     const unspokenOpening = handle.unspoken !== undefined;
+    // C-PICKUP: a model mute is not a dropped line, so a rebuild that owes the owner an answer is told the
+    // model went quiet instead of the call coming back. A quiet rebuild owes nothing and keeps its base shape.
+    const muteRebuild = reason === 'model_mute' && !handle.quietRebuild;
     const request = path === 'fresh_seeded'
       ? { ...structuredClone(handle.request), history: seed.turns, ...(unspokenOpening
         ? { opening: 'model_first' as const }
-        : handle.quietRebuild ? { opening: 'user_first' as const } : { openingText: LIVE_RECOVERY_PICKUP }) }
+        : handle.quietRebuild ? { opening: 'user_first' as const }
+          : { openingText: muteRebuild ? LIVE_MUTE_PICKUP : LIVE_RECOVERY_PICKUP }) }
       : { ...structuredClone(handle.request), resumptionHandle: savedHandle as string };
     // #591: a quiet rebuild asks for nothing, so an opener line the call inherited (a silent start after a lost
     // line) is cleared as well as the pickup that was never set.
@@ -3102,6 +3106,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // reader knows how the previous session really ended instead of inferring it from the outcome code alone.
     const closeReason = handle.adapterOutcome?.upstream?.closeReason ?? '';
     hostLogEvent({ event: 'live_recovery', path, attempt: handle.recoveries + 1, code, cause: this.#upstreamCause(handle, reason), closeCode, closeReason, reason, seedTurns: seed.turns.length, seedChars: seed.chars,
+      // C-PICKUP: which pickup the rebuilt session was opened with, so a mute is never logged as a drop.
+      pickup: reason === 'model_mute' ? 'mute' : 'connection',
       msSinceDrop: handle.dropEpisodeAt === undefined ? 0 : Math.max(0, this.#now() - handle.dropEpisodeAt),
       liveSessionId: handle.liveSessionId, generation: handle.generation });
   }

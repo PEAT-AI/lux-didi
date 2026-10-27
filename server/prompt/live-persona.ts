@@ -112,6 +112,12 @@ export const OWNER_LORE_CHAR_LIMIT = 14_000;
  * input on a fresh setup, replacing the fresh-call greeting.
  */
 export const LIVE_RECOVERY_PICKUP = 'The connection dropped for a moment and is back. Continue the conversation exactly where it was. Do not greet and do not re-introduce yourself. If you were in the middle of an answer, say in a few words that you are back and finish the thought; otherwise answer the owner\'s last words.';
+/**
+ * The opening input for a fresh seeded recovery after a model mute (C-PICKUP): nothing dropped, the model
+ * simply went silent, so the rebuild names the silence and never a reconnection. Same role as the pickup
+ * above, and the one place the difference reaches the model.
+ */
+export const LIVE_MUTE_PICKUP = 'You were silent; the socket was never lost. Continue exactly where the conversation was. Do not greet, do not announce a return and do not explain the pause. If a lookup failed, say in one short sentence that it failed; otherwise answer the owner\'s last words.';
 const separator = '\n\n';
 /** The closed set of Live instruction section ids; the host-log allowlist validates against it. */
 export const LIVE_INSTRUCTION_SECTION_IDS = Object.freeze(['voice-head', 'base', 'runtime', 'calendar', 'tools', 'people', 'owner-style', 'owner-lore', 'standing-memory', 'overlay', 'pickup', 'previous-openers', 'opening-options', 'memory', 'earlier-conversations', 'voice', 'voice-description'] as const);

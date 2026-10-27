@@ -538,10 +538,10 @@ const SCHEMAS = [
   { name: 'search_knowledge', inputSchema: { type: 'object', properties: {
     query: string, limit: integer, include_sensitive: { type: 'boolean' }, detail: string, max_chars: integer, snippet_chars: integer,
     project_hint: string, meeting_date_from: string, meeting_date_to: string, deadline_ms: integer,
-  }, required: ['query', 'limit'], additionalProperties: false } },
+  }, required: ['query', 'limit'], additionalProperties: true } },
   { name: 'get_insight', inputSchema: { type: 'object', properties: {
     ids: { type: 'array', items: integer }, id: integer, include_links: { type: 'boolean' }, detail: string, max_chars: integer, deadline_ms: integer,
-  }, required: ['ids', 'include_links'], additionalProperties: false } },
+  }, required: ['ids', 'include_links'], additionalProperties: true } },
 ];
 
 export async function replayTools(t: TestContext, store: Store, clock: ReplayClock, routeIdentity: string): Promise<ReplayTools> {

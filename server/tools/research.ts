@@ -1240,6 +1240,9 @@ const CHAT_WORDS = /\b(chats?|team|channels?|slack|mattermost|messages?|dms?|sai
  * is the generic knowledge ask.
  */
 const COMPANY_WORDS = /\b(?:mongoose|company(?: knowledge)?|customers?|clients?|prospects?|crm|deals?|our (?:products?|offerings?)|what do we sell|(?<!\bwhat )do we know)\b/u;
+/** The month names and their abbreviations, exactly, so `dec` never reads the word "decide". */
+const MONTH_PATTERN = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
+
 /**
  * W3: a count ask names a population the data endpoint counts (`users`) and either asks for its number or
  * names a window the resolver can read, so the ask "users in Indonesia last month" is data's question and the
@@ -1247,7 +1250,7 @@ const COMPANY_WORDS = /\b(?:mongoose|company(?: knowledge)?|customers?|clients?|
  */
 const COUNT_NOUN = /\b(?:users?|customers|accounts|active)\b/iu;
 const COUNT_WORDS = /\b(?:how many|number of|count of|total)\b/iu;
-const COUNT_WINDOW_WORDS = /\b(?:today|yesterday|this|last|past|week|weeks|month|months|quarter|q[1-4]|year|years|ytd|year to date|20\d{2}|jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|aug\w*|sep\w*|oct\w*|nov\w*|dec\w*)\b/iu;
+const COUNT_WINDOW_WORDS = new RegExp(`\\b(?:today|yesterday|this|last|past|week|weeks|month|months|quarter|q[1-4]|year|years|ytd|year to date|20\\d{2}|${MONTH_PATTERN})\\b`, 'iu');
 const COUNT_ASK = { test: (question: string): boolean => COUNT_NOUN.test(question) && (COUNT_WORDS.test(question) || COUNT_WINDOW_WORDS.test(question)) };
 /** #635: the writing verbs. A summarise, draft or reply ask has a chat word as its subject, not as a source. */
 const WRITING_WORDS = /\b(?:write|writes|writing|written|wrote|draft|drafts|summari[sz]e|summari[sz]ed|summaries|summary|compose|composes|reply|replies|replying|respond)\b/u;
@@ -4156,7 +4159,6 @@ const MONTH_WORDS: readonly [string, number][] = [
   ['january', 0], ['february', 1], ['march', 2], ['april', 3], ['may', 4], ['june', 5],
   ['july', 6], ['august', 7], ['september', 8], ['october', 9], ['november', 10], ['december', 11],
 ];
-const MONTH_PATTERN = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
 const NAMED_MONTH = new RegExp(`\\b(${MONTH_PATTERN})\\b(?:\\s*,?\\s*(?:of\\s+)?(\\d{4}))?`, 'iu');
 const NAMED_QUARTER = /\bq([1-4])(?:\s*,?\s*(?:of\s+)?(\d{4}))?\b/iu;
 const BARE_YEAR = /\b(20\d{2})\b/u;

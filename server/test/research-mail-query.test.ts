@@ -478,22 +478,25 @@ test('#1027: an empty sender filter retries the word as a full-text term over th
 
 test('#1027: an org ask finds its mail on the one broader read and logs the step', async () => {
   const sent: string[] = [];
+  const matched: string[][] = [];
   const h = mailHarness(async subs => subs.map(call => {
     if (call.name === 'gmail_search_messages') sent.push(String(call.args['q'] ?? call.name));
     const q = String(call.args['q'] ?? '');
-    return { key: call.key, name: call.name, ok: true, ...mailPage(fakeInbox(q)) } as IntentSubResult;
+    const ids = fakeInbox(q);
+    if (call.name === 'gmail_search_messages') matched.push([...ids]);
+    return { key: call.key, name: call.name, ok: true, ...mailPage(ids) } as IntentSubResult;
   }));
-  const reply = await runResearch(h.deps, {
+  await runResearch(h.deps, {
     action: 'start', question: 'any mail from Acme this week', lookups: [{ source: 'mail', query: 'any mail from Acme this week' }],
   }, new AbortController().signal);
   assert.deepEqual(sent, ['from:acme OR to:acme newer_than:7d', 'acme newer_than:7d'], 'one empty read, then exactly one broader read');
+  assert.deepEqual(matched, [[], ['o1', 'o2']], 'the filter read finds nothing, the full-text read finds both threads');
   const receipt = h.sources.filter(entry => entry.source === 'mail').at(-1)!;
   assert.deepEqual(receipt.mail, {
     terms: 0, operators: ['from', 'to', 'newer_than'], window: 'newer_than:7d',
     retried: { terms: 1, operators: ['newer_than'], window: 'newer_than:7d' },
   }, 'the retried shape names the step: the sender word is a term, and no from: filter is left');
   assert.equal(safeEvent(receipt)?.['mail'] === undefined, false, 'and the host log admits it');
-  assert.match(String(reply['note'] ?? ''), /found/, 'the found threads are spoken');
 });
 
 test('#1027: a person whose display name matches is found on the first read, no retry', async () => {

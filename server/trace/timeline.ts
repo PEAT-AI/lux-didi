@@ -471,7 +471,7 @@ const LOG_DETAIL_KEYS = [
   'researchId', 'sources', 'tools', 'calls', 'ms', 'msSinceReady', 'msSinceOpen', 'msSinceArrived', 'deadAirMs',
   'queuedMs', 'toolPending', 'failureClass', 'closeReason', 'terminalReason',
   // C-PITCH: the voice column, so one call's responses read as a pitch line and a shift stands out.
-  'f0Hz', 'f0P10Hz', 'f0P90Hz', 'voicedRatio', 'responseId',
+  'f0Hz', 'f0P10Hz', 'f0P90Hz', 'voicedRatio', 'responseId', 'ratio', 'medianHz', 'sessionMedianHz',
 ] as const;
 
 function logEntryText(line: LogLine): string[] {

@@ -118,7 +118,9 @@ export function connectorState(value: unknown): { id: string; state: string; nex
   const id = typeof row.id === 'string' && /^[\w.-]{1,128}$/.test(row.id) ? row.id : undefined;
   if (!id) return undefined;
   const state = text(row.state) ?? 'unknown';
-  const identity = connectionIdentity(row.identity);
+  // A Mongoose row is signed in by the owner, so its sentence says so; every other row is connected.
+  const proved = connectionIdentity(row.identity);
+  const identity = proved !== undefined && signInTarget(id) !== undefined ? proved.replace(/^Connected as /u, 'Signed in as ') : proved;
   const withIdentity = <T extends { id: string; state: string; next: string }>(rowValue: T): T & { identity?: string } => (identity ? { ...rowValue, identity } : rowValue);
   if (state === 'connected') return withIdentity({ id, state: 'Connected', next: nextStep(id, state).text });
   if (state === 'configured') return withIdentity({ id, state: 'Configured', next: nextStep(id, state).text });
@@ -131,7 +133,7 @@ export function connectorState(value: unknown): { id: string; state: string; nex
   // A finished attempt never hides the row's own reason, so a later outage reads as an outage.
   const attempt = record(row.signIn);
   const speaks = attempt !== undefined && (['running', 'waiting', 'finishing'].includes(String(attempt.phase))
-    || (attempt.phase === 'failed' && ['needs_sign_in', 'not_signed_in', 'credential_missing'].includes(reason)));
+    || (attempt.phase === 'failed' && ['needs_sign_in', 'not_signed_in', 'credential_missing', 'needs_restart'].includes(reason)));
   const progress = endpoint && speaks ? signInAttemptText(signInLabel(endpoint), attempt, 'mongoose') : undefined;
   // Only the three Mongoose endpoint rows can start a sign-in, and each carries its own name.
   return { id, state: label, next: progress ?? step.text, ...(step.guideUrl ? { guideUrl: step.guideUrl } : {}), ...(wantsSignIn ? { signIn: true } : {}), ...(wantsSignIn && endpoint ? { signInEndpoint: endpoint } : {}) };
@@ -300,6 +302,8 @@ const attemptSentences: Record<string, (label: string, server: SignInServer) => 
   running: label => `Starting the sign-in to ${label}.`,
   waiting: label => `The ${label} sign-in page was handed to your browser. Finish there, and the connector reconnects by itself.`,
   finishing: label => `${label} accepted the sign-in in the browser. Saving it now.`,
+  // C-SIGNIN-LIVE: a sign-in that landed but did not connect in place says the one thing left to do.
+  needs_restart: label => `${label} accepted the sign-in, but the connector has not opened yet. Restart Didi and it connects; the sign-in itself is saved.`,
   discovery_unreachable: (label, server) => `${server.name} is not reachable right now, so the ${label} sign-in could not start: ${server.check}, then try again.`,
   discovery_refused: (label, server) => `${server.name} did not confirm this endpoint, so the ${label} sign-in stopped before opening the browser.`,
   registration_refused: (label, server) => `${server.name} did not accept the sign-in request for ${label}. Try again in a moment.`,

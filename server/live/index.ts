@@ -18,7 +18,7 @@ import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
 import { ADMISSION_BLOCKED, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
-import { WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
+import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import { isToolFailureCode } from '../adapters/model/types.js';
 import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from '../adapters/model/types.js';
@@ -1172,6 +1172,9 @@ export class LiveSessionOwner {
   }
 
   /** Host-generated runtime context: host clock and timezone, plus the groups this session can reach. */
+  /** The per-call memory of which Mongoose endpoints were already announced (C-SIGNIN-LIVE). */
+  readonly #connectorNotes = new ConnectorNotes();
+
   #liveRuntimeContext(toolNames: readonly string[], timeZone: string): string {
     const connected = toolGroupNames(this.#researchWeb === undefined ? toolNames : [...toolNames, WEB_SEARCH_ACTION]);
     const endpoints = this.#tools?.status?.().endpoints ?? [];
@@ -1181,7 +1184,10 @@ export class LiveSessionOwner {
     const context = buildRuntimeContext({ now: new Date(this.#now()), timeZone, connected, unavailable,
       vault: { dictation: true, composed: this.#composedNotes() } });
     const signIn = signInNote(endpoints);
-    return signIn ? `${context}\n\n${signIn}` : context;
+    // C-SIGNIN-LIVE: the one sentence about a connector that just came up, said on this call only.
+    const note = this.#connectorNotes.take(endpoints);
+    const said = [signIn, note].filter((line): line is string => line !== undefined).join('\n\n');
+    return said.length > 0 ? `${context}\n\n${said}` : context;
   }
 
   /** Safe operator-visible identity. Never carries key bytes or prompt text. */

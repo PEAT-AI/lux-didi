@@ -45,8 +45,20 @@ export type AuthoritySource = (runId: string, signal: AbortSignal) => Promise<Li
 export type MongooseSignInStart = { status: 'started'; attemptId: string } | { status: 'failed'; reason: 'not-configured' | 'sign-in-in-progress' };
 /** Where one attempt is, as the Settings row shows it through the connection poll. */
 export type MongooseSignInPhase = 'running' | 'waiting' | 'finishing' | 'signed_in' | 'failed';
-export type MongooseSignInFailure = 'discovery_unreachable' | 'discovery_refused' | 'registration_refused' | 'port_in_use' | 'browser_unavailable' | 'callback_failed' | 'callback_timeout' | 'account_mismatch' | 'token_refused' | 'store_failed' | 'did_not_finish';
+export type MongooseSignInFailure = 'discovery_unreachable' | 'discovery_refused' | 'registration_refused' | 'port_in_use' | 'browser_unavailable' | 'callback_failed' | 'callback_timeout' | 'account_mismatch' | 'token_refused' | 'store_failed' | 'did_not_finish' | 'needs_restart';
 export interface MongooseSignInAttempt { attemptId: string; phase: MongooseSignInPhase; reason?: MongooseSignInFailure }
+/**
+ * The closed reason a sign-in that did not connect in place names: the endpoint row's own reason when it
+ * is one the host already publishes, so nothing free text ever reaches the line or the row.
+ */
+const SIGN_IN_ROW_REASONS = new Set(['not_signed_in', 'credential_missing', 'credential-missing', 'credential-refresh-failed',
+  'credential-consent-expired', 'credential-unavailable', 'credential-identity-mismatch', 'credential-identity-unverified',
+  'identity_mismatch', 'handshake_failed', 'discovery_failed', 'unreachable', 'transport_unavailable', 'needs_sign_in']);
+function signInRestartReason(row: Record<string, unknown>): string {
+  const named = [row['reasonCode'], row['error']].find(value => typeof value === 'string' && SIGN_IN_ROW_REASONS.has(value));
+  return typeof named === 'string' ? named : 'not_connected';
+}
+
 /** One owner click names the endpoint it signs in and answers at once; the attempt runs on and reports by row. */
 export interface MongooseSignIn {
   (endpoint?: string): Promise<MongooseSignInStart>;
@@ -98,6 +110,8 @@ function failureOf(hop: MongooseSignInHop): MongooseSignInFailure {
 export function createMongooseSignIn(options: {
   configDir: string; recover: () => Promise<void>; open?: (url: string) => void | Promise<void>;
   login?: (options: MongooseLoginOptions) => Promise<unknown>; log?: (event: Record<string, unknown>) => void;
+  /** The endpoint rows as the host holds them, read once after the in-place recovery (C-SIGNIN-LIVE). */
+  status?: () => readonly unknown[];
 }): MongooseSignIn {
   const open = options.open ?? openInDefaultBrowser;
   const login = options.login ?? runMongooseLogin;
@@ -176,8 +190,16 @@ export function createMongooseSignIn(options: {
       }))
       .then(async () => {
         move('signed_in');
-        // The record is stored; a connector that still cannot connect reports its own reason on its row.
+        // The record is stored, so this endpoint connects in place: the recovery writes its own
+        // connector_connected or connector_failure line. A recovery that leaves it unconnected owes the
+        // owner its own receipt and its own Settings line instead of a silent relaunch (R-12).
         try { await options.recover(); } catch { /* the connector lifecycle logs and shows its own failure */ }
+        const row = options.status?.().find(value => value && typeof value === 'object' && (value as Record<string, unknown>)['id'] === entry.id) as Record<string, unknown> | undefined;
+        if (row !== undefined && row['state'] !== 'connected') {
+          const reason = signInRestartReason(row);
+          log({ event: 'signin_needs_restart', endpoint, attemptId, outcome: reason });
+          attempts.set(entry.id, { attemptId, phase: 'failed', reason: 'needs_restart' });
+        }
       }, () => { move('failed', failure ?? 'did_not_finish'); })
       .finally(() => { if (pending === current) pending = undefined; });
     return { status: 'started', attemptId };
@@ -679,7 +701,7 @@ export async function startHost(config: HostConfig) {
       return attachment;
     };
     startupStage = 'listen';
-    const signIn = createMongooseSignIn({ configDir: effectiveConfigDir, recover: () => mcp.recover(), log: event => log.event(event) });
+    const signIn = createMongooseSignIn({ configDir: effectiveConfigDir, recover: () => mcp.recover(), status: () => mcp.status().endpoints, log: event => log.event(event) });
     let trelloOwner: 'unknown' | 'ok' | 'mismatch' = 'unknown';
     if (trelloKey(effectiveConfigDir) !== undefined) {
       void trelloIdentity({ configDir: effectiveConfigDir }).then(outcome => {

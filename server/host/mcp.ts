@@ -254,6 +254,8 @@ export async function composeMcpRuntime(options: {
   // OAuth record this host owns and refreshes lazily. An OAuth record is never read as a bearer token.
   const credentialOwners = new Map(selection.state === 'configured'
     ? selection.catalog.endpoints.filter(entry => entry.credentialRef).map(entry => [entry.credentialRef!, entry] as const) : []);
+  // #696: the claim a Mongoose token proved, kept per endpoint so the row can say who is connected.
+  const provenIdentity = new Map<string, IdentityProof>();
   const resolveCredential = async (reference: string): Promise<string> => {
     if (!readMongooseOAuth(configDir, reference)) return readMcpCredential(configDir, reference);
     const owner = credentialOwners.get(reference);
@@ -262,6 +264,12 @@ export async function composeMcpRuntime(options: {
       return await mongooseAccessToken(configDir, reference, owner ? mongooseEntryBinding(owner) : undefined, {
         now,
         ownerIdentity,
+        // #696: one connector_identity receipt per token check, from the check that already ran.
+        onIdentity: proof => {
+          if (!owner) return;
+          options.identityLog?.('mongoose', proof.proven, proof.match, owner.id, proof.code);
+          if (proof.proven && proof.match !== false && proof.value !== null) provenIdentity.set(owner.id, proof);
+        },
         // #502: a refused refresh is spoken once, by the endpoint's own typed connector_failure line
         // (credential-refresh-failed), never twice through this notice as well. A consent notice has no
         // such line, so it still speaks here.
@@ -753,7 +761,9 @@ export async function composeMcpRuntime(options: {
       if (attempt === 'first-connect') options.lifecycleLog?.({ event: 'connector_connected', endpointId: entry.id, connectMs: Math.max(0, now() - roundStarted) });
       // R1: the count includes a granted composite, so the owner sees every callable read tool.
       everConnected.add(entry.id);
-      reports.set(entry.id, { id: entry.id, state: 'connected', tools: granted.length, lastHandshakeAt: new Date(now()).toISOString(), ...(identity ? { identity } : {}) });
+      // A Mongoose endpoint proved its account from its own minted token, not from a tool probe.
+      const reported = identity ?? provenIdentity.get(entry.id);
+      reports.set(entry.id, { id: entry.id, state: 'connected', tools: granted.length, lastHandshakeAt: new Date(now()).toISOString(), ...(reported ? { identity: reported } : {}) });
       // C-OPEN 4: a Gmail link names the account the mailbox proved here, never one a model or a body named.
       if (entry.connector === 'google' && policy.toolNames.includes('gmail_get_profile') && !policy.toolNames.some(name => name.startsWith('calendar_')) && identity?.proven === true) noteGmailAccount(identity.value ?? undefined);
       return { retryable: false };

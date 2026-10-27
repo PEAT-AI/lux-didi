@@ -99,6 +99,11 @@ const SIGNIN_OUTCOMES: Record<string, readonly string[]> = {
   // H20: one closing line per attempt, whether it signed in or failed on a closed reason.
   signin_finished: ['signed_in', 'discovery_unreachable', 'discovery_refused', 'registration_refused', 'port_in_use',
     'browser_unavailable', 'callback_failed', 'callback_timeout', 'account_mismatch', 'token_refused', 'store_failed', 'did_not_finish'],
+  // C-SIGNIN-LIVE: a sign-in that landed but left its endpoint unconnected in place, and why. The
+  // reason is the endpoint row's own closed code, never free text, so a relaunch is never silent.
+  signin_needs_restart: ['not_signed_in', 'needs_sign_in', 'credential_missing', 'credential-missing', 'credential-refresh-failed',
+    'credential-consent-expired', 'credential-unavailable', 'credential-identity-mismatch', 'credential-identity-unverified',
+    'identity_mismatch', 'handshake_failed', 'discovery_failed', 'unreachable', 'transport_unavailable', 'not_connected'],
 };
 const SIGNIN_OAUTH_ERRORS = ['invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client', 'unsupported_grant_type', 'invalid_scope', 'invalid_target', 'access_denied'];
 /**

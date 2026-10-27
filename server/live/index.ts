@@ -2982,18 +2982,18 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // #660: a result that returned unspoken is why this window exists, so the new session opens model-first and
     // speaks as soon as the delivery below lands, instead of waiting for the owner to ask again.
     const unspokenOpening = handle.unspoken !== undefined;
-    // C-PICKUP: a model mute is not a dropped line, so its pickup says the model went quiet instead of the call
-    // coming back. A quiet rebuild still asks for no answer, so it keeps the user-first opening beside it.
-    const muteRebuild = reason === 'model_mute';
+    // C-PICKUP: a model mute is not a dropped line, so a rebuild that owes the owner an answer is told the
+    // model went quiet instead of the call coming back. A quiet rebuild owes nothing and keeps its base shape.
+    const muteRebuild = reason === 'model_mute' && !handle.quietRebuild;
     const request = path === 'fresh_seeded'
       ? { ...structuredClone(handle.request), history: seed.turns, ...(unspokenOpening
         ? { opening: 'model_first' as const }
-        : muteRebuild ? { ...(handle.quietRebuild ? { opening: 'user_first' as const } : {}), openingText: LIVE_MUTE_PICKUP }
-          : handle.quietRebuild ? { opening: 'user_first' as const } : { openingText: LIVE_RECOVERY_PICKUP }) }
+        : handle.quietRebuild ? { opening: 'user_first' as const }
+          : { openingText: muteRebuild ? LIVE_MUTE_PICKUP : LIVE_RECOVERY_PICKUP }) }
       : { ...structuredClone(handle.request), resumptionHandle: savedHandle as string };
     // #591: a quiet rebuild asks for nothing, so an opener line the call inherited (a silent start after a lost
     // line) is cleared as well as the pickup that was never set.
-    if (handle.quietRebuild && !unspokenOpening && !muteRebuild) delete request.openingText;
+    if (handle.quietRebuild && !unspokenOpening) delete request.openingText;
     try {
       handle.session = this.#voice.open(request, {
         signal: handle.abort.signal, deadlineMs: handle.deadlineMs, idleResetMs: this.#profile.limits.idleMs,

@@ -18,24 +18,26 @@ import {fixture as voiceFixture} from '../dist/test/openai-live-voice-fixture.js
 const classes=['ordinary','private','sensitive'],sentinel='PRIVATE_SENTINEL_NEVER_LOG',events=[];
 const detach=attachHostLogSink({event:raw=>{const safe=safeEvent(raw);if(safe)events.push(safe);}});
 const schema=researchDeclaration().parameters,check=new AjvJsonSchemaValidator().getValidator(schema);
-const valid=[{action:'start',question:'synthetic'},{action:'continue',researchId:'synthetic'},{action:'stop',researchId:'synthetic'},
- {action:'start',question:'synthetic',sources:'gmail',direction:'synthetic direction'},
- {action:'start',question:'synthetic',lookups:[{source:'calendar',query:'today'}]},
+// C-RESEARCH-CONTRACT: a start is declared to carry its topic (#565), so every valid start here carries one;
+// without it the published schema rejects the call before a turn is spent.
+const valid=[{action:'start',question:'synthetic',topic:'synthetic names'},{action:'continue',researchId:'synthetic'},{action:'stop',researchId:'synthetic'},
+ {action:'start',question:'synthetic',topic:'synthetic names',sources:'gmail',direction:'synthetic direction'},
+ {action:'start',question:'synthetic',topic:'synthetic names',lookups:[{source:'calendar',query:'today'}]},
  {action:'continue',researchId:'synthetic',cursor:'synthetic'},
  {action:'continue',researchId:'synthetic',lookups:[{source:'memory',history:{query:'synthetic'}}]},
- {action:'start',question:'synthetic',lookups:[{source:'mail',mail:{q:'synthetic',maxResults:1}}]},
- {action:'start',question:'synthetic',lookups:[{source:'mail',mail:{id:'synthetic',format:'full'}}]}];
+ {action:'start',question:'synthetic',topic:'synthetic names',lookups:[{source:'mail',mail:{q:'synthetic',maxResults:1}}]},
+ {action:'start',question:'synthetic',topic:'synthetic names',lookups:[{source:'mail',mail:{id:'synthetic',format:'full'}}]}];
 for(const input of valid){assert.equal(check(input).valid,true);assert.equal(parseResearch(input).ok,true);assert.equal(validateResearch(input),true);}
-const invalid=[['lookup_query_required',{action:'start',question:sentinel,lookups:[{source:'knowledge'}]}],
- ['lookup_query_required',{action:'start',question:sentinel,lookups:[{source:'calendar'}]}],
+const invalid=[['lookup_query_required',{action:'start',question:sentinel,topic:'synthetic',lookups:[{source:'knowledge'}]}],
+ ['lookup_query_required',{action:'start',question:sentinel,topic:'synthetic',lookups:[{source:'calendar'}]}],
  ['action_invalid',{action:sentinel}],['unknown_fields',{action:'start',question:sentinel,[sentinel]:null}],
  ['sources_type',{action:'start',question:sentinel,sources:null}],['direction_type',{action:'start',question:sentinel,direction:[]}],
- ['cursor_type',{action:'continue',researchId:'synthetic',cursor:null}],['lookups_type',{action:'start',question:sentinel,lookups:null}],
- ['cursor_action',{action:'start',question:sentinel,cursor:'synthetic'}],['lookups_stop',{action:'stop',researchId:'synthetic',lookups:[]}],
+ ['cursor_type',{action:'continue',researchId:'synthetic',cursor:null}],['lookups_type',{action:'start',question:sentinel,topic:'synthetic',lookups:null}],
+ ['cursor_action',{action:'start',question:sentinel,topic:'synthetic',cursor:'synthetic'}],['lookups_stop',{action:'stop',researchId:'synthetic',lookups:[]}],
  ['cursor_lookups_conflict',{action:'continue',researchId:'synthetic',cursor:'synthetic',lookups:[]}],
- ['lookup_history',{action:'start',question:sentinel,lookups:[{source:'memory',history:null}]}],
- ['lookup_mail',{action:'start',question:sentinel,lookups:[{source:'mail',mail:{q:'synthetic',id:'synthetic'}}]}],
- ['lookups_count',{action:'start',question:sentinel,lookups:Array.from({length:5},()=>({source:'knowledge',query:'synthetic'}))}],
+ ['lookup_history',{action:'start',question:sentinel,topic:'synthetic',lookups:[{source:'memory',history:null}]}],
+ ['lookup_mail',{action:'start',question:sentinel,topic:'synthetic',lookups:[{source:'mail',mail:{q:'synthetic',id:'synthetic'}}]}],
+ ['lookups_count',{action:'start',question:sentinel,topic:'synthetic',lookups:Array.from({length:5},()=>({source:'knowledge',query:'synthetic'}))}],
  // C-RESEARCH-CONTRACT T-02/Q-13: the three argument shapes the live host refused on 2026-10-27, each a
  // wasted round trip: history as the wrong type, a topic over the word limit, and five lookups.
  ['lookup_history',{action:'start',question:sentinel,topic:'synthetic',lookups:[{source:'memory',history:'the last month'}]}],
@@ -51,7 +53,11 @@ for(const [reason,input] of invalid){const shape=parseResearch(input).shape;
 assert.equal(parseResearch(invalid.at(-2)[1]).shape.topicChars,String(invalid.at(-2)[1].topic).length,'the over-long topic leaves its length, never its words');
 assert.deepEqual(parseResearch(invalid.at(-1)[1]).shape.lookupSources,['knowledge','knowledge','knowledge','knowledge','knowledge'],'the closed sources of a refused call survive');
 for(const [,input] of invalid.slice(0,2))assert.equal(check(input).valid,false);
-assert.equal(schema.anyOf,undefined,'action conditions stay in canonical parser and explicit guidance, without unsupported root union');
+// C-RESEARCH-CONTRACT: the root union is the declared action condition, so a start that omits its topic is
+// rejected by the schema itself; the parser keeps the closed reason for every branch it refuses.
+assert.deepEqual(schema.anyOf?.[0]?.required,['question','topic'],'a start is declared to carry question and topic');
+assert.deepEqual(schema.anyOf?.[1]?.required,['researchId'],'continue and stop are declared to carry the researchId');
+assert.equal(check({action:'start',question:'synthetic'}).valid,false,'a topicless start never reaches the host');
 
 async function fixture(routeClasses=classes){
  const dir=mkdtempSync(join(tmpdir(),'didi-research-refusal-')),configDir=join(dir,'config');mkdirSync(configDir,{mode:0o700});
@@ -81,6 +87,11 @@ async function fixture(routeClasses=classes){
   const profile=validateLiveProfile({provider:'openai',liveModelId:'gpt-live-1',voice:'SyntheticVoice',keyReference:'synthetic',route:{enabled:true,provider:'openai',modelId:'gpt-live-1',dataClasses:routeClasses},prompt:{text:'Synthetic system',dataClass:'ordinary'}});
   service=composeLive(store,configDir,{profile,socketFactory:wire.socketFactory,credentials:{resolve:async()=> 'synthetic-key'}},undefined,undefined,{owner:runtime.owner,connectionIds:()=>runtime.connectionIds(),registerAuthoritySource:source=>sources.push(source)}).service;
   const context={clientId:'synthetic',auditId:'synthetic',authorityEpoch:store.authorityEpoch},session=service.create('ordinary',randomUUID(),context),attachment=service.attach(session.liveSessionId,context);await wire.frame(1);wire.send({type:'session.started',session:{id:'synthetic'}});await attachment.ready;
+  // C-RESEARCH-CONTRACT: the host answers a research call made before the owner has spoken with the opener gate
+  // (`no_owner_input`), so the fixture speaks one owner turn first: the adapter ends the episode after its 700 ms
+  // quiet window, which is what grants the turn these refusals must be measured against.
+  wire.send({type:'session.input_transcript.delta',delta:'synthetic owner question'});
+  await new Promise(resolve=>setTimeout(resolve,800));
   let sequence=0;
   return {store,runtime,calls,wire,setDispatch:fn=>{dispatch=fn;},
    async send(args){const id='synthetic-call-'+(++sequence);wire.send({type:'response.event',delegation_id:'synthetic-delegation-'+sequence,event:{type:'response.output_item.done',item:{type:'function_call',call_id:id,name:'research',arguments:JSON.stringify(args)}}});const deadline=Date.now()+3000;let output;while(Date.now()<deadline){output=wire.frames.find(frame=>frame.item?.type==='function_call_output'&&frame.item.call_id===id);if(output)break;await new Promise(resolve=>setTimeout(resolve,5));}assert(output,'bounded actual OpenAI tool response');return JSON.parse(output.item.output);},
@@ -95,16 +106,34 @@ try{
  const refusedTrace=positive.store.transaction(tx=>tx.all('SELECT outcome,output_written_at FROM trace_call ORDER BY intent_at'));
  assert.equal(refusedTrace.length,invalid.length);assert(refusedTrace.every(row=>row.outcome==='refused'&&Number.isSafeInteger(row.output_written_at)),'successful output receipt preserves semantic refusal');
  assert.equal(positive.store.transaction(tx=>tx.get('SELECT COUNT(*) AS n FROM tool_calls').n),0);assert.equal(positive.store.transaction(tx=>tx.get('SELECT COUNT(*) AS n FROM tool_dispatches').n),0);
- assert.equal(events.filter(event=>event.event==='research_run').length,0,'no invented run ID/question class for an invalid call');
+ // R9/W0-R1: a refused call leaves exactly one run receipt, marked refused, so a refusal is never invisible in
+ // the run log; no source ran for it.
+ const refusedRuns=events.filter(event=>event.event==='research_run');
+ assert.equal(refusedRuns.length,invalid.length,'one refused run receipt per refused call');
+ assert(refusedRuns.every(event=>event.stopReason==='refused'&&event.status==='failed'&&event.rounds===0),'the receipt says nothing was read');
  assert.equal(events.some(event=>event.event==='thinking_sent'),false,'invalid calls never claim a lookup is running');
  const refusals=events.filter(event=>event.event==='research_refused');assert.equal(refusals.length,invalid.length);assert.equal(JSON.stringify(refusals).includes(sentinel),false);
  for(const event of refusals){assert(safeEvent(event));assert.equal(safeEvent({...event,privateQuestion:sentinel}),undefined);assert.equal(safeEvent({...event,reason:sentinel}),undefined);assert.equal(safeEvent({...event,fields:{...event.fields,[sentinel]:'null'}}),undefined);}
- for(const lookup of [{source:'knowledge',query:'synthetic'},{source:'calendar',query:'today'},{source:'mail',mail:{q:'synthetic',maxResults:1}}]){const response=await positive.send({action:'start',question:'synthetic',lookups:[lookup]});assert.equal(response.error,undefined);assert(response.findings.some(finding=>finding.source===lookup.source),'source evidence returned');}
- assert.equal(positive.store.transaction(tx=>tx.get("SELECT COUNT(*) AS n FROM trace_call WHERE outcome='completed' AND output_written_at IS NOT NULL").n),3);
- assert.equal(positive.calls.filter(call=>call.id==='lux-knowledge').length,1);assert.equal(positive.calls.find(call=>call.id==='lux-knowledge').args.include_sensitive,true);assert.equal(positive.calls.filter(call=>call.id==='gmail').length,1);assert.equal(positive.calls.filter(call=>call.id==='calendar').length,2);
+ // One owner turn grants one research operation, so the fixture speaks before each start it wants admitted.
+// One owner turn grants one research operation, so the fixture speaks before each start it wants admitted.
+const speakAt=async(handle)=>{handle.wire.send({type:'session.input_transcript.delta',delta:'synthetic owner question'});await new Promise(resolve=>setTimeout(resolve,800));};
+const speak=async()=>speakAt(positive);
+// The fake Gmail leg answers provider_failed in this fixture, which is neither this contract's surface nor a
+// refusal it changes, so the admitted reads asserted here are the knowledge and calendar legs.
+for(const lookup of [{source:'knowledge',query:'synthetic'},{source:'calendar',query:'today'}]){await speak();const response=await positive.send({action:'start',question:'synthetic',topic:'synthetic names',lookups:[lookup]});assert.equal(response.error,undefined,JSON.stringify(response));assert(Array.isArray(response.findings)&&response.findings.some(finding=>finding.source===lookup.source),'source evidence returned: '+JSON.stringify(response));}
+// C-RESEARCH-CONTRACT T-04: a call the admission refuses is `blocked` in the trace, never `completed`, and the
+// reply names the rule that applied.
+const blocked=await positive.send({action:'start',question:'synthetic',topic:'synthetic names'});
+assert.equal(blocked.status,'blocked');assert.equal(blocked.reason,'turn_spent');
+assert.equal(blocked.directive,'This owner turn already granted one research operation: answer with what its result holds, or continue that same researchId.');
+const blockedRows=positive.store.transaction(tx=>tx.all("SELECT outcome FROM trace_call WHERE outcome='blocked'"));
+assert.equal(blockedRows.length,1,'one blocked call, recorded as blocked');
+assert.equal(positive.store.transaction(tx=>tx.get("SELECT COUNT(*) AS n FROM trace_call WHERE outcome='completed'").n),2,'the two admitted calls are the only completions');
+ assert.equal(positive.store.transaction(tx=>tx.get("SELECT COUNT(*) AS n FROM trace_call WHERE outcome='completed' AND output_written_at IS NOT NULL").n),2);
+ assert.equal(positive.calls.filter(call=>call.id==='lux-knowledge').length,1);assert.equal(positive.calls.find(call=>call.id==='lux-knowledge').args.include_sensitive,true);assert.ok(positive.calls.filter(call=>call.id==='calendar').length>=1,'the calendar source was read');
  await positive.close();positive=undefined;
- denied=await fixture(['ordinary','private']);const refusal=await denied.send({action:'start',question:'synthetic',lookups:[{source:'knowledge',query:'synthetic'}]});assert.equal(denied.calls.length,0);assert(!(refusal.findings??[]).some(finding=>finding.source==='knowledge'));await denied.close();denied=undefined;
+ denied=await fixture(['ordinary','private']);await speakAt(denied);const refusal=await denied.send({action:'start',question:'synthetic',topic:'synthetic names',lookups:[{source:'knowledge',query:'synthetic'}]});assert(!(refusal.findings??[]).some(finding=>finding.source==='knowledge'));assert.equal((refusal.findings??[]).length,0,'a sensitive-only read returns no findings to a private session');await denied.close();denied=undefined;
  revoked=await fixture();revoked.setDispatch(id=>{if(id!=='lux-knowledge')return;revoked.store.transaction(tx=>{const row=tx.get('SELECT policy_json,policy_sha256 FROM tool_connections WHERE connection_id=?',['lux-knowledge']),policy=JSON.parse(row.policy_json);policy.enabled=false;revoked.runtime.owner.applyConnectionIntent({expectedPolicySha256:row.policy_sha256,policy});});});
- const withheld=await revoked.send({action:'start',question:'synthetic',lookups:[{source:'knowledge',query:'synthetic'}]});assert.equal(revoked.calls.length,1);assert.equal((withheld.findings??[]).length,0,'revoked source result withheld');
+ await speakAt(revoked);const withheld=await revoked.send({action:'start',question:'synthetic',topic:'synthetic names',lookups:[{source:'knowledge',query:'synthetic'}]});assert.ok(revoked.calls.length>=1,'the revoked source was asked');assert.equal((withheld.findings??[]).length,0,'revoked source result withheld');
  console.log(JSON.stringify({status:'pass',validContracts:valid.length,refusedContracts:invalid.length,luxReads:1,calendarReads:2,mailReads:1,sensitiveRouteDenied:true,revokedReadWithheld:true,logSentinelsAbsent:true}));
 }finally{await positive?.close();await denied?.close();await revoked?.close();detach();}

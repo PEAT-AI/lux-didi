@@ -111,7 +111,7 @@ test('a knowledge body link mints a knowledge_body handle and every hostile shap
 test('an unknown handle is not_found with the sentence she says aloud', () => {
   assert.deepEqual(openTarget('open_source', { handle: 'L999' }, 'open it'), { code: 'not_found' });
   assert.equal(OPEN_GUIDANCE.not_found, 'I could not find that item. Look it up again and use the handle the result gives you.');
-  assert.equal(OPEN_GUIDANCE.not_allowed, 'That link is not one I am allowed to open. Tell him plainly and offer the app home page instead.');
+  assert.equal(OPEN_GUIDANCE.not_allowed, 'That link is not one I am allowed to open. Tell him plainly which link failed and offer the app home page instead; if he asks again, call open again with the same handle.');
 });
 
 test('a handle minted in one live session is not_found in the next', () => {

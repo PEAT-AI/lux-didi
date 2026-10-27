@@ -2712,6 +2712,9 @@ const SEARCHED_CLAUSE: Partial<Record<CoverageStatus, (label: string) => string>
   partial_failed: label => `${label} stopped after a later page failed`,
 };
 
+/** W3: the windows a count can read, named in the one question the reply asks the owner when none was named. */
+const COUNT_WINDOWS = 'today, yesterday, last N days, this or last week, this or last month, a month such as September, last N months, this or last quarter, Q1 to Q4, this or last year, 2025, or year to date';
+
 /** The one clause the voice can say about a source it could not read, keyed by the closed reason. */
 const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: SourceKind) => string> = {
   not_connected: label => `${label} is not connected`,
@@ -2731,7 +2734,7 @@ const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: Source
   never_ran: label => `I did not run a new ${label} read this time`,
   // W3: a count without a date window is an all-time sum, which is not a user count. The window is the
   // owner's own, so the repair is one short question to the owner that names the windows she can use.
-  count_needs_date_window: label => `${label} refused this count: ask the owner which window to use (today, yesterday, last N days, this or last week, this or last month, a month such as September, last N months, this or last quarter, Q1 to Q4, this or last year, 2025, or year to date) and ask again`,
+  count_needs_date_window: label => `${label} refused this count: ask the owner which window to use (${COUNT_WINDOWS}) and ask again`,
 };
 
 /** A not-searched reason code from the host, narrowed to the closed set the header publishes. */
@@ -3436,6 +3439,8 @@ const REASON_WORDS: Record<string, string> = {
   // F17: the chat triage read is the connector's own composite, which the approved policy may not grant.
   'tool-not-granted': 'tool not granted',
   window_unparsed: 'could not resolve that date or window, ask for a day or a week',
+  // W3: a count with no window is the refusal the owner can answer, so the reason asks the question itself.
+  count_needs_date_window: `no date window, so ask the owner which window to use: ${COUNT_WINDOWS}`,
   history_unavailable: 'unavailable',
   history_reference_unavailable: 'unavailable',
   cancelled: 'the run stopped before it was read',

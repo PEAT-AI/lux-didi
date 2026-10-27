@@ -25,7 +25,7 @@ const CASES: readonly { question: string; start: string; end: string }[] = [
   { question: 'how many users in Indonesia last quarter', start: '2026-07-01', end: '2026-09-30' },
   { question: 'how many users in Indonesia this quarter', start: '2026-10-01', end: '2026-10-27' },
   { question: 'how many users in Indonesia in Q1 2026', start: '2026-01-01', end: '2026-03-31' },
-  { question: 'how many users in Indonesia in Q4', start: '2025-10-01', end: '2025-12-31' },
+  { question: 'how many users in Indonesia in Q4', start: '2026-10-01', end: '2026-10-27' },
   { question: 'how many users we had this year', start: '2026-01-01', end: '2026-10-27' },
   { question: 'how many users we had year to date', start: '2026-01-01', end: '2026-10-27' },
   { question: 'how many users we had last year', start: '2025-01-01', end: '2025-12-31' },

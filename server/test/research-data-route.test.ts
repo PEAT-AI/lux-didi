@@ -97,8 +97,9 @@ test('an undated count is refused with count_needs_date_window, never dispatched
     'the undated all-time sum never reaches the endpoint');
   const spoken = JSON.stringify(reply);
   assert.match(spoken, /count_needs_date_window/u, `the closed code: ${spoken}`);
-  assert.match(spoken, /refused this count/u, 'the one-line repair');
-  assert.match(spoken, /ask the owner/u, 'the repair asks the owner for a window she can express');
+  assert.match(spoken, /ask the owner which window to use/u, 'the repair asks the owner for a window she can express');
+  assert.match(spoken, /last month/u, 'and names the windows she can use');
+  assert.match(spoken, /year to date/u);
 });
 
 test('the count guard refuses an undated metric query at the argument boundary', () => {

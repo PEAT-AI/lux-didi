@@ -136,8 +136,11 @@ test('the split ask stages the answer she just gave, never the request fragments
   await r.say('Can you, can you');
   await r.say('store it in Lux Knowledge');
   const answer = 'Rize is a materials research company: its platform automates formulation and testing of new polymer blends.';
+  const refs = r.store.transaction(tx => tx.all("SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND finished=1", [r.sessionId])
+    .map(row => `journal:${Number(row['journal_id'])}`));
+  assert.equal(refs.length, 2, 'the two transcribed asks are one turn each');
   const staged = r.store.transaction(tx => stageComposedNote(tx, r.sessionId,
-    { title: 'Rize materials research', body: answer, evidenceRefs: ['journal:1', 'journal:2'] },
+    { title: 'Rize materials research', body: answer, evidenceRefs: refs },
     { inputAt: NOW, inputFinal: true }, NOW, true));
   assert.equal(staged['staged'], true, `staged: ${JSON.stringify(staged)}`);
   assert.equal(staged['body'], answer);

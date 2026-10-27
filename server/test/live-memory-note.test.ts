@@ -295,7 +295,7 @@ function liveSessionRow(store: Store, id: string, endedAt: number): void {
 
 function summaryRow(store: Store, id: string, loop: string, endedAt: number): void {
   store.transaction(tx => {
-    tx.run('INSERT INTO history_sessions (live_session_id, data_class, revision) VALUES (?,?,?)', [id, 'ordinary', 1]);
+    tx.run('INSERT INTO history_sessions (live_session_id, owner_id, data_class, revision, created_at) VALUES (?,?,?,?,?)', [id, store.assistantId, 'ordinary', 1, endedAt]);
     tx.run(`INSERT INTO conversation_summaries (id, live_session_id, status, summary, open_loop, input_truncated,
         injected_summary_ids, retry_count, created_at, ended_at) VALUES (?,?,'complete',?,?,0,'[]',0,?,?)`,
     [`summary-${id}`, id, 'synthetic summary', loop, endedAt, endedAt]);

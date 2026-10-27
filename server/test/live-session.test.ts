@@ -5689,6 +5689,7 @@ test('mail body integration: body consumption preserves simultaneous calendar ev
   for (;;) {
     // The evidence this call gathered rides every page as a control field, so the count is asserted on the
     // page the model is reading, never on a page that happens to carry the lines.
+    if (count === 0) process.stderr.write(`DBG631 ${JSON.stringify(last()).slice(0, 1400)}\n`);
     assert.equal((last()['calendarCoverage'] as Record<string, unknown>)['received'], 12, 'the calendar evidence the body shares a call with is still on the page');
     for (const match of JSON.stringify(last()['calendarCoverage'] ?? '').matchAll(/Body sibling event (\d+)/g)) seen.add(match[1]!);
     assert(JSON.stringify(last()).length <= 6000, 'combined actual model response respects its existing bound');

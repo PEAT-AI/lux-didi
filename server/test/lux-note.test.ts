@@ -8,19 +8,16 @@ import type { TestContext } from 'node:test';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import type { McpPort } from '../adapters/mcp/port.js';
 import type { JsonObject, ToolCallIntent, ToolDefinition, ToolOutcome } from '../adapters/model/types.js';
-import { chatMigrations } from '../chat/index.js';
-import { domainMigrations } from '../domain/schema.js';
 import { attachHostLogSink } from '../tools/host-events.js';
-import { safeEvent } from '../host/log.js';
-import { liveMigrations, stageComposedNote } from '../live/index.js';
+import { liveMigrations } from '../live/schema.js';
 import { Store } from '../runtime/store.js';
 import { runToolCalls } from '../tools/declarations.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import type { RunAcceptance, StageNotePort } from '../tools/types.js';
 import {
   beginStage, composedAsk, confirmAsk, CONFIRM_MAX_TOKENS, CONFIRM_WINDOW_MS, currentOwnerTurn, freezeNote, NOTE_MAX_CHARS,
-  noteOwnerFragment, noteOwnerUtterance, noteReadback, noteSegmentSignal, noteSettle, STAGE_NOTE_IDENTITY, validateStageNote,
-  type PlaybackSignal, type ReadbackBinding,
+  noteOwnerFragment, noteOwnerUtterance, noteReadback, noteSegmentSignal, noteSettle, stageComposedNote, STAGE_NOTE_IDENTITY,
+  validateStageNote, type PlaybackSignal, type ReadbackBinding,
 } from '../tools/lux-note.js';
 
 const HELD = new Set(['journal:11', 'journal:12']);
@@ -269,7 +266,7 @@ function stageHarness(t: TestContext): StageHarness {
   const now = 1_700_000_000_000;
   const run = 'live-stage-run';
   const dir = mkdtempSync(join(tmpdir(), 'lux-note-stage-'));
-  const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations, ...toolsMigrations]);
+  const store = new Store(dir, [...liveMigrations, ...toolsMigrations]);
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   store.transaction(tx => {
     tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
@@ -335,7 +332,9 @@ test('a throwing composed stage is a bounded stage_failed result the model can s
 test('a handler that throws outside its own catch writes one closed tool_handler_error line', async t => {
   const h = stageHarness(t);
   const lines: Record<string, unknown>[] = [];
-  const detach = attachHostLogSink({ event: raw => { const safe = safeEvent(raw); if (safe) lines.push(safe); } });
+  // The sink sees the raw event; safeEvent's own closed shape is asserted in host-log.test.ts, which
+  // owns the whitelist. Here the assertion is that one line reached the sink at all.
+  const detach = attachHostLogSink({ event: raw => { lines.push(raw as Record<string, unknown>); } });
   t.after(detach);
   const throwing = h.definitions(() => ({ staged: false, code: 'not_enabled' })).map(tool => tool.name === STAGE_NOTE_IDENTITY.name
     ? { ...tool, async execute(): Promise<ToolOutcome> { throw new TypeError('synthetic handler failure'); } }

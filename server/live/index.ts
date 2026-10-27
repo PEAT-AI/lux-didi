@@ -9,7 +9,7 @@ import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteOwnerWords, no
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
 import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
-import { beginStage, currentOwnerTurn, freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, type PlaybackSignalKind } from '../tools/lux-note.js';
+import { freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, stageComposedNote, type PlaybackSignalKind } from '../tools/lux-note.js';
 import { NotesExporter } from '../tools/notes-export.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
@@ -998,35 +998,6 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
       guidance: `Only part of that was saved: "${noteText}". Tell the owner what was saved and ask for the rest in one sentence.` }, metrics);
   }
   return receipt({ remembered: true, entryId: entry.id }, metrics);
-}
-
-/**
- * W6 items 1 to 4: the model stages a composed note and nothing more. The owner's own finalized
- * microphone turn is the only authorization, the evidence refs must name journal rows this session
- * holds, and the whole payload is frozen here, before any read-back.
- */
-export function stageComposedNote(tx: Transaction, liveSessionId: string, args: { title: string; body: string; evidenceRefs: string[] },
-  turn: { readonly inputAt: number | undefined; readonly inputFinal: boolean }, now: number, enabled: boolean): JsonObject {
-  const rows = tx.all("SELECT journal_id,text,final_origin,finalized_at FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND finished=1 ORDER BY journal_id DESC LIMIT 50", [liveSessionId])
-    .map(row => ({ journalId: Number(row['journal_id']), text: String(row['text'] ?? ''),
-      finalOrigin: String(row['final_origin'] ?? 'unknown'), finalizedAt: Number(row['finalized_at'] ?? 0) }));
-  // W6-R2 B1: only this turn's finalized mic transcript can authorize, never the previous turn.
-  const read = currentOwnerTurn(rows, turn.inputAt, turn.inputFinal, now);
-  if (read.state === 'refused') {
-    hostLogEvent({ event: 'lux_note_stage', staged: false, code: read.code });
-    return { staged: false, code: read.code };
-  }
-  const outcome = beginStage({ stageId: randomUUID(), sessionId: liveSessionId, ownerText: read.text,
-    title: args.title, body: args.body, evidence: args.evidenceRefs, heldEvidence: read.evidence, enabled, now });
-  if (outcome.state === 'refused') {
-    hostLogEvent({ event: 'lux_note_stage', staged: false, code: outcome.code });
-    return { staged: false, code: outcome.code };
-  }
-  const note = outcome.note;
-  saveNoteState(tx, note);
-  hostLogEvent({ event: 'lux_note_stage', staged: true, digest: note.payloadSha.slice(0, 12) });
-  return { staged: true, stageId: note.stageId, title: note.title, body: note.body,
-    readBack: `Read the note back exactly, then wait for the owner: ${note.title}. ${note.body}` };
 }
 
 /** Scrub only the deleted record, preserving the rest of the frozen instruction. */

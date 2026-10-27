@@ -3945,6 +3945,36 @@ test('W5: a stored open loop a previous call opened on is not offered again', as
   assert.equal(/^- open loop:/mu.test(snapshot(second.liveSessionId)), false, 'the loop a previous call opened on is not offered again');
 });
 
+// W5-R2 (master review): the distillation re-words the loop between calls, so "website lookup for Acmeworks" comes
+// back as "find the Acmeworks homepage" and the exact-topic rule alone cannot see the same loop twice. A call whose
+// plan offered any open-loop option therefore starts no other call on one for 12 hours; other kinds are untouched.
+test('W5-R2: a call that offered an open loop cools every open-loop opener for 12 hours', async t => {
+  const h = await harness(t);
+  const first = 'The owner said the Acmeworks website lookup is still to be done.';
+  h.store.transaction(tx => seedSummary(tx, 'synthetic-cooldown-source', first, NOW - 3_600_000, h.store.assistantId, NOW, first));
+  const snapshot = (liveSessionId: string): string => {
+    const row = h.store.transaction(tx => tx.get('SELECT accepted_prompt_snapshot FROM live_sessions WHERE live_session_id=?', [liveSessionId]))!;
+    return (JSON.parse(String(row['accepted_prompt_snapshot'])) as { system: string }).system;
+  };
+  const call1 = h.owner.create({ idempotencyKey: 'cooldown-1', inputClass: 'ordinary' }, h.ctx);
+  assert.match(snapshot(call1.liveSessionId), /^- open loop: /mu, 'the first call offers the stored loop');
+  // t = 20 min: the call that opened on it ends and its summary stores the same loop in other words.
+  h.advance(20 * 60_000);
+  const reworded = 'The owner said he still has to find the Acmeworks homepage.';
+  h.store.transaction(tx => {
+    tx.run('DELETE FROM conversation_summaries WHERE live_session_id=?', [call1.liveSessionId]);
+    summaries.insertSummary(tx, { liveSessionId: call1.liveSessionId, status: 'complete', summary: reworded, endedAt: NOW + 20 * 60_000 - 60_000, now: NOW + 20 * 60_000, openLoop: reworded });
+  });
+  const call2 = h.owner.create({ idempotencyKey: 'cooldown-2', inputClass: 'ordinary' }, h.ctx);
+  assert.equal(/^- open loop:/mu.test(snapshot(call2.liveSessionId)), false, 'inside the cooldown the re-worded loop is not offered');
+  // t = 13 h: the cooldown is over, so a stored loop is an opener again.
+  h.advance(13 * 3_600_000 - 20 * 60_000);
+  h.store.transaction(tx => seedSummary(tx, 'synthetic-cooldown-later', 'The owner said the Acmeworks invoice is still to be sent.',
+    NOW + 13 * 3_600_000 - 3_600_000, h.store.assistantId, NOW + 13 * 3_600_000));
+  const call3 = h.owner.create({ idempotencyKey: 'cooldown-3', inputClass: 'ordinary' }, h.ctx);
+  assert.match(snapshot(call3.liveSessionId), /^- open loop: /mu, 'past the cooldown a stored loop is offered again');
+});
+
 test('1023-N8: a start right after a call that just ended names his last topic while the summary is pending', async t => {
   const h = await harness(t);
   const first = await attached(h, 'pending-summary-1');

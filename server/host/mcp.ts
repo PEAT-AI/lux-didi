@@ -265,10 +265,10 @@ export async function composeMcpRuntime(options: {
       return await mongooseAccessToken(configDir, reference, owner ? mongooseEntryBinding(owner) : undefined, {
         now,
         ownerIdentity,
-        // #696: one connector_identity receipt per token check, from the check that already ran.
-        onIdentity: proof => {
+        // Validate every use; log only a refresh here and a successful connect below.
+        onIdentity: (proof, refreshed) => {
           if (!owner) return;
-          options.identityLog?.('mongoose', proof.proven, proof.match, owner.id, proof.code);
+          if (refreshed || !proof.proven || proof.match === false) options.identityLog?.('mongoose', proof.proven, proof.match, owner.id, proof.code);
           if (proof.proven && proof.match !== false && proof.value !== null) provenIdentity.set(owner.id, proof);
         },
         // #502: a refused refresh is spoken once, by the endpoint's own typed connector_failure line
@@ -601,6 +601,8 @@ export async function composeMcpRuntime(options: {
       const granted = [...names, ...composed].sort();
       // Healthy discovery without an approved envelope is status-only, not an empty owner policy.
       if (!names.length) {
+        const proof = provenIdentity.get(entry.id);
+        if (proof) options.identityLog?.('mongoose', proof.proven, proof.match, entry.id, proof.code);
         options.lifecycleLog?.({ event: 'connector_connected', endpointId: entry.id, connectMs: Math.max(0, now() - roundStarted) });
         everConnected.add(entry.id);
         reports.set(entry.id, { id: entry.id, state: 'connected', tools: 0, lastHandshakeAt: new Date(discovery.observedAt).toISOString() });
@@ -767,6 +769,8 @@ export async function composeMcpRuntime(options: {
         reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: stale() ? 'generation-superseded' : 'connection-policy-changed' }); return { retryable: false };
       }
       ready.add(entry.id);
+      const tokenProof = provenIdentity.get(entry.id);
+      if (entry.connector === 'mongoose' && tokenProof) options.identityLog?.('mongoose', tokenProof.proven, tokenProof.match, entry.id, tokenProof.code);
       if (attempt === 'first-connect') options.lifecycleLog?.({ event: 'connector_connected', endpointId: entry.id, connectMs: Math.max(0, now() - roundStarted) });
       // R1: the count includes a granted composite, so the owner sees every callable read tool.
       everConnected.add(entry.id);

@@ -381,6 +381,10 @@ const ANALYTICAL_ASK = /\b(?:compare|comparison|versus|vs|difference between|imp
 const ENTITY_STOP = new Set(['The', 'What', 'Who', 'When', 'Where', 'Which', 'Why', 'How', 'Does', 'Did', 'Can', 'Could', 'Would', 'Should', 'Tell', 'Show', 'Give', 'Please', 'And', 'But', 'For', 'Any', 'All', 'Is', 'Are', 'Was', 'Were', 'Do', 'Has', 'Have', 'Summarise', 'Summarize', 'Also', 'Then', 'Now']);
 const QUOTED_ENTITY = /"([^"]{2,80})"/gu;
 const CAPITALISED_ENTITY = /\b([A-Z][a-z]{1,}[\w'-]*)\b/gu;
+/** A candidate name: any word carrying a capital, so acronyms and mixed-case brands are names too. */
+const NAME_CANDIDATE = /\b([A-Za-z][A-Za-z'\u2019-]*)\b/gu;
+/** Typography, not a name: the first word of the text or of a sentence. */
+const SENTENCE_START = /(?:^|[.!?]\s+)$/u;
 /** An ask that refers to a past conversation may use her memory even when it names someone. */
 const PAST_CONVERSATION = /\b(?:last time|last we|we said|we discussed|we talked|what did we|did we say|earlier we|remember when)\b/iu;
 
@@ -408,14 +412,18 @@ export function requestedEntities(question: string): string[] {
 }
 
 /**
- * C-RESEARCH-CONTRACT Q-08: the names a question carries, sentence-initial ones included, because a topic is
- * often nothing but a name. A possessive reduces to the name it belongs to.
+ * C-RESEARCH-CONTRACT Q-08: the names a text carries, and a possessive reduces to the name it belongs to. A
+ * question is a sentence, so a capital that comes only from where its first word sits is typography there; a
+ * topic is a search phrase, not a sentence, so its first capital is a candidate name like any other.
  */
-function namedWords(text: string): string[] {
+function namedWords(text: string, question = false): string[] {
   const found: string[] = [];
-  for (const match of text.matchAll(CAPITALISED_ENTITY)) {
+  for (const match of text.matchAll(NAME_CANDIDATE)) {
     const word = (match[1] ?? '').replace(/['\u2019]s$/u, '');
-    if (word.length < 2 || ENTITY_STOP.has(word) || NOT_A_NAME.has(word.toLowerCase())) continue;
+    if (word.length < 2 || !/[A-Z]/u.test(word) || ENTITY_STOP.has(word) || NOT_A_NAME.has(word.toLowerCase())) continue;
+    // A capital on the first letter alone is typography when the word opens a question or its sentence; a
+    // capital inside the word (eBay) or an acronym (IBM) is a name wherever it sits.
+    if (question && !/[A-Z]/u.test(word.slice(1)) && SENTENCE_START.test(text.slice(0, match.index ?? 0))) continue;
     if (!found.includes(word.toLowerCase())) found.push(word.toLowerCase());
   }
   return found;
@@ -430,21 +438,35 @@ export function pagesCurrentRun(call: ResearchCall): boolean {
   return call.cursor !== undefined || (Array.isArray(call.lookups) && call.lookups.length > 0);
 }
 
+/** The name counts a refusal logs: numbers only, because the words are the owner's text. */
+export interface EntityNameCounts { namesKept: number; namesDropped: number; namesAdded: number }
+export type EntityVerdict = { ok: true; question: string } | ({ ok: false; reason: 'entity_rewrite'; question: string } & EntityNameCounts);
+
 /**
  * C-RESEARCH-CONTRACT Q-08: a rewrite may narrow to the names the owner said, and may not answer about a
  * different one. A rewrite that swaps Korbi for Rob is refused with the closed code `entity_rewrite` and the
  * original question is what stands, so a search can never quietly be about another person.
  */
-export function entityPreservedQuestion(original: string, rewritten: string):
-  { ok: true; question: string } | { ok: false; reason: 'entity_rewrite'; question: string } {
-  const before = namedWords(original);
+export function entityPreservedQuestion(original: string, rewritten: string): EntityVerdict {
+  const before = namedWords(original, true);
+  // Rule: refuse only a rewrite that drops every name the question had and adds one of its own; a question
+  // naming nobody has no name to drop, so its topic is free to name the thing to search for.
   if (before.length === 0) return { ok: true, question: rewritten };
   const after = namedWords(rewritten);
   const kept = before.filter(name => after.includes(name));
   const added = after.filter(name => !before.includes(name));
-  if (kept.length === 0 && added.length > 0) return { ok: false, reason: 'entity_rewrite', question: original };
+  const counts = { namesKept: kept.length, namesDropped: before.length - kept.length, namesAdded: added.length };
+  if (kept.length === 0 && added.length > 0) return { ok: false, reason: 'entity_rewrite', question: original, ...counts };
   return { ok: true, question: rewritten };
 }
+
+/**
+ * Requirement 4: the request this owner turn already had refused. A byte-identical retry spends no lookup and
+ * never gets a second judgement, and it is told to stop instead of being refused as if it were new. One owner
+ * turn owns this pair, so ResearchAdmission forgets it on the next turn.
+ */
+let refusedEntityRequest: { question: string; topic: string; counts: EntityNameCounts } | undefined;
+let entityRetryStopped = false;
 
 /** C-DEPTH item 1: the tier an owner question asks for, classified before the run reads anything. */
 export function budgetFor(question: string, topic?: string): number {
@@ -2299,7 +2321,7 @@ const optionalString = (value: unknown): string | undefined => typeof value === 
 
 export const RESEARCH_ARGUMENT_FIELDS = ['action', 'question', 'topic', 'researchId', 'sources', 'direction', 'lookups', 'cursor', 'pageCursor'] as const;
 export const RESEARCH_ARGUMENT_TYPES = ['absent', 'null', 'string', 'number', 'boolean', 'array', 'object', 'other'] as const;
-export const RESEARCH_REFUSAL_REASONS = ['root_type', 'unknown_fields', 'action_missing', 'action_invalid', 'question_type', 'question_required', 'question_length', 'topic_type', 'topic_required', 'topic_length', 'entity_rewrite', 'research_id_type', 'research_id_required', 'sources_type', 'direction_type', 'cursor_type', 'cursor_action', 'cursor_lookups_conflict', 'cursor_page_conflict', 'lookups_type', 'lookups_count', 'lookups_stop', 'lookup_type', 'lookup_unknown_fields', 'lookup_source', 'lookup_query_required', 'lookup_query_length', 'lookup_history', 'lookup_mail'] as const;
+export const RESEARCH_REFUSAL_REASONS = ['root_type', 'unknown_fields', 'action_missing', 'action_invalid', 'question_type', 'question_required', 'question_length', 'topic_type', 'topic_required', 'topic_length', 'entity_rewrite', 'research_id_type', 'research_id_required', 'sources_type', 'direction_type', 'cursor_type', 'cursor_action', 'cursor_lookups_conflict', 'cursor_page_conflict', 'lookups_type', 'lookups_count', 'lookups_stop', 'lookup_type', 'lookup_unknown_fields', 'lookup_source', 'lookup_query_required', 'lookup_query_length', 'lookup_history', 'lookup_mail', 'no_owner_input'] as const;
 export type ResearchRefusalReason = typeof RESEARCH_REFUSAL_REASONS[number];
 export interface ResearchArgumentShape {
   action: ResearchAction | 'missing' | 'invalid';
@@ -2311,6 +2333,10 @@ export interface ResearchArgumentShape {
   questionChars: number;
   queryChars: readonly number[];
   lookupSources: readonly LookupSource[];
+  /** C-ENTITY: the name counts of an `entity_rewrite` refusal, numbers only, on that refusal alone. */
+  namesKept?: number;
+  namesDropped?: number;
+  namesAdded?: number;
 }
 export type ParsedResearch = { ok: true; call: ResearchCall } | { ok: false; reason: ResearchRefusalReason; shape: ResearchArgumentShape };
 
@@ -2322,14 +2348,17 @@ function argumentType(value: unknown, present: boolean): typeof RESEARCH_ARGUMEN
   return type === 'string' || type === 'number' || type === 'boolean' || type === 'object' ? type : 'other';
 }
 
-/** One parser owns validity and closed refusal metadata; submitted values never enter its diagnostic. */
-export function parseResearch(args: unknown): ParsedResearch {
+/**
+ * The closed shape a research_refused line carries: lengths, closed types and closed source names, never the
+ * words. One builder, so the pre-owner-turn gate and the parser refuse with the same shape.
+ */
+export function researchArgumentShape(args: unknown): ResearchArgumentShape {
   const given = isRecord(args) ? args : {};
   // 52fa54cc repaired the arguments the model really sends: a one-item array is the same single-source hint.
   const record = Array.isArray(given['sources']) && given['sources'].length === 1 && typeof given['sources'][0] === 'string'
     ? { ...given, sources: given['sources'][0] as string } : given;
   const action = record['action'];
-  const shape: ResearchArgumentShape = {
+  return {
     action: action === 'start' || action === 'continue' || action === 'stop' ? action : Object.hasOwn(record, 'action') ? 'invalid' : 'missing',
     fields: Object.fromEntries(RESEARCH_ARGUMENT_FIELDS.map(key => [key, argumentType(record[key], Object.hasOwn(record, key))])) as ResearchArgumentShape['fields'],
     unknownFieldCount: Object.keys(record).filter(key => !(RESEARCH_ARGUMENT_FIELDS as readonly string[]).includes(key)).length,
@@ -2343,6 +2372,16 @@ export function parseResearch(args: unknown): ParsedResearch {
       .map(entry => (isRecord(entry) && typeof entry['source'] === 'string' && (LOOKUP_SOURCES as readonly string[]).includes(entry['source']) ? entry['source'] : undefined))
       .filter((source): source is LookupSource => source !== undefined),
   };
+}
+
+/** One parser owns validity and closed refusal metadata; submitted values never enter its diagnostic. */
+export function parseResearch(args: unknown): ParsedResearch {
+  const given = isRecord(args) ? args : {};
+  // 52fa54cc repaired the arguments the model really sends: a one-item array is the same single-source hint.
+  const record = Array.isArray(given['sources']) && given['sources'].length === 1 && typeof given['sources'][0] === 'string'
+    ? { ...given, sources: given['sources'][0] as string } : given;
+  const action = record['action'];
+  const shape: ResearchArgumentShape = researchArgumentShape(record);
   const refuse = (reason: ResearchRefusalReason): ParsedResearch => ({ ok: false, reason, shape });
   if (!isRecord(args)) return refuse('root_type');
   if (shape.unknownFieldCount) return refuse('unknown_fields');
@@ -2360,8 +2399,27 @@ export function parseResearch(args: unknown): ParsedResearch {
   if (action === 'start' && optionalString(record['topic']) === undefined) return refuse('topic_required');
   // C-RESEARCH-CONTRACT Q-08: a topic that swaps one named person or company for another is a drift, not a
   // narrowing, so the call is refused and the question's own names are what a retry must keep.
-  if (typeof record['question'] === 'string' && typeof record['topic'] === 'string'
-    && !entityPreservedQuestion(record['question'], record['topic']).ok) return refuse('entity_rewrite');
+  if (typeof record['question'] === 'string' && typeof record['topic'] === 'string') {
+    const question = record['question'];
+    const topic = record['topic'];
+    // Requirement 4: a byte-identical repeat of a request this owner turn already had refused is refused again
+    // at once, with the same code and the stop line, without judging names or reading anything.
+    const refused = refusedEntityRequest;
+    const repeated = refused !== undefined && refused.question === question && refused.topic === topic;
+    const verdict = repeated && refused !== undefined
+      ? { ...refused.counts, ok: false as const, reason: 'entity_rewrite' as const, question }
+      : entityPreservedQuestion(question, topic);
+    if (!verdict.ok) {
+      const counts = { namesKept: verdict.namesKept, namesDropped: verdict.namesDropped, namesAdded: verdict.namesAdded };
+      refusedEntityRequest = { question, topic, counts };
+      entityRetryStopped = repeated;
+      shape.namesKept = counts.namesKept;
+      shape.namesDropped = counts.namesDropped;
+      shape.namesAdded = counts.namesAdded;
+      return refuse('entity_rewrite');
+    }
+    entityRetryStopped = false;
+  }
   if (record['topic'] !== undefined && (String(record['topic']).length > TOPIC_MAX_CHARS || String(record['topic']).trim().split(/\s+/u).filter(Boolean).length > TOPIC_MAX_WORDS)) return refuse('topic_length');
   if (action !== 'start' && optionalString(record['researchId']) === undefined) return refuse('research_id_required');
   // W1-R4: the page pointer is its own argument. It pages the stored reply, so it is continue-only and it never
@@ -2411,7 +2469,7 @@ const REPAIR_GUIDANCE: Partial<Record<ResearchRefusalReason, string>> = {
   topic_required: `A start needs the topic: the names and nouns to search for, at most ${TOPIC_MAX_WORDS} words, e.g. {"action":"start","question":"the question","topic":"Wilmar pilot"}. The question itself is never searched.`,
   topic_type: `The topic is one short string of names and nouns, at most ${TOPIC_MAX_WORDS} words.`,
   // C-RESEARCH-CONTRACT Q-08: a rewrite may narrow the question, never answer about another person or company.
-  entity_rewrite: 'The topic replaced a name the question asks about with a different one: keep the question\'s own names in the topic and narrow only around them.',
+  entity_rewrite: 'The topic replaced a name the question asks about with a different one: keep the question\'s own names exactly and change only the words around them. Do not retry the same request in this turn: send a topic that keeps the question\'s names, or answer the owner from what you already have.',
   question_length: `The question was too long: send the owner's question in at most ${QUESTION_MAX_CHARS} characters, not a document.`,
   topic_length: `The topic is at most ${TOPIC_MAX_WORDS} words: keep only the names and nouns, and shorten anything past ${TOPIC_MAX_CHARS} characters.`,
   lookup_query_length: `The query was too long: keep it under ${RESEARCH.queryLimitChars} characters and shorten the words after source.`,
@@ -2424,9 +2482,11 @@ const REPAIR_GUIDANCE: Partial<Record<ResearchRefusalReason, string>> = {
 };
 
 export function researchRepair(reason: ResearchRefusalReason): JsonObject {
+  const guidance = REPAIR_GUIDANCE[reason] ?? 'No lookup started. Use {"action":"start","question":"the question","topic":"the names and nouns"}; optional lookups need source and query, or memory with history, or mail with mail. Continue needs the returned researchId. Stop needs researchId and no lookups. Cursor is only for continue, without lookups. Omit unused fields; null is not supported.';
   return {
     error: 'invalid_research_arguments', state: 'refused', reason,
-    guidance: REPAIR_GUIDANCE[reason] ?? 'No lookup started. Use {"action":"start","question":"the question","topic":"the names and nouns"}; optional lookups need source and query, or memory with history, or mail with mail. Continue needs the returned researchId. Stop needs researchId and no lookups. Cursor is only for continue, without lookups. Omit unused fields; null is not supported.',
+    // Requirement 4: the byte-identical retry is told it already had this answer, before it spends a third one.
+    guidance: reason === 'entity_rewrite' && entityRetryStopped ? `This exact request was already refused in this owner turn: ${guidance}` : guidance,
   };
 }
 
@@ -6949,7 +7009,7 @@ export class ResearchAdmission {
   #currentRun: string | undefined;
   /** C-RESEARCH-CONTRACT Q-08: the model spoke after this turn's result, so the turn's answer is given. */
   #answered = false;
-  ownerTurn(): void { this.#turns += 1; this.#grant = this.#turns; this.#answered = false; }
+  ownerTurn(): void { this.#turns += 1; this.#grant = this.#turns; this.#answered = false; refusedEntityRequest = undefined; entityRetryStopped = false; }
   /**
    * R6: `ownResults` is the model asking for the pending results of the research this same turn started, while that
    * research still has sources reading. That one continue spends no owner turn, and a second one is refused.

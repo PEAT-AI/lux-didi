@@ -2021,6 +2021,44 @@ test('TOPIC 2 (#565): a start without a topic is refused, and the repair line na
   assert.equal(parseResearch({ action: 'continue', researchId: 'abc', topic: 'a topic' }).ok, true, 'a continuation needs no topic');
 });
 
+// C-FILLER: the voice model sends every declared property, unused ones as "", null, [] or {}. Those are absent.
+test('FILLER 1: the empty properties the voice model sends are absent, so the call is accepted', () => {
+  const args = {
+    action: 'start', question: 'what is on my calendar tomorrow', topic: 'calendar tomorrow', cursor: '', researchId: '',
+    lookups: [{ source: 'calendar', query: 'tomorrow', history: {}, mail: {} }],
+  };
+  const parsed = parseResearch(args);
+  assert.equal(parsed.ok, true, 'the filler shapes are not model errors');
+  if (!parsed.ok) return;
+  assert.deepEqual(parsed.normalized, ['cursor', 'researchId', 'lookups[0].history', 'lookups[0].mail']);
+  assert.deepEqual(parsed.call.lookups, [{ source: 'calendar', query: 'tomorrow' }], 'the empty objects never reach the read');
+  assert.equal(Object.hasOwn(parsed.call, 'cursor'), false, 'the empty cursor is absent, so it cannot conflict with the lookups');
+  assert.equal(validateResearch(args), true);
+
+  const refused = parseResearch({ action: 'start', question: 'what is the plan', topic: '' });
+  assert.equal(refused.ok, false);
+  if (refused.ok) return;
+  assert.equal(refused.reason, 'topic_required', 'a really missing topic still refuses');
+  assert.deepEqual(refused.shape.normalized, ['topic'], 'the refusal names the property it dropped');
+  const line = { event: 'research_refused', state: 'refused', sequence: 1, reason: refused.reason, ...refused.shape };
+  assert.equal(safeEvent(line)?.event, 'research_refused', 'the refusal line survives the host log with the normalised paths');
+  assert.equal(safeEvent({ ...line, normalized: ['topic=calendar'] }), undefined, 'a value never rides the log in a path');
+});
+
+test('FILLER 2: a non-empty value and a real error still refuse, exactly as today', () => {
+  const unknown = parseResearch({ action: 'start', question: 'what is on my calendar', topic: 'calendar', lookups: [{ source: 'calendar', query: 'x', extra: 'y' }] });
+  assert.equal(unknown.ok, false);
+  if (!unknown.ok) assert.equal(unknown.reason, 'lookup_unknown_fields');
+  const empty = parseResearch({ action: 'start', question: '', topic: 'x' });
+  assert.equal(empty.ok, false, 'a start with no question still refuses');
+  if (!empty.ok) assert.equal(empty.reason, 'question_required');
+  const history = parseResearch({ action: 'start', question: 'q', topic: 't', lookups: [{ source: 'calendar', query: 'x', history: { topic: 'y' } }] });
+  assert.equal(history.ok, false, 'a non-empty history on a non-memory source still refuses');
+  if (!history.ok) assert.equal(history.reason, 'lookup_history');
+  assert.equal(parseResearch({ action: 'continue', researchId: 'abc', question: '', lookups: [] }).ok, true, 'the filler question and lookup list of a continuation are absent');
+  assert.equal(parseResearch({ action: 'stop', lookups: [] }).ok, true, 'a stop with the filler lookup list is a stop');
+});
+
 test('TOPIC 3 (#576): a spoken ask with no digits sends a query with no digit', async () => {
   const h = harness({ configured: ['knowledge'] });
   await runResearch(h.deps, {

@@ -251,6 +251,23 @@ test('the tool schemas refuse shapes outside each view and action', () => {
   assert.ok(!validateTrelloWrite({ action: 'update', card: 'C1' }), 'an update must change something');
 });
 
+// C-FILLER: the voice model sends every declared property, so an unused boolean arrives as false.
+test('FILLER: the unused booleans the voice model sends are absent, and the write sends its own shape', async () => {
+  const run = session();
+  const name = 'Call the vet about the booster';
+  const written = await board.write(run, { action: 'create', list: 'Short Term Backlog', name, checked: false, complete: false, remove: false }, 'add a card to short term backlog');
+  assert.equal(written.ok, true, 'the unused booleans are not model errors');
+  const listId = fake.lists.find(list => list.name === 'Short Term Backlog' && list.boardId === fake.boards[0]!.id)!.id;
+  assert.deepEqual(writes()[writes().length - 1]!.args, { action: 'create', listId, name }, 'no unused boolean reaches the server');
+  assert.deepEqual(events[events.length - 1]!.normalized, ['checked', 'complete', 'remove'], 'the settle line names what it dropped');
+  assert.ok(events.every(event => !JSON.stringify(event).includes(name)), 'a path is never a value');
+
+  assert.equal(validateTrelloWrite({ action: 'label', card: 'C1', label: 'green', remove: false }), true, 'a boolean the action uses is validated as today');
+  assert.equal(validateTrelloWrite({ action: 'checklist', card: 'C1', item: 'Buy a drive', checked: false }), true, 'the checklist keeps its own checked');
+  assert.equal(validateTrelloWrite({ action: 'create', list: 'Today', name: 'Call the vet', checked: true }), false, 'a value the shape does not take still refuses');
+  assert.equal(validateTrelloWrite({ action: 'create', list: 'Today', name: 'Call the vet', board: 'Other' }), false, 'so does a non-filler unknown property');
+});
+
 test('the host log lines are content-free: tool, phase, outcome and a closed reason', () => {
   assert.ok(events.length > 0);
   for (const event of events) {

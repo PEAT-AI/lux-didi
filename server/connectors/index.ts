@@ -560,12 +560,13 @@ const mattermostDescriptor: ConnectorDescriptor = {
 };
 /**
  * V7: one pass-through model declaration, carrying the input schema and description Mongoose publishes
- * for that tool. A forwarded tool whose published schema is not loaded fails loudly: an empty schema
- * told the planner nothing and it answered with nothing usable.
+ * for that tool. An endpoint whose catalogue is not loaded declares nothing: the empty schema this used
+ * to hand the planner told it nothing, and the refusal is loud where the catalogue is taken (host/mcp.ts,
+ * the closed code schema_unsanitizable), never here as a silently empty shape.
  */
-function mongooseForwardDeclaration(name: string, endpointId: string): ConnectorToolDeclaration {
+function mongooseForwardDeclaration(name: string, endpointId: string): ConnectorToolDeclaration | undefined {
   const published = mongoosePublishedTool(endpointId, name);
-  if (published === undefined) throw new ConnectorCompositionError('published-schema-absent', endpointId, 'mongoose');
+  if (published === undefined) return undefined;
   const validate = mongooseSchemaValidator.getValidator(published.parameters as Parameters<AjvJsonSchemaValidator['getValidator']>[0]);
   return {
     name,
@@ -618,7 +619,7 @@ const mongooseDescriptor: ConnectorDescriptor = {
     const typed = mongooseTypedDeclarations(endpoint, policy);
     const other = MONGOOSE_ENDPOINT_TOOLS[endpoint]
       .filter(name => !typed.some(declaration => declaration.name === name))
-      .map(name => mongooseForwardDeclaration(name, policy.endpoint.id));
+      .flatMap(name => { const declaration = mongooseForwardDeclaration(name, policy.endpoint.id); return declaration === undefined ? [] : [declaration]; });
     return [...typed, ...other];
   },
   createReader({ port, registry, endpoint, schemaDigest, generation, policy }) {

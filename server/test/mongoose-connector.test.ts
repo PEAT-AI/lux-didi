@@ -458,9 +458,12 @@ test('V7: a keyword the provider rejects fails the catalogue load loudly', () =>
   );
 });
 
-test('V7: a forwarded tool with no loaded catalogue refuses to declare, never an empty schema', () => {
+test('V7: a forwarded tool is declared only with its published schema, never with an empty one', () => {
   const descriptor = connectorDescriptor('mongoose');
-  assert.throws(() => descriptor?.declarations(MONGOOSE_POLICY.crm), /published-schema-absent/u);
+  // The crm endpoint published nothing in this test, so it declares nothing: no empty-schema pass-through.
+  assert.deepEqual(descriptor?.declarations(MONGOOSE_POLICY.crm), []);
+  const data = descriptor?.declarations(MONGOOSE_POLICY.data) ?? [];
+  assert.ok(data.every(declaration => Object.keys((declaration.parameters['properties'] ?? {}) as object).length > 0), 'every declared data tool carries its published properties');
 });
 
 test('Q-02: a contradiction ticket is projected as a contradiction, with both of its figures', () => {

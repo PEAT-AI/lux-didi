@@ -6130,7 +6130,8 @@ function takeVoiceSlices(envelope: JsonObject, slices: readonly JsonObject[], ca
     const text = typeof slice['text'] === 'string' ? slice['text'] : '';
     const offset = typeof slice['offset'] === 'number' ? slice['offset'] : 0;
     if (text === '') return { kept, rest: slices.slice(index) };
-    const fits = (line: string): boolean => voiceSliceChars(envelope, [...kept, { ...slice, text: line, end: offset + line.length }], cursorChars) <= cap;
+    const fits = (line: string): boolean => voiceSliceChars(envelope,
+      [...kept, { ...slice, text: line, end: offset + line.length, cut: VOICE_REPLY_CUT }], cursorChars) <= cap;
     const head = voiceLinePrefix(text, fits);
     if (head === '') return { kept, rest: slices.slice(index) };
     kept.push({ ...slice, text: head, end: offset + head.length, cut: VOICE_REPLY_CUT });

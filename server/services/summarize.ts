@@ -78,13 +78,19 @@ export interface ToolOutcome {
   readonly code: string | null;
 }
 
-/** The call's terminal class and code, read from the sealed tool_calls row. */
+/** The call's terminal class and code, read from the record the tools layer sealed. */
 function toolOutcomeOf(row: Record<string, unknown>): ToolOutcome | null {
   const name = row['name'];
   if (typeof name !== 'string' || !name) return null;
   const state = String(row['state']);
-  const outcome = state === 'completed' ? 'succeeded' : state === 'refused' ? 'refused' : state === 'failed' ? 'failed' : 'outcome unknown';
-  const code = typeof row['code'] === 'string' && row['code'] ? row['code'] : null;
+  // A gateway write answers "not done" through the completed path: the stage and remember tools persist
+  // `{staged: false, code}` and `{remembered: false, code}` as a completed call, so the response outranks the state.
+  const refusedAnswer = row['staged'] === 0 || row['remembered'] === 0;
+  const outcome = state === 'failed' ? 'failed'
+    : state === 'refused' || (state === 'completed' && refusedAnswer) ? 'refused'
+    : state === 'completed' ? 'succeeded' : 'outcome unknown';
+  const code = typeof row['code'] === 'string' && row['code'] ? row['code']
+    : typeof row['reason'] === 'string' && row['reason'] ? row['reason'] : null;
   return { name, outcome, code };
 }
 
@@ -128,7 +134,9 @@ export function buildDistillationInput(input: {
 /** Read the session's tool calls, oldest first, as name, terminal class and code (never arguments or result bodies). */
 export function readToolOutcomes(tx: Transaction, liveSessionId: string): readonly ToolOutcome[] {
   if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='tool_calls'", [])) return [];
-  const rows = tx.all(`SELECT json_extract(intent_json,'$.toolName') AS name, state, json_extract(result_json,'$.response.code') AS code
+  const rows = tx.all(`SELECT json_extract(intent_json,'$.toolName') AS name, state,
+      json_extract(result_json,'$.response.code') AS code, json_extract(result_json,'$.response.reason') AS reason,
+      json_extract(result_json,'$.response.staged') AS staged, json_extract(result_json,'$.response.remembered') AS remembered
     FROM tool_calls WHERE run_id=? ORDER BY created_at, execution_id`, [liveSessionId]);
   return rows.flatMap(row => toolOutcomeOf(row) ?? []);
 }

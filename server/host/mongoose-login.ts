@@ -54,12 +54,14 @@ export async function runMongooseLogin(options: MongooseLoginOptions): Promise<M
     ...rest,
     ...(expected.length > 0 ? { expectedEmail: ownerIdentity! } : {}),
     // No ownerIdentity configured is the catalogue's explicit no-comparison policy: the token is still
-    // decoded and its audience checked, and only a configured owner email is refused on a mismatch.
-    ...(expected.length > 0 ? { verifyToken: (accessToken: string) => {
+    // decoded and its audience checked, and only a configured owner email is refused on a mismatch. The
+    // claim the check proved rides into the record, so Settings can say who this endpoint signed in as.
+    verifyToken: (accessToken: string) => {
       const proof = mongooseTokenIdentity(accessToken, endpoint, expected);
       if (proof.match === false) return { ok: false as const, code: 'identity_mismatch' as const };
-      return proof.proven ? { ok: true as const } : { ok: false as const, code: 'identity_unverified' as const };
-    } } : {}),
+      if (!proof.proven && expected.length > 0) return { ok: false as const, code: 'identity_unverified' as const };
+      return { ok: true as const, ...(proof.proven && typeof proof.value === 'string' && proof.value.length > 0 ? { identity: proof.value } : {}) };
+    },
     provider: MONGOOSE_PROVIDER,
     binding: mongooseBinding(resourceUrl, endpoint),
   }) as MongooseOAuthRecord;

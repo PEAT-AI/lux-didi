@@ -76,6 +76,9 @@ for (const endpoint of MONGOOSE_ENDPOINTS) {
       assert.equal(record['resource'], resource);
       assert.equal(record['issuer'], FAKE_ORIGIN);
       assert.equal('audience' in record, false, 'the auth model has no mongoose:<name> field');
+      // C-SIGNIN-LIVE: the record always carries the claim key, so Settings can name the account; the
+      // claim itself is proven against a minted JWT, which this opaque-token fake does not mint.
+      assert.equal(record['identity'], '', 'the claim key is part of the closed record shape');
       assert.deepEqual(run.hops.map(hop => `${hop.hop}:${hop.outcome}`), ['discovery:ok', 'registration:ok', 'browser_handoff:ok', 'callback:ok', 'token:ok', 'stored:ok']);
 
       // A read through this endpoint works with the stored token, and the token opens no other endpoint.
@@ -252,6 +255,27 @@ test('the configured URL decides the binding: https only, no userinfo, query or 
   for (const refused of ['http://mongoose.test/mcp/crm', 'https://user@mongoose.test/mcp/crm', `${FAKE_ORIGIN}/mcp/crm?toolset=x`, `${FAKE_ORIGIN}/mcp/crm#x`, `${FAKE_ORIGIN}/mcp/data`, `${FAKE_ORIGIN}/mcp`, 'mongoose:crm']) {
     assert.equal(mongooseBinding(refused, 'crm'), undefined, `${refused} is not a trusted configuration`);
   }
+});
+
+test('C-SIGNIN-LIVE: the sign-in keeps the owner claim its own token check proved', async () => {
+  const { dir, cleanup } = configDir();
+  const fake = await startContractFake();
+  try {
+    const encode = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const minted = `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ email: OWNER_EMAIL, aud: MONGOOSE_ENDPOINT_AUDIENCES.crm })}.c2ln`;
+    // The one hop this test replaces: the fake mints an opaque token and the host only proves a minted
+    // claim, so the code exchange answers with a real one.
+    const wire = fake.fetch;
+    const fetchMinted = (async (input: string | URL | Request, init?: RequestInit) => {
+      const response = await wire(input, init);
+      if (!String(input).endsWith('/oauth/token')) return response;
+      const body = await response.clone().json() as Record<string, unknown>;
+      return new Response(JSON.stringify({ ...body, access_token: minted }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const run = login(fake, dir, 'crm', { ownerIdentity: OWNER_EMAIL, fetch: fetchMinted });
+    await run.operation;
+    assert.equal(stored(dir, 'crm')['identity'], OWNER_EMAIL, 'the sign-in keeps the claim it proved');
+  } finally { await fake.close(); cleanup(); }
 });
 
 // --- C-SIGNIN-LIVE: a completed sign-in connects its own endpoint in place, with no relaunch. ---

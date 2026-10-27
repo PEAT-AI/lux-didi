@@ -31,9 +31,9 @@ export const STAGE_FAILED_GUIDANCE = 'The note was not staged. Tell the owner it
 export const AUTHORIZATION_MISSING_GUIDANCE = "I did not hear a save request in your own words this turn; say 'save it to Lux' and I will stage it.";
 export const TITLE_MAX_CHARS = 120;
 export const CONFIRM_WINDOW_MS = 30_000;
-/** The open guard's bounds, on the journal rows of one owner stretch: three splits, 400 characters. */
-export const OWNER_WINDOW_TURNS = 3;
-export const OWNER_WINDOW_CHARS = 400;
+/** W1-R1: the open guard's bounds, on the journal rows of one owner stretch: six splits, 600 characters. */
+export const OWNER_WINDOW_TURNS = 6;
+export const OWNER_WINDOW_CHARS = 600;
 export const CONFIRM_SETTLE_MS = 1_500;
 export const CONFIRM_MAX_TOKENS = 6;
 const VAULT_TYPE = 'UNCATEGORIZED';
@@ -46,13 +46,11 @@ export type ComposedReason = 'negated' | 'reported' | 'quoted' | 'conditional' |
 export type ComposedAsk = { readonly decision: 'grant' } | { readonly decision: 'clarify'; readonly reason: ComposedReason }
   | { readonly decision: 'append' } | { readonly decision: 'none' };
 
-/** The verbs that can authorize a create, and the destinations that name lux and nothing else. */
-const ASK_VERB = /^(?:naya\s+)?(?:please\s+)?(?:save|remember|put|add|write|store)\b/u;
 /**
- * R7-W1: a stretch he said in pieces opens with its own frame ("can you, can you", "you have my full
- * permission to"), so the ask verb stands at the start of the clause after that frame, not of the turn.
+ * The verbs that can authorize a create, and the destinations that name lux and nothing else. W1-R2: the
+ * ask can sit anywhere in a stretch he said in pieces, so the verb is a word, not a leading anchor.
  */
-const ASK_LEAD = /^(?:(?:ok|okay|yes|yeah|so|and|also|then|naya|please|can you|could you|would you|will you|you have my full permission to|you have my permission to)\s+)*/u;
+const ASK_WORD = /\b(?:save|remember|put|add|write|store)\b/u;
 const DESTINATION = /\b(?:to|in|into)\s+(?:my\s+|the\s+)?(?:lux(?:\s+knowledge)?|knowledge\s+base|vault)\b/u;
 const APPEND = /^(?:naya\s+)?(?:please\s+)?(?:add|append|update|change|overwrite|edit|delete|remove|archive|link|restore|replace)\b(?=[\s\S]*\b(?:note|insight|entry|record)\b)/u;
 const REPORTED = /^(?:say|says|according to)\b|\b(?:he|she|they|it|someone|rob|you|the [a-z]+)\s+(?:said|says|say|asked|asks|wrote|writes|mentioned|mentions|told|tells|wants|asked me)\b/u;
@@ -60,7 +58,6 @@ const QUESTION = /\b(?:how (?:do|can|should|would) (?:i|you)|what(?:'s| is) the 
 const CONDITIONAL = /^(?:if|when|whenever|unless|should|in case)\b/u;
 const NEGATION_LEAD = /^(?:no|not|never|don(?:'| )?t|do not)\b/u;
 const NEGATION = /(?:don(?:'| )?t|do not|never|not|no)\b/u;
-const ASK_WORD = /\b(?:save|remember|put|add|write|store)\b/u;
 const HEDGE = /\b(?:maybe|perhaps|probably|might|could|i think|i guess|possibly)\b/u;
 /** A composed note about the conversation itself names its source where a dictation names a store. */
 const NOTE_SOURCE = /\b(?:note|summary)\b[^\p{L}\p{N}]+(?:about|from|of)\b[^\p{L}\p{N}]+(?:this|that|what we(?: just)? (?:discussed|talked about)|our (?:conversation|call|discussion))\b/u;
@@ -82,15 +79,13 @@ export function composedAsk(text: string): ComposedAsk {
   if (CONDITIONAL.test(key)) return { decision: 'clarify', reason: 'conditional' };
   // A negation before the verb is the owner refusing, not asking, whatever verb order he used.
   if (NEGATION_LEAD.test(key) && ASK_WORD.test(key) && DESTINATION.test(key)) return { decision: 'clarify', reason: 'negated' };
-  // R7-W1: the ask is judged from the start of its clause, past the frame a split stretch opens with.
-  const lead = ASK_LEAD.exec(key)?.[0] ?? '';
-  if (!ASK_VERB.test(key.slice(lead.length))) {
-    return HEDGE.test(key) && ASK_WORD.test(key) && DESTINATION.test(key) ? { decision: 'clarify', reason: 'ambiguous' } : { decision: 'none' };
+  // W1-R2: a save verb and a lux destination anywhere in the stretch are the ask.
+  if (!ASK_WORD.test(key)) {
+    return HEDGE.test(key) && DESTINATION.test(key) ? { decision: 'clarify', reason: 'ambiguous' } : { decision: 'none' };
   }
-  // A negation between the verb and the destination is still a refusal.
-  const verb = lead.length;
   const destination = key.search(DESTINATION);
-  const negation = key.slice(verb).search(NEGATION);
+  // A negation anywhere before the destination is the owner refusing, not asking.
+  const negation = key.search(NEGATION);
   if (negation >= 0 && negation < destination) return { decision: 'clarify', reason: 'negated' };
   if (HEDGE.test(key) || /\b(?:or|either|and maybe)\b/u.test(key.slice(destination))) return { decision: 'clarify', reason: 'ambiguous' };
   if (destination < 0) {

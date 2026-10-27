@@ -627,8 +627,8 @@ function ownerDate(at: number, timeZone: string): string {
   return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone }).format(new Date(at));
 }
 
-/** The age of a stored loop in plain words, from the injected clock and the owner's zone. */
-function ageWords(now: number, at: number, timeZone: string): string {
+/** The age of a stored loop in plain words, from the injected clock; only a loop under a day is ever an opener. */
+function ageWords(now: number, at: number): string {
   const elapsed = Math.max(0, now - at);
   if (elapsed < 60 * 60 * 1000) return 'from under an hour ago';
   const hours = Math.max(1, Math.floor(elapsed / (60 * 60 * 1000)));
@@ -638,7 +638,7 @@ function ageWords(now: number, at: number, timeZone: string): string {
 /** One stored loop as the model reads it: its age, the date it was last seen open, and a question when old. */
 function loopLine(topic: string, lastSeenAt: number, now: number, timeZone: string): string {
   const bare = topic.replace(/[.?!]+$/u, '').trim();
-  return `${bare} (${ageWords(now, lastSeenAt, timeZone)}, last seen open ${ownerDate(lastSeenAt, timeZone)})`;
+  return `${bare} (${ageWords(now, lastSeenAt)}, last seen open ${ownerDate(lastSeenAt, timeZone)})`;
 }
 
 /** A loop that a newer summary records as finished is no longer open, whatever the older row stored. */

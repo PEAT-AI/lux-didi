@@ -57,6 +57,10 @@ Every host.log line carries the same envelope, so a call can be assembled withou
 | `pid`, `seq` | the process, and this process's line counter: a gap is a lost line, not a gap in time |
 | `level` | `debug`, `info`, `warn` or `error`, from the event name, never from the caller |
 | `cause` | `tool`, `provider`, `owner`, `network`, `audio`, `host`, `connector` or `config`, on the lines whose name states a domain |
+
+A `live_rebuild` and a `live_recovery` line read their `cause` off the outcome, never off the event name. `network` needs a transport receipt: an upstream drop, a missing pong, a stall, a socket error. A planned research rebuild is `cause=host`. A model that went quiet, and the recovery that follows it, are `cause=provider`. The `trigger` is a closed set too, and `line_dropped` is no longer a default: a research rebuild is `trigger=research_context`, a silent model is `no_output_after_owner` or `no_output_after_ambient`, a window end is `session_window`, and a reason the host does not recognise is a typed error rather than a guess.
+
+The silence lines carry no static `cause` at all: `live_heard_silence` and `live_dead_air` name what really owned the silence in their own `silence` field (`tool`, `provider` or `owner`). When a socket closes, its close code and a sanitized reason (no URLs, no tokens) sit on that session's outcome and on the next `live_rebuild` or `live_recovery` line, so "the provider dropped us" is a receipt and not an inference.
 | `liveSessionId`, `generation` | the call every live line belongs to, and the provider session inside it |
 | `runId`, `researchId`, `endpointId`, `attempt` | the same joins on chat, research and connector lines |
 
@@ -80,11 +84,15 @@ A successful HTTP response alone does not prove an answer was spoken. A provider
 
 ## Logs are closed projections
 
-`safeEvent` in `server/host/log.ts` defines the accepted event fields. Keep new diagnostics as closed reason codes, IDs, counts and durations; never pass exception messages, tool arguments, query text, document titles or credential objects through a catch-all logger.
+`safeEvent` in `server/host/log.ts` defines the accepted event fields. Keep new diagnostics as closed reason codes, IDs, counts and durations; never pass exception messages, tool arguments, query text, document titles or credential objects through a catch-all logger. A test in `server/test/host-log.test.ts` enumerates every event literal handed to the emitter and fails when one has no branch, so an unrecognised event is a red build rather than a silently dropped line.
+
+A tool handler that throws after dispatch is never silent: `tool_handler_error` carries the tool name, the error class from a closed list (`Error`, `TypeError`, `SqliteError`, and `Unknown` for anything else) and the recorded closed reason. It never carries the error's message or stack, so a failing handler is diagnosable from `host.log` alone without leaking the note text, arguments or paths the handler was holding.
 
 The Live owner records `live_dead_air` evidence separately from the nudge/recovery actions. A busy tool and a silent provider are different failures; keep their attribution rather than labeling every delay a reconnect defect. `live_heard_silence` carries that attribution as `silence` (`tool` while a call is really in flight, `provider` while the model is generating, `owner` otherwise). Trace storage and correlation are owned by `server/trace/schema.ts`, `server/trace/record.ts` and `server/trace/timeline.ts`.
 
 One research call leaves one line per phase with its research id: `research_call_arrived` (start), `research_source` (each source settle, with `ms` and `outcome`), `research_still_searching` (the 10 s line, with `spoken`), `research_first_answer` (`kind` is `early`, `full` or `hard_stop`, with `elapsedMs`) and `research_late_findings` (`delivered` and `reason` when a block was spoken or parked). Read those five before guessing at a slow answer; `research_operation_deadline` says the host had to settle a call itself.
+
+A research call that never read anything leaves one refusal or block line, and the reason is a closed code. `research_refused` names the argument shape that was rejected (`reason` is one of `RESEARCH_REFUSAL_REASONS`, for example `topic_length`, `lookups_count`, `lookup_history` or `entity_rewrite`) and carries the call's shape as `topicChars`, `questionChars`, `queryChars` and the closed `lookupSources`: lengths and names only, never the owner's words or a lookup value. `research_blocked` names the admission rule that applied: `no_owner_turn` (no finalized owner turn yet), `turn_spent` (this turn's one research operation is already spent), `no_turn_since_result` (the result was delivered and the owner has not spoken since) or `answer_already_given` (the model already answered this turn, so a new run would be an orphan). The model is told the same reason verbatim in the blocked reply's `reason` field, with the one-line `directive` for it. In the trace, such a call is `trace_call.outcome` `refused` (bad arguments) or `blocked` (admission), never `completed`, and the timeline counts a blocked call as `call.blocked`.
 
 Old JSONL debug journals can contain private content. Current metadata readers are not permission to upload those directories. Preserve evidence for authorized local inspection; do not delete unknown files or promise forensic erasure.
 

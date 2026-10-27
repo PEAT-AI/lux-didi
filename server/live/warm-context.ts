@@ -71,6 +71,52 @@ export function signInNote(endpoints: readonly unknown[]): string | undefined {
   return 'Mongoose is waiting on a sign-in, so company knowledge cannot be read yet. Mention it only when an answer needs company knowledge, and say the Sign in button is in Settings.';
 }
 
+/** The three Mongoose endpoint names, as the owner hears them. Closed, never a provider payload. */
+const MONGOOSE_LABELS: Readonly<Record<string, string>> = { crm: 'Mongoose CRM', knowledge: 'Mongoose knowledge', data: 'Mongoose data' };
+
+/** The owner's first name from the proven account, for the one sentence; never the whole address. */
+function firstName(identity: unknown): string | undefined {
+  const row = identity && typeof identity === 'object' ? identity as Record<string, unknown> : {};
+  const value = typeof row['value'] === 'string' && row['proven'] === true && row['match'] !== false ? row['value'] : undefined;
+  const local = value?.split('@')[0]?.split(/[.+_-]/)[0];
+  return local !== undefined && local.length > 0 ? local[0]!.toUpperCase() + local.slice(1) : undefined;
+}
+
+/** "a", "a and b", "a, b and c": one closed list, so the sentence never carries a name a model wrote. */
+function andList(names: readonly string[]): string {
+  return names.length <= 1 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]!}`;
+}
+
+/**
+ * C-SIGNIN-LIVE: the one sentence Naya says on the call after a Mongoose endpoint came up, and never
+ * again. Each call compares the Mongoose rows with the previous call's, so a connector that connected
+ * between two calls is announced once, and the first call of a session learns silently.
+ */
+export class ConnectorNotes {
+  #connected: Set<string> | undefined;
+
+  take(endpoints: readonly unknown[]): string | undefined {
+    const rows = (Array.isArray(endpoints) ? endpoints : []).flatMap(value => {
+      const row = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+      if (row['connector'] !== 'mongoose') return [];
+      const name = typeof row['id'] === 'string' ? row['id'].replace(/^mongoose-/, '') : undefined;
+      const label = name !== undefined ? MONGOOSE_LABELS[name] : undefined;
+      return label === undefined ? [] : [{ label, connected: row['state'] === 'connected', identity: row['identity'] }];
+    });
+    const connected = new Set(rows.filter(row => row.connected).map(row => row.label));
+    const before = this.#connected;
+    this.#connected = connected;
+    if (before === undefined) return undefined;
+    const fresh = rows.filter(row => row.connected && !before.has(row.label));
+    if (fresh.length === 0) return undefined;
+    const as = firstName(fresh[0]!.identity);
+    const said = fresh.map(row => `${row.label} is now connected${as === undefined ? '' : ` as ${as}`}`);
+    const already = rows.filter(row => row.connected && before.has(row.label)).map(row => row.label.replace('Mongoose ', ''));
+    const rest = already.length === 0 ? '' : `; ${andList(already)} ${already.length === 1 ? 'was' : 'were'} already connected`;
+    return `${said.join(' and ')}${rest}.`;
+  }
+}
+
 /** Sections in priority order, each trimmed to what the instruction budget has left. */
 export function assembleContext(sections: WarmContextSections, budget: number): string {
   const blocks: string[] = [];

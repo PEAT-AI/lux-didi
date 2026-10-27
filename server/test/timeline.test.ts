@@ -24,6 +24,7 @@ function report(): TimelineReport {
     liveSessionId: fixture.liveSessionId,
     capturedAt: 1792486800000,
     callFailures: { count: 0, kinds: {} },
+    blockedCalls: 0,
     contentAccess: { state: 'allowed', dataClass: 'ordinary', revision: 1 },
     gaps: [], nativeGaps: [], unattributedPlayback: [], unattributedCalls: [], unattributedResponses: [],
     turns: [{

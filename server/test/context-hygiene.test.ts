@@ -359,7 +359,9 @@ test('HYGIENE 12: a boundary during a tool call defers the rebuild to the next b
   assert.equal(h.port.openedAt.length, 2);
 });
 
-test('HYGIENE 13: the seed is one turn carrying the asked entities and the held hit ids', async t => {
+// C-CONTINUITY item 3: a rebuild keeps the conversation. The seed is the call's own transcript plus the
+// research ledger as a distinct host section, never the ledger alone as if it were the whole call.
+test('HYGIENE 13: the seed carries the earlier owner and assistant turns and the ledger', async t => {
   const h = await live(t, CROSSED);
   await oneRead(h);
   h.port.emit(turnComplete);
@@ -367,13 +369,16 @@ test('HYGIENE 13: the seed is one turn carrying the asked entities and the held 
   const reopened = h.port.requests[1];
   assert.ok(reopened !== undefined, 'a fresh provider session was opened');
   const history = reopened.history ?? [];
-  assert.equal(history.length, 1, 'the ledger seed is exactly one turn');
-  assert.equal(history[0]!.role, 'user');
-  const seed = history[0]!.text;
+  assert.ok(history.length > 1, `the seed carries the earlier turns as well as the ledger, was ${history.length}`);
+  const ledger = history[history.length - 1]!;
+  assert.equal(ledger.role, 'user');
+  assert.match(ledger.text, /^\[host note/u, 'the ledger is a host section, not an owner utterance');
   // W10-R20: the entity clause holds once a read's findings carry the asked name; the id clause is
   // what this read can prove, and HYGIENE 4 proves the entity line on a run that supplies the names.
-  assert.match(seed, /audit|Clifton/u, `the held hit id is in the seed, seed ${JSON.stringify(seed).slice(0, 200)}, reply ${sent(h, 0).slice(0, 500)}`);
-  assert.ok(seed.length <= 6_000, `the ledger is capped at 6,000 chars, was ${seed.length}`);
+  assert.match(ledger.text, /audit|Clifton/u, `the held hit id is in the seed, seed ${JSON.stringify(ledger.text).slice(0, 200)}, reply ${sent(h, 0).slice(0, 500)}`);
+  assert.ok(ledger.text.length <= 6_000, `the ledger is capped at 6,000 chars, was ${ledger.text.length}`);
+  const transcript = history.slice(0, -1).map(turn => turn.text).join('\n');
+  assert.match(transcript, /what do we know about the plan/u, 'the owner turn before the rebuild survives it');
 });
 
 test('HYGIENE 15: a rebuild waits while the assistant is speaking, then runs at the next boundary', async t => {
@@ -416,13 +421,14 @@ test('HYGIENE 1: nothing is rebuilt under the threshold, and the first answer pa
     'exactly at the threshold the call still reads its own evidence');
   assert.equal(researchRebuildDue({ retainedChars: RESEARCH.rebuildThresholdChars + 1, rebuilds: 0 }), true,
     'one char past it and the rebuild is due');
-  assert.equal(RESEARCH.rebuildThresholdChars, 24_000, 'the threshold W10-R2 set');
+  // C-CONTINUITY item 2: the decision moved the threshold to 60,000 delivered research chars.
+  assert.equal(RESEARCH.rebuildThresholdChars, 60_000, 'the threshold C-CONTINUITY set');
 });
 
 test('HYGIENE 2: the count is what was sent, and a rebuild starts it again at zero', () => {
-  let retention = retainedAfterSend(EMPTY, 12_000);
+  let retention = retainedAfterSend(EMPTY, 30_000);
   assert.equal(researchRebuildDue(retention), false, 'one full default answer is still under');
-  retention = retainedAfterSend(retention, 12_000);
+  retention = retainedAfterSend(retention, 30_000);
   assert.equal(researchRebuildDue(retention), false, 'two of them sit exactly on the threshold, which is still under it');
   retention = retainedAfterSend(retention, 1);
   assert.equal(researchRebuildDue(retention), true, 'the next character sent crosses it');

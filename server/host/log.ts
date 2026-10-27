@@ -1,4 +1,4 @@
-import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
+import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_LIMITS, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { TRELLO_CALL_TOOLS } from '../tools/trello.js';
 import { clientDiagnostic } from '../http/routes.js';
@@ -7,7 +7,7 @@ import { TURN_FAILED_REASONS } from '../adapters/live-voice/types.js';
 import { DEBT_PHASES, DEBT_REASONS } from '../trace/kinds.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { ConfigError } from '../config/files.js';
-import { clearLogContext, envelopeContext, monoMilliseconds, nextSeq, severityOf } from './events.js';
+import { LOG_CAUSES, clearLogContext, envelopeContext, monoMilliseconds, nextSeq, severityOf } from './events.js';
 import { LIVE_INSTRUCTION_SECTION_IDS } from '../prompt/live-persona.js';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -45,7 +45,7 @@ export const LIVE_STATE_CAUSES = ['created', 'input', 'model_turn_start', 'audio
   'tool', 'settle', 'rebuild', 'poll', 'ready'] as const;
 /** #591: why a provider session was rebuilt, a closed set. The two watchdog tokens split a silent model from a
  *  model that owes the owner an answer; the other two name the transport causes that rebuild on their own. */
-export const LIVE_REBUILD_TRIGGERS = ['no_output_after_ambient', 'no_output_after_owner', 'line_dropped', 'session_window'] as const;
+export const LIVE_REBUILD_TRIGGERS = ['no_output_after_ambient', 'no_output_after_owner', 'line_dropped', 'session_window', 'research_context'] as const;
 /** C-HEADPHONES 5: the native app's closed `live_end` reasons, verbatim from NativeLiveJournal. A Stop
  *  carries one and this log repeats it, so an audio route change is never written down as the owner's
  *  own stop. A closed set: the log never prints a word the app did not send. */
@@ -99,6 +99,11 @@ const SIGNIN_OUTCOMES: Record<string, readonly string[]> = {
   // H20: one closing line per attempt, whether it signed in or failed on a closed reason.
   signin_finished: ['signed_in', 'discovery_unreachable', 'discovery_refused', 'registration_refused', 'port_in_use',
     'browser_unavailable', 'callback_failed', 'callback_timeout', 'account_mismatch', 'token_refused', 'store_failed', 'did_not_finish'],
+  // C-SIGNIN-LIVE: a sign-in that landed but left its endpoint unconnected in place, and why. The
+  // reason is the endpoint row's own closed code, never free text, so a relaunch is never silent.
+  signin_needs_restart: ['not_signed_in', 'needs_sign_in', 'credential_missing', 'credential-missing', 'credential-refresh-failed',
+    'credential-consent-expired', 'credential-unavailable', 'credential-identity-mismatch', 'credential-identity-unverified',
+    'identity_mismatch', 'handshake_failed', 'discovery_failed', 'unreachable', 'transport_unavailable', 'not_connected'],
 };
 const SIGNIN_OAUTH_ERRORS = ['invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client', 'unsupported_grant_type', 'invalid_scope', 'invalid_target', 'access_denied'];
 /**
@@ -134,6 +139,12 @@ const isSafeId = (value: unknown): value is string => typeof value === 'string' 
  */
 const rejectResearchId = (event: string): Record<string, unknown> => ({ event: 'research_id_rejected', kind: event, field: 'researchId' });
 const isSafeCount = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+/** C-CONTINUITY R-09: a socket close code, the range the protocol allows, or null before the socket answered. */
+const isSafeCloseCode = (value: unknown): value is number | null =>
+  value === null || (Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 65535);
+/** C-CONTINUITY R-09: a sanitized close reason: one bounded line of ordinary text, never free payload. */
+const isSafeCloseReason = (value: unknown): value is string =>
+  typeof value === 'string' && value.length <= 300 && !/[\u0000-\u001f\u007f]/u.test(value);
 /** A provider frame name: lowercase dots and underscores, as the Live reference writes them, never free text. */
 const UNKNOWN_FRAME_TYPE = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/;
 const isSafeMember = (value: unknown, allowed: readonly string[]): value is string => typeof value === 'string' && allowed.includes(value);
@@ -143,6 +154,8 @@ const closedKeys = (value: Record<string, unknown>, keys: readonly string[]): bo
   Object.keys(value).sort().join(',') === [...keys].sort().join(',');
 /** #613: the launch paths the app can report, mirrored from LaunchKind, so no free text crosses. */
 const LAUNCH_KINDS = ['interactive', 'login_item', 'install_relaunch', 'installed_proof', 'self_check', 'ui_proof', 'verification'];
+/** W5: the closed error classes a thrown tool handler may name (tools/declarations.ts). */
+const TOOL_HANDLER_CLASSES = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'URIError', 'AggregateError', 'SqliteError', 'Unknown'];
 
 // Only the existing diagnostic schemas cross this boundary, never arbitrary console text.
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
@@ -191,6 +204,67 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'reason'])) return;
     if (typeof value.reason !== 'string' || !/^[a-z0-9_]{1,40}$/.test(value.reason)) return;
     return { event: 'people_invalid', reason: value.reason };
+  }
+  if (value.event === 'lux_note_stage') {
+    // W5: one composed-note stage receipt. The digest of the frozen payload, or the closed refusal
+    // code, and nothing of the note itself.
+    const hasDigest = value.digest !== undefined;
+    if (!closedKeys(value, ['event', 'staged', ...(hasDigest ? ['digest'] : ['code'])])) return;
+    if (typeof value.staged !== 'boolean') return;
+    if (value.staged === true && (typeof value.digest !== 'string' || !/^[a-f0-9]{12}$/.test(value.digest))) return;
+    if (value.staged === false && !isSafeToken(value.code)) return;
+    return value.staged === true
+      ? { event: 'lux_note_stage', staged: true, digest: value.digest }
+      : { event: 'lux_note_stage', staged: false, code: value.code };
+  }
+  if (value.event === 'lux_note_readback' || value.event === 'lux_note_confirm') {
+    // W5: the note's state machine and its closed reason code, never the note. An empty code is the
+    // confirm path's "no code yet" and keeps its own shape.
+    if (!closedKeys(value, ['code', 'event', 'state'])) return;
+    if (!isSafeToken(value.state)) return;
+    if (typeof value.code !== 'string' || (value.code !== '' && !isSafeToken(value.code))) return;
+    return { event: value.event, state: value.state, code: value.code };
+  }
+  if (value.event === 'lux_note_saved') {
+    // W5: whether the frozen payload reached the vault, and the closed code that says why not.
+    if (!closedKeys(value, ['code', 'event', 'saved'])) return;
+    if (typeof value.saved !== 'boolean' || !isSafeToken(value.code)) return;
+    return { event: 'lux_note_saved', saved: value.saved, code: value.code };
+  }
+  if (value.event === 'tool_handler_error') {
+    // W5: a handler threw after dispatch. A tool name, an error class from a closed list and the
+    // recorded closed reason; never the error's message, stack or a provider string.
+    if (!closedKeys(value, ['class', 'event', 'reason', 'tool'])) return;
+    if (!isSafeToken(value.tool) || !isSafeToken(value.reason)) return;
+    if (typeof value.class !== 'string' || !TOOL_HANDLER_CLASSES.includes(value.class)) return;
+    return { event: 'tool_handler_error', tool: value.tool, class: value.class, reason: value.reason };
+  }
+  if (value.event === 'notes_export') {
+    // W5: the exporter's own counts and an 8 hex run id, never a note or a path.
+    if (!closedKeys(value, ['event', 'exported', 'failed', 'id', 'remaining', 'skipped', 'unknown'])) return;
+    if (![value.exported, value.skipped, value.failed, value.unknown, value.remaining].every(isSafeCount)) return;
+    if (typeof value.id !== 'string' || !/^[a-f0-9]{8}$/.test(value.id)) return;
+    return { event: 'notes_export', exported: value.exported, skipped: value.skipped, failed: value.failed,
+      unknown: value.unknown, remaining: value.remaining, id: value.id };
+  }
+  if (value.event === 'consumer_detach') {
+    // W5: the consumer's state, whether an answer was owed, and how many calls stayed open.
+    if (!closedKeys(value, ['awaitingAnswer', 'consumerState', 'event', 'openCalls'])) return;
+    if (!isSafeMember(value.consumerState, ['detached', 'attached', 'ended', 'backpressure'])) return;
+    if (typeof value.awaitingAnswer !== 'boolean' || !isSafeCount(value.openCalls)) return;
+    return { event: 'consumer_detach', consumerState: value.consumerState, awaitingAnswer: value.awaitingAnswer, openCalls: value.openCalls };
+  }
+  if (value.event === 'late_findings_sent') {
+    // W5: which delegation was late and the closed reason it was sent under.
+    if (!closedKeys(value, ['delegationKey', 'event', 'reason'])) return;
+    if (!isSafeId(value.delegationKey) || !isSafeToken(value.reason)) return;
+    return { event: 'late_findings_sent', delegationKey: value.delegationKey, reason: value.reason };
+  }
+  if (value.event === 'live_detach_write_failed') {
+    // W5: the session whose detach row failed to write, and the closed class of the failure.
+    if (!closedKeys(value, ['class', 'event', 'liveSessionId'])) return;
+    if (!isSafeId(value.liveSessionId) || !isSafeToken(value.class)) return;
+    return { event: 'live_detach_write_failed', liveSessionId: value.liveSessionId, class: value.class };
   }
   if (value.event === 'people_trimmed') {
     // W15: how many roster lines the section ceiling dropped, and how many of them were tier 2.
@@ -574,17 +648,20 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'live_recovery') {
     // Closed shape: one metadata-only record per recovery attempt. Never audio, text or a provider payload;
     // seedTurns/seedChars are the rebuilt journal seed's size, path is the transport chosen.
-    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'closeCode', 'reason', 'seedTurns', 'seedChars', 'msSinceDrop', 'liveSessionId', 'generation'].sort().join(',')) return;
+    if (Object.keys(value).sort().join(',') !== ['event', 'path', 'attempt', 'code', 'cause', 'closeCode', 'closeReason', 'reason', 'seedTurns', 'seedChars', 'msSinceDrop', 'liveSessionId', 'generation'].sort().join(',')) return;
     if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
     if (!isSafeCount(value.generation)) return;
     if (!isSafeMember(value.path, ['resume', 'fresh_seeded'])) return;
     if (!isSafeCount(value.attempt) || Number(value.attempt) < 1) return;
     if (!isSafeCount(value.msSinceDrop)) return;
     if (!isSafeToken(value.code)) return;
+    // C-CONTINUITY R-02/R-10: the cause is the outcome's, never the event name's static label.
+    if (!isSafeMember(value.cause, LOG_CAUSES)) return;
     if (!(value.closeCode === null || (Number.isSafeInteger(value.closeCode) && Number(value.closeCode) >= 0 && Number(value.closeCode) <= 65535))) return;
     if (!(value.reason === null || isSafeToken(value.reason))) return;
+    if (!isSafeCloseReason(value.closeReason)) return;
     if (!isSafeCount(value.seedTurns) || !isSafeCount(value.seedChars)) return;
-    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, closeCode: value.closeCode, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, msSinceDrop: value.msSinceDrop, liveSessionId: value.liveSessionId, generation: value.generation };
+    return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, cause: value.cause, closeCode: value.closeCode, closeReason: value.closeReason, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, msSinceDrop: value.msSinceDrop, liveSessionId: value.liveSessionId, generation: value.generation };
   }
   if (value.event === 'live_provider_open' || value.event === 'live_provider_ready') {
     // Closed shape: which session and generation the provider socket was opened for, how big the setup was
@@ -809,7 +886,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'live_watchdog') {
     // 3j: the response watchdog, one record per phase change. Phase, turn age and connection generation only.
     if (Object.keys(value).sort().join(',') !== ['event', 'generation', 'phase', 'turnAgeMs'].sort().join(',')) return;
-    if (!isSafeMember(value.phase, ['armed', 'nudged', 'closed', 'recovered', 'settled'])) return;
+    if (!isSafeMember(value.phase, ['armed', 'nudged', 'closed', 'recovering', 'recovered', 'settled'])) return;
     if (!isSafeCount(value.turnAgeMs) || !isSafeCount(value.generation)) return;
     return { event: 'live_watchdog', phase: value.phase, turnAgeMs: value.turnAgeMs, generation: value.generation };
   }
@@ -826,11 +903,31 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'turn_failed', reason: value.reason };
   }
   if (value.event === 'live_rebuild') {
-    // #591: every rebuild names its trigger from the closed set, so a silent model and a quiet room are told apart.
-    if (!closedKeys(value, ['event', 'trigger', 'liveSessionId', 'generation'])) return;
+    // #591: every rebuild names its trigger from the closed set, so a silent model and a quiet room are told
+    // apart. C-CONTINUITY R-01/R-02: the trigger and the cause are the outcome's, and a transport receipt's close
+    // code and sanitized reason ride along when the socket left one. Metadata only, never owner text.
+    const keys = ['event', 'trigger', 'liveSessionId', 'generation', 'cause'];
+    const extended = Object.hasOwn(value, 'closeCode') ? [...keys, 'closeCode', 'closeReason'] : keys;
+    if (!closedKeys(value, extended)) return;
     if (!isSafeMember(value.trigger, LIVE_REBUILD_TRIGGERS)) return;
+    if (!isSafeMember(value.cause, LOG_CAUSES)) return;
     if (!isSafeId(value.liveSessionId) || !isSafeCount(value.generation)) return;
-    return { event: 'live_rebuild', trigger: value.trigger, liveSessionId: value.liveSessionId, generation: value.generation };
+    if (Object.hasOwn(value, 'closeCode')) {
+      if (!isSafeCloseCode(value.closeCode) || !isSafeCloseReason(value.closeReason)) return;
+      return { event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId,
+        generation: value.generation, closeCode: value.closeCode, closeReason: value.closeReason };
+    }
+    return { event: 'live_rebuild', trigger: value.trigger, cause: value.cause, liveSessionId: value.liveSessionId, generation: value.generation };
+  }
+  if (value.event === 'research_context_rebuild') {
+    // C-CONTINUITY R-14: the planned rebuild reaches host.log with sizes only: what the call had retained, what the
+    // ledger kept, how much transcript the seed carried, and the call's total context, refusals included.
+    if (!closedKeys(value, ['event', 'retainedChars', 'ledgerChars', 'seedTranscriptChars', 'rebuilds', 'totalContextChars'])) return;
+    for (const field of ['retainedChars', 'ledgerChars', 'seedTranscriptChars', 'rebuilds', 'totalContextChars']) {
+      if (!isSafeCount(value[field])) return;
+    }
+    return { event: 'research_context_rebuild', retainedChars: value.retainedChars, ledgerChars: value.ledgerChars,
+      seedTranscriptChars: value.seedTranscriptChars, rebuilds: value.rebuilds, totalContextChars: value.totalContextChars };
   }
   if (value.event === 'live_turn_script') {
     // E1: which script the model spoke this turn, in closed buckets and code-point counts. Never text.
@@ -924,15 +1021,25 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: value.event, ms: value.ms };
   }
   if (value.event === 'research_refused') {
-    if (!closedKeys(value, ['event', 'state', 'sequence', 'reason', 'action', 'fields', 'unknownFieldCount', 'lookupCount'])) return;
+    // C-RESEARCH-CONTRACT T-04: the refusal names the closed reason and the call's shape as lengths and closed
+    // source names. Field text, question text and lookup values never enter a log line.
+    if (!closedKeys(value, ['event', 'state', 'sequence', 'reason', 'action', 'fields', 'unknownFieldCount', 'lookupCount', 'topicChars', 'questionChars', 'queryChars', 'lookupSources'])) return;
     if (value.state !== 'refused' || !(value.sequence === null || isSafeCount(value.sequence))) return;
     if (!(RESEARCH_REFUSAL_REASONS as readonly unknown[]).includes(value.reason) || !['start', 'continue', 'stop', 'missing', 'invalid'].includes(String(value.action))) return;
     if (!isSafeCount(value.unknownFieldCount) || !isSafeCount(value.lookupCount)) return;
+    if (!isSafeCount(value.topicChars) || !isSafeCount(value.questionChars)) return;
+    // F5: the shape carries one entry per lookup, and a refused call may name more than the limit allows, so the
+    // ceiling is the call's own lookup count (already closed and counted) rather than the limit it broke.
+    const entries = Math.min(value.lookupCount, RESEARCH_LIMITS.maxLoggedLookups);
+    if (!Array.isArray(value.queryChars) || value.queryChars.length > entries || !value.queryChars.every(isSafeCount)) return;
+    if (!Array.isArray(value.lookupSources) || value.lookupSources.length > entries) return;
+    if (!value.lookupSources.every(source => (LOOKUP_SOURCES as readonly unknown[]).includes(source))) return;
     if (!value.fields || typeof value.fields !== 'object' || Array.isArray(value.fields)) return;
     const fields = value.fields as Record<string, unknown>;
     if (!closedKeys(fields, [...RESEARCH_ARGUMENT_FIELDS]) || !Object.values(fields).every(type => (RESEARCH_ARGUMENT_TYPES as readonly unknown[]).includes(type))) return;
     return { event: 'research_refused', state: 'refused', sequence: value.sequence, reason: value.reason, action: value.action,
-      fields: Object.fromEntries(RESEARCH_ARGUMENT_FIELDS.map(key => [key, fields[key]])), unknownFieldCount: value.unknownFieldCount, lookupCount: value.lookupCount };
+      fields: Object.fromEntries(RESEARCH_ARGUMENT_FIELDS.map(key => [key, fields[key]])), unknownFieldCount: value.unknownFieldCount, lookupCount: value.lookupCount,
+      topicChars: value.topicChars, questionChars: value.questionChars, queryChars: [...value.queryChars], lookupSources: [...value.lookupSources] };
   }
   if (value.event === 'live_tool_turn') {
     // O1/F6: per-turn tool metrics, tool names, millisecond latency and per-endpoint peak concurrency only.

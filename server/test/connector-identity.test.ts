@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
@@ -13,6 +13,8 @@ import {
   type IdentityProof, type IdentitySource,
 } from '../connectors/identity.js';
 import { safeEvent } from '../host/log.js';
+import { MONGOOSE_REFRESH_MARGIN_MS, MongooseCredentialError, mongooseAccessToken, mongooseBinding, readMongooseOAuth, writeMongooseOAuth, type MongooseOAuthRecord } from '../host/mongoose-auth.js';
+import { MONGOOSE_ENDPOINT_AUDIENCES } from '../connectors/mongoose.js';
 import { startHost } from '../host/runtime.js';
 import type { ConnectorResult } from '../connectors/index.js';
 // The owner-identity contract's own matrix file (fixture, per-connector proofs, latch and sign-in
@@ -286,4 +288,59 @@ test('an unproven strict proof refuses as identity_unverified, and a mismatch ke
   assert.equal(identityAction(unproven, true), 'refuse');
   assert.equal(refusalCode(unproven), 'identity_unverified');
   assert.equal(refusalCode({ proven: true, match: false, value: OTHER }), 'identity_mismatch');
+});
+
+// --- C-SIGNIN-LIVE / #696: a Mongoose endpoint proves its identity from its own minted token. ---
+
+const MONGOOSE_NOW = 1_760_000_000_000;
+const MONGOOSE_OWNER = 'owner@example.test';
+
+/** The minted claim pair the host decodes: the email claim and that endpoint's own audience. */
+function mintedMongooseToken(endpoint: 'knowledge' | 'data' | 'crm', email: string): string {
+  const encode = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString('base64url');
+  return `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ email, aud: MONGOOSE_ENDPOINT_AUDIENCES[endpoint] })}.c2ln`;
+}
+
+function mongooseRecord(endpoint: 'knowledge' | 'data' | 'crm', accessToken: string, expiresAt: number): MongooseOAuthRecord {
+  const binding = mongooseBinding(`https://mongoose.test/mcp/${endpoint}`, endpoint)!;
+  return {
+    schemaVersion: 3, endpoint, resource: binding.resource, issuer: binding.issuer,
+    tokenEndpoint: `${binding.issuer}/oauth/token`, clientId: 'mcp_client', redirectPort: 8768, account: MONGOOSE_OWNER,
+    accessToken, refreshToken: `refresh-${endpoint}`, expiresAt, consentStartedAt: MONGOOSE_NOW,
+  };
+}
+
+test('#696: each Mongoose endpoint logs its token proof at connect and after a refresh, never a claim', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'didi-mongoose-identity-'));
+  const dir = join(root, 'provider-config'); mkdirSync(dir, { mode: 0o700 });
+  const binding = mongooseBinding('https://mongoose.test/mcp/crm', 'crm')!;
+  const seen: Array<{ proven: boolean; match: boolean | null }> = [];
+  const onIdentity = (proof: IdentityProof): void => { seen.push({ proven: proof.proven, match: proof.match }); };
+  try {
+    // First connect: the stored token is unexpired, so the token check is the one that runs.
+    writeMongooseOAuth(dir, 'mongoose-crm', mongooseRecord('crm', mintedMongooseToken('crm', MONGOOSE_OWNER), MONGOOSE_NOW + 3_600_000));
+    await mongooseAccessToken(dir, 'mongoose-crm', binding, { now: () => MONGOOSE_NOW, ownerIdentity: MONGOOSE_OWNER, onIdentity });
+    // After a refresh: the minted replacement is checked the same way, once.
+    writeMongooseOAuth(dir, 'mongoose-crm', mongooseRecord('crm', mintedMongooseToken('crm', MONGOOSE_OWNER), MONGOOSE_NOW + MONGOOSE_REFRESH_MARGIN_MS));
+    const refreshed = (async () => new Response(JSON.stringify({
+      access_token: mintedMongooseToken('crm', MONGOOSE_OWNER), refresh_token: 'refresh-crm-2', token_type: 'Bearer', expires_in: 3600,
+    }), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch;
+    await mongooseAccessToken(dir, 'mongoose-crm', binding, { now: () => MONGOOSE_NOW, ownerIdentity: MONGOOSE_OWNER, onIdentity, fetch: refreshed });
+    assert.deepEqual(seen, [{ proven: true, match: true }, { proven: true, match: true }]);
+    assert.equal(readMongooseOAuth(dir, 'mongoose-crm')?.identity, MONGOOSE_OWNER, 'the sign-in claim is persisted with the record');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('#696: a pedro@ token logs match=false and refuses the endpoint until the owner signs in', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'didi-mongoose-stranger-'));
+  const dir = join(root, 'provider-config'); mkdirSync(dir, { mode: 0o700 });
+  const binding = mongooseBinding('https://mongoose.test/mcp/crm', 'crm')!;
+  const seen: Array<{ proven: boolean; match: boolean | null }> = [];
+  try {
+    writeMongooseOAuth(dir, 'mongoose-crm', mongooseRecord('crm', mintedMongooseToken('crm', 'pedro@plantix.net'), MONGOOSE_NOW + 3_600_000));
+    await assert.rejects(
+      () => mongooseAccessToken(dir, 'mongoose-crm', binding, { now: () => MONGOOSE_NOW, ownerIdentity: MONGOOSE_OWNER, onIdentity: proof => seen.push({ proven: proof.proven, match: proof.match }) }),
+      (error: unknown) => error instanceof MongooseCredentialError && error.code === 'credential-identity-mismatch');
+    assert.deepEqual(seen, [{ proven: true, match: false }]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -137,7 +137,7 @@ test('a mute owner turn is nudged once and then recovered on a fresh seeded sess
   await until(live, () => phases(live).includes('nudged'), RESPONSE_WATCHDOG_NUDGE_MS + 2_000);
   assert.equal(live.fake.sessionsOpened, 1, 'a nudge is not a recovery');
   await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_RECOVERY_MS + 2_000);
-  assert.deepEqual(phases(live), ['armed', 'nudged', 'recovered']);
+  assert.deepEqual(phases(live), ['armed', 'nudged', 'recovering', 'recovered']);
   assert.equal(live.fake.sessionsOpened, 2, 'the recovery opened one fresh session');
   assert.ok((live.fake.requests.at(-1)!.history ?? []).length > 0, 'the fresh session carries the journal seed');
   assert.ok(live.receipts.some(record => record.event === 'live_recovery' && record.path === 'fresh_seeded' && record.reason === 'model_mute'),
@@ -170,13 +170,20 @@ test('#591: an ambient-only turn closes at the watchdog without a nudge, a chime
   assert.equal(terminalCode(live), undefined, 'the call is still up for the owner');
 });
 
+// C-CONTINUITY R-01/R-02: every trigger the host can name reaches the log with the cause its outcome earned, and a
+// trigger or cause outside the closed sets is refused. `research_context` is a trigger of its own, never a drop.
 test('the rebuild trigger is a closed set the host log accepts for every token', () => {
   for (const trigger of LIVE_REBUILD_TRIGGERS) {
-    assert.deepEqual(safeEvent({ event: 'live_rebuild', trigger, liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }),
-      { event: 'live_rebuild', trigger, liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }, `the host log keeps the ${trigger} trigger`);
+    const cause = trigger === 'research_context' ? 'host' : 'provider';
+    assert.deepEqual(safeEvent({ event: 'live_rebuild', trigger, cause, liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }),
+      { event: 'live_rebuild', trigger, cause, liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }, `the host log keeps the ${trigger} trigger`);
   }
-  assert.equal(safeEvent({ event: 'live_rebuild', trigger: 'ambient', liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }), undefined,
+  assert.equal(safeEvent({ event: 'live_rebuild', trigger: 'ambient', cause: 'provider', liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }), undefined,
     'a trigger outside the closed set never reaches the host log');
+  assert.equal(safeEvent({ event: 'live_rebuild', cause: 'provider', liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }), undefined,
+    'a rebuild with no trigger at all is not a rebuild');
+  assert.equal(safeEvent({ event: 'live_rebuild', trigger: 'line_dropped', cause: 'the-internet', liveSessionId: '9a1f1c9e-0b7a-4c22-9d2e-8f0b6c3d5e11', generation: 2 }), undefined,
+    'a cause outside the closed set never reaches the host log');
 });
 
 test('an open model turn that emits one chunk and then nothing is nudged once and then recovered', async t => {
@@ -185,7 +192,7 @@ test('an open model turn that emits one chunk and then nothing is nudged once an
   for (let chunk = 0; chunk < 5; chunk++) await live.emit({ type: 'audio', pcm: new Uint8Array(8), rate: 24000 });
   assert.deepEqual(phases(live), ['armed'], 'one armed record per turn, not one per audio chunk');
   await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
-  assert.deepEqual(phases(live), ['armed', 'nudged', 'recovered'], 'a turn that opens and goes quiet is watched to recovery');
+  assert.deepEqual(phases(live), ['armed', 'nudged', 'recovering', 'recovered'], 'a turn that opens and goes quiet is watched to recovery');
   assert.equal(live.fake.sessionsOpened, 2);
   // #591: the model spoke, but the owner never did, so nothing is owed and the rebuild arrives unannounced.
   assert.equal(openingText(live), undefined, 'no owner words since the model spoke means no pickup to answer');
@@ -240,7 +247,7 @@ test('a second mute inside the window settles the call honestly instead of loopi
   await flush();
   await ownerTurnEnd(live);
   await until(live, () => phases(live).includes('settled'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
-  assert.deepEqual(phases(live), ['armed', 'nudged', 'recovered', 'armed', 'nudged', 'settled']);
+  assert.deepEqual(phases(live), ['armed', 'nudged', 'recovering', 'recovered', 'armed', 'nudged', 'settled']);
   assert.equal(live.owner.get(live.liveSessionId).terminal?.state, 'failed', 'a second mute inside the window settles');
   assert.equal(terminalCode(live), 'model_unresponsive');
   assert.equal(live.fake.sessionsOpened, 2, 'a second mute inside the window opens no third session');
@@ -351,7 +358,7 @@ test('a port with different declarations runs the same watchdog path', async t =
     const live = await openLive(t, { capabilities });
     await ownerTurnEnd(live);
     await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 5_000);
-    assert.deepEqual(phases(live), ['armed', 'nudged', 'recovered']);
+    assert.deepEqual(phases(live), ['armed', 'nudged', 'recovering', 'recovered']);
     assert.equal(live.fake.sessionsOpened, 2, 'the recovery is fresh seeded even when resumption is supported');
   }
 });

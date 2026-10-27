@@ -45,7 +45,8 @@ class DeadlineClock {
 /** One provider session the test drives: it never becomes ready and dies on its own, or it goes live. */
 interface DrivenSession {
   live(): void;
-  die(): void;
+  /** C-CONTINUITY R-08: the outcome the session settles with, so a test can hand it a transport receipt. */
+  die(drop?: { errorKind: string; closeCode: number | null; closeReason: string; bufferedAmount: number; writesFailed: number; sessionMs: number }): void;
 }
 
 /** A port whose every open can be made to die before its ready event, which is the failure at issue (#525). */
@@ -96,7 +97,8 @@ function drivenPort() {
       control.signal.addEventListener('abort', () => { if (ended) return; end(); resolveDone({ status: 'cancelled', code: 'cancelled' }); }, { once: true });
       sessions.push({
         live: () => { events({ sequence: ++sequence, type: 'ready' } as LiveVoiceEvent); resolveReady(); },
-        die: () => { rejectReady(new Error('provider setup refused')); resolveDone({ status: 'failed', code: 'transport_error', recoverable: true }); end(); },
+        die: drop => { rejectReady(new Error('provider setup refused'));
+          resolveDone({ status: 'failed', code: 'transport_error', recoverable: true, ...(drop === undefined ? {} : { upstream: drop }) }); end(); },
       });
       openedAt.push(sessions.length);
       return session;
@@ -474,4 +476,35 @@ test('R2: when the fresh open fails too, the call ends as provider_recovery_exha
   await again.ready;
   assert.equal(h.owner.get(next.liveSessionId).lifecycle, 'active', 'the next attach starts clean');
   h.owner.revoke(next.liveSessionId);
+});
+
+// C-CONTINUITY R-02/R-08/R-09: a rebuild that follows a transport drop reads its cause, its close code and its
+// sanitized reason off the receipt the adapter left, so `cause=network` is evidence and not a label.
+test('C-CONTINUITY R-02: a rebuild after a transport drop logs cause=network with its close code and reason', async t => {
+  const h = await harness(t);
+  const created = h.owner.create({ idempotencyKey: 'continuity-drop', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: created.liveSessionId }, h.ctx);
+  const first = (await sessionAt(h, 0))!;
+  first.live();
+  await attachment.ready;
+  await flush();
+  first.die({ errorKind: 'write_error', closeCode: 1006, closeReason: 'upstream reset', bufferedAmount: 0, writesFailed: 1, sessionMs: 900 });
+  await flush();
+  // The recovery line is written once the new socket is live, so the fixture takes it past its ready event.
+  for (let round = 0; round < 12 && h.port.sessions.length < 2; round += 1) await flush();
+  const second = await sessionAt(h, 1);
+  assert.ok(second !== undefined, 'the host opened a second provider session');
+  second.live();
+  await flush();
+  const rebuilds = h.receipts.filter(entry => entry['event'] === 'live_rebuild');
+  assert.ok(rebuilds.length >= 1, 'the drop rebuilt the session');
+  const rebuild = rebuilds[0]!;
+  assert.equal(rebuild['trigger'], 'line_dropped', 'a transport drop is a line drop');
+  assert.equal(rebuild['cause'], 'network', 'and its cause is the network, because a transport receipt exists');
+  assert.equal(rebuild['closeCode'], 1006, 'the close code rides the rebuild line');
+  assert.equal(rebuild['closeReason'], 'upstream reset', 'and so does its sanitized reason');
+  const recovery = h.receipts.find(entry => entry['event'] === 'live_recovery');
+  assert.ok(recovery !== undefined, 'and the recovery line is written');
+  assert.equal(recovery['cause'], 'network');
+  assert.equal(recovery['closeReason'], 'upstream reset', 'the recovery line carries the same reason');
 });

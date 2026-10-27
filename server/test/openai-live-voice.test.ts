@@ -2178,3 +2178,17 @@ test('R4 GPT close purges held audio and closes the socket without a cancel comm
   assert.equal(audioBytes(opened.captured), 0, 'held and late audio never plays after close');
   assert.equal((await opened.session.done).status, 'closed');
 });
+
+// C-CONTINUITY R-09/R-08: every provider socket close leaves its close code and a sanitized reason on the
+// outcome, so the next rebuild or recovery line can say how the session really ended.
+test('C-CONTINUITY R-09: a remote close keeps its code and sanitized reason in the outcome', async t => {
+  const { socket, session } = await fakeReady(t);
+  socket.emit('close', 1011, Buffer.from('provider overload: https://api.openai.com/v1?key=sk-live-secret-token'));
+  const outcome = await session.done;
+  assert.equal(outcome.code, 'remote_closed');
+  assert.equal(outcome.upstream?.closeCode, 1011, 'the socket code is recorded');
+  const reason = String(outcome.upstream?.closeReason ?? '');
+  assert.match(reason, /provider overload/u, 'the reason is carried');
+  assert.ok(!/https?:\/\//u.test(reason), 'no URL reaches the record');
+  assert.ok(!reason.includes('sk-live-secret-token'), 'no token reaches the record');
+});

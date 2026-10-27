@@ -36,6 +36,7 @@ cp "$root/server/host/mongoose-login.ts" "$out/source/host/"
 # server/tools imports the debug journal receipt and the memory read model: copy those modules too.
 cp "$root"/server/domain/*.ts "$out/source/domain/"
 cp "$root/server/test/mongoose-connector.test.ts" "$out/source/test/"
+cp "$root/server/test/research-data-route.test.ts" "$out/source/test/"
 cp "$root/server/test/mongoose-auth.test.ts" "$out/source/test/"
 # The sign-in contract: the real host login against a synthetic Mongoose that enforces the server's own rules.
 cp "$root/server/test/mongoose-signin-contract.test.ts" "$root/server/test/mongoose-contract-fake.ts" "$out/source/test/"
@@ -63,5 +64,5 @@ cp "$root/server/test/fixtures/stdio-mattermost-attention-child.mjs" "$out/dist/
 cp "$root/server/test/fixtures/stdio-mattermost-people-child.mjs" "$out/dist/test/fixtures/"
 mkdir -p "$out/test/fixtures"
 cp "$root/server/test/fixtures/mongoose-literal-sanitized.json" "$out/test/fixtures/"
-cp "$root/server/test/fixtures/mongoose-discovery.json" "$out/test/fixtures/"
-node_test_files --test-timeout=15000 "$out/dist/test/mongoose-connector.test.js" "$out/dist/test/mongoose-auth.test.js" "$out/dist/test/mongoose-signin-contract.test.js" "$out/dist/test/mattermost-connector.test.js" "$out/dist/test/mattermost-attention.test.js" "$out/dist/test/trello-board.test.js" "$out/dist/test/mattermost-people.test.js"
+cp "$root/server/test/fixtures/mongoose-discovery.json" "$root/server/test/fixtures/mongoose-data-live.json" "$out/test/fixtures/"
+node_test_files --test-timeout=15000 "$out/dist/test/mongoose-connector.test.js" "$out/dist/test/research-data-route.test.js" "$out/dist/test/mongoose-auth.test.js" "$out/dist/test/mongoose-signin-contract.test.js" "$out/dist/test/mattermost-connector.test.js" "$out/dist/test/mattermost-attention.test.js" "$out/dist/test/trello-board.test.js" "$out/dist/test/mattermost-people.test.js"

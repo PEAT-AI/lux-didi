@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CalendarDigestCache, WarmContextCache, assembleContext, calendarDigestFreshMs, calendarDigestReadMs, calendarDigestRefreshMs, chooseStartContext, collectSections, signInNote, warmContextMaxAgeMs } from '../live/warm-context.js';
+import { CalendarDigestCache, ConnectorNotes, WarmContextCache, assembleContext, calendarDigestFreshMs, calendarDigestReadMs, calendarDigestRefreshMs, chooseStartContext, collectSections, signInNote, warmContextMaxAgeMs } from '../live/warm-context.js';
 import { CALENDAR_DIGEST_READ_MS, readCalendarDigest, type CalendarDigestRead, type CalendarDigestReadResult, type GcalListInput, type GoogleResult } from '../connectors/google.js';
 import { NAYA_LIVE_BASE, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, composeLiveInstruction, composeLiveSessionInstruction } from '../prompt/live-persona.js';
 
@@ -400,4 +400,24 @@ test('a parked sign-in is one short line at call start and nothing when Mongoose
   assert.equal(signInNote([{ id: 'gmail', connector: 'google', state: 'error', reasonCode: 'needs_sign_in' }]), undefined);
   assert.equal(signInNote([{ id: 'mattermost', connector: 'mattermost', state: 'error', error: 'credential-missing' }]), undefined, 'a Mattermost credential fault is not a Mongoose sign-in');
   assert.equal(signInNote([]), undefined);
+});
+
+// --- C-SIGNIN-LIVE: one sentence the call after a Mongoose endpoint came up, then silence. ---
+
+test('a newly connected Mongoose endpoint is announced once, in one sentence, and then never again', () => {
+  const owner = 'rob@plantix.net';
+  const row = (endpoint: string, connected: boolean): Record<string, unknown> => ({
+    id: `mongoose-${endpoint}`, connector: 'mongoose', state: connected ? 'connected' : 'error',
+    ...(connected ? { identity: { proven: true, match: true, value: owner } } : {}),
+  });
+  const notes = new ConnectorNotes();
+  // The first call of a session says nothing: it learns what was already connected.
+  assert.equal(notes.take([row('knowledge', true), row('data', true), row('crm', false)]), undefined);
+  assert.equal(notes.take([row('knowledge', true), row('data', true), row('crm', true)]),
+    'Mongoose CRM is now connected as Rob; knowledge and data were already connected.');
+  assert.equal(notes.take([row('knowledge', true), row('data', true), row('crm', true)]), undefined, 'spoken once, then cleared');
+  // A row that never proves an identity is named, and the sentence never carries an address.
+  assert.equal(notes.take([row('knowledge', true), row('data', true), row('crm', true)]), undefined);
+  assert.equal(notes.take([row('knowledge', false), row('data', true), row('crm', false)]), undefined);
+  assert.equal(notes.take([row('knowledge', true), row('data', true), row('crm', false)]), 'Mongoose knowledge is now connected as Rob; data was already connected.');
 });

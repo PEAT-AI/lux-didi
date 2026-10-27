@@ -26,7 +26,9 @@ export const RESPONSE_TERMINAL_REASONS = [
 ] as const;
 export type ResponseTerminalReason = (typeof RESPONSE_TERMINAL_REASONS)[number];
 
-export const CALL_OUTCOMES = ['completed', 'failed', 'refused', 'cancelled', 'aborted', 'timeout', 'unknown'] as const;
+// C-RESEARCH-CONTRACT T-04: `blocked` is its own outcome, so the trace can tell a refused call from an answered
+// one. A call the admission refused reached no source and produced no findings.
+export const CALL_OUTCOMES = ['completed', 'failed', 'refused', 'blocked', 'cancelled', 'aborted', 'timeout', 'unknown'] as const;
 export type CallOutcome = (typeof CALL_OUTCOMES)[number];
 
 export const PLAYBACK_TERMINATION_REASONS = ['drained', 'flushed', 'interrupted', 'failed', 'session_end'] as const;

@@ -55,7 +55,7 @@ export const traceMigrations: readonly SchemaMigration[] = [{
        executed_at INTEGER,
        output_prepared_at INTEGER,
        output_written_at INTEGER,
-       outcome TEXT NOT NULL CHECK (outcome IN ('completed','failed','refused','cancelled','aborted','timeout','unknown')),
+       outcome TEXT NOT NULL CHECK (outcome IN ('completed','failed','refused','blocked','cancelled','aborted','timeout','unknown')),
        ms INTEGER,
        result_chars INTEGER CHECK (result_chars IS NULL OR result_chars >= 0)
      )`,
@@ -250,5 +250,55 @@ export const traceMigrations: readonly SchemaMigration[] = [{
     `INSERT INTO trace_research_text(research_id,call_key,at,kind,text) SELECT research_id,call_key,at,kind,text FROM trace_research_text_v6`,
     `DROP TABLE trace_research_text_v6`,
     `CREATE INDEX trace_research_text_at ON trace_research_text(at)`,
+  ],
+}, {
+  // C-RESEARCH-CONTRACT T-04: `blocked` joins the call outcomes, so a call the admission refused is never
+  // recorded as one that answered. SQLite cannot alter a CHECK, so the call table and its one child (the result
+  // text) are rebuilt in dependency order. The child is dropped before the parent, and neither its rows nor the
+  // call rows are lost: the child's rows wait in a plain staging table until the new parent exists.
+  owner: 'trace',
+  version: 8,
+  statements: [
+    `CREATE TABLE trace_call_result_keep AS SELECT call_key, text, text_truncated, content_pruned_at FROM trace_call_result`,
+    `DROP TABLE trace_call_result`,
+    `CREATE TABLE trace_call_next (
+       call_key TEXT PRIMARY KEY,
+       live_session_id TEXT NOT NULL,
+       connection_epoch TEXT NOT NULL,
+       provider_call_id TEXT,
+       response_key TEXT,
+       turn_id TEXT,
+       name TEXT NOT NULL,
+       args_chars INTEGER NOT NULL CHECK (args_chars >= 0),
+       intent_at INTEGER NOT NULL,
+       executed_at INTEGER,
+       output_prepared_at INTEGER,
+       output_written_at INTEGER,
+       outcome TEXT NOT NULL CHECK (outcome IN ('completed','failed','refused','blocked','cancelled','aborted','timeout','unknown')),
+       ms INTEGER,
+       result_chars INTEGER CHECK (result_chars IS NULL OR result_chars >= 0),
+       execution_completed_at INTEGER,
+       canonical_owner_id TEXT,
+       canonical_run_id TEXT,
+       canonical_execution_id TEXT,
+       canonical_result_id TEXT,
+       canonical_result_sha256 TEXT,
+       research_id TEXT
+     )`,
+    `INSERT INTO trace_call_next(call_key, live_session_id, connection_epoch, provider_call_id, response_key, turn_id, name, args_chars, intent_at, executed_at, output_prepared_at, output_written_at, outcome, ms, result_chars, execution_completed_at, canonical_owner_id, canonical_run_id, canonical_execution_id, canonical_result_id, canonical_result_sha256, research_id)
+       SELECT call_key, live_session_id, connection_epoch, provider_call_id, response_key, turn_id, name, args_chars, intent_at, executed_at, output_prepared_at, output_written_at, outcome, ms, result_chars, execution_completed_at, canonical_owner_id, canonical_run_id, canonical_execution_id, canonical_result_id, canonical_result_sha256, research_id FROM trace_call`,
+    `DROP TABLE trace_call`,
+    `ALTER TABLE trace_call_next RENAME TO trace_call`,
+    `CREATE UNIQUE INDEX trace_call_provider ON trace_call(live_session_id, connection_epoch, provider_call_id) WHERE provider_call_id IS NOT NULL`,
+    `CREATE INDEX trace_call_response ON trace_call(live_session_id, response_key)`,
+    `CREATE INDEX trace_call_intent_at ON trace_call(intent_at)`,
+    `CREATE TABLE trace_call_result (
+       call_key TEXT PRIMARY KEY REFERENCES trace_call(call_key) ON DELETE CASCADE,
+       text TEXT,
+       text_truncated INTEGER NOT NULL CHECK (text_truncated IN (0,1)),
+       content_pruned_at INTEGER
+     )`,
+    `INSERT INTO trace_call_result(call_key, text, text_truncated, content_pruned_at) SELECT call_key, text, text_truncated, content_pruned_at FROM trace_call_result_keep`,
+    `DROP TABLE trace_call_result_keep`,
   ],
 }];

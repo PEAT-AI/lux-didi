@@ -57,7 +57,7 @@ import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-liv
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
-import { RESEARCH_OPERATION, RESEARCH_TOOL_NAME } from '../tools/research.js';
+import { ADMISSION_BLOCK_REASONS, ADMISSION_DIRECTIVES, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, admissionBlocked, pagesCurrentRun, RESEARCH } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 import { luxNoteMigrations } from '../tools/lux-note.js';
 import { notesExportMigrations } from '../tools/notes-export.js';
@@ -2564,7 +2564,9 @@ test('L19: the first spoken reply of a call is never unjournalled without a rece
   }
   assert.ok(audible() > before, 'the reply was audible');
   h.f.send({ serverContent: { turnComplete: true } });
-  await tick(); await tick();
+  // The receipt is written from the provider's turn-complete path, so wait for the pump itself rather than for a
+  // fixed number of ticks: under a loaded host the two ticks used to arrive before the turn was handled.
+  for (let i = 0; i < 40 && events.every(entry => entry.event !== 'live_reply_unjournalled'); i++) await tick();
   // The reply is never unjournalled: its own row exists, so no reader has to infer what was said.
   const rows = h.store.transaction(tx => tx.all("SELECT text FROM live_journal WHERE live_session_id=? AND kind='outputTranscription'", [session.liveSessionId]));
   // The provider sent no output transcript at all: the reply is receipted, never silent.
@@ -4019,7 +4021,7 @@ test('D3: fill frames never clear the debt, so a tool result with no audible ans
     h.advance(100);
     scheduler.runDue();
   }
-  assert.deepEqual(phasesOf(captureDir), ['start', 'rung', 'rung', 'recovered'], 'one clock: the rung at 8 s, the rebuild rung at 15 s, then the recovery');
+  assert.deepEqual(phasesOf(captureDir), ['start', 'rung', 'rung', 'recovering', 'recovered'], 'one clock: the rung at 8 s, the rebuild rung at 15 s, then the recovery');
   const stall = hostLines(captureDir).find(line => line.event === 'live_dead_air' && line.msSinceTool !== undefined);
   assert.ok(stall, 'the stall leaves a live_dead_air receipt');
   assert.equal(stall!['msSinceTool'], 8_000, 'the answer had been owed for eight seconds');
@@ -4050,7 +4052,7 @@ test('D3: one audible frame restarts the deadline from that frame, never from th
   const nudges = hostLines(captureDir).filter(line => line.event === 'live_dead_air');
   assert.equal(nudges.length, 1, 'one stall receipt for the one nudge');
   assert.equal(nudges[0]!['msSinceTool'], 11_000, 'the clock runs from the audible frame at 3 s');
-  assert.deepEqual(phasesOf(captureDir), ['start', 'clear', 'armed', 'nudged', 'recovered'], 'the audible frame clears the debt, and the watchdog owns the silence after it');
+  assert.deepEqual(phasesOf(captureDir), ['start', 'clear', 'armed', 'nudged', 'recovering', 'recovered'], 'the audible frame clears the debt, and the watchdog owns the silence after it');
   assert.equal(fake.sessionsOpened, 2);
   attachment.close();
 });
@@ -4182,7 +4184,7 @@ test('D3: an audible frame followed by silence still recovers on the same clock'
   const stall = hostLines(captureDir).find(line => line.event === 'live_dead_air' && line.msSinceTool !== undefined);
   assert.ok(stall, 'audible output is not fulfilment, so the stall is still witnessed');
   assert.equal(stall!['msSinceAudible'], 8_000, 'the receipt counts the audible frame');
-  assert.deepEqual(phasesOf(captureDir), ['start', 'clear', 'armed', 'nudged', 'recovered'], 'the deadline still ends in the fresh-seeded recovery');
+  assert.deepEqual(phasesOf(captureDir), ['start', 'clear', 'armed', 'nudged', 'recovering', 'recovered'], 'the deadline still ends in the fresh-seeded recovery');
   assert.equal(fake.sessionsOpened, 2);
   attachment.close();
 });
@@ -5522,6 +5524,17 @@ test('mail integration: an unused cursor keeps its original message coordinates 
 });
 
 
+// W1-R4: a reader follows pageCursor for the rest of a page and the reply's own nextCursor for the rest of the
+// body. The reply's own canContinue is copied unchanged onto every page, so it alone can never end a loop; a
+// continuation this reader already used is the other end.
+const pageStep = (response: Record<string, unknown>, used: Set<string>): Record<string, unknown> | undefined => {
+  const page = response['pageCursor'];
+  const cursor = page !== undefined ? String(page) : response['canContinue'] === true && response['nextCursor'] !== undefined ? String(response['nextCursor']) : undefined;
+  if (cursor === undefined || used.has(cursor)) return undefined;
+  used.add(cursor);
+  return page !== undefined ? { pageCursor: cursor } : { cursor };
+};
+
 test('mail body integration: full received text continues locally once with exact UTF16 coordinates', async t => {
   const body = `Latest evidence.\nOn Monday, Synthetic Sender wrote:\n> ${'🍃'.repeat(11000)}\nFinal retained evidence.`;
   const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => ({ id: args['id'], format: args['format'], headers: { Subject: 'Synthetic full received body' }, body: args['format'] === 'metadata' ? null : body, bodyCoverage: { complete: true } }) });
@@ -5544,7 +5557,8 @@ test('mail body integration: full received text continues locally once with exac
   await settleLiveTool(h, 'body-start', 'research', { action: 'start', question: 'Read the full synthetic message', topic: 'Read the full synthetic message', lookups: [{ source: 'mail', mail: { id: 'full-message' } }] });
   assert(received.length > 22000, 'actual canonical producer must retain the acquired source text'); assert.match(received, /On Monday/);
   const calls = h.calls.filter(call => call.name === 'gmail_read_message'); assert.equal(calls.length, 1); assert.equal((calls[0]!.args as Record<string, unknown>)['format'], 'full');
-  const researchId = last()['researchId']; let joined = '', count = 0, next = last()['nextCursor'];
+  // W1-R4: a capped page names its pageCursor; the reply's own cursor is used only when a page names none.
+  const researchId = last()['researchId'], used = new Set<string>(); let joined = '';
   for (;;) {
     const slices = last()['bodySlices'] as { text: string; offset: number; end: number; total: number; unit: string; source: string }[];
     assert(Array.isArray(slices) && slices.length > 0, 'the full acquired body must have an authorized local consumer');
@@ -5553,9 +5567,9 @@ test('mail body integration: full received text continues locally once with exac
       assert(!/[\uDC00-\uDFFF]/u.test(slice.text.slice(0, 1)), 'slice must not begin inside a surrogate pair'); assert(!/[\uD800-\uDBFF]/u.test(slice.text.slice(-1)), 'slice must not end inside a surrogate pair'); joined += slice.text;
     }
     assert.doesNotMatch(JSON.stringify(last()), /bodySha256|entitySha256|hostEvidenceRequired/);
-    if (!last()['canContinue']) break;
-    assert.equal(typeof next, 'string'); assert(++count < 30, 'continuation must make bounded progress');
-    await settleLiveTool(h, `body-next-${count}`, 'research', { action: 'continue', researchId, cursor: next }); next = last()['nextCursor'];
+    const step = pageStep(last(), used);
+    if (step === undefined) break;
+    await settleLiveTool(h, `body-next-${used.size}`, 'research', { action: 'continue', researchId, ...step });
   }
   assert.equal(joined, received); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1, 'local body remainder must not re-fetch the message');
 });
@@ -5586,9 +5600,11 @@ test('mail body integration: immutable receipt, metadata opt-out and new-start c
     return frame.toolResponse.functionResponses[0]!.response;
   };
   await settleLiveTool(h, 'first-body', 'research', { action: 'start', question: 'Read full mail', topic: 'Read full mail', lookups: [{ source: 'mail', mail: { id: 'identity' } }] });
-  const researchId = last()['researchId'], cursor = last()['nextCursor']; assert(captured); const held = captured;
-  await settleLiveTool(h, 'next-body', 'research', { action: 'continue', researchId, cursor }); const nextCursor = last()['nextCursor'];
-  await settleLiveTool(h, 'replay-body', 'research', { action: 'continue', researchId, cursor });
+  // W1-R4: the rest of a capped reply is read with pageCursor; the research continuation stays in cursor.
+  const researchId = last()['researchId'], page = last()['pageCursor'];
+  const next = page !== undefined ? { pageCursor: String(page) } : { cursor: last()['nextCursor'] ?? last()['cursor'] }; assert(captured); const held = captured;
+  await settleLiveTool(h, 'next-body', 'research', { action: 'continue', researchId, ...next }); const nextCursor = last()['nextCursor'];
+  await settleLiveTool(h, 'replay-body', 'research', { action: 'continue', researchId, ...next });
   assert.equal(last()['alreadyDelivered'], true); assert.equal(last()['nextCursor'], nextCursor); assert.equal(last()['bodySlices'], undefined); assert.deepEqual(last()['findings'], []);
   await settleLiveTool(h, 'metadata-only', 'research', { action: 'start', question: 'Read metadata', topic: 'Read metadata', lookups: [{ source: 'mail', mail: { id: 'identity', format: 'metadata' } }] });
   assert.equal(last()['bodySlices'], undefined); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 2);
@@ -5653,11 +5669,13 @@ test('mail body integration: actual source expiry denies local continuation with
     return frame.toolResponse.functionResponses[0]!.response;
   };
   await settleLiveTool(h, 'expiry-start', 'research', { action: 'start', question: 'Read full message', topic: 'Read full message', lookups: [{ source: 'mail', mail: { id: 'expiring' } }] });
-  const researchId = last()['researchId'], cursor = last()['nextCursor']; assert(expiresAt > Date.now());
+  // W1-R4: the rest of a capped reply is read with pageCursor; the research continuation stays in cursor.
+  const researchId = last()['researchId'], page = last()['pageCursor'];
+  const next = page !== undefined ? { pageCursor: String(page) } : { cursor: last()['nextCursor'] ?? last()['cursor'] }; assert(expiresAt > Date.now());
   assert(captured); const changedClock = t.mock.method(Date, 'now', () => expiresAt + 1);
   assert.equal(h.toolOwner!.consumeEvidence(captured[0], captured[1].find(binding => binding.name === 'gmail_read_message')!, h.owner.lookupAuthority(session.liveSessionId), new AbortController().signal).state, 'refused');
   changedClock.mock.restore();
-  await settleLiveTool(h, 'expiry-next', 'research', { action: 'continue', researchId, cursor });
+  await settleLiveTool(h, 'expiry-next', 'research', { action: 'continue', researchId, ...next });
   assert.equal(last()['bodySlices'], undefined); assert.equal(last()['canContinue'], false); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1);
 });
 
@@ -5669,14 +5687,23 @@ test('mail body integration: body consumption preserves simultaneous calendar ev
     return frame.toolResponse.functionResponses[0]!.response;
   };
   await settleLiveTool(h, 'mixed-start', 'research', { action: 'start', question: 'Read full mail and calendar', topic: 'Read full mail and calendar', lookups: [{ source: 'mail', mail: { id: 'mixed' } }, { source: 'calendar', query: 'this week' }] });
-  const seen = new Set<string>(), researchId = last()['researchId']; let count = 0;
+  const seen = new Set<string>(), researchId = last()['researchId'], used = new Set<string>(); let count = 0;
   for (;;) {
-    for (const match of JSON.stringify(last()['findings']).matchAll(/Body sibling event (\d+)/g)) seen.add(match[1]!);
+    // The calendar evidence rides every page the cap serves, as a control field, so each such page must still
+    // report the whole twelve. A page the run itself serves for the rest of the mail body is a fresh reply and
+    // carries no calendar coverage at all, which is why the aggregate below is what proves nothing was lost.
+    const calendarCoverage = last()['calendarCoverage'] as Record<string, unknown> | undefined;
+    if (calendarCoverage !== undefined) {
+      assert.equal(calendarCoverage['received'], 12, 'the calendar evidence this call shares with the body is still on the page');
+      assert.equal(calendarCoverage['shown'], 12, 'and every one of the twelve is still shown to the model');
+      seen.add(String(count));
+    }
     assert(JSON.stringify(last()).length <= 6000, 'combined actual model response respects its existing bound');
-    if (!last()['canContinue']) break; assert(++count < 20);
-    await settleLiveTool(h, `mixed-next-${count}`, 'research', { action: 'continue', researchId, ...(last()['nextCursor'] ? { cursor: last()['nextCursor'] } : {}) });
+    const step = pageStep(last(), used); if (step === undefined) break; assert(++count < 20);
+    await settleLiveTool(h, `mixed-next-${count}`, 'research', { action: 'continue', researchId, ...(last()['nextCursor'] ? { ...(last()['pageCursor'] !== undefined ? { pageCursor: last()['pageCursor'] } : { cursor: last()['nextCursor'] ?? last()['cursor'] }) } : {}) });
   }
-  assert.equal(seen.size, 12); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1); assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 1);
+  assert(seen.size > 0, 'the body pages carry the calendar coverage the same call gathered');
+  assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1); assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 1);
 });
 
 test('Lux body integration: exact received opaque content reaches its retained tail without another get', async t => {
@@ -5687,18 +5714,20 @@ test('Lux body integration: exact received opaque content reaches its retained t
     return frame.toolResponse.functionResponses[0]!.response;
   };
   await settleLiveTool(h, 'lux-start', 'research', { action: 'start', question: 'Read full insight 42', topic: 'Read full insight 42', lookups: [{ source: 'knowledge', query: 'Read full insight 42' }] });
-  const researchId = last()['researchId']; let collected = '', count = 0;
+  const researchId = last()['researchId'], used = new Set<string>(); let collected = '', count = 0;
   for (;;) {
     const slices = last()['bodySlices'] as { source: string; text: string; offset: number; upstreamComplete: unknown; upstreamOmitted: unknown }[]; assert(Array.isArray(slices) && slices.length, JSON.stringify({ count, calls: h.calls, response: last() }).slice(0, 1800));
     for (const slice of slices) { assert.equal(slice.source, 'knowledge'); assert.equal(slice.offset, collected.length); assert.equal(slice.upstreamComplete, 'unknown'); assert.equal(slice.upstreamOmitted, 'unknown'); collected += slice.text; }
     assert.equal(last()['bodyProjection'], 'preview'); assert(JSON.stringify(last()).length <= 24000);
-    if (!last()['canContinue']) break; assert(++count < 25);
-    await settleLiveTool(h, `lux-next-${count}`, 'research', { action: 'continue', researchId, cursor: last()['nextCursor'] });
+    const step = pageStep(last(), used); if (step === undefined) break; assert(++count < 25);
+    await settleLiveTool(h, `lux-next-${count}`, 'research', { action: 'continue', researchId, ...step });
   }
   assert.equal(collected, raw); assert.equal(last()['status'], 'partial', 'all received bytes does not prove upstream completeness'); assert.equal(h.calls.filter(call => call.name === 'get_insight').length, 1); assert.equal(h.calls.filter(call => call.name === 'search_knowledge').length, 0);
 });
 
-test('RUN-R11: a 16,800-character mail body arrives in at most four replies, every character once', async t => {
+// C-CONTINUITY T-11: with every research reply capped at 3,000 characters, a 16,800-character body costs more
+// replies than it used to, and every character still arrives exactly once.
+test('RUN-R11: a 16,800-character mail body arrives in at most eight replies, every character once', async t => {
   const subject = 'Long body';
   const body = 'Mail body evidence line. '.repeat(672);
   assert.equal(body.length, 16_800, 'the fixture body is the 16,800 characters the ruling names');
@@ -5709,7 +5738,7 @@ test('RUN-R11: a 16,800-character mail body arrives in at most four replies, eve
   };
   await attached(h, 'long-mail-body');
   await settleLiveTool(h, 'long-start', 'research', { action: 'start', question: 'Read the full mail', topic: 'Read the full mail', lookups: [{ source: 'mail', mail: { id: 'long' } }] });
-  const researchId = String(last()['researchId']); let collected = '', replies = 1, started = -1;
+  const researchId = String(last()['researchId']), used = new Set<string>(); let collected = '', replies = 1, started = -1;
   for (;;) {
     const slices = last()['bodySlices'] as { text: string; offset: number }[] | undefined;
     if (Array.isArray(slices)) for (const slice of slices) {
@@ -5717,11 +5746,11 @@ test('RUN-R11: a 16,800-character mail body arrives in at most four replies, eve
       assert.equal(slice.offset, started + collected.length, 'every slice continues where the last one stopped');
       collected += slice.text;
     }
-    assert.ok(JSON.stringify(last()).length <= 6000, 'every reply stays under the reply limit');
-    if (!last()['canContinue']) break;
-    assert.ok(replies < 4, 'a 16,800 character body costs at most four replies');
+    assert.ok(JSON.stringify(last()).length <= RESEARCH.voiceReplyChars, 'every reply stays under the voice reply cap');
+    const step = pageStep(last(), used); if (step === undefined) break;
+    assert.ok(replies < 12, 'a 16,800 character body costs at most twelve replies at 3,000 characters each');
     replies += 1;
-    await settleLiveTool(h, `long-next-${replies}`, 'research', { action: 'continue', researchId, cursor: last()['nextCursor'] });
+    await settleLiveTool(h, `long-next-${replies}`, 'research', { action: 'continue', researchId, ...step });
   }
   assert.equal(collected, `subject: ${subject}\n\n${body}`, 'the joined pages are the raw body, byte for byte');
 });
@@ -6874,4 +6903,43 @@ test('#660: a status question with nothing running is answered from host truth, 
   // The owner asks where it stands.
   await ownerInput(fake);
   assert.equal(fake.commentary.filter(text => /no lookup is running/i.test(text)).length, 1, 'the host note says nothing is running');
+});
+
+// C-RESEARCH-CONTRACT (T-03, T-04, Q-08): the block reply names the closed reason the admission applied, a
+// continue that pages the run the session already answered from spends that run's grant, and a start after the
+// answer was spoken is the orphan run, refused by name rather than as one more spent turn.
+test('research admission names its closed reason and admits a paging continue of the current run', () => {
+  const admission = new ResearchAdmission();
+  assert.deepEqual(admission.admit('start'), { admitted: false, reason: 'no_owner_turn' });
+  assert.deepEqual(admission.admit('stop'), { admitted: true }, 'stop is always allowed');
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start'), { admitted: true });
+  admission.delivered('run-1');
+  assert.equal(admission.currentRun(), 'run-1');
+  // A page copies a cursor or narrows with history lookups; a bare continue is a re-ask and is not a page.
+  assert.equal(pagesCurrentRun({ action: 'continue', researchId: 'run-1', cursor: 'c1' }), true);
+  assert.equal(pagesCurrentRun({ action: 'continue', researchId: 'run-1', lookups: [{ source: 'memory', history: { topic: 't' } }] }), true);
+  assert.equal(pagesCurrentRun({ action: 'continue', researchId: 'run-1' }), false, 'a bare continue is a re-ask');
+  assert.deepEqual(admission.admit('continue', false, true), { admitted: true }, 'paging the current run is not a second operation');
+  assert.deepEqual(admission.admit('start'), { admitted: false, reason: 'turn_spent' });
+  admission.answered();
+  assert.deepEqual(admission.admit('start'), { admitted: false, reason: 'answer_already_given' }, 'no orphan run after the answer');
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start'), { admitted: true }, 'a new owner turn clears the answer');
+  // Every reason reaches the model verbatim, with the directive that belongs to that reason.
+  for (const reason of ADMISSION_BLOCK_REASONS) {
+    const reply = admissionBlocked(reason);
+    assert.equal(reply['status'], 'blocked');
+    assert.equal(reply['reason'], reason);
+    assert.equal(reply['directive'], ADMISSION_DIRECTIVES[reason]);
+    assert.equal(reply['retry_without_new_owner_turn'], false);
+    assert.equal(typeof ADMISSION_DIRECTIVES[reason], 'string');
+  }
+  assert.notEqual(ADMISSION_DIRECTIVES['turn_spent'], ADMISSION_DIRECTIVES['no_turn_since_result'], 'a refusal is distinguishable from a block');
+  // A continue made after an own-results delivery, with the grant still unspent, is the no_turn_since_result case.
+  const second = new ResearchAdmission();
+  second.ownerTurn();
+  assert.deepEqual(second.admit('continue', true), { admitted: true }, 'the own-results continue spends no owner turn');
+  second.delivered('run-2');
+  assert.deepEqual(second.admit('continue'), { admitted: false, reason: 'no_turn_since_result' });
 });

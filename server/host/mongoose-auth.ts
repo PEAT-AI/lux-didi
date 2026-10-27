@@ -1,4 +1,5 @@
 import { MONGOOSE_ENDPOINTS, MONGOOSE_ENDPOINT_PATHS, mongooseEndpointName, mongooseTokenIdentity, type MongooseEndpoint } from '../connectors/mongoose.js';
+import type { IdentityProof } from '../connectors/identity.js';
 import {
   discoverProtectedResource, oauthAccessToken, onOrigin as oauthOnOrigin, readOAuthRecord, trustedOrigin, writeOAuthRecord,
   OAUTH_DISCOVERY_TIMEOUT_MS, OAUTH_LOCK_STALE_MS, OAUTH_RECORD_KEYS, OAUTH_RECORD_LIMIT, OAUTH_RECORD_SCHEMA, OAUTH_REFRESH_MARGIN_MS,
@@ -41,6 +42,8 @@ export interface MongooseOAuthRecord {
   expiresAt: number;
   /** Epoch milliseconds of the first consent in this family; the 90 day cap is measured from here. */
   consentStartedAt: number;
+  /** The owner email the endpoint's own minted token named when the token check accepted it. */
+  identity?: string;
 }
 
 /**
@@ -121,6 +124,11 @@ export function mongooseCredentialPresent(configDir: string, reference: string):
 export interface MongooseAuthOptions extends OAuthTokenOptions {
   /** The catalogue's one owner email; every minted token must name it, or the token is never used. */
   ownerIdentity?: string | null;
+  /**
+   * The one receipt per token check (#696): proven, matched and a closed code, never the claim itself.
+   * It runs at the first connect and after every refresh, from the JWT check this module already does.
+   */
+  onIdentity?: (proof: IdentityProof) => void;
 }
 
 /**
@@ -138,10 +146,13 @@ export function mongooseAccessToken(configDir: string, reference: string, bindin
     // ownerIdentity configured there is nothing to compare, which is the catalogue's explicit
     // no-comparison policy, not a fallback: the token is still decoded and its audience checked.
     verifyToken: accessToken => {
-      if (endpoint === undefined) return;
+      if (endpoint === undefined) return undefined;
       const proof = mongooseTokenIdentity(accessToken, endpoint, expected);
-      if (proof.match === false) throw new OAuthCredentialError('credential-identity-mismatch');
-      if (!proof.proven && expected.length > 0) throw new OAuthCredentialError('credential-identity-unverified');
+      options.onIdentity?.(proof);
+      if (proof.match === false) return { ok: false as const, code: 'identity_mismatch' as const };
+      if (!proof.proven && expected.length > 0) return { ok: false as const, code: 'identity_unverified' as const };
+      // The claim the issuer minted is what the sign-in record keeps, so Settings can name the account.
+      return { ok: true as const, ...(proof.proven && typeof proof.value === 'string' && proof.value.length > 0 ? { identity: proof.value } : {}) };
     },
   }, token);
 }

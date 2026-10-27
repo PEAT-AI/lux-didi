@@ -422,7 +422,7 @@ test('#657 review: the tool declaration states the lookup limit and the allowed 
   const text = JSON.stringify(researchDeclaration(['knowledge', 'mail', 'chat']));
   assert.match(text, /at most 4 lookups, each with source/iu, 'the first sentence names the limit and the source key');
   assert.match(text, /query, mail or history/u, 'and the three other keys a lookup may carry');
-  assert.match(text, /memory, knowledge, company, calendar, mail, chat, replies, drive or web/u, 'and the values the source key takes');
+  assert.match(text, /memory, knowledge, company, data, calendar, mail, chat, replies, drive or web/u, 'and the values the source key takes');
 });
 
 // --- REVIEWFIX G1: the second status alternative matched ordinary content questions -------------------

@@ -16,7 +16,9 @@ import {
   MONGOOSE_ENDPOINTS, MONGOOSE_ENDPOINT_AUDIENCES, MONGOOSE_ENDPOINT_PATHS, MONGOOSE_ENDPOINT_TOOLS, MONGOOSE_READ_TOOLS,
   MONGOOSE_FAILURE_STAGES, mongooseCredentialAtStart, mongooseFailureStage, type MongooseEndpoint,
 } from '../connectors/index.js';
-import { projectMongooseResult, mongooseToolStatus } from '../tools/mongoose.js';
+import { projectMongooseResult, mongooseToolStatus, renderMongooseTool } from '../tools/mongoose.js';
+import { MongooseSchemaRefusal, mongoosePublishCatalogue, mongooseSanitizeParameters } from '../connectors/mongoose.js';
+import type { ConnectionPolicy } from '../tools/types.js';
 import { loadMcpEndpoints, mcpErrorCode } from '../config/mcp.js';
 
 const ACCOUNT = 'account-a';
@@ -95,6 +97,55 @@ async function fixture(endpoint: MongooseEndpoint, options: FixtureOptions = {})
   const address = listener.address(); assert(address && typeof address !== 'string');
   const url = `http://127.0.0.1:${address.port}${MONGOOSE_ENDPOINT_PATHS[endpoint]}`;
   return { url, calls, get authorization() { return authorization.filter(value => value !== undefined); }, async close() { await sdk.close().catch(() => {}); await new Promise<void>(resolve => listener.close(() => resolve())); } };
+}
+
+/**
+ * V7: the `run_metric_query` argument schema the live server publishes, exactly as the 2026-10-27 fixture
+ * records it (test/fixtures/mongoose-data-live.json, run_metric_query_input_schema_published_by_server):
+ * title, description, queryConfig{exploreName, metrics, dimensions, filters{dimensions[],metrics[],type},
+ * sorts[], limit integer minimum 1}, and the filter rule {fieldId, operator enum, values[], settings}.
+ */
+const PUBLISHED_METRIC_SCHEMA: Record<string, unknown> = {
+  type: 'object', additionalProperties: false, required: ['queryConfig'],
+  properties: {
+    title: { type: 'string' },
+    description: { type: 'string' },
+    queryConfig: {
+      type: 'object', additionalProperties: false, required: ['exploreName'],
+      properties: {
+        exploreName: { type: 'string' },
+        metrics: { type: 'array', items: { type: 'string' } },
+        dimensions: { type: 'array', items: { type: 'string' } },
+        filters: { type: 'object', additionalProperties: false, properties: {
+          dimensions: { type: 'array', items: { type: 'object', additionalProperties: false, properties: {
+            fieldId: { type: 'string' }, operator: { type: 'string', enum: ['equals', 'inThePast'] },
+            values: { type: 'array', items: { type: ['string', 'number'] } },
+            settings: { type: 'object', additionalProperties: false, properties: { unitOfTime: { type: 'string', enum: ['days'] }, completed: { type: 'boolean' } } },
+          } } },
+          metrics: { type: 'array', items: { type: 'object' } },
+          type: { type: 'string', enum: ['and'] },
+        } },
+        sorts: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { fieldId: { type: 'string' }, descending: { type: 'boolean' } } } },
+        limit: { type: 'integer', minimum: 1, maximum: 500 },
+      },
+    },
+  },
+};
+
+/** One approved connection policy per Mongoose endpoint, enough to build the planner-facing table. */
+const MONGOOSE_POLICY: Readonly<Record<MongooseEndpoint, ConnectionPolicy>> = {
+  knowledge: mongoosePolicy('knowledge'), data: mongoosePolicy('data'), crm: mongoosePolicy('crm'),
+};
+
+function mongoosePolicy(endpoint: MongooseEndpoint): ConnectionPolicy {
+  return {
+    schemaVersion: 1, ownerId: 'owner', connectionId: `connection-${endpoint}`, generation: 1, enabled: true, connector: 'mongoose',
+    endpoint: { id: `mongoose-${endpoint}`, url: `https://synthetic.invalid${MONGOOSE_ENDPOINT_PATHS[endpoint]}`, account: ACCOUNT, resource: MONGOOSE_ENDPOINT_AUDIENCES[endpoint], credentialRef: `mongoose-${endpoint}` },
+    toolNames: [...MONGOOSE_ENDPOINT_TOOLS[endpoint]], schemaDigest: 'schema',
+    sourcePolicy: { id: 'synthetic-policy', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
+    route: { identity: 'synthetic-route', allowedClasses: ['private'] },
+    bounds: { maxQueryChars: 200, maxSearchLimit: 10, maxGetIds: 10, maxEntityBytes: 9000, maxResultBytes: 20000 },
+  };
 }
 
 function adapterFor(endpoint: MongooseEndpoint, url: string, token: string) {
@@ -372,4 +423,78 @@ test('the mongoose descriptor declares only the three endpoint envelopes', () =>
   for (const endpoint of MONGOOSE_ENDPOINTS) {
     for (const name of MONGOOSE_ENDPOINT_TOOLS[endpoint]) assert(descriptor.envelope.includes(name), `${endpoint} declares ${name}`);
   }
+});
+
+test('V7: the data envelope forwards the published run_metric_query schema, not an empty one', () => {
+  // The whole data envelope is published at connect time, so every forwarded tool carries its own shape.
+  mongoosePublishCatalogue('mongoose-data', MONGOOSE_ENDPOINT_TOOLS.data.map(name => ({
+    name,
+    description: name === 'run_metric_query' ? 'Run one metric query on one explore with the published argument shape.' : `The published ${name} read.`,
+    inputSchema: name === 'run_metric_query' ? PUBLISHED_METRIC_SCHEMA : { type: 'object', additionalProperties: false, properties: { limit: { type: 'integer', minimum: 1 } } },
+  })));
+  const descriptor = connectorDescriptor('mongoose');
+  assert(descriptor);
+  const declaration = descriptor?.declarations(MONGOOSE_POLICY.data).find(candidate => candidate.name === 'run_metric_query');
+  assert.ok(declaration, 'the published tool is declared');
+  assert.notDeepEqual(declaration.parameters, { type: 'object', properties: {} }, 'never the empty pass-through schema');
+  assert.deepEqual(declaration.parameters, mongooseSanitizeParameters(PUBLISHED_METRIC_SCHEMA), 'exactly the sanitized published schema');
+  assert.equal(declaration.description, 'Run one metric query on one explore with the published argument shape.', 'the published description, not the forwarded text');
+  // The planner can build the real shape, so the published schema really reached it.
+  assert.equal(declaration.validate({ queryConfig: { exploreName: 'active_users_daily', metrics: ['active_users_daily_n_active_users'], limit: 10 } }), true);
+  assert.equal(declaration.validate({ queryConfig: { limit: 10 } }), false, 'exploreName stays required');
+});
+
+test('V7: a float literal is sanitized to an integer, never forwarded', () => {
+  const sanitized = mongooseSanitizeParameters({ type: 'object', properties: { limit: { type: 'integer', minimum: 1.5, maximum: 9.99 }, ratio: { type: 'number' } } });
+  const properties = sanitized['properties'] as Record<string, Record<string, unknown>>;
+  assert.equal(properties['limit']?.['minimum'], 1);
+  assert.equal(properties['limit']?.['maximum'], 9);
+});
+
+test('V7 (F4): a fractional multipleOf is refused, never truncated to an invalid zero', () => {
+  assert.throws(
+    () => mongooseSanitizeParameters({ type: 'object', properties: { q: { type: 'integer', multipleOf: 0.5 } } }),
+    (error: unknown) => error instanceof MongooseSchemaRefusal && error.path.endsWith('properties.q.multipleOf'),
+  );
+});
+
+test('V7: a keyword the provider rejects fails the catalogue load loudly', () => {
+  assert.throws(
+    () => mongoosePublishCatalogue('mongoose-data', [{ name: 'run_metric_query', description: 'x', inputSchema: { type: 'object', properties: { q: { type: 'string', oneOf: [{ type: 'string' }] } } } }]),
+    (error: unknown) => error instanceof MongooseSchemaRefusal && error.path.endsWith('properties.q.oneOf'),
+  );
+});
+
+test('V7: a forwarded tool is declared only with its published schema, never with an empty one', () => {
+  const descriptor = connectorDescriptor('mongoose');
+  // The crm endpoint published nothing in this test, so it declares nothing: no empty-schema pass-through.
+  assert.deepEqual(descriptor?.declarations(MONGOOSE_POLICY.crm), []);
+  const data = descriptor?.declarations(MONGOOSE_POLICY.data) ?? [];
+  assert.ok(data.every(declaration => Object.keys((declaration.parameters['properties'] ?? {}) as object).length > 0), 'every declared data tool carries its published properties');
+});
+
+test('Q-02: a contradiction ticket is projected as a contradiction, with both of its figures', () => {
+  const text = renderMongooseTool({ outcome: 'ok', items: [{
+    type: 'ticket', ref: 'ticket:122',
+    name: 'Contradiction: Indonesia active users, market profile says 43,538 (2024) but SE Asia total is ~29K (2025)',
+  }] }).text;
+  assert.match(text, /contradiction: true/u, `the disagreement leads: ${text}`);
+  assert.match(text, /values: 43,538 \/ ~29K/u, 'both sides travel with it, in the source\'s own spelling');
+});
+
+test('Q-02 (F3): a ticket id ahead of the contradiction is not one of the two sides', () => {
+  const text = renderMongooseTool({ outcome: 'ok', items: [{
+    type: 'ticket', ref: 'ticket:122',
+    name: 'Ticket 45231 Contradiction: Indonesia active users, market profile says 43,538 (2024) but SE Asia total is ~29K (2025)',
+  }] }).text;
+  assert.match(text, /values: 43,538 \/ ~29K/u, `the two sides, never the id: ${text}`);
+});
+
+test('Q-02: an empty read is projected as empty_body, never as complete evidence', () => {
+  assert.match(renderMongooseTool({ outcome: 'ok', complete: true, body: '' }).text, /empty_body: true/u);
+});
+
+test('Q-02: a no_match that carries suggestions is a pointer to read, never a failure', () => {
+  const text = renderMongooseTool({ outcome: 'no_match', suggestions: ['Plantix Indonesia', 'Plantix Brazil'] }).text;
+  assert.match(text, /no direct answer, candidates: Plantix Indonesia, Plantix Brazil/u);
 });

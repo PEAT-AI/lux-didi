@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import type { JsonObject } from '../adapters/model/types.js';
 import type { SchemaMigration, Transaction } from '../contracts/storage.js';
 import { canonicalJSON, sha256 } from './canonical.js';
+import { hostLogEvent } from './host-events.js';
 
 /** The composed-note stage tool is a gateway declaration, never a remote MCP one. */
 export const STAGE_NOTE_IDENTITY = { name: 'stage_lux_note', accountId: 'gateway:live-voice', resourceId: 'owner-vault' } as const;
@@ -23,6 +25,8 @@ export function validateStageNote(args: unknown): args is { title: string; body:
 
 /** A note is titled and bodied by the host; title plus body is never truncated, only refused. */
 export const NOTE_MAX_CHARS = 2000;
+/** What the model says when the host could not stage the note at all: a closed code in plain words. */
+export const STAGE_FAILED_GUIDANCE = 'The note was not staged. Tell the owner it was not saved and ask them to say it again in one sentence.';
 export const TITLE_MAX_CHARS = 120;
 export const CONFIRM_WINDOW_MS = 30_000;
 export const CONFIRM_SETTLE_MS = 1_500;
@@ -214,6 +218,38 @@ export function beginStage(input: StageInput): StageOutcome {
     stageId: input.stageId, sessionId: input.sessionId, title: input.title.replace(/\s+/g, ' ').trim(), body: input.body.replace(/\s+/g, ' ').trim(),
     payload: frozen.payload, payloadSha: frozen.payloadSha, state: 'staged', stagedAt: input.now,
   } };
+}
+
+export interface OwnerTurnFacts { readonly inputAt: number | undefined; readonly inputFinal: boolean }
+
+/**
+ * W6 items 1 to 4: the model stages a composed note and nothing more. The owner's own finalized
+ * microphone turn is the only authorization, the evidence refs must name journal rows this session
+ * holds, and the whole payload is frozen here, before any read-back. W5: it lives beside the rest of
+ * the stage state machine so the tool-owner check can drive the shipped function, not a copy.
+ */
+export function stageComposedNote(tx: Transaction, liveSessionId: string, args: { title: string; body: string; evidenceRefs: string[] },
+  turn: OwnerTurnFacts, now: number, enabled: boolean): JsonObject {
+  const rows = tx.all("SELECT journal_id,text,final_origin,finalized_at FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND finished=1 ORDER BY journal_id DESC LIMIT 50", [liveSessionId])
+    .map(row => ({ journalId: Number(row['journal_id']), text: String(row['text'] ?? ''),
+      finalOrigin: String(row['final_origin'] ?? 'unknown'), finalizedAt: Number(row['finalized_at'] ?? 0) }));
+  // W6-R2 B1: only this turn's finalized mic transcript can authorize, never the previous turn.
+  const read = currentOwnerTurn(rows, turn.inputAt, turn.inputFinal, now);
+  if (read.state === 'refused') {
+    hostLogEvent({ event: 'lux_note_stage', staged: false, code: read.code });
+    return { staged: false, code: read.code };
+  }
+  const outcome = beginStage({ stageId: randomUUID(), sessionId: liveSessionId, ownerText: read.text,
+    title: args.title, body: args.body, evidence: args.evidenceRefs, heldEvidence: read.evidence, enabled, now });
+  if (outcome.state === 'refused') {
+    hostLogEvent({ event: 'lux_note_stage', staged: false, code: outcome.code });
+    return { staged: false, code: outcome.code };
+  }
+  const note = outcome.note;
+  saveNoteState(tx, note);
+  hostLogEvent({ event: 'lux_note_stage', staged: true, digest: note.payloadSha.slice(0, 12) });
+  return { staged: true, stageId: note.stageId, title: note.title, body: note.body,
+    readBack: `Read the note back exactly, then wait for the owner: ${note.title}. ${note.body}` };
 }
 
 const ended = (note: NoteState, state: 'cancelled' | 'invalidated', code: string, now: number): NoteState => ({ ...note, state, code, endedAt: now });

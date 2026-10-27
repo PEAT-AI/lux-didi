@@ -52,6 +52,8 @@ export interface TimelineReport {
   tools?: ToolDiagnostics;
   /** L8-Q04: what went wrong in the call as its receipts record it, a lower bound by kind. */
   callFailures: { count: number; kinds: Record<string, number> };
+  /** C-RESEARCH-CONTRACT T-04: calls the admission refused. Not a failure: they reached no source. */
+  blockedCalls: number;
   coverage?: { metadata: string; content: string; native: string; failureCountLowerBound: number | null; lastReason: string | null; unassociatedTranscriptRows: number | null };
   contentAccess?: DiagnosticContentAccess;
   transcript?: { journalId: number; role: UtteranceRole; text: string; final: boolean; finalOrigin: string | null; providerStartMs: number | null; providerEndMs: number | null }[];
@@ -185,12 +187,15 @@ export function buildTimeline(read: TraceRead, liveSessionId: string, options: T
 
   const audibilityReported = playback.some(segment => segment.audibleAt !== null);
   const callFailures = callFailuresOf(read, liveSessionId, responses, calls);
+  // C-RESEARCH-CONTRACT T-04: a blocked call is counted on its own line, never inside the failure count.
+  const blockedCalls = calls.filter(call => call.outcome === 'blocked').length;
   const gaps = turns.flatMap(track => gapsFor(track, audibilityReported)).sort((a, b) => a.turnIndex - b.turnIndex || a.obligation.localeCompare(b.obligation) || a.turnId.localeCompare(b.turnId));
   return {
     tools: readToolDiagnostics(read,liveSessionId,{content: options.content === true,...(options.contentAuthority ? {authority: options.contentAuthority} : {})}),
     liveSessionId,unattributedCalls: calls.filter(call => call.turnId === null),unattributedResponses: responses.filter(response => response.turnId === null),...(coverage ? { coverage } : {}),...(contentAccess ? { contentAccess } : {}),...(transcript ? { transcript } : {}),
     capturedAt: options.capturedAt ?? Date.now(),
     callFailures,
+    blockedCalls,
     turns,
     gaps,
     nativeGaps: missingNativeRanges(read, liveSessionId),
@@ -356,6 +361,7 @@ export function renderTimeline(report: TimelineReport): string {
   for (const call of report.unattributedCalls) lines.push(`unattributed call ${call.name} key=${call.callKey} outcome=${call.outcome} execution_ms=${call.executionMs ?? 'unknown'}`);
   for (const response of report.unattributedResponses) lines.push(`unattributed response ${response.responseKey} status=${response.status}`);
   lines.push(`call_failures_at_least=${report.callFailures.count}${Object.entries(report.callFailures.kinds).map(([kind, n]) => ` ${kind}=${n}`).join('')}`);
+  if (report.blockedCalls > 0) lines.push(`blocked_calls=${report.blockedCalls}`);
   if (report.coverage) lines.push(`coverage metadata=${report.coverage.metadata} content=${report.coverage.content} native=${report.coverage.native} failures_at_least=${report.coverage.failureCountLowerBound ?? 'unknown'}`);
   if (report.contentAccess) lines.push(`content: ${report.contentAccess.state}${report.contentAccess.state === 'denied' ? ` reason=${report.contentAccess.reason}` : ''}`);
   for (const row of report.transcript ?? []) lines.push(`transcript journal=${row.journalId} role=${row.role} source=automatic_transcription final_origin=${row.finalOrigin ?? 'unknown'} ${JSON.stringify(row.text)}`);

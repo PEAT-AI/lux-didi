@@ -11,6 +11,17 @@ A connected source is an account or service Naya can consult through a host-appr
 | Mattermost | `server/connectors/mattermost.ts` | Read people, channels, threads and attention evidence |
 | Mongoose | `server/connectors/mongoose.ts` | Read the separately approved knowledge, data and CRM endpoints |
 
+Each Mongoose endpoint is its own connection, so one unsigned endpoint never hides another: `mongoose-knowledge`
+serves the research `company` source, `mongoose-data` serves the research `data` source (company numbers), and an
+unsigned `mongoose-crm` disables only the CRM reads.
+
+A forwarded Mongoose tool reaches the planner with the input schema and description the endpoint published in its
+own MCP tool list, sanitized for the provider (integer bounds only, no keyword the provider rejects). The catalogue
+is taken at connect time; a schema that cannot be sanitized fails that connect with the closed code
+`schema_unsanitizable`, never as an empty schema. A count read (`run_metric_query`) without a date dimension and a
+date filter is refused by the host with `count_needs_date_window`, because the undated query returns an all-time sum
+rather than a user count.
+
 `CONNECTOR_DESCRIPTORS` in `server/connectors/index.ts` is the registry. These descriptors are read-only: `ConnectorToolDeclaration.effect` is `'read'`. Do not infer that all host tools are read-only. Trello is a separate host gateway in `server/host/trello.ts`, with a privately configured board (`TRELLO_BOARD_FILE`), rather than another descriptor in this registry. Its write authority and the note-writing flows belong in [tool-owner.md](tool-owner.md).
 
 ## Add or change a descriptor
@@ -40,6 +51,9 @@ Every identity-bearing connector acts as the one owner email in `ownerIdentity` 
 - Mongoose proves itself from the access token it was minted (`email` plus that endpoint's exact `aud`) after the PKCE code exchange and after every refresh, with no `get_started` probe. The claim names and audience strings live in `server/test/fixtures/mongoose-token-claims.json` with the commit they were read from (Mongoose `backend/src/mongoose/auth/tokens.py`, `issue_mongoose_access_token`). The sign-in also sends `expected_email` and `login_hint`; Mongoose refuses a different Google account before it mints a code and returns `error=access_denied&mongoose_error=account_mismatch`, which Didi reports as its own outcome.
 - An identity failure is terminal for that endpoint: the endpoint latches until an explicit sign-in or a host restart, writes one `connector_latched` line with a closed code, and is never re-probed by the recovery round or by an owner turn. A tool call routed to a latched endpoint fails with that code, and the other endpoints keep working.
 - A sign-in always ends in the log: `signin_finished` with `signed_in` or a closed failure, and a sign-in that never receives its callback ends in `signin_callback outcome=timeout`.
+- A sign-in to one Mongoose endpoint connects that endpoint in place, with no relaunch: the host reconnects the endpoint and writes `connector_connected` or a `connector_failure` with its closed code. When the reconnect leaves it unconnected, the host also writes `signin_needs_restart` with the row's own reason, and the Settings row says so.
+- Each Mongoose endpoint writes one `connector_identity` line (connector, endpoint, `proven`, `match`) at its first connect and after every token refresh, from the check of its own minted JWT. The proven owner email is kept in the endpoint's private record, so the Settings row says who it is signed in as; the log never carries the address.
+- On the call after a Mongoose endpoint comes up, Naya has one sentence naming what became connected and who it connected as, and says it once.
 
 ## Keep one owner per contract
 

@@ -9,16 +9,16 @@ import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteOwnerWords, no
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
 import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
-import { beginStage, currentOwnerTurn, freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, type PlaybackSignalKind } from '../tools/lux-note.js';
+import { freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, stageComposedNote, type PlaybackSignalKind } from '../tools/lux-note.js';
 import { NotesExporter } from '../tools/notes-export.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
-import { ADMISSION_BLOCKED, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention } from '../tools/research.js';
+import { admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
-import { WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
+import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
 import type { RunAcceptance, LiveAuthority } from '../tools/types.js';
 import { isToolFailureCode } from '../adapters/model/types.js';
 import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from '../adapters/model/types.js';
@@ -178,15 +178,26 @@ const FRESH_THREAD_WINDOW_MS = 2 * 60 * 1000;
 /** The closed set of past calls the open-loop option may draw on, newest first. */
 const OPEN_LOOP_SOURCES = 3;
 
+/** W5 (Q-06): the calls whose model note was refused for not matching the owner's words. A refusal
+ *  closed that loop, so the call start must not offer it again: only the owner can raise it. */
+export function staleRefusedNoteSessions(tx: Transaction, ownerId: string): ReadonlySet<string> {
+  if (!tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name='tool_calls'", [])) return new Set();
+  return new Set(tx.all(`SELECT DISTINCT run_id FROM tool_calls WHERE owner_id=?
+    AND json_extract(intent_json,'$.toolName')='remember_note'
+    AND json_extract(result_json,'$.response.code')='owner_text_mismatch'`, [ownerId]).map(row => String(row['run_id'])));
+}
+
 /** Contract 1023 N8: the stored open_loop column of the eligible past calls, newest first. The summary text is
  *  never mined for a cue word, so a call whose distillation stored no loop offers none. */
-function storedOpenLoops(tx: Transaction, allowedClasses: readonly DataClass[], now: number): { text: string; lastSeenAt: number }[] {
+export function storedOpenLoops(tx: Transaction, allowedClasses: readonly DataClass[], now: number, refused: ReadonlySet<string> = new Set()): { text: string; lastSeenAt: number }[] {
   const rows = tx.all(`SELECT s.live_session_id AS id, s.open_loop AS loop, s.ended_at AS seen_at FROM conversation_summaries s
     WHERE s.status='complete' AND s.open_loop IS NOT NULL AND s.ended_at IS NOT NULL AND s.ended_at<=? AND s.ended_at>=?
     ORDER BY s.ended_at DESC,s.rowid DESC LIMIT 12`, [now, now - EARLIER_CONVERSATIONS_WINDOW_MS]);
   const eligibility = new Map<string, ReturnType<typeof historySessionEvidence>>();
   const loops: { text: string; lastSeenAt: number }[] = [];
   for (const row of rows) {
+    // W5 (Q-06): a call whose note was refused is never offered as an open loop again.
+    if (refused.has(String(row['id']))) continue;
     const source = historySessionEvidence(tx, String(row['id']), eligibility);
     if (!source || !allowedClasses.includes(source.dataClass)) continue;
     loops.push({ text: String(row['loop']), lastSeenAt: Number(row['seen_at']) });
@@ -247,6 +258,11 @@ function recoveryBackoffMs(index: number): number { return RECOVERY_BACKOFF_MS[M
 /** GL2-R1: the closed set of reasons a projected state changes, shared with the host log whitelist. */
 type LiveStateCause = (typeof LIVE_STATE_CAUSES)[number];
 export const SEED_CHAR_LIMIT = 8_000;
+/**
+ * C-CONTINUITY item 3: the header the research ledger rides under. The ledger is the host's own extractive
+ * record of what it delivered, so it says who is speaking and never reads as something the owner said.
+ */
+export const HOST_LEDGER_HEADER = '[host note, not the owner\u2019s words] research this call already delivered:';
 /** The cost cap on a mute: past this the muted session closes benignly, so a long mute costs no provider time. */
 export const MUTE_WARM_MS = 180_000;
 /** After an unmute with an answer held, this much owner silence earns her one short offer of it. */
@@ -532,8 +548,15 @@ interface ActiveSession {
   /** R5: the word count of the owner's last finished utterance, so a filler sound is not read as a new question. */
   ownerLastWords: number;
   /** C-DEPTH item 5 (W10-R12): the research text this call holds in the provider conversation, and the payload
-   *  the rebuild will seed when it is due. */
+   *  the rebuild will seed when it is due. C-CONTINUITY item 4: the ledger is cumulative, so it is the whole call's
+   *  extractive record, not the one batch that crossed the threshold. */
   researchRetention: ResearchRetention; researchRebuildSeed?: string | undefined;
+  /** C-CONTINUITY item 4: every delivered research batch of this call, oldest evicted first. */
+  researchLedgerLog: ResearchLedgerLog;
+  /** C-CONTINUITY item 5: every research payload this call put in the conversation, refusals included. */
+  contextToolChars: number;
+  /** C-CONTINUITY T-11: the full research replies the voice cap paged, kept for this call only. */
+  voicePages: VoiceReplyBook;
   /** S4a-R2 (e): one execution receipt per call of this turn, the only source a late line may name. */
   exec: Map<string, { source: string; status: ExecStatus }>;
   progressCallIds: Set<string>;
@@ -1172,6 +1195,9 @@ export class LiveSessionOwner {
   }
 
   /** Host-generated runtime context: host clock and timezone, plus the groups this session can reach. */
+  /** The per-call memory of which Mongoose endpoints were already announced (C-SIGNIN-LIVE). */
+  readonly #connectorNotes = new ConnectorNotes();
+
   #liveRuntimeContext(toolNames: readonly string[], timeZone: string): string {
     const connected = toolGroupNames(this.#researchWeb === undefined ? toolNames : [...toolNames, WEB_SEARCH_ACTION]);
     const endpoints = this.#tools?.status?.().endpoints ?? [];
@@ -1181,7 +1207,10 @@ export class LiveSessionOwner {
     const context = buildRuntimeContext({ now: new Date(this.#now()), timeZone, connected, unavailable,
       vault: { dictation: true, composed: this.#composedNotes() } });
     const signIn = signInNote(endpoints);
-    return signIn ? `${context}\n\n${signIn}` : context;
+    // C-SIGNIN-LIVE: the one sentence about a connector that just came up, said on this call only.
+    const note = this.#connectorNotes.take(endpoints);
+    const said = [signIn, note].filter((line): line is string => line !== undefined).join('\n\n');
+    return said.length > 0 ? `${context}\n\n${said}` : context;
   }
 
   /** Safe operator-visible identity. Never carries key bytes or prompt text. */
@@ -1305,7 +1334,7 @@ export class LiveSessionOwner {
       const freshThread = freshOwnerThread(tx, assistantId, this.#profile.route.dataClasses, now);
       const openerPlan = buildOpeningOptions({ candidates: storedSummaries, now, timeZone,
         ...(this.#calendar === undefined ? {} : { calendar: this.#calendar }),
-        openLoops: storedOpenLoops(tx, this.#profile.route.dataClasses, now),
+        openLoops: storedOpenLoops(tx, this.#profile.route.dataClasses, now, staleRefusedNoteSessions(tx, assistantId)),
         ...(freshThread === undefined ? {} : { freshThread }),
         ...(earlierOpeners[0] === undefined ? {} : { previousKinds: earlierOpeners[0].kinds }),
         rotation: Number(tx.get('SELECT COUNT(*) AS starts FROM live_sessions WHERE owner_assistant_id=?', [assistantId])?.['starts'] ?? 0) });
@@ -1696,6 +1725,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       toolCache: new LiveToolCache(LIVE_CACHE_TTL_MS, () => this.#now()),
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
       researchAdmission: new ResearchAdmission(), researchRetention: { retainedChars: 0, rebuilds: 0 },
+      researchLedgerLog: new ResearchLedgerLog(), voicePages: new VoiceReplyBook(), contextToolChars: 0,
       registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
@@ -1762,34 +1792,12 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
   /** W6 item 12: the notes exporter's own switch, on unless live.json turns it off. */
   #notesExport(): boolean { return this.#profile.features?.notesExport !== false; }
 
-  /**
-   * W6 items 1 to 4: the model stages a composed note and nothing more. The owner's own finalized
-   * microphone turn is the only authorization, the evidence refs must name journal rows this session
-   * holds, and the whole payload is frozen here, before any read-back.
-   */
+  /** The composed stage itself is `stageComposedNote`; this keeps the session's own note bookkeeping. */
   #stageComposedNote(tx: Transaction, liveSessionId: string, args: { title: string; body: string; evidenceRefs: string[] }, handle: ActiveSession | undefined): JsonObject {
-    const rows = tx.all("SELECT journal_id,text,final_origin,finalized_at FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND finished=1 ORDER BY journal_id DESC LIMIT 50", [liveSessionId])
-      .map(row => ({ journalId: Number(row['journal_id']), text: String(row['text'] ?? ''),
-        finalOrigin: String(row['final_origin'] ?? 'unknown'), finalizedAt: Number(row['finalized_at'] ?? 0) }));
-    // W6-R2 B1: only this turn's finalized mic transcript can authorize, never the previous turn.
-    const read = currentOwnerTurn(rows, handle?.inputAt, handle?.inputFinal === true, this.#now());
-    if (read.state === 'refused') {
-      hostLogEvent({ event: 'lux_note_stage', staged: false, code: read.code });
-      return { staged: false, code: read.code };
-    }
-    const now = this.#now();
-    const outcome = beginStage({ stageId: randomUUID(), sessionId: liveSessionId, ownerText: read.text,
-      title: args.title, body: args.body, evidence: args.evidenceRefs, heldEvidence: read.evidence, enabled: this.#composedNotes(), now });
-    if (outcome.state === 'refused') {
-      hostLogEvent({ event: 'lux_note_stage', staged: false, code: outcome.code });
-      return { staged: false, code: outcome.code };
-    }
-    const note = outcome.note;
-    saveNoteState(tx, note);
-    this.#noteSessions.add(liveSessionId);
-    hostLogEvent({ event: 'lux_note_stage', staged: true, digest: note.payloadSha.slice(0, 12) });
-    return { staged: true, stageId: note.stageId, title: note.title, body: note.body,
-      readBack: `Read the note back exactly, then wait for the owner: ${note.title}. ${note.body}` };
+    const result = stageComposedNote(tx, liveSessionId, args,
+      { inputAt: handle?.inputAt, inputFinal: handle?.inputFinal === true }, this.#now(), this.#composedNotes());
+    if (result['staged'] === true) this.#noteSessions.add(liveSessionId);
+    return result;
   }
 
   /** W6 item 5: only the app's own drained receipt arms the confirmation; an interruption kills the stage. */
@@ -2490,8 +2498,12 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       this.#settle(handle, { state: 'failed', code: starved ? 'uplink_starved' : 'model_unresponsive' }, false, 'ended', null);
       return;
     }
-    hostLogEvent({ event: 'live_watchdog', phase: 'recovered', turnAgeMs, generation });
-    await this.#recoverFromDrop(handle, undefined, true, 'model_mute');
+    // C-CONTINUITY R-10: the phase names what really happened, so `recovering` is written before the reopen and
+    // `recovered` only once the provider says the new session is live.
+    hostLogEvent({ event: 'live_watchdog', phase: 'recovering', turnAgeMs, generation });
+    if (await this.#recoverFromDrop(handle, undefined, true, 'model_mute')) {
+      hostLogEvent({ event: 'live_watchdog', phase: 'recovered', turnAgeMs, generation });
+    }
   }
 
   /**
@@ -2715,6 +2727,22 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     return { turns: kept, chars, condensed };
   }
 
+  /**
+   * C-CONTINUITY item 3: the one seed every `fresh_seeded` open uses. The transcript is the call's own history
+   * under `SEED_CHAR_LIMIT`, and the cumulative research ledger rides as a distinct host section after it, so a
+   * rebuild keeps the conversation instead of replacing it with the one batch that crossed the threshold.
+   */
+  #seedWithLedger(liveSessionId: string, inputClass: DataClass, ledger: string | undefined, deadLine = false): {
+    turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number;
+    transcriptChars: number; ledgerChars: number; condensed: boolean } {
+    const seed = this.#seedHistory(liveSessionId, inputClass, deadLine);
+    const body = typeof ledger === 'string' ? ledger.trim() : '';
+    const text = body === '' ? undefined : `${HOST_LEDGER_HEADER}\n${body}`;
+    if (text === undefined) return { ...seed, transcriptChars: seed.chars, ledgerChars: 0 };
+    return { turns: [...seed.turns, { role: 'user' as const, text, dataClass: inputClass }],
+      chars: seed.chars + text.length, transcriptChars: seed.chars, ledgerChars: body.length, condensed: seed.condensed };
+  }
+
   /** A provider session window ended: an attended call takes a fresh seeded window, an unattended one ends where it is. */
   #sessionWindowEnded(handle: ActiveSession): void {
     if (this.#attended(handle)) { void this.#continueSession(handle); return; }
@@ -2750,12 +2778,41 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     const prior = handle.researchRetention;
     handle.researchRebuildSeed = undefined;
     handle.researchRetention = step.retention;
-    hostLogEvent({ event: 'research_context_rebuild', retainedChars: prior.retainedChars, epochChars: ledger.length,
-      rebuilds: step.retention.rebuilds });
+    const seed = this.#seedWithLedger(handle.liveSessionId, handle.inputClass, ledger);
+    hostLogEvent({ event: 'research_context_rebuild', retainedChars: prior.retainedChars, ledgerChars: seed.ledgerChars,
+      seedTranscriptChars: seed.transcriptChars, rebuilds: step.retention.rebuilds,
+      totalContextChars: handle.request.system.text.length + seed.chars + handle.contextToolChars });
     const remaining = handle.deadlineAt - now;
     const idle = handle.idleAt - now;
-    const seed = { turns: [{ role: 'user' as const, text: ledger, dataClass: handle.inputClass }], chars: ledger.length };
     await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, remaining, seed, 'research_context');
+  }
+
+  /**
+   * C-CONTINUITY R-01: the closed trigger a rebuild names. `line_dropped` is no longer the arm everything falls
+   * into: a reason this method does not know is a typed error, so a planned rebuild can never be logged as a
+   * network one again.
+   */
+  #rebuildTrigger(handle: ActiveSession, reason: string | null): (typeof LIVE_REBUILD_TRIGGERS)[number] {
+    if (reason === 'model_mute') return this.#ownerWordsSinceModelOutput(handle.liveSessionId) ? 'no_output_after_owner' : 'no_output_after_ambient';
+    if (reason === 'research_context') return 'research_context';
+    if (reason === 'session_deadline' || reason === 'deadline' || reason === 'session_timeout' || reason === 'idle_timeout'
+      || reason === 'handshake_timeout') return 'session_window';
+    if (reason === 'line_dropped' || reason === 'transport_error' || reason === 'remote_closed' || reason === 'protocol_error'
+      || reason === 'provider_setup_rejected' || reason === 'unsupported_provider' || reason === 'go_away'
+      || reason === 'backpressure' || reason === 'event_limit' || reason === 'incoming_limit' || reason === 'outgoing_limit'
+      || reason === 'provider_error' || reason === 'closed') return 'line_dropped';
+    // A reason outside the adapter's own closed error set is a typed error, never a guess that blames the network.
+    throw new TypeError(`live_rebuild_reason_unknown:${String(reason)}`);
+  }
+
+  /**
+   * C-CONTINUITY R-02/R-10: the cause a rebuild or recovery line carries, always read off the outcome: `network`
+   * only when the adapter left a transport receipt, `host` when the host itself chose to rebuild, `provider`
+   * otherwise, which is what a mute is.
+   */
+  #upstreamCause(handle: ActiveSession, reason: string | null): 'host' | 'network' | 'provider' {
+    if (reason === 'research_context') return 'host';
+    return handle.adapterOutcome?.upstream === undefined ? 'provider' : 'network';
   }
 
   #attended(handle: ActiveSession): boolean { return !this.#settled(handle) && handle.consumerState === 'attached'; }
@@ -2789,11 +2846,15 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     handle.lastRecoveryPath = path;
     // #591: a model mute with nothing asked for since the model last spoke rebuilds quietly: no reconnect
     // marker (which is what makes the native shell ring and chime) and no pickup instruction to answer.
-    const trigger: (typeof LIVE_REBUILD_TRIGGERS)[number] = reason === 'model_mute'
-      ? (this.#ownerWordsSinceModelOutput(handle.liveSessionId) ? 'no_output_after_owner' : 'no_output_after_ambient')
-      : reason === 'session_deadline' ? 'session_window' : 'line_dropped';
+    // C-CONTINUITY R-01/R-02: the trigger is the outcome's, never a default arm, and the cause is read off the
+    // outcome too: `network` only when a transport receipt exists, `host` for a planned research rebuild, and
+    // `provider` for a model that went quiet. A close code and its sanitized reason ride along when there is one.
+    const trigger = this.#rebuildTrigger(handle, reason);
+    const upstream = handle.adapterOutcome?.upstream;
+    const cause = this.#upstreamCause(handle, reason);
     handle.quietRebuild = trigger === 'no_output_after_ambient';
-    hostLogEvent({ event: 'live_rebuild', trigger, liveSessionId: handle.liveSessionId, generation: handle.generation });
+    hostLogEvent({ event: 'live_rebuild', trigger, cause, liveSessionId: handle.liveSessionId, generation: handle.generation,
+      ...(upstream === undefined ? {} : { closeCode: upstream.closeCode, closeReason: upstream.closeReason }) });
     this.#cancelSpeakingHold(handle);
     handle.thinking = false; handle.speaking = false;
     this.#store.transaction(tx => tx.run('UPDATE live_sessions SET connection_generation=? WHERE live_session_id=?', [handle.generation, handle.liveSessionId]));
@@ -2857,6 +2918,11 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     const opened = await this.#awaitProviderReady(handle, handle.session);
     if (!opened) return false;
     handle.ready = true;
+    // C-CONTINUITY item 6: the new session holds no research payload, so the counter starts again and a seed the
+    // previous session never needed is dropped. Only here, after the provider says the session is live: a failed
+    // open changes nothing, so the call cannot lose the rebuild it still owes.
+    handle.researchRetention = { retainedChars: 0, rebuilds: handle.researchRetention.rebuilds };
+    handle.researchRebuildSeed = undefined;
     return true;
   }
 
@@ -2872,7 +2938,10 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
 
   /** Record one recovery attempt (metadata only): the path, the outcome code, close code and seed size. */
   #logRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', code: string, closeCode: number | null, reason: string | null, seed: { turns: unknown[]; chars: number }): void {
-    hostLogEvent({ event: 'live_recovery', path, attempt: handle.recoveries + 1, code, closeCode, reason, seedTurns: seed.turns.length, seedChars: seed.chars,
+    // C-CONTINUITY R-09: the socket close code and its sanitized reason ride on the recovery line, so the next
+    // reader knows how the previous session really ended instead of inferring it from the outcome code alone.
+    const closeReason = handle.adapterOutcome?.upstream?.closeReason ?? '';
+    hostLogEvent({ event: 'live_recovery', path, attempt: handle.recoveries + 1, code, cause: this.#upstreamCause(handle, reason), closeCode, closeReason, reason, seedTurns: seed.turns.length, seedChars: seed.chars,
       msSinceDrop: handle.dropEpisodeAt === undefined ? 0 : Math.max(0, this.#now() - handle.dropEpisodeAt),
       liveSessionId: handle.liveSessionId, generation: handle.generation });
   }
@@ -2883,6 +2952,10 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    * episode's time budget, backoff is 0/2/4/8 s, and the current session deadline does not move.
    */
   async #recoverFromDrop(handle: ActiveSession, outcome: LiveVoiceOutcome | undefined, forceFresh = false, reasonOverride?: string): Promise<boolean> {
+    // C-CONTINUITY R-02/R-08/R-09: the outcome this recovery is for is kept on the handle, so the rebuild and
+    // recovery lines read their cause and their socket close code and reason off a receipt instead of a guess. A
+    // reopen with no outcome behind it (a mute, a provider window) clears a spent one rather than inheriting it.
+    handle.adapterOutcome = outcome;
     const now = this.#now();
     // #656: one model-mute rebuild per recovery window, on the same watchdogRecoveredAt stamp and
     // RESPONSE_WATCHDOG_WINDOW_MS the sliding watchdog keeps. Every model-mute route passes this door, so a model
@@ -2912,7 +2985,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     const saved = this.#store.transaction(tx => tx.get('SELECT resumption_handle FROM live_sessions WHERE live_session_id=?', [handle.liveSessionId]));
     const savedHandle = saved?.['resumption_handle'];
     const hasHandle = typeof savedHandle === 'string' && savedHandle.length > 0;
-    const seed = this.#seedHistory(handle.liveSessionId, handle.inputClass);
+    const seed = this.#seedWithLedger(handle.liveSessionId, handle.inputClass, handle.researchLedgerLog.text());
     const reuse = !forceFresh && this.#voice.capabilities.supportsResumption && hasHandle && handle.toolCalls < RESUMPTION_TOOL_CALL_LIMIT && !failedResume;
     const closeCode = outcome?.upstream?.closeCode ?? null;
     const reason = reasonOverride ?? outcome?.code ?? null;
@@ -2981,7 +3054,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     if (idle <= 0) { this.#settle(handle, { state: 'failed', code: 'idle_timeout' }, false, 'ended', null); return false; }
     const remaining = Math.min(this.#profile.limits.sessionMs, callRemaining);
     const window = Math.min(10_000, Math.max(1, remaining));
-    const seed = this.#seedHistory(handle.liveSessionId, handle.inputClass);
+    const seed = this.#seedWithLedger(handle.liveSessionId, handle.inputClass, handle.researchLedgerLog.text());
     handle.recoveries = 0; handle.lastRecoveryPath = 'fresh_seeded'; handle.dropEpisodeAt = undefined;
     const opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, remaining, idle, window, seed, 'session_deadline', false);
     if (!opened) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
@@ -3361,6 +3434,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           }
           this.#cancelSpeakingHold(handle);
           handle.thinking = false; handle.speaking = true; handle.lastModelAudioAt = this.#now();
+          // C-RESEARCH-CONTRACT Q-08: audible words after this turn's research result are the answer to that turn,
+          // so a start that follows them is the orphan run the admission refuses by name.
+          handle.researchAdmission.answered();
           handle.turnAudioAt = handle.lastModelAudioAt;
           this.#noteState(handle, 'audio');
           if (handle.firstAudioAt === undefined) {
@@ -3621,6 +3697,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
       unavailableNow: () => this.#unreachableSources(handle), execute,
+      // C-CONTINUITY T-11: the call's page book, so a reply cursor reads the stored answer, never a new search.
+      voicePages: handle.voicePages,
       // WEB-1021: the selector carries the public web read built from the same Gemini binding it uses.
       ...(this.#researchWeb === undefined ? {} : { web: this.#researchWeb }),
       emit: progress => {
@@ -3671,7 +3749,13 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // message is refused exactly like a second start in one owner turn.
     const parsedCalls = event.calls.map(call => {
       const parsed = parseResearch(call.args);
-      const verdict = parsed.ok ? handle.researchAdmission.admit(parsed.call.action, parsed.ok && this.#ownPendingResults(handle, parsed.call.action, parsed.call.researchId)) : undefined;
+      // C-RESEARCH-CONTRACT T-03: a continue that names the run this session already answered from only pages or
+      // narrows it, so it spends that run's grant instead of needing an owner turn of its own.
+      // C-CONTINUITY T-11: reading the next page of an answer this call already has is not a new search, so it
+      // spends no admission turn and cannot be refused for want of a fresh owner turn.
+      const sameRun = parsed.ok && parsed.call.action === 'continue' && pagesCurrentRun(parsed.call) && parsed.call.researchId === handle.researchAdmission.currentRun();
+      const pages = parsed.ok && parsed.call.pageCursor !== undefined && handle.voicePages.holds(parsed.call.pageCursor);
+      const verdict = parsed.ok && !pages ? handle.researchAdmission.admit(parsed.call.action, this.#ownPendingResults(handle, parsed.call.action, parsed.call.researchId), sameRun) : undefined;
       return { call, parsed, verdict };
     });
     // F6: every research call in one model message runs concurrently; the adapter bounds each source.
@@ -3684,7 +3768,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         response = researchRepair(parsed.reason);
       } else if (verdict !== undefined && !verdict.admitted) {
         hostLogEvent({ event: 'research_blocked', liveSessionId: handle.liveSessionId, generation, action: parsed.call.action, reason: verdict.reason });
-        response = { ...ADMISSION_BLOCKED };
+        response = admissionBlocked(verdict.reason);
       } else {
         const firstStep = handle.toolStep;
         // R2: the one "still searching" line this call may earn, armed for its own 10 s and cancelled by its answer.
@@ -3697,7 +3781,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         // L8-Q01/Q05: the run this call started or continued, its question, and its first canonical execution
         // (only when this call ran alone, so a batch step is never credited to the wrong call).
         this.#linkResearchCall(handle, host, call.id, parsed.call.question, response, event.calls.length === 1 && handle.toolStep > firstStep ? firstStep : undefined);
-        if (response['error'] === undefined && parsed.call.action !== 'stop' && generation === handle.generation) handle.researchAdmission.delivered();
+        if (response['error'] === undefined && parsed.call.action !== 'stop' && generation === handle.generation) {
+          handle.researchAdmission.delivered(typeof response['researchId'] === 'string' ? response['researchId'] : parsed.call.researchId);
+        }
       }
       // R6: a reply that names sources still reading is the call's first answer point, so the late-findings
       // window and the one late commentary of this call both count from here.
@@ -3708,6 +3794,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       // R6: the one research this turn may still collect from, and whether it still has sources reading.
       const answeredId = typeof response['researchId'] === 'string' ? response['researchId'] : '';
       handle.pendingResearch = Array.isArray(pending) && pending.length > 0 && answeredId !== '' ? { id: answeredId, count: pending.length } : undefined;
+      // C-CONTINUITY T-11: every research result enters this voice session here, so the reply cap is applied
+      // once, centrally, after the envelope is final: a deadline partial and a resumed run obey it too.
+      response = capVoiceReply(response, handle.voicePages);
       return { id: call.id, name: call.name, response };
     }));
     for (const entry of settled) {
@@ -3718,16 +3807,23 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       projections.push({ name: entry.name, status, markdown: entry.name === RESEARCH_TOOL_NAME ? researchProjection(entry.response, status) : `research: ${status}`, sources: [] });
     }
     // C-DEPTH item 5 (W10-R12): count exactly the research text the provider now holds, so the rebuild is due
-    // when the call has really retained that much. The ledger is built here too, from this batch's findings.
-    const answerChars = responses.reduce((sum, entry) => sum + JSON.stringify(entry.response ?? {}).length, 0);
+    // when the call has really retained that much. C-CONTINUITY item 5: a refused or failed result adds nothing to
+    // that counter, and the same batch still counts in the total context figure the rebuild line carries.
+    const research = responses.filter(entry => entry.name === RESEARCH_TOOL_NAME).map(entry => entry.response);
+    const deliveredReplies = research.filter(reply => reply['error'] === undefined);
+    const answerChars = deliveredReplies.reduce((sum, reply) => sum + JSON.stringify(reply).length, 0);
     handle.researchRetention = retainedAfterSend(handle.researchRetention, answerChars);
-    if (researchRebuildDue(handle.researchRetention, this.#rebuildThresholdChars) && handle.researchRebuildSeed === undefined) {
-      const findings = responses.flatMap(entry => Array.isArray((entry.response as JsonObject)?.['findings'])
-        ? ((entry.response as JsonObject)['findings'] as { source?: string; text?: string }[]) : []);
-      handle.researchRebuildSeed = researchLedgerOf({
+    // C-CONTINUITY item 4: the ledger takes one record per delivered batch, so a later refusal can never replace
+    // what the owner already heard with an empty header, and the threshold is read against the whole call.
+    for (const reply of deliveredReplies) {
+      const findings = Array.isArray(reply['findings']) ? (reply['findings'] as { source?: string; text?: string }[]) : [];
+      handle.researchLedgerLog.add(researchLedgerOf({
         question: this.#lastResearchQuestion.get(handle.liveSessionId) ?? '', findings,
-        cursors: responses.map(entry => String((entry.response as JsonObject)?.['nextCursor'] ?? '')).filter(cursor => cursor !== ''),
-      });
+        cursors: String(reply['nextCursor'] ?? '') === '' ? [] : [String(reply['nextCursor'])],
+      }));
+    }
+    if (researchRebuildDue(handle.researchRetention, this.#rebuildThresholdChars) && handle.researchRebuildSeed === undefined) {
+      handle.researchRebuildSeed = handle.researchLedgerLog.text();
     }
     return { responses, projections };
   }
@@ -4137,6 +4233,9 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         if (responses.length) {
           // OPEN2-R4: the one exposure point, on the text these results deliver after every trim.
           exposeToolResults(responses);
+          // C-CONTINUITY item 5: the total-context figure counts every tool payload this call hands the provider,
+          // research and intent alike, refusals and errors included, so the number it reports is really the total.
+          handle.contextToolChars += responses.reduce((sum, entry) => sum + JSON.stringify(entry.response ?? {}).length, 0);
           // #538: what the write did is the host's to read, not a receipt to log and then forget.
           const outcome = handle.session.sendToolResponse({ responses });
           // #451: the function_call_output write itself, measured from the frame that asked for it.

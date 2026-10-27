@@ -17,7 +17,7 @@ export const OAUTH_RECORD_SCHEMA = 3;
 /** One protected-resource probe is bounded, so a hung discovery never holds a bootstrap. */
 export const OAUTH_DISCOVERY_TIMEOUT_MS = 5_000;
 /** Exactly the keys the login writes and the runtime accepts, so doc and reader cannot drift. */
-export const OAUTH_RECORD_KEYS = ['schemaVersion', 'endpoint', 'resource', 'issuer', 'tokenEndpoint', 'clientId', 'redirectPort', 'account', 'accessToken', 'refreshToken', 'expiresAt', 'consentStartedAt'] as const;
+export const OAUTH_RECORD_KEYS = ['schemaVersion', 'endpoint', 'resource', 'issuer', 'tokenEndpoint', 'clientId', 'redirectPort', 'account', 'accessToken', 'refreshToken', 'expiresAt', 'consentStartedAt', 'identity'] as const;
 export const OAUTH_RECORD_LIMIT = 8 * 1024;
 /** Refresh this long before the advertised expiry so a request never races the deadline. */
 export const OAUTH_REFRESH_MARGIN_MS = 120_000;
@@ -43,6 +43,11 @@ export interface OAuthRecord {
   expiresAt: number;
   /** Epoch milliseconds of the first consent in this family. */
   consentStartedAt: number;
+  /**
+   * The owner email the issuer minted into the token and the token check accepted, so Settings can say
+   * who a connector is signed in as without a connect. It never reaches host.log.
+   */
+  identity?: string;
 }
 
 export type OAuthCredentialCode = 'credential-missing' | 'credential-refresh-failed' | 'credential-refresh-unavailable' | 'credential-refresh-busy' | 'credential-consent-expired' | 'credential-unavailable'
@@ -139,24 +144,30 @@ export function readOAuthRecord(configDir: string, reference: string, accept: (e
   catch { return undefined; }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   if ((raw as Record<string, unknown>)['schemaVersion'] !== OAUTH_RECORD_SCHEMA) return undefined;
+  // A record written before the claim was kept carries no such key; it stays valid and its claim is
+  // proven again at the next connect.
+  if ((raw as Record<string, unknown>)['identity'] === undefined) (raw as Record<string, unknown>)['identity'] = '';
   let record: Record<string, unknown>;
   try { record = fields(raw, OAUTH_RECORD_KEYS, 'invalid_secret'); }
   catch { return undefined; }
-  const { endpoint, resource, issuer, tokenEndpoint, clientId, redirectPort, account, accessToken, refreshToken, expiresAt, consentStartedAt } = record;
+  const { endpoint, resource, issuer, tokenEndpoint, clientId, redirectPort, account, accessToken, refreshToken, expiresAt, consentStartedAt, identity } = record;
   if (typeof endpoint !== 'string' || typeof resource !== 'string' || typeof issuer !== 'string') return undefined;
   const binding = accept(endpoint, resource);
   if (!binding || binding.endpoint !== endpoint || binding.resource !== resource || binding.issuer !== issuer || !onOrigin(tokenEndpoint, issuerOrigin(issuer))) return undefined;
   if (!secret(clientId) || !secret(account) || !secret(accessToken) || !secret(refreshToken)) return undefined;
   if (!Number.isSafeInteger(redirectPort) || (redirectPort as number) < 1 || (redirectPort as number) > 65535) return undefined;
   if (!timestamp(expiresAt) || !timestamp(consentStartedAt)) return undefined;
-  return { schemaVersion: OAUTH_RECORD_SCHEMA, endpoint, resource, issuer, tokenEndpoint: tokenEndpoint as string, clientId, redirectPort: redirectPort as number, account, accessToken, refreshToken, expiresAt: expiresAt as number, consentStartedAt: consentStartedAt as number };
+  // The claim is the owner's address or nothing: a malformed one is a malformed record.
+  if (typeof identity !== 'string' || identity.length > 254) return undefined;
+  return { schemaVersion: OAUTH_RECORD_SCHEMA, endpoint, resource, issuer, tokenEndpoint: tokenEndpoint as string, clientId, redirectPort: redirectPort as number, account, accessToken, refreshToken, expiresAt: expiresAt as number, consentStartedAt: consentStartedAt as number, identity };
 }
 
 /** Atomic replace: a private temp file in the same directory, then one rename. */
 export function writeOAuthRecord(configDir: string, reference: string, record: OAuthRecord): void {
   const target = join(configDir, `${reference}.json`);
   const temp = join(configDir, `.${reference}.json.${process.pid}.tmp`);
-  const data = Buffer.from(JSON.stringify(record), 'utf8');
+  // Exactly the closed key set every time: the claim is written empty when no token check proved one.
+  const data = Buffer.from(JSON.stringify({ ...record, identity: record.identity ?? '' }), 'utf8');
   let fd: number | undefined;
   try {
     fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
@@ -220,7 +231,7 @@ export interface OAuthLoginOptions {
    */
   expectedEmail?: string;
   /** Prove a minted access token names the owner account; a refusal stores nothing. */
-  verifyToken?: (accessToken: string) => { ok: true } | { ok: false; code: 'identity_mismatch' | 'identity_unverified' };
+  verifyToken?: (accessToken: string) => { ok: true; identity?: string } | { ok: false; code: 'identity_mismatch' | 'identity_unverified' };
   /** The one identity this sign-in binds, from trusted configuration; undefined refuses at discovery. */
   binding: OAuthBinding | undefined;
   configDir: string;
@@ -402,6 +413,7 @@ export async function runOAuthLogin(options: OAuthLoginOptions): Promise<OAuthRe
       refreshToken,
       expiresAt: now() + (expiresIn as number) * 1000,
       consentStartedAt: now(),
+      ...(proof !== undefined && proof.ok && proof.identity ? { identity: proof.identity } : {}),
     };
     try { writeOAuthRecord(options.configDir, options.reference, record); }
     catch (error) { hop({ hop: 'stored', outcome: 'failed' }); throw error; }
@@ -464,10 +476,11 @@ export interface OAuthTokenOptions {
 export interface OAuthTokenPolicy {
   accept: (endpoint: string, resource: string) => OAuthBinding | undefined;
   /**
-   * Prove a token before it is used: a cached one and a freshly refreshed one alike. It throws an
-   * OAuthCredentialError for a token that names another account, so a bad refresh is never written.
+   * Prove a token before it is used: a cached one and a freshly refreshed one alike. A refusal is an
+   * OAuthCredentialError for a token that names another account, so a bad refresh is never written; an
+   * accepted proof may carry the owner claim it proved, which the record keeps for Settings.
    */
-  verifyToken?: (accessToken: string) => void;
+  verifyToken?: (accessToken: string) => { ok: true; identity?: string } | { ok: false; code: string } | void;
   consentCapMs?: number;
   consentWarnMs?: number;
 }
@@ -497,12 +510,21 @@ export async function oauthAccessToken(configDir: string, reference: string, bin
 const bound = (record: OAuthRecord, binding: OAuthBinding): boolean =>
   record.endpoint === binding.endpoint && record.resource === binding.resource && record.issuer === binding.issuer;
 
+/** Prove one token with the policy's own check: a refusal keeps its closed credential code. */
+function verify(policy: OAuthTokenPolicy, accessToken: string): { ok: true; identity?: string } | undefined {
+  const proof = policy.verifyToken?.(accessToken);
+  if (proof !== undefined && !proof.ok) {
+    throw new OAuthCredentialError(proof.code === 'identity_mismatch' ? 'credential-identity-mismatch' : 'credential-identity-unverified');
+  }
+  return proof as { ok: true; identity?: string } | undefined;
+}
+
 async function resolveToken(configDir: string, reference: string, binding: OAuthBinding, policy: OAuthTokenPolicy, options: OAuthTokenOptions): Promise<string> {
   const now = options.now ?? Date.now;
   const record = readOAuthRecord(configDir, reference, policy.accept);
   if (!record || !bound(record, binding)) throw new OAuthCredentialError('credential-missing');
   if (now() < record.expiresAt - OAUTH_REFRESH_MARGIN_MS) {
-    policy.verifyToken?.(record.accessToken);
+    verify(policy, record.accessToken);
     return record.accessToken;
   }
   if (policy.consentCapMs !== undefined && now() >= record.consentStartedAt + policy.consentCapMs) throw new OAuthCredentialError('credential-consent-expired');
@@ -513,7 +535,7 @@ async function resolveToken(configDir: string, reference: string, binding: OAuth
     const current = readOAuthRecord(configDir, reference, policy.accept) ?? record;
     if (!bound(current, binding)) throw new OAuthCredentialError('credential-missing');
     if (now() < current.expiresAt - OAUTH_REFRESH_MARGIN_MS) {
-      policy.verifyToken?.(current.accessToken);
+      verify(policy, current.accessToken);
       return current.accessToken;
     }
     let next: OAuthRecord;
@@ -521,8 +543,9 @@ async function resolveToken(configDir: string, reference: string, binding: OAuth
     catch (error) { options.notify?.('refresh-failed'); throw error; }
     // A refreshed token that names another account is discarded: nothing is written, and the endpoint
     // parks on a new sign-in instead of reading with the wrong account.
-    policy.verifyToken?.(next.accessToken);
-    writeOAuthRecord(configDir, reference, next);
+    const proven = verify(policy, next.accessToken);
+    // The refreshed record keeps the claim this connect proved, so Settings can name the account.
+    writeOAuthRecord(configDir, reference, proven !== undefined && proven.identity ? { ...next, identity: proven.identity } : next);
     if (policy.consentCapMs !== undefined && policy.consentWarnMs !== undefined && !warned.has(key) && now() >= next.consentStartedAt + policy.consentCapMs - policy.consentWarnMs) {
       warned.add(key);
       options.notify?.('consent-expiring');

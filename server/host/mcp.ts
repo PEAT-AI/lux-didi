@@ -7,7 +7,7 @@ import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '.
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter, type McpTransportState } from '../adapters/mcp/adapter.js';
-import { mongooseCredentialAtStart, mongooseFailureStage, mongooseReadOnly } from '../connectors/mongoose.js';
+import { MongooseSchemaRefusal, MONGOOSE_SCHEMA_REFUSAL, mongooseCredentialAtStart, mongooseFailureStage, mongoosePublishCatalogue, mongooseReadOnly } from '../connectors/mongoose.js';
 import { MongooseCredentialError, MONGOOSE_CONSENT_CAP_MS, mongooseAccessToken, mongooseCredentialPresent, mongooseEntryBinding, readMongooseOAuth } from './mongoose-auth.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
@@ -254,6 +254,8 @@ export async function composeMcpRuntime(options: {
   // OAuth record this host owns and refreshes lazily. An OAuth record is never read as a bearer token.
   const credentialOwners = new Map(selection.state === 'configured'
     ? selection.catalog.endpoints.filter(entry => entry.credentialRef).map(entry => [entry.credentialRef!, entry] as const) : []);
+  // #696: the claim a Mongoose token proved, kept per endpoint so the row can say who is connected.
+  const provenIdentity = new Map<string, IdentityProof>();
   const resolveCredential = async (reference: string): Promise<string> => {
     if (!readMongooseOAuth(configDir, reference)) return readMcpCredential(configDir, reference);
     const owner = credentialOwners.get(reference);
@@ -262,6 +264,12 @@ export async function composeMcpRuntime(options: {
       return await mongooseAccessToken(configDir, reference, owner ? mongooseEntryBinding(owner) : undefined, {
         now,
         ownerIdentity,
+        // #696: one connector_identity receipt per token check, from the check that already ran.
+        onIdentity: proof => {
+          if (!owner) return;
+          options.identityLog?.('mongoose', proof.proven, proof.match, owner.id, proof.code);
+          if (proof.proven && proof.match !== false && proof.value !== null) provenIdentity.set(owner.id, proof);
+        },
         // #502: a refused refresh is spoken once, by the endpoint's own typed connector_failure line
         // (credential-refresh-failed), never twice through this notice as well. A consent notice has no
         // such line, so it still speaks here.
@@ -575,6 +583,18 @@ export async function composeMcpRuntime(options: {
         return { retryable: stage === 'first_call' || discovery.reason === 'credential-refresh-unavailable' };
       }
       const envelope = connectionEnvelope(entry.connector, entry);
+      // V7: the published tool list is the planner's argument shape, so it is taken at intake. A schema
+      // that cannot be sanitized fails this connect loudly with a closed code, never as an empty schema.
+      if (entry.connector === 'mongoose') {
+        try {
+          mongoosePublishCatalogue(entry.id, discovery.tools);
+        } catch (error) {
+          const path = error instanceof MongooseSchemaRefusal ? error.path : undefined;
+          reportFailure(entry, 'handshake', attempt, MONGOOSE_SCHEMA_REFUSAL, path);
+          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: MONGOOSE_SCHEMA_REFUSAL });
+          return { retryable: false };
+        }
+      }
       const accepts = readClassifiers[entry.connector] ?? (() => true);
       const names = grantMode === 'owner-trusted-reads'
         ? discovery.tools.filter(tool => envelope.includes(tool.name) && accepts(tool)).map(tool => tool.name).sort()
@@ -753,7 +773,9 @@ export async function composeMcpRuntime(options: {
       if (attempt === 'first-connect') options.lifecycleLog?.({ event: 'connector_connected', endpointId: entry.id, connectMs: Math.max(0, now() - roundStarted) });
       // R1: the count includes a granted composite, so the owner sees every callable read tool.
       everConnected.add(entry.id);
-      reports.set(entry.id, { id: entry.id, state: 'connected', tools: granted.length, lastHandshakeAt: new Date(now()).toISOString(), ...(identity ? { identity } : {}) });
+      // A Mongoose endpoint proved its account from its own minted token, not from a tool probe.
+      const reported = identity ?? provenIdentity.get(entry.id);
+      reports.set(entry.id, { id: entry.id, state: 'connected', tools: granted.length, lastHandshakeAt: new Date(now()).toISOString(), ...(reported ? { identity: reported } : {}) });
       // C-OPEN 4: a Gmail link names the account the mailbox proved here, never one a model or a body named.
       if (entry.connector === 'google' && policy.toolNames.includes('gmail_get_profile') && !policy.toolNames.some(name => name.startsWith('calendar_')) && identity?.proven === true) noteGmailAccount(identity.value ?? undefined);
       return { retryable: false };
@@ -824,7 +846,10 @@ export async function composeMcpRuntime(options: {
         generations.set(id, token);
         recovery.stop(id);
         registry.suspend(id);
-        await settle(entry, token, 'refresh', identityOnce)
+        // C-SIGNIN-LIVE (R-12): a landed sign-in is this endpoint's first connect with a usable
+        // credential, so it writes connector_connected (or connector_failure with its closed code) and
+        // never a restart the owner has to do by hand.
+        await settle(entry, token, 'first-connect', identityOnce)
           .then(result => { if (result.retryable) scheduleRecovery(entry); })
           .catch(() => { /* the per-connector report already carries the failure */ });
       }));

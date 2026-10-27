@@ -32,7 +32,7 @@ cp server/tools/vault-write.ts "$out/source/tools/"
 # W7: the Trello tool descriptions are voice content too.
 cp server/tools/trello.ts "$out/source/tools/"
 cp server/tools/redact.ts "$out/source/tools/"
-cp server/tools/declarations.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts server/tools/open-handles.ts server/tools/types.ts server/tools/history.ts server/tools/diagnostic-input.ts server/tools/canonical.ts server/tools/received-body.ts server/tools/remember.ts server/tools/calendar-window.ts server/tools/web-search.ts server/tools/chat-intent.ts "$out/source/tools/"
+cp server/tools/declarations.ts server/tools/host-events.ts server/tools/research.ts server/tools/intent.ts server/tools/live-shape.ts server/tools/open-handles.ts server/tools/open.ts server/tools/types.ts server/tools/history.ts server/tools/diagnostic-input.ts server/tools/canonical.ts server/tools/received-body.ts server/tools/remember.ts server/tools/calendar-window.ts server/tools/web-search.ts server/tools/chat-intent.ts "$out/source/tools/"
 cp server/prompt/*.ts "$out/source/prompt/"
 # W15: the persona, the tools and the connectors resolve people through the host snapshot, so the
 # staging tree carries that module and its import closure too.

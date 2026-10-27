@@ -419,5 +419,5 @@ test('a newly connected Mongoose endpoint is announced once, in one sentence, an
   // A row that never proves an identity is named, and the sentence never carries an address.
   assert.equal(notes.take([row('knowledge', true), row('data', true), row('crm', true)]), undefined);
   assert.equal(notes.take([row('knowledge', false), row('data', true), row('crm', false)]), undefined);
-  assert.equal(notes.take([row('knowledge', true), row('data', true), row('crm', false)]), 'Mongoose knowledge is now connected as Rob; Mongoose data was already connected.');
+  assert.equal(notes.take([row('knowledge', true), row('data', true), row('crm', false)]), 'Mongoose knowledge is now connected as Rob; data was already connected.');
 });

@@ -56,7 +56,15 @@ test('an imperative with an explicit lux destination is the only form that autho
   for (const text of ['you have my full permission to save it in Lux Knowledge', 'can you, can you store it in Lux Knowledge']) {
     assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
   }
-  assert.deepEqual(composedAsk('both of these things'), { decision: 'none' });
+  // W1-R2: a save verb and a lux destination anywhere in the stretch are the ask, whatever leads it.
+  for (const text of ['naya what can you tell me about rize store it in lux knowledge',
+    'you have my full permission to save it in Lux Knowledge and also a card in Trello both of these things']) {
+    assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
+  }
+  // No save verb, or no lux destination, is still no authorization.
+  for (const text of ['both of these things', 'both of these in Lux Knowledge', 'you have my full permission to save it and also a card in Trello']) {
+    assert.deepEqual(composedAsk(text), { decision: 'none' }, text);
+  }
 });
 
 test('negated, reported, quoted, conditional and ambiguous save asks are refused with a clarification', () => {
@@ -196,22 +204,21 @@ test('a typed turn never authorizes, and the current finalized mic turn does', (
 });
 
 // R7-W1: a VAD split ask is one ask, so the whole finalized stretch of this turn authorizes it.
-test('an ask split across finalized mic fragments of this stretch is one authorization', () => {
+test('the exact four-fragment incident ask composes into one authorization', () => {
   const rows = [turnRow(21, 'you have my full permission to save it', 1_200), turnRow(22, 'in Lux Knowledge', 1_300),
-    turnRow(23, 'both of these things', 1_400)];
-  const read = currentOwnerTurn(rows, 1_000, true, 1_500);
+    turnRow(23, 'and also a card in Trello', 1_400), turnRow(24, 'both of these things', 1_500)];
+  const read = currentOwnerTurn(rows, 1_000, true, 1_600);
   assert.equal(read.state, 'owner_turn');
   if (read.state !== 'owner_turn') return;
-  assert.equal(read.text, 'you have my full permission to save it in Lux Knowledge both of these things');
-  assert.deepEqual([...read.evidence].sort(), ['journal:21', 'journal:22', 'journal:23']);
+  assert.equal(read.text, 'you have my full permission to save it in Lux Knowledge and also a card in Trello both of these things');
+  assert.deepEqual([...read.evidence].sort(), ['journal:21', 'journal:22', 'journal:23', 'journal:24']);
 });
 
 test('the composed stretch keeps the open guard bounds and never crosses its own window', () => {
-  const four = [turnRow(11, 'and also a card in Trello', 1_100), turnRow(12, 'save it to lux', 1_200),
-    turnRow(13, 'in Lux Knowledge', 1_300), turnRow(14, 'both of these', 1_400)];
-  const bounded = currentOwnerTurn(four, 1_000, true, 1_500);
-  assert.equal(bounded.state === 'owner_turn' ? bounded.text : '', 'save it to lux in Lux Knowledge both of these');
-  const long = currentOwnerTurn([turnRow(11, 'a'.repeat(300), 1_200), turnRow(12, 'b'.repeat(300), 1_300)], 1_000, true, 1_400);
+  const seven = [11, 12, 13, 14, 15, 16, 17].map((id, index) => turnRow(id, `fragment ${id}`, 1_100 + index * 10));
+  const bounded = currentOwnerTurn(seven, 1_000, true, 1_500);
+  assert.equal(bounded.state === 'owner_turn' ? bounded.text : '', 'fragment 12 fragment 13 fragment 14 fragment 15 fragment 16 fragment 17');
+  const long = currentOwnerTurn([turnRow(11, 'a'.repeat(400), 1_200), turnRow(12, 'b'.repeat(400), 1_300)], 1_000, true, 1_400);
   assert.equal(long.state === 'owner_turn' ? long.text.length : 0, OWNER_WINDOW_CHARS);
   // A split from before this turn started, or from before the confirm window, is never composed.
   const before = currentOwnerTurn([turnRow(11, 'save it to lux', 900), turnRow(12, 'both of these', 1_400)], 1_000, true, 1_500);
@@ -300,9 +307,9 @@ interface StageHarness {
   definitions(port: StageNotePort): readonly ToolDefinition[];
 }
 
-/** The default session: the owner asked a minute earlier, then asked to store this answer. */
+/** The default session: the owner asked, then asked to store this answer, both in the same stretch. */
 const DEFAULT_SEEDS: readonly JournalSeed[] = [
-  ['inputTranscription', 'Naya, what can you tell me about Rize', -60_000],
+  ['inputTranscription', 'Naya, what can you tell me about Rize', 0],
   ['inputTranscription', 'store it in Lux Knowledge', 0]];
 
 function stageHarness(t: TestContext, seeds: readonly JournalSeed[] = DEFAULT_SEEDS): StageHarness {
@@ -365,7 +372,8 @@ test('the composed stage completes a real store write and leaves exactly one not
 
 test('the split-fragment save ask stages instead of refusing on its newest fragment alone', async t => {
   const h = stageHarness(t, [['inputTranscription', 'you have my full permission to save it', 0],
-    ['inputTranscription', 'in Lux Knowledge', 4_000], ['inputTranscription', 'both of these things', 9_000]]);
+    ['inputTranscription', 'in Lux Knowledge', 4_000], ['inputTranscription', 'and also a card in Trello', 6_000],
+    ['inputTranscription', 'both of these things', 9_000]]);
   const outcome = await h.stage(STAGE_ARGS);
   assert.equal(outcome?.status, 'completed');
   const stages = h.store.transaction(tx => tx.all('SELECT state FROM lux_note_stages'));

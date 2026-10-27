@@ -80,7 +80,8 @@ test('a number question runs search_fields then run_metric_query on the data end
   const country = filters.dimensions?.find(entry => entry.fieldId === 'active_users_daily_country');
   const window = filters.dimensions?.find(entry => entry.fieldId === 'active_users_daily_event_date_day');
   assert.ok(country && country.operator === 'equals' && country.values.includes('Indonesia'), 'the country filter');
-  assert.ok(window && window.operator === 'inThePast', 'the date window');
+  assert.ok(window && window.operator === 'between', `the date window is the resolved between filter: ${JSON.stringify(window)}`);
+  assert.deepEqual(window.values, ['2026-10-25', '2026-10-25'], 'yesterday, as the inclusive day the ask named');
   assert.match(JSON.stringify(reply['findings']), /2026-10-25/u, 'the spoken result carries the latest loaded day');
 });
 
@@ -96,7 +97,8 @@ test('an undated count is refused with count_needs_date_window, never dispatched
     'the undated all-time sum never reaches the endpoint');
   const spoken = JSON.stringify(reply);
   assert.match(spoken, /count_needs_date_window/u, `the closed code: ${spoken}`);
-  assert.match(spoken, /date window/u, 'and the one-line repair');
+  assert.match(spoken, /refused this count/u, 'the one-line repair');
+  assert.match(spoken, /ask the owner/u, 'the repair asks the owner for a window she can express');
 });
 
 test('the count guard refuses an undated metric query at the argument boundary', () => {

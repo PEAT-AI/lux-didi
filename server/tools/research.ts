@@ -1240,6 +1240,8 @@ const CHAT_WORDS = /\b(chats?|team|channels?|slack|mattermost|messages?|dms?|sai
  * is the generic knowledge ask.
  */
 const COMPANY_WORDS = /\b(?:mongoose|company(?: knowledge)?|customers?|clients?|prospects?|crm|deals?|our (?:products?|offerings?)|what do we sell|(?<!\bwhat )do we know)\b/u;
+/** W3: a count of users is the data endpoint's question, so the number never rides on a knowledge search. */
+const COUNT_ASK = /\bhow many\b[^?]{0,80}\b(?:users?|customers|accounts|active)\b/iu;
 /** #635: the writing verbs. A summarise, draft or reply ask has a chat word as its subject, not as a source. */
 const WRITING_WORDS = /\b(?:write|writes|writing|written|wrote|draft|drafts|summari[sz]e|summari[sz]ed|summaries|summary|compose|composes|reply|replies|replying|respond)\b/u;
 /** #635: the pure recall forms. A recall ask reads her own history, and the chat only when the ask names it. */
@@ -1307,6 +1309,8 @@ const CHAT_ROUTE_WORDS = { test: (text: string): boolean => CHAT_WORDS.test(text
 const ROUTE_CLASSES: readonly { source: SourceKind; words: { test(text: string): boolean }; needed?: (text: string) => boolean }[] = [
   { source: 'calendar', words: SCHEDULE_WORDS }, { source: 'mail', words: MAIL_WORDS }, { source: 'drive', words: DRIVE_ASK },
   { source: 'chat', words: CHAT_ROUTE_WORDS, needed: chatQuestionWords }, { source: 'mongoose', words: COMPANY_WORDS },
+  // W3: a count of users is routed to the data endpoint, where the number is read, not only to knowledge.
+  { source: 'data', words: COUNT_ASK },
 ];
 
 /** Whether an ask's words route this source, its own word class and its own need rule together. */
@@ -1389,7 +1393,8 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   // #639: a company ask names a source, so it takes the same branch the mail, calendar and chat words take.
   const companyWords = COMPANY_WORDS.test(text);
   const driveWords = DRIVE_ASK.test(text);
-  const matched = mailWords || calendarWords || chatWords || companyWords || driveWords || triage;
+  const countWords = COUNT_ASK.test(question);
+  const matched = mailWords || calendarWords || chatWords || companyWords || driveWords || countWords || triage;
   if (!matched) {
     offer('brief', 0.5, null); offer('knowledge_search', 0.4, 'knowledge');
     if (webWords) offer('web_search', 0.45, 'web');
@@ -1402,6 +1407,8 @@ export function fallbackSelection(question: string, configured: readonly SourceK
   // #639: the company layer answers a company ask beside the knowledge base, and is offered only when the
   // ask names it, never as a default read of every question.
   if (companyWords) offer('company_search', 0.4, 'mongoose');
+  // W3: the count read is the data endpoint's, offered on the same words the route class reads.
+  if (countWords) offer('company_metric', 0.6, 'data');
   if (driveWords) offer('drive_search', 0.5, 'drive');
   if (webWords) offer('web_search', 0.45, 'web');
   return { questionClass: 'cross_source', actions, pUseful };
@@ -2722,9 +2729,9 @@ const UNSEARCHED_CLAUSE: Record<UnsearchedReason, (label: string, source: Source
   name_not_found: () => 'I do not know that name',
   // L8-13: the latest ask ran no new read of this source, so nothing about it took too long.
   never_ran: label => `I did not run a new ${label} read this time`,
-  // W3: a count without a date window is an all-time sum, which is not a user count. The repair is
-  // the line the planner needs, so it names the missing window and nothing else.
-  count_needs_date_window: label => `${label} refused this count: add a date window (a date dimension or an inThePast filter) and ask again`,
+  // W3: a count without a date window is an all-time sum, which is not a user count. The window is the
+  // owner's own, so the repair is one short question to the owner that names the windows she can use.
+  count_needs_date_window: label => `${label} refused this count: ask the owner which window to use (today, yesterday, last N days, this or last week, this or last month, a month such as September, last N months, this or last quarter, Q1 to Q4, this or last year, 2025, or year to date) and ask again`,
 };
 
 /** A not-searched reason code from the host, narrowed to the closed set the header publishes. */
@@ -4130,19 +4137,111 @@ function metricCountryOf(question: string): string | undefined {
   return match?.[1]?.trim();
 }
 
+/** A resolved count window: inclusive calendar days, the two dates the endpoint's `between` filter reads. */
+export interface MetricWindow { start: string; end: string }
+
+const MONTH_WORDS: readonly [string, number][] = [
+  ['january', 0], ['february', 1], ['march', 2], ['april', 3], ['may', 4], ['june', 5],
+  ['july', 6], ['august', 7], ['september', 8], ['october', 9], ['november', 10], ['december', 11],
+];
+const MONTH_PATTERN = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
+const NAMED_MONTH = new RegExp(`\\b(${MONTH_PATTERN})\\b(?:\\s*,?\\s*(?:of\\s+)?(\\d{4}))?`, 'iu');
+const NAMED_QUARTER = /\bq([1-4])(?:\s*,?\s*(?:of\s+)?(\d{4}))?\b/iu;
+const BARE_YEAR = /\b(20\d{2})\b/u;
+
+/** A UTC calendar day, the form the fixture's `between` values take. */
+function utcDay(year: number, month: number, day: number): string {
+  return new Date(Date.UTC(year, month, day)).toISOString().slice(0, 10);
+}
+
+/** The day-of-month the month shift lands on, clamped to that month's own last day. */
+function shiftMonths(year: number, month: number, day: number, delta: number): string {
+  const shifted = year * 12 + month + delta;
+  const y = Math.floor(shifted / 12);
+  const m = shifted - y * 12;
+  const lastDay = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  return utcDay(y, m, Math.min(day, lastDay));
+}
+
 /**
- * W3: the days the ask names. A count over no window is the all-time sum of daily distinct users, which
- * the live endpoint answered with 948,541 and which is not a user count, so no window is a refusal.
+ * W3: the window the ask names, as the inclusive start and end days the data endpoint filters on. A count
+ * over no window is the all-time sum of daily distinct users, which the live endpoint answered with 948,541
+ * and which is not a user count, so an unreadable window resolves to nothing and the count is refused.
+ *
+ * Conventions, all in UTC and all inclusive: `today` is one day; `last N days` ends today and starts N-1
+ * days back; `this|last week` is a Monday-based calendar week, this one ending today; `this X` starts at
+ * the period's first day and ends today, `last X` is the whole previous period; `last N months` ends today
+ * and starts the same day-of-month N months back; a named month, quarter or year without one means its most
+ * recent occurrence that has already begun.
  */
-function metricWindowDays(question: string): number | undefined {
-  if (/\btoday\b/iu.test(question)) return 1;
-  if (/\byesterday\b/iu.test(question)) return 2;
-  const counted = /\b(?:last|past) (\d+) days?\b/iu.exec(question);
-  if (counted?.[1] !== undefined) {
-    const days = Number(counted[1]);
-    if (Number.isSafeInteger(days) && days >= 1 && days <= 90) return days;
+export function metricWindow(question: string, nowMs: number): MetricWindow | undefined {
+  const text = question.toLowerCase();
+  const now = new Date(nowMs);
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+  const day = now.getUTCDate();
+  const today = utcDay(year, month, day);
+  const dayMs = 86_400_000;
+  const daysAgo = (count: number): string => new Date(nowMs - count * dayMs).toISOString().slice(0, 10);
+  // The end of a period that is still running is today: an ask never names days that have not happened.
+  const openEnd = (end: string): string => (end > today ? today : end);
+  if (/\btoday\b/u.test(text)) return { start: today, end: today };
+  if (/\byesterday\b/u.test(text)) return { start: daysAgo(1), end: daysAgo(1) };
+  const dayCount = /\b(?:last|past) (\d+) days?\b/u.exec(text);
+  if (dayCount?.[1] !== undefined) {
+    const days = Number(dayCount[1]);
+    if (Number.isSafeInteger(days) && days >= 1 && days <= 366) return { start: daysAgo(days - 1), end: today };
+    return undefined;
   }
-  if (/\b(?:this|last) week\b/iu.test(question)) return 7;
+  const monthCount = /\b(?:last|past) (\d+) months?\b/u.exec(text);
+  if (monthCount?.[1] !== undefined) {
+    const months = Number(monthCount[1]);
+    if (Number.isSafeInteger(months) && months >= 1 && months <= 120) return { start: shiftMonths(year, month, day, -months), end: today };
+    return undefined;
+  }
+  if (/\byear to date\b|\bytd\b/u.test(text)) return { start: utcDay(year, 0, 1), end: today };
+  if (/\bthis year\b/u.test(text)) return { start: utcDay(year, 0, 1), end: today };
+  if (/\blast year\b/u.test(text)) return { start: utcDay(year - 1, 0, 1), end: utcDay(year - 1, 11, 31) };
+  const quarter = /\b(this|last) quarter\b/u.exec(text);
+  if (quarter?.[1] !== undefined) {
+    const startMonth = Math.floor(month / 3) * 3;
+    if (quarter[1] === 'this') return { start: utcDay(year, startMonth, 1), end: today };
+    const priorMonth = startMonth === 0 ? 9 : startMonth - 3;
+    const priorYear = startMonth === 0 ? year - 1 : year;
+    return { start: utcDay(priorYear, priorMonth, 1), end: utcDay(priorYear, priorMonth + 3, 0) };
+  }
+  if (/\bthis month\b/u.test(text)) return { start: utcDay(year, month, 1), end: today };
+  if (/\blast month\b/u.test(text)) {
+    const priorMonth = month === 0 ? 11 : month - 1;
+    const priorYear = month === 0 ? year - 1 : year;
+    return { start: utcDay(priorYear, priorMonth, 1), end: utcDay(priorYear, priorMonth + 1, 0) };
+  }
+  const weekday = (now.getUTCDay() + 6) % 7;
+  if (/\bthis week\b/u.test(text)) return { start: daysAgo(weekday), end: today };
+  if (/\blast week\b/u.test(text)) return { start: daysAgo(weekday + 7), end: daysAgo(weekday + 1) };
+  const namedQuarter = NAMED_QUARTER.exec(text);
+  if (namedQuarter?.[1] !== undefined) {
+    const startMonth = (Number(namedQuarter[1]) - 1) * 3;
+    const named = namedQuarter[2] === undefined ? undefined : Number(namedQuarter[2]);
+    // Without a year, the most recent quarter that has already begun.
+    const qYear = named ?? (utcDay(year, startMonth, 1) > today ? year - 1 : year);
+    return { start: utcDay(qYear, startMonth, 1), end: openEnd(utcDay(qYear, startMonth + 3, 0)) };
+  }
+  const namedMonth = NAMED_MONTH.exec(text);
+  if (namedMonth?.[1] !== undefined) {
+    const monthIndex = MONTH_WORDS.find(([name]) => name.startsWith(namedMonth[1]!.toLowerCase().slice(0, 3)))?.[1];
+    if (monthIndex === undefined) return undefined;
+    const named = namedMonth[2] === undefined ? undefined : Number(namedMonth[2]);
+    // Without a year, the most recent month that has already begun.
+    const mYear = named ?? (utcDay(year, monthIndex, 1) > today ? year - 1 : year);
+    return { start: utcDay(mYear, monthIndex, 1), end: openEnd(utcDay(mYear, monthIndex + 1, 0)) };
+  }
+  const bareYear = BARE_YEAR.exec(text);
+  if (bareYear?.[1] !== undefined) {
+    const named = Number(bareYear[1]);
+    if (named > year || named < 2000) return undefined;
+    return { start: utcDay(named, 0, 1), end: openEnd(utcDay(named, 11, 31)) };
+  }
   return undefined;
 }
 
@@ -4153,20 +4252,19 @@ function metricWindowDays(question: string): number | undefined {
  */
 export function companyMetricSubs(query: string, question: string, nowMs: number): { subs: IntentSubCall[] } | { refusal: 'count_needs_date_window' } {
   const metric = COMPANY_METRICS.find(entry => entry.words.test(query) || entry.words.test(question)) ?? COMPANY_METRICS[0]!;
-  const days = metricWindowDays(question);
-  if (days === undefined) return { refusal: 'count_needs_date_window' };
+  const window = metricWindow(question, nowMs);
+  if (window === undefined) return { refusal: 'count_needs_date_window' };
   const country = metricCountryOf(question);
-  const day = new Date(nowMs).toISOString().slice(0, 10);
   const where = country ?? 'all countries';
   const dimensions = [
     ...(country === undefined ? [] : [{ fieldId: metric.countryField, operator: 'equals', values: [country] }]),
-    { fieldId: metric.dateField, operator: 'inThePast', values: [days], settings: { unitOfTime: 'days' } },
+    { fieldId: metric.dateField, operator: 'between', values: [window.start, window.end] },
   ];
   return { subs: [
     { key: 'm0', name: INTERNAL.mongooseSearchFields, args: { patterns: [query.trim()], exploreName: metric.exploreName } },
     { key: 'm1', name: INTERNAL.mongooseMetricQuery, args: {
-      title: `${where} daily active users as of ${day}`,
-      description: `Daily active users ${country === undefined ? '' : `in ${country} `}per day over the last ${days} day${days === 1 ? '' : 's'}.`,
+      title: `${where} daily active users ${window.start} to ${window.end}`,
+      description: `Daily active users ${country === undefined ? '' : `in ${country} `}per day from ${window.start} to ${window.end}.`,
       queryConfig: {
         exploreName: metric.exploreName,
         metrics: [metric.metric],

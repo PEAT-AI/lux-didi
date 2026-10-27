@@ -20,7 +20,11 @@ own MCP tool list, sanitized for the provider (integer bounds only, no keyword t
 is taken at connect time; a schema that cannot be sanitized fails that connect with the closed code
 `schema_unsanitizable`, never as an empty schema. A count read (`run_metric_query`) without a date dimension and a
 date filter is refused by the host with `count_needs_date_window`, because the undated query returns an all-time sum
-rather than a user count.
+rather than a user count. The count route resolves the window the ask named, from today, yesterday, last N days,
+this or last week, this or last month, a named month such as September, last N months, this or last quarter, Q1 to
+Q4, this or last year, a year, or year to date, into an inclusive start and end day, and sends it as the date
+dimension's `between` filter; a window it cannot resolve is refused and the reply asks the owner, in one question,
+which of those windows to use.
 
 `CONNECTOR_DESCRIPTORS` in `server/connectors/index.ts` is the registry. These descriptors are read-only: `ConnectorToolDeclaration.effect` is `'read'`. Do not infer that all host tools are read-only. Trello is a separate host gateway in `server/host/trello.ts`, with a privately configured board (`TRELLO_BOARD_FILE`), rather than another descriptor in this registry. Its write authority and the note-writing flows belong in [tool-owner.md](tool-owner.md).
 

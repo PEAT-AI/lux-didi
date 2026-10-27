@@ -5687,7 +5687,7 @@ test('mail body integration: body consumption preserves simultaneous calendar ev
   assert.equal(seen.size, 12); assert.equal(h.calls.filter(call => call.name === 'gmail_read_message').length, 1); assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 1);
 });
 
-const dbg2 = (tag: string, r: Record<string, unknown>): void => { process.stderr.write(`DBG2 ${tag} ${JSON.stringify({ keys: Object.keys(r).sort(), slices: Array.isArray(r['bodySlices']) ? (r['bodySlices'] as { text: string; offset: number }[]).map(s => [s.offset, s.text.length]) : 'none', pc: r['pageCursor'] ?? 'none', pr: r['pagesRemaining'] ?? 'none' })}\n`); };
+const dbg2 = (tag: string, r: Record<string, unknown>): void => { process.stderr.write(`DBG2 ${tag} ${JSON.stringify({ keys: Object.keys(r).sort(), slices: Array.isArray(r['bodySlices']) ? (r['bodySlices'] as { text: string; offset: number; total: number }[]).map(s => [s.offset, s.text.length, s.total]) : 'none', pc: r['pageCursor'] ?? 'none', pr: r['pagesRemaining'] ?? 'none' })}\n`); };
 test('Lux body integration: exact received opaque content reaches its retained tail without another get', async t => {
   const raw = JSON.stringify({ id: 42, title: 'Synthetic Lux body', content: 'Lux received evidence. '.repeat(1400) + 'LUX_LOCAL_TAIL' });
   const h = await harness(t, { tools: true, knowledgeContent: raw }); await attached(h, 'lux-local-tail');
@@ -5735,6 +5735,7 @@ test('RUN-R11: a 16,800-character mail body arrives in at most eight replies, ev
     replies += 1;
     await settleLiveTool(h, `long-next-${replies}`, 'research', { action: 'continue', researchId, ...(last()['pageCursor'] !== undefined ? { pageCursor: last()['pageCursor'] } : { cursor: last()['nextCursor'] ?? last()['cursor'] }) });
   }
+  process.stderr.write(`DBG3 collected=${collected.length} expected=${`subject: ${subject}\n\n${body}`.length} frameLast=${JSON.stringify(last()['bodySlices']).length}\n`);
   assert.equal(collected, `subject: ${subject}\n\n${body}`, 'the joined pages are the raw body, byte for byte');
 });
 test('VOICE-R4: a research call sends no status line at six seconds', async t => {

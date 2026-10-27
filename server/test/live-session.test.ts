@@ -5522,6 +5522,10 @@ test('mail integration: an unused cursor keeps its original message coordinates 
 });
 
 
+// W1-R3/W1-R4 diagnosis pass (temporary): what a page really carries, removed before the commit.
+const dbgPage = (tag: string, response: Record<string, unknown>): void => {
+  process.stderr.write(`DBG ${tag} ${JSON.stringify({ keys: Object.keys(response).sort(), findings: Array.isArray(response['findings']) ? (response['findings'] as unknown[]).length : 'none', slices: Array.isArray(response['bodySlices']) ? (response['bodySlices'] as unknown[]).length : 'none', pageCursor: typeof response['pageCursor'], pagesRemaining: response['pagesRemaining'] ?? 'none', canContinue: response['canContinue'] ?? 'none', status: response['status'] ?? 'none' })}\n`);
+};
 test('mail body integration: full received text continues locally once with exact UTF16 coordinates', async t => {
   const body = `Latest evidence.\nOn Monday, Synthetic Sender wrote:\n> ${'🍃'.repeat(11000)}\nFinal retained evidence.`;
   const h = await harness(t, { tools: true, mail: true, mailData: (_name, args) => ({ id: args['id'], format: args['format'], headers: { Subject: 'Synthetic full received body' }, body: args['format'] === 'metadata' ? null : body, bodyCoverage: { complete: true } }) });
@@ -5671,6 +5675,7 @@ test('mail body integration: body consumption preserves simultaneous calendar ev
   await settleLiveTool(h, 'mixed-start', 'research', { action: 'start', question: 'Read full mail and calendar', topic: 'Read full mail and calendar', lookups: [{ source: 'mail', mail: { id: 'mixed' } }, { source: 'calendar', query: 'this week' }] });
   const seen = new Set<string>(), researchId = last()['researchId']; let count = 0;
   for (;;) {
+    dbgPage('631', last());
     for (const match of JSON.stringify(last()['findings'] ?? '').matchAll(/Body sibling event (\d+)/g)) seen.add(match[1]!);
     assert(JSON.stringify(last()).length <= 6000, 'combined actual model response respects its existing bound');
     if (!last()['canContinue']) break; assert(++count < 20);
@@ -5713,6 +5718,7 @@ test('RUN-R11: a 16,800-character mail body arrives in at most eight replies, ev
   await settleLiveTool(h, 'long-start', 'research', { action: 'start', question: 'Read the full mail', topic: 'Read the full mail', lookups: [{ source: 'mail', mail: { id: 'long' } }] });
   const researchId = String(last()['researchId']); let collected = '', replies = 1, started = -1;
   for (;;) {
+    dbgPage('633', last());
     const slices = last()['bodySlices'] as { text: string; offset: number }[] | undefined;
     if (Array.isArray(slices)) for (const slice of slices) {
       if (started < 0) started = slice.offset;

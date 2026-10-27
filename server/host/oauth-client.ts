@@ -524,7 +524,7 @@ async function resolveToken(configDir: string, reference: string, binding: OAuth
   const record = readOAuthRecord(configDir, reference, policy.accept);
   if (!record || !bound(record, binding)) throw new OAuthCredentialError('credential-missing');
   if (now() < record.expiresAt - OAUTH_REFRESH_MARGIN_MS) {
-    policy.verifyToken?.(record.accessToken);
+    verify(policy, record.accessToken);
     return record.accessToken;
   }
   if (policy.consentCapMs !== undefined && now() >= record.consentStartedAt + policy.consentCapMs) throw new OAuthCredentialError('credential-consent-expired');

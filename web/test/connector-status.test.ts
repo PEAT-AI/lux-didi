@@ -90,5 +90,5 @@ test('the Mongoose rows say "signed in as" the proven account, and the other con
   assert.equal(row('mongoose-crm', { proven: true, match: true, value: OWNER })?.identity, `Signed in as ${OWNER} \u2713`);
   assert.equal(row('mongoose-data', { proven: true, match: false, value: 'other@example.test' })?.identity, 'Signed in as a different account');
   assert.equal(row('mongoose-knowledge', { proven: false, match: null, value: null })?.identity, 'Account not verified');
-  assert.equal(row('gmail', { proven: true, match: true, value: OWNER })?.identity, `Connected as ${OWNER}`);
+  assert.equal(row('gmail', { proven: true, match: true, value: OWNER })?.identity, `Connected as ${OWNER} \u2713`);
 });

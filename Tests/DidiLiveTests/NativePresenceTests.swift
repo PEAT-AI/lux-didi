@@ -189,6 +189,17 @@ import Foundation
         try require(record.receipts.last?["trigger"] as? String == "app",
             "an ordinary ending keeps the receipt it always had")
 
+        // C-RECOVERY (e): a call whose recovery gave up is not the owner's own end, so the existing goodbye tone
+        // says the call is over instead of the room going quiet with the orb still up.
+        presence.toggle(.hotkey)
+        presence.ready(presence.generation)
+        record.calls.removeAll()
+        record.receipts.removeAll()
+        presence.endAfterHostTerminal(voiceStop: false, lostCall: true, generation: presence.generation)
+        try require(presence.state == .cold, "an exhausted recovery closes the call")
+        try require(record.calls.contains("goodbye"), "and sounds the lost-call cue, got \(record.calls)")
+        try require(record.receipts.last?["trigger"] as? String == "app", "it is still a host ending, not a voice stop")
+
         // Sleep tears down from LIVE at once and never reconnects.
         presence.toggle(.hotkey)
         presence.ready(presence.generation)

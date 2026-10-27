@@ -413,8 +413,24 @@ describe('openai gpt-live adapter', () => {
       { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Monday first' }] },
       { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Pick up where we left off.' }] },
     ]);
-    const seeded = Array.from({ length: 200 }, (_, index) => ({ role: 'user' as const, text: `turn ${index}`, dataClass: 'ordinary' as const }));
-    assert.throws(() => new OpenAiLiveVoiceAdapter(options()).open(request({ history: seeded }), control()), code('invalid_request'));
+  });
+
+  // C-RECOVERY (a): a long call must still reopen. The adapter keeps the newest turns and the pickup line's slot
+  // instead of refusing the whole open, which is what lost the 2026-10-27 call.
+  test('C-RECOVERY (a): a history over the 128-message ceiling is trimmed to its newest turns and still opens', async t => {
+    const f = await fixture(t);
+    const history = Array.from({ length: 140 }, (_, index) => ({
+      role: (index % 2 ? 'model' : 'user') as 'user' | 'model', text: `turn ${index}`, dataClass: 'ordinary' as const }));
+    const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory }))
+      .open(request({ history, openingText: 'Pick up where we left off.' }), control());
+    t.after(() => session.close());
+    await f.frame(1);
+    const start = f.frames[0] as unknown as Start;
+    const input = start.session['input'] as { role?: string; content: { text: string }[] }[];
+    assert.equal(input.length, 128, 'the trimmed history plus the pickup line stays at the documented 128 messages');
+    assert.equal(input[0]!.content[0]!.text, 'turn 13', 'the oldest turns are the ones that go');
+    assert.equal(input[126]!.content[0]!.text, 'turn 139', 'the newest turn is always kept');
+    assert.equal(input[127]!.content[0]!.text, 'Pick up where we left off.', 'and the pickup line keeps its slot');
   });
 
   test('#1023: a new call with seeded history still seeds the fresh opening directive', async t => {

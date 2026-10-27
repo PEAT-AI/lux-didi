@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { createLiveSessionOwner, IDLE_RESET_CAUSES, LIVE_DROPPED_LINE_MARK, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
+import { createLiveSessionOwner, IDLE_RESET_CAUSES, isBareAcknowledgement, LIVE_DROPPED_LINE_MARK, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
   validateLiveProfile, type LiveAttachment, type LiveContext, type LiveOutputChunk, type LiveSessionOwner } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -416,4 +416,35 @@ test('N-2/W5-R1: the gemini adapter classifies digital silence, and a silent gem
   }
   assert.equal(terminalCode(live), 'idle_timeout', 'the idle end fires although the gemini route kept sending silence');
   assert.ok(live.now() - lastSpeech <= 302_000, `it fired at the idle limit (${live.now() - lastSpeech} ms)`);
+});
+
+// C-RECOVERY (d): "Okay" after the model finished is an acknowledgement, not a question. It may be watched, but it
+// never spends a rebuild: the call goes quiet because the owner is done talking, not because a model stalled.
+test('C-RECOVERY (d): a bare acknowledgement after the model spoke never rebuilds the call', async t => {
+  const live = await openLive(t);
+  await live.emit({ type: 'outputTranscription', text: 'Your three o\'clock is free, okay?', finished: true });
+  await live.emit({ type: 'inputTranscription', text: 'Okay', finished: true });
+  assert.deepEqual(phases(live), ['armed'], 'the acknowledgement still arms the watchdog on its silence');
+  await live.advance(RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 20_000);
+  assert.equal(live.fake.sessionsOpened, 1, 'a bare acknowledgement opens no new provider session');
+  assert.deepEqual(rebuildTriggers(live), [], 'and it writes no rebuild');
+  assert.deepEqual(phases(live), ['armed', 'closed'], 'the turn closes at the nudge deadline instead');
+});
+
+// C-RECOVERY (d), the contrast the ruling demands: a real question is still an owed answer and still rebuilds.
+test('C-RECOVERY (d): a real question after the model spoke still rebuilds as today', async t => {
+  const live = await openLive(t);
+  await live.emit({ type: 'outputTranscription', text: 'Monday is clear.', finished: true });
+  await live.emit({ type: 'inputTranscription', text: 'what is next on my calendar', finished: true });
+  await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 4_000);
+  assert.equal(live.fake.sessionsOpened, 2, 'a question still earns a rebuild');
+  assert.deepEqual(rebuildTriggers(live), ['no_output_after_owner'], 'and the rebuild names owner speech');
+});
+
+// C-RECOVERY (d): the acknowledgement class is closed, so no paraphrase or question can hide inside it.
+test('C-RECOVERY (d): the acknowledgement class is three closed words at most, and never a question', () => {
+  for (const text of ['okay', 'Okay.', 'ok thanks', 'yeah right', 'mhm', 'all right then']) assert.equal(isBareAcknowledgement(text), true, text);
+  for (const text of ['okay?', 'no', 'what is next', 'okay what is next on my calendar', 'right, what about tomorrow']) {
+    assert.equal(isBareAcknowledgement(text), false, text);
+  }
 });

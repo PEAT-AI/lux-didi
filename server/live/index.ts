@@ -254,10 +254,49 @@ function messageKeyOf(error: unknown): string {
 }
 /** The wait before attempt `index` (0-based): 0, 2, 4, 8, then 8 s. */
 function recoveryBackoffMs(index: number): number { return RECOVERY_BACKOFF_MS[Math.min(index, RECOVERY_BACKOFF_MS.length - 1)]!; }
+/** C-RECOVERY (d): the closed words that acknowledge a turn instead of asking one. A bare acknowledgement owes the
+ *  model no reply, so the watchdog must never rebuild a call because the owner said one. */
+const ACKNOWLEDGEMENT_WORDS = new Set([
+  'okay', 'ok', 'okey', 'mhm', 'mm', 'hmm', 'right', 'yeah', 'yep', 'yup', 'sure', 'alright', 'cool', 'thanks',
+  'thank', 'you', 'got', 'it', 'then', 'bye', 'great', 'nice', 'perfect',
+]);
+/** C-RECOVERY (d): up to three words, every one of them an acknowledgement, and never a question. */
+export function isBareAcknowledgement(text: string): boolean {
+  if (text.includes('?')) return false;
+  const words = text.toLowerCase().replace(/[.,!\u2026\u2019']/g, ' ').split(/\s+/).filter(word => word.length > 0);
+  if (words.length === 0 || words.length > 3) return false;
+  return words.every(word => ACKNOWLEDGEMENT_WORDS.has(word));
+}
 /** The seeded history is bounded by dropping whole oldest turns until it fits this many characters. */
 /** GL2-R1: the closed set of reasons a projected state changes, shared with the host log whitelist. */
 type LiveStateCause = (typeof LIVE_STATE_CAUSES)[number];
 export const SEED_CHAR_LIMIT = 8_000;
+/** C-RECOVERY (a): the adapter's session.input ceiling is 128 messages, and every seeded open appends one
+ *  line after the history (the pickup or the opener), so the history itself owns at most 127 of them. */
+export const SEED_MESSAGE_LIMIT = 127;
+/** C-RECOVERY (a): the adapter's documented 8,192-token proxy, quoted in its own four characters per token. */
+export const SEED_TOKEN_PROXY_LIMIT = 8_192;
+export const SEED_TOKEN_PROXY_CHARS = SEED_TOKEN_PROXY_LIMIT * 4;
+interface SeedTurnLike { role: 'user' | 'model'; text: string }
+/** C-RECOVERY (a): the one bound every seeded open passes through. The newest finished turns are kept, adjacent
+ *  same-role turns never survive it, and the history plus every appended turn stays inside the adapter's message
+ *  ceiling and its token proxy, so a large conversation shrinks instead of being refused. */
+export function fitSeedTurns<T extends SeedTurnLike>(transcript: readonly T[], appended: readonly T[] = []): { turns: T[]; chars: number; condensed: boolean } {
+  const room = Math.max(0, SEED_MESSAGE_LIMIT - appended.length);
+  let kept = transcript.slice(Math.max(0, transcript.length - room));
+  let condensed = kept.length < transcript.length;
+  const total = (turns: readonly T[]): number => turns.reduce((sum, turn) => sum + turn.text.length, 0)
+    + appended.reduce((sum, turn) => sum + turn.text.length, 0);
+  while (kept.length > 1 && total(kept) > SEED_CHAR_LIMIT) { kept = kept.slice(1); condensed = true; }
+  if (kept.length > 0 && total(kept) > SEED_CHAR_LIMIT) {
+    const last = kept[kept.length - 1]!;
+    const roomLeft = Math.max(0, SEED_CHAR_LIMIT - (total(kept) - last.text.length));
+    const keep = Math.max(roomLeft - 3, 0);
+    kept = [...kept.slice(0, -1), { ...last, text: keep > 0 ? `...${last.text.slice(last.text.length - keep)}` : '...' }];
+    condensed = true;
+  }
+  return { turns: [...kept, ...appended], chars: total(kept), condensed };
+}
 /**
  * C-CONTINUITY item 3: the header the research ledger rides under. The ledger is the host's own extractive
  * record of what it delivered, so it says who is speaking and never reads as something the owner said.
@@ -2390,6 +2429,14 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       const turnAgeMs = this.#now() - (handle.watchdogSince ?? this.#now());
       if (step === 'nudge') {
         if (handle.watchdogPhase === 'nudged') return;
+        // C-RECOVERY (d): the owner's last words were "Okay", not a question, so the silence after them is the
+        // call being done talking, not a stalled answer. The turn closes and the watchdog never spends a rebuild.
+        if (this.#bareAcknowledgement(handle.liveSessionId)) {
+          this.#closeTurn(handle, 'completed', 'silent');
+          this.#cancelWatchdog(handle);
+          hostLogEvent({ event: 'live_watchdog', phase: 'closed', turnAgeMs, generation });
+          return;
+        }
         // #591: no tool result, no model output (audible or written) and no owner words since the model last
         // spoke means nothing asked for this turn, so the watchdog closes it and leaves the session listening
         // instead of nudging a reply nobody asked for.
@@ -2683,6 +2730,16 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       [liveSessionId, liveSessionId]));
   }
 
+  /** C-RECOVERY (d): whether the owner's latest words since the model last spoke are a bare acknowledgement. Such
+   *  a turn answers nothing, so the silence after it is not a stalled answer and no rebuild may be spent on it. */
+  #bareAcknowledgement(liveSessionId: string): boolean {
+    const row = this.#store.transaction(tx => tx.get(
+      "SELECT text FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND TRIM(COALESCE(text,''))<>''"
+      + " AND journal_id > COALESCE((SELECT MAX(journal_id) FROM live_journal WHERE live_session_id=? AND kind='outputTranscription'),0)"
+      + " ORDER BY journal_id DESC LIMIT 1", [liveSessionId, liveSessionId]));
+    return isBareAcknowledgement(typeof row?.['text'] === 'string' ? String(row['text']) : '');
+  }
+
   #seedHistory(liveSessionId: string, inputClass: DataClass, deadLine = false): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number; condensed: boolean } {
     const conversationId = this.#conversationOf(liveSessionId);
     const rows = this.#store.transaction(tx => tx.all(
@@ -2701,30 +2758,18 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // An unfinished model run is speech the owner never heard, so it never becomes history here.
     if (role === 'model') pending = '';
     flush();
-    const exchanges: { role: 'user' | 'model'; text: string }[][] = [];
+    // C-RECOVERY (a): a seed turn is one side of a finished-turn boundary, so two runs that the finished marks
+    // left in the same role are one turn, never two adjacent messages of the same role.
+    const merged: { role: 'user' | 'model'; text: string }[] = [];
     for (const run of runs) {
-      if (run.role === 'user' || exchanges.length === 0) exchanges.push([run]);
-      else exchanges[exchanges.length - 1]!.push(run);
+      const previous = merged[merged.length - 1];
+      if (previous === undefined || previous.role !== run.role) { merged.push({ role: run.role, text: run.text }); continue; }
+      previous.text = `${previous.text} ${run.text}`;
     }
-    const charsOf = (exchange: { role: 'user' | 'model'; text: string }[]) => exchange.reduce((sum, run) => sum + run.text.length, 0);
-    let chars = exchanges.reduce((sum, exchange) => sum + charsOf(exchange), 0);
-    let condensed = false;
-    // The latest exchange is the anchor: older exchanges go whole, and a latest exchange over budget is condensed.
-    while (exchanges.length > 1 && chars > SEED_CHAR_LIMIT) { chars -= charsOf(exchanges[0]!); exchanges.shift(); }
-    if (exchanges.length === 1 && chars > SEED_CHAR_LIMIT) {
-      const anchor = exchanges[0]!;
-      for (const run of anchor) {
-        const room = SEED_CHAR_LIMIT - (chars - run.text.length);
-        if (run.text.length <= room) continue;
-        const keep = Math.max(room - 3, 0);
-        run.text = keep > 0 ? `...${run.text.slice(run.text.length - keep)}` : '...';
-        chars = charsOf(anchor); condensed = true;
-      }
-    }
-    const kept = exchanges.flat().slice(-128).map(run => ({ role: run.role, text: run.text, dataClass: inputClass }));
+    const turns = merged.map(run => ({ role: run.role, text: run.text, dataClass: inputClass }));
     // L19: the dead call's last answer was never heard, so the seed closes it as heard instead of leaving it open.
-    if (deadLine && kept.length > 0 && kept[kept.length - 1]!.role === 'model') kept.push({ role: 'user', text: LIVE_DROPPED_LINE_MARK, dataClass: inputClass });
-    return { turns: kept, chars, condensed };
+    if (deadLine && turns.length > 0 && turns[turns.length - 1]!.role === 'model') turns.push({ role: 'user', text: LIVE_DROPPED_LINE_MARK, dataClass: inputClass });
+    return { turns, chars: turns.reduce((sum, turn) => sum + turn.text.length, 0), condensed: false };
   }
 
   /**
@@ -2732,15 +2777,16 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    * under `SEED_CHAR_LIMIT`, and the cumulative research ledger rides as a distinct host section after it, so a
    * rebuild keeps the conversation instead of replacing it with the one batch that crossed the threshold.
    */
-  #seedWithLedger(liveSessionId: string, inputClass: DataClass, ledger: string | undefined, deadLine = false): {
+  #seedWithLedger(liveSessionId: string, inputClass: DataClass, ledger: string | undefined, deadLine = false, transcript = true): {
     turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number;
     transcriptChars: number; ledgerChars: number; condensed: boolean } {
-    const seed = this.#seedHistory(liveSessionId, inputClass, deadLine);
+    const seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number } = transcript
+      ? this.#seedHistory(liveSessionId, inputClass, deadLine) : { turns: [], chars: 0 };
     const body = typeof ledger === 'string' ? ledger.trim() : '';
     const text = body === '' ? undefined : `${HOST_LEDGER_HEADER}\n${body}`;
-    if (text === undefined) return { ...seed, transcriptChars: seed.chars, ledgerChars: 0 };
-    return { turns: [...seed.turns, { role: 'user' as const, text, dataClass: inputClass }],
-      chars: seed.chars + text.length, transcriptChars: seed.chars, ledgerChars: body.length, condensed: seed.condensed };
+    const appended = text === undefined ? [] : [{ role: 'user' as const, text, dataClass: inputClass }];
+    const fitted = fitSeedTurns(seed.turns, appended);
+    return { turns: fitted.turns, chars: fitted.chars, transcriptChars: seed.chars, ledgerChars: body.length, condensed: fitted.condensed };
   }
 
   /** A provider session window ended: an attended call takes a fresh seeded window, an unattended one ends where it is. */
@@ -2859,8 +2905,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     handle.thinking = false; handle.speaking = false;
     this.#store.transaction(tx => tx.run('UPDATE live_sessions SET connection_generation=? WHERE live_session_id=?', [handle.generation, handle.liveSessionId]));
     handle.consumer.dropAudio();
-    // Fence before closing: neither iterator callbacks nor pending async tool work can cross the cut.
-    handle.session.close();
+    // C-RECOVERY (c): the old session is closed only once the new one opened, so a provider that refuses the
+    // rebuild leaves the call on the session it already had instead of on none.
+    const previousSession = handle.session;
     for (const id of handle.pendingCallIds) {
       const tool: LiveToolProjection = { callId: id, name: handle.pendingCalls.get(id) ?? 'unknown', status: 'error', code: 'tool_call_lost_on_resume', markdown: 'Tool call lost when the voice connection resumed.', sources: [] };
       const journalSequence = this.#persist(handle, { type: 'toolResult', sequence: 0, tool }, 'toolResult');
@@ -2901,6 +2948,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       handle.unspokenDelivered = false;
       this.#observeDiagnostics(handle, handle.session);
       handle.goAwayUntil = undefined;
+      // C-RECOVERY (c): the new session exists, so the old one can be closed without ever leaving the call open on none.
+      previousSession.close();
     } catch (error) {
       // C-LIVE R2: a synchronous refusal is never swallowed. Its class and a closed message key are logged with the
       // mode and the cause, and the caller decides on the one fresh retry.
@@ -3018,27 +3067,43 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
   }
 
   /**
-   * C-LIVE R2: an open the provider refused gets one fresh seeded open after a short backoff, never a repeat of the
-   * failed resume. If that fails as well, the call ends as `provider_recovery_exhausted`: no audio is attempted, the
+   * C-LIVE R2: an open the provider refused gets a fresh seeded open after a short backoff, never a repeat of the
+   * failed resume, and C-RECOVERY (b) shrinks that seed on each refusal: the newest half of the conversation first,
+   * then a plain open with only the summary context. If those fail as well, the call ends as
+   * `provider_recovery_exhausted`: no audio is attempted, the
    * client receives the terminal and the next call starts clean. The generation moved on each attempt, so callbacks
    * of the old provider sessions are already fenced out.
    */
   async #retryRefusedOpen(handle: ActiveSession, remaining: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null, closeCode: number | null, path: 'resume' | 'fresh_seeded'): Promise<boolean> {
     const exhausted = (): false => { this.#settle(handle, { state: 'failed', code: 'provider_recovery_exhausted' }, false, 'ended', null); return false; };
-    this.#logRecovery(handle, path, 'open_refused', closeCode, reason, seed);
-    if ((handle.recoveryRefusals ?? 0) > 1) return exhausted();
-    await this.#delay(RECOVERY_REFUSED_BACKOFF_MS);
-    if (this.#settled(handle)) return false;
-    // The call's own budget still bounds the retry: an exhausted session or idle window is not a provider refusal.
-    const now = this.#now();
-    const left = handle.deadlineAt - now, idleLeft = handle.idleAt - now;
-    if (left <= 0 || idleLeft <= 0 || remaining <= 0) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
-    const opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, left, idleLeft, window, seed, reason);
-    if (!opened) { if (this.#settled(handle)) return false; return exhausted(); }
-    handle.recoveryRefusals = 0;
-    this.#logRecovery(handle, 'fresh_seeded', 'opened', closeCode, reason, seed);
-    await this.#deliverUnspoken(handle);
-    return true;
+    // C-RECOVERY (b): a locally refused seed is never resent unchanged. The first retry carries the newest half
+    // of the same conversation, and the last attempt is a plain open with only the summary context.
+    const shrink = (from: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }) => {
+      const turns = from.turns.slice(-Math.max(1, Math.ceil(from.turns.length / 2)));
+      return { turns, chars: turns.reduce((sum, turn) => sum + turn.text.length, 0) };
+    };
+    let attempt = seed;
+    for (;;) {
+      this.#logRecovery(handle, path, 'open_refused', closeCode, reason, attempt);
+      if ((handle.recoveryRefusals ?? 0) > 2) return exhausted();
+      await this.#delay(RECOVERY_REFUSED_BACKOFF_MS);
+      if (this.#settled(handle)) return false;
+      // The call's own budget still bounds the retry: an exhausted session or idle window is not a provider refusal.
+      const now = this.#now();
+      const left = handle.deadlineAt - now, idleLeft = handle.idleAt - now;
+      if (left <= 0 || idleLeft <= 0 || remaining <= 0) { this.#settle(handle, { state: 'failed', code: 'resume_failed' }, false, 'ended', null); return false; }
+      attempt = (handle.recoveryRefusals ?? 0) >= 2
+        ? this.#seedWithLedger(handle.liveSessionId, handle.inputClass, handle.researchLedgerLog.text(), false, false)
+        : shrink(attempt);
+      const opened = await this.#openRecovery(handle, 'fresh_seeded', undefined, Math.min(remaining, left), idleLeft, window, attempt, reason);
+      if (opened) {
+        handle.recoveryRefusals = 0;
+        this.#logRecovery(handle, 'fresh_seeded', 'opened', closeCode, reason, attempt);
+        await this.#deliverUnspoken(handle);
+        return true;
+      }
+      if (this.#settled(handle)) return false;
+    }
   }
 
   /**
@@ -3139,6 +3204,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
 
   #emitDiagnostics(handle: ActiveSession): void {
     if (handle.diagnosticsEmitted) return;
+    // C-RECOVERY (e): the one diagnostics line for a call is written once the call settled, so its terminalCode is
+    // the live_sessions terminal outcome and never the field default a superseded generation's loop end saw.
+    if (!handle.terminal) return;
     handle.diagnosticsEmitted = true;
     void Promise.all(handle.diagnosticSnapshots).then(values => {
       const snapshots = values.filter((value): value is Readonly<LiveVoiceDiagnostics> => value !== undefined);
@@ -3502,7 +3570,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         if (event.type === 'inputTranscription' && event.finished === true) this.#finalizeOwnerInput(handle, generation, event.finalOrigin);
       }
     } catch (error) {
-      handle.persistFailure = error;
+      // C-RECOVERY (f): a failed write is a closed class of its own, so the host's host_error names the journal
+      // write instead of a bare Error, and the rejection the host logs carries that code too.
+      handle.persistFailure = error instanceof LiveError ? error : new LiveError('persistence_failed');
       this.#diagnosticFailure(handle,'journal_write_failed');
     }
     if (!handle.terminal) {
@@ -4346,6 +4416,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       attempt(() => handle.consumer.close());
       handle.resolveDone();
     }
+    this.#emitDiagnostics(handle);
     if (handle.persistFailure) console.error(JSON.stringify({ event: 'live_terminal_write_failed', liveSessionId: handle.liveSessionId,
       code: handle.diagnosticTerminalCode, class: 'Error' }));
   }

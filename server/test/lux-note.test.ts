@@ -340,10 +340,7 @@ test('a handler that throws outside its own catch writes one closed tool_handler
   const throwing = h.definitions(() => ({ staged: false, code: 'not_enabled' })).map(tool => tool.name === STAGE_NOTE_IDENTITY.name
     ? { ...tool, async execute(): Promise<ToolOutcome> { throw new TypeError('synthetic handler failure'); } }
     : tool);
-  const call: ToolCallIntent = { runId: h.run, actorId: 'tester', authorityEpoch: h.store.authorityEpoch, revision: 1, executionId: 'run:2:0',
-    toolName: STAGE_NOTE_IDENTITY.name, argumentsHash: createHash('sha256').update(JSON.stringify(STAGE_ARGS)).digest('hex'),
-    callId: 'call-handler', accountId: VAULT_ACCOUNT, resourceId: VAULT_RESOURCE };
-  assert.equal(h.owner.journal.intent(call, STAGE_ARGS), 'fresh');
+  // The batch books the call itself, so the handler throws after a real dispatch.
   const batch = await runToolCalls(h.owner, [{ id: 'call-handler', name: STAGE_NOTE_IDENTITY.name, args: STAGE_ARGS as unknown as JsonObject }], {
     registry: throwing, host: { runId: h.run, actorId: 'tester', authorityEpoch: h.store.authorityEpoch, revision: 1,
       grants: [{ tool: STAGE_NOTE_IDENTITY.name, effect: 'write', accountId: VAULT_ACCOUNT, resourceId: VAULT_RESOURCE }] },

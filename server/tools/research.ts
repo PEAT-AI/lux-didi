@@ -4142,7 +4142,7 @@ function metricCountryOf(question: string): string | undefined {
   return match?.[1]?.trim();
 }
 
-/** A resolved count window: inclusive calendar days, the two dates the endpoint's `between` filter reads. */
+/** A resolved count window: inclusive calendar days, the two dates the endpoint's `inBetween` filter reads. */
 export interface MetricWindow { start: string; end: string }
 
 const MONTH_WORDS: readonly [string, number][] = [
@@ -4154,7 +4154,7 @@ const NAMED_MONTH = new RegExp(`\\b(${MONTH_PATTERN})\\b(?:\\s*,?\\s*(?:of\\s+)?
 const NAMED_QUARTER = /\bq([1-4])(?:\s*,?\s*(?:of\s+)?(\d{4}))?\b/iu;
 const BARE_YEAR = /\b(20\d{2})\b/u;
 
-/** A UTC calendar day, the form the fixture's `between` values take. */
+/** A UTC calendar day, the form the fixture's `inBetween` values take. */
 function utcDay(year: number, month: number, day: number): string {
   return new Date(Date.UTC(year, month, day)).toISOString().slice(0, 10);
 }
@@ -4263,7 +4263,7 @@ export function companyMetricSubs(query: string, question: string, nowMs: number
   const where = country ?? 'all countries';
   const dimensions = [
     ...(country === undefined ? [] : [{ fieldId: metric.countryField, operator: 'equals', values: [country] }]),
-    { fieldId: metric.dateField, operator: 'between', values: [window.start, window.end] },
+    { fieldId: metric.dateField, operator: 'inBetween', values: [window.start, window.end] },
   ];
   return { subs: [
     { key: 'm0', name: INTERNAL.mongooseSearchFields, args: { patterns: [query.trim()], exploreName: metric.exploreName } },

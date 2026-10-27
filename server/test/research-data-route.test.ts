@@ -25,6 +25,11 @@ const LIVE = JSON.parse(readFileSync(FIXTURE, 'utf8')) as {
   trap_observed: string;
 };
 
+/** The endpoint's own filter operator enum, from the tool list it published (captured 2026-10-27). */
+const PUBLISHED_OPERATORS: readonly string[] = (JSON.parse(readFileSync(join(process.cwd(), 'server/test/fixtures/mongoose-tools-list-literal.json'), 'utf8')) as {
+  data: { name: string; inputSchema: { $defs: Record<string, { properties: { operator: { enum: string[] } } }> } }[];
+}).data.find(tool => tool.name === 'run_metric_query')?.inputSchema.$defs['s57dd195e34']?.properties.operator.enum ?? [];
+
 /** 26 Oct 2026, the morning after the last day the fixture loaded (25 Oct). */
 const NOW = Date.UTC(2026, 9, 26, 9, 0, 0);
 const CONFIGURED: readonly SourceKind[] = ['data'];
@@ -80,7 +85,9 @@ test('a number question runs search_fields then run_metric_query on the data end
   const country = filters.dimensions?.find(entry => entry.fieldId === 'active_users_daily_country');
   const window = filters.dimensions?.find(entry => entry.fieldId === 'active_users_daily_event_date_day');
   assert.ok(country && country.operator === 'equals' && country.values.includes('Indonesia'), 'the country filter');
-  assert.ok(window && window.operator === 'between', `the date window is the resolved between filter: ${JSON.stringify(window)}`);
+  assert.ok(window && window.operator === 'inBetween', `the date window is the resolved between filter: ${JSON.stringify(window)}`);
+  assert.ok(PUBLISHED_OPERATORS.includes(window.operator),
+    `the operator the endpoint published: ${window.operator} of ${PUBLISHED_OPERATORS.join(', ')}`);
   assert.deepEqual(window.values, ['2026-10-25', '2026-10-25'], 'yesterday, as the inclusive day the ask named');
   assert.match(JSON.stringify(reply['findings']), /2026-10-25/u, 'the spoken result carries the latest loaded day');
 });

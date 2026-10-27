@@ -6,7 +6,7 @@ import {
 
 /**
  * W3: the count windows. Every case reads the same `now` the owner's failed ask ran at, and the dates are
- * the inclusive days the data endpoint's `between` filter takes. Conventions under test: `last N days` ends
+ * the inclusive days the data endpoint's `inBetween` filter takes. Conventions under test: `last N days` ends
  * today and starts N-1 days back; `last N months` ends today and starts the same day-of-month N months back;
  * `this X` ends today, `last X` is the whole previous period; a named month, quarter or year without one means
  * its most recent occurrence that has already begun.
@@ -55,7 +55,7 @@ test('an out-of-range day count is no window, never a silent read of today', () 
   assert.equal(metricWindow('how many users in Indonesia last 0 days', NOW), undefined);
 });
 
-test('the last month count is the published between filter the live fixture carries', () => {
+test('the last month count is the published inBetween filter the live fixture carries', () => {
   const subs = companyMetricSubs('active users Indonesia last month', 'how many users we had in Indonesia last month', NOW);
   assert.ok('subs' in subs, 'the count is dispatched');
   const metric = subs.subs.find(call => call.name === 'run_metric_query');
@@ -66,7 +66,7 @@ test('the last month count is the published between filter the live fixture carr
   assert.deepEqual(country, { fieldId: 'active_users_daily_country', operator: 'equals', values: ['Indonesia'] });
   const window = filters.dimensions?.find(entry => entry.fieldId === 'active_users_daily_event_date_day');
   assert.deepEqual(window, {
-    fieldId: 'active_users_daily_event_date_day', operator: 'between', values: ['2026-09-01', '2026-09-30'],
+    fieldId: 'active_users_daily_event_date_day', operator: 'inBetween', values: ['2026-09-01', '2026-09-30'],
   }, 'the September window, in the shape the endpoint published');
 });
 

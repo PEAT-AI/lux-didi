@@ -1,11 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mongooseAccessToken, mongooseBinding, writeMongooseOAuth, MongooseCredentialError, type MongooseOAuthRecord } from '../host/mongoose-auth.js';
 import { MongooseLoginError, runMongooseLogin, type MongooseLoginOptions, type MongooseSignInHop } from '../host/mongoose-login.js';
-import { MONGOOSE_ENDPOINTS, type MongooseEndpoint } from '../connectors/mongoose.js';
+import { composeMcpRuntime } from '../host/mcp.js';
+import { Store } from '../runtime/store.js';
+import { toolsMigrations } from '../tools/schema.js';
+import { MONGOOSE_ENDPOINTS, MONGOOSE_ENDPOINT_AUDIENCES, MONGOOSE_ENDPOINT_TOOLS, mongooseEndpointName, type MongooseEndpoint } from '../connectors/mongoose.js';
 import { FAKE_ORIGIN, canonicalResource, startContractFake, type ContractFake } from './mongoose-contract-fake.js';
 
 const NOW = 1_760_000_000_000;
@@ -247,4 +252,74 @@ test('the configured URL decides the binding: https only, no userinfo, query or 
   for (const refused of ['http://mongoose.test/mcp/crm', 'https://user@mongoose.test/mcp/crm', `${FAKE_ORIGIN}/mcp/crm?toolset=x`, `${FAKE_ORIGIN}/mcp/crm#x`, `${FAKE_ORIGIN}/mcp/data`, `${FAKE_ORIGIN}/mcp`, 'mongoose:crm']) {
     assert.equal(mongooseBinding(refused, 'crm'), undefined, `${refused} is not a trusted configuration`);
   }
+});
+
+// --- C-SIGNIN-LIVE: a completed sign-in connects its own endpoint in place, with no relaunch. ---
+
+/** The Mongoose catalogue for one synthetic origin: three endpoints, one record each. */
+function syncCatalogue(origin: string): Record<string, unknown>[] {
+  return MONGOOSE_ENDPOINTS.map(name => ({
+    id: `mongoose-${name}`, connector: 'mongoose', transport: 'streamable-http', account: OWNER_EMAIL,
+    url: `${origin}/mcp/${name}`, resource: `mongoose:${name}`, credentialRef: `mongoose-${name}`,
+    enabled: true, allowEgress: true, unknownClass: 'ordinary',
+  }));
+}
+
+/** A synthetic Mongoose MCP endpoint set: every path answers the handshake with that endpoint's tools. */
+async function syntheticMongoose(): Promise<{ origin: string; close(): Promise<void> }> {
+  const endpoint = createServer(async (req, res) => {
+    const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    if (!/^Bearer .+$/.test(String(req.headers.authorization ?? ''))) { res.writeHead(401).end(); return; }
+    const message = JSON.parse(Buffer.concat(chunks).toString()) as { id?: unknown; method: string };
+    if (message.id === undefined) { res.writeHead(202).end(); return; }
+    const name = mongooseEndpointName(String(req.url)) ?? 'crm';
+    const tools = MONGOOSE_ENDPOINT_TOOLS[name].map(tool => ({ name: tool, inputSchema: { type: 'object', properties: {}, additionalProperties: true }, annotations: { readOnlyHint: true } }));
+    const result = message.method === 'initialize' ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'synthetic-mongoose', version: '1' } }
+      : message.method === 'tools/list' ? { tools } : {};
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }));
+  });
+  endpoint.listen(0, '127.0.0.1'); await once(endpoint, 'listening');
+  const address = endpoint.address(); if (!address || typeof address === 'string') throw new Error('no port');
+  return { origin: `http://127.0.0.1:${address.port}`, close: () => new Promise<void>(resolve => endpoint.close(() => resolve())) };
+}
+
+const OWNER_EMAIL = 'owner@example.test';
+
+/** The minted claim pair the host decodes: the owner email and that endpoint's own audience. */
+function mintedToken(endpoint: MongooseEndpoint, email: string): string {
+  const encode = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString('base64url');
+  return `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ email, aud: MONGOOSE_ENDPOINT_AUDIENCES[endpoint] })}.c2ln`;
+}
+
+test('a completed CRM sign-in connects crm in place, logging connector_connected with no host restart', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-mongoose-inplace-'));
+  const configDir = join(dir, 'provider-config'); mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const fake = await syntheticMongoose();
+  const store = new Store(join(dir, 'state'), toolsMigrations);
+  const lifecycle: Record<string, unknown>[] = [];
+  const mcp = await composeMcpRuntime({
+    store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, deferConnectors: true,
+    lifecycleLog: event => lifecycle.push(event as unknown as Record<string, unknown>),
+  });
+  t.after(async () => { await mcp.close(); await fake.close(); rmSync(dir, { recursive: true, force: true }); });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: OWNER_EMAIL, endpoints: syncCatalogue(fake.origin) }), { mode: 0o600 });
+  const record = (endpoint: MongooseEndpoint): Record<string, unknown> => {
+    const binding = mongooseBinding(`${fake.origin}/mcp/${endpoint}`, endpoint)!;
+    return { schemaVersion: 3, endpoint, resource: binding.resource, issuer: binding.issuer, tokenEndpoint: `${fake.origin}/oauth/token`, clientId: 'synthetic', redirectPort: 8768, account: OWNER_EMAIL, accessToken: mintedToken(endpoint, OWNER_EMAIL), refreshToken: `refresh-${endpoint}`, expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now(), identity: OWNER_EMAIL };
+  };
+  // knowledge and data were already signed in; crm is the one the owner is signing in now.
+  writeFileSync(join(configDir, 'mongoose-knowledge.json'), JSON.stringify(record('knowledge')), { mode: 0o600 });
+  writeFileSync(join(configDir, 'mongoose-data.json'), JSON.stringify(record('data')), { mode: 0o600 });
+
+  await mcp.start();
+  assert.equal(mcp.status().endpoints.find(row => row.id === 'mongoose-crm')?.state, 'error', 'crm is not connected before the sign-in');
+  assert.equal(lifecycle.some(event => event['event'] === 'connector_connected' && event['endpointId'] === 'mongoose-crm'), false);
+
+  // The sign-in lands: the record appears exactly as runMongooseLogin writes it.
+  writeFileSync(join(configDir, 'mongoose-crm.json'), JSON.stringify(record('crm')), { mode: 0o600 });
+  await mcp.recover();
+
+  assert.equal(mcp.status().endpoints.find(row => row.id === 'mongoose-crm')?.state, 'connected', 'crm connected in place, no restart');
+  assert.deepEqual(lifecycle.filter(event => event['event'] === 'connector_connected' && event['endpointId'] === 'mongoose-crm').length, 1);
 });

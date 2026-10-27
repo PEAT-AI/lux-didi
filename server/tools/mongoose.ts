@@ -117,8 +117,10 @@ function hitLines(data: Record<string, unknown>): string[] | undefined {
 const CONTRADICTION_IN_TEXT = /\bcontradiction\b/iu;
 function contradictionOf(text: string): { flagged: boolean; values: string[] } {
   if (!CONTRADICTION_IN_TEXT.test(text)) return { flagged: false, values: [] };
-  // A year in brackets dates the figure, it is not one of the two sides of the disagreement.
-  const values = text.replace(/\(\d{4}\)/gu, ' ').match(/\d[\d,]*(?:\.\d+)?\s?[KkMm]?/gu) ?? [];
+  // A year in brackets dates the figure, it is not one of the two sides of the disagreement. A marker the
+  // source attached to a figure ("~29K") is part of that figure: an approximation spoken as an exact
+  // number is the failure this projection exists to prevent.
+  const values = text.replace(/\(\d{4}\)/gu, ' ').match(/[~≈<>+±]?\s?\d[\d,]*(?:\.\d+)?\s?[KkMm]?/gu) ?? [];
   return { flagged: true, values: values.map(value => value.trim()) };
 }
 

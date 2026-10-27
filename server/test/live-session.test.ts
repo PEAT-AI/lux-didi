@@ -2073,6 +2073,30 @@ test('a tool result after a barge-in interruption is sent once and recorded afte
   h.owner.revoke(session.liveSessionId);
 });
 
+test('a response the owner barges in on is measured on its own, so two voices never mix (#1027 F1)', async t => {
+  const events: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(() => sink());
+  const h = await harness(t, {});
+  const { session, attachment } = await attached(h);
+  void (async () => { for await (const _chunk of attachment.output) { /* drain playback */ } })();
+  // 2000 samples of a 110 Hz tone at 24 kHz: a real voiced frame, not the 8-byte stub.
+  const samples = new Int16Array(2000);
+  for (let index = 0; index < samples.length; index += 1) samples[index] = Math.round(0.4 * 32767 * Math.sin((2 * Math.PI * 110 * index) / 24000));
+  const voiced = { inlineData: { mimeType: 'audio/pcm;rate=24000', data: Buffer.from(samples.buffer).toString('base64') } };
+  const handled = h.owner.get(session.liveSessionId).journal.events;
+  h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [voiced] } } });
+  h.f.send({ serverContent: { interrupted: true } });
+  h.f.send({ serverContent: { outputTranscription: { text: 'after the barge-in', finished: true } } });
+  await drain(h, session.liveSessionId, handled + 2);
+  const profiles = events.filter(line => line.event === 'live_voice_profile');
+  assert.equal(profiles.length, 1, 'the interrupted response logged its own profile');
+  assert.equal(profiles[0]!.responseId, 'resp-1');
+  assert.ok(Number(profiles[0]!.audibleMs) > 0, `audible ms ${String(profiles[0]!.audibleMs)}`);
+  assert.ok(Math.abs(Number(profiles[0]!.f0Hz) - 110) < 5, `measured ${String(profiles[0]!.f0Hz)} Hz`);
+  h.owner.revoke(session.liveSessionId);
+});
+
 test('Live accepts a frozen real tool snapshot and projects only result-gated Markdown', async t => {
   const h = await harness(t, { tools: true });
   const { session, attachment } = await attached(h);

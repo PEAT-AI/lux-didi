@@ -34,6 +34,7 @@ import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kind
 import { clockSync, hostLogEvent, LIVE_REBUILD_TRIGGERS, LIVE_STATE_CAUSES, NATIVE_END_REASONS, setLogContext } from '../host/log.js';
 import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
 import { validateAcceptedPrompt } from './config.js';
+import { VoiceProfileMeter } from './voice-profile.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DataClass, LiveVoiceDiagnostics, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceSession, LiveVoiceRequest, LiveToolResponse, LiveToolSendOutcome, TurnFailedReason } from '../adapters/live-voice/index.js';
 import type { DebtPhase, DebtReason } from '../trace/kinds.js';
@@ -592,6 +593,9 @@ interface ActiveSession {
   deadAirNudgedAt?: number | undefined;
   /** C-DEADAIR: the provider wrote text for this owed answer and the owner heard none of it. */
   debtTextSeen?: boolean | undefined;
+  /** C-PITCH: the per-response voice meter over the output PCM already forwarded to playback, and how many
+   *  responses it has closed, which is the closed id its two events carry. */
+  voiceProfile?: VoiceProfileMeter | undefined; voiceResponses?: number | undefined;
   /** D6: an open model turn holds SPEAKING until turnComplete or 1,500 ms of audible silence. */
   speakingHoldTimer?: ReturnType<JobTimer> | undefined;
   sessionTimer: ReturnType<JobTimer> | undefined; callTimer: ReturnType<JobTimer> | undefined; idleTimer: ReturnType<JobTimer> | undefined;
@@ -2619,6 +2623,22 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     }
   }
 
+  /** C-PITCH: close the voice meter for the response that just ended, whether the provider completed the turn or
+   *  the owner barged in on it. An interrupted response played audio, so it is measured too, with its own closed
+   *  id, and its samples never roll into the next response. */
+  #logVoiceProfile(handle: ActiveSession, generation: number): void {
+    const voice = handle.voiceProfile?.finish();
+    if (!voice) return;
+    handle.voiceResponses = (handle.voiceResponses ?? 0) + 1;
+    const responseId = `resp-${handle.voiceResponses}`;
+    const { profile, shift } = voice;
+    hostLogEvent({ event: 'live_voice_profile', liveSessionId: handle.liveSessionId, generation, responseId,
+      audibleMs: profile.audibleMs, f0Hz: profile.f0Hz, f0P10Hz: profile.f0P10Hz, f0P90Hz: profile.f0P90Hz,
+      voicedRatio: profile.voicedRatio, rmsDbfs: profile.rmsDbfs });
+    if (shift) hostLogEvent({ event: 'live_voice_shift', liveSessionId: handle.liveSessionId, generation, responseId,
+      ratio: shift.ratio, medianHz: shift.medianHz, sessionMedianHz: shift.sessionMedianHz });
+  }
+
   #closeTurn(handle: ActiveSession, closeReason: TurnCloseReason, outcome?: TurnOutcome): void {
     const turnId = handle.connection.turnId;
     if (turnId === undefined) return;
@@ -3415,6 +3435,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           // THINKING through it, because that work is still open (D5, amendment C).
           handle.thinking = false;
           this.#closeTurn(handle, 'interrupted', 'silent');
+          // C-PITCH: a barge-in ends a response that already played audio, so it is measured and closed here
+          // rather than folded into whatever the next response says.
+          this.#logVoiceProfile(handle, generation);
           this.#noteState(handle, 'interrupted');
           handle.turnInterrupted = true;
           logTurnScript(handle);
@@ -3427,6 +3450,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
         if (event.type === 'turnComplete') {
+          // C-PITCH: one closed measurement per response that played audio, and the shift receipt when this
+          // response's median F0 sits beyond the ratio from the session's running median (a voice change).
+          this.#logVoiceProfile(handle, generation);
           // L19 second clause: a reply that was spoken with no transcript row is receipted, never silent.
           if (handle.spokenThisTurn && !handle.outputJournalled)
             hostLogEvent({ event: 'live_reply_unjournalled', liveSessionId: handle.liveSessionId, generation: handle.generation });
@@ -3493,6 +3519,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           }
           // L-04: this frame is the newest thing the owner heard, and the next wait starts at its end.
           handle.heardSince = this.#now(); handle.heardAfterTool = false;
+          // C-PITCH: the meter reads this frame just before it is queued, at about one percent of audio duration.
+          (handle.voiceProfile ??= new VoiceProfileMeter()).push(event.pcm, event.rate);
           this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue;
         }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }

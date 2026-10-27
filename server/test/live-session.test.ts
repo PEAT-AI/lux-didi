@@ -5687,8 +5687,10 @@ test('mail body integration: body consumption preserves simultaneous calendar ev
   await settleLiveTool(h, 'mixed-start', 'research', { action: 'start', question: 'Read full mail and calendar', topic: 'Read full mail and calendar', lookups: [{ source: 'mail', mail: { id: 'mixed' } }, { source: 'calendar', query: 'this week' }] });
   const seen = new Set<string>(), researchId = last()['researchId'], used = new Set<string>(); let count = 0;
   for (;;) {
-    process.stderr.write(`DBG631 findings=${JSON.stringify(last()['findings'] ?? null).slice(0, 160)} keys=${Object.keys(last()).sort().join(',')}\n`);
-    for (const match of JSON.stringify(last()['findings'] ?? '').matchAll(/Body sibling event (\d+)/g)) seen.add(match[1]!);
+    // The evidence this call gathered rides every page as a control field, so the count is asserted on the
+    // page the model is reading, never on a page that happens to carry the lines.
+    assert.equal((last()['calendarCoverage'] as Record<string, unknown>)['received'], 12, 'the calendar evidence the body shares a call with is still on the page');
+    for (const match of JSON.stringify(last()['calendarCoverage'] ?? '').matchAll(/Body sibling event (\d+)/g)) seen.add(match[1]!);
     assert(JSON.stringify(last()).length <= 6000, 'combined actual model response respects its existing bound');
     const step = pageStep(last(), used); if (step === undefined) break; assert(++count < 20);
     await settleLiveTool(h, `mixed-next-${count}`, 'research', { action: 'continue', researchId, ...(last()['nextCursor'] ? { ...(last()['pageCursor'] !== undefined ? { pageCursor: last()['pageCursor'] } : { cursor: last()['nextCursor'] ?? last()['cursor'] }) } : {}) });

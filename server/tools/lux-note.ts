@@ -57,7 +57,7 @@ const REPORTED = /^(?:say|says|according to)\b|\b(?:he|she|they|it|someone|rob|y
 const QUESTION = /\b(?:how (?:do|can|should|would) (?:i|you)|what(?:'s| is) the (?:way|phrase|command)|can you tell me how)\b/u;
 const CONDITIONAL = /^(?:if|when|whenever|unless|should|in case)\b/u;
 const NEGATION_LEAD = /^(?:no|not|never|don(?:'| )?t|do not)\b/u;
-const NEGATION = /(?:don(?:'| )?t|do not|never|not|no)\b/u;
+const NEGATION = /\b(?:don(?:'| )?t|cannot|can(?:'| )?t|do not|never|not|no)\b/u;
 const HEDGE = /\b(?:maybe|perhaps|probably|might|could|i think|i guess|possibly)\b/u;
 /** A composed note about the conversation itself names its source where a dictation names a store. */
 const NOTE_SOURCE = /\b(?:note|summary)\b[^\p{L}\p{N}]+(?:about|from|of)\b[^\p{L}\p{N}]+(?:this|that|what we(?: just)? (?:discussed|talked about)|our (?:conversation|call|discussion))\b/u;

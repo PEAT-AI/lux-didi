@@ -317,7 +317,8 @@ test('a note refused in an earlier call is not re-offered at the next call start
     'result-1', JSON.stringify({ response: { remembered: false, code: 'owner_text_mismatch' }, dataClasses: [] }), 'b'.repeat(64)]));
 
   assert.deepEqual([...store.transaction(tx => staleRefusedNoteSessions(tx, store.assistantId))], [REFUSED]);
-  const loops = store.transaction(tx => storedOpenLoops(tx, ['ordinary'], NOW));
+  // The call start reads the open loops with the refused set, which is the wiring under test.
+  const loops = store.transaction(tx => storedOpenLoops(tx, ['ordinary'], NOW, staleRefusedNoteSessions(tx, store.assistantId)));
   const texts = loops.map(loop => loop.text);
   assert.equal(texts.includes(REFUSED_LOOP), false, 'the refused note is never offered again');
   assert.equal(texts.includes(FRESH_LOOP), true, 'an ordinary open loop still is');

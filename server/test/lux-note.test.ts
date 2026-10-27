@@ -74,6 +74,10 @@ test('an imperative with an explicit lux destination is the only form that autho
     'no I mean the other file save it to Lux knowledge']) {
     assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
   }
+  // W1-R4 F10: every save verb is judged, so an ask after a report of not saving still grants.
+  for (const text of ['I did not save it, but save it to Lux', 'I never saved it, save it to Lux knowledge']) {
+    assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
+  }
 });
 
 test('negated, reported, quoted, conditional and ambiguous save asks are refused with a clarification', () => {
@@ -95,6 +99,12 @@ test('negated, reported, quoted, conditional and ambiguous save asks are refused
     ['do not save it to Lux', 'negated'],
     ["don't put it in Lux", 'negated'],
     ['never save this to Lux', 'negated'],
+    // W1-R4 F9: a negation governs across a short auxiliary chain, and a contraction is one token.
+    ["I don't want to save it to Lux", 'negated'],
+    ["I didn't want to save it to Lux", 'negated'],
+    ["I won't need to save it to Lux", 'negated'],
+    ['I do not intend to save it to Lux', 'negated'],
+    ["I can't just save it to Lux", 'negated'],
   ];
   for (const [text, reason] of refusals) {
     assert.deepEqual(composedAsk(text), { decision: 'clarify', reason }, text);

@@ -57,3 +57,4 @@ Text consumes the host's tools through `ChatToolsComposition`; Live consumes its
 ## Verification
 
 Use [checks.md](checks.md) for tool, connector, prompt and native check routing. Test remote effects with fakes and receipt assertions, never real accounts. [Diagnostic store](diagnostic-store.md) explains canonical tool and source records without mistaking a bounded model projection for complete source content.
+Legacy local facts and preferences remain available for recall, but closing a live session never exports them to Lux. The legacy notesExport setting cannot authorize a write; saving any such content requires the same fresh stage_lux_note candidate, readback and confirmation as every other live save.

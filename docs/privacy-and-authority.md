@@ -65,3 +65,5 @@ Never publish real credentials, private profiles, board names, account content, 
 ## Honest limits
 
 Same-user process separation is not an operating-system sandbox. Data-class enforcement is routing policy, not perfect sensitivity detection. Prompt-injection immunity, forensic erasure, guaranteed notification delivery and universal provider availability are not claimed. Future policy belongs in [roadmap.md](roadmap.md), not in descriptions of the installed release.
+
+Legacy local facts and preferences remain available for recall, but closing a live session never exports them to Lux. The legacy notesExport setting cannot authorize a write; saving any such content requires the same fresh stage_lux_note candidate, readback and confirmation as every other live save.

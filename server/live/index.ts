@@ -10,7 +10,6 @@ import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
 import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
 import { NoteRequestGate, noteKey, noteReadbackText, readbackMatches, freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, stageComposedNote, type PlaybackSignalKind } from '../tools/lux-note.js';
-import { NotesExporter } from '../tools/notes-export.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
 import { INTENT_TOOL_NAMES, isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
@@ -1974,7 +1973,6 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
   #composedNotes(): boolean { return this.#profile.features?.composedNotes !== false; }
 
   /** W6 item 12: the notes exporter's own switch, on unless live.json turns it off. */
-  #notesExport(): boolean { return this.#profile.features?.notesExport !== false; }
 
   /** The composed stage itself is `stageComposedNote`; this keeps the session's own note bookkeeping. */
   #stageComposedNote(tx: Transaction, liveSessionId: string, args: { title: string; body: string; evidenceRefs: string[] }, handle: ActiveSession | undefined): JsonObject {
@@ -2118,23 +2116,6 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    * W6 item 12: the session-end flush of remember_note facts and preferences. One row per note, the
    * same vault client, no spoken confirmation, and a log event that carries counts only.
    */
-  async #flushNotes(handle: ActiveSession): Promise<void> {
-    if (!this.#notesExport()) return;
-    const rows = this.#store.transaction(tx => tx.all(`SELECT e.id AS id, e.text AS text, s.note AS note FROM entries e
-      JOIN source_references s ON s.owner_kind='entry' AND s.owner_id=e.id
-      WHERE s.provider='live-voice' AND s.note IN ('kind:fact','kind:preference')
-        AND NOT EXISTS (SELECT 1 FROM entry_tombstones t WHERE t.entry_id=e.id)
-      ORDER BY e.captured_at, e.id`));
-    if (rows.length === 0) return;
-    const candidates = rows.map(row => ({ id: String(row['id']), text: String(row['text']),
-      kind: String(row['note']) === 'kind:preference' ? 'preference' as const : 'fact' as const }));
-    const exporter = new NotesExporter({
-      store: this.#store, sessionId: handle.liveSessionId, transport: this.#luxWrite,
-      nearDuplicate: async text => this.#luxWrite.nearDuplicate?.(text), now: this.#now,
-      log: event => hostLogEvent({ ...event, event: 'notes_export' }), enabled: true,
-    });
-    await exporter.flush(candidates);
-  }
 
   /**
    * O1b-N: one native playback receipt, validated against the O1a ingestion types and recorded as a
@@ -4851,7 +4832,6 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       attempt(() => handle.session.close());
     } finally {
       attempt(() => this.#closeTurn(handle, 'session_end'));
-      attempt(() => { void this.#flushNotes(handle).catch(() => hostLogEvent({ event: 'notes_export', failed: 1 })); });
       attempt(() => this.#tools?.owner.releaseEvidence(handle.liveSessionId));
       attempt(() => { handle.sessionTimer?.cancel(); handle.callTimer?.cancel(); handle.idleTimer?.cancel();
         handle.muteTimer?.cancel(); handle.mutedOfferTimer?.cancel(); handle.inputFinalTimer?.cancel(); });

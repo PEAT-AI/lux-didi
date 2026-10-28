@@ -963,9 +963,14 @@ export async function composeMcpRuntime(options: {
       // Only an endpoint whose first connect failed is retried: it never published a grant, so no read and no
       // approved binding exists to disturb. An endpoint that connected once and then failed a read keeps the
       // refusal rules above, so a changed catalog, binding, revocation or late close is still refused.
+      // W2-R2: a terminal refusal is not re-handshaken. `entry.configurationError` is the static catalog
+      // field, while a refusal at settle is stored on the report, so a per-utterance recover() used to
+      // handshake an owner-refused endpoint again and again (114 handshakes in 11 minutes on 10-28).
+      // The report clears when this host settles the endpoint again, which is a start or a new policy.
       const parkedOnError = active.filter(entry => !closed && !eligible.has(entry.id) && !needsSignIn.has(entry.id)
         && reports.get(entry.id)?.state === 'error' && !everConnected.has(entry.id)
-        && entry.configurationError === undefined && entry.unknownClass !== null);
+        && entry.configurationError === undefined && reports.get(entry.id)?.configurationError === undefined
+        && entry.unknownClass !== null);
       await Promise.all(parkedOnError.map(async entry => {
         const token = (generations.get(entry.id) ?? 0) + 1;
         generations.set(entry.id, token);

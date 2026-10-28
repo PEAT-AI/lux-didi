@@ -64,7 +64,7 @@ Everything else still refuses in every mode, and each refusal writes one closed 
 node server/dist/config/mcp-cli.js approve --config-dir <config dir> --data-dir <data dir> --owner-id <owner> --policy-input <policy file>
 ```
 
-There is no Settings control for an approval; the command is the whole surface.
+There is no Settings control for an approval; the command is the whole surface. A terminal refusal is not handshaken again by the host's recovery round, however often the owner speaks, until the endpoint is settled again by a start or a new policy.
 
 ### The install gate
 

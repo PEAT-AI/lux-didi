@@ -452,6 +452,8 @@ async function mattermostBindingHost(t: TestContext, grantMode: 'owner-trusted-r
   await mkdir(configDir, { recursive: true, mode: 0o700 });
   const servers = new Map<string, { sdk: McpServer; transport: WebStandardStreamableHTTPServerTransport }>();
   const published = new Map<string, readonly string[]>();
+  // W2-R2: one handshake is one tools/list of one path, so a recovery that is skipped is visible here.
+  const handshakes = new Map<string, number>();
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
     const server = servers.get(path);
@@ -474,7 +476,7 @@ async function mattermostBindingHost(t: TestContext, grantMode: 'owner-trusted-r
       published.set(path, names);
       const sdk = new McpServer({ name: 'synthetic-mattermost', version: '1' }, { capabilities: { tools: {} } });
       const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
-      sdk.setRequestHandler('tools/list', () => ({ tools: [...names, 'mattermost_post_message'].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: false } })) }) as never);
+      sdk.setRequestHandler('tools/list', () => ({ tools: (handshakes.set(path, (handshakes.get(path) ?? 0) + 1), [...names, 'mattermost_post_message']).map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: false } })) }) as never);
       sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: JSON.stringify({ username: 'synthetic-owner', email: 'owner@example.invalid' }) }] }) as never);
       await sdk.connect(transport);
       servers.set(path, { sdk, transport });
@@ -492,7 +494,7 @@ async function mattermostBindingHost(t: TestContext, grantMode: 'owner-trusted-r
     const row = store.transaction(tx => tx.get('SELECT policy_json FROM tool_connections WHERE owner_id=? AND connection_id=?', [store.assistantId, id]));
     return row === undefined ? undefined : JSON.parse(String(row['policy_json'])) as ConnectionPolicy;
   };
-  return { start, policy, lifecycle };
+  return { start, policy, lifecycle, handshakes: (path: string): number => handshakes.get(path) ?? 0 };
 }
 
 test('W2-R1: a release that widens inside the reviewed envelope reconnects the owner\'s own connector, one generation on', async t => {
@@ -533,6 +535,23 @@ test('W2-R1: a changed http url for the same endpoint id is still a move, never 
   assert.equal(moved.status().endpoints.find(endpoint => endpoint.id === 'mattermost')?.configurationError, 'owner-approval-required');
   assert.deepEqual(h.lifecycle.filter(event => event.event === 'connector_approval_refused').at(-1),
     { event: 'connector_approval_refused', endpointId: 'mattermost', reason: 'endpoint_changed' });
+});
+
+test('W2-R2: a terminal connector refusal is not re-handshaken by recover()', async t => {
+  const h = await mattermostBindingHost(t);
+  await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
+  // The stored approval names the old path: the moved url is a terminal refusal, not a transient failure.
+  const moved = await h.start([{ id: 'mattermost', path: '/moved', enabled: true }], { '/old': MATTERMOST_TOOLS, '/moved': MATTERMOST_TOOLS });
+  assert.equal(h.handshakes('/moved'), 1, 'the refusal itself is one handshake');
+  const events = h.lifecycle.length;
+  // Every owner utterance recovers; three of them must not handshake a terminally refused endpoint again.
+  await moved.recover();
+  await moved.recover();
+  await moved.recover();
+  assert.equal(h.handshakes('/moved'), 1, 'exactly one handshake for a terminal refusal, however often recover() runs');
+  assert.equal(h.lifecycle.length, events, 'a skipped recovery writes no connector receipt');
+  assert.equal(moved.status().endpoints.find(endpoint => endpoint.id === 'mattermost')?.configurationError, 'owner-approval-required');
+  assert.deepEqual(moved.connectionIds(), []);
 });
 
 test('W2-R1: a widening outside the reviewed envelope is never granted, in any mode', async t => {

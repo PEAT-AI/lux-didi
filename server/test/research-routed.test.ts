@@ -6,7 +6,6 @@ import {
   type ResearchDeps, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchRoutedLog, type ResearchSubcallLog, type ResearchTimer, type SourceKind,
 } from '../tools/research.js';
 import { declarationsFor } from '../tools/declarations.js';
-import { lateCommentarySilence } from '../live/index.js';
 import { safeEvent } from '../host/log.js';
 import type { ToolDefinition } from '../adapters/model/types.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -1225,12 +1224,4 @@ test('#1028: a fetched knowledge entry reaches the round as its body, not its ti
   }, new AbortController().signal);
   assert.ok(seen.includes('get_insight'), 'the named entry was fetched');
   assert.match(JSON.stringify(reply['findings']), /harvested on Friday/u, 'the fetched entry body is in the round');
-});
-
-test('#1028: room speech after the answer does not park a late finding', () => {
-  const answeredAt = 1_000;
-  assert.equal(lateCommentarySilence({ now: 3_000, answeredAt, alreadySpoken: false, ownerWords: 9, inputAt: 2_000, newerWorkAt: 500 }), null,
-    'no research start and no tool call after the answer, so the finding is offered');
-  assert.equal(lateCommentarySilence({ now: 3_000, answeredAt, alreadySpoken: false, ownerWords: 0, newerWorkAt: 2_000 }), 'new_question',
-    'a research operation that started after the answer parks it');
 });

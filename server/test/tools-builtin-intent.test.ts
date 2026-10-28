@@ -12,7 +12,7 @@ import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import { noteOwnerWords, nativeActions } from '../tools/open.js';
+import { noteOwnerWords, noteOwnerPartial, ownerTurnWords, webOwnerWords, resolveWebOpen, nativeActions } from '../tools/open.js';
 import type { LiveAuthority } from '../tools/types.js';
 import type { ToolCallIntent } from '../adapters/model/types.js';
 import { fixture } from './live-voice-fixture.js';
@@ -66,5 +66,40 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     // journal.intent invokes callDTO, the same canonicalization used by the gateway.
     assert.equal(owner.journal.intent(intent), 'fresh', definition.name);
     await assert.doesNotReject(() => definition.execute(args, { ...intent, signal }), `${definition.name} must accept its stored intent`);
+  }
+});
+
+
+test('A3: partial owner transcription accumulates without borrowing tool text', async () => {
+  const runId = randomUUID();
+  noteOwnerPartial(runId, 'open ');
+  noteOwnerPartial(runId, 'plantix ');
+  noteOwnerPartial(runId, 'dot net');
+  assert.equal(ownerTurnWords(runId).trim(), 'open plantix dot net');
+  const result = await resolveWebOpen({ kind: 'site', target: 'plantix dot net' }, ownerTurnWords(runId), new AbortController().signal);
+  assert.ok('target' in result);
+});
+
+test('A3: absent owner transcript waits once for at most 1500 ms', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let settled = false;
+  const pending = webOwnerWords(randomUUID(), new AbortController().signal).then(words => { settled = true; return words; });
+  t.mock.timers.tick(1499);
+  await Promise.resolve();
+  assert.equal(settled, false);
+  t.mock.timers.tick(1);
+  assert.equal(await pending, '');
+});
+
+test('A3: finalized uppercase verbs do not wait for another transcript', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const text of ['OPEN plantix dot net', 'ÖFFNE die Karte von Odemira', 'SEARCH FOR drip irrigation']) {
+    const runId = randomUUID();
+    noteOwnerWords(runId, text);
+    let settled = false;
+    const pending = webOwnerWords(runId, new AbortController().signal).then(() => { settled = true; });
+    await Promise.resolve(); await Promise.resolve();
+    assert.equal(settled, true, text);
+    await pending;
   }
 });

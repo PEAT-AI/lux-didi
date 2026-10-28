@@ -1190,6 +1190,17 @@ test('1023-N8: a summary still pending falls back to the last owner words of the
   assert.equal(plan.options.length, 1, 'no other option is invented from thin air');
 });
 
+test('C-SUMMARY8: a call still waiting for its summary is the recent thread, never the older stored one', () => {
+  const candidates = [pastSummary(0, 'The owner said the tax form is still to be filed.')];
+  const pending = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', rotation: 0,
+    freshThread: 'Fine. The Mongoose mint delivery window moves to Friday. Nothing else.' });
+  assert.equal(optionOf(pending, 'recent-thread')?.topic, 'The Mongoose mint delivery window moves to Friday',
+    'the call that just ended names the recent thread while its summary is pending');
+  const silent = buildOpeningOptions({ candidates, now: NOW_3U, timeZone: 'UTC', rotation: 0, freshThread: 'Okay.' });
+  assert.equal(optionOf(silent, 'recent-thread'), undefined,
+    'a pending call with no topic of its own names no older thread as recent');
+});
+
 test('3u: the plan is bounded and the composed session instruction stays under the existing limits', () => {
   const now = NOW_3U;
   const candidates = Array.from({ length: 5 }, (_, index) => pastSummary(index,

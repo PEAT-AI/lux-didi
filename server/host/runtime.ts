@@ -686,7 +686,10 @@ export async function startHost(config: HostConfig) {
       log.event({ event: 'live_started', provider: liveNow.provider, modelId: liveNow.model, voice: liveNow.voice,
         voiceKind: isCustomVoiceId(liveNow.voice) ? 'custom' : 'preset' });
     }
-    void summarizer.reconcile().catch(error => log.error(error));
+    // C-SUMMARY8: the app closes this host's stdin at every call end, so a call's summary is often still
+    // pending when the next host starts. Finish it here, bounded, before the listener can serve a call:
+    // the opener plan is fixed at call start and must never read an older thread as the recent one.
+    await summarizer.recoverAtStart().catch(error => { log.error(error); return 'done' as const; });
     void summarizer.requeueFailed().catch(error => log.error(error));
     // Observe the actual durable provider settlement, which does not emit console text.
     // L12d: the same window carries the resource series, one receipt per minute while the call is live.
@@ -721,6 +724,10 @@ export async function startHost(config: HostConfig) {
           await live.prewarm(),
         start: () => mcp.start(), async close() {
         if (closed) return; closed = true;
+        // C-SUMMARY8: the terminal hook queued this call's summary, and the process is about to go. Wait
+        // for it, bounded, before the store it writes to closes; a forced kill skips this and the next
+        // host start finishes the work instead.
+        await summarizer.settleOnExit().catch(() => undefined);
         logExit('ready', 'close');
         removeOwnDescriptor(descriptorPath);
         chat.shutdown();

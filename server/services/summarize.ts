@@ -31,6 +31,10 @@ export const SUMMARY_RETRY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 export const SUMMARY_RETRY_MAX_ATTEMPTS = (SUMMARY_MAX_RETRIES + 1) * SUMMARY_HOST_START_LIMIT;
 /** The default wall-clock budget, in milliseconds, for one distillation model call. */
 export const SUMMARY_DEADLINE_BUDGET_MS = 30_000;
+/** C-SUMMARY8: how long a host start, or an exit the app did not force, waits for an unfinished call's
+ *  summary. Well under one model attempt's 30 s budget, so a slow provider cannot hold the ready frame
+ *  or the exit; when it runs out the opener plans without that call. */
+export const SUMMARY_SETTLE_BUDGET_MS = 8_000;
 /** The newest retryable sessions a single host start re-queues; older ones wait for a later start. */
 export const SUMMARY_RECOVERY_LIMIT = 30;
 export const SUMMARY_MIN_OWNER_TURNS = 2;
@@ -222,16 +226,24 @@ export interface SummarizerOptions {
 }
 
 export interface Summarizer {
-  /** Fire-and-forget from the Live terminal path; never awaited by close. */
+  /** Fire-and-forget from the Live terminal path; a non-forced exit waits for it through settleOnExit. */
   schedule(liveSessionId: string): void;
   /** Distil every ended session without a row, one at a time. */
-  reconcile(): Promise<void>;
+  reconcile(phase?: SummaryPhase): Promise<void>;
   /** Host start: retry the newest transiently failed sessions whose journal survives, after the boot delay. */
   requeueFailed(): Promise<void>;
   distill(liveSessionId: string, options?: { deadHost?: boolean }): Promise<void>;
+  /** Host start: finish every ended session whose summary a previous host did not write, bounded. */
+  recoverAtStart(budgetMs?: number): Promise<SummarySettleOutcome>;
+  /** Exit the app did not force: finish the summary this call already queued, bounded. */
+  settleOnExit(budgetMs?: number): Promise<SummarySettleOutcome>;
 }
 
 const RETRYABLE: ReadonlySet<string> = new Set(['error', 'deadline', 'cancelled']);
+/** C-SUMMARY8: which wait produced a conversation_summary_* line; the per-call schedule names no phase. */
+export type SummaryPhase = 'at_start';
+/** Whether a bounded wait finished the work or gave up on it. */
+export type SummarySettleOutcome = 'done' | 'timeout';
 
 /** The closed failure classes a row and the log may name, never the provider's own text. */
 export type SummaryFailureCode = 'deadline' | 'cancelled' | 'network' | 'credential_unavailable' | 'provider'
@@ -278,13 +290,17 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
     return options.model!.generate(request, { signal, deadlineMs: deadlineAt(Date.now(), options.deadlineBudgetMs ?? SUMMARY_DEADLINE_BUDGET_MS) });
   }
 
-  async function distill(liveSessionId: string, runOptions: { deadHost?: boolean; priorRetries?: number } = {}): Promise<void> {
+  async function distill(liveSessionId: string, runOptions: { deadHost?: boolean; priorRetries?: number; phase?: SummaryPhase } = {}): Promise<void> {
+    // C-SUMMARY8: the start-up pass names its phase, so a reader can tell a boot recovery from a call-end one.
+    const emit = (event: SummarizerLogEvent): void => { options.log(runOptions.phase === undefined ? event : { ...event, phase: runOptions.phase }); };
     const prepared = options.store.transaction(tx => {
       if (historyForgotten(tx, liveSessionId)) return null;
       const existing = summaries.getBySession(tx, liveSessionId);
       // A row skipped only for a missing text model is not terminal: with a model configured now, the session is
-      // distilled again. Every other skip reason and every complete or failed row stays sealed.
-      if (existing && !(options.model && summaries.reopenNoModelSkip(tx, liveSessionId))) return null;
+      // distilled again. C-SUMMARY8: neither is the in-flight marker a host exited on, re-distilled from the
+      // journal. Every other skip reason and every complete or failed row stays sealed.
+      if (existing && !(options.model && (existing.status === 'failed' && existing.errorCode === summaries.PENDING_SUMMARY_ERROR_CODE
+        ? summaries.removeFailed(tx, liveSessionId) : summaries.reopenNoModelSkip(tx, liveSessionId)))) return null;
       const transcript = readSessionTranscript(tx, liveSessionId);
       const toolOutcomes = readToolOutcomes(tx, liveSessionId);
       const source = historySessionEvidence(tx, liveSessionId);
@@ -298,7 +314,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
     const endedAt = transcript.endedAt ?? options.now();
     if (!source) {
       options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, status: 'skipped', skipReason: 'history_provenance_unavailable', endedAt, now: options.now() }));
-      options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'history_provenance_unavailable' });
+      emit({ event: 'conversation_summary_skipped', liveSessionId, reason: 'history_provenance_unavailable' });
       return;
     }
     const provenance = { dataClass: source.dataClass, sourceRevision: source.revision };
@@ -308,25 +324,25 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
     });
     if (options.model && !options.modelAllowedClasses?.includes(source.dataClass)) {
       options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'skipped', skipReason: 'summary_route_class_denied', endedAt, now: options.now() }));
-      options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'summary_route_class_denied' });
+      emit({ event: 'conversation_summary_skipped', liveSessionId, reason: 'summary_route_class_denied' });
       return;
     }
     if (transcript.ownerTurns < SUMMARY_MIN_OWNER_TURNS) {
       options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'skipped', skipReason: 'too_few_turns', endedAt, inputTruncated: !!runOptions.deadHost, injectedSummaryIds: injected.map(i => i.id), now: options.now() }));
-      options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'too_few_turns' });
+      emit({ event: 'conversation_summary_skipped', liveSessionId, reason: 'too_few_turns' });
       return;
     }
     // No text model configured: record the row and its reason, so the store shows why nothing was distilled.
     if (!options.model) {
       options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'skipped', skipReason: 'no_text_model', endedAt, inputTruncated: !!runOptions.deadHost, injectedSummaryIds: injected.map(i => i.id), now: options.now() }));
-      options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'no_text_model' });
+      emit({ event: 'conversation_summary_skipped', liveSessionId, reason: 'no_text_model' });
       return;
     }
     // The in-flight row: a host that exits during the model call leaves it for the next start to retry.
     options.store.transaction(tx => summaries.markSummaryPending(tx, liveSessionId, options.now(), provenance));
     const input = buildDistillationInput({ assistantName: options.assistantName, turns: transcript.turns, toolNames: transcript.toolNames, toolOutcomes, dateMs: endedAt, timeZone: options.timeZone, injected });
     const truncated = input.truncated || !!runOptions.deadHost;
-    options.log({ event: 'conversation_summary_started', liveSessionId, inputChars: input.text.length, truncated });
+    emit({ event: 'conversation_summary_started', liveSessionId, inputChars: input.text.length, truncated });
     const startedAt = options.now();
     const firstRetry = runOptions.priorRetries ?? 0;
     let retryCount = firstRetry;
@@ -349,16 +365,16 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
         if (!parsed) {
           const sealed: SummaryFailureCode = result.status === 'blocked' || result.status === 'denied' ? failureCode(result) : 'invalid_output';
           options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'failed', promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, errorCode: sealed, now: options.now() }));
-          options.log({ event: 'conversation_summary_failed', liveSessionId, errorCode: sealed, retryCount });
+          emit({ event: 'conversation_summary_failed', liveSessionId, errorCode: sealed, retryCount });
           return;
         }
         if (parsed.skip || !parsed.summary) {
           options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'skipped', skipReason: 'model_skip', promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, now: options.now() }));
-          options.log({ event: 'conversation_summary_skipped', liveSessionId, reason: 'model_skip' });
+          emit({ event: 'conversation_summary_skipped', liveSessionId, reason: 'model_skip' });
           return;
         }
         options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'complete', summary: parsed.summary, openLoop: parsed.openLoop, promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, now: options.now() }));
-        options.log({ event: 'conversation_summary_completed', liveSessionId, inputChars: input.text.length, outputChars: parsed.summary.length, durationMs: options.now() - startedAt, truncated, retryCount });
+        emit({ event: 'conversation_summary_completed', liveSessionId, inputChars: input.text.length, outputChars: parsed.summary.length, durationMs: options.now() - startedAt, truncated, retryCount });
         return;
       }
       lastError = result ? failureCode(result) : lastError;
@@ -367,7 +383,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
       retryCount += 1;
     }
     options.store.transaction(tx => summaries.insertSummary(tx, { liveSessionId, ...provenance, status: 'failed', promptVersion: SUMMARY_PROMPT_VERSION, endedAt, model: options.modelId, inputChars: input.text.length, inputTruncated: truncated, injectedSummaryIds: injected.map(i => i.id), retryCount, errorCode: lastError, now: options.now() }));
-    options.log({ event: 'conversation_summary_failed', liveSessionId, errorCode: lastError, retryCount });
+    emit({ event: 'conversation_summary_failed', liveSessionId, errorCode: lastError, retryCount });
   }
 
   /**
@@ -403,18 +419,46 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
     options.log({ event: 'conversation_summary_recovery', requeued, skipped });
   }
 
+  /** One bounded wait: resolves 'timeout' rather than rejecting when the budget runs out, and leaves the
+   *  work it raced running, so a slow distillation still writes its row when it finishes. */
+  function within(work: Promise<void>, budgetMs: number): Promise<SummarySettleOutcome> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<SummarySettleOutcome>(resolve => { timer = setTimeout(() => resolve('timeout'), budgetMs); });
+    return Promise.race([work.then(() => 'done' as const), deadline]).finally(() => { if (timer !== undefined) clearTimeout(timer); });
+  }
+
+  /** Distil every ended session without a row, one at a time, naming the phase when a start asked for it. */
+  async function reconcilePending(phase?: SummaryPhase): Promise<void> {
+    const pending = options.store.transaction(tx => summaries.endedSessionsWithoutSummary(tx));
+    for (const session of pending) {
+      await serialize(() => distill(session.liveSessionId, { deadHost: session.deadHost, ...(phase === undefined ? {} : { phase }) }));
+    }
+  }
+
   return {
     schedule(liveSessionId: string): void {
       void serialize(() => distill(liveSessionId)).catch(() => { /* never surfaces on the close path */ });
     },
-    async reconcile(): Promise<void> {
-      const pending = options.store.transaction(tx => summaries.endedSessionsWithoutSummary(tx));
-      for (const session of pending) {
-        await serialize(() => distill(session.liveSessionId, { deadHost: session.deadHost }));
-      }
-    },
+    reconcile: (phase?: SummaryPhase): Promise<void> => reconcilePending(phase),
     distill(liveSessionId: string, runOptions?: { deadHost?: boolean }): Promise<void> {
       return serialize(() => distill(liveSessionId, runOptions));
+    },
+    recoverAtStart(budgetMs: number = SUMMARY_SETTLE_BUDGET_MS): Promise<SummarySettleOutcome> {
+      // C-SUMMARY8: the interrupted in-flight markers first, then the calls that never got one, both before
+      // the listener serves a call and therefore before any opener plan is fixed.
+      const work = (async () => {
+        const now = options.now();
+        const interrupted = options.store.transaction(tx => summaries.interruptedSessions(tx, SUMMARY_RECOVERY_LIMIT))
+          .filter(session => session.endedAt === null || now - session.endedAt <= SUMMARY_RETRY_MAX_AGE_MS);
+        for (const session of interrupted) {
+          await serialize(() => distill(session.liveSessionId, { deadHost: session.deadHost, phase: 'at_start' }));
+        }
+        await reconcilePending('at_start');
+      })();
+      return within(work, budgetMs);
+    },
+    settleOnExit(budgetMs: number = SUMMARY_SETTLE_BUDGET_MS): Promise<SummarySettleOutcome> {
+      return within(chain, budgetMs);
     },
     requeueFailed,
   };

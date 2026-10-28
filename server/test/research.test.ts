@@ -2314,5 +2314,5 @@ test('#1028: one owner turn opens two different asks and refuses a repeat or a t
   const repeat = new ResearchAdmission();
   repeat.ownerTurn();
   assert.deepEqual(repeat.admit('start', false, false, 'who owns Acme Seeds'), { admitted: true });
-  assert.deepEqual(repeat.admit('start', false, false, 'Who owns Acme Seeds '), { admitted: false, reason: 'turn_spent' }, 'the same question again is the turn's one ask');
+  assert.deepEqual(repeat.admit('start', false, false, 'Who owns Acme Seeds '), { admitted: false, reason: 'turn_spent' }, "the same question again is the turn's one ask");
 });

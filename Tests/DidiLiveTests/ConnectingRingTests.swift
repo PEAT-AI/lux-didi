@@ -179,9 +179,9 @@ import Foundation
         var registered: [String] = [], removed: [String] = []
         let alarms = AlarmShellPolicy(acquire: { acquired += 1; return true }, release: { released += 1 },
             register: { registered.append($0.id) }, remove: { removed.append($0) })
-        let pending = ShellAlarm(id: "synthetic", fireAtUtc: 60_000, tz: "UTC", state: "pending", ringDeadlineUtc: nil)
-        alarms.apply([pending], notificationsAllowed: true)
-        alarms.apply([pending], notificationsAllowed: true)
+        let pendingAlarm = ShellAlarm(id: "synthetic", fireAtUtc: 60_000, tz: "UTC", state: "pending", ringDeadlineUtc: nil)
+        alarms.apply([pendingAlarm], notificationsAllowed: true)
+        alarms.apply([pendingAlarm], notificationsAllowed: true)
         try require(acquired == 1 && registered == ["synthetic"], "pending alarm acquires once and registers once")
         alarms.apply([ShellAlarm(id: "synthetic", fireAtUtc: 60_000, tz: "UTC", state: "ringing", ringDeadlineUtc: 660_000)], notificationsAllowed: true)
         try require(removed == ["synthetic"] && released == 0, "ringing removes notification but holds power assertion")

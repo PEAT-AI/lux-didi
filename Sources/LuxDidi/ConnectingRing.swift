@@ -369,6 +369,7 @@ final class ConnectingRing {
     private var playToken: UInt64 = 0
     /// Whether the ring's player and engine are running right now.
     private var outputRunning = false
+    private var alarmDeadline: Int?
 
     private let now: @MainActor () -> Int
     /// One main-actor turn between the ask and the play, so a stop that lands in the same turn
@@ -397,7 +398,40 @@ final class ConnectingRing {
         self.after = after
     }
 
+    func startAlarm(deadlineMs: Int) {
+        let deadline = min(deadlineMs, now() + 600_000)
+        guard deadline > now() else { return }
+        if let current = alarmDeadline { alarmDeadline = max(current, deadline); return }
+        alarmDeadline = deadline
+        playToken &+= 1
+        ringOutput().stopOutput()
+        alarmPulse(token: playToken)
+    }
+
+    private func alarmPulse(token: UInt64) {
+        guard token == playToken, let deadline = alarmDeadline else { return }
+        guard now() < deadline else { stopAlarm(); return }
+        if let buffer = ConnectingChimeTone.buffer() {
+            outputRunning = ringOutput().playChime(buffer)
+            after(ConnectingChimeTone.lengthMs + ConnectingChimeTone.fadeMs) { [weak self] in
+                guard let self, token == self.playToken else { return }
+                self.outputRunning = false
+                self.output?.stopOutput()
+            }
+        }
+        after(min(45_000, deadline - now())) { [weak self] in self?.alarmPulse(token: token) }
+    }
+
+    func stopAlarm() {
+        guard alarmDeadline != nil else { return }
+        alarmDeadline = nil
+        playToken &+= 1
+        outputRunning = false
+        output?.stopOutput()
+    }
+
     func presenceChanged(_ next: PresenceState, failed: Bool) {
+        guard alarmDeadline == nil else { return }
         let at = now()
         switch director.transition(to: next, failed: failed, atMs: at) {
         case .beginStart(let token):
@@ -461,6 +495,7 @@ final class ConnectingRing {
     /// presence the owner sees stays live. An ended rebuild ramps out through the ordinary cold or
     /// muted presence record, which plays no chime.
     func rebuildStarted() {
+        guard alarmDeadline == nil else { return }
         presenceChanged(.connecting, failed: false)
     }
 
@@ -472,6 +507,7 @@ final class ConnectingRing {
     /// #589: the owner's own words ended the call, so the same player says goodbye: one descending bell,
     /// then the output stops. Nothing here touches the live engine, whose microphone is already closed.
     func goodbye() {
+        guard alarmDeadline == nil else { return }
         let output = ringOutput()
         // #613: the goodbye records played or refused in native-live.log, and the mic is already released.
         guard let buffer = ConnectingGoodbyeTone.buffer() else {
@@ -500,4 +536,45 @@ final class ConnectingRing {
         output = made
         return made
     }
+}
+
+struct ShellAlarm: Codable, Equatable, Sendable {
+    let id: String
+    let fireAtUtc: Int
+    let tz: String
+    let state: String
+    let ringDeadlineUtc: Int?
+}
+
+/// Pure ownership policy; native effects are injected so local tests never touch power or notifications.
+@MainActor final class AlarmShellPolicy {
+    private let acquire: () -> Bool
+    private let release: () -> Void
+    private let register: (ShellAlarm) -> Void
+    private let remove: (String) -> Void
+    private var held = false
+    private var registered = Set<String>()
+    private(set) var degraded = false
+    private(set) var caption: String?
+    var assertionHeld: Bool { held }
+    init(acquire: @escaping () -> Bool, release: @escaping () -> Void,
+         register: @escaping (ShellAlarm) -> Void, remove: @escaping (String) -> Void) {
+        self.acquire = acquire; self.release = release; self.register = register; self.remove = remove
+    }
+    func apply(_ alarms: [ShellAlarm], notificationsAllowed: Bool) {
+        let active = alarms.filter { $0.state == "pending" || $0.state == "ringing" }
+        if !active.isEmpty && !held { held = acquire() }
+        if active.isEmpty && held { release(); held = false }
+        let pending = Set(active.filter { $0.state == "pending" }.map(\.id))
+        for id in registered.subtracting(pending) { remove(id) }
+        for alarm in active where pending.contains(alarm.id) && !registered.contains(alarm.id) { register(alarm) }
+        registered = pending
+        degraded = !active.isEmpty && (!held || !notificationsAllowed)
+        if let next = active.min(by: { $0.fireAtUtc < $1.fireAtUtc }) {
+            let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(identifier: next.tz); formatter.dateFormat = "HH:mm"
+            caption = "Alarm " + formatter.string(from: Date(timeIntervalSince1970: Double(next.fireAtUtc) / 1000)) + (degraded ? " !" : "")
+        } else { caption = nil }
+    }
+    func stop() { apply([], notificationsAllowed: true) }
 }

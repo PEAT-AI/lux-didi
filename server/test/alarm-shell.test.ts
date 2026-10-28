@@ -48,9 +48,11 @@ test('alarm shell: real HTTP delivers a persisted due frame to an authenticated 
     assert.equal(scheduler.list().find(row => row.id === alarm.id)?.state, 'ringing', 'commit before frame');
     shell.publish(alarm);
   }, changed: rows => shell.state(rows) });
-  const service = await listenService({ store, now: () => now, alarms: { scheduler, shell } });
   const abort = new AbortController();
-  t.after(async () => { abort.abort(); scheduler.stop(); await service.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  let closeService: (() => Promise<void>) | undefined;
+  t.after(async () => { abort.abort(); scheduler.stop(); await closeService?.(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const service = await listenService({ port: 0, store, now: () => now, alarms: { scheduler, shell } });
+  closeService = service.close;
   const denied = await fetch(`${service.origin}/v1/alarms/events`);
   assert.equal(denied.status, 401);
   await denied.arrayBuffer();

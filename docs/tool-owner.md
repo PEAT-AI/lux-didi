@@ -81,3 +81,14 @@ A held lookup result without a web link has no open handle. Say in one sentence 
 Gmail web destinations admit the account home or an `all`, `inbox` or `sent` fragment followed by one message/thread identifier. The shared host policy and Swift native policy reject other Gmail fragments. Calendar event, Docs/Slides and Drive viewer links retain their existing narrow HTTPS shapes.
 
 Legacy local facts and preferences remain available for recall, but closing a live session never exports them to Lux. The legacy notesExport setting cannot authorize a write; saving any such content requires the same fresh stage_lux_note candidate, readback and confirmation as every other live save.
+
+## Awake-Mac alarm tools
+
+`set_alarm`, `list_alarms`, `cancel_alarm` and `snooze_alarm` are host-owned Live builtins under `gateway:live-voice` / `owner-alarms`. They participate in the exact stored-intent checks, rather than bypassing the registry. Mutation authority is separately derived from fresh finalized microphone transcription, never model arguments, typed text, host notes or alarm prompts. Split asks may span two finalized owner turns; the latest must still continue the alarm request.
+
+The host parses time in its system IANA zone and commits a fixed UTC instant. Set and snooze return confirmation only with the durable tool receipt; snooze and old-occurrence completion share that transaction. Model timestamps are consistency checks, not write authority. Local scheduling and ringing do not depend on provider availability.
+
+Per W11-R5, a new alarm session carries only alarm instructions, owner display name and scheduled time in non-user setup instructions. An already-live session receives no injected text or rebuild: local chime and menu state continue, with `live_session_no_channel` degradation until owner speech acknowledges it. The generic host-note prefix is not a non-user provider channel and is not used for alarm speech.
+
+These are awake-Mac alarms: closed lids, manual sleep, shutdown and unavailable local services may prevent ringing. A denied notification, failed idle-sleep assertion or unreachable shell is disclosed in the committed receipt. See [voice alarms](alarm.md) for storage, recovery, diagnostics and synthetic verification.
+

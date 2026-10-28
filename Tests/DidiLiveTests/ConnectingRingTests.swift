@@ -174,6 +174,44 @@ import Foundation
     /// The same presence transitions through the real entry point, with a fake clock and a fake
     /// output, so the play, the ramp and the record are pinned and not just the director's return.
     @MainActor static func runWiring() throws {
+        // Alarm policy has no OS calls in this fixture: power, notifications and audio are injected.
+        var acquired = 0, released = 0
+        var registered: [String] = [], removed: [String] = []
+        try require(AlarmShellPolicy.menuTitle(alarmCaption: "Alarm 08:00 !", pendingCall: true) == "Alarm 08:00 !", "live updates preserve the alarm and degraded caption")
+        try require(AlarmShellPolicy.menuTitle(alarmCaption: nil, pendingCall: true) == "•", "ending alarms restores the pending-call marker")
+        try require(AlarmShellPolicy.menuTitle(alarmCaption: nil, pendingCall: false).isEmpty, "empty shell clears the menu caption")
+        let alarms = AlarmShellPolicy(acquire: { acquired += 1; return true }, release: { released += 1 },
+            register: { registered.append($0.id) }, remove: { removed.append($0) })
+        let pendingAlarm = ShellAlarm(id: "synthetic", fireAtUtc: 60_000, tz: "UTC", state: "pending", ringDeadlineUtc: nil)
+        alarms.apply([pendingAlarm], notificationsAllowed: true)
+        alarms.apply([pendingAlarm], notificationsAllowed: true)
+        try require(acquired == 1 && registered == ["synthetic"], "pending alarm acquires once and registers once")
+        alarms.apply([ShellAlarm(id: "synthetic", fireAtUtc: 60_000, tz: "UTC", state: "ringing", ringDeadlineUtc: 660_000)], notificationsAllowed: true)
+        try require(removed == ["synthetic"] && released == 0, "ringing removes notification but holds power assertion")
+        alarms.apply([], notificationsAllowed: true)
+        try require(released == 1, "last alarm releases power assertion")
+        let alarmClock = TestClock()
+        let alarmOutput = RecordingRingOutput()
+        var alarmWaits: [(Int, @MainActor () -> Void)] = []
+        let alarmRing = ConnectingRing(output: alarmOutput, now: { alarmClock.ms }, deferStart: { $0() }, after: { alarmWaits.append(($0, $1)) })
+        try require(alarmRing.startAlarm(deadlineMs: 600_000), "ring-started receipt requires accepted local audio output")
+        alarmRing.startAlarm(deadlineMs: 600_000)
+        try require(alarmOutput.chimes == 1, "duplicate due frames cannot stack chimes")
+        alarmClock.ms = 45_000
+        let repeatAlarm = alarmWaits.first { $0.0 == 45_000 }!
+        repeatAlarm.1()
+        try require(alarmOutput.chimes == 2, "alarm repeats through the same injected output without rebuilding engine")
+        alarmRing.stopAlarm()
+        let stoppedCount = alarmOutput.chimes
+        alarmClock.ms = 90_000
+        alarmWaits.last { $0.0 == 45_000 }?.1()
+        try require(alarmOutput.chimes == stoppedCount, "stopped alarm cannot be restarted by stale repeat")
+        let refusedOutput = RecordingRingOutput(); refusedOutput.chimeResult = false
+        let refusedRing = ConnectingRing(output: refusedOutput, now: { 0 }, deferStart: { $0() }, after: { _, _ in })
+        try require(!refusedRing.startAlarm(deadlineMs: 600_000), "failed output cannot report ring started")
+        let degradedPolicy = AlarmShellPolicy(acquire: { false }, release: {}, register: { _ in }, remove: { _ in })
+        degradedPolicy.apply([pendingAlarm], notificationsAllowed: false)
+        try require(degradedPolicy.degraded && degradedPolicy.caption?.hasSuffix(" !") == true, "power and notification failure is visible")
         // Example 1: connecting for 4.0 s then live plays once, ramps once over 30 ms, and leaves
         // one record with 4000 ms.
         let clock = TestClock()

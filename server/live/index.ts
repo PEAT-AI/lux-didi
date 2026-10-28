@@ -75,6 +75,11 @@ export function openersNote(openers: readonly string[], topics: readonly (string
   return `Earlier opener topic classes, closed for this call: ${[...new Set(classes)].join(', ')}. Never open on tool_failure.`;
 }
 
+const ALARM_MODE_MARKER = '[alarm mode]';
+export function alarmSessionInstructions(input: import('./types.js').AlarmSessionSetup): string {
+  return `${ALARM_MODE_MARKER} Wake ${JSON.stringify(input.ownerDisplayName)} for the alarm at ${JSON.stringify(input.scheduledTime)}. Address them by name and briefly invite a spoken answer. Continue brief wake-up reminders until they answer. You are Naya. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
+}
+
 /** Host instructions are never owner words, including on adapters with only a user text channel. */
 export const hostNote = (text: string): string => `[host note, not the owner] ${text}`;
 
@@ -1484,7 +1489,7 @@ export class LiveSessionOwner {
     this.#guardOpen();
     if (!input || typeof input !== 'object' || typeof input.idempotencyKey !== 'string' || !keyPattern.test(input.idempotencyKey)) throw new LiveError('invalid_request');
     this.#contextShape(context);
-    const fingerprintFor = (prompt: string) => identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt, pickupJobId: input.pickupJobId ?? null });
+    const fingerprintFor = (prompt: string) => identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt, pickupJobId: input.pickupJobId ?? null, ...(input.alarm ? { alarm: input.alarm } : {}) });
     const now = this.#now();
     // #595: the owner travels, so the zone is read when this call is composed, never at host start.
     const timeZone = this.#ownerTimeZone();
@@ -1593,7 +1598,10 @@ export class LiveSessionOwner {
       const summaryClasses = storedSummaries.filter(row => injectedSummaryIds.includes(row.id)).map(row => row.dataClass);
       const selectedClasses = new Set([...configuredPrompt.dataClasses, ...summaryClasses, ...injectedOpeners.map(row => row.dataClass), ...(composed.selectedIds.length ? ['ordinary' as const] : [])]);
       if (injectedSummaryIds.length || earlier.omitted.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: earlier.omitted.length, chars: composed.sections.find(section => section.id === 'earlier-conversations')?.chars ?? 0 });
-      const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text, dataClasses: classes.filter(value => selectedClasses.has(value)), memory, ...(pickup ? { pickup } : {}) }, assistantId);
+      const missedAlarms = !input.alarm && this.#tools ? tx.all("SELECT id,fire_at_utc,tz FROM alarms WHERE state='missed' AND NOT EXISTS(SELECT 1 FROM alarm_missed_mentions WHERE alarm_id=alarms.id) ORDER BY fire_at_utc LIMIT 5") : [];
+      const missedNote = missedAlarms.length ? '\n\n[missed alarm] Briefly mention the missed alarm times: ' + missedAlarms.map(alarm => new Intl.DateTimeFormat('en-GB', { timeZone: String(alarm.tz), hour: '2-digit', minute: '2-digit' }).format(Number(alarm.fire_at_utc))).join(', ') + '.' : '';
+      for (const alarm of missedAlarms) tx.run('INSERT INTO alarm_missed_mentions(alarm_id) VALUES(?)', [alarm.id!]);
+      const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: input.alarm ? alarmSessionInstructions(input.alarm) : composed.text + missedNote, dataClasses: input.alarm ? ['ordinary'] : classes.filter(value => selectedClasses.has(value)), memory: input.alarm ? { status: 'empty', selectedIds: [], omitted: [] } : memory, ...(!input.alarm && pickup ? { pickup } : {}) }, assistantId);
       const promptIdentity = identity({ text: acceptedPrompt.system, dataClass: this.#profile.prompt.dataClass });
       const fingerprint = fingerprintFor(promptIdentity);
       tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?)',
@@ -3227,6 +3235,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    * synchronous refusal; an asynchronous failure surfaces as rebuilding && !ready on the next loop pass.
    */
   async #openRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', savedHandle: string | undefined, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null, awaitReady = true): Promise<boolean> {
+    // An alarm occurrence has one provider attempt. Local ringing is independent of recovery.
+    if (handle.request.system.text.startsWith(ALARM_MODE_MARKER)) return false;
     handle.sessionTimer?.cancel();
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
     // C-LOG-ENVELOPE F1: the rebuild opens a new provider session inside the same call, so every later
@@ -4871,6 +4881,8 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         // #573: the open tools are checked against the owner's words since the model last spoke, so a
         // provider that finalizes one utterance as two turns still carries the whole ask.
         if (ownerTurn) noteOwnerWords(handle.liveSessionId, ownerTurn);
+        if (ownerTurn && transcription?.finalOrigin !== 'typed') this.#tools?.owner.observeAlarmOwner(handle.liveSessionId, String(journalId), ownerTurn, now);
+
         // W6 item 6: the composed note listens to the same finalized owner turn, and to nothing else.
         if (ownerTurn && transcription?.finalOrigin !== 'typed') pendingOwnerText = ownerTurn;
       }
@@ -4929,6 +4941,13 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         });
       });
       attempt(() => this.#observeState(handle, 'ended', 'settle'));
+      if (this.#tools && handle.request.system.text.startsWith(ALARM_MODE_MARKER)
+        && ['failed', 'deadline', 'not_started', 'outcome_unknown'].includes(outcome.state)) {
+        attempt(() => {
+          const alarm = this.#store.transaction(tx => tx.get("SELECT a.id,a.fire_at_utc FROM alarms a JOIN alarm_session_attempts s ON s.alarm_id=a.id WHERE s.live_session_id=? AND a.state='ringing'", [handle.liveSessionId]));
+          if (alarm) hostLogEvent({ event: 'alarm_degraded', alarmId: String(alarm.id), scheduledMs: Number(alarm.fire_at_utc), actualMs: this.#now(), reason: 'provider_unavailable' });
+        });
+      }
       attempt(() => this.#onSessionTerminal?.(handle.liveSessionId));
       if (journalSequence !== undefined) attempt(() => this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'terminal', sequence: null, journalSequence: journalSequence!, text: null, finished: null, value: null } }));
       attempt(() => handle.consumer.close());

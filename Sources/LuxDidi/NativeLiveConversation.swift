@@ -46,6 +46,7 @@ enum State: String, CaseIterable {
     @Published private(set) var pendingCall: NativePendingLiveJob?
     let device: NativeLiveAudioDevice
     private let coordinator: LiveSessionCoordinator
+    private let alarmSession: Bool
     private let http: NativeLiveOperatorHTTP
     private let dictationIsCapturing: () -> Bool
     private var observer: Task<Void, Never>?
@@ -85,12 +86,13 @@ enum State: String, CaseIterable {
     /// The close a stop asks. Production is the coordinator's own; a test injects a host that never answers.
     typealias CloseHook = @MainActor (LiveStopTrigger) async -> LiveStopReceipt?
 
-    init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, logsDirectory: URL? = nil, audioDevice: NativeLiveAudioDevice? = nil, latch: OwnerStopLatch = OwnerStopLatch(), coordinatorFactory: @escaping CoordinatorFactory = { http, device in LiveSessionCoordinator(http: http, sockets: LiveSocketTransport(requests: http), sink: device) }, closeHook: CloseHook? = nil) {
+    init(authority: (origin: URL, request: NativeLiveRequestBuilder), dictationIsCapturing: @escaping () -> Bool, pickupJobID: String? = nil, alarmID: String? = nil, logsDirectory: URL? = nil, audioDevice: NativeLiveAudioDevice? = nil, latch: OwnerStopLatch = OwnerStopLatch(), coordinatorFactory: @escaping CoordinatorFactory = { http, device in LiveSessionCoordinator(http: http, sockets: LiveSocketTransport(requests: http), sink: device) }, closeHook: CloseHook? = nil) {
         self.closeHook = closeHook
         self.logsDirectory = logsDirectory
         self.latch = latch
         self.journal = NativeLiveJournal(fileURL: logsDirectory?.appendingPathComponent("native-live.log"))
-        self.http = NativeLiveOperatorHTTP(authority: authority, pickupJobID: pickupJobID)
+        self.alarmSession = alarmID != nil
+        self.http = NativeLiveOperatorHTTP(authority: authority, pickupJobID: pickupJobID, alarmID: alarmID)
         self.dictationIsCapturing = dictationIsCapturing
         // Production wiring: a real audio journal in the app's logs dir, shared by the owner
         // and the device so every lifecycle record lands in audio.log with a timestamp. The owner keeps
@@ -331,6 +333,7 @@ enum State: String, CaseIterable {
     }
 
     private func claimAutomaticRestart(now: Date = Date()) -> Bool {
+        guard !alarmSession else { return false }
         if let last = lastAutomaticRestartAt, now.timeIntervalSince(last) < 60 { return false }
         lastAutomaticRestartAt = now
         return true

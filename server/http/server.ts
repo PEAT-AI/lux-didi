@@ -1,4 +1,5 @@
 import { HostLog } from '../host/log.js';
+import { AlarmSessionCoordinator, type AlarmScheduler, type AlarmShellBridge, type AlarmRecheck } from '../host/alarm-scheduler.js';
 import type { LivePendingService } from '../live/types.js';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse, Server } from 'node:http';
@@ -71,13 +72,14 @@ async function readBody(req: IncomingMessage, limit = 65536): Promise<Record<str
   try { return object(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError('BAD_REQUEST', 'Malformed JSON'); }
 }
 interface Principal { clientId: string; mode: 'bearer' | 'browser'; tokenHash?: string; csrfToken?: string }
-export interface ServiceOptions { ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; live?: LiveService; toolsStatus?: () => { endpoints: unknown[] }; mongooseSignIn?: (endpoint?: string) => Promise<{ status: 'started'; attemptId: string } | { status: 'failed'; reason: string }>; mongooseSignInAttempt?: (endpointId: string, connected: boolean) => { attemptId: string; phase: string; reason?: string } | undefined; trelloRow?: () => Record<string, unknown> }
+export interface ServiceOptions { alarms?: { scheduler: AlarmScheduler; shell: AlarmShellBridge }; ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; live?: LiveService; toolsStatus?: () => { endpoints: unknown[] }; mongooseSignIn?: (endpoint?: string) => Promise<{ status: 'started'; attemptId: string } | { status: 'failed'; reason: string }>; mongooseSignInAttempt?: (endpointId: string, connected: boolean) => { attemptId: string; phase: string; reason?: string } | undefined; trelloRow?: () => Record<string, unknown> }
 export interface EntryDeletionResponse extends EntryTombstone { liveSessionRetainsUntilRebuild: boolean }
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
   const { store, domain, chat, live } = options;
   const modelStatus = options.modelStatus ?? { status: 'unconfigured' };
   const streamClosers = new Map<string, Set<() => void>>();
+  const alarmStreams = new Set<() => void>();
   let streamCount = 0;
   const serveStatic = options.webRoot === undefined ? undefined : await createStaticHandler(options.webRoot);
   const now = options.now ?? Date.now;
@@ -85,6 +87,17 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
   const pairing = new Map<string, number>();
   const selection = new ConversationSelection();
   const diagnosticLog = new HostLog(store.directory);
+  const alarmSessions = options.alarms && live ? new AlarmSessionCoordinator({ store,
+    hasLiveSession: () => !['idle', 'ended', 'error'].includes(live.current().state),
+    open: (setup, key) => {
+      if (!live.createAlarm) throw Error('alarm_speech_unavailable');
+      return live.createAlarm(setup, key, { clientId: 'local-admin', auditId: randomUUID(), authorityEpoch: store.authorityEpoch }).liveSessionId;
+    },
+    degraded: (id, reason) => {
+      const alarm = options.alarms!.scheduler.list().find(row => row.id === id);
+      if (alarm) diagnosticLog.event({ event: 'alarm_degraded', alarmId: id, scheduledMs: alarm.fireAtUtc, actualMs: now(), reason });
+    },
+  }) : undefined;
   const diagnosticTimes = new Map<string, number[]>();
   const liveClients = () => new Set(store.transaction(tx => tx.all('SELECT DISTINCT client_id FROM runtime_sessions WHERE expires_at>?', [now()])).map(row => String(row.client_id)));
   const send = (res: ServerResponse, status: number, payload: unknown) => {
@@ -120,6 +133,56 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       if (url.hash || url.username || url.password) throw new ServiceError('BAD_REQUEST', 'Invalid request target');
       if (serveStatic && await serveStatic(req, res)) return;
       const method = req.method ?? '';
+      if (url.pathname.startsWith('/api/v1/alarms/') && options.alarms) {
+        const actor = principal(req);
+        if (actor.mode !== 'bearer') throw new ServiceError('FORBIDDEN', 'Native shell only', 403);
+        const { scheduler, shell } = options.alarms;
+        if (method === 'GET' && url.pathname === '/api/v1/alarms/events') {
+          for (const close of [...alarmStreams]) close();
+          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'Connection': 'keep-alive' });
+          res.flushHeaders();
+          const unbind = shell.bind(frame => {
+            if (res.destroyed) return false;
+            if (res.writableLength > 65536) { res.destroy(); return false; }
+            res.write(`data: ${JSON.stringify(frame)}\n\n`);
+            return true; // write(false) is backpressure, not a disconnected shell.
+          });
+          const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': alarm heartbeat\n\n'); }, 30000);
+          heartbeat.unref();
+          const close = () => { clearInterval(heartbeat); unbind(); alarmStreams.delete(close); res.end(); };
+          alarmStreams.add(close);
+          req.on('close', close);
+          shell.state(scheduler.list());
+          scheduler.recheck('reconnect');
+          return;
+        }
+        if (method === 'POST' && req.headers['x-didi-authority-epoch'] === store.authorityEpoch) {
+          const body = await readBody(req);
+          if (url.pathname === '/api/v1/alarms/session' && typeof body.id === 'string' && typeof body.ownerDisplayName === 'string' && body.ownerDisplayName.length > 0 && body.ownerDisplayName.length <= 120) {
+            const attempt = alarmSessions?.attempt(body.id, body.ownerDisplayName);
+            if (attempt?.status === 'created' && attempt.liveSessionId && live) { send(res, 201, success(live.snapshot(attempt.liveSessionId))); return; }
+            send(res, 409, { error: { code: 'ALARM_SPEECH_UNAVAILABLE', message: 'Local ringing continues.' }, requestId }); return;
+          }
+          if (url.pathname === '/api/v1/alarms/ring-started' && typeof body.id === 'string') {
+            const alarm = scheduler.list().find(row => row.id === body.id && row.state === 'ringing');
+            if (alarm) diagnosticLog.event({ event: 'alarm_ring_started', alarmId: alarm.id, scheduledMs: alarm.fireAtUtc, actualMs: now(), reason: 'local_ring' });
+            send(res, 200, success({ status: 'ok' })); return;
+          }
+          if (url.pathname === '/api/v1/alarms/shell' && typeof body.assertion === 'boolean' && typeof body.notifications === 'boolean') {
+            shell.report({ assertion: body.assertion, notifications: body.notifications });
+            const health = shell.health();
+            if (health.degraded) for (const alarm of scheduler.list().filter(row => row.state === 'pending' || row.state === 'ringing')) {
+              for (const reason of health.reasons) diagnosticLog.event({ event: 'alarm_degraded', alarmId: alarm.id, scheduledMs: alarm.fireAtUtc, actualMs: now(), reason });
+            }
+            send(res, 200, success(health)); return;
+          }
+          const reasons: AlarmRecheck[] = ['wake', 'clock_changed', 'timezone_changed'];
+          if (url.pathname === '/api/v1/alarms/recheck' && reasons.some(reason => reason === body.reason)) {
+            scheduler.recheck(body.reason as AlarmRecheck); send(res, 200, success({ status: 'ok' })); return;
+          }
+        }
+        throw new ServiceError('BAD_REQUEST', 'Invalid alarm shell request');
+      }
       let route = resolveRoute(method, url);
       if (route.kind === 'health') { send(res, 200, { status: 'ok', version: '0.1.0', serviceMode: 'loopback' }); return; }
       if (route.kind === 'pair') {
@@ -406,6 +469,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
   if (!address || typeof address === 'string') throw new Error('Missing service address');
   origin = `http://127.0.0.1:${address.port}`;
   return { server, origin, close: () => new Promise<void>((resolve, reject) => {
+    for (const close of [...alarmStreams]) close();
     for (const closers of [...streamClosers.values()]) for (const close of [...closers]) close();
     const finish = () => { server.close(error => error ? reject(error) : resolve()); server.closeIdleConnections(); };
     if (upgrader) void upgrader.close().then(finish, finish); else finish();

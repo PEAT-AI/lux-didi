@@ -5,6 +5,7 @@ import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { TRELLO_CALL_TOOLS, TRELLO_WRITE_ARGUMENT_FIELDS } from '../tools/trello.js';
 import { OPEN_RECEIPT_CODES, OPEN_TOOL_NAMES } from '../tools/open.js';
 import { clientDiagnostic } from '../http/routes.js';
+import { ALARM_LOG_REASONS } from './events.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { TURN_FAILED_REASONS } from '../adapters/live-voice/types.js';
 import { DEBT_PHASES, DEBT_REASONS } from '../trace/kinds.js';
@@ -203,6 +204,15 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (value.event === 'host_ready_ms') {
     if (!closedKeys(value, ['event', 'ms']) || !isSafeCount(value.ms)) return;
     return { event: 'host_ready_ms', ms: value.ms };
+  }
+  if (value.event === 'alarm_set' || value.event === 'alarm_due' || value.event === 'alarm_ring_started'
+    || value.event === 'alarm_acknowledged' || value.event === 'alarm_missed' || value.event === 'alarm_degraded') {
+    if (typeof value.alarmId !== 'string' || !/^[A-Za-z0-9:_-]{1,256}$/.test(value.alarmId)
+      || typeof value.scheduledMs !== 'number' || !Number.isFinite(value.scheduledMs)
+      || typeof value.actualMs !== 'number' || !Number.isFinite(value.actualMs)
+      || !ALARM_LOG_REASONS.some(reason => reason === value.reason)) return;
+    return { event: value.event, alarmId: value.alarmId, scheduledMs: value.scheduledMs, actualMs: value.actualMs, reason: value.reason };
+
   }
   if (value.event === 'tool_diagnostic_capture') {
     const reasons = ['context_absent','coverage_write_failed','insert_write_failed','seal_write_failed','reuse_context_absent','reuse_write_failed','execution_not_active_or_scope_changed','insert_failed_wire_observed','insert_failed_pre_wire_refused','insert_failed_dispatch_unknown','wire_observed_context_absent','pre_wire_context_absent','dispatch_unknown_context_absent'];

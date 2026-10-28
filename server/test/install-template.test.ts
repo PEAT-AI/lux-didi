@@ -23,8 +23,11 @@ function fixture() {
   const scripts = join(root, 'scripts'); mkdirSync(scripts);
   const installer = join(scripts, 'install-macos-app.sh');
   copyFileSync(sourceInstaller, installer);
-  copyFileSync(join(dirname(sourceInstaller), 'run-installed-checks.sh'), join(scripts, 'run-installed-checks.sh'));
-  writeFileSync(join(scripts, 'check-installed-fixture.sh'), '#!/bin/bash\nset -eu\ntest -f "$1/Contents/MacOS/LuxDidi"\nexit "${DIDI_FIXTURE_CHECK_FAIL:-0}"\n');
+  copyFileSync(join(dirname(sourceInstaller), 'run-installed-checks.sh'), join(scripts, 'run-installed-checks-real.sh'));
+  const checks = join(scripts, 'fixture-checks'); mkdirSync(checks);
+  // Explicit check-set injection keeps this portable-app fixture off all account and alarm probes.
+  writeFileSync(join(scripts, 'run-installed-checks.sh'), '#!/bin/bash\nexec bash "$(dirname "$0")/run-installed-checks-real.sh" "$@" --checks-dir "$(dirname "$0")/fixture-checks"\n');
+  writeFileSync(join(checks, 'check-installed-fixture.sh'), '#!/bin/bash\nset -eu\ntest -f "$1/Contents/MacOS/LuxDidi"\nexit "${DIDI_FIXTURE_CHECK_FAIL:-0}"\n');
   const run = (extra: Record<string, string> = {}) => spawnSync('/bin/bash', [installer, app], { env: { ...process.env, HOME: home, ...extra }, encoding: 'utf8', timeout: 15000 });
   return { root, home, app, run };
 }

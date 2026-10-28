@@ -247,6 +247,7 @@ function changedEndpointFields(stored: ConnectionEndpoint, next: ConnectionEndpo
 
 /** Compose the inert MCP runtime once at startup: config, owner and registry only, no remote work. */
 export async function composeMcpRuntime(options: {
+  alarms?: ToolsOwnerOptions['alarms'];
   log?: ToolsOwnerOptions['log'];
   connectorLog?: (connector: string, stage: string, detail?: ConnectorFailureDetail) => void;
   /** One receipt per proof: a connector name, the two booleans, the endpoint and the proof's closed code. */
@@ -358,7 +359,7 @@ export async function composeMcpRuntime(options: {
       ? { id: previous.id, state: 'connected', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt }
       : { id: previous.id, state: 'configured', tools: previous.tools, lastHandshakeAt: previous.lastHandshakeAt, error: status.reason });
   };
-  const owner = createToolsOwner({ grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, configuredConnectionIds: () => configuredConnectionIds, ...(options.log ? { log: options.log } : {}), ...(options.trello ? { trello: options.trello } : {}) });
+  const owner = createToolsOwner({ ...(options.alarms ? { alarms: options.alarms } : {}), grantMode: selection.state === 'missing' ? 'explicit' : selection.catalog.grantMode, store, ownerId, registry, port, lookupAuthority: options.lookupAuthority, reportToolStatus, configuredConnectionIds: () => configuredConnectionIds, ...(options.log ? { log: options.log } : {}), ...(options.trello ? { trello: options.trello } : {}) });
   const sourcePort = owner.sourcePort;
   if (selection.state === 'missing') {
     const empty: McpRuntimeComposition = { registry, port: sourcePort, owner, connectionIds: () => [], status: () => ({ endpoints: [] }), start: async () => {}, refresh: async () => {}, recover: async () => {}, close: () => port.close() };

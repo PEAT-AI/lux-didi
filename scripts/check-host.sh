@@ -15,6 +15,16 @@ if [ -n "$console_log" ]; then
 fi
 # Exercise the documented build producer, using the current compiler layout.
 bash scripts/run-local.sh --build-only
+# Compile the complete shell, including its idle alarm subscription, without launching it.
+if [ "$(uname -s)" = Darwin ]; then
+  (
+    native_work=$(mktemp -d "${TMPDIR:-/tmp}/didi-alarm-build.XXXXXX")
+    trap 'rm -rf "$native_work"' EXIT
+    bash scripts/build-macos-app.sh "$native_work/LuxDidi.app" --cache "$native_work/cache"
+  )
+fi
+# Exercise the discovered installed alarm check against its offline staged package.
+bash scripts/check-installed-alarm.sh
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 for file in server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-stdout.test.js server/dist/test/connector-publication.test.js server/dist/test/host-log.test.js server/dist/test/log-envelope.test.js server/dist/test/trello-board.test.js server/dist/test/connector-recovery.test.js server/dist/test/trello-guidance.test.js server/dist/test/wire-envelope.test.js server/dist/test/open-actions.test.js server/dist/test/tools-builtin-intent.test.js; do

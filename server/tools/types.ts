@@ -48,6 +48,7 @@ export interface ToolFailureEvent {
   tool: string; connector: string; errorClass: 'Error' | 'SyntaxError' | 'UnknownThrow'; messageHead: string;
 }
 export interface ToolsOwnerOptions {
+  alarms?: { now(): number; recheck(): void; ownerSpeech?(): void; health(): { degraded: boolean; reasons: string[] } };
   log?: (event: ToolFailureEvent) => void;
   grantMode?: 'explicit' | 'owner-trusted-reads';
   store: StorePort; ownerId: string; registry: McpRegistry; port: McpPort;
@@ -69,6 +70,7 @@ export type ConnectionRestoreResult = { state: 'restored' } | { state: 'refused'
 export type StageNotePort = (tx: Transaction, runId: string, args: { title: string; body: string; evidenceRefs: string[] }) => JsonValue;
 
 export interface ToolsOwner {
+  observeAlarmOwner(session: string, journalId: string, words: string, at: number): void;
   readonly sourcePort: McpPort;
   journal: ToolCallJournal; resultGate: ToolResultGate;
   /** Trusted synchronous publication boundary; uses the same canonical checks as resultGate. */

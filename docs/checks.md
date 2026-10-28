@@ -138,3 +138,9 @@ Release 8 shipped four live failures with every test green: an untested tool ent
 - `scripts/backlog_validate.py`: validates the historical planning backlog in `planning/`. It does not test the product.
 - `scripts/warm-npm-cache.sh`, `scripts/npm-ci-offline.sh`: fill and use the offline npm cache that several checks need.
 - `scripts/ci-gauntlet.sh [--ci]`: the release gate in one command, in the order listed above, stopping at the first failure. `--ci` is the nine that need no macOS, which is what CI runs.
+
+## Installed alarm smoke
+
+| Check | Evidence |
+| --- | --- |
+| `scripts/check-installed-alarm.sh [app target]` | Runs the four alarm tools, stub-clock delivery, fake-shell frames and alarm setup against packaged host modules, with synthetic state and no audio or app launch. With no target it stages an offline package; an explicit target never falls back to the checkout. The installed-check discovery runner finds this script automatically. |

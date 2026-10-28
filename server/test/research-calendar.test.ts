@@ -709,6 +709,7 @@ test('C-CAL8: a schedule ask speaks the calendar first, and the knowledge about 
   const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my schedule today' }, signal());
   const findings = reply['findings'] as Record<string, unknown>[];
   assert.ok(findings.length > 0, 'the ask answers with findings');
+  assert.ok(findings.length > 1, `the knowledge beside it answers too: ${JSON.stringify(findings.map(finding => finding['source']))}`);
   assert.equal(findings[0]?.['source'], 'calendar', `the calendar leads a schedule ask: ${JSON.stringify(findings.map(finding => finding['source']))}`);
   assert.match(String(findings[0]?.['text']), /Synthetic 14\b/, 'and its first finding carries the meetings still ahead');
 });

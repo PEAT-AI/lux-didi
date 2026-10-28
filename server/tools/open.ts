@@ -30,11 +30,11 @@ export const OPEN_BROWSER_GUIDANCE = 'For a browser, tab, Chrome or link request
 
 const OPEN_ONLY = 'These tools only open things: they never type, click, send or change anything.';
 
-export const OPEN_TOOLS: readonly { name: string; description: string; parameter: string; pattern: RegExp }[] = [
-  { name: 'open_source', description: `Open one item the owner named, using the handle its lookup result carried in a line starting "open:". ${OPEN_ONLY}`, parameter: 'handle', pattern: /^L[0-9]{1,4}$/ },
-  { name: 'open_home', description: `Open the home page of Gmail, Google Calendar or Mattermost. ${OPEN_ONLY}`, parameter: 'app', pattern: /^(gmail|calendar|mattermost)$/ },
-  { name: 'open_file', description: `Only for an explicitly local file request, never a browser, tab or link request: open an existing file or folder inside the owner's home folder with its default app. ${OPEN_ONLY}`, parameter: 'path', pattern: /^\/|^~/ },
-  { name: 'open_app', description: `Only launch an installed application by name; never use this for a domain or site name, or to open a page in a browser. ${OPEN_ONLY}`, parameter: 'name', pattern: /^\S(?:.*\S)?$/ },
+export const OPEN_TOOLS: readonly { name: string; description: string; guidance: string; parameter: string; pattern: RegExp }[] = [
+  { name: 'open_source', guidance: 'shown handle', description: `Open one item the owner named, using the handle its lookup result carried in a line starting "open:". ${OPEN_ONLY}`, parameter: 'handle', pattern: /^L[0-9]{1,4}$/ },
+  { name: 'open_home', guidance: 'app home', description: `Open the home page of Gmail, Google Calendar or Mattermost. ${OPEN_ONLY}`, parameter: 'app', pattern: /^(gmail|calendar|mattermost)$/ },
+  { name: 'open_file', guidance: 'local path', description: `Only for an explicitly local file request, never a browser, tab or link request: open an existing file or folder inside the owner's home folder with its default app. ${OPEN_ONLY}`, parameter: 'path', pattern: /^\/|^~/ },
+  { name: 'open_app', guidance: 'app name', description: `Only launch an installed application by name; never use this for a domain or site name, or to open a page in a browser. ${OPEN_ONLY}`, parameter: 'name', pattern: /^\S(?:.*\S)?$/ },
 ];
 
 export function openParameters(tool: (typeof OPEN_TOOLS)[number]): Record<string, unknown> {
@@ -492,6 +492,6 @@ export async function resolveWebOpen(args: { kind: WebKind; target: string }, wo
 
 /** One generated usage line per registered open tool, shared by the public prompt. */
 export const OPEN_TOOL_GUIDANCE = [
-  ...OPEN_TOOLS.map(tool => `${tool.name}: ${tool.description}`),
-  `${OPEN_WEB_NAME}: ${OPEN_WEB_DESCRIPTION}`,
+  ...OPEN_TOOLS.map(tool => `${tool.name}: ${tool.guidance}.`),
+  `${OPEN_WEB_NAME}: site/map/search.`,
 ].join('\n');

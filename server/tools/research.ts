@@ -4327,7 +4327,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // spends a round on a continue the run answers with continuation_unavailable.
     // #657: a status ask wider than one batch names the sources it left for the next call.
     const deferred = run.deferredSources ?? [];
-    const canRepeat = complete && deferred.length === 0 ? false : canContinue || trimmed || deferred.length > 0;
+    const canRepeat = run.chatPage !== undefined || (complete && deferred.length === 0 ? false : canContinue || trimmed || deferred.length > 0);
     // #4: the left-out count is derived inside the measured reply, so the header's total and this sentence
     // never drift apart when a later trim takes one more event out.
     const calendarGroup = groups.find(group => group.source === 'calendar');
@@ -5871,7 +5871,7 @@ function bareContinue(call: ResearchCall): boolean {
  * answers with a pointer at the findings already given instead of spending a round to re-render them.
  */
 function finishedAnswer(run: RunState): boolean {
-  return run.ended && !run.stopped && !run.cancelled && run.answerOpen !== true;
+  return run.ended && !run.stopped && !run.cancelled && run.answerOpen !== true && run.chatPage === undefined;
 }
 
 /** The closed reply a continue on a finished run gets: the id, the state and a pointer, never the payload. */
@@ -6208,6 +6208,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     const sub: IntentSubCall = { ...page.sub, key: `${page.sub.key}p${page.next}`, args: { ...page.sub.args, offset: page.next } };
     const results = await deps.execute([sub], signal);
     if (!evidenceAllowed(deps, run, signal)) return deniedEvidence(deps, run);
+    noteChatReads(run, [sub], results);
     const block = shapeBlock('chat_search', results, deps.timeZone);
     for (const [key, entry] of run.ledger) if (entry.source === 'chat') run.ledger.delete(key);
     run.ledger.set(`chat_search:page:${page.next}`, { kind: 'chat_search', source: 'chat', summary: block.text, lines: block.lines, total: Math.max(page.total, block.total) });

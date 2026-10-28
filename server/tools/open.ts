@@ -383,7 +383,7 @@ export function webBinding(target: string, ownerWords: string): boolean {
 export interface NotForSpeech { fixNotForSpeech: string; say: string }
 /** A closed, speech-safe receipt even when execution failed before it could open anything. */
 export function openWebFailure(code: string): { code: string; fixNotForSpeech: string; say: string } {
-  const closed = ['executor_intent_mismatch', 'no_open_intent', 'not_owner_words', 'native_timeout', 'not_allowed', 'not_found', 'ambiguous', 'failed', 'invalid_arguments'];
+  const closed = ['open_web_failed', 'executor_intent_mismatch', 'no_open_intent', 'not_owner_words', 'native_timeout', 'not_allowed', 'not_found', 'ambiguous', 'failed', 'invalid_arguments'];
   const reason = closed.includes(code) ? code : 'failed';
   const guidance = OPEN_WEB_GUIDANCE[reason as keyof typeof OPEN_WEB_GUIDANCE];
   return { code: reason, ...(guidance ?? { fixNotForSpeech: 'Nothing opened. Say the browser action failed; do not claim success.', say: 'I could not open that in your browser, so nothing is open.' }) };

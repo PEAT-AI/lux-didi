@@ -118,7 +118,7 @@ async function harness(t: TestContext, overrides: {
       endpoint: { ...endpoint, credentialRef: null }, toolNames: ['search_knowledge', 'get_insight'], schemaDigest: canonicalToolDigest(schemas),
       sourcePolicy: { id: 'live-fixture', revision: 1, unknownClass: 'ordinary', allowedClasses: ['ordinary'] },
       route: { identity: liveProfileIdentity(profile), allowedClasses: ['ordinary'] },
-      bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 } });
+      bounds: { maxQueryChars: 512, maxSearchLimit: 20, maxGetIds: 20, maxEntityBytes: 4096, maxResultBytes: 4096 } });
     assert.equal((await port.discover(endpoint.id)).state, 'discovered');
     toolOwner.projectConnection('lux');
     tools = { owner: toolOwner, connectionIds: () => ['lux'] };
@@ -184,12 +184,14 @@ async function until(predicate: () => boolean) {
 // C-LUXSAVE11 replaces the retired live local-memory-write workflow. Local memory unit coverage
 // remains in live-memory-note.test.ts; this file exercises the real host and Gemini wire.
 async function ownerBlock(h: Harness, text: string, finished = true): Promise<void> {
+  const before = Number(h.store.transaction(tx => tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE kind='inputTranscription'"))?.['id'] ?? 0);
   h.f.send({ serverContent: { inputTranscription: { text, finished } } });
-  await drain();
+  await until(() => Number(h.store.transaction(tx => tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE kind='inputTranscription'"))?.['id'] ?? 0) > before);
 }
 async function assistantBlock(h: Harness, text: string): Promise<void> {
+  const before = Number(h.store.transaction(tx => tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE kind='turnComplete'"))?.['id'] ?? 0);
   h.f.send({ serverContent: { outputTranscription: { text, finished: true }, turnComplete: true } });
-  await drain();
+  await until(() => Number(h.store.transaction(tx => tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE kind='turnComplete'"))?.['id'] ?? 0) > before);
 }
 async function call(h: Harness, name: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
   const id = `synthetic-call-${h.f.frames.length}-${name}`;
@@ -240,6 +242,11 @@ for (const confirmation of ['yes', 'split', 'split_no', 'wrong_readback', 'unarm
       playback(attachment, 'started', 1, NOW + 100);
       h.advance(100); clock.advance(100);
       playback(attachment, 'drained', 2, NOW + 200);
+      if (['yes', 'split', 'unavailable'].includes(confirmation)) {
+        const armed = h.store.transaction(tx => tx.get('SELECT state,code FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
+        const seen = h.store.transaction(tx => tx.all("SELECT kind,text FROM live_journal WHERE live_session_id=? AND kind IN ('outputTranscription','turnComplete') ORDER BY journal_id", [session.liveSessionId]));
+        assert.equal(armed?.['state'], 'armed', JSON.stringify({ armed, seen }));
+      }
     }
     await ownerBlock(h, confirmation === 'early' ? '' : 'yes');
     if (confirmation === 'split' || confirmation === 'split_no') {

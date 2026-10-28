@@ -20,9 +20,11 @@ enum NativeProbeFailure: String, Error {
 
 // The owned child uses this escalation policy; virtual sleep keeps lifecycle proofs deterministic.
 @MainActor enum NativeServiceStop {
-    static func escalate(sleep: (UInt64) async throws -> Void,
+    static func escalate(graceNanoseconds: UInt64 = 30_000_000_000, sleep: (UInt64) async throws -> Void,
                          isRunning: () -> Bool, terminate: () -> Void, forceKill: () -> Void) async throws {
-        try await sleep(500_000_000)
+        // Match the host summary deadline: stdin closure starts graceful completion, not termination.
+        // A child that exits sooner cancels this task; only an unresponsive child reaches escalation.
+        try await sleep(graceNanoseconds)
         guard isRunning() else { return }
         terminate()
         try await sleep(500_000_000)
@@ -128,10 +130,11 @@ enum NativeProbeFailure: String, Error {
         defer { deadline.cancel() }
         return try await withCheckedThrowingContinuation { frameWaiter = $0 }
     }
-    func stop() async {
+    func stop(graceful: Bool = false) async {
         stopping = true; closeInput()
         let escalation = Task { [weak self] in
             try? await NativeServiceStop.escalate(
+                graceNanoseconds: graceful ? 30_000_000_000 : 500_000_000,
                 sleep: { try await Task.sleep(nanoseconds: $0) },
                 isRunning: { self?.isRunning == true },
                 terminate: { self?.process.terminate() },
@@ -471,6 +474,6 @@ struct OwnedServiceConnection {
         wakeObserver = nil
         operation = nil; state = .stopped; connection = nil
         onEnd?(reason, [:])
-        if let child { await child.stop(); observeStop(child); self.child = nil }
+        if let child { await child.stop(graceful: reason == .shutdown); observeStop(child); self.child = nil }
     }
 }

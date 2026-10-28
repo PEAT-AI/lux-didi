@@ -2243,7 +2243,11 @@ test('C-AUDIO10: overflowing speech never retains silence heartbeats ahead of sp
     session.sendAudio({ pcm: pcm16(320, index % 2 ? 1200 : 0), dataClass: 'ordinary' });
     clock.advance(20);
   }
-  assert.equal(receipts().filter(row => row.event === 'uplink_speech_shed').length, 1);
+  const speechLoss = receipts().filter(row => row.event === 'uplink_speech_shed');
+  assert.equal(speechLoss.length, 1);
+  assert.equal(speechLoss[0]!.silenceFramesBeforeSpeechShed, 0,
+    'at the speech-shed decision every non-speech frame, including heartbeats, is already gone');
+  assert.ok(safeEvent(speechLoss[0]!), 'the ordering receipt is a closed counts-only event');
   // End with speech and trigger the next overflow; any surviving silence would be an older heartbeat.
   for (let index = 0; index < 60; index += 1) {
     session.sendAudio({ pcm: pcm16(320, 1200), dataClass: 'ordinary' });

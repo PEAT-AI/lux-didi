@@ -359,7 +359,7 @@ test('C-LOGS11: a turn with no native receipt says so, and never prints a zero',
     ]);
     const audit = buildCallAudit(buildTimeline(readOf(store), SESSION), scan);
     const row = audit.turns[0]!;
-    assert.equal(row.finalToProviderMs, 1_600);
+    assert.equal(row.finalToProviderMs, 2_000);
     assert.equal(row.finalToAudibleMs, null);
     assert.equal(row.missingReason, 'no_native_receipt');
     const text = renderCallAudit(audit);
@@ -413,8 +413,8 @@ test('C-LOGS11: the across-sessions summary reports counts per tool and p50/p90 
     assert.equal(summary.version, CALL_AUDIT_SCHEMA_VERSION);
     assert.equal(summary.sessions, 2);
     assert.deepEqual(summary.callsPerTool, { 'calendar_list_events': 1, 'gmail_search_messages': 3, research: 1 });
-    // Nearest rank over [12, 40, 60, 80, 6100]: p50 is the third value, p90 the fifth.
-    assert.deepEqual(summary.latencyPerTool['gmail_search_messages'], { count: 3, p50: 60, p90: 6100 });
+    // Nearest rank over the three searches [12, 60, 80]: p50 is the second value, p90 the third.
+    assert.deepEqual(summary.latencyPerTool['gmail_search_messages'], { count: 3, p50: 60, p90: 80 });
     assert.deepEqual(summary.latencyPerTool['research'], { count: 1, p50: 6100, p90: 6100 });
     assert.deepEqual(summary.refusalsByCode, { grant_not_permitted: 1 });
     // Both sessions' owner-final-to-audio waits: 1700 in session A, 5000 in session B.

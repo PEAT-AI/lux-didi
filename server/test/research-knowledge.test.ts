@@ -308,10 +308,10 @@ test('#1028: a fetched knowledge entry reaches the round as its body, not its ti
     execute: async (subs: readonly IntentSubCall[]) => {
       executed.push(...subs.map(call => call.name));
       if (subs.some(call => call.name === 'get_insight')) {
-        return subs.map(call => sub(call.name, '### Release notes (decision | 2026-10-17) [id 123]\nThe planted rows were harvested on Friday.', true, call.key));
+        return subs.map(call => sub(call.name, '### Korbi release notes (decision | 2026-10-17) [id 123]\nThe planted rows were harvested on Friday.', true, call.key));
       }
       return subs.map(call => call.name === 'search_knowledge'
-        ? sub(call.name, '### Release notes (decision | 2026-10-17) [id 123]\nA short summary line.', true, call.key)
+        ? sub(call.name, '### Korbi release notes (decision | 2026-10-17) [id 123]\nA short summary line.', true, call.key)
         : sub(call.name, 'evidence', true, call.key));
     },
   };

@@ -2812,7 +2812,7 @@ function sourceListText(sources: readonly SourceKind[]): string {
 
 /** The declaration description names the sources this session actually configured, never a source it lacks. */
 export function researchDescription(sources: readonly SourceKind[]): string {
-  return `One lookup over ${sourceListText(sources)}: at most ${MAX_LOOKUPS} lookups per call, each with a source (${LOOKUP_SOURCE_TEXT}). Use it for evidence beyond the conversation. Call start with the question and a topic of names and nouns, at most ${TOPIC_MAX_WORDS} words: only the topic is searched. Its result carries the researchId; continue and stop copy it. A finished run needs no continue: continue only when a result says more is available. One owner turn grants one research operation.`;
+  return `One lookup over ${sourceListText(sources)}: at most ${MAX_LOOKUPS} lookups per call, each with a source (${LOOKUP_SOURCE_TEXT}). Use it for evidence beyond the conversation. Call start with the question and a topic of names and nouns, at most ${TOPIC_MAX_WORDS} words: only the topic is searched. Its result carries the researchId; a finished run needs no continue. One owner turn grants one operation.`;
 }
 
 export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH_SOURCES): { name: string; description: string; guidance: string; parameters: JsonObject; validate(args: unknown): boolean } {
@@ -5807,6 +5807,13 @@ function continuesRun(run: RunState, call: ResearchCall, question: string): bool
 }
 
 /**
+ * C-POLISH10: a continue that names no direction and no lookup asks only for the run again.
+ */
+function bareContinue(call: ResearchCall): boolean {
+  return (call.direction ?? '').trim() === '' && normalizeLookups(call.lookups).length === 0;
+}
+
+/**
  * C-POLISH10: a run whose answer was delivered and that left nothing to fetch. Its continue is a repeat, so the call
  * answers with a pointer at the findings already given instead of spending a round to re-render them.
  */
@@ -6001,9 +6008,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       }
     }
     const priorRun = call.cursor === undefined ? deps.ledger.find(call.researchId ?? '') : undefined;
-    // C-POLISH10: a run that already gave its whole answer has nothing left to fetch, so its continue answers with a
-    // closed pointer instead of the same findings again, the payload it would spend a round to re-render.
-    if (priorRun !== undefined && continuesRun(priorRun, call, question) && finishedAnswer(priorRun)) return alreadyDelivered(priorRun.researchId);
+    // C-POLISH10: a bare continue on a run that already gave its whole answer has nothing left to fetch, so it answers
+    // with a closed pointer instead of spending a round to re-render the same findings. A direction or a lookup names
+    // more than the run already gave, and keeps its own path.
+    if (priorRun !== undefined && bareContinue(call) && continuesRun(priorRun, call, question) && finishedAnswer(priorRun)) return alreadyDelivered(priorRun.researchId);
     if (priorRun !== undefined && !continuesRun(priorRun, call, question)) {
       // #654: an id from an older run never carries a new source or a new topic, so that ask starts fresh.
       deps.ledger.cancelActive();

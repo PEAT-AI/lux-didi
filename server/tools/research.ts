@@ -7336,6 +7336,10 @@ export class ResearchAdmission {
    * heard the answer for this turn and a new research run would be an orphan.
    */
   answered(): void { if (this.#deliveredAt !== undefined && this.#deliveredAt === this.#turns) this.#answered = true; }
+
+  /** C-REBUILD8: a response that only filed a filler ("One second.") is not the answer to the turn, so it takes
+   *  the mark back: the real run for that question is still the turn's own and never an orphan. */
+  acknowledgedOnly(): void { this.#answered = false; }
 }
 
 /** C-LIVE behaviour 2: the reads whose next page can still finish before the operation must answer. */

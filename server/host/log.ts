@@ -720,7 +720,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCloseReason(value.closeReason)) return;
     if (!isSafeCount(value.seedTurns) || !isSafeCount(value.seedChars)) return;
     // C-PICKUP: which pickup the rebuilt session was opened with; a closed set, so no spoken text rides here.
-    if (!isSafeMember(value.pickup, ['mute', 'connection'])) return;
+    if (!isSafeMember(value.pickup, ['mute', 'connection', 'quiet', 'none'])) return;
     return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, cause: value.cause, closeCode: value.closeCode, closeReason: value.closeReason, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, msSinceDrop: value.msSinceDrop, pickup: value.pickup, liveSessionId: value.liveSessionId, generation: value.generation };
   }
   if (value.event === 'live_provider_open' || value.event === 'live_provider_ready') {

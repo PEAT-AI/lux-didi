@@ -1367,12 +1367,19 @@ test('C-SUMMARY8: an interrupted summary cannot hold the ready frame past its st
       });
     } finally { seed.close(); }
     let modelCalls = 0;
+    let releaseModel = () => {};
     const started = performance.now();
     const host = await startHost({ dataDir: dir, webRoot, configDir, port: 0,
       modelTesting: {
         deadlineMs: 400,
         credentials: { resolve: async () => 'synthetic-not-a-real-key' },
-        transport: () => { modelCalls += 1; return new Promise<Response>(() => { /* deliberately no response */ }); },
+        transport: () => {
+          modelCalls += 1;
+          return new Promise<Response>(resolve => {
+            // Remain unanswered through the startup proof, then refuse permanently for bounded cleanup.
+            releaseModel = () => resolve(new Response('{}', { status: 400 }));
+          });
+        },
       } });
     const elapsed = Math.round(performance.now() - started);
     try {
@@ -1381,6 +1388,6 @@ test('C-SUMMARY8: an interrupted summary cannot hold the ready frame past its st
       assert.ok(elapsed < SUMMARY_START_SETTLE_BUDGET_MS + 1_500,
         `the ready frame took ${elapsed} ms: an unanswered provider cannot hold it past the start budget`);
       assert.ok(elapsed < 6_000, 'and it stays inside the native six second ready-frame cap');
-    } finally { await host.close(); }
+    } finally { releaseModel(); await host.close(); }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

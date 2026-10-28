@@ -478,7 +478,7 @@ describe('openai gpt-live adapter', () => {
     assert.doesNotMatch(FRESH_OPENING, /the last thing you and the owner were on/u);
     assert.match(FRESH_OPENING, /never the closing lines/u);
     assert.match(FRESH_OPENING, /or stopping, ending or listening/u);
-    assert.match(FRESH_OPENING, /when he speaks first, answer his words/u);
+    assert.match(FRESH_OPENING, /owner speech arriving first takes priority/u);
     assert.doesNotMatch(FRESH_OPENING, /[\u2013\u2014]/u);
   });
 

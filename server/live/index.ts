@@ -5,14 +5,13 @@ import { recordHistorySession, historySessionEvidence, recordHistoryDependency }
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
-import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteModelOutput, noteOwnerWords, noteOwnerPartial, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
+import { clearOpenLedger, exposeToolResults, noteModelOutput, noteOwnerWords, noteOwnerPartial, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
-import { ALARM_NAMES } from '../tools/alarm.js';
 import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
 import { NoteRequestGate, noteKey, noteReadbackText, readbackMatches, freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, stageComposedNote, type PlaybackSignalKind } from '../tools/lux-note.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
-import { runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
+import { LIVE_NOT_MODEL_FACING, runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
 import { INTENT_TOOL_NAMES, isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
 import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook } from '../tools/research.js';
@@ -1898,7 +1897,7 @@ export class LiveSessionOwner {
     const history = fitSeedTurns(seed.turns, this.#jobHistory(liveSessionId, inputClass) ?? []).turns;
     // Only owner-facing tools are declared to the model; the connector reads stay
     // dispatchable through the registry so the intent fan-out and the session cache keep working.
-    const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || tool.name === 'stage_lux_note' || ALARM_NAMES.some(name => name === tool.name) || OPEN_TOOL_NAMES.has(tool.name) || TRELLO_TOOL_NAMES.has(tool.name));
+    const modelFacing = registry.filter(tool => !Object.hasOwn(LIVE_NOT_MODEL_FACING, tool.name));
     // The port carries the original JSON schemas; each adapter builds its own provider dialect.
     const declarations = modelFacing.map(tool => ({ name: tool.name, description: tool.description, parameters: structuredClone(tool.parameters) }));
     const system = acceptedPrompt.system;

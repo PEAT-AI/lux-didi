@@ -207,6 +207,21 @@ export function refusalCode(proof: IdentityProof): 'identity_mismatch' | Identit
 }
 
 /**
+ * The identity codes a retry can clear. `identity_timeout` means the proof did not answer in time, and
+ * the Google helper reports `credential_refresh_failed` for every token refresh that failed for a
+ * reason other than a refusal: the network, DNS, a 5xx. lux-cli reports a refused credential
+ * (`invalid_grant`, `invalid_scope`) as `credential_revoked`, so a dead grant never shares a code with
+ * an unreachable one. Every other code is a definite answer and latches until sign-in or a host restart
+ * (C-OWNER-IDENTITY point 5).
+ */
+export const TRANSIENT_IDENTITY_CODES: readonly IdentityErrorCode[] = ['identity_timeout', 'credential_refresh_failed'];
+
+/** Whether one identity failure earns a background retry instead of a latch. */
+export function identityFailureRetryable(proof: IdentityProof): boolean {
+  return proof.code !== undefined && TRANSIENT_IDENTITY_CODES.includes(proof.code);
+}
+
+/**
  * Run one connector identity probe under a short timeout. A throw, a timeout, a refused call or an
  * empty value set is unproven, never a refusal: the connector stays usable and is shown unverified.
  */

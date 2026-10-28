@@ -414,6 +414,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'google_mcp_path_unsafe', endpointId: value.endpointId };
   }
   if (value.event === 'connector_connected' || value.event === 'connector_recovered'
+    || value.event === 'connector_retry'
     || value.event === 'connector_recovery_exhausted' || value.event === 'connector_unavailable'
     || value.event === 'connector_latched'
     || value.event === 'connector_helper_stderr') {
@@ -429,11 +430,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       return { event: 'connector_connected', endpointId: value.endpointId, connectMs: value.connectMs };
     }
     if (value.event === 'connector_recovered') {
-      if (!closedKeys(value, ['attempts', 'connectMs', 'endpointId', 'event']) || !count(value.attempts, 8) || !ms(value.connectMs)) return;
+      // A transient failure is retried every two minutes for the host's life, so an attempt count is not
+      // bounded by the delay ladder any more.
+      if (!closedKeys(value, ['attempts', 'connectMs', 'endpointId', 'event']) || !count(value.attempts, 100_000) || !ms(value.connectMs)) return;
       return { event: 'connector_recovered', endpointId: value.endpointId, attempts: value.attempts, connectMs: value.connectMs };
     }
+    if (value.event === 'connector_retry') {
+      if (!closedKeys(value, ['attempt', 'connector', 'endpointId', 'event', 'outcome'])
+        || !count(value.attempt, 100_000) || !token(value.connector) || !token(value.outcome)) return;
+      return { event: 'connector_retry', connector: value.connector, endpointId: value.endpointId, attempt: value.attempt, outcome: value.outcome };
+    }
     if (value.event === 'connector_recovery_exhausted') {
-      if (!closedKeys(value, ['attempts', 'endpointId', 'event', 'reason']) || !count(value.attempts, 8) || !token(value.reason)) return;
+      if (!closedKeys(value, ['attempts', 'endpointId', 'event', 'reason']) || !count(value.attempts, 100_000) || !token(value.reason)) return;
       return { event: 'connector_recovery_exhausted', endpointId: value.endpointId, attempts: value.attempts, reason: value.reason };
     }
     if (value.event === 'connector_unavailable') {

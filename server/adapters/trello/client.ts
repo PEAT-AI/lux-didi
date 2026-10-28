@@ -67,7 +67,7 @@ export function trelloRequests(tool: string, args: Args): { requests: Request[];
   const path = (segments: readonly (string | undefined)[]): string => segments.filter(segment => segment !== undefined).map(segment => encodeURIComponent(String(segment))).join('/');
   switch (`${tool}.${action}`) {
     case 'trelloReadMember.get_me': return { requests: [{ method: 'GET', path: 'members/me', query: { fields: FIELDS } }] };
-    case 'trelloReadBoard.list': return { requests: [{ method: 'GET', path: 'boards', ...(typeof args.cursor === 'string' ? { query: { cursor: args.cursor } } : {}) }] };
+    case 'trelloReadBoard.list': return { requests: [{ method: 'GET', path: 'members/me/boards' }] };
     case 'trelloReadBoard.list_labels': return { requests: [{ method: 'GET', path: `boards/${path([String(args.boardId)])}/labels`, ...(typeof args.cursor === 'string' ? { query: { cursor: args.cursor } } : {}) }] };
     case 'trelloReadList.list_by_board': return { requests: [{ method: 'GET', path: `boards/${path([String(args.boardId)])}/lists`, ...(typeof args.cursor === 'string' ? { query: { cursor: args.cursor } } : {}) }] };
     case 'trelloReadCard.get': return { requests: [{ method: 'GET', path: `cards/${path([card])}` }] };

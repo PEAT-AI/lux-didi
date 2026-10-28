@@ -2321,9 +2321,9 @@ test('W5-R1: settled calendar and knowledge answer at 1 s while web stays pendin
   const clock = fakeClock();
   const sources = deferred<void>();
   const web = deferred<{ ok: false; code: 'web_timeout' }>();
-  const h = harness({ now: clock.now, schedule: clock.schedule, configured: ['calendar', 'knowledge', 'web'],
-    execute: async subs => { await sources.promise; return subs.map(call => sub(call.name, 'Synthetic finding.', true, call.key)); },
-  });
+  const h = harness({ now: clock.now, schedule: clock.schedule, configured: ['calendar', 'knowledge', 'web'], executeText: MERGED_CALENDAR });
+  const execute = h.deps.execute;
+  h.deps.execute = async (...args) => { await sources.promise; return execute(...args); };
   h.deps.web = { search: async () => web.promise };
   let background: Promise<void> | undefined;
   h.deps.background = done => { background = done; };

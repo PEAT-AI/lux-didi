@@ -5529,6 +5529,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         first.historyPages = outcomes.flatMap(outcome => outcome.historyPage ? [outcome.historyPage] : []);
         const source = batch[0]?.source;
         if (source) {
+          if (source !== 'web') first.settledNonWeb = true;
           first.reading.delete(source);
           first.wake?.();
           lateFindingsOf(deps, first, run.researchId, source, Math.max(...batch.map(outcome => outcome.ms)), [...new Set(batch.flatMap(outcome => outcome.lines))], batch.some(outcome => outcome.outcome === 'ok' || outcome.outcome === 'empty'), run.runId, signal.aborted || run.cancelled || run.stopped);
@@ -5584,6 +5585,7 @@ function withHistoryPages(reply: JsonObject, pages: JsonObject[]): JsonObject {
 }
 
 interface FirstAnswerState {
+  settledNonWeb?: boolean;
   historyPages?: JsonObject[];
   mailShown: Set<string>;
   /** When the call answered ahead of its readers; unset until then. */
@@ -5656,8 +5658,8 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
     delete first.wake;
     if (raced === 'settled') { stopTimers(); return undefined; }
     const view = first.snapshot?.();
-    nonWebSettled = view !== undefined && view.run.sourcesDone.size > 0
-      && [...first.reading].every(source => source === 'web' || view.run.sourcesDone.has(source));
+    nonWebSettled = view !== undefined && first.settledNonWeb === true && first.reading.has('web')
+      && [...first.reading].every(source => source === 'web');
     if (raced === 'due' || nonWebSettled) break;
   }
   stopTimers();
@@ -6566,6 +6568,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             });
             // R6: this source settled after the call had already answered, so what it found is handed over
             // once, and only if the first reply did not already say it.
+            if (part.source !== 'web') first.settledNonWeb = true;
             first.reading.delete(part.source);
             first.wake?.();
             lateFindingsOf(deps, first, run.researchId, part.source, Math.max(0, now() - at), block.lines, part.results.some(result => result.ok), run.runId, signal.aborted || run.cancelled || run.stopped);

@@ -7184,7 +7184,7 @@ export const RESEARCH_OPERATION = Object.freeze({
  */
 export const ADMISSION_DIRECTIVES: Readonly<Record<AdmissionBlockReason, string>> = Object.freeze({
   no_owner_turn: 'No owner turn has started, so answer from the conversation until the owner speaks.',
-  turn_spent: 'This owner turn already granted one research operation: answer with what its result holds, or continue that same researchId.',
+  turn_spent: 'This owner turn already granted its research operations: answer with what their results hold, or continue that same researchId.',
   no_turn_since_result: 'That result was already delivered: answer from it, and research again only after the owner speaks.',
   answer_already_given: 'You already answered this owner turn: a new research needs a new turn from the owner.',
 });

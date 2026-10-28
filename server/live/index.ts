@@ -640,6 +640,8 @@ interface ActiveSession {
    * parked by work the host actually did after the answer and never by a raw owner input.
    */
   researchStartedAt?: number | undefined; lastToolCallAt?: number | undefined;
+  /** #1028: the one delayed re-offer of a late finding a hold postponed, so a hold never discards it. */
+  lateHoldTimer?: ReturnType<JobTimer> | undefined;
   /** R6: the research this turn may collect once without a new owner turn, and how many sources it still reads. */
   pendingResearch?: { id: string; count: number } | undefined;
   /** R5: the word count of the owner's last finished utterance, so a filler sound is not read as a new question. */
@@ -4141,6 +4143,16 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // spoken once through the response channel or kept in the ledger for the next continuation. Never a
     // provider frame the wire refuses.
     const reason = this.#lateCommentaryReason(handle, event);
+    // #1028 behaviour 4: a hold postpones the line, it never discards the finding, so a block held by room
+    // speech is offered once the hold is over. A new question, a closed turn or a spoken line still ends it.
+    if (reason === 'owner_speaking') {
+      handle.lateHoldTimer?.cancel();
+      handle.lateHoldTimer = this.#schedule(() => {
+        handle.lateHoldTimer = undefined;
+        if (this.#settled(handle) || generation !== handle.generation) return;
+        this.#lateFindings(handle, generation, event);
+      }, SPEAKING_HOLD_MS);
+    }
     if (reason !== null) return hostLogEvent({ ...receipt, destination: 'ledger', reason });
     const line = `One more thing from ${event.source}: ${event.items[0]!.slice(0, LATE_SPOKEN_CHARS)}`;
     try { handle.session.sendText({ text: line }); } catch { return hostLogEvent({ ...receipt, destination: 'ledger', reason: 'send_failed' }); }

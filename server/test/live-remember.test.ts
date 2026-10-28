@@ -69,6 +69,7 @@ async function harness(t: TestContext, overrides: {
   overlay?: { schemaVersion: 1; text: string; accent?: string };
   memoryFailure?: boolean;
   vaultUnavailable?: boolean;
+  composedNotes?: boolean;
   crashAfterInsert?: boolean;
 } = {}): Promise<Harness> {
   const trace: unknown[] = [];
@@ -79,7 +80,7 @@ async function harness(t: TestContext, overrides: {
   const domain = createDomainPort({ outbox: Outbox });
   const store = new Store(dir, [...domain.migrations, ...chatMigrations, ...liveMigrations, ...(overrides.tools ? toolsMigrations : [])]);
   let clock = NOW;
-  const profile = validateLiveProfile({ ...profileInput(overrides.limits, overrides.model), ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}) });
+  const profile = validateLiveProfile({ ...profileInput(overrides.limits, overrides.model), ...(overrides.composedNotes === undefined ? {} : { features: { composedNotes: overrides.composedNotes } }), ...(overrides.overlay ? { overlay: overrides.overlay } : {}), ...(overrides.system !== undefined ? { prompt: { text: overrides.system, dataClass: 'ordinary' } } : {}) });
   const voice = new GeminiLiveVoiceAdapter(options({
     socketFactory: f.socketFactory, modelId: profile.liveModelId, voice: profile.voice, keyReference: profile.keyReference,
     route: { enabled: true, provider: 'gemini', modelId: profile.liveModelId, dataClasses: profile.route.dataClasses },
@@ -331,17 +332,21 @@ test('C-LUXSAVE11 host: legacy live calls are absent and fail closed even with v
   attachment.close();
 });
 
-test('C-LUXSAVE11 host: existing local memories remain readable after retiring the write tool', async t => {
-  const h = await harness(t, { tools: true });
+for (const kind of ['task', 'fact', 'preference'] as const) {
+for (const composedNotes of [undefined, false]) {
+test(`C-LUXSAVE11 F1: legacy ${kind} remains readable without teardown export (composedNotes=${composedNotes ?? 'default'})`, async t => {
+  const h = await harness(t, { tools: true, ...(composedNotes === undefined ? {} : { composedNotes }) });
   const { session, attachment } = await attached(h);
   await ownerBlock(h, 'remember that the synthetic launch is Friday');
-  const seeded = h.store.transaction(tx => rememberOwnerNote(tx, session.liveSessionId, { text: 'the synthetic launch is Friday', kind: 'task' }, NOW));
+  const seeded = h.store.transaction(tx => rememberOwnerNote(tx, session.liveSessionId, { text: 'the synthetic launch is Friday', kind }, NOW));
   assert.equal(seeded['remembered'], true, 'seed a pre-existing local memory through its existing domain boundary');
   attachment.close();
   await until(() => h.owner.lookupAuthority(session.liveSessionId) === null);
   const next = h.owner.create({ idempotencyKey: 'recall-next', inputClass: 'ordinary' }, h.ctx);
   assert.ok(next.liveSessionId);
-  assert.equal(h.saved.length, 0);
+  await drain();
+  assert.equal(h.saved.length, 0, 'legacy recall does not authorize a vault insert on teardown');
+  assert.equal(h.store.transaction(tx => tx.all('SELECT * FROM lux_note_stages').length), 0, 'no confirmed candidate exists');
   const snapshot = JSON.stringify(h.owner.get(next.liveSessionId));
   assert.ok(snapshot.includes('liveSessionId'));
   const nextAttachment = h.owner.attach({ liveSessionId: next.liveSessionId }, h.ctx);
@@ -350,6 +355,9 @@ test('C-LUXSAVE11 host: existing local memories remain readable after retiring t
   assert.ok(JSON.stringify(h.requests).includes('the synthetic launch is Friday'));
   nextAttachment.close();
 });
+}
+}
+
 
 for (const order of ['read_then_save', 'read_then_save_tool', 'save_then_read'] as const) {
   test(`C-LUXSAVE11 host: ${order} controls authority while external results always taint`, async t => {

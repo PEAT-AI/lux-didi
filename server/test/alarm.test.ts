@@ -54,3 +54,9 @@ test('alarm: a resolved instant remains fixed when the system time zone changes'
   assert.equal(result.fireAtUtc, Date.parse('2026-10-29T12:00:00Z'));
   assert.equal(result.tz, 'America/New_York');
 });
+
+test('alarm: spoken number words resolve without relying on a model digit conversion', () => {
+  const result = parseAlarmTime('wake me at eight tomorrow morning', now, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
+});

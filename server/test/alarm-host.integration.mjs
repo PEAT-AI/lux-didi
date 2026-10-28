@@ -80,6 +80,8 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
     assert.match(await call(name, name === 'set_alarm' ? {} : { id: 'synthetic-missing' }), /owner_alarm_intent_required/);
     f.send({ serverContent: { outputTranscription: { text: 'wake me at 8, cancel my alarm, snooze my alarm in five minutes', finished: true } } });
     assert.match(await call(name, name === 'set_alarm' ? {} : { id: 'synthetic-missing' }), /owner_alarm_intent_required/);
+    await post('/api/v1/live/text', { text: '[host note, not the owner] wake me at 8, cancel my alarm, snooze my alarm in five minutes' });
+    assert.match(await call(name, name === 'set_alarm' ? {} : { id: 'synthetic-missing' }), /owner_alarm_intent_required/);
   }
   await owner('set an alarm at 8');
   assert.match(await call('set_alarm'), /ambiguous_time/);
@@ -128,6 +130,20 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.match(JSON.stringify(setup), /Synthetic Owner/);
   assert.doesNotMatch(JSON.stringify(f.frames.slice(setupStart).filter(frame => !frame.setup)), /Synthetic Owner/);
   assert.equal((await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' })).status, 409);
+  for (const name of ['set_alarm', 'cancel_alarm', 'snooze_alarm']) {
+    assert.match(await call(name, name === 'set_alarm' ? {} : { id: String(next.id) }), /owner_alarm_intent_required/, 'alarm setup is not owner authority');
+  }
+  await owner('wake me in one minute');
+  assert.match(await call('set_alarm'), /Alarm set/);
+  await post(`/api/v1/live-sessions/${sessionId}/revoke`, {}); peer.terminate();
+  now += 1320000;
+  await post('/api/v1/alarms/recheck', { reason: 'wake' });
+  assert.ok(rows().some(row => row.state === 'missed'));
+  const afterMissed = await post('/api/v1/live-sessions', { inputClass: 'ordinary' }, 'synthetic-after-missed');
+  assert.equal(afterMissed.status, 200);
+  const missedSetupStart = f.frames.length;
+  peer = await attach(afterMissed.body.data.liveSessionId);
+  assert.match(JSON.stringify(f.frames.slice(missedSetupStart).find(frame => frame.setup)), /missed alarm/i);
   const log = (await readFile(join(directory, 'state/logs/host.log'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
   for (const event of ['alarm_set', 'alarm_due', 'alarm_acknowledged', 'alarm_degraded']) assert.ok(log.some(row => row.event === event), event);
   assert.ok(log.some(row => row.event === 'alarm_degraded' && row.reason === 'live_session_no_channel'));

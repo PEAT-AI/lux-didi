@@ -50,6 +50,19 @@ A gate check that runs past twenty minutes is a defect; the CI job is under fift
 
 After installing the app, run `scripts/smoke.sh` once (it makes at most two real model turns, so never in a loop).
 
+## Rules that stop green-but-broken
+
+Release 8 shipped four live failures with every test green: an untested tool entry, a Trello call to a route the vendor does not publish, a connector refused after install, and host notes the model read as the owner's words. Each rule below names its trigger and the action it costs.
+
+- A tool is new or changed: it joins the registry-wide intent test (`server/test/intent-tools.test.ts`) and the real-host integration matrix under its own name, never through a sibling tool.
+- A transport calls an external API: it validates every outbound method and path against a pinned vendor-published spec, checked in under `server/test/fixtures/specs/` with its retrieval URL and date, and an agent-written extract is never a source.
+- A guard judges the owner's words: test it with the ask split across two finalized owner turns.
+- A refusal or a gate gets a test: pair it with a test that the valid case passes.
+- Host-originated text moves toward the model: it carries the host-note mark (`[host note, not the owner]`) at the wire frame, never an unmarked user turn, and `server/test/wire-envelope.test.ts` lists every emitter so a new one cannot reach the model unregistered.
+- Per-turn state is added (admission, budgets, ledgers): add a two-turn reset test.
+- An install is declared done: `scripts/run-installed-checks.sh` passes on the installed bundle, and that script fails when zero checks ran (the script arrives with the release 9 install gate).
+- A test looks wrong against new code: never edit the test to match the code, and an accepted assertion changes only under a ruling that names it.
+
 ## Server and host
 
 | Script | Covers |

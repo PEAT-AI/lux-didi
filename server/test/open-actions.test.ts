@@ -555,6 +555,17 @@ test('C-OPENWEB8: two matching sites open nothing and he is asked which one', as
   } finally { useWebSearchPort(undefined); }
 });
 
+test('C-OPENWEB8: exactly one matching site opens that site, so the ambiguous guard is not a search that never matches', async () => {
+  useWebSearchPort(() => port([{ title: 'Acme Seeds UK', url: 'https://acme-seeds.co.uk/about' }]));
+  try {
+    const found = await resolveWebOpen({ kind: 'site', target: 'Acme Seeds' }, 'open the homepage of Acme Seeds', signal);
+    assert.ok('target' in found, 'one match opens, where the ambiguous case opens nothing');
+    assert.equal(found.target.target, 'https://acme-seeds.co.uk/');
+    assert.equal(found.target.kind, 'web');
+    assert.equal(found.target.detail, 'web', 'the receipt names a web surface and never the address');
+  } finally { useWebSearchPort(undefined); }
+});
+
 test('C-OPENWEB8: no matching site says nothing was found, never that several matched', async () => {
   useWebSearchPort(() => port([{ title: 'Somewhere else', url: 'https://example.invalid/' }]));
   try {

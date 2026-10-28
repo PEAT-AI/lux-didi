@@ -5358,6 +5358,10 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     // here too, so a source that is not connected reads as not connected instead of as a provider that failed.
     const refusedCode = refusedConnectionCode(own);
     if (refusedCode !== undefined && !run.unavailableReasons.has(plan.read.source)) run.unavailableReasons.set(plan.read.source, refusedCode);
+    // C-DEPTH11/#648: any other closed code the helper answered with is the reason the owner hears, so a
+    // failed read never degrades to the bare "no answer". A mail helper with no payload speaks its own line.
+    const failedCode = own.find(result => !result.ok && result.code !== undefined)?.code;
+    if (failedCode !== undefined && !run.unavailableReasons.has(plan.read.source)) run.unavailableReasons.set(plan.read.source, failedCode);
     // #565: a routed read counts as read, so a continuation of this run never dispatches it again.
     if ((outcome === 'ok' || outcome === 'empty') && plan.read.kind !== 'memory_search') run.readKinds.add(plan.read.kind);
     // #635: a read that answered in part and then ran out of its budget is a partial timeout, so the header

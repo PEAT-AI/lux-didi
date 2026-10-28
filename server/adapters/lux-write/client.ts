@@ -125,7 +125,10 @@ export function createLuxWriteTransport(endpoint: LuxWriteEndpoint, fetchImpl: t
       if (!call.json || typeof call.json !== 'object' || 'error' in (call.json as Record<string, unknown>)) return { outcome: 'failed' };
       const payload = vaultPayload((call.json as { result?: unknown }).result);
       if (!payload) return { outcome: 'failed' };
-      if (payload.action === 'inserted' && validInsightId(payload.insight_id)) return { outcome: 'inserted', insightId: payload.insight_id };
+      // lux-knowledge returns an integer id; retain string ids from older transports.
+      const insightId = typeof payload.insight_id === 'number' && Number.isSafeInteger(payload.insight_id) && payload.insight_id > 0
+        ? String(payload.insight_id) : payload.insight_id;
+      if (payload.action === 'inserted' && validInsightId(insightId)) return { outcome: 'inserted', insightId };
       if (payload.action === 'duplicate') return { outcome: 'duplicate' };
       return { outcome: 'failed' };
     },

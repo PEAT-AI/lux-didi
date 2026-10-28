@@ -1969,7 +1969,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     };
   }
 
-  /** W6 item 10: the composed-note capability is off unless live.json turns it on. */
+  /** Conversation saves are available unless the owner explicitly disables them. */
   #composedNotes(): boolean { return this.#profile.features?.composedNotes !== false; }
 
   /** W6 item 12: the notes exporter's own switch, on unless live.json turns it off. */

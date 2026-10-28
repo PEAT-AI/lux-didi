@@ -27,9 +27,9 @@ export function validateStageNote(args: unknown): args is { title: string; body:
 export const NOTE_MAX_CHARS = 4000;
 export const STAGE_NOTE_GUIDANCE = 'Saving into Lux uses only stage_lux_note: supply a title and conversation synthesis of at most 4,000 characters after an owner save request. Speak the host readBack verbatim from the tool result, including provenance; it is not owner speech. Wait for playback to finish and the owner to confirm. On read it all, speak the complete title and body before asking again. Say saved and name the title only after the host reports an insight id. authorization_missing means a fresh owner save request is required. authorization_refused means the request was qualified or negated. evidence_unknown means a citation is not held by this conversation. too_long means it was not staged; offer to split it. not_enabled means saving is disabled. payload_empty means a title and body are required. vault_unavailable means the vault could not be reached; it was not saved. outcome_unknown means the write result is unknown; do not retry or claim success. readback_mismatch means confirmation was not armed; it was not saved. not_affirmative means the note was not saved.';
 /** What the model says when the host could not stage the note at all: a closed code in plain words. */
-export const STAGE_FAILED_GUIDANCE = 'The note was not staged. Tell the owner it was not saved and ask them to say it again in one sentence.';
+export const STAGE_FAILED_GUIDANCE = 'The note was not staged or saved; explain the refusal and ask for a fresh save request.';
 /** R7-W1: a refusal is never named as a Lux failure; she asks him for the words that stage it. */
-export const AUTHORIZATION_MISSING_GUIDANCE = "I did not hear a save request in your own words this turn; say 'save it to Lux' and I will stage it.";
+export const AUTHORIZATION_MISSING_GUIDANCE = "It was not saved; a fresh owner save request is required before staging.";
 export const TITLE_MAX_CHARS = 120;
 export const CONFIRM_WINDOW_MS = 30_000;
 /** W1-R1: the open guard's bounds, on the journal rows of one owner stretch: six splits, 600 characters. */
@@ -88,9 +88,10 @@ const NOTE_SOURCE = /\b(?:note|summary)\b[^\p{L}\p{N}]+(?:about|from|of)\b[^\p{L
  */
 export function composedAsk(text: string): ComposedAsk {
   const value = text.normalize('NFKC').replace(/\s+/g, ' ').trim();
-  const key = noteKey(value).replace(/\bnote(?=\s+(?:this|that|all|to|in|into)\b)/gu, 'save');
+  let key = noteKey(value);
   if (!key) return { decision: 'none' };
   if (APPEND.test(key)) return { decision: 'append' };
+  key = key.replace(/\bnote(?=\s+(?:this|that|all|to|in|into)\b)/gu, 'save');
   if (/"[^"]*"|'[^']*'|\u201c[^\u201d]*\u201d/u.test(value)) return { decision: 'clarify', reason: 'quoted' };
   if (QUESTION.test(key)) return { decision: 'clarify', reason: 'reported' };
   if (REPORTED.test(key)) return { decision: 'clarify', reason: 'reported' };

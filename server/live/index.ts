@@ -627,6 +627,8 @@ interface ActiveSession {
   inputFinalAt: number | undefined;
   /** First model audio of the current turn; reset at each model turn start. */
   firstAudioAt: number | undefined;
+  audioResponseId?: string;
+  traceOutputTurnId?: string;
   /** L-04: the end of the last audible frame, owner speech end or model audio end, whichever came later, and whether
    *  the wait that followed began after a tool result. The wait to the next model audio is the silence the owner heard. */
   heardSince?: number | undefined; heardAfterTool: boolean;
@@ -2828,6 +2830,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     connection.turnIndex += 1;
     const turnId = `${handle.liveSessionId}:t${connection.turnIndex}`;
     connection.turnId = turnId;
+    handle.traceOutputTurnId = turnId;
     this.#receipt(handle, 'turn.opened', { turnId }, {
       origin: 'owner', turnIndex: connection.turnIndex, openedAt: this.#now(), monoMs: hostMonotonicMs(),
       ...(supersedes === undefined ? {} : { supersedesTurnId: supersedes }),
@@ -3648,7 +3651,12 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           if (handle.turnCompleteSeen) { handle.dropResponse = false; handle.outputJournalled = false; handle.turnCompleteSeen = false; }
           if (handle.muted) handle.mutedResponse = true;
           resetTurnScript(handle);
-          handle.firstAudioAt = undefined; handle.turnAudioAt = undefined;
+          // Synthesized owner-end notifications do not identify a new provider response.
+          const responseId = 'responseId' in event && typeof event.responseId === 'string' ? event.responseId : undefined;
+          if (responseId !== undefined ? responseId !== handle.audioResponseId : !handle.speaking) {
+            handle.firstAudioAt = undefined; handle.turnAudioAt = undefined;
+          }
+          if (responseId !== undefined) handle.audioResponseId = responseId;
           this.#beginModelTurn(handle);
           // A generation start is the think time. gpt-live-1 sends none for a plain turn, so the adapter
           // synthesizes one when the owner's episode ends, and this is what puts the orb in THINKING.
@@ -4709,7 +4717,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       const journalId = Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [handle.liveSessionId])!['journal_id']);
       if (handle.pendingDiagnosticLoss) tx.run("UPDATE live_sessions SET diagnostic_metadata_state='partial',diagnostic_content_state='partial',diagnostic_failures=MAX(COALESCE(diagnostic_failures,0),1),diagnostic_last_reason='store_unavailable' WHERE live_session_id=?", [handle.liveSessionId]);
       if (transcription) {
-        const turnId = handle.connection.turnId;
+        const turnId = handle.connection.turnId ?? (transcription.type === 'outputTranscription' ? handle.traceOutputTurnId : undefined);
         if (turnId !== undefined) {
           // L2-R1: live_journal keeps its fragments and its empty closing row; the audit row is where the
           // assembled utterance belongs, so trace_utterance final=1 answers "what was said".

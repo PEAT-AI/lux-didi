@@ -930,6 +930,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.ms) || !SILENCE_OWNERS.includes(String(value.silence))) return;
     return { event: 'live_heard_silence', ms: value.ms, silence: value.silence as string };
   }
+  if (value.event === 'uplink_speech_shed') {
+    if (!closedKeys(value, ['event', 'ms']) || !isSafeCount(value.ms)) return;
+    return { event: 'uplink_speech_shed', ms: value.ms };
+  }
   if (value.event === 'live_response_latency') {
     // C-DEADAIR: the provider's share of a wait, kept apart from the host's dead-air clock. Three durations and
     // the session they belong to, never any turn content.

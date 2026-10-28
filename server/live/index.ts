@@ -595,7 +595,6 @@ const RESEARCH_PROJECTION_CHARS = 240;
  * and a refusal names its reason, so a journal line is never a bare `research: error`.
  */
 export function researchProjection(response: JsonObject, status: 'completed' | 'error'): string {
-  if (response['status'] === 'refused' || response['status'] === 'blocked' || response['state'] === 'refused') return `research: refused:${text(response['code']) ?? text(response['reason']) ?? 'unknown'}`;
   const text = (value: unknown): string | undefined => (typeof value === 'string' && value.length > 0 ? value : undefined);
   const detail = (): string => {
     if (response['status'] === 'refused' || response['status'] === 'blocked' || response['state'] === 'refused') return `refused:${text(response['code']) ?? text(response['reason']) ?? 'unknown'}`;

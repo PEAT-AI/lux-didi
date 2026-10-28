@@ -2330,7 +2330,7 @@ test('W5-R1: settled calendar and knowledge answer at 1 s while web stays pendin
   let answered = false;
   const result = runResearch(h.deps, { action: 'start', question: 'my schedule and project update', lookups: [
     { source: 'calendar', query: 'today' }, { source: 'knowledge', query: 'project update' }, { source: 'web', query: 'project update' },
-  ] }, signal()).then(reply => { answered = true; return reply; });
+  ] }, new AbortController().signal).then(reply => { answered = true; return reply; });
   await settle();
   clock.advance(1000);
   sources.resolve();
@@ -2345,6 +2345,6 @@ test('W5-R1: settled calendar and knowledge answer at 1 s while web stays pendin
 
 test('R9-W5: cost research does not automatically read the calendar', async () => {
   const h = harness({ configured: ['calendar', 'knowledge'], executeText: 'Synthetic price: ten units.' });
-  await runResearch(h.deps, { action: 'start', question: 'what does the synthetic service cost', lookups: [{ source: 'knowledge', query: 'synthetic service cost' }] }, signal());
+  await runResearch(h.deps, { action: 'start', question: 'what does the synthetic service cost', lookups: [{ source: 'knowledge', query: 'synthetic service cost' }] }, new AbortController().signal);
   assert.equal(h.executed.some(call => call.name === 'calendar_list_events'), false);
 });

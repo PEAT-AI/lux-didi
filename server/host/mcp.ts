@@ -12,7 +12,7 @@ import { MongooseCredentialError, MONGOOSE_CONSENT_CAP_MS, mongooseAccessToken, 
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
-import { identityAction, identityProofMemo, proveIdentity, refusalCode, IDENTITY_TIMEOUT_MS, type IdentityErrorCode, type IdentityProof } from '../connectors/identity.js';
+import { identityAction, identityFailureRetryable, identityProofMemo, proveIdentity, refusalCode, IDENTITY_TIMEOUT_MS, type IdentityErrorCode, type IdentityProof } from '../connectors/identity.js';
 import { googleAccountPinRefused, googleMcpPathUnsafe } from '../connectors/google.js';
 import { noteGmailAccount } from '../tools/open-handles.js';
 import { homedir } from 'node:os';
@@ -136,17 +136,6 @@ export interface ConnectorFailureDetail {
 }
 
 /**
- * Whether an identity failure is worth a bounded background retry. Only an inconclusive probe is:
- * `identity_timeout` means the proof did not answer in time, so the connector earns the bounded
- * recovery ladder (5/20/60 s), never a restart per owner turn (TR4-R8). The definite outcomes
- * `identity_unverified`, `identity_mismatch` and `not_signed_in` are terminal for that endpoint: it
- * latches until an explicit sign-in or a host restart (C-OWNER-IDENTITY point 5).
- */
-export function identityFailureRetryable(proof: IdentityProof): boolean {
-  return proof.code === 'identity_timeout';
-}
-
-/**
  * The report's closed reason for one identity refusal. Ruling TR4-R8: a helper that answers
  * `credential_missing` is a dead credential, a sign-in need, never an unproven account, so its row
  * says `not_signed_in`; every other code keeps its own closed name.
@@ -155,8 +144,15 @@ function outcomeCode(code: 'identity_mismatch' | IdentityErrorCode): 'identity_m
   return code === 'credential_missing' ? 'not_signed_in' : code;
 }
 
-/** Every restart delay of one bounded background recovery round, after a retryable connect failure. */
-export const CONNECTOR_RECOVERY_DELAYS_MS = [5_000, 20_000, 60_000] as const;
+/** Every restart delay of one background recovery round, after a retryable connect failure. */
+export const CONNECTOR_RECOVERY_DELAYS_MS = [2_000, 5_000, 15_000, 45_000] as const;
+
+/**
+ * How often a transient failure is retried once the delays above are spent, for as long as the host
+ * lives. A network that came up a minute after the host started, or a local server that was still
+ * booting, must not need a restart; only a definite refusal latches.
+ */
+export const CONNECTOR_RECOVERY_REPEAT_MS = 120_000;
 
 /**
  * #671-R2: how often, per endpoint, a read that needs an endpoint whose bounded round was spent on a
@@ -166,11 +162,12 @@ export const CONNECTOR_RECOVERY_DELAYS_MS = [5_000, 20_000, 60_000] as const;
 export const CONNECTOR_REARM_INTERVAL_MS = 120_000;
 
 /**
- * One bounded recovery round per endpoint: at most one timer per endpoint, the delays in order, then it
- * stops and stays stopped until the next explicit reconnect or host start. `next` returns whether an
- * attempt is pending now, so the status projection can say "retrying" only while one really is.
+ * One recovery round per endpoint: at most one timer per endpoint, the delays in order, then every
+ * `repeatMs` for as long as the host lives. Without `repeatMs` the round is bounded and stops until the
+ * next explicit reconnect or host start. `next` returns whether an attempt is pending now, so the
+ * status projection can say "retrying" only while one really is.
  */
-export function createRecoverySchedule(delays: readonly number[] = CONNECTOR_RECOVERY_DELAYS_MS) {
+export function createRecoverySchedule(delays: readonly number[] = CONNECTOR_RECOVERY_DELAYS_MS, repeatMs?: number) {
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   const spent = new Map<string, number>();
   return {
@@ -185,9 +182,10 @@ export function createRecoverySchedule(delays: readonly number[] = CONNECTOR_REC
     next: (id: string, run: () => void): boolean => {
       if (timers.has(id)) return true;
       const used = spent.get(id) ?? 0;
-      if (used >= delays.length) return false;
+      const delay = used < delays.length ? delays[used] : repeatMs;
+      if (delay === undefined) return false;
       spent.set(id, used + 1);
-      const timer = setTimeout(() => { timers.delete(id); run(); }, delays[used]);
+      const timer = setTimeout(() => { timers.delete(id); run(); }, delay);
       timer.unref?.();
       timers.set(id, timer);
       return true;
@@ -205,6 +203,8 @@ export type ConnectorLifecycleEvent =
   | { event: 'mongoose_tool_schema_refused'; endpointId: string; tool: string }
   | { event: 'connector_connected'; endpointId: string; connectMs: number }
   | { event: 'connector_recovered'; endpointId: string; attempts: number; connectMs: number }
+  /** One background retry of a transient failure, with the closed code it ended on. */
+  | { event: 'connector_retry'; connector: string; endpointId: string; attempt: number; outcome: string }
   | { event: 'connector_recovery_exhausted'; endpointId: string; attempts: number; reason: string }
   | { event: 'connector_unavailable'; endpointId: string; reason: string }
   | { event: 'connector_helper_stderr'; endpointId: string; bytes: number }
@@ -224,8 +224,10 @@ export async function composeMcpRuntime(options: {
   now?: () => number;
   /** Test seam: override the endpoint read deadline; production uses {@link ENDPOINT_CALL_DEADLINE_MS}. */
   callDeadlineMs?: number;
-  /** Test seam: override the bounded recovery delays; production uses {@link CONNECTOR_RECOVERY_DELAYS_MS}. */
+  /** Test seam: override the recovery delays; production uses {@link CONNECTOR_RECOVERY_DELAYS_MS}. */
   recoveryDelaysMs?: readonly number[];
+  /** Test seam: override the steady retry interval; `false` bounds the round; production uses {@link CONNECTOR_RECOVERY_REPEAT_MS}. */
+  recoveryRepeatMs?: number | false;
   /** Hold connector initialization until `start()`; the supervised host writes the ready frame first. */
   deferConnectors?: boolean;
   /** Test seam: the home folder the Google wiring guard checks against; production uses the user's home. */
@@ -295,7 +297,8 @@ export async function composeMcpRuntime(options: {
   // failure and never re-settles an endpoint whose grant was revoked, refused or closed on purpose.
   const everConnected = new Set<string>();
   const generations = new Map<string, number>();
-  const recovery = createRecoverySchedule(options.recoveryDelaysMs);
+  const repeatMs = options.recoveryRepeatMs === undefined ? CONNECTOR_RECOVERY_REPEAT_MS : options.recoveryRepeatMs;
+  const recovery = createRecoverySchedule(options.recoveryDelaysMs, repeatMs === false ? undefined : repeatMs);
   // The per-tool digest of each endpoint's readable names as of its last approved round.
   const approvedSchemas = new Map<string, Map<string, string>>();
   let closed = false;
@@ -468,8 +471,8 @@ export async function composeMcpRuntime(options: {
   // one fresh attempt per interval and no more.
   const lastAttemptAt = new Map<string, number>();
   // The endpoints whose bounded round was spent on a retryable reason and may be re-armed by a read.
-  // An identity timeout is retryable but never re-armed by a read (TR4-R8): its ladder is 5/20/60 s and
-  // an owner turn never restarts it, so this set only ever holds non-identity failures.
+  // An identity failure never is (TR4-R8): it runs on its own ladder, so an owner turn never starts a
+  // probe, and this set only ever holds non-identity failures.
   const rearm = new Set<string>();
   const identityTimeouts = new Set<string>();
   const retryEndpoint = async (entry: McpEndpointEntry): Promise<{ retryable: boolean }> => {
@@ -481,6 +484,10 @@ export async function composeMcpRuntime(options: {
     if (replaceSession.delete(entry.id)) await port.retire(entry.id);
     const started = now();
     const result = await settle(entry, token, 'refresh', identityProofMemo()).catch(() => ({ retryable: false }));
+    // One closed line per retry outcome: the endpoint, its connector, which attempt this was and the code
+    // it ended on. A recovery is its own code, never a helper message or an address.
+    options.lifecycleLog?.({ event: 'connector_retry', connector: entry.connector, endpointId: entry.id, attempt: recovery.attempts(entry.id),
+      outcome: reports.get(entry.id)?.state === 'connected' ? 'connected' : failureReasons.get(entry.id) ?? 'connector-unavailable' });
     if (!result.retryable) rearm.delete(entry.id);
     if (!result.retryable && reports.get(entry.id)?.state === 'connected') {
       options.lifecycleLog?.({ event: 'connector_recovered', endpointId: entry.id, attempts: recovery.attempts(entry.id), connectMs: Math.max(0, now() - started) });

@@ -48,6 +48,7 @@ const NAMED: Readonly<Record<string, Severity>> = {
   tool_ceiling_hit: { level: 'warn', cause: 'tool' },
   tool_arguments_rejected: { level: 'warn', cause: 'tool' },
   connector_failure: { level: 'warn', cause: 'connector' },
+  connector_retry: { level: 'info', cause: 'connector' },
 };
 
 /** A degradation is a warn, an unclassified host_error is an error, and the rest is routine. */

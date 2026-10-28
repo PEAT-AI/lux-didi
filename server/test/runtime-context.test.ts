@@ -116,3 +116,10 @@ test('C-LUXSAVE11: Runtime context never duplicates the generated save capabilit
   assert.equal(text.split('\n').find(line => line.startsWith('Connected now:')), 'Connected now: web search.');
   assert.match(text, /team chat needs approval/);
 });
+
+ test('C-CONVO9: refused connector is absent from Connected now', () => {
+  const text = buildRuntimeContext({ now: new Date('2026-01-01T00:00:00Z'), timeZone: 'UTC', connected: ['team chat', 'web search'],
+    connectors: [{ connector: 'mattermost', state: 'refused', reasonCode: 'owner-approval-required' }] });
+  assert.equal(text.split('\n').find(line => line.startsWith('Connected now:')), 'Connected now: web search.');
+  assert.match(text, /team chat needs approval/);
+});

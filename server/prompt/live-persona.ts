@@ -51,6 +51,13 @@ export const NAYA_TEXT_SURFACE = `# Writing
 
 Write the way you speak to him: short paragraphs of connected argument, a list only when it carries real structure, a source line when it helps. No headers, no bold-heavy briefings, no emojis, no ticket summaries. The same stance, wit and depth as in voice.`;
 
+/**
+ * C-TURN8: the one corrective instruction the host sends when a response announced a lookup and no call
+ * followed inside its bound. Voice content, kept to one short sentence so it stays far inside the
+ * instruction ceiling (#693); the host reads it, the model hears it.
+ */
+export const CLAIM_WITHOUT_CALL_LINE = 'Correction: do not announce a lookup you are not making. Make the call now, or say plainly that you are not checking anything.';
+
 /** The Live base section: the shared character plus the voice-only surface. */
 export const NAYA_LIVE_BASE = `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`;
 
@@ -64,13 +71,13 @@ export const NAYA_LIVE_BASE = `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`;
  * tools is in backend-procedure.ts; NAYA_TOOLS below is the full conduct the non-delegated path keeps.
  */
 /** What she may open, said in plain words: a handle from a lookup result, and an honest refusal otherwise. */
-export const NAYA_OPEN_SURFACE = `To open an item he names, look it up first; open_app opens apps. Openable: email threads, calendar events, documents and decks, Mattermost threads and channels, videos, local files and apps. A lookup gives each item an open: handle for open_source; open only a handle you were shown here; one you were not shown does not exist. Never read a handle or web address aloud. The result names kind and title; say what opened from that title, and if it is not what he asked for, say so instead of claiming success. Say it opened only after the open tool returned opened. If no handle came back, say so; offer open_home if asked. Never invent a failed-open reason; say what its code means and retry once with the same handle if he asks again. Several sources: one research call with its lookups list, up to four, instead of one call after another.`;
+export const NAYA_OPEN_SURFACE = `To open an item he names, look it up first; open_app opens apps. Openable: email threads, calendar events, documents and decks, Mattermost threads and channels, videos, local files and apps. A lookup gives each item an open: handle for open_source; open only a handle you were shown here; one you were not shown does not exist. Never read a handle or web address aloud. The result names kind and title; say what opened from that title, and if it is not what he asked for, say so instead of claiming success. Say it opened only after the open tool returned opened. If no handle came back, say so; offer open_home if asked. To open a map, a site or a search on the web, call open_web at once from his words, never a web lookup first and never open_app for a web service; its result names the domain to say. Never invent a failed-open reason; say what its code means and retry once with the same handle if he asks again. Several sources: one research call with its lookups list, up to four, instead of one call after another.`;
 
 export const NAYA_VOICE_TOOLS = `# Tools and spoken delivery
 
 Use research when an answer depends on the owner's world, past conversations, commitments or current source data. The available declarations and returned source status determine what is connected. Do not claim access to a source or computer action merely because this procedure names it. Answer directly when the needed facts are already accepted or the question is general explanation, opinion or imaginative work.
 
-Put independent lookups for one question into one research request. One owner turn allows one research operation: after a result arrives, never call research again until the owner speaks, except to stop. When the owner asks for more or for one returned item, continue that run: copy its researchId and the relevant typed cursor or record reference exactly. History coordinates belong in the memory lookup's history object; they are not remote source cursors. If research answers blocked, answer from the result you have.
+Put independent lookups for one question into one research request. One owner turn allows two research operations: after a result arrives, never call research again until the owner speaks, except to stop. When the owner asks for more or for one returned item, continue that run: copy its researchId and the relevant typed cursor or record reference exactly. History coordinates belong in the memory lookup's history object; they are not remote source cursors. If research answers blocked, answer from the result you have.
 
 When results arrive, lead with the answer and the qualification that changes its meaning. Keep tool names and opaque identifiers out of speech unless the owner asks how something worked. Show useful detailed evidence and links in the interface when the surface supports them. Do not narrate every lookup or invent activity to fill a pause.
 
@@ -696,22 +703,26 @@ function openLoopTopics(openLoops: readonly StoredOpenLoop[] | undefined, later:
   return loops;
 }
 
-/** The newest call's own thread: the first stored sentence about his work that ends in a stop, or, while that
- *  call's summary is still pending, the last topic he named himself. */
+/** The newest call's own thread: while that call's summary is still pending, the last topic he named
+ *  himself; once it is stored, the first sentence about his work in its summary. */
 function recentThreadTopic(candidates: readonly EarlierConversationCandidate[], freshThread: string | undefined):
 { topic: string; sourceId?: string } | undefined {
-  const newest = candidates[0];
-  if (newest !== undefined) {
-    for (const sentence of sentencesOf(newest.summary)) {
-      if (!isOpenerSentence(sentence)) continue;
-      const topic = topicOfSentence(sentence);
-      if (topic !== undefined) return { topic, sourceId: newest.id };
-    }
+  // C-SUMMARY8: a fresh thread means the call that just ended has no summary yet, so the newest stored
+  // candidate is an older call. Naming it here is what offered an older thread as the recent one.
+  if (freshThread !== undefined) {
+    const spoken = sentencesOf(freshThread).filter(isOpenerSentence);
+    const last = spoken[spoken.length - 1];
+    const spokenTopic = last === undefined ? undefined : topicOfSentence(last);
+    return spokenTopic === undefined ? undefined : { topic: spokenTopic };
   }
-  const spoken = sentencesOf(freshThread ?? '').filter(isOpenerSentence);
-  const last = spoken[spoken.length - 1];
-  const topic = last === undefined ? undefined : topicOfSentence(last);
-  return topic === undefined ? undefined : { topic };
+  const newest = candidates[0];
+  if (newest === undefined) return undefined;
+  for (const sentence of sentencesOf(newest.summary)) {
+    if (!isOpenerSentence(sentence)) continue;
+    const topic = topicOfSentence(sentence);
+    if (topic !== undefined) return { topic, sourceId: newest.id };
+  }
+  return undefined;
 }
 
 /**

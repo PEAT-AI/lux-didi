@@ -140,3 +140,27 @@ test('C-DEADAIR: the provider latency is recorded apart from the wait, owner fin
   assert.equal(typeof record['msSinceToolOutput'], 'number');
   assert.ok(Number(record['msSinceOwnerFinal']) >= 1_000, 'the wait is measured from the owner final words');
 });
+
+// C-REBUILD8 (review BL1): the debt ladder owns the same speaking hold the sliding watchdog keeps. On 2026-10-28
+// the N12 nudge came from this path, not from the watchdog: `live_debt phase=rung reason=dead_air` then
+// `live_dead_air_nudge elapsedMs=8000` with no `live_watchdog phase=nudged` anywhere near it, and the rebuild
+// followed one RESPONSE_WATCHDOG_RECOVERY_MS later. A sentence still being spoken holds both back.
+test('C-REBUILD8: the debt rung never nudges or rebuilds inside the owner sentence', async t => {
+  const live = await openCall(t);
+  await live.emit(ownerFinal('When does the synthetic bridge reopen?'));
+  await live.emit(toolCall('d5'));
+  await live.emit(portEvent({ type: 'modelTurnStarted' }));
+  // The settled read owes an answer, so the ladder is armed and the hold below is what keeps it quiet.
+  assert.equal(live.receipts.filter(record => record.event === 'live_debt' && record['phase'] === 'start').length, 1,
+    'the settled read armed the ladder');
+  for (let second = 0; second < 15; second += 1) {
+    await live.emit(portEvent({ type: 'inputTranscription', text: `and then number ${second}`, finished: false }));
+    await live.advance(1_000);
+  }
+  assert.equal(rungReceipts(live).length, 0, 'his unfinalized sentence owns the debt silence, so no dead-air nudge fires');
+  assert.equal(live.fake.sessionsOpened, 1, 'and the ladder rebuilds nothing inside his words');
+  // Held, not dead: from his final fragment the ladder judges the silence as it always did.
+  await live.emit(ownerFinal('book a table for four'));
+  for (let spent = 0; spent < AUDIBLE_DEBT_RUNG_MS + 2_000 && rungReceipts(live).length === 0; spent += 250) await live.advance(250);
+  assert.equal(rungReceipts(live).length, 1, 'the rung is judged from his final fragment, not before it');
+});

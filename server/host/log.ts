@@ -74,6 +74,8 @@ const KNOWLEDGE_DAY_FILTERS = ['none', 'past_window', 'dropped_on_empty'];
 // W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
 const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_summary_completed', 'conversation_summary_failed', 'conversation_summary_skipped']);
 const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip', 'no_text_model', 'history_provenance_unavailable', 'summary_route_class_denied'];
+/** C-SUMMARY8: the only phase a summary line may name; the per-call schedule names none. */
+const SUMMARY_PHASES = ['at_start'];
 /** S4a: why a progress line was sent, as a closed set (never free text). */
 const PROGRESS_REASONS = ['dead_air', 'stalled', 'lookup'];
 /** W4: why a progress decision stayed silent, as a closed set (never free text, never the line itself). */
@@ -132,6 +134,13 @@ function mailQueryShape(value: unknown): { terms: number; operators: string[]; w
   return { terms: row['terms'], operators: operators as string[], ...(hasWindow ? { window: window as string } : {}) };
 }
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
+/**
+ * #689: the live owner stamps a research event's callKey with `scopedTraceKey`, `call:` plus the 64 lowercase hex
+ * of a sha256. That shape is closed, so it can carry no text and no provider id can imitate it; SAFE_ID stays as it
+ * is for every other field. A plain safe id is still accepted, because the ledger also carries provider call ids.
+ */
+const SCOPED_CALL_KEY = /^call:[0-9a-f]{64}$/;
+const isCallKey = (value: unknown): value is string => isSafeId(value) || (typeof value === 'string' && SCOPED_CALL_KEY.test(value));
 /**
  * Z1: a research line whose id fails SAFE_ID used to be dropped whole, so a run that really happened left
  * no receipt and read as a run that never happened. The replacement names the event and the field only,
@@ -309,6 +318,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.detail !== 'string' || !/^[a-z0-9]{1,16}$/.test(value.detail)) return;
     return { event: 'native_action', action: value.action, code: value.code, detail: value.detail };
   }
+  if (value.event === 'live_claim_without_call') {
+    // C-TURN8: a claim the turn never acted on is counted from the turn's sequence and its bound, nothing else.
+    if (Object.keys(value).sort().join(',') !== ['event', 'ms', 'sequence'].join(',')) return;
+    if (!isSafeCount(value.sequence) || !isSafeCount(value.ms)) return;
+    return { event: 'live_claim_without_call', sequence: value.sequence, ms: value.ms };
+  }
+  if (value.event === 'live_tool_refused') {
+    // C-TURN8: a tool the host refused before the owner spoke, by name and closed reason, never an argument.
+    if (Object.keys(value).sort().join(',') !== ['event', 'reason', 'sequence', 'tool'].join(',')) return;
+    if (!isSafeCount(value.sequence) || !SAFE_TOKEN.test(String(value.tool)) || value.reason !== 'no_owner_input') return;
+    return { event: 'live_tool_refused', sequence: value.sequence, tool: value.tool, reason: value.reason };
+  }
   if (value.event === 'open_claim_corrected') {
     // Open2: the correction is counted, never quoted: one closed reason, no words of hers.
     if (Object.keys(value).sort().join(',') !== ['event', 'reason'].join(',')) return;
@@ -407,6 +428,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'google_mcp_path_unsafe', endpointId: value.endpointId };
   }
   if (value.event === 'connector_connected' || value.event === 'connector_recovered'
+    || value.event === 'connector_retry'
     || value.event === 'connector_recovery_exhausted' || value.event === 'connector_unavailable'
     || value.event === 'connector_latched'
     || value.event === 'connector_helper_stderr') {
@@ -422,11 +444,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
       return { event: 'connector_connected', endpointId: value.endpointId, connectMs: value.connectMs };
     }
     if (value.event === 'connector_recovered') {
-      if (!closedKeys(value, ['attempts', 'connectMs', 'endpointId', 'event']) || !count(value.attempts, 8) || !ms(value.connectMs)) return;
+      // A transient failure is retried every two minutes for the host's life, so an attempt count is not
+      // bounded by the delay ladder any more.
+      if (!closedKeys(value, ['attempts', 'connectMs', 'endpointId', 'event']) || !count(value.attempts, 100_000) || !ms(value.connectMs)) return;
       return { event: 'connector_recovered', endpointId: value.endpointId, attempts: value.attempts, connectMs: value.connectMs };
     }
+    if (value.event === 'connector_retry') {
+      if (!closedKeys(value, ['attempt', 'connector', 'endpointId', 'event', 'outcome'])
+        || !count(value.attempt, 100_000) || !token(value.connector) || !token(value.outcome)) return;
+      return { event: 'connector_retry', connector: value.connector, endpointId: value.endpointId, attempt: value.attempt, outcome: value.outcome };
+    }
     if (value.event === 'connector_recovery_exhausted') {
-      if (!closedKeys(value, ['attempts', 'endpointId', 'event', 'reason']) || !count(value.attempts, 8) || !token(value.reason)) return;
+      if (!closedKeys(value, ['attempts', 'endpointId', 'event', 'reason']) || !count(value.attempts, 100_000) || !token(value.reason)) return;
       return { event: 'connector_recovery_exhausted', endpointId: value.endpointId, attempts: value.attempts, reason: value.reason };
     }
     if (value.event === 'connector_unavailable') {
@@ -691,7 +720,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCloseReason(value.closeReason)) return;
     if (!isSafeCount(value.seedTurns) || !isSafeCount(value.seedChars)) return;
     // C-PICKUP: which pickup the rebuilt session was opened with; a closed set, so no spoken text rides here.
-    if (!isSafeMember(value.pickup, ['mute', 'connection'])) return;
+    if (!isSafeMember(value.pickup, ['mute', 'connection', 'quiet', 'none'])) return;
     return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, cause: value.cause, closeCode: value.closeCode, closeReason: value.closeReason, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, msSinceDrop: value.msSinceDrop, pickup: value.pickup, liveSessionId: value.liveSessionId, generation: value.generation };
   }
   if (value.event === 'live_provider_open' || value.event === 'live_provider_ready') {
@@ -1162,7 +1191,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeId(value.researchId)) return rejectResearchId('research_progress');
     if (!isSafeMember(value.phase, RESEARCH_PHASES) || !isSafeCount(value.elapsedMs)) return;
     if (!isSafeMembers(value.sourcesDone, RESEARCH_SOURCES) || !isSafeMembers(value.sourcesPending, RESEARCH_SOURCES)) return;
-    if (hasCall && !isSafeId(value.callKey)) return;
+    if (hasCall && !isCallKey(value.callKey)) return;
     return { event: 'research_progress', researchId: value.researchId, ...(hasCall ? { callKey: value.callKey } : {}), phase: value.phase, sourcesDone: value.sourcesDone, sourcesPending: value.sourcesPending, elapsedMs: value.elapsedMs };
   }
   if (value.event === 'research_run') {
@@ -1242,7 +1271,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
     if (normalized !== undefined && !isNormalizedPaths(normalized)) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_routed');
-    if (routedCall && !isSafeId(value.callKey)) return;
+    if (routedCall && !isCallKey(value.callKey)) return;
     if (!isSafeCount(value.lookups)) return;
     if (!Array.isArray(value.sources) || value.sources.length > 4 || !isSafeMembers(value.sources, ROUTED_SOURCES)) return;
     if (!Array.isArray(value.outcomes) || value.outcomes.length !== value.sources.length || !isSafeMembers(value.outcomes, ROUTED_OUTCOMES)) return;
@@ -1390,7 +1419,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // A resolved window is two calendar dates in the id form, never a query and never an event title.
     if (hasFrom !== hasTo) return;
     if (hasFrom && (!isSafeId(value.windowFrom) || !isSafeId(value.windowTo))) return;
-    if (hasCall && !isSafeId(value.callKey)) return;
+    if (hasCall && !isCallKey(value.callKey)) return;
     return { event: 'research_subcall', researchId: value.researchId, ...(hasCall ? { callKey: value.callKey } : {}), kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor, ...(hasWindow ? { window: value.window } : {}), ...(hasUnread ? { unread: value.unread } : {}), ...(hasFrom ? { windowFrom: value.windowFrom, windowTo: value.windowTo } : {}) };
   }
   if (value.event === 'conversation_summary_recovery') {
@@ -1401,10 +1430,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (typeof value.event === 'string' && SUMMARY_EVENTS.has(value.event)) {
     // W13: the distiller's outcome, session id, character counts, milliseconds and reason codes only.
+    // C-SUMMARY8: phase names the start-up pass; the per-call schedule carries no phase.
     const counts = ['inputChars', 'outputChars', 'durationMs', 'retryCount'] as const;
-    const allowed = ['event', 'liveSessionId', ...counts, 'truncated', 'errorCode', 'reason'];
+    const allowed = ['event', 'liveSessionId', ...counts, 'truncated', 'errorCode', 'reason', 'phase'];
     if (Object.keys(value).some(key => !allowed.includes(key))) return;
     if (!isSafeId(value.liveSessionId)) return;
+    if ('phase' in value && !isSafeMember(value.phase, SUMMARY_PHASES)) return;
     for (const name of counts) if (name in value && !isSafeCount(value[name])) return;
     if ('truncated' in value && typeof value.truncated !== 'boolean') return;
     if ('errorCode' in value && !isSafeToken(value.errorCode)) return;

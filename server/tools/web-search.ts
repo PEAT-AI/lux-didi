@@ -1,4 +1,5 @@
 import type { Credentials } from '../adapters/model/types.js';
+import { registrableDomain } from './open-handles.js';
 
 /**
  * WEB-1021: one typed action, no provider abstraction. Gemini `gemini-3.8-flash` generateContent with
@@ -286,4 +287,37 @@ export function webFooter(cards: readonly { title: string; url: string }[], attr
   const label = (title: string): string => title.replace(/[\[\]]/g, '');
   return [...cards.slice(0, WEB_SOURCE_CAP), ...attribution.slice(0, WEB_SOURCE_CAP)]
     .map(card => `[${label(card.title)}](${card.url})`).join(' · ');
+}
+
+/**
+ * C-OPENWEB8: the sites that are never the one the owner meant when he names a company. A closed list,
+ * because an aggregator or a social page that merely mentions the name is not that name's home.
+ */
+export const SITE_BLOCKLIST: readonly string[] = [
+  'wikipedia.org', 'linkedin.com', 'crunchbase.com', 'facebook.com', 'instagram.com', 'x.com', 'twitter.com',
+  'youtube.com', 'youtu.be', 'glassdoor.com', 'bloomberg.com', 'pitchbook.com', 'zoominfo.com', 'indeed.com',
+  'reddit.com', 'quora.com', 'pinterest.com', 'tiktok.com', 'threads.net', 'medium.com', 'yelp.com',
+  'tripadvisor.com', 'google.com', 'bing.com', 'duckduckgo.com', 'search.yahoo.com',
+];
+
+export type SitePick = { domain: string } | { candidates: string[] };
+
+/**
+ * The one site the owner's words name, from the results of the existing web search: the second-level
+ * label equals or contains his name, aggregators and social pages are dropped, and one match opens.
+ */
+export function pickSiteDomain(name: string, sources: readonly WebSource[]): SitePick {
+  const wanted = name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  const domains: string[] = [];
+  if (wanted.length >= 2) {
+    for (const source of sources) {
+      let host: string;
+      try { host = new URL(source.url).hostname; } catch { continue; }
+      const domain = registrableDomain(host);
+      if (!domain.includes('.') || SITE_BLOCKLIST.includes(domain)) continue;
+      if (!(domain.split('.')[0] ?? '').replace(/[^\p{L}\p{N}]+/gu, '').includes(wanted)) continue;
+      if (!domains.includes(domain)) domains.push(domain);
+    }
+  }
+  return domains.length === 1 ? { domain: domains[0]! } : { candidates: domains.slice(0, 3) };
 }

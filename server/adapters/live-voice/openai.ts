@@ -1775,19 +1775,41 @@ class Session implements LiveVoiceSession {
 
   /** Speakable progress: the voice model paraphrases it aloud, so the owner hears that a lookup is still running.
    *  Documented shape (`session.commentary.append`, guides/live-delegation): plain-string `content` under 500
-   *  tokens. #516: the append names no delegation; every frame that carried a `delegation_id` was refused on it,
-   *  and the provider binds the append to the turn that is open when it arrives. */
+   *  tokens. C-REBUILD8: the provider requires `delegation_id` on the append and refuses one without it by name
+   *  (`command_rejected code=missing_required_parameter param=delegation_id kind=cmt`, 2026-10-28 N10), so the
+   *  frame carries the delegation in flight; with no delegation open nothing is sent at all. */
   sendCommentary(input: { text: string }): boolean {
     return this.append('session.commentary.append', 'cmt', input);
+  }
+
+  /** C-REBUILD8: the delegation a progress line belongs to: the open one still waiting on a call, else the most
+   *  recently opened one. A session that opened no delegation returns undefined, and the line is never sent. */
+  private delegationInFlight(): string | undefined {
+    let latest: string | undefined;
+    let awaiting: string | undefined;
+    for (const delegation of this.delegations.values()) {
+      latest = delegation.id;
+      if (delegation.awaiting.size > 0 && awaiting === undefined) awaiting = delegation.id;
+    }
+    return awaiting ?? latest;
   }
 
   private append(type: 'session.commentary.append', kind: 'cmt', input: { text: string }): boolean {
     if (this.draining) return false;
     if (!this.checkpoint()) fail(this.terminal!.code);
     if (!this.isReady) fail('not_ready');
+    // C-REBUILD8: with no delegation open the provider requires a parameter the host cannot supply, so the line
+    // is skipped and logged as a closed skip instead of being written and refused.
+    const delegationId = this.delegationInFlight();
+    if (delegationId === undefined) {
+      // C-REBUILD8: the closed skip the host log schema already has for a progress line that stayed silent
+      // (W4: `delegationKey` plus a reason from its closed set). No delegation asked, so the key says none.
+      hostLogEvent({ event: 'commentary_skipped', delegationKey: 'none', reason: 'no_delegation' });
+      return false;
+    }
     // The documented ceiling is 500 tokens per append; a short character bound keeps every line well under it.
     if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > APPEND_CHAR_LIMIT) { fail('invalid_request'); return false; }
-    if (!this.write(JSON.stringify({ type, event_id: this.commandId(kind), content: input.text }))) { fail(this.terminal!.code); return false; }
+    if (!this.write(JSON.stringify({ type, event_id: this.commandId(kind), content: input.text, delegation_id: delegationId }))) { fail(this.terminal!.code); return false; }
     return true;
   }
 

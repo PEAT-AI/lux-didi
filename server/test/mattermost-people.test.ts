@@ -12,7 +12,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { EndpointConfig } from '../adapters/mcp/port.js';
 import {
   CONNECTOR_COMPOSED_TOOLS, composedGrantedNames, connectionEnvelope, createMattermostReader, nameKey,
-  MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS,
+  MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, withoutOwner,
 } from '../connectors/index.js';
 import type { MattermostAttention, MattermostChatRead, MattermostReader, MattermostResult } from '../connectors/index.js';
 import { projectMattermostResult } from '../tools/mattermost.js';
@@ -20,6 +20,7 @@ import { shapeMattermost } from '../tools/live-shape.js';
 import { INTERNAL, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { ResearchLedger, runResearch, shapeBlock, type ResearchDeps } from '../tools/research.js';
 import { chatAsk, chatIntent, chatWindow, spokenChannel } from '../tools/chat-intent.js';
+import { installPeople, parsePeople, type PeopleSnapshot } from '../people/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // The fixture's clock and the suite's, one instant, so the week window is the same every run.
@@ -40,13 +41,13 @@ const fixtureDaysAgo = (days: number): string => new Date(FIXTURE_NOW - days * D
 
 type Call = { name: string; arguments: Record<string, unknown> };
 
-async function setup(t: { after(fn: () => Promise<void> | void): void }, mode: 'people' | 'legacy', grant?: (names: string[]) => string[]) {
+async function setup(t: { after(fn: () => Promise<void> | void): void }, mode: 'people' | 'legacy', grant?: (names: string[]) => string[], extraEnv: Record<string, string> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'didi-mattermost-people-'));
   const log = join(dir, 'calls.log');
   const registry = new McpRegistry();
   const config: EndpointConfig = {
     id: 'mattermost', transport: 'stdio', command: process.execPath, args: [child, mode],
-    env: { HOME: dir, PATH: process.env.PATH ?? '/usr/bin', DIDI_FAKE_MATTERMOST_LOG: log, DIDI_FAKE_MATTERMOST_NOW: String(FIXTURE_NOW), LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+    env: { HOME: dir, PATH: process.env.PATH ?? '/usr/bin', DIDI_FAKE_MATTERMOST_LOG: log, DIDI_FAKE_MATTERMOST_NOW: String(FIXTURE_NOW), LOGNAME: '', SHELL: '', TERM: '', USER: '', ...extraEnv },
     account: ACCOUNT, resource: RESOURCE,
   };
   registry.register(config);
@@ -210,7 +211,13 @@ test('C-CHAT person-overview: the direct messages, shared groups and shared chan
   assert.match(read.read, /^everything you and Ada Moss \(@ada\.moss\) exchanged since /u);
   const projected = projectMattermostResult(f.adapter, result);
   assert.ok(projected.ok);
-  assert.match(projected.projection.text, /^- direct messages: 17 posts, last \d{4}-\d{2}-\d{2}$/mu);
+  // R8-W9: every section's counts ride ONE summary line after the posts, because nine header lines spent
+  // the whole voice cap and the posts they counted never reached the answer.
+  const summary = projected.projection.text.split('\n').filter(line => line.startsWith('- '));
+  assert.equal(summary.length, 1, 'the counts are one summary line, never one line per conversation');
+  assert.match(summary[0]!, /^- direct messages: 17 posts, last \d{4}-\d{2}-\d{2}; /u);
+  assert.match(summary[0]!, /; group with kim\.oak: 4 posts/u);
+  assert.ok(projected.projection.text.match(/^\*\*/mu), 'the posts lead, the line headed `**channel | role | age**`');
 });
 
 test('C-CHAT person-overview: an ambiguous name is the child refusal turned into the question', async t => {
@@ -408,6 +415,127 @@ test('CHAT-P1: "what did I discuss with Ada this week" is the overview over this
   assert.equal(f.calls().filter(call => call.name === 'mattermost_conversation_overview').length, 1);
   assert.match(JSON.stringify(reply['findings'] ?? []), /direct messages: \d+ posts/u);
   assert.match(String(reply['note']), /I read everything you and Ada Moss \(@ada\.moss\) exchanged since /u);
+});
+
+// ---- R8-W9: what was said, the person's DM, the name's edge, and the product's spoken name -----------------
+
+const ALEX_DM = 'chanDAlex0000000000000000a';
+
+/** A roster with two colleagues: Alex (a direct conversation exists) and Tess (none does). */
+function roster(): PeopleSnapshot {
+  return parsePeople({
+    version: 1,
+    people: [
+      { id: 'alex-ray', name: 'Alex Ray', aliases: ['Alex'], role: 'Engineer', circle: 'plantix', tier: 1, email: ['alex@example.invalid'], mattermost: 'alex.ray' },
+      { id: 'tess-wren', name: 'Tess Wren', aliases: ['Tess'], role: 'Designer', circle: 'plantix', tier: 1, email: ['tess@example.invalid'], mattermost: 'tess.wren' },
+    ],
+  });
+}
+
+test('R8-W9: "what did I discuss with Alex lately" answers with the newest posts, not with section counts', async t => {
+  const f = await setup(t, 'people', undefined, { DIDI_FAKE_MATTERMOST_ALEX: 'yes' });
+  const planned: IntentSubCall[] = [];
+  const reply = await runResearch(researchDeps(f, planned), { action: 'start', question: 'what did I discuss with Alex lately', topic: 'Alex discussion' }, new AbortController().signal);
+  const sent = planned.find(call => call.name === INTERNAL.chatRead)?.args;
+  assert.equal(sent?.['intent'], 'overview');
+  assert.equal(sent?.['person'], 'Alex');
+  assert.equal(sent?.['query'], undefined, '"lately" is a window, never a search term');
+  assert.equal(sent?.['from_date'], fixtureDaysAgo(7), 'lately is seven days');
+  const findings = String((reply['findings'] as { text: string }[])[0]?.text ?? '');
+  assert.match(findings, /alex note 2 about the pilot plan/u, 'the newest post text reaches the voice');
+  // N2: the roles are exact, never "either": the newest post is Alex's and the one before it is the owner's.
+  assert.match(findings, /direct messages \| they \| (?:just now|\d+ (?:minute|hour|day|week|month)s? ago) \| alex note 1 about the pilot plan/u, 'the partner\'s post is "they"');
+  assert.match(findings, /direct messages \| you \| (?:just now|\d+ (?:minute|hour|day|week|month)s? ago) \| alex note 2 about the pilot plan/u, 'the owner\'s post is "you"');
+  assert.match(findings, /showing \d+ of 12 posts/u, 'the counts are one line saying how many of the twelve it showed');
+  const summary = findings.split('\n').filter(line => /^showing \d+ of \d+ posts;/u.test(line));
+  assert.equal(summary.length, 1, 'nine section lines never spend the voice cap again');
+});
+
+test('R8-W9: a roster person with an existing direct conversation reads it, never "no direct messages"', async t => {
+  const f = await setup(t, 'people', undefined, { DIDI_FAKE_MATTERMOST_ALEX: 'yes' });
+  installPeople(roster());
+  t.after(() => installPeople(null));
+  const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Alex', sides: 'both' }));
+  assert.equal(read.notFound, undefined);
+  assert.doesNotMatch(read.read, /no direct messages/u);
+  assert.equal(searches(f.calls())[0]?.['channel'], ALEX_DM, 'the existing DM channel, read only');
+  assert.ok(read.posts.length > 0, 'the conversation holds posts');
+});
+
+test('R8-W9 (F1): a roster person without a direct conversation says so only after the lookup, and reads their mentions instead', async t => {
+  const f = await setup(t, 'people');
+  installPeople(roster());
+  t.after(() => installPeople(null));
+  const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Tess', sides: 'both' }));
+  assert.ok(f.calls().some(call => call.name === 'mattermost_list_channels'), 'the DM lookup ran before the answer');
+  assert.equal(searches(f.calls())[0]?.['query'], '@tess.wren', 'their mentions, because no direct conversation exists');
+  assert.equal(searches(f.calls())[0]?.['channel'], undefined, 'mentions live in every channel, never a DM');
+  assert.match(read.read, /^posts mentioning Tess Wren \(@tess\.wren\) in every channel, because you have no direct messages with them/u);
+  assert.doesNotMatch(read.read, /ask for their mentions/u, 'the mentions are already what was read');
+});
+
+test('R8-W9 (F2): the owner\'s display name goes with the handle, word by word, and only their own words go', () => {
+  assert.equal(withoutOwner('pilot Robert Smith', 'robert', 'Robert Smith'), 'pilot', 'the whole name is the owner');
+  assert.equal(withoutOwner('pilot robert', 'robert', 'Robert Smith'), 'pilot', 'the handle too');
+  assert.equal(withoutOwner('smith street pilot', 'robert', 'Robert Smith'), 'street pilot', 'a shared surname is the owner\'s word and goes; other words stay');
+  assert.equal(withoutOwner('pilot', 'robert@example.invalid', 'Robert Smith'), 'pilot', 'the part before any @ is the handle');
+  assert.equal(withoutOwner('pilot', '', ''), 'pilot', 'no identity, nothing dropped');
+});
+
+test('R8-W9: the owner\'s own handle never becomes a chat search term', async t => {
+  const f = await setup(t, 'people');
+  const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', sides: 'both', query: 'pilot robert' }));
+  assert.equal(searches(f.calls())[0]?.['query'], 'pilot', 'the handle is dropped, the topic stays');
+  assert.doesNotMatch(read.read, /robert/u);
+});
+
+test('R8-W9: a name stops at the name, and every person shape is a person ask', () => {
+  const at = { terms: 'Alex telling the pilot', nowMs: Date.parse('2026-10-25T09:00:00Z'), timeZone: 'UTC' };
+  assert.deepEqual(chatIntent('what is Alex telling', at), { kind: 'person-said', person: 'Alex', sides: 'theirs', terms: '', window: {} });
+  assert.deepEqual(chatIntent('what did I exchange with Alex', at), { kind: 'person-overview', person: 'Alex', terms: '', window: {} });
+  assert.deepEqual(chatIntent('what did I talk to Alex about', at), { kind: 'person-overview', person: 'Alex', terms: '', window: {} });
+  assert.deepEqual(chatIntent('what did I chat with Alex about', at), { kind: 'person-overview', person: 'Alex', terms: '', window: {} });
+  assert.deepEqual(chatIntent('what did Alex write to me', at), { kind: 'person-said', person: 'Alex', sides: 'theirs', terms: '', window: {} });
+  assert.equal(chatAsk('what did I exchange with Alex'), true);
+  assert.equal(chatAsk('what did I talk to Alex about'), true);
+});
+
+test('R8-W9: "lately" and "recently" are seven days, "last two weeks" fourteen, "today" from local midnight', () => {
+  const now = Date.parse('2026-10-25T09:00:00Z');
+  assert.deepEqual(chatWindow('what did Ada write lately', now, 'UTC'), { from: '2026-10-18' });
+  assert.deepEqual(chatWindow('what has Ada said recently', now, 'UTC'), { from: '2026-10-18' });
+  assert.deepEqual(chatWindow('what did Ada write in the last two weeks', now, 'UTC'), { from: '2026-10-11' });
+  assert.deepEqual(chatWindow('what did Ada write this week', now, 'UTC'), { from: '2026-10-19' });
+  assert.deepEqual(chatWindow('what did Ada write today', now, 'UTC'), { from: '2026-10-25' });
+});
+
+test('R8-W9 (N1): the summary line keeps one line of the voice cap even when the posts fill every other line', () => {
+  const posts = Array.from({ length: 9 }, (_, index) => `**direct messages | they | ${index + 1} hours ago | note ${index + 1}**\nnote ${index + 1} about the pilot plan`);
+  const text = ['read: everything you and Ada exchanged', 'matched: 40', ...posts, '- direct messages: 17 posts; group with kim.oak: 4 posts'].join('\n');
+  const block = shapeBlock('chat_search', [{ key: 'c0', name: INTERNAL.chatRead, ok: true, text, originalCharacters: text.length, omittedCharacters: 0 }]);
+  assert.equal(block.lines.length, 8, 'the voice cap is unchanged');
+  assert.match(block.lines[7]!, /^showing 7 of 40 posts; direct messages: 17 posts; group with kim\.oak: 4 posts$/u, 'the counts and the honest count of posts survive a full page');
+  assert.equal(block.total, 40, 'the header still says how many the archive matched');
+});
+
+test('R8-W9: every spoken form of the chat product\'s name routes to chat and is never a channel or a term', () => {
+  const at = { terms: 'metamost', nowMs: Date.parse('2026-10-25T09:00:00Z'), timeZone: 'UTC' };
+  for (const spoken of ['Metamos', 'Metamost', 'MetaMost', 'MetaMouse', 'meta mouse', 'matter most', 'Mattermost']) {
+    assert.equal(chatAsk(`can you read ${spoken}`), true, spoken);
+    assert.equal(spokenChannel(`what is in the ${spoken} channel`), undefined, `${spoken} is never a channel name`);
+    assert.deepEqual(chatIntent(`can you read ${spoken}`, at), { kind: 'topic-search', terms: '', window: {} }, spoken);
+  }
+  assert.deepEqual(chatIntent('can you read Metamost about the pilot', { ...at, terms: 'metamost pilot' }), { kind: 'topic-search', terms: 'pilot', window: {} });
+});
+
+test('R8-W9: "can you read Metamost" reads the chat and never looks for a channel of that name', async t => {
+  const f = await setup(t, 'people');
+  const planned: IntentSubCall[] = [];
+  const reply = await runResearch(researchDeps(f, planned), { action: 'start', question: 'can you read Metamost' }, new AbortController().signal);
+  assert.ok(planned.every(call => call.name !== INTERNAL.chatRead), 'no channel read for a product name');
+  assert.ok(planned.some(call => call.name === INTERNAL.chatSearch), 'the chat leg runs');
+  assert.ok(planned.every(call => !String(call.args['query'] ?? call.args['channel'] ?? '').toLowerCase().includes('metamost')), 'the spoken name is not a search term');
+  assert.doesNotMatch(JSON.stringify(reply), /channel-not-found|channel not found/u);
 });
 
 test('CHAT-P2 (L1-01): "what is in the AI AI AI team chat channel" reads that channel and names it', async t => {

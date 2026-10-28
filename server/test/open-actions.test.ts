@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { safeEvent } from '../host/log.js';
-import { NativeActionBus, OPEN_GUIDANCE, OPEN_RECEIPT_CODES, OPEN_TOOLS, OPEN_TOOL_NAMES, exposeToolResults, noteModelOutput, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openParameters, openTarget, ownerWords, receiptDetail, validateOpen } from '../tools/open.js';
+import { NativeActionBus, OPEN_GUIDANCE, OPEN_RECEIPT_CODES, OPEN_WEB_GUIDANCE, OPEN_TOOLS, OPEN_TOOL_NAMES, ownerTurnWords, resolveWebOpen, useWebSearchPort, validateOpenWeb, webWords, exposeToolResults, noteModelOutput, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openParameters, openTarget, ownerWords, receiptDetail, validateOpen } from '../tools/open.js';
 import { beginHandleSession, endHandleSession, exposeHandles, noteMattermostOrigin, openDestination, resolveHandle } from '../tools/open-handles.js';
 import { shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge } from '../tools/live-shape.js';
 
@@ -9,8 +9,10 @@ const RUN = 'live-open-1';
 
 test('the model-facing open tools are the item tool, the home tool, a file and an app', () => {
   assert.deepEqual(OPEN_TOOLS.map(tool => tool.name), ['open_source', 'open_home', 'open_file', 'open_app']);
-  assert.deepEqual([...OPEN_TOOL_NAMES].sort(), ['open_app', 'open_file', 'open_home', 'open_source']);
+  // C-OPENWEB8: open_web joins the model-facing set, but it is not one of the single-argument handle tools.
+  assert.deepEqual([...OPEN_TOOL_NAMES].sort(), ['open_app', 'open_file', 'open_home', 'open_source', 'open_web']);
   assert.equal(OPEN_TOOL_NAMES.has('open_url'), false, 'a free https url is no longer a tool the model sees');
+  assert.equal(OPEN_TOOLS.some(tool => tool.name === 'open_web'), false, 'open_web carries a kind and a target, not a handle');
   for (const tool of OPEN_TOOLS) {
     assert.match(tool.description, /only open things: they never type, click, send or change anything\./);
     const parameters = openParameters(tool) as { required: string[]; additionalProperties: boolean };
@@ -465,7 +467,7 @@ test('C-OPEN: a stretch with no open verb refuses with its own real code', () =>
   assert.deepEqual(safeEvent({ event: 'native_action', action: 'open_url', code: 'kind_mismatch', detail: 'none' }),
     { event: 'native_action', action: 'open_url', code: 'kind_mismatch', detail: 'none' }, 'and so does a kind mismatch');
   assert.equal(safeEvent({ event: 'native_action', action: 'open_url', code: 'refused', detail: 'none' }), undefined, 'the code set stays closed');
-  assert.deepEqual([...OPEN_RECEIPT_CODES].sort(), ['failed', 'kind_mismatch', 'no_open_intent', 'not_allowed', 'not_found', 'opened'], 'the receipt code set is the acks plus the guard codes');
+  assert.deepEqual([...OPEN_RECEIPT_CODES].sort(), ['ambiguous', 'failed', 'kind_mismatch', 'no_open_intent', 'not_allowed', 'not_found', 'not_owner_words', 'opened'], 'the receipt code set is the acks plus the guard codes');
   // C-OPEN: the ask he repeats is his own open intent, so the same handle opens.
   noteModelOutput(run);
   noteOwnerWords(run, 'why can not you open it in my browser');
@@ -473,4 +475,113 @@ test('C-OPEN: a stretch with no open verb refuses with its own real code', () =>
   assert.ok('target' in retried, 'the repeated ask opens the same handle');
   assert.equal(retried.target.kind, 'gmail');
   endHandleSession(run);
+});
+
+// C-OPENWEB8: the model names words, never a destination, and the host answers from the owner's turn.
+const WEB_RUN = 'live-open-web-1';
+const MAP_TURN = 'open the map of Odemira in my browser';
+const port = (sources: { title: string; url: string }[]) => ({
+  search: async () => ({ ok: true as const, evidence: { answer: 'synthetic', claims: [], sources, retrievedAt: '2026-10-28T09:00:00.000Z' } }),
+});
+const signal = new AbortController().signal;
+
+test('C-OPENWEB8: a map, a site and a search are built by the host from the words he said', async () => {
+  const maps = await resolveWebOpen({ kind: 'maps', target: 'Odemira' }, MAP_TURN, signal);
+  assert.ok('target' in maps);
+  assert.equal(maps.target.target, 'https://www.google.com/maps/search/?api=1&query=Odemira');
+  assert.equal(maps.target.kind, 'web');
+  assert.equal(maps.target.detail, 'web', 'the receipt names a web surface and never the address');
+
+  const directions = await resolveWebOpen({ kind: 'maps', target: 'Odemira to Lisbon' }, 'open directions Odemira to Lisbon', signal);
+  assert.ok('target' in directions);
+  assert.equal(directions.target.target, 'https://www.google.com/maps/dir/?api=1&destination=Lisbon&origin=Odemira');
+
+  const search = await resolveWebOpen({ kind: 'search', target: 'harbour news' }, 'open a search for harbour news', signal);
+  assert.ok('target' in search);
+  assert.equal(search.target.target, 'https://www.google.com/search?q=harbour+news');
+});
+
+test('C-OPENWEB8: a spoken domain opens its root, and a planted path or query never rides along', async () => {
+  const site = await resolveWebOpen({ kind: 'site', target: 'plantix.net' }, 'open plantix dot net', signal);
+  assert.ok('target' in site);
+  assert.equal(site.target.target, 'https://plantix.net/');
+  assert.equal(site.target.title, 'plantix.net');
+
+  // Review F1: the model passes the words he said, so the spoken form of a domain must open its root.
+  const spoken = await resolveWebOpen({ kind: 'site', target: 'plantix dot net' }, 'open plantix dot net', signal);
+  assert.ok('target' in spoken);
+  assert.equal(spoken.target.target, 'https://plantix.net/');
+
+  // The words of a query are not his words, so the binding refuses before anything is built.
+  const planted = await resolveWebOpen({ kind: 'site', target: 'plantix.net/?q=secret' }, 'open plantix dot net', signal);
+  assert.deepEqual(planted, { code: 'not_owner_words' });
+  assert.equal('target' in planted, false, 'no address is ever returned for a planted query');
+});
+
+test('C-OPENWEB8: a target taken from a mail, a page or the model is refused as not his words', async () => {
+  const fromMail = await resolveWebOpen({ kind: 'maps', target: 'Odemira' }, 'open the map of the place in that mail', signal);
+  assert.deepEqual(fromMail, { code: 'not_owner_words' });
+  assert.match(OPEN_WEB_GUIDANCE.not_owner_words.say, /nothing is open/u);
+  assert.match(OPEN_WEB_GUIDANCE.not_owner_words.fixNotForSpeech, /his own words|his words/u);
+
+  // A question about a site is not an open request, whatever it names.
+  const asking = await resolveWebOpen({ kind: 'site', target: 'evil.com' }, 'did you get a mail from evil dot com?', signal);
+  assert.deepEqual(asking, { code: 'no_open_intent' });
+  assert.match(OPEN_WEB_GUIDANCE.no_open_intent.say, /nothing is open/u);
+});
+
+test('C-OPENWEB8: a site he names in words is found in the web results, aggregators dropped', async () => {
+  useWebSearchPort(() => port([
+    { title: 'LinkedIn', url: 'https://www.linkedin.com/company/acme-seeds' },
+    { title: 'Acme Seeds', url: 'https://www.acme-seeds.com/about' },
+    { title: 'Acme Seeds on Wikipedia', url: 'https://en.wikipedia.org/wiki/Acme_Seeds' },
+  ]));
+  try {
+    const found = await resolveWebOpen({ kind: 'site', target: 'Acme Seeds' }, 'open the homepage of Acme Seeds', signal);
+    assert.ok('target' in found);
+    assert.equal(found.target.target, 'https://acme-seeds.com/', 'the one matching registrable domain, at its root');
+  } finally { useWebSearchPort(undefined); }
+});
+
+test('C-OPENWEB8: two matching sites open nothing and he is asked which one', async () => {
+  useWebSearchPort(() => port([
+    { title: 'Acme Seeds UK', url: 'https://acme-seeds.co.uk/' },
+    { title: 'Acme Seeds US', url: 'https://acme-seeds.com/' },
+  ]));
+  try {
+    const found = await resolveWebOpen({ kind: 'site', target: 'Acme Seeds' }, 'open the homepage of Acme Seeds', signal);
+    assert.deepEqual(found, { code: 'ambiguous', candidates: ['acme-seeds.co.uk', 'acme-seeds.com'] });
+    assert.match(OPEN_WEB_GUIDANCE.ambiguous.say, /more than one match/u);
+  } finally { useWebSearchPort(undefined); }
+});
+
+test('C-OPENWEB8: no matching site says nothing was found, never that several matched', async () => {
+  useWebSearchPort(() => port([{ title: 'Somewhere else', url: 'https://example.invalid/' }]));
+  try {
+    // Review F2: zero matches and several matches are different answers.
+    const found = await resolveWebOpen({ kind: 'site', target: 'Acme Seeds' }, 'open the homepage of Acme Seeds', signal);
+    assert.deepEqual(found, { code: 'not_found' });
+    assert.match(OPEN_WEB_GUIDANCE.not_found.say, /could not find that site/u);
+    assert.doesNotMatch(OPEN_WEB_GUIDANCE.not_found.say, /more than one/u);
+  } finally { useWebSearchPort(undefined); }
+});
+
+test('C-OPENWEB8: the binding reads the current turn only, never an earlier one', () => {
+  noteModelOutput(WEB_RUN);
+  noteOwnerWords(WEB_RUN, 'open the map of Odemira in my browser');
+  assert.equal(ownerTurnWords(WEB_RUN), 'open the map of Odemira in my browser');
+  noteOwnerWords(WEB_RUN, 'what is the weather tomorrow');
+  assert.equal(ownerTurnWords(WEB_RUN), 'what is the weather tomorrow', 'the current turn replaced the earlier one');
+  assert.deepEqual(webWords('Plantix dot net.'), ['plantix.net']);
+  assert.deepEqual(webWords('plantix dot net'), ['plantix.net']);
+  assert.deepEqual(webWords('open the map of Odemira in my browser'), ['open', 'the', 'map', 'of', 'odemira', 'in', 'my', 'browser']);
+});
+
+test('C-OPENWEB8: the argument shape is two keys, a web kind and his words', () => {
+  assert.equal(validateOpenWeb({ kind: 'maps', target: 'Odemira' }), true);
+  assert.equal(validateOpenWeb({ kind: 'site', target: ' plantix.net ' }), true);
+  assert.equal(validateOpenWeb({ kind: 'url', target: 'https://evil.example' }), false, 'the kind set is closed');
+  assert.equal(validateOpenWeb({ kind: 'maps', target: '' }), false);
+  assert.equal(validateOpenWeb({ kind: 'maps', target: 'Odemira', url: 'https://evil.example' }), false, 'no third key is accepted');
+  assert.equal(validateOpenWeb({ target: 'Odemira' }), false);
 });

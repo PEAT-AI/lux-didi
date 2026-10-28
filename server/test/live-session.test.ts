@@ -2103,7 +2103,8 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   assert.equal(h.owner.lookupAuthority(session.liveSessionId)?.actorId, h.ctx.clientId);
   const setup = (h.f.frames[0] as { setup: { tools: { functionDeclarations: { name: string; parameters: any }[] }[] } }).setup;
   // OC1 (#228): the host-native open tools are declared beside research, remember_note and the vault write.
-  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['open_app', 'open_file', 'open_home', 'open_source', 'remember_note', 'research', 'save_to_vault']);
+  // C-OPENWEB8: open_web joins them for a map, a site or a search he names.
+  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['open_app', 'open_file', 'open_home', 'open_source', 'open_web', 'remember_note', 'research', 'save_to_vault']);
   const derived = setup.tools[0]!.functionDeclarations.find(d => d.name === 'research')!;
   assert.equal(derived.parameters.properties.question.type, 'STRING');
   const outputs = attachment.output[Symbol.asyncIterator]();
@@ -2128,15 +2129,59 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
 });
 
+type RefusalShape = { error?: string; fixNotForSpeech?: string; say?: string; speakingRule?: string };
+const refusalAt = (h: Harness, index: number): RefusalShape =>
+  (h.f.frames[index] as { toolResponse: { functionResponses: { response: RefusalShape }[] } }).toolResponse.functionResponses[0]!.response;
+const badInsight = (h: Harness, id: string): void => {
+  h.f.send({ toolCall: { functionCalls: [{ id, name: 'get_insight', args: { ids: '[123]', include_links: 'false' } }] } });
+};
+
 test('Live refuses undeclared tools and original-schema-invalid arguments without dispatch', async t => {
   const h = await harness(t, { tools: true }); const { attachment } = await attached(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'bad1', name: 'get_insight', args: { ids: '[123]', include_links: 'false' } }, { id: 'bad2', name: 'not_granted', args: {} }] } });
   await h.f.frame(2); assert.equal(h.calls.length, 0);
-  const response = h.f.frames[1] as { toolResponse: { functionResponses: { response: { error: string } }[] } };
-  const errors = response.toolResponse.functionResponses.map(r => r.response.error);
-  assert.match(errors[0]!, /Invalid arguments for get_insight/, 'an invalid get_insight refusal carries one-try guidance');
-  assert.equal(errors[1], 'unknown_tool');
+  const response = h.f.frames[1] as { toolResponse: { functionResponses: { response: RefusalShape }[] } };
+  const responses = response.toolResponse.functionResponses.map(entry => entry.response);
+  assert.equal(responses[0]!.error, 'invalid_arguments');
+  assert.match(responses[0]!.fixNotForSpeech!, /Invalid arguments for get_insight/, 'an invalid get_insight refusal carries one-try guidance');
+  assert.equal(responses[0]!.say, 'That lookup failed on my side.');
+  assert.equal(responses[1]!.error, 'unknown_tool');
   assert.equal(h.owner.current().entries.filter(e => e.kind === 'toolResult' && e.tool?.status === 'error').length, 2);
+  attachment.close(); await attachment.done;
+});
+
+test('an invalid-arguments refusal marks the fix not for speech and names no argument value', async t => {
+  const h = await harness(t, { tools: true }); const { attachment } = await attached(h);
+  badInsight(h, 'shape1'); await h.f.frame(2);
+  const refusal = refusalAt(h, 1);
+  assert.equal(refusal.error, 'invalid_arguments');
+  assert.match(refusal.fixNotForSpeech!, /Invalid arguments for get_insight/);
+  assert.match(refusal.speakingRule!, /never read fixNotForSpeech aloud/i);
+  assert.equal(refusal.say, 'That lookup failed on my side.');
+  assert.equal(JSON.stringify(refusal).includes('[123]'), false, 'no argument value reaches the model');
+  attachment.close(); await attachment.done;
+});
+
+test('the invalid-argument retry suffix stops at the next owner turn', async t => {
+  const h = await harness(t, { tools: true }); const { attachment } = await attached(h);
+  badInsight(h, 'a1'); await h.f.frame(2);
+  badInsight(h, 'a2'); await h.f.frame(3);
+  // The owner speaks again: the next owner turn opens and its invalid-argument count starts at zero.
+  h.f.send({ serverContent: { inputTranscription: { text: 'Anything on my plate?', finished: true } } });
+  await tick();
+  badInsight(h, 'b1'); await h.f.frame(4);
+  assert.match(refusalAt(h, 3).fixNotForSpeech!, /Invalid arguments for get_insight/);
+  assert.doesNotMatch(refusalAt(h, 3).fixNotForSpeech!, /Stop retrying/, 'a repeat in an earlier turn never shortens this one');
+  attachment.close(); await attachment.done;
+});
+
+test('three invalid calls inside one owner turn keep the stop-retrying suffix', async t => {
+  const h = await harness(t, { tools: true }); const { attachment } = await attached(h);
+  badInsight(h, 'a1'); await h.f.frame(2);
+  badInsight(h, 'a2'); await h.f.frame(3);
+  badInsight(h, 'a3'); await h.f.frame(4);
+  assert.doesNotMatch(refusalAt(h, 2).fixNotForSpeech!, /Stop retrying/);
+  assert.match(refusalAt(h, 3).fixNotForSpeech!, /Stop retrying this tool in this turn\./);
   attachment.close(); await attachment.done;
 });
 
@@ -2522,6 +2567,67 @@ test('L7: the muted time is excluded from live_dead_air', async t => {
   const deadAir = events.find(entry => entry.event === 'live_dead_air' && typeof entry['deadAirMs'] === 'number');
   assert.ok(deadAir, 'the first audible frame logs the dead air it followed');
   assert.ok(Number(deadAir!['deadAirMs']) < 5_000, `the 25 s mute is not dead air the owner heard, got ${deadAir!['deadAirMs']}`);
+});
+
+// #720: a burst of the owner's own fragments used to anchor the receipt at the first one, so the receipt named the
+// length of his sentence instead of the wait that followed it.
+test('#720: dead air is measured from the owner last fragment, not the first', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { session, attachment } = await attached(h, 'dead-air-last-fragment');
+  const events: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(() => sink());
+  // Each fragment is journaled before the clock moves, so its arrival time is the one the test intends.
+  const say = async (text: string, advanceMs: number): Promise<void> => {
+    const before = h.owner.get(session.liveSessionId).journal.events;
+    h.f.send({ serverContent: { inputTranscription: { text, finished: true } } });
+    await drain(h, session.liveSessionId, before + 1);
+    h.advance(advanceMs);
+  };
+  await say('synthetic one', 1_000);
+  await say('synthetic two', 1_000);
+  await say('synthetic three', 4_000);
+  // Four seconds after his last fragment, the answer becomes audible.
+  h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+  for (let i = 0; i < 40 && !events.some(entry => entry.event === 'live_dead_air' && typeof entry['deadAirMs'] === 'number'); i++) await tick();
+  const deadAir = events.find(entry => entry.event === 'live_dead_air' && typeof entry['deadAirMs'] === 'number');
+  assert.ok(deadAir, 'the first audible frame logs the dead air it followed');
+  const ms = Number(deadAir!['deadAirMs']);
+  assert.ok(ms >= 3_900 && ms <= 4_100, `the wait after his last fragment is about 4 s, not the 6 s from his first, got ${ms}`);
+  attachment.close();
+  await attachment.done;
+});
+
+// #720: the mute sits between his last fragment and the answer, so it belongs to the span and must be excluded.
+test('#720: a mute inside the span is excluded from live_dead_air', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { session, attachment } = await attached(h, 'dead-air-muted-span');
+  const events: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(() => sink());
+  const say = async (text: string, advanceMs: number): Promise<void> => {
+    const before = h.owner.get(session.liveSessionId).journal.events;
+    h.f.send({ serverContent: { inputTranscription: { text, finished: true } } });
+    await drain(h, session.liveSessionId, before + 1);
+    h.advance(advanceMs);
+  };
+  await say('synthetic first', 1_000);
+  await say('synthetic last', 500);
+  attachment.setInputMuted(true);
+  h.advance(14_500);
+  scheduler.runDue();
+  attachment.setInputMuted(false);
+  h.advance(1_000);
+  h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+  for (let i = 0; i < 40 && !events.some(entry => entry.event === 'live_dead_air' && typeof entry['deadAirMs'] === 'number'); i++) await tick();
+  const deadAir = events.find(entry => entry.event === 'live_dead_air' && typeof entry['deadAirMs'] === 'number');
+  assert.ok(deadAir, 'the first audible frame logs the dead air it followed');
+  const ms = Number(deadAir!['deadAirMs']);
+  assert.ok(ms >= 1_400 && ms <= 1_600, `the 14.5 s mute is not dead air the owner heard, got ${ms}`);
+  attachment.close();
+  await attachment.done;
 });
 
 test('L19: a call seeded after a dead one marks its last answer heard and never repeats it', async t => {
@@ -3315,6 +3421,8 @@ test('E1: provider barge-in writes one metadata-only live_interrupted host recor
 test('an intent call answers with one model tool call from one host-side fan-out', async t => {
   const h = await harness(t, { tools: true });
   await attached(h, 'intent-search');
+  // C-TURN8: an owner-data tool answers the owner's turn, so the turn exists before the call.
+  await ownerSpoke(h, 'what do we know about lux didi');
   h.f.send({ toolCall: { functionCalls: [{ id: 'i1', name: 'search', args: { query: 'lux didi' } }] } });
   while (toolResponseCount(h) === 0) await tick();
   assert.equal(toolResponseCount(h), 1, 'exactly one response for the one intent call');
@@ -3412,6 +3520,8 @@ test('a model turn that stops generating without turnComplete is logged open (#3
 test('the calendar intent reads events from every calendar the owner keeps', async t => {
   const h = await harness(t, { tools: true, calendar: true });
   await attached(h, 'calendar-all');
+  // C-TURN8: the calendar reads the owner's data, so his turn comes first.
+  await ownerSpoke(h, 'what is on my calendar this week');
   h.f.send({ toolCall: { functionCalls: [{ id: 'cal', name: 'calendar', args: {} }] } });
   for (let i = 0; i < 2000 && toolResponseCount(h) === 0; i++) await tick();
   assert.equal(toolResponseCount(h), 1, 'one response for the calendar intent');
@@ -6214,6 +6324,109 @@ test('MUTE: the owner who speaks right after the unmute gets no held answer offe
   await attachment.done;
 });
 
+// C-TURN8: on 10-28 a trello read and a research start ran 0.7 s into a call, before the owner said
+// anything. Research was refused; every other owner-data tool went as far as its argument check.
+test('C-TURN8: an owner-data read other than research is refused no_owner_input before the owner speaks', async t => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-preowner-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const h = await harness(t, { tools: true });
+  const { session } = await attached(h, 'preowner-gate');
+  await settleLiveTool(h, 'search-1', 'search', { query: 'lux didi' }, { spoke: false });
+  const response = (h.f.frames[1] as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!.response;
+  assert.deepEqual({ error: response.error, state: response.state, reason: response.reason },
+    { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input' }, 'the same shape and reason research already sends');
+  const gated = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
+  assert.equal(String(gated?.tool?.markdown ?? ''), 'search: refused (no_owner_input)', 'the model is told nothing ran');
+  assert.deepEqual(h.calls.map(call => call.name), [], 'no read reached a source');
+  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; tool?: string; reason?: string });
+  const refused = lines.filter(line => line.event === 'live_tool_refused');
+  assert.deepEqual(refused.map(line => [line.tool, line.reason]), [['search', 'no_owner_input']], 'one closed refusal line per call');
+  h.owner.revoke(session.liveSessionId);
+});
+
+// C-TURN8: a save is owner data too, so the same gate answers it before he has spoken, rather than letting
+// it reach the note or vault gates that name a different cause.
+test('C-TURN8: a save before the owner speaks is refused no_owner_input and writes nothing', async t => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-preowner-save-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const h = await harness(t, { tools: true });
+  const { session } = await attached(h, 'preowner-save');
+  const written = (): number => h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n']));
+  const before = written();
+  await settleLiveTool(h, 'vault-1', 'save_to_vault', { text: 'synthetic line' }, { spoke: false });
+  const response = (h.f.frames[1] as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!.response;
+  assert.deepEqual({ error: response.error, state: response.state, reason: response.reason },
+    { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input' }, 'the save is refused with the read gate reason');
+  const gated = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
+  assert.equal(String(gated?.tool?.markdown ?? ''), 'save_to_vault: refused (no_owner_input)', 'the model is told nothing was saved');
+  assert.equal(written(), before, 'nothing was written before he spoke');
+  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').split('\n').filter(line => line.startsWith('{'))
+    .map(line => JSON.parse(line) as { event: string; tool?: string; reason?: string });
+  assert.deepEqual(lines.filter(line => line.event === 'live_tool_refused').map(line => [line.tool, line.reason]), [['save_to_vault', 'no_owner_input']]);
+  h.owner.revoke(session.liveSessionId);
+});
+
+// C-TURN8: three times on 10-28 she said she was checking and no call followed. The host gives the call
+// one beat (CLAIM_WITHOUT_CALL_MS) and then says so once, inside the owner's turn.
+test('C-TURN8: a claim with no call gets exactly one correction, and only once per owner turn', async t => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-claim-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const { session } = await attached(h, 'claim-without-call');
+  const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
+  const corrections = () => h.f.frames.filter(frame => {
+    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
+    return typeof text === 'string' && text.startsWith('Correction:');
+  });
+  const counted = () => readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').split('\n').filter(line => line.startsWith('{'))
+    .map(line => JSON.parse(line) as { event: string; ms?: number }).filter(line => line.event === 'live_claim_without_call');
+  const armed = (): boolean => [...scheduler.pending].some(entry => entry.due === scheduler.now + 3_000);
+  const turnOpen = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'inputTranscription');
+  h.f.send({ serverContent: { inputTranscription: { text: 'what did Priya send me about the synthetic contract', finished: true } } });
+  for (let attempt = 0; attempt < 200 && !turnOpen(); attempt++) await tick();
+  assert.ok(turnOpen(), 'the owner turn is open before she answers it');
+  h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that now.", finished: true }, turnComplete: true } });
+  for (let attempt = 0; attempt < 300 && !armed(); attempt++) await tick();
+  assert.ok(armed(), 'the announced lookup armed its three-second bound');
+  await advance(2_000);
+  assert.equal(corrections().length, 0, 'nothing is said before the bound has passed');
+  assert.deepEqual(counted(), [], 'and nothing is logged yet');
+  await advance(1_000);
+  assert.deepEqual(counted().map(line => line.ms), [3_000], 'the claim is counted with its bound');
+  assert.equal(corrections().length, 1, 'exactly one correction for the announcement');
+  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /say plainly that you are not checking anything/);
+  h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that again now.", finished: true }, turnComplete: true } });
+  const againSaid = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'outputTranscription'
+    && String((entry as { text?: string }).text ?? '').includes('again'));
+  for (let attempt = 0; attempt < 200 && !againSaid(); attempt++) await tick();
+  await advance(3_000);
+  assert.equal(corrections().length, 1, 'the turn spends its one correction and never a second');
+  assert.equal(counted().length, 1, 'and it is logged once');
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('C-TURN8: a claim followed by its call inside the bound is never corrected', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const { session } = await attached(h, 'claim-with-call');
+  const corrections = () => h.f.frames.filter(frame => {
+    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
+    return typeof text === 'string' && text.startsWith('Correction:');
+  });
+  h.f.send({ serverContent: { inputTranscription: { text: 'save the synthetic line to my vault', finished: true } } });
+  await settlePort();
+  h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that.", finished: true }, turnComplete: true } });
+  await settlePort();
+  await settleLiveTool(h, 'vault-2', 'save_to_vault', { text: 'synthetic line' }, { spoke: false });
+  h.advance(3_000); scheduler.runDue(); await settlePort();
+  assert.equal(corrections().length, 0, 'the call answered the announcement');
+  h.owner.revoke(session.liveSessionId);
+});
+
 // #451 / RECON-RESEARCH Q6: six opener lookups (35 s) ran before the owner ever spoke, one cancelling the
 // next. A start before the first owner input is answered at once and reaches no source at all.
 test('#451: an opener research start before the owner speaks is answered at once and runs no source', async t => {
@@ -7082,6 +7295,14 @@ test('research admission names its closed reason and admits a paging continue of
   assert.deepEqual(admission.admit('start'), { admitted: false, reason: 'answer_already_given' }, 'no orphan run after the answer');
   admission.ownerTurn();
   assert.deepEqual(admission.admit('start'), { admitted: true }, 'a new owner turn clears the answer');
+  // C-REBUILD8: a response that only filed a filler answered nothing, so the mark it took is given back and no
+  // start is refused as the orphan run after an answer.
+  admission.delivered('run-2');
+  admission.answered();
+  assert.deepEqual(admission.admit('start'), { admitted: false, reason: 'answer_already_given' }, 'a real answer spends the turn');
+  admission.acknowledgedOnly();
+  assert.deepEqual(admission.admit('start'), { admitted: false, reason: 'turn_spent' },
+    '"One second." is not the answer: the grant is what refuses it, never answer_already_given');
   // Every reason reaches the model verbatim, with the directive that belongs to that reason.
   for (const reason of ADMISSION_BLOCK_REASONS) {
     const reply = admissionBlocked(reason);

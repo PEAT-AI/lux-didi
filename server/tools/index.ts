@@ -22,7 +22,7 @@ import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, vali
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
-import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, ownerWords, validateOpen, type OpenReceiptCode } from './open.js';
+import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, OPEN_WEB_GUIDANCE, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, ownerTurnWords, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode } from './open.js';
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
@@ -693,6 +693,43 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
             const opened = code === 'opened' && dispatched ? { code: 'opened' as const, kind: dispatched.kind, title: dispatched.title } : undefined;
             return complete(call as ToolCallIntent, refused !== undefined ? { code: refused, guidance: OPEN_GUIDANCE[refused] } : opened ?? { code }, ['ordinary'], tx);
+          });
+          return { status: 'completed' as const, result };
+        },
+      });
+      // C-OPENWEB8: a map, a site or a search he asked for, opened from his own words. The address is
+      // built by the host from the target; no model argument is ever a URL, a host or a query string.
+      definitions.push({
+        name: OPEN_WEB_NAME, description: OPEN_WEB_DESCRIPTION, effect: 'read' as const, accountId: OPEN_IDENTITY.accountId, resourceId: OPEN_IDENTITY.resourceId,
+        parameters: OPEN_WEB_PARAMETERS, validate: validateOpenWeb,
+        async execute(args, context) {
+          if (context.runId !== runId || !validateOpenWeb(args) || context.signal.aborted) return { status: 'failed' as const };
+          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
+          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
+          const resolved = await resolveWebOpen(args, ownerTurnWords(context.runId), context.signal);
+          const dispatched = 'target' in resolved ? resolved.target : undefined;
+          const refused = 'target' in resolved ? undefined : resolved.code;
+          const code: OpenReceiptCode = dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
+          if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
+          else nativeActionReceipt('open_url', code, 'web');
+          if (code === 'opened' && dispatched) noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });
+          // The refusal is the closed code plus the not-for-speech fix and the line she says; a found-only
+          // case carries the domains so she asks which one he means.
+          const key = refused ?? (code in OPEN_WEB_GUIDANCE ? code as keyof typeof OPEN_WEB_GUIDANCE : 'not_allowed');
+          const found = 'target' in resolved ? undefined : resolved.candidates;
+          const payload: JsonObject = code === 'opened' && dispatched
+            ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: webOpenedSay(dispatched.title) }
+            : { code: refused ?? code, ...OPEN_WEB_GUIDANCE[key], ...(found === undefined ? {} : { candidates: found }) };
+          const result = store.transaction(tx => {
+            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
+            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+            const call = storedCall(tx, row);
+            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: OPEN_WEB_NAME };
+            if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
+            const snapshot = validateCallRun(tx, call);
+            assertLiveIdentity(tx, call); target(snapshot, call, tx);
+            if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
+            return complete(call as ToolCallIntent, payload, ['ordinary'], tx);
           });
           return { status: 'completed' as const, result };
         },

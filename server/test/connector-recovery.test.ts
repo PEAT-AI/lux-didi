@@ -10,17 +10,17 @@ import { once } from 'node:events';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { Store } from '../runtime/store.js';
 import { toolsMigrations } from '../tools/index.js';
-import { composeMcpRuntime, CONNECTOR_REARM_INTERVAL_MS, CONNECTOR_RECOVERY_DELAYS_MS, createRecoverySchedule, identityFailureRetryable } from '../host/mcp.js';
+import { composeMcpRuntime, CONNECTOR_REARM_INTERVAL_MS, CONNECTOR_RECOVERY_DELAYS_MS, CONNECTOR_RECOVERY_REPEAT_MS, createRecoverySchedule } from '../host/mcp.js';
 import { connectionReasonCode } from '../http/server.js';
-import { bindCalendarFirstConnect, bindCalendarRecovery } from '../host/runtime.js';
+import { bindCalendarFirstConnect, bindCalendarRecovery, connectorLifecycleSink } from '../host/runtime.js';
 import { CalendarDigestCache } from '../live/warm-context.js';
 import { safeEvent } from '../host/log.js';
-import { proveIdentity, type IdentitySource } from '../connectors/identity.js';
+import { identityFailureRetryable, proveIdentity, type IdentitySource } from '../connectors/identity.js';
 import { MONGOOSE_ENDPOINTS, mongooseCredentialAtStart } from '../connectors/mongoose.js';
 import type { ConnectorResult } from '../connectors/index.js';
 
 const ACCOUNT = 'owner@example.test';
-const FAST = [10, 10, 10];
+const FAST = [10, 10, 10, 10];
 
 async function body(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -40,16 +40,27 @@ interface FixtureOptions {
   token?: (res: ServerResponse) => void;
   /** #671: which tool call answers 503, the transient unavailability the owner's Mac reported. */
   unavailableCall?: (index: number) => boolean;
+  /**
+   * TRAIN8-R8: from this 1-based request on, the answer never lands, so the recovery attempt's own
+   * deadline is what ends it. Request 1 is the first connect, which stays fast on purpose.
+   */
+  hangFrom?: number;
 }
 
-async function fixture(options: FixtureOptions = {}) {
+async function fixture(options: FixtureOptions = {}, port = 0) {
   let requests = 0;
   let calls = 0;
+  let served = 0;
+  let hung = 0;
   const listener = createServer(async (req, res) => {
     try {
       const bytes = await body(req);
       if ((req.method ?? 'GET') === 'DELETE') { res.writeHead(200); res.end(); return; }
       if (req.url === '/oauth/token') { options.token?.(res); return; }
+      // The attempt that never answers: the response is left open on purpose, so only the recovery
+      // attempt's own deadline can end it. Closed by listener.closeAllConnections().
+      served += 1;
+      if (options.hangFrom !== undefined && served >= options.hangFrom) { hung += 1; return; }
       const sdk = new Server({ name: 'synthetic-mongoose', version: '1' }, { capabilities: { tools: { listChanged: false } } });
       sdk.setRequestHandler('tools/list', () => {
         requests += 1;
@@ -76,11 +87,12 @@ async function fixture(options: FixtureOptions = {}) {
   });
   // No keep-alive: a pooled socket would make close() wait out Node's five second keep-alive timeout.
   listener.keepAliveTimeout = 0;
-  listener.listen(0, '127.0.0.1'); await once(listener, 'listening');
+  listener.listen(port, '127.0.0.1'); await once(listener, 'listening');
   const address = listener.address(); assert(address && typeof address !== 'string');
   return {
     url: `http://127.0.0.1:${address.port}/mcp`,
     requests: () => requests,
+    hung: () => hung,
     async close() {
       listener.closeAllConnections();
       await new Promise<void>(resolve => listener.close(() => resolve()));
@@ -147,7 +159,7 @@ test('a retryable failure gets exactly the bounded recovery round, one probe at 
     // Stop is the explicit reconnect: the counter starts over.
     schedule.stop('mongoose');
     assert.equal(schedule.attempts('mongoose'), 0);
-    assert.equal(CONNECTOR_RECOVERY_DELAYS_MS.length, 3);
+    assert.equal(CONNECTOR_RECOVERY_DELAYS_MS.length, 4);
   } finally { mock.timers.reset(); }
 });
 
@@ -166,12 +178,34 @@ test('the schedule gives up after every delay and stays stopped', () => {
   } finally { mock.timers.reset(); }
 });
 
+test('a transient failure keeps retrying on the steady interval, so a late network or server still recovers', () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const schedule = createRecoverySchedule([1, 1], CONNECTOR_RECOVERY_REPEAT_MS);
+    let runs = 0;
+    const step = (): void => { runs += 1; schedule.next('google', step); };
+    schedule.next('google', step);
+    mock.timers.tick(1); mock.timers.tick(1);
+    assert.equal(runs, 2, 'the delays ran in order');
+    assert.equal(schedule.pending('google'), true, 'a transient round never ends while the host lives');
+    assert.equal(CONNECTOR_RECOVERY_REPEAT_MS, 120_000);
+    for (let round = 0; round < 3; round += 1) mock.timers.tick(CONNECTOR_RECOVERY_REPEAT_MS);
+    assert.equal(runs, 5, 'then once per steady interval');
+    schedule.stop('google');
+    assert.equal(schedule.pending('google'), false, 'an explicit reconnect stops it');
+  } finally { mock.timers.reset(); }
+});
+
 test('an inconclusive identity probe keeps the ladder, a definite failure is terminal per endpoint', async () => {
   const source: IdentitySource = { tool: 'get_profile', args: {}, values: decoded => [String((decoded as { id?: unknown }).id)] };
   const slow = await proveIdentity({ source, expected: [ACCOUNT], timeoutMs: 5, call: () => new Promise<ConnectorResult>(() => {}) });
   assert.equal(slow.proven, false);
   assert.equal(slow.code, 'identity_timeout', 'a timeout is its own closed code, never a mismatch');
   assert.equal(identityFailureRetryable(slow), true, 'TR4-R8: the proof did not answer, so it is inconclusive and earns the bounded ladder');
+  // lux-cli reports a refresh that failed for a reason other than a refusal (the network, DNS, a 5xx) as
+  // credential_refresh_failed, and a refused grant as credential_revoked. Only the first can clear itself.
+  assert.equal(identityFailureRetryable({ proven: false, match: null, value: null, code: 'credential_refresh_failed' }), true, 'a refresh the network broke earns the retry ladder');
+  assert.equal(identityFailureRetryable({ proven: false, match: null, value: null, code: 'credential_revoked' }), false, 'a refused grant latches until sign-in');
   // An answered "no account" is definite, never inconclusive: only a proof that did not answer is retried.
   assert.equal(identityFailureRetryable({ proven: false, match: null, value: null, code: 'identity_unverified' }), false, 'a definite unproven answer latches until an explicit sign-in');
   const mismatch = await proveIdentity({ source, expected: [ACCOUNT], timeoutMs: 50, call: async () => ({ state: 'completed', decodedResult: { id: 'other@example.test' } } as unknown as ConnectorResult) });
@@ -196,7 +230,7 @@ test('TR4-R8: an identity that times out every time is probed at most once plus 
   let clock = 9_000_000;
   const runtime = await composeMcpRuntime({
     store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
-    callDeadlineMs: 120, recoveryDelaysMs: FAST, now: () => clock,
+    callDeadlineMs: 120, recoveryDelaysMs: FAST, recoveryRepeatMs: false, now: () => clock,
   });
   t.after(() => runtime.close());
   // FAST mirrors CONNECTOR_RECOVERY_DELAYS_MS, so the ladder is the real one, driven in tens of ms.
@@ -273,7 +307,7 @@ test('a consent family past its cap is parked for sign-in with no wire call', as
   assert.equal(f.requests(), 0);
 });
 
-test('a retryable first call failure retries a bounded number of times and then stops', async t => {
+test('a retryable first call failure retries a bounded number of times and then stops', { timeout: 45000 }, async t => {
   // A discovery timeout is a five second wait by construction, which no test here may take; the timeout
   // cause itself is asserted at the projection above. This drives the same retryable first_call path with
   // a fast closed cause: a tool definition the client refuses.
@@ -282,17 +316,71 @@ test('a retryable first call failure retries a bounded number of times and then 
   oauthRecord(configDir, 'mongoose-knowledge', { refreshToken: 'refresh-material', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now() });
   const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-store-'));
   const store = new Store(join(dir, 'data'), toolsMigrations);
-  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST });
+  // TRAIN8-R9: the claim is the number of ATTEMPTS and that the round stops. An attempt the per-attempt
+  // deadline cuts before `tools/list` is still an attempt, so the count is read from the closed
+  // `connector_retry` lines the recovery writes; the wire count stays as a sanity bound.
+  const retries: Array<{ event?: string; outcome?: string; attempt?: number }> = [];
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST, recoveryRepeatMs: false, lifecycleLog: event => { if ((event as { event?: string }).event === 'connector_retry') retries.push(event as { event?: string; outcome?: string; attempt?: number }); } });
   t.after(() => runtime.close());
   const failed = runtime.status().endpoints[0]!;
   assert.equal(failed.state, 'error', 'the endpoint did not connect');
   assert.equal(failed.retrying, true, 'a retry is scheduled');
   assert.equal(f.requests(), 1);
-  // Wait on the wire, not on the flag: `retrying` is briefly false between two scheduled attempts.
-  await until(() => f.requests() === 4, 2000);
-  assert.equal(f.requests(), 4, 'the first connect plus exactly three bounded retries');
-  await until(() => runtime.status().endpoints[0]!.retrying === false, 2000);
+  // The attempt count: the first connect plus the bounded retries. The wait bound is only a guard against
+  // a hung round, and the test carries its own timeout above it because check-host.sh runs the suite with
+  // --test-timeout=15000.
+  // The schedule's bound is the first connect plus one attempt per configured delay; FAST mirrors
+  // CONNECTOR_RECOVERY_DELAYS_MS, so that is 1 + FAST.length attempts and the round then stops.
+  const bounded = 1 + FAST.length;
+  const attempts = () => 1 + retries.length;
+  await until(() => attempts() >= bounded, 28000);
+  assert.equal(attempts(), bounded, `the first connect plus exactly ${FAST.length} bounded retries`);
+  // The wire sanity bound: at least one attempt reached the tools, and none exceeded the attempt count.
+  assert.ok(f.requests() >= 1, `at least one attempt reached the tools (${f.requests()})`);
+  assert.ok(f.requests() <= attempts(), `no wire read outnumbers the attempts (${f.requests()} <= ${attempts()})`);
+  // The round stops: `retrying` is briefly false between two scheduled attempts, so wait for a stop that
+  // holds for at least one more full delay, then prove no further attempt was issued.
+  await until(() => runtime.status().endpoints[0]!.retrying === false, 28000);
+  await new Promise(resolve => setTimeout(resolve, Math.max(...FAST) * 2));
   assert.equal(runtime.status().endpoints[0]!.retrying, false, 'the round is over and no further attempt is pending');
+  assert.equal(attempts(), bounded, 'no further attempt is issued after the round stops');
+  assert.ok(f.requests() <= attempts(), `the stopped round issues no wire read beyond its attempts (${f.requests()} <= ${attempts()})`);
+});
+
+test('TRAIN8-R8: an attempt that never answers is cut by its own deadline, so the round advances and stops', { timeout: 30000 }, async t => {
+  // The ruling's case: a connect whose answer never lands. Without a per-attempt deadline this round never
+  // issues another attempt, which is exactly the stall the release train measured. The fixture leaves every
+  // answer open from the second wire request on, so the attempt deadline is what ends each attempt, and the
+  // ladder still walks its bounded count and stops. The first connect rides the SDK's own five second
+  // connect bound, which is why this test runs a little over five seconds; every attempt after it is cut at
+  // the 50ms test seam.
+  const f = await fixture({ hangFrom: 2, tools: [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: [], required: 'not-an-array' } }] }); t.after(() => f.close());
+  const configDir = configDirFor(f.url, 'mongoose-knowledge');
+  oauthRecord(configDir, 'mongoose-knowledge', { refreshToken: 'refresh-material', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now() });
+  const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-hang-'));
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const retries: Array<{ event?: string; outcome?: string }> = [];
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST, recoveryRepeatMs: false, recoveryAttemptDeadlineMs: 50, lifecycleLog: event => { const line = event as { event?: string; outcome?: string }; if (line.event === 'connector_retry') retries.push(line); } });
+  t.after(() => runtime.close());
+  await runtime.start();
+  // The cut is read on the retry line it writes, not on the projection: a later attempt sets the
+  // projection back to connecting before its own answer arrives.
+  const cut = () => retries.some(line => line.outcome === 'identity_timeout');
+  await until(cut, 20000);
+  assert.ok(cut(), 'the attempt that never answered was cut and logged as the closed transient identity_timeout');
+  // The round advances past the cut and stops at its bounded count: the first connect plus one attempt per
+  // configured delay. No further attempt follows once it has stopped.
+  const attempts = () => 1 + retries.length;
+  await until(() => attempts() >= 2, 20000);
+  assert.ok(attempts() >= 2, `the round advances past the cut attempt (${attempts()})`);
+  let stable = 0;
+  for (let poll = 0; poll < 300 && stable < 5; poll += 1) {
+    const before = attempts();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    stable = attempts() === before ? stable + 1 : 0;
+  }
+  assert.equal(runtime.status().endpoints[0]!.retrying, false, 'the round is over and no attempt is pending');
+  assert.ok(attempts() <= 1 + FAST.length, `the round stops at its bounded count (${attempts()} <= 1 + ${FAST.length})`);
 });
 
 /** Two Google endpoints of one owner account, each proving itself with its own family's tool. */
@@ -352,6 +440,124 @@ test('a gmail proof that runs out of time is retried until it proves the account
   assert.equal(identity.length, 3, 'calendar once, gmail twice');
   assert.equal(identity.filter(entry => !entry.proven).length, 1, 'only gmail was unproven, and only once');
   assert.equal(identity.filter(entry => entry.proven).length, 2);
+});
+
+// --- C-CONNECT8: a transient failure at host start recovers on its own; a permanent one still latches ---
+
+/** One google calendar endpoint, so a recovery owes the calendar digest a read. */
+function calendarOnlyConfig(url: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-calendar-recovery-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT, ownerChatUsername: 'owner',
+    endpoints: [googleConfig(url, 'calendar', 'calendar')],
+  }), { mode: 0o600 });
+  return configDir;
+}
+
+test('C-CONNECT8: a transient refresh failure twice, then a proof, connects and rebuilds the calendar digest', async t => {
+  let probes = 0;
+  const calendar = await fixture({ tools: CALENDAR_TOOLS, call: () => {
+    probes += 1;
+    // What the owner's Mac saw at 02:26Z: the helper could not reach Google to refresh, so it answered
+    // the closed code for a refresh that failed for a reason other than a refusal. The third probe is
+    // the one the network let through.
+    return probes <= 2 ? { payload: { error: 'credential-refresh-failed' } } : { payload: { calendars: [{ id: ACCOUNT, primary: true }] } };
+  } });
+  t.after(() => calendar.close());
+  const configDir = calendarOnlyConfig(calendar.url);
+  const dir = mkdtempSync(join(tmpdir(), 'didi-calendar-digest-'));
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const lifecycle: Lifecycle[] = [];
+  let refreshes = 0;
+  let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
+  runtime = await composeMcpRuntime({
+    store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    callDeadlineMs: 200, recoveryDelaysMs: FAST, recoveryRepeatMs: false,
+    lifecycleLog: connectorLifecycleSink({
+      log: event => { lifecycle.push(event as Lifecycle); },
+      onRecovered: bindCalendarRecovery({
+        digest: { refresh: async () => { refreshes += 1; return {}; } },
+        endpoints: () => runtime?.status().endpoints ?? [],
+        grantOf: id => ({ endpointId: id, toolNames: ['calendar_list_events'] }),
+      }),
+    }),
+  });
+  t.after(() => runtime!.close());
+  const failed = runtime.status().endpoints[0]!;
+  assert.equal(failed.state, 'error', 'the refresh the network broke never proves the account');
+  assert.equal(failed.reasonCode, 'credential_refresh_failed');
+  assert.equal(failed.retrying, true, 'a transient failure earns the retry ladder instead of a latch');
+  await until(() => runtime!.status().endpoints[0]!.state === 'connected', 4000);
+  assert.equal(probes, 3, 'two failed refreshes, then the proof that landed');
+  await until(() => refreshes === 1, 2000);
+  const retries = lifecycle.filter(event => event.event === 'connector_retry');
+  assert.deepEqual(retries.map(event => event.outcome), ['credential_refresh_failed', 'connected'], 'one closed line per retry outcome');
+  assert.equal(lifecycle.filter(event => event.event === 'connector_latched').length, 0, 'nothing translatable latched');
+  assert.equal(lifecycle.filter(event => event.event === 'connector_recovered').length, 1);
+});
+
+test('C-CONNECT8: a refused grant (invalid_grant) stays latched with no retry, as today', async t => {
+  let probes = 0;
+  const calendar = await fixture({ tools: CALENDAR_TOOLS, call: () => {
+    probes += 1;
+    // lux-cli answers invalid_grant with credential_revoked: the provider refused the credential, so no
+    // amount of retrying can clear it.
+    return { payload: { error: 'credential-revoked' } };
+  } });
+  t.after(() => calendar.close());
+  const configDir = calendarOnlyConfig(calendar.url);
+  const dir = mkdtempSync(join(tmpdir(), 'didi-calendar-latched-'));
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const lifecycle: Lifecycle[] = [];
+  const runtime = await composeMcpRuntime({
+    store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    callDeadlineMs: 200, recoveryDelaysMs: FAST, recoveryRepeatMs: false,
+    lifecycleLog: event => { lifecycle.push(event as Lifecycle); },
+  });
+  t.after(() => runtime.close());
+  const row = runtime.status().endpoints[0]!;
+  assert.equal(row.state, 'error');
+  assert.equal(row.reasonCode, 'credential_revoked');
+  assert.equal(row.retrying, false, 'a definite refusal never schedules a retry');
+  assert.equal(lifecycle.find(event => event.event === 'connector_latched')?.code, 'credential_revoked');
+  // Longer than the first ladder delay: a retry that was wrongly scheduled would have fired by now.
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(probes, 1, 'the refused grant is never probed again');
+  assert.equal(lifecycle.filter(event => event.event === 'connector_retry').length, 0);
+});
+
+const KNOWLEDGE_TOOLS = [{ name: 'search_knowledge', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } }];
+
+test('C-CONNECT8: lux-knowledge refusing connections at start connects once it listens, without a restart', async t => {
+  // Take a free port, then hand it back: the first discovery is a real connection refused.
+  const pickup = await fixture({});
+  const port = Number(new URL(pickup.url).port);
+  await pickup.close();
+  const dir = mkdtempSync(join(tmpdir(), 'didi-knowledge-late-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT, ownerChatUsername: 'owner',
+    endpoints: [{ id: 'lux-knowledge', transport: 'streamable-http', url: `http://127.0.0.1:${port}/mcp`, connector: 'lux-knowledge',
+      account: ACCOUNT, resource: 'lux-knowledge', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' }],
+  }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const lifecycle: Lifecycle[] = [];
+  const runtime = await composeMcpRuntime({
+    store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+    callDeadlineMs: 300, recoveryDelaysMs: [20, 20, 20], recoveryRepeatMs: 40,
+    lifecycleLog: event => { lifecycle.push(event as Lifecycle); },
+  });
+  t.after(() => runtime.close());
+  await until(() => runtime.status().endpoints[0]!.retrying === true, 2000);
+  assert.equal(runtime.status().endpoints[0]!.state, 'error', 'the local server was not listening yet');
+  const knowledge = await fixture({ tools: KNOWLEDGE_TOOLS }, port);
+  t.after(() => knowledge.close());
+  await until(() => runtime.status().endpoints[0]!.state === 'connected', 5000);
+  assert.ok(lifecycle.some(event => event.event === 'connector_retry'), 'the retry that connected wrote its own line');
+  assert.ok(lifecycle.some(event => event.event === 'connector_recovered'), 'the recovery is the same host, not a restart');
 });
 
 // --- 671: an inconclusive proof at host start recovers in the same bounded round, and every unavailable
@@ -453,7 +659,7 @@ test('671-R2: a recovery attempt writes its own closed reason line, first connec
   const identity: Array<{ proven: boolean; code?: string }> = [];
   const runtime = await composeMcpRuntime({
     store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
-    callDeadlineMs: 120, recoveryDelaysMs: FAST,
+    callDeadlineMs: 120, recoveryDelaysMs: FAST, recoveryRepeatMs: false,
     connectorLog: (_connector, stage, detail) => { failures.push({ stage, ...(detail ?? {}) }); },
     identityLog: (_connector, proven, _match, _endpointId, code) => { identity.push({ proven, ...(code === undefined ? {} : { code }) }); },
   });
@@ -461,7 +667,7 @@ test('671-R2: a recovery attempt writes its own closed reason line, first connec
   await until(() => failures.length >= 1 + FAST.length, 4000);
   assert.equal(failures.length, 1 + FAST.length, 'the first connect and every retry, not only the first');
   assert.equal(failures[0]!.attempt, 'first-connect');
-  assert.deepEqual(failures.slice(1).map(row => row.attempt), ['refresh', 'refresh', 'refresh'], 'each retry names its own pass');
+  assert.deepEqual(failures.slice(1).map(row => row.attempt), FAST.map(() => 'refresh'), 'each retry names its own pass');
   assert.deepEqual([...new Set(failures.map(row => row.reason))], ['identity_timeout'], 'a timed out probe says so, never a bare identity_unverified');
   assert.deepEqual([...new Set(failures.map(row => row.stage))], ['handshake']);
   assert.equal(identity.filter(row => !row.proven && row.code === 'identity_timeout').length, 1 + FAST.length, 'every receipt carries the closed code');
@@ -491,7 +697,7 @@ test('671-R2: a read earns one fresh attempt per interval after a round spent on
   let clock = 5_000_000;
   const runtime = await composeMcpRuntime({
     store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
-    now: () => clock, recoveryDelaysMs: FAST,
+    now: () => clock, recoveryDelaysMs: FAST, recoveryRepeatMs: false,
     connectorLog: (_connector: string, _stage: string, detail?: { endpointId?: string }) => { if (detail?.endpointId === 'gmail') attempts += 1; },
   });
   t.after(() => runtime.close());
@@ -560,7 +766,7 @@ function oauthRecordAt(configDir: string, base: string): void {
   }), { mode: 0o600 });
 }
 
-type Lifecycle = { event: string; endpointId: string; attempts?: number; reason?: string; connectMs?: number; bytes?: number };
+type Lifecycle = { event: string; endpointId: string; attempts?: number; reason?: string; connectMs?: number; bytes?: number; connector?: string; attempt?: number; outcome?: string; code?: string };
 
 async function mongooseRuntime(t: { after: (fn: () => void) => void }, f: { url: string; close: () => Promise<void> }) {
   const configDir = configDirFor(f.url, 'mongoose-knowledge');
@@ -614,7 +820,7 @@ test('1022: a recovery round that never succeeds says so once, with the reason',
   const store = new Store(join(dir, 'data'), toolsMigrations);
   const lifecycle: Lifecycle[] = [];
   const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
-    recoveryDelaysMs: FAST, lifecycleLog: event => { lifecycle.push(event as Lifecycle); } });
+    recoveryDelaysMs: FAST, recoveryRepeatMs: false, lifecycleLog: event => { lifecycle.push(event as Lifecycle); } });
   t.after(() => { void runtime.close(); });
   assert.equal(runtime.status().endpoints[0]!.retrying, true);
   await until(() => lifecycle.some(entry => entry.event === 'connector_recovery_exhausted'), 4000);

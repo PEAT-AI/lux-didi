@@ -42,6 +42,8 @@ export async function fixture(t: TestContext) {
   let requestPath = '';
   let authorization: string | undefined;
   const frames: Frame[] = [];
+  /** C-REBUILD8: the frames the provider's own rule refused, so a test can name them. */
+  const rejections: Frame[] = [];
   const waiters = new Map<number, () => void>();
   let connections = 0;
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
@@ -55,7 +57,16 @@ export async function fixture(t: TestContext) {
     authorization = req.headers.authorization;
     socket.on('error', () => {});
     socket.on('message', (bytes: Buffer) => {
-      frames.push(JSON.parse(bytes.toString()) as Frame);
+      const frame = JSON.parse(bytes.toString()) as Frame;
+      frames.push(frame);
+      // C-REBUILD8: the provider says its own rule out loud. A commentary append without a delegation is refused
+      // by name (`command_rejected code=missing_required_parameter param=delegation_id kind=cmt`, 2026-10-28 N10),
+      // so this fake enforces the same rule instead of accepting whatever the adapter writes.
+      if (frame['type'] === 'session.commentary.append' && typeof frame['delegation_id'] !== 'string') {
+        rejections.push(frame);
+        socket.send(JSON.stringify({ type: 'error', error: { type: 'command_rejected', code: 'missing_required_parameter',
+          param: 'delegation_id', kind: 'cmt' } }));
+      }
       for (const [n, notify] of waiters) if (frames.length >= n) { waiters.delete(n); notify(); }
     });
     resolve();
@@ -65,7 +76,7 @@ export async function fixture(t: TestContext) {
     await new Promise<void>(resolve => server.close(() => resolve()));
   });
   return {
-    server, frames, connected,
+    server, frames, rejections, connected,
     get connections() { return connections; },
     get destination() { return destination; },
     get requestPath() { return requestPath; },

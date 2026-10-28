@@ -5,15 +5,15 @@ import { recordHistorySession, historySessionEvidence, recordHistoryDependency }
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
-import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteModelOutput, noteOwnerWords, noteSpoken, openClaimCorrection } from '../tools/open.js';
+import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteModelOutput, noteOwnerWords, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
 import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
 import { freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, stageComposedNote, type PlaybackSignalKind } from '../tools/lux-note.js';
 import { NotesExporter } from '../tools/notes-export.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
-import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
-import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
+import { runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
+import { INTENT_TOOL_NAMES, isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
 import { admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
@@ -24,7 +24,7 @@ import { isToolFailureCode } from '../adapters/model/types.js';
 import type { ToolDefinition, HostContext, JsonObject, ToolResultBinding } from '../adapters/model/types.js';
 import type { LiveToolsComposition, LivePageProjection, LiveToolProjection, ResearchProgressView } from './types.js';
 
-import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningOption, type OpeningOptionKind } from '../prompt/index.js';
+import { CONVERSATION_RECALL_COVERAGE_NOTE, publicOwnerProfile, PROMPT_VERSION, TRUSTED_SYSTEM_CODE_UNIT_LIMIT, buildRuntimeContext, buildEarlierConversationsSection, earlierConversationsBudget, buildOpeningOptions, EARLIER_CONVERSATIONS_WINDOW_MS, openingOptionsTopics, LIVE_INSTRUCTION_TARGET_CHARS, composeLiveSessionInstruction, toolGroupNames, type OpeningOption, type OpeningOptionKind, CLAIM_WITHOUT_CALL_LINE } from '../prompt/index.js';
 import { IngestReject, parsePlaybackReceipt, playbackKeyOf, recordPlaybackReceipt, type NativePlaybackReceipt } from '../trace/ingest.js';
 import { liveTracePort, record, recordCallLink, recordCallResult, recordQueryShape, recordResearchText, recordSourceRead, scopedTraceKey, TraceRecordError, type LiveTracePort, type TraceDetailMap, type TraceEventIds } from '../trace/record.js';
 import { markDiagnosticLoss, type DiagnosticLoss } from '../trace/coverage.js';
@@ -296,6 +296,28 @@ export function isBareAcknowledgement(text: string): boolean {
   if (words.length === 0 || words.length > 3) return false;
   return words.every(word => ACKNOWLEDGEMENT_WORDS.has(word));
 }
+/** C-REBUILD8: the fillers a model says while it is stalling instead of answering. A response made only of these
+ *  answers nothing, so the silence after it is a model mute and not a turn that was served. */
+const ACK_RESPONSE_PHRASES = new Set([
+  'one second', 'one sec', 'one moment', 'one minute', 'a second', 'a sec', 'a moment', 'just a second',
+  'just a moment', 'just one second', 'hold on', 'hold', 'let me check', 'let me see', 'let me look',
+  'let me check that', 'let me look that up', 'checking', 'checking now', 'looking', 'looking now', 'searching',
+]);
+/** C-REBUILD8: the single words a stalling response may be built from, all already acknowledgements. */
+const ACK_RESPONSE_WORDS = new Set([...ACKNOWLEDGEMENT_WORDS, 'second', 'sec', 'moment', 'minute', 'hold', 'on', 'just',
+  'a', 'let', 'me', 'check', 'checking', 'see', 'look', 'looking', 'now', 'searching', 'so']);
+/** C-REBUILD8: the bound a whole filler response fits in; a real answer is longer than this. */
+export const ACK_RESPONSE_CHAR_LIMIT = 40;
+/** C-REBUILD8: whether a whole model response filed a filler and nothing else ("One second."). It takes no
+ *  question mark and never a full sentence with content, so a real answer can never be read as a filler. */
+export function isAckOnlyResponse(text: string): boolean {
+  const trimmed = stripNonLexicalTags(text).trim();
+  if (trimmed.length === 0 || trimmed.length > ACK_RESPONSE_CHAR_LIMIT || trimmed.includes('?')) return false;
+  const words = trimmed.toLowerCase().replace(/[.,!\u2026\u2019']/g, ' ').split(/\s+/).filter(word => word.length > 0);
+  if (words.length === 0) return false;
+  if (ACK_RESPONSE_PHRASES.has(words.join(' '))) return true;
+  return words.every(word => ACK_RESPONSE_WORDS.has(word));
+}
 /** The seeded history is bounded by dropping whole oldest turns until it fits this many characters. */
 /** GL2-R1: the closed set of reasons a projected state changes, shared with the host log whitelist. */
 type LiveStateCause = (typeof LIVE_STATE_CAUSES)[number];
@@ -472,6 +494,30 @@ export function callCeilingMs(toolName: string | undefined): number {
 }
 /** R6: how recent the model's own audio must be to hold a late line back. */
 const ANSWER_AUDIO_HOLD_MS = 3_000;
+/**
+ * C-TURN8: how long an announced lookup has to start its call before the host corrects it. Three seconds,
+ * the same one beat this file already treats as a turn's pause (ANSWER_AUDIO_HOLD_MS), so a claim followed
+ * by a call in the same breath is never corrected.
+ */
+const CLAIM_WITHOUT_CALL_MS = 3_000;
+/**
+ * C-TURN8: the closed set of English announcements that promise a lookup. A response carrying one and
+ * starting no call is a claim without an action. Nothing else is read.
+ */
+const LOOKUP_CLAIM = /\b(?:i'?m checking|i am checking|checking (?:that|this|it)|working on (?:that|it)|i'?ll check|let me check|looking (?:that|it|this) up)\b/iu;
+/**
+ * C-TURN8: every tool that reads or writes the owner's own data (Trello, research, mail, calendar, chat,
+ * knowledge, conversation history, saves). None of them runs before his first word: research keeps its own
+ * gate in `#researchBatch`, and every other name here, reads and saves alike, is refused by `#toolBatch`
+ * with the same shape and reason. Saves keep their own later gates once he has spoken
+ * (`not_owner_requested` in the vault tool, `owner_transcript_not_final` / `owner_text_mismatch` in the note
+ * provenance path); this gate only answers the case where he has not spoken at all. The `open_*` tools stay
+ * open: they read no owner record and the opener never calls them.
+ */
+const OWNER_DATA_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
+  ...INTENT_TOOL_NAMES, RESEARCH_TOOL_NAME, ...TRELLO_TOOL_NAMES,
+  'conversation_history', 'remember_note', 'save_to_vault', 'stage_lux_note',
+]);
 /** S4a: a delegation still open this long after its last call was answered, with no terminal nested event, is
  *  stalled: the receipt names it, and the S2 recovery resumes instead of rebuilding. */
 export const DELEGATION_DEADLINE_MS = 25_000;
@@ -487,6 +533,12 @@ const LATE_SPOKEN_CHARS = 280;
 export interface LateCommentaryState {
   now: number; answeredAt: number; alreadySpoken: boolean;
   inputAt?: number | undefined; ownerWords: number; lastModelAudioAt?: number | undefined;
+  /**
+   * #1028 behaviour 4: when a newer research operation started, or a newer tool call was made, after the
+   * answer. A question the host acted on is that; a raw owner input is not, because room speech arrives as
+   * one and used to park a finding the owner had asked for.
+   */
+  newerWorkAt?: number | undefined;
 }
 
 /**
@@ -500,7 +552,12 @@ export function lateCommentarySilence(state: LateCommentaryState): string | null
   if (state.now - state.answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
   const filler = state.ownerWords > 0 && state.ownerWords <= FILLER_WORDS;
   const immediate = state.inputAt !== undefined && state.inputAt - state.answeredAt < SPEAKING_HOLD_MS;
-  if (state.inputAt !== undefined && state.inputAt > state.answeredAt && !filler && !immediate) return 'new_question';
+  // #1028 behaviour 4: a new question is one the host acted on, a research operation it started or a tool call
+  // it made after the answer. Without that evidence the owner's input is room speech, and the finding lands.
+  const askedAgain = state.newerWorkAt !== undefined
+    ? state.newerWorkAt > state.answeredAt
+    : state.inputAt !== undefined && state.inputAt > state.answeredAt && !filler && !immediate;
+  if (askedAgain) return 'new_question';
   if (state.inputAt !== undefined && state.now - state.inputAt < SPEAKING_HOLD_MS) return 'owner_speaking';
   if (state.lastModelAudioAt !== undefined && state.now - state.lastModelAudioAt < ANSWER_AUDIO_HOLD_MS) return 'answer_playing';
   return null;
@@ -566,7 +623,7 @@ interface ActiveSession {
   stopAfterJournalId?: number;
   stopGeneration?: number;
   inputAt?: number;
-  /** When the owner's turn finished, to measure dead air until the first model audio. */
+  /** #720: the anchor is the owner's last finished fragment of the turn, not the first. */
   inputFinalAt: number | undefined;
   /** First model audio of the current turn; reset at each model turn start. */
   firstAudioAt: number | undefined;
@@ -578,8 +635,13 @@ interface ActiveSession {
   turnAudioAt?: number | undefined;
   /** Spoken output script codes of the current turn, counted and then reported as counts only. */
   turnLatin: number; turnDevanagari: number; turnChars: number;
+  /** C-REBUILD8: the words this turn's response spoke, kept so a filler-only answer is recognisable. Bounded. */
+  turnSpoken?: string | undefined;
   /** Whether this turn followed tool work and whether the owner cut it off. */
   turnAfterTool: boolean; turnInterrupted: boolean;
+  /** C-TURN8: what she said this response, the timer watching it, and the owner turn's own correction budget. */
+  claimText: string; claimTimer?: { cancel: () => void } | undefined;
+  claimToolSeen: boolean; claimCorrected: boolean;
   inputJournalId?: number;
   inputFinalTimer?: ReturnType<JobTimer>;
   /** W6: the composed-note settle window runs on its own timer, so a late fragment can still cancel. */
@@ -588,6 +650,8 @@ interface ActiveSession {
   generation: number; attempts: number; rebuilding: boolean;
   /** #591: a rebuild nothing asked for stays quiet: no reconnect marker, no pickup, no instruction to open. */
   quietRebuild: boolean;
+  /** C-PICKUP: the pickup the last recovery attempt opened with, so the receipt names what was sent. */
+  recoveryPickup?: 'none' | 'quiet' | 'mute' | 'connection' | undefined;
   /** #591: model text or an output transcript since this turn opened, so a turn that spoke is never called ambient. */
   modelTextSinceOpen: boolean;
   /** #451: when this connection generation's provider socket was opened, and when the provider said ready. */
@@ -624,6 +688,13 @@ interface ActiveSession {
   delegationTimer?: ReturnType<JobTimer> | undefined;
   /** R6: when this call's first answer went out with sources still reading, and which call spoke a late line. */
   researchAnsweredAt?: number | undefined; lateCommentaryFor?: string | undefined;
+  /**
+   * #1028 behaviour 4: the last research start and the last tool call this turn made, so a late finding is
+   * parked by work the host actually did after the answer and never by a raw owner input.
+   */
+  researchStartedAt?: number | undefined; lastToolCallAt?: number | undefined;
+  /** #1028: the one delayed re-offer of a late finding a hold postponed, so a hold never discards it. */
+  lateHoldTimer?: ReturnType<JobTimer> | undefined;
   /** R6: the research this turn may collect once without a new owner turn, and how many sources it still reads. */
   pendingResearch?: { id: string; count: number } | undefined;
   /** R5: the word count of the owner's last finished utterance, so a filler sound is not read as a new question. */
@@ -705,6 +776,8 @@ interface ActiveSession {
   liveStepItems: Map<string, number>;
   toolCalls: number;
   seenIds: Set<string>;
+  /** The invalid-arguments count of the owner turn in flight, so the retry suffix never survives a turn. */
+  invalidAttempts: Map<string, number>;
   thinking: boolean;
   pendingCallIds: Set<string>;
   bargeInCallIds: Set<string>;
@@ -826,6 +899,9 @@ function journalKind(type: string): JournalKind | null { return (persistedKinds 
  */
 function countTurnScript(handle: ActiveSession, text: string): void {
   noteSpoken(handle.liveSessionId, text);
+  // C-REBUILD8: the response's own words, bounded at four hundred characters; a longer answer keeps its head,
+  // which is never a filler, so the bound can only ever make the check say "not a filler".
+  handle.turnSpoken = `${handle.turnSpoken ?? ''} ${text}`.slice(0, 400);
   for (const character of text) {
     if (/\s/u.test(character)) continue;
     handle.turnChars += 1;
@@ -836,7 +912,7 @@ function countTurnScript(handle: ActiveSession, text: string): void {
 
 function resetTurnScript(handle: ActiveSession): void {
   handle.turnLatin = 0; handle.turnDevanagari = 0; handle.turnChars = 0;
-  handle.turnAfterTool = false; handle.turnInterrupted = false; handle.inaudibleMs = 0;
+  handle.turnAfterTool = false; handle.turnInterrupted = false; handle.inaudibleMs = 0; handle.turnSpoken = '';
 }
 
 /** One metadata-only record per turn. A turn with no spoken output reports nothing. */
@@ -1261,6 +1337,8 @@ export class LiveSessionOwner {
     this.#store = config.store;
     this.#voice = config.voice;
     this.#researchWeb = config.researchWeb;
+    // C-OPENWEB8: a site he names but does not spell out is found with the one web search this host owns.
+    useWebSearchPort(() => this.#researchWeb);
     this.#profile = validateLiveProfile(config.profile);
     this.#timeZonePin = config.timeZone;
     const now = config.now ?? Date.now;
@@ -1824,7 +1902,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
       researchAdmission: new ResearchAdmission(), researchRetention: { retainedChars: 0, rebuilds: 0 },
       researchLedgerLog: new ResearchLedgerLog(), voicePages: new VoiceReplyBook(), contextToolChars: 0,
-      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      claimText: '', claimToolSeen: false, claimCorrected: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), invalidAttempts: new Map(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
@@ -2076,7 +2155,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       this.#armIdle(handle, this.#profile.limits.idleMs, 'unmuted');
       // L7: the muted time is not dead air the owner heard, and a response that began under the mute is not
       // played at unmute: the owner speaks next, and the held-answer offer names it in one sentence.
-      handle.mutedMs += Math.max(0, now - (handle.mutedAt ?? now));
+      // #720: only the muted time inside the dead-air span counts, so a mute that opened before the owner's last
+      // fragment is trimmed to that fragment instead of being subtracted from a wait it never made longer.
+      handle.mutedMs += Math.max(0, now - Math.max(handle.mutedAt ?? now, handle.inputFinalAt ?? now));
       // A response whose first audio arrived under the mute is cancelled at once; if in doubt, it is dropped.
       handle.dropResponse = handle.mutedResponse;
       // The held answer offer owns the reply the mute deferred; only the next owner turn or provider
@@ -2293,6 +2374,14 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     if (this.#settled(handle) || generation !== handle.generation || handle.debtSince === undefined) return;
     handle.debtTimer = undefined;
     if (handle.debtBargeIn) return;
+    // C-REBUILD8: the speaking hold the sliding watchdog keeps, at the layer that owns the dead-air nudge. The
+    // 2026-10-28 N12 nudge came from here (`live_debt phase=rung reason=dead_air` then `live_dead_air_nudge`), so a
+    // sentence still being spoken holds the rung and its rebuild back; the ladder re-anchors and judges the
+    // silence from his final fragment. No timer value changes.
+    if (handle.inputFinal !== true && handle.inputAt !== undefined && this.#now() - handle.inputAt < SPEAKING_HOLD_MS) {
+      this.#scheduleDebt(handle, SPEAKING_HOLD_MS, step);
+      return;
+    }
     const turnAgeMs = Math.max(0, this.#now() - handle.debtSince);
     // #656: a tool call the model issued owns the silence through the dead-air path (#538 speaks progress while a call
     // runs), so the ladder never nudges or rebuilds over it: it stands down and #armDebt re-anchors the clock on that
@@ -2389,6 +2478,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     handle.awaitingAnswer = false;
     handle.answerAt = undefined;
     this.#cancelTimers(handle);
+    // C-TURN8: a failed turn earns no correction for what it never said.
+    this.#resetClaimCheck(handle);
     this.#cancelWatchdog(handle);
     this.#noteState(handle, 'tool');
     if (typeof handle.session.sendCommentary === 'function') {
@@ -2405,6 +2496,31 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
 
   #cancelTimers(handle: ActiveSession): void {
     handle.delegationTimer?.cancel(); handle.delegationTimer = undefined;
+  }
+
+  /** C-TURN8: a turn boundary carries no claim over, spends no correction and leaves no timer armed. */
+  #resetClaimCheck(handle: ActiveSession): void {
+    handle.claimTimer?.cancel(); handle.claimTimer = undefined;
+    handle.claimText = ''; handle.claimToolSeen = false; handle.claimCorrected = false;
+  }
+
+  /**
+   * C-TURN8: a response that announced a lookup completes, so its call has CLAIM_WITHOUT_CALL_MS to start. A
+   * call anywhere in this owner turn silences it, as does a correction already sent, the mute, and the
+   * owner's own speech. The ledger of what she said is consumed here, so a response is judged once.
+   */
+  #armClaimCheck(handle: ActiveSession, sequence: number): void {
+    const claim = LOOKUP_CLAIM.test(handle.claimText);
+    handle.claimText = '';
+    handle.claimTimer?.cancel(); handle.claimTimer = undefined;
+    if (!claim || handle.claimCorrected || handle.claimToolSeen || handle.muted) return;
+    handle.claimTimer = this.#schedule(() => {
+      handle.claimTimer = undefined;
+      if (this.#settled(handle) || handle.claimToolSeen || handle.inputFinal === false || handle.muted) return;
+      handle.claimCorrected = true;
+      hostLogEvent({ event: 'live_claim_without_call', sequence, ms: CLAIM_WITHOUT_CALL_MS });
+      try { handle.session.sendText({ text: CLAIM_WITHOUT_CALL_LINE }); } catch { /* a closed transport settles on its own */ }
+    }, CLAIM_WITHOUT_CALL_MS);
   }
 
   #armDelegationDeadline(handle: ActiveSession): void {
@@ -2491,6 +2607,14 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     handle.watchdogTimer = this.#schedule(() => {
       if (this.#settled(handle) || generation !== handle.generation) return;
       if (handle.pendingCallIds.size > 0) return;
+      // C-REBUILD8: a sentence still being spoken owns the silence. A non-final transcript younger than the
+      // speaking hold means his words are not finished, so neither the dead-air rung nor the recovery speaks or
+      // rebuilds inside that sentence; the clock restarts at his final fragment (the final transcription arms
+      // this watchdog again). No timer value moves: only the moment the silence begins is judged.
+      if (handle.inputFinal !== true && handle.inputAt !== undefined && this.#now() - handle.inputAt < SPEAKING_HOLD_MS) {
+        this.#scheduleWatchdog(handle, delayMs, generation, step);
+        return;
+      }
       const turnAgeMs = this.#now() - (handle.watchdogSince ?? this.#now());
       const sinceTool = handle.watchdogSinceTool === true;
       if (step === 'nudge') {
@@ -2681,6 +2805,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
 
   /** The turn opens at the owner-utterance boundary O1a defined: the first transcription of what she said. */
   #openTurn(handle: ActiveSession): void {
+    // A fresh owner turn restarts the invalid-argument count, so an earlier turn's repeats never shorten this one.
+    handle.invalidAttempts = new Map();
     // R7/R8: the owner spoke before the dropped-line opener became audible, so it is cancelled; the
     // provider's barge-in (interrupted) or its turn end frees the answer, never a late opener frame.
     if (handle.dropOpener) { if (openerCancelled(true, handle.spokenThisTurn)) handle.dropResponse = true; handle.dropOpener = false; }
@@ -2693,6 +2819,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // L-04: her own words restart the silence, so no earlier model frame of this turn anchors the debt clock.
     handle.turnAudioAt = undefined;
     this.#cancelTimers(handle);
+    // C-TURN8: a new owner turn is a fresh correction budget.
+    this.#resetClaimCheck(handle);
     handle.progressCallIds.clear();
     handle.exec.clear();
     handle.liveSteps = [];
@@ -2851,6 +2979,25 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     return isBareAcknowledgement(typeof row?.['text'] === 'string' ? String(row['text']) : '');
   }
 
+  /** C-REBUILD8: whether the model's own last response was a filler the owner already heard before it went mute
+   *  ("One second."). Such a response answers the turn it acknowledged no more than the owner's "Okay" does, so
+   *  the silence after it is a model mute on the question underneath and never the ambient case. */
+  #ackAnsweredOwner(liveSessionId: string): boolean {
+    const rows = this.#store.transaction(tx => tx.all(
+      "SELECT kind,text FROM live_journal WHERE live_session_id=? AND kind IN ('inputTranscription','outputTranscription')"
+      + ' ORDER BY journal_id DESC LIMIT 400', [liveSessionId]));
+    // The model's newest run of speech, the way the seed reads a turn: every fragment back to the owner's words.
+    let index = 0;
+    const said: string[] = [];
+    while (index < rows.length && String(rows[index]!['kind']) === 'outputTranscription') { said.unshift(String(rows[index]!['text'] ?? '')); index += 1; }
+    if (said.length === 0 || !isAckOnlyResponse(said.join(' '))) return false;
+    // The owner spoke before it, so that turn is the question this filler never answered.
+    for (; index < rows.length && String(rows[index]!['kind']) === 'inputTranscription'; index += 1) {
+      if (String(rows[index]!['text'] ?? '').trim() !== '') return true;
+    }
+    return false;
+  }
+
   #seedHistory(liveSessionId: string, inputClass: DataClass, deadLine = false): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number } {
     const conversationId = this.#conversationOf(liveSessionId);
     const rows = this.#store.transaction(tx => tx.all(
@@ -2950,7 +3097,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    * network one again.
    */
   #rebuildTrigger(handle: ActiveSession, reason: string | null): (typeof LIVE_REBUILD_TRIGGERS)[number] {
-    if (reason === 'model_mute') return this.#ownerWordsSinceModelOutput(handle.liveSessionId) ? 'no_output_after_owner' : 'no_output_after_ambient';
+    if (reason === 'model_mute') return this.#ownerWordsSinceModelOutput(handle.liveSessionId) || this.#ackAnsweredOwner(handle.liveSessionId) ? 'no_output_after_owner' : 'no_output_after_ambient';
     if (reason === 'research_context') return 'research_context';
     if (reason === 'session_deadline' || reason === 'deadline' || reason === 'session_timeout' || reason === 'idle_timeout'
       || reason === 'handshake_timeout') return 'session_window';
@@ -3040,15 +3187,33 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // C-PICKUP: a model mute is not a dropped line, so a rebuild that owes the owner an answer is told the
     // model went quiet instead of the call coming back. A quiet rebuild owes nothing and keeps its base shape.
     const muteRebuild = reason === 'model_mute' && !handle.quietRebuild;
+    // C-REBUILD8: the filler the model filed before it went mute is not the last word the new session inherits.
+    // The owner's question under it is, so the pickup answers that question instead of continuing a stale line. A
+    // quiet rebuild has no such turn to drop, so its seed is byte-identical.
+    if (muteRebuild) {
+      const tail = seed.turns.at(-1);
+      if (tail !== undefined && tail.role === 'model' && seed.turns.length > 1 && isAckOnlyResponse(tail.text)) {
+        seed.turns.pop(); seed.chars = Math.max(0, seed.chars - tail.text.length);
+      }
+    }
+    // C-REBUILD8: a rebuild inherits the conversation, never the call's own opener line. The opener belongs to
+    // the session that spoke it, so a stale one is never sent again as new output; the request is rebuilt from a
+    // base that carries no line of its own.
+    const base = structuredClone(handle.request);
+    delete base.openingText;
     const request = path === 'fresh_seeded'
-      ? { ...structuredClone(handle.request), history: seed.turns, ...(unspokenOpening
+      ? { ...base, history: seed.turns, ...(unspokenOpening
         ? { opening: 'model_first' as const }
         : handle.quietRebuild ? { opening: 'user_first' as const }
           : { openingText: muteRebuild ? LIVE_MUTE_PICKUP : LIVE_RECOVERY_PICKUP }) }
-      : { ...structuredClone(handle.request), resumptionHandle: savedHandle as string };
+      : { ...base, resumptionHandle: savedHandle as string };
     // #591: a quiet rebuild asks for nothing, so an opener line the call inherited (a silent start after a lost
     // line) is cleared as well as the pickup that was never set.
     if (handle.quietRebuild && !unspokenOpening) delete request.openingText;
+    // C-PICKUP: the recovery line names the pickup this request really opens with, never the one its reason
+    // implies. A quiet rebuild with nothing asked for sends none, and a mute names the silence.
+    handle.recoveryPickup = path === 'resume' ? 'none' : muteRebuild ? 'mute'
+      : handle.quietRebuild && !unspokenOpening ? 'quiet' : unspokenOpening ? 'none' : 'connection';
     try {
       handle.session = this.#voice.open(request, {
         signal: handle.abort.signal, deadlineMs: handle.deadlineMs, idleResetMs: this.#profile.limits.idleMs,
@@ -3106,8 +3271,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // reader knows how the previous session really ended instead of inferring it from the outcome code alone.
     const closeReason = handle.adapterOutcome?.upstream?.closeReason ?? '';
     hostLogEvent({ event: 'live_recovery', path, attempt: handle.recoveries + 1, code, cause: this.#upstreamCause(handle, reason), closeCode, closeReason, reason, seedTurns: seed.turns.length, seedChars: seed.chars,
-      // C-PICKUP: which pickup the rebuilt session was opened with, so a mute is never logged as a drop.
-      pickup: reason === 'model_mute' ? 'mute' : 'connection',
+      // C-PICKUP: which pickup the rebuilt session was opened with, read off the request that was sent, so a mute
+      // is never logged as a drop and a pickup that was never sent is never logged as mute.
+      pickup: handle.recoveryPickup ?? 'none',
       msSinceDrop: handle.dropEpisodeAt === undefined ? 0 : Math.max(0, this.#now() - handle.dropEpisodeAt),
       liveSessionId: handle.liveSessionId, generation: handle.generation });
   }
@@ -3545,6 +3711,10 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           hostLogEvent({ event: 'research_call_arrived', liveSessionId: handle.liveSessionId, generation, calls: event.calls.length,
             ...researchCallFacts(event.calls) });
           handle.turnAfterTool = true;
+          // C-TURN8: the call arrived, so the announcement before it answered for itself.
+          handle.claimToolSeen = true;
+          handle.claimTimer?.cancel(); handle.claimTimer = undefined;
+          handle.claimText = '';
           handle.thinking = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
           this.#openSteps(handle, event.calls);
@@ -3590,6 +3760,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           handle.turnInterrupted = true;
           logTurnScript(handle);
           clearOpenLedger(handle.liveSessionId);
+          // C-TURN8: the owner cut her off, so no claim of hers outlives the turn he interrupted.
+          this.#resetClaimCheck(handle);
           // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.
           hostLogEvent({ event: 'live_interrupted', liveSessionId: handle.liveSessionId,
             turnCompleteSeen: handle.turnCompleteSeen,
@@ -3610,6 +3782,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           // must not show the previous turn's sources as if they were running (review finding F2).
           if (handle.pendingCallIds.size === 0) handle.liveSteps = [];
           correctOpenClaim(handle);
+          // C-REBUILD8: a response that only filed a filler ("One second.") answered nothing, so it never spends
+          // the turn's answer: a start that follows it is not the orphan run the admission refuses by name.
+          if (isAckOnlyResponse(handle.turnSpoken ?? '')) handle.researchAdmission.acknowledgedOnly();
           logTurnScript(handle);
           this.#noteState(handle, 'turn_complete');
           // O1b-A: the answer is over. A turn that produced no audible output is closed as silent, which is the
@@ -3672,7 +3847,13 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue;
         }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
-        if (event.type === 'outputTranscription') countTurnScript(handle, stripNonLexicalTags(event.text));
+        if (event.type === 'outputTranscription') {
+          const said = stripNonLexicalTags(event.text);
+          countTurnScript(handle, said);
+          handle.claimText = `${handle.claimText} ${said}`.slice(-300);
+          // C-TURN8: the response's transcript is complete, so an announced lookup has its beat from here.
+          if (event.finished === true) this.#armClaimCheck(handle, event.sequence);
+        }
         if (event.type === 'inputTranscription') {
           if (!ownerTurnOpen) {
             ownerTurnOpen = true;
@@ -3687,8 +3868,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           if (handle.inputFinal) handle.ownerLastWords = typeof event.text === 'string' && event.text.trim() !== '' ? event.text.trim().split(/\s+/u).length : 0;
           if (handle.inputFinal) {
             // L-05: the provider sends the finished fragments of one utterance one after another, and the dead-air
-            // receipt is owed one measurement per utterance, so only the first of them arms it.
-            if (handle.inputFinalAt === undefined) handle.inputFinalAt = handle.inputAt;
+            // receipt is owed one measurement per utterance, so it is armed once and written once per span.
+            // #720: the span runs from the owner's LAST fragment, not the first, so the anchor moves with every one.
+            handle.inputFinalAt = handle.inputAt;
             // L-04: her speech is audible, so the wait the owner hears starts at its last fragment.
             handle.heardSince = handle.inputAt; handle.mutedMs = 0;
             if (ownerTurnOpen) {
@@ -3769,7 +3951,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       }
       handle.inputFinal = true;
       // L-05: the quiet-timer finalization of one utterance is the same utterance the provider already ended.
-      if (handle.inputFinalAt === undefined) handle.inputFinalAt = this.#now();
+      // #720: it is also the owner's last word of the turn so far, so the dead-air anchor moves to it.
+      handle.inputFinalAt = this.#now();
       handle.heardSince = this.#now(); handle.mutedMs = 0;
       for (const resolve of handle.inputFinalWaiters ?? []) resolve();
     }, Math.max(0, 300 - (this.#now() - handle.inputAt)));
@@ -3864,7 +4047,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       const calls = subs.map((sub, n) => ({ id: `r${step}~${n}~${sub.key}`, name: sub.name, args: sub.args }));
       const signalMap = new Map<string, AbortSignal>(calls.map(call => [call.id, signal]));
       const control = { signal, deadlineMs: handle.deadlineMs };
-      const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals: signalMap, authority: gateAuthority, control, step, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
+      const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals: signalMap, authority: gateAuthority, control, step, contentIndex: 0, seenIds: handle.seenIds, invalidAttempts: handle.invalidAttempts, baseClasses: [handle.inputClass] });
       const authorized = (this.lookupAuthority(host.runId) || this.lookupJobAuthority(host.runId)) ? await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] }) : raw;
       if (signal.aborted || generation !== handle.generation || this.#settled(handle)) {
         this.#tools!.owner.releaseEvidence(host.runId, [...raw.bindings, ...authorized.bindings]);
@@ -3907,6 +4090,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       authorizeEvidence: (bindings, signal) => !signal.aborted && generation === handle.generation && !this.#settled(handle)
         && this.#tools!.owner.authorizeDelivery(host, bindings, [handle.inputClass], this.lookupAuthority(host.runId), signal).state === 'allowed',
       configured, configuredNow: () => this.#researchSources(handle),
+      // #1028 behaviour 1: the digest this host already read is where the names of the owner's own
+      // organisations live, so a misheard one is resolved before any source reads.
+      calendarDigest: () => this.#calendar,
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
       unavailableNow: () => this.#unreachableSources(handle), execute,
@@ -3968,7 +4154,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       // spends no admission turn and cannot be refused for want of a fresh owner turn.
       const sameRun = parsed.ok && parsed.call.action === 'continue' && pagesCurrentRun(parsed.call) && parsed.call.researchId === handle.researchAdmission.currentRun();
       const pages = parsed.ok && parsed.call.pageCursor !== undefined && handle.voicePages.holds(parsed.call.pageCursor);
-      const verdict = parsed.ok && !pages ? handle.researchAdmission.admit(parsed.call.action, this.#ownPendingResults(handle, parsed.call.action, parsed.call.researchId), sameRun) : undefined;
+      const verdict = parsed.ok && !pages ? handle.researchAdmission.admit(parsed.call.action, this.#ownPendingResults(handle, parsed.call.action, parsed.call.researchId), sameRun, parsed.call.question ?? '') : undefined;
+      // #1028 behaviour 4: an admitted start is the work that makes a later late finding a new question.
+      if (verdict?.admitted === true && parsed.ok && parsed.call.action === 'start') handle.researchStartedAt = this.#now();
       return { call, parsed, verdict };
     });
     // F6: every research call in one model message runs concurrently; the adapter bounds each source.
@@ -4120,6 +4308,16 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // spoken once through the response channel or kept in the ledger for the next continuation. Never a
     // provider frame the wire refuses.
     const reason = this.#lateCommentaryReason(handle, event);
+    // #1028 behaviour 4: a hold postpones the line, it never discards the finding, so a block held by room
+    // speech is offered once the hold is over. A new question, a closed turn or a spoken line still ends it.
+    if (reason === 'owner_speaking') {
+      handle.lateHoldTimer?.cancel();
+      handle.lateHoldTimer = this.#schedule(() => {
+        handle.lateHoldTimer = undefined;
+        if (this.#settled(handle) || generation !== handle.generation) return;
+        this.#lateFindings(handle, generation, event);
+      }, SPEAKING_HOLD_MS);
+    }
     if (reason !== null) return hostLogEvent({ ...receipt, destination: 'ledger', reason });
     const line = `One more thing from ${event.source}: ${event.items[0]!.slice(0, LATE_SPOKEN_CHARS)}`;
     try { handle.session.sendText({ text: line }); } catch { return hostLogEvent({ ...receipt, destination: 'ledger', reason: 'send_failed' }); }
@@ -4154,12 +4352,16 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       inputAt: handle.inputAt,
       ownerWords: handle.ownerLastWords,
       lastModelAudioAt: handle.lastModelAudioAt,
+      newerWorkAt: Math.max(handle.researchStartedAt ?? 0, handle.lastToolCallAt ?? 0),
     });
   }
 
   /** A fresh turn of tool work: the step list restarts and every direct call opens its own line.
    *  A `research` call opens one line per source from inside the run instead. */
   #openSteps(handle: ActiveSession, calls: readonly { id: string; name: string; args: JsonObject }[]): void {
+    // #1028 behaviour 4: a tool call the owner's new ask made holds a late finding back; a continue of the run
+    // already reading is that run's own work, not a new question.
+    if (calls.some(call => call.name !== RESEARCH_TOOL_NAME)) handle.lastToolCallAt = this.#now();
     const running = new Set([...handle.exec].filter(([, entry]) => entry.status === 'running').map(([id]) => id));
     handle.liveSteps = handle.liveSteps.filter(step => running.has(step.stepId) || running.has(step.callId));
     handle.liveStepItems = new Map();
@@ -4200,7 +4402,19 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     const cachedDeliveryBindings = new Map<number, ToolResultBinding>();
     let responses = event.calls.map(call => ({ id: call.id, name: call.name, response: { error: 'Tool not granted' } as JsonObject }));
     let projections: LiveToolProjection[] = event.calls.map(call => ({ name: call.name, status: 'error', markdown: 'Tool not granted', sources: [] }));
-    if (this.#tools && handle.host) {
+    // C-TURN8: no owner-data tool runs before the owner's first word. Research keeps its own gate inside
+    // `#researchBatch` (answered at once, no source reached); every other owner-data name is refused here,
+    // before any argument check, with the same shape and the same closed reason.
+    const beforeOwner = handle.inputAt === undefined
+      && event.calls.some(call => call.name !== RESEARCH_TOOL_NAME && OWNER_DATA_TOOL_NAMES.has(call.name));
+    if (beforeOwner) {
+      const refusal: JsonObject = { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input',
+        guidance: 'Nothing read yet. Do not retry before the owner speaks; make this call again after their first turn.' };
+      for (const call of event.calls) hostLogEvent({ event: 'live_tool_refused', sequence: event.sequence, tool: call.name, reason: 'no_owner_input' });
+      responses = event.calls.map(call => ({ id: call.id, name: call.name, response: refusal }));
+      projections = event.calls.map(call => ({ name: call.name, status: 'error' as const, markdown: `${call.name}: refused (no_owner_input)`, sources: [] }));
+    }
+    if (!beforeOwner && this.#tools && handle.host) {
       await handle.connectorRecovery;
       if (this.#settled(handle) || generation !== handle.generation) return;
       const authority = this.lookupAuthority(handle.host.runId);
@@ -4267,7 +4481,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         if (this.#settled(handle) || generation !== handle.generation) throw new LiveError('invalidated');
         const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals,
           authority: { isCurrent: async (_host, _tool, signal) => dispatchGate.state === 'allowed' && !signal.aborted && generation === handle.generation && !this.#settled(handle) }, control,
-          step: useStep, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
+          step: useStep, contentIndex: 0, seenIds: handle.seenIds, invalidAttempts: handle.invalidAttempts, baseClasses: [handle.inputClass] });
         // Completion never sends to the old transport. With no active authority, retain references for pickup.
         if (!this.lookupAuthority(host.runId) && !this.lookupJobAuthority(host.runId)) return raw;
         return await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] });
@@ -4327,6 +4541,9 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       const followBatch = await runBatch(phase2, ++handle.toolStep);
       if ((this.#settled(handle) || generation !== handle.generation)) return;
       for (const unit of pending) handle.callAborts.delete(unit.call.id);
+      // C-REFUSAL8: an invalid-arguments refusal answers with the fix marked not for speech and one fixed
+      // spoken line, so the model can never read the host's guidance aloud; every other refusal stays a code.
+      const refusalResponse = (why: string): JsonObject => invalidArgumentsResponse(why) ?? { error: why };
       responses = event.calls.map((call, index) => {
         const hit = cached.get(index);
         if (hit) { projections[index] = hit.projection; return { id: call.id, name: call.name, response: hit.response }; }
@@ -4343,7 +4560,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
           projections[index] = { name: call.name, status: ok ? 'completed' : 'error', markdown: noEmptyResult(digest.text, call.name, typeof call.args['query'] === 'string' ? call.args['query'] : undefined), sources: [] };
           // The count the voice view shows is the items the source returned, never the citation count.
           if (ok && digest.itemCount !== undefined) handle.liveStepItems.set(call.id, digest.itemCount);
-          return { id: call.id, name: call.name, response: ok ? intentResponse(digest, unit.intent) : { error: reason } };
+          return { id: call.id, name: call.name, response: ok ? intentResponse(digest, unit.intent) : refusalResponse(reason) };
         }
         const accepted = batch?.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
         const completed = accepted !== undefined && record?.status === 'completed';
@@ -4352,7 +4569,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         const projection: LiveToolProjection = { name: call.name, status: completed ? 'completed' : 'error', markdown, sources };
         projections[index] = projection;
         if (completed && cache.cacheable(call.name)) cache.set(call.name, call.args, { response: accepted.response, projection, binding: accepted.binding });
-        return { id: call.id, name: call.name, response: completed ? accepted.response : { error: reason } };
+        return { id: call.id, name: call.name, response: completed ? accepted.response : refusalResponse(reason) };
       });
       // Per-turn metadata only: the traces the council requires before any playback fence.
       const latency: { tool: string; ms: number }[] = [];

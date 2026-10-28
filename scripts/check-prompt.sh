@@ -94,7 +94,7 @@ for (const removed of [
   'follow a plausible next source once',
 ]) assert.ok(!everything.includes(removed), `removed rule still present: ${removed}`);
 for (const rule of [
-  'One owner turn allows one research operation',
+  'One owner turn allows two research operations',
   'after a result arrives, never call research again until the owner speaks, except to stop',
   'Answer at once from a result, even a partial one',
   'state its coverage honestly in a few words, such as nine of thirty-eight events',
@@ -104,7 +104,7 @@ for (const rule of [
   'If research answers blocked, answer from the result you have',
 ]) assert.ok(voice.includes(rule), `voice rule missing: ${rule}`);
 for (const rule of [
-  'One owner turn allows one research operation',
+  'One owner turn allows two research operations',
   'Continue a run with its researchId only when the owner asks for more',
   'If research answers blocked, do not call it again in this turn',
 ]) assert.ok(procedure.includes(rule), `backend rule missing: ${rule}`);
@@ -117,6 +117,14 @@ for (const code of ['no_open_intent', 'not_allowed']) {
   assert.ok(open.OPEN_GUIDANCE[code].includes('same handle'), `the ${code} guidance asks for the same handle on a retry`);
 }
 assert.equal(open.OPEN_GUIDANCE.no_open_intent.includes('did not hear an open request'), true, 'no_open_intent says she did not hear one');
+// C-OPENWEB8: a web ask is answered by open_web at once, and a refused binding says nothing is open.
+assert.ok(persona.NAYA_OPEN_SURFACE.includes('call open_web at once'), 'the web open rule is pinned in the open surface');
+assert.ok(persona.NAYA_OPEN_SURFACE.includes('never a web lookup first'), 'she never looks it up before opening it');
+assert.ok(open.OPEN_WEB_DESCRIPTION.includes('never pass a URL'), 'the tool description bans a URL argument');
+assert.ok(open.OPEN_WEB_DESCRIPTION.includes('open_source instead'), 'a document by name keeps the handle path');
+assert.equal(open.OPEN_WEB_GUIDANCE.not_owner_words.say.includes('nothing is open'), true, 'a refused binding says nothing opened');
+assert.equal(open.OPEN_WEB_GUIDANCE.not_owner_words.fixNotForSpeech.length > 0, true, 'a refused binding carries a fix');
+assert.deepEqual([...open.OPEN_WEB_PARAMETERS.properties.kind.enum].sort(), ['maps', 'search', 'site'], 'the web kind set is closed');
 assert.ok(voice.includes('never use a stock waiting line'), 'the stock waiting line ban is kept');
 assert.equal(research.RESEARCH.mailLines, 8); assert.equal(research.RESEARCH.chatLines, 8);
 assert.equal(research.RESEARCH.moreAvailableNote, 'Partial: answer now, offer the rest; read on only if asked.');
@@ -148,5 +156,13 @@ for (const reasonCode of ['credential_missing', 'credential-unavailable', 'crede
 for (const rule of ['say you cannot hear your output', 'never say you are unchanged', 'End no answer with "okay?" as a reflex']) {
   assert.ok(persona.NAYA_VOICE_SURFACE.includes(rule), `the voice surface states the truth rule: ${rule}`);
 }
-console.log(JSON.stringify({ case: 'own_state_truth', connectorLine: true, noDenialRule: true, voiceRules: 3 }));
+// C-TURN8: the one corrective line the host sends for a claim without its call is voice content, one
+// sentence, inside the instruction ceiling (#693), and free of dash prose.
+assert.ok(persona.CLAIM_WITHOUT_CALL_LINE.length > 0 && persona.CLAIM_WITHOUT_CALL_LINE.length <= 160,
+  'the claim correction stays one short instruction inside the voice ceiling');
+assert.doesNotMatch(persona.CLAIM_WITHOUT_CALL_LINE, /[\u2013\u2014]/, 'no dash prose reaches her voice');
+assert.match(persona.CLAIM_WITHOUT_CALL_LINE, /^Correction: /, 'she hears it as the host correcting her');
+assert.match(persona.CLAIM_WITHOUT_CALL_LINE, /make the call now/i, 'it offers the call');
+assert.match(persona.CLAIM_WITHOUT_CALL_LINE, /say plainly that you are not checking anything/, 'it offers the plain refusal');
+console.log(JSON.stringify({ case: 'own_state_truth', connectorLine: true, noDenialRule: true, voiceRules: 3, claimWithoutCall: true }));
 NODE

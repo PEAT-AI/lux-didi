@@ -14,7 +14,7 @@ import { historySessionEvidence, recordHistorySession } from '../domain/history-
 import * as summaries from '../domain/summaries.js';
 import {
   SUMMARY_BOOT_REQUEUE_DELAY_MS, SUMMARY_HOST_START_LIMIT, SUMMARY_MAX_RETRIES, SUMMARY_RETRY_BACKOFF_MS,
-  SUMMARY_RETRY_MAX_AGE_MS, createSummarizer,
+  SUMMARY_RETRY_MAX_AGE_MS, createSummarizer, type SummarizerLogEvent,
 } from '../services/summarize.js';
 import type { ModelControl, ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
 import { currentLivePlaybackRate } from '../config/live.js';
@@ -167,10 +167,10 @@ class ScriptedModel implements ModelPort {
   }
 }
 
-function worker(store: Store, model: ModelPort, waits: number[]) {
+function worker(store: Store, model: ModelPort, waits: number[], log: (event: SummarizerLogEvent) => void = () => {}) {
   // The host always passes the route's permitted classes; without them the distiller fails closed and skips.
   return createSummarizer({ store, model, modelId: 'synthetic-text-model', modelAllowedClasses: ['ordinary', 'private'],
-    assistantName: 'Naya', timeZone: 'UTC', now: () => SUMMARY_NOW, log: () => {},
+    assistantName: 'Naya', timeZone: 'UTC', now: () => SUMMARY_NOW, log,
     delay: ms => { waits.push(ms); return Promise.resolve(); } });
 }
 
@@ -226,6 +226,54 @@ test('a pending row left by a host that exited is requeued at the next start', a
     await worker(h.store, model, waits).requeueFailed();
     assert.deepEqual(waits, [SUMMARY_BOOT_REQUEUE_DELAY_MS], 'the boot requeue waits out the start-up window');
     assert.equal(storedRow(h.store, 's-pending-crash')!.status, 'complete', 'the orphaned summary is distilled');
+  } finally { h.cleanup(); }
+});
+
+test('C-SUMMARY8: a start finishes the summary a previous host exited on, before a call can plan', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-at-start');
+    const source = h.store.transaction(tx => historySessionEvidence(tx, 's-at-start'))!;
+    h.store.transaction(tx => summaries.markSummaryPending(tx, 's-at-start', SUMMARY_NOW, { dataClass: source.dataClass, sourceRevision: source.revision }));
+    const model = new ScriptedModel([modelResult('complete', '{"skip": false, "summary": "The owner discussed the mint window."}')]);
+    const waits: number[] = [];
+    const events: SummarizerLogEvent[] = [];
+    const outcome = await worker(h.store, model, waits, event => events.push(event)).recoverAtStart();
+    assert.equal(outcome, 'done', 'the start waited for the summary and it landed');
+    assert.deepEqual(waits, [], 'no boot requeue delay: the opener plan waits behind this pass');
+    assert.equal(storedRow(h.store, 's-at-start')!.status, 'complete', 'the interrupted row is replaced by its outcome');
+    assert.equal(events.find(event => event.event === 'conversation_summary_started')?.['phase'], 'at_start',
+      'the start-up pass names its phase on the closed summary line');
+  } finally { h.cleanup(); }
+});
+
+test('C-SUMMARY8: a summary that outlives the start budget leaves the call unknown, never blocking the start', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-slow-start');
+    const source = h.store.transaction(tx => historySessionEvidence(tx, 's-slow-start'))!;
+    h.store.transaction(tx => summaries.markSummaryPending(tx, 's-slow-start', SUMMARY_NOW, { dataClass: source.dataClass, sourceRevision: source.revision }));
+    const model: ModelPort = { generate: () => new Promise<ModelResult>(() => { /* a provider that never answers */ }) };
+    const outcome = await worker(h.store, model, []).recoverAtStart(1);
+    assert.equal(outcome, 'timeout', 'the start gives up on the budget, it does not hang on the provider');
+    assert.equal(storedRow(h.store, 's-slow-start')!.status, 'failed', 'the in-flight row stays as it was for the next start');
+  } finally { h.cleanup(); }
+});
+
+test('C-SUMMARY8: a call too short to summarise costs the next start no wait', async () => {
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-short');
+    h.store.transaction(tx => tx.run("DELETE FROM live_journal WHERE live_session_id='s-short' AND kind='inputTranscription'", []));
+    const model = new ScriptedModel([modelResult('complete', '{"skip": false, "summary": "never asked for"}')]);
+    const waits: number[] = [];
+    const summarizer = worker(h.store, model, waits);
+    await summarizer.distill('s-short');
+    assert.equal(storedRow(h.store, 's-short')!.skipReason, 'too_few_turns');
+    assert.equal(model.calls, 0, 'the session never reached the model');
+    assert.equal(await summarizer.recoverAtStart(), 'done', 'nothing pending, so the start returns at once');
+    assert.deepEqual(waits, [], 'and it never arms a timer');
+    assert.equal(model.calls, 0, 'the skipped call is never distilled again');
   } finally { h.cleanup(); }
 });
 

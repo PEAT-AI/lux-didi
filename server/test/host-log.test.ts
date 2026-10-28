@@ -97,12 +97,34 @@ test('research_subcall carries the calendar window kind as a closed enum', () =>
   assert.equal(safeEvent({ ...base, window: 'tomorrow', extra: 1 }), undefined, 'an extra key fails closed');
 });
 
+// #689: the live owner stamps a research event's callKey with the scoped trace key, `call:` plus 64 lowercase hex.
+// SAFE_ID refused it, so a completed run left no routed or subcall receipt at all.
+test('a research event keeps the scoped callKey and still drops a malformed one', () => {
+  const callKey = `call:${'a1'.repeat(32)}`;
+  const routed = { event: 'research_routed', researchId: 'r1', sources: ['calendar'], lookups: 1, ms: [12], outcomes: ['ok'] };
+  assert.deepEqual(safeEvent({ ...routed, callKey }), { ...routed, callKey }, 'the scoped callKey is kept');
+  assert.equal(safeEvent({ ...routed, callKey: `call:${'A1'.repeat(32)}` }), undefined, 'uppercase hex is refused');
+  assert.equal(safeEvent({ ...routed, callKey: `call:${'a1'.repeat(31)}` }), undefined, 'a short digest is refused');
+  assert.equal(safeEvent({ ...routed, callKey: 'call:the owners question' }), undefined, 'free text is refused');
+  assert.deepEqual(safeEvent({ ...routed, callKey: 'research-window' }), { ...routed, callKey: 'research-window' }, 'a plain safe id still passes');
+
+  const subcall = { event: 'research_subcall', researchId: 'r1', kind: 'calendar_window', tool: 'calendar_list_events', ok: true, items: 1, rawBytes: 10, keptBytes: 8, queryChars: 0, queryAuthor: 'routed' };
+  assert.deepEqual(safeEvent({ ...subcall, callKey }), { ...subcall, callKey }, 'the subcall keeps it too');
+  assert.equal(safeEvent({ ...subcall, callKey: 'call: ' }), undefined, 'a malformed subcall key is dropped');
+
+  const progress = { event: 'research_progress', researchId: 'r1', phase: 'round', sourcesDone: [], sourcesPending: [], elapsedMs: 3 };
+  assert.deepEqual(safeEvent({ ...progress, callKey }), { ...progress, callKey }, 'progress keeps it too');
+});
+
 test('conversation_summary events keep the session id, counts, ms and reason codes only', () => {
   const started = { event: 'conversation_summary_started', liveSessionId: 's-1', inputChars: 120, truncated: false };
   assert.deepEqual(safeEvent(started), started);
   assert.equal(safeEvent({ ...started, summary: 'the owner said something private' }), undefined, 'summary text is refused');
   assert.equal(safeEvent({ ...started, liveSessionId: 'not a safe id' }), undefined, 'a malformed id is refused');
   assert.equal(safeEvent({ ...started, inputChars: -1 }), undefined, 'a negative count is refused');
+  // C-SUMMARY8: the start-up pass names one closed phase; any other value is refused with the line.
+  assert.deepEqual(safeEvent({ ...started, phase: 'at_start' }), { ...started, phase: 'at_start' });
+  assert.equal(safeEvent({ ...started, phase: 'at_call_end' }), undefined, 'an unknown phase is refused');
 
   const completed = { event: 'conversation_summary_completed', liveSessionId: 's-1', inputChars: 120, outputChars: 40, durationMs: 12, truncated: false, retryCount: 0 };
   assert.deepEqual(safeEvent(completed), completed);
@@ -258,6 +280,17 @@ test('conversation_summary_injection keeps counts and a size, never ids or text'
   assert.equal(safeEvent({ ...injection, ids: ['a'] }), undefined, 'never summary ids');
   assert.equal(safeEvent({ ...injection, injected: 1.5 }), undefined, 'a non-integer count is refused');
   assert.equal(safeEvent({ ...injection, omitted: -1 }), undefined, 'a negative count is refused');
+});
+
+test('C-TURN8: live_claim_without_call and live_tool_refused carry a count and a closed reason only', () => {
+  const claim = { event: 'live_claim_without_call', sequence: 7, ms: 3_000 };
+  assert.deepEqual(safeEvent(claim), claim, 'the turn sequence and the bound are the whole line');
+  assert.equal(safeEvent({ ...claim, text: 'SYNTHETIC-SPOKEN-TEXT' }), undefined, 'no spoken words reach the line');
+  assert.equal(safeEvent({ ...claim, ms: -1 }), undefined, 'a negative bound is refused');
+  const refused = { event: 'live_tool_refused', sequence: 3, tool: 'trello_read', reason: 'no_owner_input' };
+  assert.deepEqual(safeEvent(refused), refused, 'the tool name and the closed reason are kept');
+  assert.equal(safeEvent({ ...refused, reason: 'other' }), undefined, 'only no_owner_input exists');
+  assert.equal(safeEvent({ ...refused, args: { card: 'Synthetic' } }), undefined, 'no argument ever reaches the line');
 });
 
 test('warm_prewarm keeps two ages and one flag, and nothing the calendar carried', () => {

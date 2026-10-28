@@ -82,12 +82,28 @@ export function renderAttention(data: unknown): MattermostProjection {
 }
 
 /**
+ * R8-W9: a post's age in plain words, so a chat answer says "2 hours ago" and never an ISO stamp. A time
+ * that does not parse, or one in the future, is "just now".
+ */
+export function relativeTime(time: string, nowMs: number): string {
+  const at = Date.parse(time);
+  if (!Number.isFinite(at) || nowMs - at < 60_000) return 'just now';
+  const ago = nowMs - at;
+  const units: readonly [number, string][] = [[60_000, 'minute'], [3_600_000, 'hour'], [86_400_000, 'day'], [604_800_000, 'week'], [2_592_000_000, 'month']];
+  let unit = units[0]!;
+  for (const candidate of units) if (ago >= candidate[0]) unit = candidate;
+  const many = Math.floor(ago / unit[0]);
+  return `${many} ${unit[1]}${many === 1 ? '' : 's'} ago`;
+}
+
+/**
  * C-CHAT: the chat read as the voice reads it. Closed lead lines first: `read:` (what was read and over which
  * window), `matched:` (the archive's own count), `note:` (a capability this child lacks), `clarify:` (the
- * question to ask back) or `not found:`; then the overview sections as `- ` lines and the posts as
- * `**channel | author | time [post id]**` with their text, attachment text included.
+ * question to ask back) or `not found:`; then the posts as `**channel | author role | relative time**` with
+ * their text, attachment text included; then the overview's sections as ONE `- ` summary line, because nine
+ * header lines used to spend the whole voice cap on counts while the posts they counted never arrived.
  */
-export function renderChatRead(data: unknown): MattermostProjection {
+export function renderChatRead(data: unknown, nowMs = Date.now()): MattermostProjection {
   if (!isRecord(data) || typeof data['read'] !== 'string' || !Array.isArray(data['posts'])) {
     return { text: 'No chat read.', partial: false, originalCharacters: 0, omittedCharacters: 0, shape: 'unrecognised', itemCount: 0 };
   }
@@ -97,22 +113,29 @@ export function renderChatRead(data: unknown): MattermostProjection {
   if (typeof data['missing'] === 'string') lines.push(`note: ${data['missing']}`);
   if (typeof data['clarify'] === 'string') lines.push(`clarify: ${data['clarify']}`);
   if (typeof data['notFound'] === 'string') lines.push(`not found: ${data['notFound']}`);
+  const sections: string[] = [];
   for (const section of Array.isArray(data['sections']) ? data['sections'].filter(isRecord) : []) {
     const last = field(section, 'last');
-    lines.push(`- ${field(section, 'name')}: ${field(section, 'counts')}${last !== '' ? `, last ${last.slice(0, 10)}` : ''}`);
+    sections.push(`${field(section, 'name')}: ${field(section, 'counts')}${last !== '' ? `, last ${last.slice(0, 10)}` : ''}`);
   }
   const posts = data['posts'].filter(isRecord);
   const sources: ShapedSource[] = [];
   let omitted = 0;
   for (const post of posts) {
     const id = field(post, 'id');
-    lines.push(`**${[field(post, 'channel'), field(post, 'author'), field(post, 'time')].filter(Boolean).join(' | ')}${id !== '' ? ` [post ${id}]` : ''}**`);
+    // R8-W9: a chat read says who spoke as a role and when as an age, so the voice tells the person's own
+    // words from the owner's; a plain search, which carries no role, keeps its channel, author and stamp.
+    const role = field(post, 'role');
+    const stamp = role !== '' ? relativeTime(field(post, 'time'), nowMs) : field(post, 'time');
+    lines.push(`**${[field(post, 'channel'), role !== '' ? role : field(post, 'author'), stamp].filter(Boolean).join(' | ')}${id !== '' ? ` [post ${id}]` : ''}**`);
     const text = field(post, 'text');
     if (text.length > MATTERMOST_MESSAGE_CHARS) omitted += text.length - MATTERMOST_MESSAGE_CHARS;
     lines.push(text.length > MATTERMOST_MESSAGE_CHARS ? `${text.slice(0, MATTERMOST_MESSAGE_CHARS - 3)}...` : text);
     const permalink = field(post, 'permalink');
     if (permalink !== '') sources.push({ title: `Mattermost: #${field(post, 'channel') || 'post'}`, url: permalink, sourceType: 'mattermost' });
   }
+  // R8-W9: the overview's counts are one summary line after the posts, never one line each.
+  if (sections.length > 0) lines.push(`- ${sections.join('; ')}`);
   const text = lines.join('\n');
   const shape = typeof data['clarify'] === 'string' || typeof data['notFound'] === 'string' ? 'empty' : 'items';
   return { text, partial: omitted > 0, originalCharacters: text.length + omitted, omittedCharacters: omitted, shape, itemCount: posts.length, ...(sources.length > 0 ? { sources } : {}) };

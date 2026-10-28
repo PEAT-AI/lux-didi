@@ -83,13 +83,17 @@ public struct OpenDestination: Sendable, Equatable {
     public static func of(_ target: String, mattermostHost: String?) -> OpenDestination? {
         guard let parts = URLComponents(string: target), parts.scheme?.lowercased() == "https",
               parts.user == nil, parts.password == nil, parts.port == nil,
-              let host = parts.host?.lowercased(), !host.isEmpty, !matches(parts.percentEncodedPath, rejected),
-              !(parts.queryItems ?? []).contains(where: { $0.name == "q" || $0.name == "redirect" || $0.name == "export" })
+              let host = parts.host?.lowercased(), !host.isEmpty, !matches(parts.percentEncodedPath, rejected)
         else { return nil }
         // The raw path, as the host reads it: a %2F never becomes a separator here.
         let path = parts.percentEncodedPath
-        let eid = (parts.queryItems ?? []).contains { $0.name == "eid" }
-        let video = (parts.queryItems ?? []).first { $0.name == "v" }?.value?.isEmpty == false
+        let items = parts.queryItems ?? []
+        // C-OPENWEB8: exactly one shape carries `q`, a plain Google search. Every other shape refuses it
+        // as before, so a search phrase cannot ride the last-line allowlist on a mail, docs or video link.
+        let googleSearch = host == "www.google.com" && path == "/search" && names(items) == ["q"] && (value(items, "q") ?? "").isEmpty == false
+        if !googleSearch && items.contains(where: { $0.name == "q" || $0.name == "redirect" || $0.name == "export" }) { return nil }
+        let eid = items.contains { $0.name == "eid" }
+        let video = items.first { $0.name == "v" }?.value?.isEmpty == false
         switch host {
         case "mail.google.com":
             return matches(path, "^/mail/u/([0-9]{1,2}|[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\\.[A-Za-z0-9-]{1,63})+)/?$") ? OpenDestination(kind: "gmail") : nil
@@ -97,8 +101,16 @@ public struct OpenDestination: Sendable, Equatable {
             if path == "/" { return OpenDestination(kind: "calendar") }
             return matches(path, "^/(calendar/)?event/?$") && eid ? OpenDestination(kind: "calendar") : nil
         case "www.google.com":
-            // The link the Calendar API returns for an event; nothing else on this host opens.
-            return path == "/calendar/event" && eid ? OpenDestination(kind: "calendar") : nil
+            // The link the Calendar API returns for an event, and the three web surfaces open_web builds:
+            // a maps search, directions and a plain Google search, each with exactly its own parameters.
+            if path == "/calendar/event" && eid { return OpenDestination(kind: "calendar") }
+            if googleSearch { return OpenDestination(kind: "web") }
+            if path == "/maps/search/" && names(items) == ["api", "query"] && value(items, "api") == "1" { return OpenDestination(kind: "web") }
+            if path == "/maps/dir/", value(items, "api") == "1",
+               ["api", "destination", "origin"].contains(names(items)), value(items, "destination")?.isEmpty == false {
+                return OpenDestination(kind: "web")
+            }
+            return nil
         case "docs.google.com":
             return matches(path, "^/(document|presentation|spreadsheets)/d/[A-Za-z0-9_-]{1,256}(/(edit|view))?/?$") ? OpenDestination(kind: "docs") : nil
         case "drive.google.com":
@@ -108,10 +120,21 @@ public struct OpenDestination: Sendable, Equatable {
         case "youtu.be":
             return matches(path, "^/[A-Za-z0-9_-]{1,64}/?$") ? OpenDestination(kind: "youtube") : nil
         default:
-            guard let configured = mattermostHost?.lowercased(), host == configured,
-                  matches(path, "^/(t/)?[A-Za-z0-9._-]{1,64}/(pl|channels)/[A-Za-z0-9._-]{1,64}/?$") else { return nil }
-            return OpenDestination(kind: "mattermost")
+            if let configured = mattermostHost?.lowercased(), host == configured {
+                return matches(path, "^/(t/)?[A-Za-z0-9._-]{1,64}/(pl|channels)/[A-Za-z0-9._-]{1,64}/?$") ? OpenDestination(kind: "mattermost") : nil
+            }
+            // C-OPENWEB8: a site root and nothing else, on a host none of the cases above claims.
+            return path == "/" && items.isEmpty && matches(host, "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
+                ? OpenDestination(kind: "web") : nil
         }
+    }
+
+    private static func names(_ items: [URLQueryItem]) -> [String] {
+        items.map { $0.name }.sorted()
+    }
+
+    private static func value(_ items: [URLQueryItem], _ name: String) -> String? {
+        items.first { $0.name == name }?.value
     }
 
     private static func matches(_ text: String, _ pattern: String) -> Bool {

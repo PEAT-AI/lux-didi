@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { attachHostLogSink } from '../tools/host-events.js';
-import { beginHandleSession, endHandleSession, exposeHandles, gmailThreadUrl, homeDestination, noteGmailAccount, openDestination, resolveHandle } from '../tools/open-handles.js';
+import { beginHandleSession, endHandleSession, exposeHandles, gmailThreadUrl, homeDestination, noteGmailAccount, openDestination, registrableDomain, resolveHandle, siteRootUrl, spokenDomain, webDestination } from '../tools/open-handles.js';
 import { openTarget } from '../tools/open.js';
 import { DRIVE_CHOOSE_GUIDANCE, shapeDriveFile, shapeDriveSearch, shapeGcalList, shapeGmailList, shapeGmailRead } from '../tools/live-shape.js';
 import { renderGoogleTool } from '../tools/google.js';
 import { DRIVE_MIME_TYPES } from '../tools/research.js';
+import { SITE_BLOCKLIST, pickSiteDomain } from '../tools/web-search.js';
 
 /** The check script copies the shared table and both allowlist sources next to the compiled test. */
 const fixture = (name: string): string => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
@@ -266,5 +267,60 @@ test('C-OPEN evals: every replayable row E1 to E9 passes its rule on the open ar
       }
       if (row.expect.noBodyHandle === true) assert.equal(/^open: /m.test(text.replace(/^open: L\d+ = Gmail: .*$/gm, '')), false, `${row.id}: only the message itself is openable`);
     } finally { noteGmailAccount(undefined); endHandleSession(`eval-${row.id}`); }
+  }
+});
+
+// C-OPENWEB8: the web surfaces open_web builds from the owner's words, and the domain it names back.
+test('C-OPENWEB8: every web surface is built with URL and URLSearchParams, never by concatenation', () => {
+  assert.deepEqual(webDestination('maps', 'Odemira'), { url: 'https://www.google.com/maps/search/?api=1&query=Odemira', domain: 'google.com' });
+  assert.deepEqual(webDestination('maps', 'directions to Lisbon'), { url: 'https://www.google.com/maps/dir/?api=1&destination=Lisbon', domain: 'google.com' });
+  assert.deepEqual(webDestination('maps', 'Odemira to Lisbon'), { url: 'https://www.google.com/maps/dir/?api=1&destination=Lisbon&origin=Odemira', domain: 'google.com' });
+  // A character that would separate a path or a query is encoded by URLSearchParams, never read as one.
+  assert.equal(webDestination('search', 'a&b=c')?.url, 'https://www.google.com/search?q=a%26b%3Dc');
+  assert.deepEqual(webDestination('site', 'plantix.net'), { url: 'https://plantix.net/', domain: 'plantix.net' });
+  // Review F1: the words he said are the target, so the spoken dot opens the root too.
+  assert.deepEqual(webDestination('site', 'plantix dot net'), { url: 'https://plantix.net/', domain: 'plantix.net' });
+  assert.deepEqual(webDestination('site', 'Plantix dot net.'), { url: 'https://plantix.net/', domain: 'plantix.net' });
+  assert.equal(webDestination('site', 'acme seeds'), undefined, 'two spoken words are a name, not a domain');
+  assert.equal(webDestination('site', 'plantix.net/?q=secret'), undefined, 'a path or query is not a spoken domain');
+  assert.equal(webDestination('site', 'localhost'), undefined, 'one label is not a registrable domain');
+  assert.equal(webDestination('site', 'plantix.net.evil.example'), undefined, 'a deeper label is not its own registrable domain');
+  assert.equal(webDestination('maps', '  '), undefined);
+});
+
+test('C-OPENWEB8: a domain is read back the way she says it, and a root is https with nothing else', () => {
+  assert.equal(registrableDomain('www.plantix.net'), 'plantix.net');
+  assert.equal(registrableDomain('en.wikipedia.org'), 'wikipedia.org');
+  assert.equal(registrableDomain('shop.example.co.uk'), 'example.co.uk');
+  assert.equal(spokenDomain('Plantix.NET'), 'plantix.net');
+  assert.equal(spokenDomain('open plantix dot net'), undefined, 'a whole sentence is not a domain');
+  assert.equal(spokenDomain('acme dot seeds dot com'), undefined, 'a deeper label is not its own registrable domain');
+  assert.equal(spokenDomain('plantix dot net'), 'plantix.net', 'the spoken dot is the address dot');
+  assert.equal(spokenDomain('plantix.net.'), 'plantix.net', 'a closing period is the sentence, not the address');
+  assert.equal(spokenDomain('plantix.net/private'), undefined);
+  assert.equal(spokenDomain('plantix.net:8443'), undefined);
+  assert.equal(spokenDomain('owner@plantix.net'), undefined);
+  assert.equal(siteRootUrl('plantix.net'), 'https://plantix.net/');
+  assert.equal(siteRootUrl('plantix.net/private'), undefined);
+});
+
+test('C-OPENWEB8: the handle policy is unchanged, so no open: handle ever reaches a web surface', () => {
+  for (const url of ['https://www.google.com/search?q=odemira', 'https://www.google.com/maps/search/?api=1&query=Odemira', 'https://plantix.net/']) {
+    assert.equal(openDestination(url), undefined, `open_source refuses ${url}`);
+  }
+});
+
+test('C-OPENWEB8: the site he named is the one whose label matches, aggregators and social pages dropped', () => {
+  const sources = [
+    { title: 'Wikipedia', url: 'https://en.wikipedia.org/wiki/Acme_Seeds' },
+    { title: 'LinkedIn', url: 'https://www.linkedin.com/company/acme-seeds' },
+    { title: 'Acme Seeds', url: 'https://www.acme-seeds.com/about' },
+  ];
+  assert.deepEqual(pickSiteDomain('Acme Seeds', sources), { domain: 'acme-seeds.com' });
+  assert.deepEqual(pickSiteDomain('Acme Seeds', sources.slice(0, 2)), { candidates: [] });
+  assert.deepEqual(pickSiteDomain('Acme Seeds', [...sources, { title: 'Acme Seeds UK', url: 'https://acme-seeds.co.uk/' }]),
+    { candidates: ['acme-seeds.com', 'acme-seeds.co.uk'] });
+  for (const blocked of ['wikipedia.org', 'linkedin.com', 'youtube.com', 'x.com', 'bloomberg.com', 'zoominfo.com']) {
+    assert.ok(SITE_BLOCKLIST.includes(blocked), `${blocked} is never the site he means`);
   }
 });

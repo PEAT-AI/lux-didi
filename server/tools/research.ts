@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import type { ToolResultBinding, JsonObject } from '../adapters/model/types.js';
 import type { CalendarEvent as RetainedCalendarEvent, CalendarScope, MailMessage } from './live-shape.js';
 import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
-import { chatAsk, chatIntent, chatSubs } from './chat-intent.js';
+import { CHAT_PRODUCT_SOURCE, chatAsk, chatIntent, chatSubs } from './chat-intent.js';
 import { bindPerson, peopleSnapshot } from '../people/index.js';
 import { MAIL_QUERY_OPERATORS } from '../contracts/mail-operators.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
@@ -413,6 +413,96 @@ export function requestedEntities(question: string): string[] {
   return found;
 }
 
+/** #1028: the classes a spoken name's sound collapses to, so two hearings of one name agree. */
+const PHONETIC_CLASS: Readonly<Record<string, string>> = Object.freeze({
+  b: '1', f: '1', p: '1', v: '1', c: '2', g: '2', j: '2', k: '2', q: '2', s: '2', x: '2', z: '2',
+  d: '3', t: '3', l: '4', m: '5', n: '5', r: '6',
+});
+
+/**
+ * #1028 behaviour 1: the name as it sounds, not as it was spelled. This is the one extension the release 6
+ * entity path needed: its matching was the written name, and a spoken name arrives as it was heard.
+ */
+function phoneticKey(word: string): string {
+  const letters = word.toLowerCase().replace(/[^a-z]/gu, '');
+  if (letters === '') return '';
+  let key = letters[0]!;
+  let last = PHONETIC_CLASS[key] ?? '';
+  for (const letter of letters.slice(1)) {
+    const digit = PHONETIC_CLASS[letter] ?? '';
+    if (digit !== '' && digit !== last) key += digit;
+    last = digit;
+  }
+  return key;
+}
+
+/** One insertion, deletion or substitution apart: the tolerance a name that sounds right still needs. */
+function withinOneEdit(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let left = 0;
+  let right = 0;
+  let edits = 0;
+  while (left < a.length && right < b.length) {
+    if (a[left] === b[right]) { left += 1; right += 1; continue; }
+    edits += 1;
+    if (edits > 1) return false;
+    if (a.length > b.length) left += 1;
+    else if (b.length > a.length) right += 1;
+    else { left += 1; right += 1; }
+  }
+  return edits + (a.length - left) + (b.length - right) <= 1;
+}
+
+/** The names one text can carry: runs of one to three capitalised words, the longest run first. */
+function nameRuns(text: string): string[] {
+  const words = text.split(/\s+/u);
+  const runs: string[] = [];
+  for (let start = 0; start < words.length; start += 1) {
+    const run: string[] = [];
+    for (let end = start; end < Math.min(words.length, start + 3); end += 1) {
+      const word = words[end]!.replace(/^[^\p{Lu}]+/u, '').replace(/[^\p{L}'-]+$/u, '');
+      if (!/^\p{Lu}[\p{L}'-]*$/u.test(word)) break;
+      run.push(word);
+      if (!ENTITY_STOP.has(word)) runs.push(run.join(' '));
+    }
+  }
+  return runs.sort((a, b) => b.length - a.length);
+}
+
+/** Whether the owner's name and the heard name are one name, sound by sound, one slip allowed. */
+function sameName(known: string, heard: string): boolean {
+  const knownWords = known.split(/\s+/u).map(phoneticKey).filter(key => key !== '');
+  const heardWords = heard.split(/\s+/u).map(phoneticKey).filter(key => key !== '');
+  if (knownWords.length === 0 || knownWords.length !== heardWords.length) return false;
+  return knownWords.every((key, index) => key === heardWords[index] || withinOneEdit(key, heardWords[index]!));
+}
+
+/**
+ * #1028 behaviour 1: the names the owner's own sources carry, the calendar digest the start already read and
+ * the roster beside her profile, so a misheard name is resolved against what she owns before any read.
+ */
+function ownedNames(deps: ResearchDeps): string[] {
+  const digest = deps.calendarDigest?.() ?? '';
+  const roster = (peopleSnapshot()?.people ?? []).flatMap(person => [person.name, ...person.aliases]);
+  return [...nameRuns(digest), ...roster];
+}
+
+/**
+ * #1028 behaviour 1: the question carrying the name the owner's own sources have for it. The matched run is
+ * replaced everywhere it appears, so the web query, the knowledge read and the calendar window all name the
+ * organisation the owner meant rather than the way the recognition heard it.
+ */
+export function resolvedEntityQuestion(question: string, known: readonly string[]): { question: string; name?: string; heard?: string } {
+  const owned = [...new Set(known.map(name => name.trim()).filter(name => name !== ''))];
+  for (const heard of nameRuns(question)) {
+    const hit = owned.find(name => sameName(name, heard));
+    if (hit === undefined || hit === heard) continue;
+    return { question: question.split(heard).join(hit), name: hit, heard };
+  }
+  return { question };
+}
+
 /**
  * C-RESEARCH-CONTRACT Q-08: the names a text carries, and a possessive reduces to the name it belongs to. A
  * question is a sentence, so a capital that comes only from where its first word sits is typography there; a
@@ -739,8 +829,8 @@ function spokenNames(question: string): string[] {
 }
 
 /** The RFC3339 window in the session timezone, independent of the process timezone. */
-export function windowRange(window: string, nowMs: number, timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone): { timeMin: string; timeMax: string } {
-  return calendarRange(window, nowMs, timeZone);
+export function windowRange(window: string, nowMs: number, timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone, fromNow = false): { timeMin: string; timeMax: string } {
+  return calendarRange(window, nowMs, timeZone, fromNow);
 }
 
 /** The resolved window kind, a closed enum for the host log: today, tomorrow, week or a single date. */
@@ -974,7 +1064,7 @@ const ROUTE_WORDS: Partial<Record<SourceKind, RegExp>> = {
   // The lookbehind keeps a Gmail operator's own value ("in:inbox") out of the strip.
   knowledge: /(?<!:)\blux\b(?!\s+didi\b)|\bknowledge base\b|\bknowledge\b|\b(?:the )?vault\b|\b(?:google drive|the drive|drive files?)\b/giu,
   mail: /(?<!:)\b(?:the )?(?:e-?mails?|gmail|inbox(?:es)?|mails?)\b/giu,
-  chat: /(?<!:)\bteam chats?\b|\bmattermost\b/giu,
+  chat: new RegExp(String.raw`(?<!:)\bteam chats?\b|\bmattermost\b|${CHAT_PRODUCT_SOURCE}`, 'giu'),
   calendar: /(?<!:)\b(?:the )?calendar\b/giu,
   web: /(?<!:)\bthe web\b/giu,
   mongoose: /(?<!:)\bmongoose\b/giu,
@@ -1231,6 +1321,17 @@ const SCHEDULE_WORDS = new RegExp(`${OWNER_SCHEDULE.source}|\\b(next week|weekda
 
 export function ownerScheduleQuestion(question: string): boolean {
   return OWNER_SCHEDULE.test(question.toLowerCase());
+}
+
+/**
+ * C-CAL8: today, my schedule, what is next and the next meeting mean the rest of the day from now on.
+ * The one ask that keeps the past is the one that names the morning or what already happened, and its
+ * words are read here rather than inferred, so a plain schedule ask never speaks a finished meeting.
+ * An afternoon ask is not one of them: at 13:43 the afternoon is still ahead.
+ */
+const PAST_EVENTS_ASK = /\b(morning|earlier|already|so far|what happened|happened (?:already|so far)|this morning|been through)\b/u;
+export function pastEventsAsked(question: string): boolean {
+  return PAST_EVENTS_ASK.test(question.toLowerCase());
 }
 
 /** Whether a question asks what came in, rather than naming something to look up. */
@@ -1791,7 +1892,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     let range: { timeMin: string; timeMax: string };
     // A question that names no window reads today, the connector's own default; an ambiguous or
     // unreadable one dispatches nothing.
-    try { range = windowRange(config.window ?? calendarWindowOf(config.question, 'today'), config.nowMs ?? Date.now(), config.timeZone); }
+    try { range = windowRange(config.window ?? calendarWindowOf(config.question, 'today'), config.nowMs ?? Date.now(), config.timeZone, !pastEventsAsked(config.question ?? '')); }
     catch { return []; }
     return [search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar }, 'cal0')];
   }
@@ -1847,7 +1948,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     const named = new Set(ROUTE_CLASSES.filter(route => routeWanted(route, config.question)).map(route => route.source));
     // A brief reads primary events; calendar names alone are not findings.
     if (config.configured.includes('calendar') && named.has('calendar')) {
-      const range = windowRange('today', config.nowMs ?? Date.now(), config.timeZone);
+      const range = windowRange('today', config.nowMs ?? Date.now(), config.timeZone, !pastEventsAsked(config.question ?? ''));
       subs.push(search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar }, 'b0'));
     }
     if (config.configured.includes('mail') && named.has('mail')) subs.push(search(INTERNAL.mailList, { q: 'newer_than:2d' }, 'b1'));
@@ -2044,6 +2145,8 @@ export interface RunState {
   startedFresh?: boolean;
   /** C-DEPTH item 3 (W10-R6): the full entry read of this run was cut, so the summaries are what shipped. */
   knowledgeFetchCut?: boolean;
+  /** #1028 behaviour 1: the name the owner's own sources resolved this ask to, when it named one. */
+  resolvedName?: string | undefined;
 }
 
 function invalidateEvidence(run: RunState): void {
@@ -2298,6 +2401,11 @@ export interface ResearchDeps {
   configured: readonly SourceKind[];
   /** Re-resolved per run so a connector that comes up or down mid-session is reported truthfully. */
   configuredNow?: (() => readonly SourceKind[]) | undefined;
+  /**
+   * #1028 behaviour 1: the calendar digest this start already read, so a name the recognition misheard is
+   * resolved against a source the owner owns instead of being searched as it was heard.
+   */
+  calendarDigest?: (() => string | undefined) | undefined;
   /** WEB: the public web read. Present means the web part is configured; absent means it is not offered. */
   web?: WebSearchPort | undefined;
   /**
@@ -2803,6 +2911,13 @@ const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 
 const spokenLabelOf = (source: SourceKind): string => SOURCE_LABELS.find(([name]) => name === source)?.[1] ?? SOURCE_LABEL[source];
 /** Findings order: her own memory and the owner's knowledge base lead, company sources follow. */
 const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'data', 'drive', 'web'];
+/**
+ * C-CAL8: a schedule ask is answered by the calendar first, so its reply opens with the meetings and the
+ * knowledge behind them follows. Every other ask keeps the declared order.
+ */
+const sourceOrderFor = (question: string): readonly SourceKind[] => ownerScheduleQuestion(question)
+  ? ['calendar', ...SOURCE_ORDER.filter(source => source !== 'calendar')]
+  : SOURCE_ORDER;
 /** #621: the smallest room a floor clip may leave, so one source's last line always fits the bound. */
 const FLOOR_CLIP_CHARS = 8;
 const LINE_CAP: Partial<Record<CandidateKind, number>> = {
@@ -3355,8 +3470,16 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
       let heading: string | undefined;
       let body: string[] = [];
       // C-CHAT (AUD-002): the archive's own match count, so the header says "8 of 71", never "8 of 8".
-      const matched = result.name.startsWith('mattermost') ? Number(/^matched: (\d+)$/mu.exec(result.text)?.[1] ?? 0) : 0;
+      const chat = result.name.startsWith('mattermost');
+      // R8-W9: only the composed chat read carries overview sections; a search post and an attention item
+      // are items of their own and keep one line each.
+      const foldSections = result.name === INTERNAL.chatRead;
+      const matched = chat ? Number(/^matched: (\d+)$/mu.exec(result.text)?.[1] ?? 0) : 0;
       const before = total;
+      // R8-W9: a chat read's overview sections are counts of nine conversations, and nine header lines
+      // spent the whole voice cap on counts while the posts they counted never reached it. They become
+      // one summary line after the posts.
+      const sections: string[] = [];
       const flush = (): void => {
         if (heading === undefined) { body = []; return; }
         lines.push(clip(`${heading.replace(/\s*\[post [^\]]+\]/g, '').trim()}${body.length ? ` | ${body.join(' ')}` : ''}`, cap));
@@ -3365,10 +3488,25 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
       for (const line of raw) {
         const bold = /^\*\*(.+?)\*\*$/.exec(line);
         if (bold) { flush(); heading = bold[1]!; continue; }
-        if (line.startsWith('- ')) { flush(); lines.push(clip(line.slice(2).replace(/\s*\[post [^\]]+\]/g, '').trim(), cap)); total += 1; continue; }
+        if (line.startsWith('- ')) {
+          flush();
+          const item = clip(line.slice(2).replace(/\s*\[post [^\]]+\]/g, '').trim(), cap);
+          if (!foldSections) { lines.push(item); total += 1; }
+          else if (item !== '') sections.push(item);
+          continue;
+        }
         if (heading !== undefined) body.push(line);
       }
       flush();
+      if (sections.length > 0) {
+        // N1: the summary keeps one line of the voice cap even when the posts fill every other line, and it
+        // counts the posts that line survives, so a full page still says how many of how many it showed.
+        const room = (LINE_CAP[kind] ?? Number.POSITIVE_INFINITY) - 1;
+        const shownPosts = Math.min(Math.max(0, total - before), room);
+        const summary = clip(`showing ${shownPosts} of ${Math.max(matched, shownPosts)} posts; ${sections.join('; ')}`, cap);
+        lines.splice(Math.min(lines.length, room), 0, summary);
+        total += 1;
+      }
       total = Math.max(total, before + matched);
     }
   }
@@ -3948,7 +4086,7 @@ export function capReply(reply: JsonObject, limit: number, refresh?: () => void)
 function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number, sources?: JsonObject, skipBodies = false, bodyLimit = RESEARCH.bodyLimitChars): JsonObject {
   const bodyReply = skipBodies ? undefined : receivedBodyReply(run, configured, bodyLimit);
   if (bodyReply) { if (Array.isArray((bodyReply as JsonObject)['bodySlices'])) run.bodyReplies += 1; return bodyReply; }
-  const groups: { source: SourceKind; label: string; lines: string[]; total: number; days?: { day: string; entries: string[] }[]; meta?: string[] }[] = [];
+  const groups: { source: SourceKind; label: string; lines: string[]; total: number; days?: { day: string; entries: string[] }[]; events?: RetainedCalendarEvent[]; meta?: string[] }[] = [];
   const shownLines = new Set<string>();
   for (const entry of run.ledger.values()) {
     if (entry.bodyOnly || !entry.lines || entry.lines.length === 0 || entry.source === null || (entry.source === 'calendar' && run.calendar.size > 0) || (entry.source === 'mail' && run.mail.size > 0)) continue;
@@ -3981,7 +4119,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const remaining = [...calendarEvents].filter(([key]) => !run.calendarDelivered.has(key)).sort(([, a], [, b]) => a.start.localeCompare(b.start));
   // E8: the whole window comes back, one line per day, so a week is never re-asked day by day.
   const calendarDays = compactCalendarWindow(remaining.map(([, event]) => event), run.timeZone);
-  if (remaining.length > 0) groups.push({ source: 'calendar', label: SOURCE_LABEL.calendar, lines: calendarDayLines(calendarDays), days: calendarDays, total: Math.max(calendarEvents.size, remaining.length) });
+  if (remaining.length > 0) groups.push({ source: 'calendar', label: SOURCE_LABEL.calendar, lines: calendarDayLines(calendarDays), days: calendarDays, events: remaining.map(([, event]) => event), total: Math.max(calendarEvents.size, remaining.length) });
   const calendarReads = [...run.calendar.values()];
   const calendarUpstream = calendarReads.some(read => !read.failed && !read.exhausted);
   const calendarPartial = calendarReads.some(read => read.failed || read.unread > 0 || read.upstreamIncomplete || !read.exhausted);
@@ -4007,7 +4145,8 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const unchecked = configured.filter(source => !readSources.has(source));
   // Outcome 2: name the sources this run could not reach, in one short clause the model can voice,
   // so an outage is never hidden behind a narrow answer. `knowledge` leads the findings.
-  groups.sort((a, b) => SOURCE_ORDER.indexOf(a.source) - SOURCE_ORDER.indexOf(b.source));
+  const order = sourceOrderFor(run.question ?? '');
+  groups.sort((a, b) => order.indexOf(a.source) - order.indexOf(b.source));
   // #635: a chat read that failed by timing out is said as a timeout with its budget, never as a chat out of
   // reach. #569 keeps its timeout reason on the web's endpoint; #655 says that timeout as the web taking too long.
   const chatTimedOut = run.sourcesFailed.has('chat') && TIMED_OUT.has(run.unavailableReasons.get('chat') ?? '');
@@ -4072,14 +4211,37 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const unavailableReasons = run.unavailableReasons.size === 0 ? undefined : Object.fromEntries(run.unavailableReasons);
   let dropped = 0;
   let droppedEvents = 0;
+  let droppedPast = 0;
+  let droppedAhead = 0;
+  // C-CAL8 F4: once the past is gone the earliest meeting still ahead goes, and the reply names that count
+  // too, so the note never accounts for fewer events than the header says are missing.
+  const leftOutNote = (): string[] => {
+    if (droppedPast === 0 && droppedAhead === 0) return [];
+    const counted = [droppedPast > 0 ? `${droppedPast} earlier` : '', droppedAhead > 0 ? `${droppedAhead} later` : ''].filter(part => part.length > 0).join(' and ');
+    return [`- plus ${counted} ${droppedPast + droppedAhead === 1 ? 'event' : 'events'} left out of this answer`];
+  };
   const shownOf = (group: { lines: string[]; days?: { day: string; entries: string[] }[] }): number => group.days === undefined ? group.lines.length : group.days.reduce((n, day) => n + day.entries.length, 0);
   // A calendar trim drops one event, never a whole day, so a full window loses as little as the budget needs.
-  const trimCalendarEvent = (group: { lines: string[]; days?: { day: string; entries: string[] }[] }): boolean => {
+  // C-CAL8: it drops what is already past first, oldest first, and never a meeting still ahead, so a capped
+  // answer keeps the afternoon and names the earlier events it left out instead of cutting the last one.
+  const trimCalendarEvent = (group: { lines: string[]; days?: { day: string; entries: string[] }[]; events?: RetainedCalendarEvent[] }): boolean => {
     const days = group.days;
     if (days === undefined || days.length === 0) return false;
-    days[days.length - 1]!.entries.pop();
-    while (days.length > 0 && days[days.length - 1]!.entries.length === 0) days.pop();
-    group.lines.splice(0, group.lines.length, ...calendarDayLines(days));
+    const events = group.events;
+    if (events !== undefined) {
+      if (events.length <= 1) return false;
+      const now = new Date(run.startedAt).toISOString();
+      // The earliest event first: every event already past goes before any meeting still ahead, and once
+      // only the afternoon is left the earliest of those goes, so the last meeting of the day always stays.
+      if (events[0]!.start < now) droppedPast += 1; else droppedAhead += 1;
+      events.splice(0, 1);
+      group.days = compactCalendarWindow(events, run.timeZone);
+      group.lines.splice(0, group.lines.length, ...calendarDayLines(group.days), ...leftOutNote());
+    } else {
+      days[days.length - 1]!.entries.pop();
+      while (days.length > 0 && days[days.length - 1]!.entries.length === 0) days.pop();
+      group.lines.splice(0, group.lines.length, ...calendarDayLines(days));
+    }
     droppedEvents += 1;
     return true;
   };
@@ -4176,9 +4338,12 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       // C-DEPTH item 2: an ask that names a person or a document gives her memory no allocation at all, unless
       // the ask refers to a past conversation, so her own notes can never crowd out the evidence she was asked for.
       const names = requestedEntities(run.question ?? '').length > 0 && !pastConversationAsk(run.question ?? '');
+      // C-CAL8: on a schedule ask the calendar yields last, so the meetings the ask was about survive a cap.
+      const scheduleAsk = ownerScheduleQuestion(run.question ?? '');
+      const pool = scheduleAsk && fillable.some(group => group.source !== 'calendar') ? fillable.filter(group => group.source !== 'calendar') : fillable;
       const memory = names || !run.route.has('memory') ? fillable.find(group => group.source === 'memory') : undefined;
       const trimmed = memory !== undefined && groups.some(group => group.source !== 'memory' && shownOf(group) > 0) ? memory
-        : fillable.reduce((worst, group) => (kept(group) > kept(worst) ? group : worst));
+        : pool.reduce((worst, group) => (kept(group) > kept(worst) ? group : worst));
       // #4: a calendar day line is a list of whole events, so it loses one event at a time, the count it
       // reports is the count of events it really dropped, and it is never clipped: a clip would swallow an
       // event while the header still claimed it. Its last event stays, so the answer keeps the day it read.
@@ -4196,6 +4361,9 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // The floor: one line per source. A line wider than the whole room is clipped, never left half a word.
     const widest = groups.filter(group => shownOf(group) > 0).sort((a, b) => b.lines.join(' ').length - a.lines.join(' ').length)[0];
     if (widest === undefined) break;
+    // C-CAL8: a calendar line is a list of whole events, so the floor drops one event instead of clipping the
+    // day: a clip would swallow the last meeting of the day while the header still claimed it was shown.
+    if (widest.days !== undefined && trimCalendarEvent(widest)) continue;
     const last = widest.lines[widest.lines.length - 1]!;
     const room = last.length - (rendered - limit) - 1;
     const clipped = room >= FLOOR_CLIP_CHARS ? sentencePrefix(last, room) || clip(last, room) : '';
@@ -4474,7 +4642,9 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
   if (lookup.source === 'calendar') {
     let range: { timeMin: string; timeMax: string };
     // An unnamed window is unresolved, never widened: only the declared grammar resolves here.
-    try { range = windowRange(calendarWindowOf(query) || calendarWindowOf(context.question), context.now(), context.timeZone); }
+    // C-CAL8: a schedule lookup reads today from now, exactly as the plan surface does, so the model's own
+    // `query: 'today'` lookup never hands back the morning the owner already sat through.
+    try { range = windowRange(calendarWindowOf(query) || calendarWindowOf(context.question), context.now(), context.timeZone, !pastEventsAsked(context.question ?? '')); }
     catch { return { source: 'calendar', kind: 'calendar_window', subs: [], unresolved: true, reason: 'window_unparsed' }; }
     return { source: 'calendar', kind: 'calendar_window', subs: [
       { key: 'cal0', name: INTERNAL.calendarList, args: { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar } as JsonObject },
@@ -5215,6 +5385,26 @@ async function depthRead(deps: ResearchDeps, run: RunState, question: string, si
  * K6: the routed start. Every lookup is dispatched before any is awaited, so the layers the model
  * named are read at once; the reply is shaped as today's, plus a per-source outcome.
  */
+/**
+ * #1028 behaviour 1: an ask about one of the owner's own organisations reads where her record of it lives,
+ * so knowledge and calendar answer for a name the web alone should never have had to answer.
+ */
+function withOwnedSources(run: RunState, question: string, lookups: readonly ResearchLookup[], configured: readonly SourceKind[]): ResearchLookup[] {
+  if (run.resolvedName === undefined) return [...lookups];
+  const missing = (['knowledge', 'calendar'] as const).filter(source => configured.includes(source) && !lookups.some(lookup => lookup.source === source));
+  if (missing.length === 0) return [...lookups];
+  const asked = fallbackQuery('knowledge_search', question).query ?? run.resolvedName ?? '';
+  const window = fallbackQuery('calendar_window', question).window ?? 'today';
+  const batch = [...lookups];
+  for (const source of missing) {
+    // #1028: a batch the model already filled is never cut down to make room; the owner's own source is
+    // deferred to the next call, where its coverage is said, instead of a lookup the model asked for vanishing.
+    if (batch.length < MAX_LOOKUPS) batch.push({ source, query: source === 'knowledge' ? asked : window });
+    else run.deferredSources = [...new Set([...(run.deferredSources ?? []), source])];
+  }
+  return batch;
+}
+
 async function routedResearch(deps: ResearchDeps, run: RunState, question: string, lookups: readonly ResearchLookup[], configured: readonly SourceKind[], unavailable: readonly SourceKind[], unavailableReason: (source: SourceKind) => string, signal: AbortSignal, now: () => number, limit: number, first: FirstAnswerState): Promise<JsonObject> {
   const started = run.startedAt;
   const logRouted = deps.logRouted ?? ((event: ResearchRoutedLog): void => { hostLogEvent(event); });
@@ -5647,11 +5837,21 @@ async function withFullEntries(
     const bodies = new Map<string, string>();
     for (const entry of read) {
       if (!entry.ok || !entry.text.trim()) continue;
+      // #1028 behaviour 2: the whole fetched entry is merged, not the heading line alone. A read that fetched
+      // an entry carried its title twice and its body never, so the round it was paid for found nothing new.
+      let open: string | undefined;
       for (const line of entry.text.split('\n')) {
         const id = hitIdOf(line);
-        if (id !== undefined && !bodies.has(id)) bodies.set(id, line.trim().slice(0, RESEARCH.knowledgeBodyChars));
+        if (id !== undefined) {
+          open = id;
+          if (!bodies.has(id)) bodies.set(id, line.trim());
+          continue;
+        }
+        if (open === undefined) continue;
+        bodies.set(open, `${bodies.get(open)!}\n${line.trim()}`);
       }
     }
+    for (const [id, body] of bodies) bodies.set(id, body.slice(0, RESEARCH.knowledgeBodyChars));
     if (bodies.size === 0) { run.knowledgeFetchCut = true; return [...results]; }
     const enriched = searched.text.split('\n').map(line => {
       const id = hitIdOf(line);
@@ -5690,7 +5890,12 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     return reply;
   }
 
-  const question = call.question?.trim() ?? '';
+  const spoken = call.question?.trim() ?? '';
+  // #1028 behaviour 1: the name the owner's world holds for a name the recognition misheard, resolved before
+  // any source reads, so every query below names the organisation she meant.
+  const entity = resolvedEntityQuestion(spoken, ownedNames(deps));
+  const question = entity.question;
+  const resolvedName = entity.name;
   // #565 and MAILQ-AUTHOR F3: only a start names a topic, and a continuation reads no new text, so the
   // words that reach a source are the ones the run opened with.
   const topic = call.action === 'start' ? (call.topic?.trim() ?? '') : '';
@@ -5750,6 +5955,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     }
   }
   run.direction = call.direction ?? run.direction;
+  // #1028 behaviour 1: the name this run's sources were resolved to, carried so the reads below can say which
+  // name they were asked about.
+  run.resolvedName = resolvedName;
   // R3: the readers are bounded by the hard stop, not by the patience budget: a source that has not returned by
   // then is cut, and the call names it. A page never starts unless it fits the patience budget (boundedPages).
   run.operationDeadlineAt = now() + RESEARCH_OPERATION.hardStopMs;
@@ -5881,7 +6089,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     return buildReply(run, 'answered', configured, false, limit);
   }
   // K6: a routed start names its own layers, so the selector is skipped and every lookup runs at once.
-  const lookups = normalizeLookups(call.lookups);
+  const lookups = normalizeLookups(call.lookups).map(lookup => entity.heard === undefined || entity.name === undefined
+    ? lookup : { ...lookup, query: lookup.query.split(entity.heard).join(entity.name) });
   if (call.action === 'continue' && run.historyTokens.size > 0 && lookups.length === 0) return { researchId: run.researchId, status: 'partial', findings: [], canContinue: true, note: 'Continue local history with a memory lookup containing history.recordRef or history.cursor from historyPages.' };
   // #657 item 1: a status or test-all ask names every source, so the host reads the first batch within
   // the limit and leaves the rest for the next call, instead of refusing the whole ask.
@@ -5889,7 +6098,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     const probes = toolBatch(run, configured, lookups).map(lookup => statusProbeOf(lookup, question));
     if (probes.length > 0) return routedResearch(deps, run, question, probes, configured, unavailable, unavailableReason, signal, now, limit, first);
   }
-  if (lookups.length > 0) return routedResearch(deps, run, question, lookups, configured, unavailable, unavailableReason, signal, now, limit, first);
+  // #1028 behaviour 1: an ask that names one of the owner's own organisations is read where her record of it
+  // lives, whether or not the model named a lookup for it.
+  const ownedLookups = withOwnedSources(run, question, lookups, configured);
+  if (ownedLookups.length > 0) return routedResearch(deps, run, question, ownedLookups, configured, unavailable, unavailableReason, signal, now, limit, first);
   // TRIAGE-R3: a recall ask reads her own remembered history, so it takes the memory lookup the routed
   // path already serves with its binding, page and continuation, never a knowledge search.
   // E2 (#605): a discussion ask reads the chat beside her memory, because that is where it was said.
@@ -7045,7 +7257,7 @@ export const RESEARCH_OPERATION = Object.freeze({
  */
 export const ADMISSION_DIRECTIVES: Readonly<Record<AdmissionBlockReason, string>> = Object.freeze({
   no_owner_turn: 'No owner turn has started, so answer from the conversation until the owner speaks.',
-  turn_spent: 'This owner turn already granted one research operation: answer with what its result holds, or continue that same researchId.',
+  turn_spent: 'This owner turn already granted its research operations: answer with what their results hold, or continue that same researchId.',
   no_turn_since_result: 'That result was already delivered: answer from it, and research again only after the owner speaks.',
   answer_already_given: 'You already answered this owner turn: a new research needs a new turn from the owner.',
 });
@@ -7073,20 +7285,39 @@ export class ResearchAdmission {
   #currentRun: string | undefined;
   /** C-RESEARCH-CONTRACT Q-08: the model spoke after this turn's result, so the turn's answer is given. */
   #answered = false;
-  ownerTurn(): void { this.#turns += 1; this.#grant = this.#turns; this.#answered = false; refusedEntityRequest = undefined; entityRetryStopped = false; }
+  /** #1028 behaviour 3: the questions this owner turn already started, so two different asks both run. */
+  #starts: string[] = [];
+  ownerTurn(): void { this.#turns += 1; this.#grant = this.#turns; this.#answered = false; this.#starts = []; refusedEntityRequest = undefined; entityRetryStopped = false; }
   /**
    * R6: `ownResults` is the model asking for the pending results of the research this same turn started, while that
    * research still has sources reading. That one continue spends no owner turn, and a second one is refused.
    * C-RESEARCH-CONTRACT T-03: `sameRun` is a continue that pages or narrows the run this session already answered
    * from. It spends the same grant instead of being refused, because it is not a second research operation.
    */
-  admit(action: ResearchAction, ownResults = false, sameRun = false): AdmissionVerdict {
+  admit(action: ResearchAction, ownResults = false, sameRun = false, question = ''): AdmissionVerdict {
     if (action === 'stop') return { admitted: true };
     if (action === 'continue' && sameRun) return { admitted: true };
     if (ownResults && action === 'continue' && !this.#ownResults) { this.#ownResults = true; return { admitted: true }; }
     if (this.#turns === 0) return { admitted: false, reason: 'no_owner_turn' };
     // C-RESEARCH-CONTRACT Q-08: a start after the answer was spoken is the orphan run, and it names its cause.
     if (action === 'start' && this.#answered) return { admitted: false, reason: 'answer_already_given' };
+    if (action === 'start') {
+      // #1028 behaviour 3: two different questions asked in one breath both run, so a turn opens at most
+      // two research operations. A third, a repeat of the same question, a start after this turn's answer
+      // was delivered, and a start that only asks for the run already reading ("more") all stay turn_spent.
+      const asked = question.trim().toLowerCase();
+      const distinct = asked !== '' && !metaOnlyQuestion(asked);
+      if (this.#grant === this.#turns) {
+        this.#starts.push(distinct ? asked : '');
+        this.#grant = undefined;
+        return { admitted: true };
+      }
+      if (this.#deliveredAt === this.#turns || !distinct || this.#starts.includes(asked) || this.#starts.length >= 2) {
+        return { admitted: false, reason: 'turn_spent' };
+      }
+      this.#starts.push(asked);
+      return { admitted: true };
+    }
     if (this.#grant !== this.#turns) return { admitted: false, reason: 'turn_spent' };
     if (action === 'continue' && this.#deliveredAt !== undefined && this.#turns <= this.#deliveredAt) return { admitted: false, reason: 'no_turn_since_result' };
     this.#grant = undefined;
@@ -7105,6 +7336,10 @@ export class ResearchAdmission {
    * heard the answer for this turn and a new research run would be an orphan.
    */
   answered(): void { if (this.#deliveredAt !== undefined && this.#deliveredAt === this.#turns) this.#answered = true; }
+
+  /** C-REBUILD8: a response that only filed a filler ("One second.") is not the answer to the turn, so it takes
+   *  the mark back: the real run for that question is still the turn's own and never an orphan. */
+  acknowledgedOnly(): void { this.#answered = false; }
 }
 
 /** C-LIVE behaviour 2: the reads whose next page can still finish before the operation must answer. */

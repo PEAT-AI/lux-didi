@@ -209,8 +209,9 @@ test('Live remember writes owner words once, freezes the current prompt and reca
 });
 
 test('Live remember provenance refusals do not write memory', async t => {
+  // C-TURN8: the case with no owner speech at all is answered earlier now, by the pre-owner gate, and is
+  // asserted in `a note with no owner speech at all is still refused`.
   for (const [utterance, text, code] of [
-    [undefined, 'model invention', 'owner_transcript_not_final'],
     ['What is on my calendar?', 'model invention', 'owner_text_mismatch'],
     ['remember that mint is Friday', 'mint is Monday', 'owner_text_mismatch'],
     ['remember this as private: mint is Friday', 'mint is Friday', 'private_memory_unsupported'],
@@ -228,12 +229,7 @@ test('Live remember provenance refusals do not write memory', async t => {
       const scheduler = new RememberClock();
       const h = await harness(st, { tools: true, scheduler });
       await attached(h);
-      const resultPromise = remember(h, utterance, { text, kind: 'fact' }, 2);
-      if (utterance === undefined) {
-        await until(() => [...scheduler.pending].some(item => item.at === NOW + 1500));
-        scheduler.advance(1500);
-      }
-      const result = await resultPromise;
+      const result = await remember(h, utterance, { text, kind: 'fact' }, 2);
       const { guidance, ...refused } = result as Record<string, unknown>;
       assert.equal(typeof guidance, 'string', 'a refusal carries guidance she must say');
       assert.deepEqual(refused, { remembered: false, code });
@@ -438,13 +434,12 @@ test('a note grounded in the latest partial turn is stored when the transcript n
 });
 
 test('a note with no owner speech at all is still refused', async t => {
-  const scheduler = new RememberClock();
-  const h = await harness(t, { tools: true, scheduler });
+  // C-TURN8: before his first word the pre-owner gate answers, with its own closed reason, so the note never
+  // reaches its provenance check. The scenario and its guarantee (nothing written) are unchanged.
+  const h = await harness(t, { tools: true });
   await attached(h);
-  const resultPromise = remember(h, undefined, { text: 'model invention', kind: 'fact' }, 2, false);
-  await until(() => [...scheduler.pending].some(item => item.at === NOW + 1500));
-  scheduler.advance(1500);
-  assert.deepEqual(refusal(await resultPromise), { remembered: false, code: 'owner_transcript_not_final' });
+  assert.deepEqual(refusal(await remember(h, undefined, { text: 'model invention', kind: 'fact' }, 2)),
+    { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input' });
   assert.equal(rows(h).length, 0);
 });
 
@@ -477,6 +472,26 @@ test('W7: a signed-in board declares trello_read and trello_write, and a write r
   h.f.send({ toolCall: { functionCalls: [{ id: 'trello-3', name: 'trello_read', args: { view: 'list', list: 'Sprint' } }] } });
   await h.f.frame(3);
   assert.equal(seen[1]?.kind, 'read');
+});
+
+test('C-TURN8: a trello read before the owner speaks is refused no_owner_input and never reaches the board', async t => {
+  const { board, seen } = stubBoard(true);
+  const h = await harness(t, { tools: true, trello: board });
+  const { session } = await attached(h);
+  h.f.send({ toolCall: { functionCalls: [{ id: 'trello-early', name: 'trello_read', args: { view: 'list', list: 'Sprint' } }] } });
+  const answered = (): Record<string, unknown>[] => {
+    for (const frame of h.f.frames as { toolResponse?: { functionResponses: { response: Record<string, unknown> }[] } }[]) {
+      const response = frame.toolResponse?.functionResponses[0]?.response;
+      if (response !== undefined) return [response];
+    }
+    return [];
+  };
+  await until(() => answered().length > 0);
+  const response = answered()[0]!;
+  assert.deepEqual({ error: response.error, state: response.state, reason: response.reason },
+    { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input' }, 'the board read is refused before his first word');
+  assert.deepEqual(seen, [], 'the board was never read');
+  h.owner.revoke(session.liveSessionId);
 });
 
 test('W7: without a Trello sign-in, or under explicit grants, no Trello tool is declared', async t => {

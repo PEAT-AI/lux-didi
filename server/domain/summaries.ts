@@ -165,6 +165,22 @@ export function endedSessionsWithoutSummary(tx: Transaction): EndedSession[] {
     deadHost: deadHostOutcome(row['outcome']) }));
 }
 
+/** C-SUMMARY8: the newest calls whose summary a host exited on mid-flight. The in-flight marker is not
+ *  an outcome, so a start finishes these before it serves a call. */
+export function interruptedSessions(tx: Transaction, limit: number): EndedSession[] {
+  const rows = tx.all(
+    `SELECT s.live_session_id AS id, s.terminal_at AS ended_at, s.terminal_outcome AS outcome
+       FROM conversation_summaries c
+       JOIN live_sessions s ON s.live_session_id = c.live_session_id
+      WHERE c.status = 'failed' AND c.error_code = ?
+        AND NOT EXISTS (SELECT 1 FROM history_exclusions h WHERE h.source_kind='live' AND h.source_id=c.live_session_id)
+      ORDER BY s.created_at DESC, s.rowid DESC
+      LIMIT ?`, [PENDING_SUMMARY_ERROR_CODE, limit],
+  );
+  return rows.map(row => ({ liveSessionId: String(row['id']), endedAt: row['ended_at'] === null || row['ended_at'] === undefined ? null : Number(row['ended_at']),
+    deadHost: deadHostOutcome(row['outcome']) }));
+}
+
 /** The code an in-flight summary carries: written before the model call, replaced by the outcome, retried at the next start. */
 export const PENDING_SUMMARY_ERROR_CODE = 'pending';
 

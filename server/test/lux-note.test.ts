@@ -453,7 +453,7 @@ test('a throwing composed stage is a bounded stage_failed result the model can s
   const outcome = await h.stageWith(() => { throw new Error('synthetic stage failure'); }, STAGE_ARGS);
   assert.equal(outcome?.status, 'completed');
   const response = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT result_json FROM tool_calls')!['result_json'])) as Record<string, unknown>)['response'];
-  assert.deepEqual(response, { staged: false, code: 'stage_failed', guidance: 'The note was not staged. Tell the owner it was not saved and ask them to say it again in one sentence.' });
+  assert.deepEqual(response, { staged: false, code: 'stage_failed', guidance: 'The note was not staged or saved; explain the refusal and ask for a fresh save request.' });
   assert.equal(h.store.transaction(tx => tx.all('SELECT stage_id FROM lux_note_stages')).length, 0);
 });
 

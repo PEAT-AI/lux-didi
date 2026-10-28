@@ -53,15 +53,12 @@ async function fixture(options: FixtureOptions = {}, port = 0) {
       const bytes = await body(req);
       if ((req.method ?? 'GET') === 'DELETE') { res.writeHead(200); res.end(); return; }
       if (req.url === '/oauth/token') { options.token?.(res); return; }
-      // TRAIN8-R8: count the attempt on the wire, where the assertion means it. Counting inside the
-      // tools/list handler misses an attempt whose handshake fails before it, which is exactly the
-      // attempt a bounded recovery round must still count.
-      requests += 1;
       // The attempt that never answers: the response is left open on purpose, so only the recovery
       // attempt's own deadline can end it. closed by listener.closeAllConnections().
       if (options.hang === true) { hung += 1; return; }
       const sdk = new Server({ name: 'synthetic-mongoose', version: '1' }, { capabilities: { tools: { listChanged: false } } });
       sdk.setRequestHandler('tools/list', () => {
+        requests += 1;
         return { tools: options.tools ?? [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: { query: { type: 'string' } } }, annotations: { readOnlyHint: true } }] } as never;
       });
       sdk.setRequestHandler('tools/call', async request => {

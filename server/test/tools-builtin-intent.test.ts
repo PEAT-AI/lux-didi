@@ -239,7 +239,7 @@ for (const provider of ['gemini', 'openai'] as const) test(`live owner catalog r
   }
   for (const name of ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm']) assert.ok(names.includes(name), `${provider}: ${name}`);
   assert.ok(!names.includes('remember_note') && !names.includes('save_to_vault'));
-  f.send(provider === 'gemini' ? { setupComplete: {} } : { type: 'session.started' });
+  f.send(provider === 'gemini' ? { setupComplete: {} } : { type: 'session.started', session: { id: 'synthetic-catalog' } });
   await attachment.ready;
   if (provider === 'gemini') {
     // The fake provider selects only an advertised tool; the host receives real wire events,
@@ -251,6 +251,6 @@ for (const provider of ['gemini', 'openai'] as const) test(`live owner catalog r
     const response = f.frames[2] as { toolResponse: { functionResponses: { name: string; response: unknown }[] } };
     assert.equal(response.toolResponse.functionResponses[0]!.name, 'set_alarm');
     assert.equal(store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1, JSON.stringify(response));
-    assert.equal(store.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM tool_calls WHERE tool_name='set_alarm'")?.n), 1);
+    assert.equal(store.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM tool_calls WHERE json_extract(intent_json, '$.toolName')='set_alarm'")?.n), 1);
   }
 });

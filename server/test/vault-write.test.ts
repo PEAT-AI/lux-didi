@@ -278,3 +278,34 @@ test('the words he actually dictated are still a referent', async t => {
   const rows = h.store.transaction(tx => tx.all('SELECT content FROM vault_writes'));
   assert.deepEqual(rows.map(row => row['content']), ['the survey boat is moored at pontoon three']);
 });
+
+
+// Upstream src/lux_knowledge/server.py:517, schema SHA256
+// cdd259f3d686f24298ed6444880930a0648590730890fe27c98bc9329c7c38a1.
+// SaveInsightResult in core.py declares insight_id: int | None.
+test('C-LUXSAVE11 W12-R1: outbound save obeys the upstream schema and accepts its numeric receipt', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const fakeFetch: typeof fetch = async (_url, init) => {
+    const call = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    calls.push(call);
+    const headers = { 'content-type': 'application/json', 'mcp-session-id': 'synthetic-session' };
+    if (call['method'] === 'notifications/initialized') return new Response(null, { status: 202, headers });
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: call['id'], result: call['method'] === 'initialize'
+      ? { protocolVersion: '2025-06-18', capabilities: {} }
+      : { content: [{ type: 'text', text: JSON.stringify({ action: 'inserted', insight_id: 81, candidates: [] }) }] } }), { headers });
+  };
+  const transport = createLuxWriteTransport({ url: 'http://127.0.0.1:12345/mcp' }, fakeFetch);
+  const result = await transport.save({ content: 'Synthetic candidate.', title: 'Synthetic title', insightType: 'UNCATEGORIZED', project: 'didi-voice' });
+  const call = calls.find(entry => entry['method'] === 'tools/call');
+  assert.ok(call);
+  const params = call['params'] as { name: string; arguments: Record<string, unknown> };
+  assert.equal(params.name, 'save_insight');
+  // Required and optional names from the unmodified upstream signature, no invented metadata argument.
+  const required = ['content', 'insight_title', 'insight_type'];
+  const allowed = [...required, 'project', 'force'];
+  assert.ok(required.every(key => key in params.arguments));
+  assert.ok(Object.keys(params.arguments).every(key => allowed.includes(key)));
+  for (const key of ['content', 'insight_title', 'insight_type', 'project']) assert.equal(typeof params.arguments[key], 'string');
+  assert.ok(['TECHNICAL_DECISION', 'BUG_GOTCHA', 'PATTERN', 'MEETING', 'USER_PREFERENCE', 'PROJECT_CONSTRAINT', 'UNCATEGORIZED'].includes(String(params.arguments['insight_type'])));
+  assert.deepEqual(result, { outcome: 'inserted', insightId: '81' });
+});

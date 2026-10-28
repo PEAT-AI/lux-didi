@@ -304,6 +304,7 @@ export function stageComposedNote(tx: Transaction, liveSessionId: string, args: 
       : { staged: false, code: outcome.code };
   }
   const note = outcome.note;
+  tx.run("UPDATE lux_note_stages SET state='invalidated',code='replaced' WHERE live_session_id=? AND state IN ('staged','armed','settling')", [liveSessionId]);
   saveNoteState(tx, note);
   hostLogEvent({ event: 'lux_note_stage', staged: true, digest: note.payloadSha.slice(0, 12) });
   return { staged: true, stageId: note.stageId, title: note.title, body: note.body,
@@ -321,7 +322,8 @@ export function noteReadback(note: NoteState, now: number, receipt: 'drained' | 
 
 /** A confirmation is the next finalized owner-mic turn after the read-back, inside its window. */
 export function noteOwnerUtterance(note: NoteState, input: { readonly text: string; readonly now: number; readonly onsetAt?: number }): NoteState {
-  if (note.state !== 'armed' && note.state !== 'settling') return ended(note, 'cancelled', 'not_armed', input.now);
+  if (note.state !== 'staged' && note.state !== 'armed' && note.state !== 'settling') return note;
+  if (note.state === 'staged') return ended(note, 'cancelled', 'not_armed', input.now);
   if ((input.onsetAt ?? input.now) < (note.armedAt ?? Infinity)) return ended(note, 'cancelled', 'speech_before_readback_end', input.now);
   if (input.now - (note.armedAt ?? note.stagedAt) > CONFIRM_WINDOW_MS) return ended(note, 'cancelled', 'confirm_expired', input.now);
   const confirmationText = [note.confirmationText ?? '', input.text].filter(Boolean).join(' ');

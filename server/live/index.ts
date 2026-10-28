@@ -1050,17 +1050,6 @@ function finishedOwnerTurn(tx: Transaction, liveSessionId: string): string {
   return finishedUtterance(tx, liveSessionId, 'inputTranscription');
 }
 
-/** The closed owner turn before the current one, which a bare "save this to lux" refers to. */
-function previousOwnerTurn(tx: Transaction, liveSessionId: string): string {
-  const rows = tx.all("SELECT text,finished FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' ORDER BY journal_id", [liveSessionId]);
-  let pending = '', last = '', before = '';
-  for (const row of rows) {
-    pending += String(row['text'] ?? '');
-    if (Number(row['finished']) === 1) { before = last; last = pending.trim(); pending = ''; }
-  }
-  return before;
-}
-
 const MEMORY_AFFIRM = new Set(['love', 'loves', 'like', 'likes', 'prefer', 'prefers', 'preferred', 'enjoy', 'enjoys',
   'want', 'wants', 'need', 'needs', 'keen', 'best', 'favorite', 'favourite']);
 const MEMORY_DENY = new Set(['not', 'never', 'no', 'none', 'nothing', 'cannot', 'cant', 'dont', 'doesnt', 'didnt', 'isnt', 'arent',
@@ -4806,7 +4795,6 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         // #573: the open tools are checked against the owner's words since the model last spoke, so a
         // provider that finalizes one utterance as two turns still carries the whole ask.
         if (ownerTurn) noteOwnerWords(handle.liveSessionId, ownerTurn);
-        if (ownerTurn && transcription?.finalOrigin !== 'typed') this.#vault.observe(tx, handle.liveSessionId, String(journalId), ownerTurn, previousOwnerTurn(tx, handle.liveSessionId));
         // W6 item 6: the composed note listens to the same finalized owner turn, and to nothing else.
         if (ownerTurn && transcription?.finalOrigin !== 'typed') pendingOwnerText = ownerTurn;
       }
@@ -4834,7 +4822,6 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
     this.#noteRequests.get(handle.liveSessionId)?.disconnect();
     this.#noteRequests.delete(handle.liveSessionId);
     this.#noteSpeech.delete(handle.liveSessionId);
-    this.#store.transaction(tx => tx.run("UPDATE lux_note_stages SET state='invalidated',code='disconnected' WHERE live_session_id=? AND state IN ('staged','armed','settling')", [handle.liveSessionId]));
     if (handle.terminal) return;
     // Fence input and output before any operation that can fail or reenter.
     handle.terminal = true;
@@ -4845,6 +4832,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
     };
     let journalSequence: number | undefined;
     try {
+      attempt(() => this.#store.transaction(tx => tx.run("UPDATE lux_note_stages SET state='invalidated',code='disconnected' WHERE live_session_id=? AND state IN ('staged','armed','settling')", [handle.liveSessionId])));
       attempt(() => handle.abort.abort());
       attempt(() => handle.researchLedger.close());
       attempt(() => handle.consumer.dropAudio());

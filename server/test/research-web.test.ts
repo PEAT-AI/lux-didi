@@ -606,3 +606,34 @@ test('#1028: a misheard organisation resolves to the name her own calendar diges
   assert.ok(h.executed.includes('calendar_list_events'), 'calendar ran for a named organisation');
   assert.ok(reply['researchId'] !== undefined, 'the round answered');
 });
+
+test('#1028: a named organisation runs her knowledge and calendar even when the model named no lookup', async () => {
+  const h = harness({ ok: false, code: 'web_insufficient', reason: 'empty' });
+  const deps: ResearchDeps = {
+    ...h.deps, configured: ['knowledge', 'calendar', 'web'] as readonly SourceKind[],
+    calendarDigest: () => '11:00 Acme Seeds quarterly review',
+  };
+  await runResearch(deps, { action: 'start', question: 'what did Akme Seats decide', lookups: [] }, new AbortController().signal);
+  assert.ok(h.executed.includes('search_knowledge'), 'knowledge ran with no lookup named for it');
+  assert.ok(h.executed.includes('calendar_list_events'), 'calendar ran with no lookup named for it');
+});
+
+test('#1028: a full batch keeps every lookup the model asked for and defers her own source', async () => {
+  const h = harness({ ok: false, code: 'web_insufficient', reason: 'empty' });
+  const deps: ResearchDeps = {
+    ...h.deps, configured: ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'] as readonly SourceKind[],
+    calendarDigest: () => '11:00 Acme Seeds quarterly review',
+  };
+  const reply = await runResearch(deps, {
+    action: 'start', question: 'what did Akme Seats decide',
+    lookups: [
+      { source: 'web', query: 'Acme Seeds' }, { source: 'mail', query: 'from:acme' },
+      { source: 'chat', query: 'acme' }, { source: 'mongoose', query: 'acme' },
+    ],
+  }, new AbortController().signal);
+  assert.ok(h.executed.some(name => name.startsWith('gmail')), 'the mail lookup the model asked for still ran');
+  assert.ok(h.executed.some(name => name.startsWith('chat')), 'the chat lookup the model asked for still ran');
+  assert.equal(h.executed.filter(name => name === 'search_knowledge').length, 0, 'her own source waits for the next call, never cutting a batch');
+  assert.equal(h.webCalls.length, 1, 'the web lookup still ran');
+  assert.ok(reply['researchId'] !== undefined, 'the round answered');
+});

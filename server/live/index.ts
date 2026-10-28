@@ -512,7 +512,10 @@ export function lateCommentarySilence(state: LateCommentaryState): string | null
     ? state.newerWorkAt > state.answeredAt
     : state.inputAt !== undefined && state.inputAt > state.answeredAt && !filler && !immediate;
   if (askedAgain) return 'new_question';
-  if (state.inputAt !== undefined && state.now - state.inputAt < SPEAKING_HOLD_MS) return 'owner_speaking';
+  // #1028 behaviour 4: the speaking hold keeps the answer from talking over a new question, so it holds only
+  // for input the host acted on. Room speech is not a question and never silences a finding.
+  const held = state.newerWorkAt === undefined || state.newerWorkAt > state.answeredAt;
+  if (held && state.inputAt !== undefined && state.now - state.inputAt < SPEAKING_HOLD_MS) return 'owner_speaking';
   if (state.lastModelAudioAt !== undefined && state.now - state.lastModelAudioAt < ANSWER_AUDIO_HOLD_MS) return 'answer_playing';
   return null;
 }

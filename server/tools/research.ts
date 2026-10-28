@@ -5320,10 +5320,16 @@ function withOwnedSources(run: RunState, question: string, lookups: readonly Res
   if (run.resolvedName === undefined) return [...lookups];
   const missing = (['knowledge', 'calendar'] as const).filter(source => configured.includes(source) && !lookups.some(lookup => lookup.source === source));
   if (missing.length === 0) return [...lookups];
-  const kept = lookups.slice(0, Math.max(0, MAX_LOOKUPS - missing.length));
   const asked = fallbackQuery('knowledge_search', question).query ?? run.resolvedName ?? '';
   const window = fallbackQuery('calendar_window', question).window ?? 'today';
-  return [...kept, ...missing.map(source => ({ source, query: source === 'knowledge' ? asked : window }))];
+  const batch = [...lookups];
+  for (const source of missing) {
+    // #1028: a batch the model already filled is never cut down to make room; the owner's own source is
+    // deferred to the next call, where its coverage is said, instead of a lookup the model asked for vanishing.
+    if (batch.length < MAX_LOOKUPS) batch.push({ source, query: source === 'knowledge' ? asked : window });
+    else run.deferredSources = [...new Set([...(run.deferredSources ?? []), source])];
+  }
+  return batch;
 }
 
 async function routedResearch(deps: ResearchDeps, run: RunState, question: string, lookups: readonly ResearchLookup[], configured: readonly SourceKind[], unavailable: readonly SourceKind[], unavailableReason: (source: SourceKind) => string, signal: AbortSignal, now: () => number, limit: number, first: FirstAnswerState): Promise<JsonObject> {
@@ -6019,7 +6025,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     const probes = toolBatch(run, configured, lookups).map(lookup => statusProbeOf(lookup, question));
     if (probes.length > 0) return routedResearch(deps, run, question, probes, configured, unavailable, unavailableReason, signal, now, limit, first);
   }
-  if (lookups.length > 0) return routedResearch(deps, run, question, withOwnedSources(run, question, lookups, configured), configured, unavailable, unavailableReason, signal, now, limit, first);
+  // #1028 behaviour 1: an ask that names one of the owner's own organisations is read where her record of it
+  // lives, whether or not the model named a lookup for it.
+  const ownedLookups = withOwnedSources(run, question, lookups, configured);
+  if (ownedLookups.length > 0) return routedResearch(deps, run, question, ownedLookups, configured, unavailable, unavailableReason, signal, now, limit, first);
   // TRIAGE-R3: a recall ask reads her own remembered history, so it takes the memory lookup the routed
   // path already serves with its binding, page and continuation, never a knowledge search.
   // E2 (#605): a discussion ask reads the chat beside her memory, because that is where it was said.

@@ -20,17 +20,17 @@ import { fixture } from './live-voice-fixture.js';
 test('A2: each live builtin executes against its exact stored intent', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-builtin-intent-'));
   const store = new Store(join(dir, 'state'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
-  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+
   const f = await fixture(t);
   const registry = new McpRegistry();
   const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic' });
   t.after(() => port.close());
   let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
-  const owner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async (runId, signal) => lookup?.(runId, signal) ?? null });
+  const owner = createToolsOwner({ grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port, lookupAuthority: async (runId, signal) => lookup?.(runId, signal) ?? null });
   const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'models/synthetic', voice: 'Synthetic', keyReference: 'synthetic', route: { enabled: true, provider: 'gemini', modelId: 'models/synthetic', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic', dataClass: 'ordinary' } });
   const { service } = composeLive(store, dir, { profile, socketFactory: f.socketFactory, credentials: { resolve: async () => 'synthetic' } }, undefined, undefined,
     { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } });
-  t.after(() => service.shutdown());
+  t.after(async () => { await service.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   const context = { clientId: 'synthetic-actor', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
   const session = service.create('ordinary', randomUUID(), context);
   const attachment = service.attach(session.liveSessionId, context);
@@ -55,6 +55,12 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       executionId: randomUUID(), callId: randomUUID(), toolName: definition.name,
       argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
       accountId: definition.accountId, resourceId: definition.resourceId };
+    // Research is a live-loop protocol declaration, not a durable builtin executor.
+    // Its placeholder intentionally has no tool intent identity and is intercepted by Live.
+    if (definition.name === 'research') {
+      assert.equal((await definition.execute(args, { ...intent, signal })).status, 'failed');
+      continue;
+    }
     assert.equal(owner.journal.intent(intent), 'fresh', definition.name);
     await assert.doesNotReject(() => definition.execute(args, { ...intent, signal }), `${definition.name} must accept its stored intent`);
   }

@@ -6246,7 +6246,7 @@ test('C-TURN8: a claim with no call gets exactly one correction, and only once p
   const stop = captureHostDiagnostics(new HostLog(captureDir));
   t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
   const scheduler = new DeadlineClock();
-  const h = await harness(t, { scheduler, tools: true });
+  const h = await harness(t, { scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
   const { session } = await attached(h, 'claim-without-call');
   const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
   const corrections = () => h.f.frames.filter(frame => {
@@ -6267,7 +6267,6 @@ test('C-TURN8: a claim with no call gets exactly one correction, and only once p
   assert.equal(corrections().length, 0, 'nothing is said before the bound has passed');
   assert.deepEqual(counted(), [], 'and nothing is logged yet');
   await advance(1_000);
-  t.diagnostic(`fired: ${JSON.stringify(counted().map(line => line.ms))} pending: ${JSON.stringify([...scheduler.pending].map(entry => entry.due - scheduler.now))}`);
   assert.deepEqual(counted().map(line => line.ms), [3_000], 'the claim is counted with its bound');
   assert.equal(corrections().length, 1, 'exactly one correction for the announcement');
   assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /say plainly that you are not checking anything/);
@@ -6283,7 +6282,7 @@ test('C-TURN8: a claim with no call gets exactly one correction, and only once p
 
 test('C-TURN8: a claim followed by its call inside the bound is never corrected', async t => {
   const scheduler = new DeadlineClock();
-  const h = await harness(t, { scheduler, tools: true });
+  const h = await harness(t, { scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
   const { session } = await attached(h, 'claim-with-call');
   const corrections = () => h.f.frames.filter(frame => {
     const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;

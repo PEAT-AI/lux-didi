@@ -2456,7 +2456,6 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     if (!claim || handle.claimCorrected || handle.claimToolSeen || handle.muted) return;
     handle.claimTimer = this.#schedule(() => {
       handle.claimTimer = undefined;
-      hostLogEvent({ event: 'live_claim_without_call', sequence, ms: this.#settled(handle) ? 11 : handle.claimToolSeen ? 12 : handle.inputFinal === false ? 13 : handle.muted ? 14 : 15 });
       if (this.#settled(handle) || handle.claimToolSeen || handle.inputFinal === false || handle.muted) return;
       handle.claimCorrected = true;
       hostLogEvent({ event: 'live_claim_without_call', sequence, ms: CLAIM_WITHOUT_CALL_MS });

@@ -1296,6 +1296,7 @@ export class LiveSessionOwner {
   readonly #noteSessions = new Set<string>();
   /** W6-R2 B2/C1: the one segment carrying each stage's read-back, keyed by session and bound to the stage. */
   readonly #noteRequests = new Map<string, NoteRequestGate>();
+  readonly #noteOnset = new Map<string, number>();
   readonly #noteSpeech = new Map<string, { stageId: string; text: string; matched: boolean; drainedAt?: number }>();
   readonly #noteReadback = new Map<string, { readonly stageId: string; readonly key: string }>();
   readonly #voice: LiveVoicePort;
@@ -1985,6 +1986,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     if (result['staged'] === true) {
       this.#noteSessions.add(liveSessionId);
       this.#noteReadback.delete(liveSessionId);
+      this.#noteOnset.delete(liveSessionId);
       this.#noteSpeech.set(liveSessionId, { stageId: String(result['stageId']), text: '', matched: false });
     }
     return result;
@@ -2043,18 +2045,21 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     if (!this.#noteSessions.has(handle.liveSessionId)) return;
     const open = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
     if (!open) return;
-    if (open.state === 'armed' && noteKey(text) === 'read it all' && (handle.inputAt ?? this.#now()) >= (open.armedAt ?? Infinity)) {
+    const onsetAt = this.#noteOnset.get(handle.liveSessionId) ?? handle.inputAt ?? this.#now();
+    if (!this.#noteOnset.has(handle.liveSessionId)) this.#noteOnset.set(handle.liveSessionId, onsetAt);
+    if (open.state === 'armed' && noteKey(text) === 'read it all' && onsetAt >= (open.armedAt ?? Infinity)) {
       const next = { ...open, state: 'staged' as const, fullReadback: true, confirmationText: '' };
       this.#store.transaction(tx => saveNoteState(tx, next));
       this.#noteReadback.delete(handle.liveSessionId);
       this.#noteSpeech.set(handle.liveSessionId, { stageId: open.stageId, text: '', matched: false });
+      this.#noteOnset.delete(handle.liveSessionId);
       return;
     }
-    const next = noteOwnerUtterance(open, { text, now: this.#now(), ...(handle.inputAt === undefined ? {} : { onsetAt: handle.inputAt }) });
+    const next = noteOwnerUtterance(open, { text, now: this.#now(), onsetAt });
     if (next === open) return;
     this.#store.transaction(tx => saveNoteState(tx, next));
     hostLogEvent({ event: 'lux_note_confirm', state: next.state, code: next.code ?? '' });
-    if (next.state !== 'settling') { this.#noteReadback.delete(handle.liveSessionId); this.#noteNotSaved(handle, next.code ?? 'not_affirmative'); return; }
+    if (next.state !== 'settling') { this.#noteOnset.delete(handle.liveSessionId); this.#noteReadback.delete(handle.liveSessionId); this.#noteNotSaved(handle, next.code ?? 'not_affirmative'); return; }
     handle.noteSettleTimer?.cancel();
     handle.noteSettleTimer = this.#schedule(() => { void this.#noteSettle(handle); }, Math.max(0, (next.settleAt ?? 0) - this.#now()));
     handle.noteSettleTimer.unref();
@@ -2064,7 +2069,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
   #noteFragment(handle: ActiveSession): void {
     if (!this.#noteSessions.has(handle.liveSessionId)) return;
     const open = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
-    if (!open || open.state !== 'settling') return;
+    if (!open) return;
+    if (!this.#noteOnset.has(handle.liveSessionId)) this.#noteOnset.set(handle.liveSessionId, handle.inputAt ?? this.#now());
+    if (open.state !== 'settling') return;
     const next = noteOwnerFragment(open, this.#now());
     if (next === open) return;
     handle.noteSettleTimer?.cancel(); handle.noteSettleTimer = undefined;
@@ -2080,7 +2087,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     if (!open || open.state !== 'settling') return;
     const settled = noteSettle(open, this.#now());
     if (settled.state !== 'committed') {
-      if (settled !== open) { this.#store.transaction(tx => saveNoteState(tx, settled)); this.#noteNotSaved(handle, settled.code ?? 'not_affirmative'); }
+      if (settled !== open) { this.#noteOnset.delete(handle.liveSessionId); this.#store.transaction(tx => saveNoteState(tx, settled)); this.#noteNotSaved(handle, settled.code ?? 'not_affirmative'); }
       return;
     }
     // The digest frozen at stage time is the only payload that may ever be sent.
@@ -2098,6 +2105,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     catch { receipt = { saved: false, code: 'outcome_unknown' }; }
     this.#store.transaction(tx => markCommitted(tx, settled.stageId, receipt.insightId));
     this.#noteReadback.delete(handle.liveSessionId);
+    this.#noteOnset.delete(handle.liveSessionId);
     hostLogEvent({ event: 'lux_note_saved', saved: receipt.saved, code: receipt.code ?? 'inserted' });
     if (this.#settled(handle)) return;
     const line = receipt.saved
@@ -4823,6 +4831,9 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
     this.#noteRequests.get(handle.liveSessionId)?.disconnect();
     this.#noteRequests.delete(handle.liveSessionId);
     this.#noteSpeech.delete(handle.liveSessionId);
+    this.#noteOnset.delete(handle.liveSessionId);
+    this.#noteSessions.delete(handle.liveSessionId);
+    this.#noteReadback.delete(handle.liveSessionId);
     if (handle.terminal) return;
     // Fence input and output before any operation that can fail or reenter.
     handle.terminal = true;

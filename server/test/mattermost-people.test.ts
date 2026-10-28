@@ -12,7 +12,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import type { EndpointConfig } from '../adapters/mcp/port.js';
 import {
   CONNECTOR_COMPOSED_TOOLS, composedGrantedNames, connectionEnvelope, createMattermostReader, nameKey,
-  MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS,
+  MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, withoutOwner,
 } from '../connectors/index.js';
 import type { MattermostAttention, MattermostChatRead, MattermostReader, MattermostResult } from '../connectors/index.js';
 import { projectMattermostResult } from '../tools/mattermost.js';
@@ -470,6 +470,14 @@ test('R8-W9 (F1): a roster person without a direct conversation says so only aft
   assert.equal(searches(f.calls())[0]?.['channel'], undefined, 'mentions live in every channel, never a DM');
   assert.match(read.read, /^posts mentioning Tess Wren \(@tess\.wren\) in every channel, because you have no direct messages with them/u);
   assert.doesNotMatch(read.read, /ask for their mentions/u, 'the mentions are already what was read');
+});
+
+test('R8-W9 (F2): the owner\'s display name goes with the handle, word by word, and only their own words go', () => {
+  assert.equal(withoutOwner('pilot Robert Smith', 'robert', 'Robert Smith'), 'pilot', 'the whole name is the owner');
+  assert.equal(withoutOwner('pilot robert', 'robert', 'Robert Smith'), 'pilot', 'the handle too');
+  assert.equal(withoutOwner('smith street pilot', 'robert', 'Robert Smith'), 'street pilot', 'a shared surname is the owner\'s word and goes; other words stay');
+  assert.equal(withoutOwner('pilot', 'robert@example.invalid', 'Robert Smith'), 'pilot', 'the part before any @ is the handle');
+  assert.equal(withoutOwner('pilot', '', ''), 'pilot', 'no identity, nothing dropped');
 });
 
 test('R8-W9: the owner\'s own handle never becomes a chat search term', async t => {

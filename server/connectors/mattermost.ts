@@ -406,17 +406,21 @@ function channelLabel(channel: MattermostChannel): string {
 }
 
 /**
- * R8-W9: the owner's own handle never rides a chat search. The audit saw the owner's name reach the query,
- * where it matches every post he ever wrote; the whole word and its local part (before any @) are dropped,
- * and the rest of the words stay as the owner said them.
+ * R8-W9: the owner's own name and handle never ride a chat search. The audit saw the owner's name reach the
+ * query, where it matches every post he ever wrote, so the handle, the part before any @, and every word of
+ * the identity's display name are dropped as whole words; the rest stays as the owner said it (F2).
  */
-function withoutOwner(text: string, owner: string): string {
-  const handle = owner.trim().toLowerCase().replace(/^@/u, '');
-  if (handle === '') return text;
+export function withoutOwner(text: string, owner: string, display = ''): string {
+  const handle = owner.trim().replace(/^@/u, '');
   const local = handle.includes('@') ? handle.slice(0, handle.indexOf('@')) : handle;
-  const words = [...new Set([handle, local])].filter(word => word !== '').map(word => word.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'));
-  if (words.length === 0) return text;
-  const strip = new RegExp(String.raw`(?<![\p{L}\p{N}])@?(?:${words.join('|')})(?![\p{L}\p{N}])`, 'giu');
+  const words = new Set<string>();
+  const take = (value: string): void => {
+    for (const word of value.split(/[^\p{L}\p{N}]+/u)) if (word.length > 1) words.add(word.toLowerCase().replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'));
+  };
+  take(local);
+  take(display);
+  if (words.size === 0) return text;
+  const strip = new RegExp(String.raw`(?<![\p{L}\p{N}])@?(?:${[...words].join('|')})(?![\p{L}\p{N}])`, 'giu');
   return text.replace(strip, ' ').replace(/\s+/gu, ' ').trim();
 }
 
@@ -903,9 +907,9 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     if (query === undefined) return { state: 'refused', reason: 'invalid-query' };
     const who = await ownerIdentity(signal);
     if (!who.ok) return who.result;
-    // R8-W9: the owner's own name and handle are never a search term; "what Ada and robert decided" asks
-    // about Ada, and searching the handle finds every post the owner ever wrote.
-    const asked = withoutOwner(query, who.owner.username);
+    // R8-W9: the owner's own name and handle are never a search term; "what Ada and Robert Smith decided"
+    // asks about Ada, and searching either finds every post the owner ever wrote (F2: the display name too).
+    const asked = withoutOwner(query, who.owner.username, who.owner.displayName);
     const children: SourceDispatchRef[] = who.evidence[SOURCE_DISPATCH] ? [who.evidence[SOURCE_DISPATCH]!] : [];
     const capture = (evidence: MattermostEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
     const window = { from: input.from_date ?? new Date(Date.now() - MATTERMOST_CHAT.days * DAY_MS).toISOString().slice(0, 10), ...(input.to_date === undefined ? {} : { to: input.to_date }) };

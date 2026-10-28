@@ -571,19 +571,22 @@ function stdioApprovalHost(t: TestContext, dir: string, configDir: string) {
   const lifecycle: { event: string; endpointId?: string; fields?: readonly string[]; reason?: string; addedToolNames?: readonly string[] }[] = [];
   const failures: string[] = [];
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
-  const endpoint = (args: readonly string[], path: string, account = 'mattermost') => ({
+  const endpoint = (args: readonly string[], path: string, account = 'mattermost', home = '/home/fixture') => ({
     id: 'mattermost-people', transport: 'stdio', command: process.execPath, args: [...args],
     // The whole launch environment, PATH included, exactly as the installing host shapes it.
-    env: { HOME: '/home/fixture', PATH: path, LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+    env: { HOME: home, PATH: path, LOGNAME: '', SHELL: '', TERM: '', USER: '' },
     connector: 'mattermost', account, resource: 'mattermost', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'private',
   });
-  const write = (grantMode: string, args: readonly string[], path: string, account?: string): void => {
+  const write = (grantMode: string, args: readonly string[], path: string, account?: string, home?: string): void => {
     // No ownerIdentity: the synthetic child answers no real account, so the catalog states none.
     writeFileSync(join(configDir, 'mcp.json'),
-      JSON.stringify({ schemaVersion: 1, grantMode, endpoints: [endpoint(args, path, account)] }),
+      JSON.stringify({ schemaVersion: 1, grantMode, endpoints: [endpoint(args, path, account, home)] }),
       { mode: 0o600 });
   };
   const start = async () => {
+    // One tools owner per Store: a restarted host opens the same data directory fresh, as the real host does.
+    store.close();
+    store = new Store(join(dir, 'data'), toolsMigrations);
     const runtime = await composeMcpRuntime({
       store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
       lifecycleLog: event => { lifecycle.push(event as unknown as { event: string }); },
@@ -618,8 +621,8 @@ test('W2-R1: a rebuilt stdio child in a moved directory with a fresh PATH reconn
   await first.close();
   const settled = h.generation();
   h.lifecycle.length = 0;
-  // The moved child and the host's new shell PATH: same id, same descriptor, same account and resource.
-  h.write('owner-trusted-reads', [rebuiltChild, 'people'], '/opt/homebrew/bin:/usr/bin');
+  // The moved child, its new home and the host's new shell PATH: same id, descriptor, account and resource.
+  h.write('owner-trusted-reads', [rebuiltChild, 'people'], '/opt/homebrew/bin:/usr/bin', 'mattermost', '/home/fixture-rebuilt');
   const moved = await h.start();
   try {
     assert.equal(h.report(moved)?.state, 'connected', JSON.stringify(h.report(moved)));
@@ -632,7 +635,7 @@ test('W2-R1: a rebuilt stdio child in a moved directory with a fresh PATH reconn
   } finally { await moved.close(); }
   // A PATH-only change is not an endpoint change at all: nothing moved but the shell that launched it.
   h.lifecycle.length = 0;
-  h.write('owner-trusted-reads', [rebuiltChild, 'people'], '/usr/local/bin:/usr/bin');
+  h.write('owner-trusted-reads', [rebuiltChild, 'people'], '/usr/local/bin:/usr/bin', 'mattermost', '/home/fixture-rebuilt');
   const pathOnly = await h.start();
   try {
     assert.equal(h.report(pathOnly)?.state, 'connected');

@@ -957,9 +957,12 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       const label = person.display !== person.username ? `${person.display} (@${person.username})` : `@${person.username}`;
       const theirs = input.intent === 'person' && input.sides !== 'both';
       if (person.dmChannelId === undefined) {
-        const anywhere = await postsRead(who.owner.username, { query: asked, author: person.username, ...dates }, limit, offset, capture, signal);
+        // R8-W9 (F1): you have no direct conversation with them, so the answer reads their mentions instead
+        // and says both facts: whose mentions these are, and why they are what came back.
+        const mentioned = [asked, `@${person.username}`].filter(part => part !== '').join(' ');
+        const anywhere = await postsRead(who.owner.username, { query: mentioned, ...dates }, limit, offset, capture, signal);
         if (!anywhere.ok) return anywhere.result;
-        return page(`posts by ${label} in every channel, because you have no direct messages with them,`, anywhere, missingOf(person.missing, overviewMissing).missing);
+        return page(`posts mentioning ${label} in every channel, because you have no direct messages with them,`, anywhere, missingOf(person.missing, overviewMissing).missing);
       }
       const direct = await postsRead(who.owner.username, { query: asked, channel: person.dmChannelId, ...(theirs ? { author: person.username } : {}), ...dates }, limit, offset, capture, signal);
       if (!direct.ok) return direct.result;

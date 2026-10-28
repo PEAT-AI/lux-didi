@@ -460,15 +460,16 @@ test('R8-W9: a roster person with an existing direct conversation reads it, neve
   assert.ok(read.posts.length > 0, 'the conversation holds posts');
 });
 
-test('R8-W9: a roster person without a direct conversation says so only after the DM lookup, and offers their posts', async t => {
+test('R8-W9 (F1): a roster person without a direct conversation says so only after the lookup, and reads their mentions instead', async t => {
   const f = await setup(t, 'people');
   installPeople(roster());
   t.after(() => installPeople(null));
   const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Tess', sides: 'both' }));
   assert.ok(f.calls().some(call => call.name === 'mattermost_list_channels'), 'the DM lookup ran before the answer');
-  assert.match(read.read, /because you have no direct messages with them/u);
-  assert.equal(searches(f.calls())[0]?.['channel'], undefined, 'their posts in the channels they share, never a DM');
-  assert.equal(searches(f.calls())[0]?.['author'], 'tess.wren');
+  assert.equal(searches(f.calls())[0]?.['query'], '@tess.wren', 'their mentions, because no direct conversation exists');
+  assert.equal(searches(f.calls())[0]?.['channel'], undefined, 'mentions live in every channel, never a DM');
+  assert.match(read.read, /^posts mentioning Tess Wren \(@tess\.wren\) in every channel, because you have no direct messages with them/u);
+  assert.doesNotMatch(read.read, /ask for their mentions/u, 'the mentions are already what was read');
 });
 
 test('R8-W9: the owner\'s own handle never becomes a chat search term', async t => {

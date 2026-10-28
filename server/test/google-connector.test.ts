@@ -852,9 +852,8 @@ test('the warm calendar digest keeps one bounded line and trims a day that does 
   assert.equal(typeof digest, 'string');
   assert.ok((digest ?? '').length <= CALENDAR_DIGEST_CHARS, 'the digest never exceeds the bound');
   assert.match(digest ?? '', /^00:00 review with the whole team 0/, 'the first event keeps its local clock time');
-  assert.match(digest ?? '', /team 10, \+\d+ more$/, 'a trimmed digest says how many events it left out');
-  const more = /\+(\d+) more$/u.exec(digest ?? '');
-  assert.ok(Number(more?.[1]) > 0, 'the count names the events the bound left out');
+  assert.match(digest ?? '', /team 9, \+20 more$/, 'a trimmed digest says how many events it left out');
+  assert.ok((digest ?? '').indexOf('team 10') < 0, 'the events past the bound are counted, never half written');
 });
 
 test('the warm calendar digest renders the day in the host time zone', async () => {

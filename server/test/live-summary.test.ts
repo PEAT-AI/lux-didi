@@ -413,3 +413,28 @@ test('a refused tool reaches the distillation input by its recorded code, not by
     assert.equal(storedRow(h.store, 's-refused-tool')!.status, 'complete', 'the summary is stored');
   } finally { h.cleanup(); }
 });
+
+// C-START10: virtual time covers the native quit interval without delaying the test host.
+test('C-START10: quit grace completes an eight-second summary and the next start does not repeat it', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-quit-grace');
+    let entered!: () => void;
+    const generating = new Promise<void>(resolve => { entered = resolve; });
+    let calls = 0;
+    const model: ModelPort = { generate: () => {
+      calls += 1; entered();
+      return new Promise(resolve => setTimeout(() => resolve(modelResult('complete', '{"skip":false,"summary":"the owner saved a synthetic note."}')), 8_000));
+    } };
+    const summarizer = worker(h.store, model, []);
+    summarizer.schedule('s-quit-grace');
+    await generating;
+    const closing = summarizer.settleOnExit();
+    t.mock.timers.tick(8_000);
+    assert.equal(await closing, 'done', 'quit grants the existing summary budget, not the old 800 ms window');
+    assert.equal(storedRow(h.store, 's-quit-grace')!.status, 'complete');
+    assert.equal(await worker(h.store, model, []).recoverAtStart(), 'done');
+    assert.equal(calls, 1, 'a durable completion is not regenerated on the next launch');
+  } finally { h.cleanup(); }
+});

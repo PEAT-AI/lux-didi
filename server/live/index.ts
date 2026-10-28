@@ -3653,7 +3653,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           resetTurnScript(handle);
           // Synthesized owner-end notifications do not identify a new provider response.
           const responseId = 'responseId' in event && typeof event.responseId === 'string' ? event.responseId : undefined;
-          if (responseId !== undefined ? responseId !== handle.audioResponseId : !handle.speaking) {
+          if (responseId !== undefined ? responseId !== handle.audioResponseId : true) {
             handle.firstAudioAt = undefined; handle.turnAudioAt = undefined;
           }
           if (responseId !== undefined) handle.audioResponseId = responseId;

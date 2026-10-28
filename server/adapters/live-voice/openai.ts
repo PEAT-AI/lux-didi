@@ -941,7 +941,7 @@ class Session implements LiveVoiceSession {
       });
       return;
     }
-    this.emit({ type: 'modelTurnStarted' });
+    this.emit({ type: 'modelTurnStarted', ...this.providerIds() });
     this.touch();
   }
 

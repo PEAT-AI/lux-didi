@@ -11,8 +11,7 @@
 set -uo pipefail
 target="${1:?run-installed-checks.sh needs the installed target as its first argument}"
 shift
-script_dir="$(cd "$(dirname "$0")" && pwd)"
-checks_dir="$script_dir"
+checks_dir="$(cd "$(dirname "$0")" && pwd)"
 while [ $# -gt 0 ]; do
   case "$1" in
     --checks-dir) checks_dir="${2:?--checks-dir needs a directory}"; shift 2;;
@@ -38,22 +37,6 @@ if [ "$failed" -ne 0 ]; then
   exit 1
 fi
 # F2: a gate that ran nothing proves nothing, so a release that ships no installed check fails its own install.
-# The alarm probe starts only an isolated synthetic host from the target package: no app launch or audio.
-# --checks-dir replaces the check set for the existing runner fixtures.
-if [ "$checks_dir" = "$script_dir" ]; then
-  ran=$((ran + 1))
-  alarm_node="$target/Contents/MacOS/node"
-  [ -x "$alarm_node" ] || alarm_node=node
-  if DIDI_ALARM_SERVICE_ROOT="$target/Contents/Resources/server/node_modules/@lux-didi/service" \
-     DIDI_ALARM_WEB_ROOT="$target/Contents/Resources/web/dist" \
-     "$alarm_node" --test --test-timeout=15000 "$script_dir/../server/test/alarm-host.integration.mjs"; then
-    printf 'INSTALLED CHECK PASS: alarm round trip\n'
-  else
-    printf 'INSTALLED CHECK FAIL: alarm round trip\n' >&2
-    failed=$((failed + 1))
-  fi
-fi
-
 if [ "$ran" -eq 0 ]; then
   echo "INSTALLED-CHECKS FAIL ran=0: no $checks_dir/check-installed-*.sh to prove the installed release" >&2
   exit 1

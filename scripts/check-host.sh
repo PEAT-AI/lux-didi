@@ -23,15 +23,8 @@ if [ "$(uname -s)" = Darwin ]; then
     bash scripts/build-macos-app.sh "$native_work/LuxDidi.app" --cache "$native_work/cache"
   )
 fi
-# Run the alarm matrix against the packed service layout, not a source-only stand-in.
-(
-  alarm_work=$(mktemp -d "${TMPDIR:-/tmp}/didi-alarm-installed.XXXXXX")
-  trap 'rm -rf "$alarm_work"' EXIT
-  (cd server && npm pack --offline --ignore-scripts --loglevel=error --pack-destination "$alarm_work")
-  mkdir -p "$alarm_work/Resources/server/node_modules/@lux-didi/service"
-  tar -xzf "$alarm_work"/*.tgz -C "$alarm_work/Resources/server/node_modules/@lux-didi/service" --strip-components=1
-  DIDI_ALARM_SERVICE_ROOT="$alarm_work/Resources/server/node_modules/@lux-didi/service" node --test --test-timeout=15000 server/test/alarm-host.integration.mjs
-)
+# Exercise the discovered installed alarm check against its offline staged package.
+bash scripts/check-installed-alarm.sh
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 for file in server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-stdout.test.js server/dist/test/connector-publication.test.js server/dist/test/host-log.test.js server/dist/test/log-envelope.test.js server/dist/test/trello-board.test.js server/dist/test/connector-recovery.test.js server/dist/test/trello-guidance.test.js; do

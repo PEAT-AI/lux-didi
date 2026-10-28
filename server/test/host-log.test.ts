@@ -693,12 +693,12 @@ test('C-START10: provider ready records host latency once, not on reconnect or t
   try {
     let now = 1_475;
     const log = new HostLog(dir, undefined, { startedAt: 100, now: () => now });
-    const ready = { event: 'live_provider_ready', liveSessionId: 'ls-start10', generation: 0, msSinceOpen: 25, closeCode: null };
+    const ready = { event: 'live_provider_ready', liveSessionId: LIVE_SESSION_ID, generation: 0, msSinceOpen: 25, closeCode: null };
     log.event({ ...ready, msSinceOpen: -1 });
     log.event(ready);
     now = 9_000;
     log.event({ ...ready, generation: 1 });
-    log.event({ ...ready, liveSessionId: 'ls-next-call' });
+    log.event({ ...ready, liveSessionId: '22222222-3333-4444-8555-666666666666' });
     const rows = readFileSync(join(dir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
     const receipts = rows.filter(row => row.event === 'host_ready_ms');
     assert.equal(receipts.length, 1);

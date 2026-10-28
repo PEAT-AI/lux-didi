@@ -144,7 +144,7 @@ function seedConversation(store: Store, id: string, endedAt = SUMMARY_NOW): void
         JSON.stringify({ state: 'closed', code: 'normal' }), endedAt, endedAt, endedAt, null]);
     tx.run(`INSERT INTO live_grants (grant_id, live_session_id, provider, model, voice, key_reference, permitted_classes,
         chosen_input_class, revision, granted_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-      [`grant-${id}`, id, 'gemini', 'synthetic-live', 'voice', 'gemini-primary', JSON.stringify(['ordinary', 'private']), 'ordinary', 1, endedAt]);
+      [`grant-${id}`, id, 'gemini', 'models/live-start10-test', 'voice', 'gemini-primary', JSON.stringify(['ordinary', 'private']), 'ordinary', 1, endedAt]);
     recordHistorySession(tx, id, 'owner', ['ordinary', 'private'], [], endedAt);
     for (const text of ['one', 'two']) {
       tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,?,?)',
@@ -446,8 +446,8 @@ test('C-START10: an eight-second startup summary does not delay provider open pa
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const h = summarizerFixture();
   const fake = fakeLiveVoicePort();
-  const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'synthetic-live', voice: 'ExplicitVoice',
-    keyReference: 'synthetic', route: { enabled: true, provider: 'gemini', modelId: 'synthetic-live', dataClasses: ['ordinary', 'private'] },
+  const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'models/live-start10-test', voice: 'ExplicitVoice',
+    keyReference: 'synthetic', route: { enabled: true, provider: 'gemini', modelId: 'models/live-start10-test', dataClasses: ['ordinary', 'private'] },
     prompt: { text: 'Synthetic system', dataClass: 'ordinary' } });
   let elapsed = 0;
   const owner = createLiveSessionOwner({ store: h.store, voice: fake.port, profile, now: () => SUMMARY_NOW + elapsed, timeZone: 'UTC' });

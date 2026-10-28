@@ -1305,7 +1305,8 @@ async function googleCalendarHost(t: TestContext) {
     const payload = name === 'calendar_list_calendars'
       ? { calendars: [{ id: 'owner@example.test', summary: 'Owner', primary: true, accessRole: 'owner' }] }
       : { events: [CALENDAR_HOST_EVENT] };
-    return { content: [{ type: 'text', text: JSON.stringify(payload) }] } as never;
+    // The helper's own envelope shape (lux-cli google-mcp): the data object carries the tool answer.
+    return { content: [{ type: 'text', text: JSON.stringify({ tool: name, data: payload, coverage: { returned: 1, complete: true, next_page_token: null } }) }] } as never;
   });
   await sdk.connect(active);
   const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
@@ -1325,7 +1326,7 @@ test('C-DEPTH11: a booted host calendar read carries the attendees into the tool
   const framed = projectGoogleResult(host.runtime.port, result);
   assert.equal(framed.ok, true, 'the projected frame is built from the stored payload');
   if (!framed.ok) return;
-  assert.match(framed.projection.text, /attendees: 2 people: robin\.vale \(organizer, accepted\), Ari Andor \(declined\)/u, 'the people and their answers reach the model frame');
+  assert.match(framed.projection.text, /attendees: 2 people: robin\.vale \(organizer, accepted\), Ari Andor \(declined\)/u, `the people and their answers reach the model frame: ${framed.projection.text}`);
 });
 
 test('a policy that grants a connector composite admits its granted child reads (#630)', async t => {

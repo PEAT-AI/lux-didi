@@ -405,6 +405,9 @@ function channelLabel(channel: MattermostChannel): string {
   return channel.displayName ?? channel.name ?? channel.id ?? '';
 }
 
+/** R8-W9 (N2): a handle the child spells in another case is still the same handle. */
+const sameHandle = (author: string, owner: string): boolean => author.toLowerCase() === owner.toLowerCase();
+
 /**
  * R8-W9: the owner's own name and handle never ride a chat search. The audit saw the owner's name reach the
  * query, where it matches every post he ever wrote, so the handle, the part before any @, and every word of
@@ -436,7 +439,7 @@ function chatPost(raw: Record<string, unknown>, owner?: string): ChatReadPost {
     time: firstText(raw, ['timestamp', 'created_at', 'time']),
     text: postText(raw),
     // R8-W9: the voice says whose words these are, so "you" and "they" never need a handle to tell apart.
-    ...(owner === undefined || owner === '' ? {} : { role: author === owner ? 'you' as const : 'they' as const }),
+    ...(owner === undefined || owner === '' ? {} : { role: sameHandle(author, owner) ? 'you' as const : 'they' as const }),
     ...(permalink !== '' ? { permalink } : {}),
     ...(rootId !== '' ? { rootId } : {}),
   };
@@ -460,7 +463,7 @@ function overviewOf(data: unknown, owner: string, span: string): Pick<Mattermost
     for (const post of Array.isArray(posts) ? posts.filter(isRecord) : []) {
       const permalink = firstText(post, ['permalink', 'url']);
       const author = firstText(post, ['author', 'username']);
-      anchors.push({ id: firstText(post, ['id']), channel: where, author, time: firstText(post, ['created_at', 'timestamp']), text: postText(post), ...(owner !== '' ? { role: author === owner ? 'you' as const : 'they' as const } : {}), ...(permalink !== '' ? { permalink } : {}) });
+      anchors.push({ id: firstText(post, ['id']), channel: where, author, time: firstText(post, ['created_at', 'timestamp']), text: postText(post), ...(owner !== '' ? { role: sameHandle(author, owner) ? 'you' as const : 'they' as const } : {}), ...(permalink !== '' ? { permalink } : {}) });
     }
   };
   const dm = isRecord(record['dm']) ? record['dm'] : undefined;

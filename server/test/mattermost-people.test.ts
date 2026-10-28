@@ -443,7 +443,9 @@ test('R8-W9: "what did I discuss with Alex lately" answers with the newest posts
   assert.equal(sent?.['from_date'], fixtureDaysAgo(7), 'lately is seven days');
   const findings = String((reply['findings'] as { text: string }[])[0]?.text ?? '');
   assert.match(findings, /alex note 2 about the pilot plan/u, 'the newest post text reaches the voice');
-  assert.match(findings, /direct messages \| (?:you|they) \| (?:just now|\d+ (?:minute|hour|day|week|month)s? ago) \| alex note/u, 'the role and the age lead the post');
+  // N2: the roles are exact, never "either": the newest post is Alex's and the one before it is the owner's.
+  assert.match(findings, /direct messages \| they \| (?:just now|\d+ (?:minute|hour|day|week|month)s? ago) \| alex note 1 about the pilot plan/u, 'the partner\'s post is "they"');
+  assert.match(findings, /direct messages \| you \| (?:just now|\d+ (?:minute|hour|day|week|month)s? ago) \| alex note 2 about the pilot plan/u, 'the owner\'s post is "you"');
   assert.match(findings, /showing \d+ of 12 posts/u, 'the counts are one line saying how many of the twelve it showed');
   const summary = findings.split('\n').filter(line => /^showing \d+ of \d+ posts;/u.test(line));
   assert.equal(summary.length, 1, 'nine section lines never spend the voice cap again');

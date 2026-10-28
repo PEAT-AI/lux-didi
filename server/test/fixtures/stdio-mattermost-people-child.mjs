@@ -117,8 +117,11 @@ if (process.env.DIDI_FAKE_MATTERMOST_ALEX === 'yes') {
   const direct = dm(alexDm, alex.username, now - 30 * 60 * 1000);
   CHANNELS.push(direct);
   channelById.set(direct.id, direct);
+  // One owner post is spelled "Robert" by the child, so a role that folds case is told apart from one
+  // that compares exact strings (R8-W9 N2).
   for (let index = 1; index <= 12; index += 1) {
-    add(direct.id, index % 2 === 0 ? OWNER.username : alex.username, now - index * HOUR, `alex note ${index} about the pilot plan`);
+    const author = index % 2 === 0 ? (index === 2 ? 'Robert' : OWNER.username) : alex.username;
+    add(direct.id, author, now - index * HOUR, `alex note ${index} about the pilot plan`);
   }
 }
 

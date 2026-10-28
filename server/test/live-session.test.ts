@@ -5246,6 +5246,35 @@ test('O1b-N: a forwarded playback receipt records native rows and a refused fram
   attachment.close();
   await attachment.done;
 });
+// C-LOGS11: the native audibility receipt is the only proof the owner could hear her, so the turn's first one
+// closes the wait from his final words. One turn logs one measurement, and a turn with no final says so.
+test('C-LOGS11: the first audible receipt logs the owner-final-to-audible wait once per turn', async t => {
+  const h = await harness(t);
+  const logged: Record<string, unknown>[] = [];
+  const detachSink = attachHostLogSink({ event: raw => { const record = raw as Record<string, unknown>; if (record['event'] === 'live_first_audible') logged.push(record); } });
+  t.after(() => detachSink());
+  const { session, attachment } = await attached(h, 'audible-latency');
+  const frame = (receipt: string, seq: number): string =>
+    JSON.stringify({ type: 'playback_receipt', receipt, segment_seq: 1, source_instance_id: 'inst-lat', source_seq: seq,
+      mono_ms: 900 + seq, wall_ms: 1_700_000_000_000 + seq });
+  // The owner's final opens the turn, so the turn's first audibility receipt has an anchor to measure from.
+  h.f.send({ serverContent: { inputTranscription: { text: 'Synthetic owner words on this call.', finished: true } } });
+  await settlePort();
+  attachment.playbackReceipt(frame('received', 1));
+  attachment.playbackReceipt(frame('audible', 2));
+  await settlePort();
+  assert.equal(logged.length, 1, 'the turn logs one measurement');
+  assert.equal(typeof logged[0]!['finalToAudibleMs'], 'number');
+  assert.equal(logged[0]!['missingReason'], null);
+  // A second segment of the same turn is not a second measurement.
+  attachment.playbackReceipt(frame('audible', 3));
+  await settlePort();
+  assert.equal(logged.length, 1);
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a receipt never ends the call');
+  attachment.close();
+  await attachment.done;
+});
+
 test('S5: the orb never reads listening while a call obligation is open, whatever the adapter reports', async t => {
   const scheduler = new DeadlineClock();
   const fake = progressPort();

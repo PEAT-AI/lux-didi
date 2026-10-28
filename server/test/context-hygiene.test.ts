@@ -3,7 +3,7 @@ import assert_ from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
@@ -18,6 +18,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
+import { HostLog } from '../host/log.js';
 import type { LiveToolResponse, LiveVoiceControl, LiveVoiceEvent, LiveVoiceOutcome, LiveVoicePort, LiveVoiceRequest, LiveVoiceSession } from '../adapters/live-voice/index.js';
 import type { WebSearchPort } from '../tools/web-search.js';
 
@@ -526,4 +527,40 @@ test('HYGIENE 7 (W10-R15 P2): the seed and the count are reset only on the branc
   const busy = researchRebuildStep(due, 4_000, { ...SAFE, responsePending: true }, 30_000, 30_000);
   assert.equal(busy.action, 'defer', 'a pending response defers');
   assert.deepEqual(busy.retention, due, 'and the count is untouched');
+});
+
+/** C-LOGS11: one real HostLog on a scratch directory, returning a reader of the envelope as written. */
+function hostLogSink(t: TestContext): () => Record<string, unknown>[] {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-audit-lines-'));
+  const detach = attachHostLogSink(new HostLog(dir));
+  t.after(() => { detach(); rmSync(dir, { recursive: true, force: true }); });
+  return () => readFileSync(join(dir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(text => JSON.parse(text) as Record<string, unknown>);
+}
+
+test('C-LOGS11: a real host run names the turn and one call key on admit, dispatch and outcome', async t => {
+  const h = await live(t, 50_000);
+  const records = hostLogSink(t);
+  await ownerSpoke(h, 'what do we know about the plan');
+  await oneRead(h);
+  const logs = records();
+  const finals = logs.filter(record => record.event === 'owner_final');
+  assert.equal(finals.length >= 1, true, 'the owner final is on the host log');
+  const turnId = finals.at(-1)!['turnId'];
+  assert.equal(typeof turnId, 'string', 'the owner final names its turn');
+  const read = (event: string) => logs.filter(record => record.event === event);
+  const admitted = read('tool_call_admitted');
+  const dispatched = read('tool_call_dispatched');
+  const settled = read('tool_call_outcome');
+  assert.equal(admitted.length >= 1, true, 'the call was admitted');
+  assert.equal(dispatched.length >= 1, true, 'the call left the host');
+  assert.equal(settled.length >= 1, true, 'the call settled');
+  const keys = [admitted.at(-1)!, dispatched.at(-1)!, settled.at(-1)!].map(record => record['callKey']);
+  assert.equal(typeof keys[0], 'string', 'the admit line names the call');
+  assert.deepEqual(keys, [keys[0], keys[0], keys[0]], 'one key across admit, dispatch and outcome');
+  for (const record of [admitted.at(-1)!, dispatched.at(-1)!, settled.at(-1)!]) {
+    assert.equal(record['turnId'], turnId, `${String(record['event'])} names the turn it ran in`);
+    assert.equal(record['tool'], 'research', 'and the tool it names');
+  }
+  assert.equal(settled.at(-1)!['outcome'], 'completed');
+  assert.equal('refusalCode' in settled.at(-1)!, false, 'a completed call names no refusal code');
 });

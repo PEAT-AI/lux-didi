@@ -44,6 +44,41 @@ node scripts/didi-timeline "LIVE_SESSION_OR_CHAT_RUN_ID" --data-dir /absolute/ho
 
 `didi-timeline call <session|latest>` assembles one call's ordered story from the store and every log, and `didi-timeline doctor` reports log health and the lines no session can be attributed to.
 
+## Review a call in one command
+
+```sh
+node scripts/didi-timeline call latest --audit
+node scripts/didi-timeline call LIVE_SESSION_ID --audit --json
+node scripts/didi-timeline sessions --since 2026-10-20 --audit-summary
+node scripts/didi-timeline sessions --since 2026-10-20 --audit-summary --json
+```
+
+`call --audit` prints, in order: session coverage and clock health; one row per tool call; one row per owner turn; then the aggregates. `sessions --audit-summary` prints the same aggregates across every session with a turn since the date. `--json` is the stable shape and carries its own schema number (`version`), so a reader pins a number rather than a field list.
+
+| Column | Means |
+| --- | --- |
+| `turn` | the turn id (`<liveSessionId>:t<n>`), the same id every log line inside that turn carries |
+| `call key` | the one key a tool call keeps across its admit, dispatch and outcome lines, and the store's `trace_call.call_key` |
+| `tool` | the tool name the model called |
+| `execution` | `executionMs`: the call's own execution span, absent when the trace has no pair of stage receipts |
+| `total` | `totalMs`: the store's measured intent-to-output duration for the call |
+| `outcome` | the call's closed outcome: `completed`, `failed`, `refused`, `blocked`, `cancelled` or `unknown` |
+| `refusal` | the closed refusal code from the outcome line (`grant_not_permitted`, `invalid_arguments`, `unknown_tool`, `no_owner_input`, and the rest of that union); `missing` when the outcome line named none |
+| `ownerFinal` | when the owner's last finished transcription of the turn landed, epoch ms, from the `owner_final` line |
+| `providerFirstAudio` | when the provider's first audible frame of the turn arrived, from `live_first_audio` or `live_answer_audio` |
+| `nativeFirstAudible` | the turn's first audibility receipt from the native player, from the trace store |
+| `finalToProvider` | `providerFirstAudio - ownerFinal`: the wait the owner sat through before her voice existed |
+| `finalToAudible` | `nativeFirstAudible - ownerFinal`: the wait until what she said reached his speaker |
+| `missing` | why a measurement is absent (`no_owner_final`, `no_provider_audio`, `no_native_receipt`) |
+
+The aggregates are the five slowest calls, the refusals counted per code, the turns over four seconds from final to audio, the announced claims the turn never acted on, and the dead-air events. `sessions --audit-summary` adds counts per tool, p50 and p90 latency per tool, refusals per code, and p50 and p90 of the owner-final-to-audio wait.
+
+A missing measurement prints as `missing` or `null` and is never printed as zero, so an absent native receipt cannot read as an instant answer. A missing number is answered by a missing receipt, never by inference from a neighbour.
+
+The output carries ids, durations, counts and closed codes only. It carries no transcript, no prompt, no mail, calendar or chat content, no tool argument and no tool result, with or without `--content`, because the audit reads only metadata columns and the metadata-only log envelope.
+
+The envelope is what makes the join possible: every host log line emitted inside a turn carries `turnId`, and every tool-call line carries `callKey` and the tool name, so `grep <call_key> host.log` returns exactly one call's lines. `msSinceReady` and `msSinceOpen` on `live_first_audio` measure the provider's own open, not the wait the owner felt; the owner-facing wait is `finalToProviderFirstAudioMs` on that same line and `msSinceOwnerFinal` on `live_response_latency`. `msSinceResponseCreated` is the time from the provider announcing a response to its first audio: it is not owner-facing latency, because it excludes everything between his last word and that announcement.
+
 `latest` means latest Live session. A chat run ID is not its conversation session ID. [Diagnostic store](diagnostic-store.md) owns the table relationships, gated `--content` inspection and read-only SQL recipes.
 
 A voice that changes inside one call is read from two closed events, never from listening back, because no audio is kept. `live_voice_profile` is written once per model response that played audio, with `liveSessionId`, `generation`, a closed `responseId`, `audibleMs`, `f0Hz` (median fundamental over voiced frames), `f0P10Hz`, `f0P90Hz`, `voicedRatio` and `rmsDbfs`, measured on the output PCM the host already forwarded to playback. `live_voice_shift` follows the profile it was measured against when that response's median F0 differs from the session's running median by more than the configured ratio (default 1.35x, roughly the female-to-male speaking-pitch gap). `didi-timeline call <session>` prints the `f0Hz` column per response, so a female-to-male switch shows as a ratio beyond the band on one `live_voice_shift` line, not as an inference: a `voicedRatio` near zero means the response was mostly silence or noise and its pitch line should not be read as a voice at all.

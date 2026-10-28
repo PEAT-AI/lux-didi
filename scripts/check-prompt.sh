@@ -117,6 +117,14 @@ for (const code of ['no_open_intent', 'not_allowed']) {
   assert.ok(open.OPEN_GUIDANCE[code].includes('same handle'), `the ${code} guidance asks for the same handle on a retry`);
 }
 assert.equal(open.OPEN_GUIDANCE.no_open_intent.includes('did not hear an open request'), true, 'no_open_intent says she did not hear one');
+// C-OPENWEB8: a web ask is answered by open_web at once, and a refused binding says nothing is open.
+assert.ok(persona.NAYA_OPEN_SURFACE.includes('call open_web at once'), 'the web open rule is pinned in the open surface');
+assert.ok(persona.NAYA_OPEN_SURFACE.includes('never a web lookup first'), 'she never looks it up before opening it');
+assert.ok(open.OPEN_WEB_DESCRIPTION.includes('never pass a URL'), 'the tool description bans a URL argument');
+assert.ok(open.OPEN_WEB_DESCRIPTION.includes('open_source instead'), 'a document by name keeps the handle path');
+assert.equal(open.OPEN_WEB_GUIDANCE.not_owner_words.say.includes('nothing is open'), true, 'a refused binding says nothing opened');
+assert.equal(open.OPEN_WEB_GUIDANCE.not_owner_words.fixNotForSpeech.length > 0, true, 'a refused binding carries a fix');
+assert.deepEqual([...open.OPEN_WEB_PARAMETERS.properties.kind.enum].sort(), ['maps', 'search', 'site'], 'the web kind set is closed');
 assert.ok(voice.includes('never use a stock waiting line'), 'the stock waiting line ban is kept');
 assert.equal(research.RESEARCH.mailLines, 8); assert.equal(research.RESEARCH.chatLines, 8);
 assert.equal(research.RESEARCH.moreAvailableNote, 'Partial: answer now, offer the rest; read on only if asked.');

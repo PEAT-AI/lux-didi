@@ -9,7 +9,7 @@ export const HANDLE_PATTERN = /^L[0-9]{1,4}$/;
 export const OPEN_HANDLE_CAP = 3;
 export const HOME_APPS = ['gmail', 'calendar', 'mattermost'] as const;
 export type HomeApp = (typeof HOME_APPS)[number];
-export type OpenKind = 'gmail' | 'calendar' | 'docs' | 'drive' | 'youtube' | 'mattermost' | 'home' | 'file' | 'app';
+export type OpenKind = 'gmail' | 'calendar' | 'docs' | 'drive' | 'youtube' | 'mattermost' | 'home' | 'file' | 'app' | 'web';
 export type OpenProvenance = 'structured' | 'knowledge_body';
 export interface OpenHandle { handle: string; url: string; kind: OpenKind; provenance: OpenProvenance; title: string }
 export interface SourceLink { title: string; url?: string; sourceType?: string }
@@ -222,4 +222,71 @@ export function bodySourceLinks(text: string, sourceType: 'knowledge' = 'knowled
     found.push({ title: kindTitle(destination.url), url: destination.url, sourceType });
   }
   return found;
+}
+
+/**
+ * C-OPENWEB8: the web addresses the owner may ask for. The host builds every one with URL and
+ * URLSearchParams from the words he said, so no model argument can carry a path, a query or a port.
+ */
+export const WEB_KINDS = ['maps', 'site', 'search'] as const;
+export type WebKind = (typeof WEB_KINDS)[number];
+
+/** A spoken domain: one registrable domain and nothing else. A path, query, port or userinfo fails this. */
+const DOMAIN_LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?';
+const DOMAIN_SHAPE = new RegExp(`^${DOMAIN_LABEL}(?:\\.${DOMAIN_LABEL})+$`, 'u');
+/** Public suffixes with two labels, so "example co uk" keeps its three. */
+const TWO_LABEL_SUFFIXES = new Set(['co.uk', 'org.uk', 'ac.uk', 'com.au', 'net.au', 'co.nz', 'co.za', 'com.br', 'co.jp', 'com.mx', 'co.in', 'com.sg']);
+
+/** The registrable domain of a host: the public suffix plus one label, or the host itself. */
+export function registrableDomain(host: string): string {
+  const labels = host.toLowerCase().replace(/^www\./u, '').replace(/\.+$/u, '').split('.').filter(Boolean);
+  const last = labels.slice(-2).join('.');
+  return labels.length > 2 && TWO_LABEL_SUFFIXES.has(last) ? labels.slice(-3).join('.') : last;
+}
+
+/** The domain he spoke, or undefined when the words are a name rather than a domain. */
+export function spokenDomain(target: string): string | undefined {
+  const value = target.trim().toLowerCase();
+  if (!DOMAIN_SHAPE.test(value)) return undefined;
+  return registrableDomain(value) === value ? value : undefined;
+}
+
+/** The one origin a site root may open: https, a registrable domain and no path or query at all. */
+export function siteRootUrl(domain: string): string | undefined {
+  if (spokenDomain(domain) !== domain) return undefined;
+  return new URL(`https://${domain}/`).toString();
+}
+
+/** "<A> to <B>" or "directions to <B>": the one place the owner's words name two places. */
+function directionsOf(words: string): { destination: string; origin?: string } | undefined {
+  const direct = /^directions\s+to\s+(.+)$/u.exec(words);
+  if (direct?.[1]) return { destination: direct[1] };
+  const pair = /^(.+?)\s+to\s+(.+)$/u.exec(words);
+  return pair?.[1] && pair[2] ? { origin: pair[1], destination: pair[2] } : undefined;
+}
+
+export interface WebDestination { url: string; domain: string }
+
+/** The Google Maps or Google search address for the owner's words; never built by concatenation. */
+export function webDestination(kind: WebKind, target: string): WebDestination | undefined {
+  const words = target.replace(/\s+/gu, ' ').trim();
+  if (words.length === 0) return undefined;
+  if (kind === 'maps') {
+    const directions = directionsOf(words);
+    const url = new URL(directions ? 'https://www.google.com/maps/dir/' : 'https://www.google.com/maps/search/');
+    url.searchParams.set('api', '1');
+    if (directions) {
+      url.searchParams.set('destination', directions.destination);
+      if (directions.origin) url.searchParams.set('origin', directions.origin);
+    } else url.searchParams.set('query', words);
+    return { url: url.toString(), domain: 'google.com' };
+  }
+  if (kind === 'search') {
+    const url = new URL('https://www.google.com/search');
+    url.searchParams.set('q', words);
+    return { url: url.toString(), domain: 'google.com' };
+  }
+  const domain = spokenDomain(words);
+  const url = domain === undefined ? undefined : siteRootUrl(domain);
+  return url === undefined || domain === undefined ? undefined : { url, domain };
 }

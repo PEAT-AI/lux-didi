@@ -4528,7 +4528,7 @@ test('C-CONVO9: a pending lookup bridges at three seconds only once per ask', as
   const scheduler = new DeadlineClock();
   const fake = progressPort();
   let release!: () => void;
-  const held = new Promise<void>(resolve => { release = resolve; });
+  let held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'progress-first');
   // The lookup is still running: this is the delegation the owner is waiting on.
@@ -4549,6 +4549,13 @@ test('C-CONVO9: a pending lookup bridges at three seconds only once per ask', as
   assert.equal(receipts.filter(entry => entry['event'] === 'commentary_sent').length, 0, 'no commentary send was ever recorded');
   release();
   await settlePort();
+  // A second pending leg in this same owner ask cannot earn another bridge.
+  held = new Promise<void>(resolve => { release = resolve; });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'svc1-second', name: 'search_knowledge', args: { query: 'second synthetic leg', limit: 1 } }] });
+  await settlePort();
+  h.advance(3_000); scheduler.runDue(); await settlePort();
+  assert.deepEqual(fake.commentary, ['Still looking, give me a moment.'], 'second pending interval sends none');
+  release(); await settlePort();
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -4559,6 +4566,8 @@ test('no commentary steps on the owner while a lookup runs', async t => {
   const held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'progress-suppressed');
+  fake.emit({ type: 'outputTranscription', text: 'Checking the knowledge base.', finished: true });
+  await settlePort();
   fake.emit({ type: 'toolCall', calls: [{ id: 'svc2', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   // The owner is talking over the lookup: the line would step on her.

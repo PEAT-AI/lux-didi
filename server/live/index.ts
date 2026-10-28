@@ -64,8 +64,9 @@ export const OPENER_CONTEXT_CHARS = 450;
  */
 export function openersNote(openers: readonly string[], topics: readonly (string | undefined)[] = []): string | undefined {
   if (!openers.length) return undefined;
-  const classes = topics.slice(0, 3).map(topic => {
-    if (/tool[_ -]failure|tool.*(?:fail|unavailable)|(?:fail|broken).*tool/i.test(topic ?? '')) return 'tool_failure';
+  const classes = openers.slice(0, 3).map((opener, index) => {
+    const topic = topics[index] ?? opener;
+    if (/tool[_ -]failure|(?:tool|mail|calendar|web|search|chat|knowledge|connector).*(?:fail|broken|unavailable|offline|timeout|approval)|(?:fail|broken).*tool/i.test(topic ?? '')) return 'tool_failure';
     if (/calendar|meeting|schedule/i.test(topic ?? '')) return 'calendar';
     if (/open.loop|commitment|unfinished/i.test(topic ?? '')) return 'open_loop';
     return 'recent_thread';
@@ -4211,7 +4212,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
   }
 
   /**
-   * R2: the one short line an owner waiting on a research call hears at 10 s. It rides the speakable-progress
+   * C-CONVO9: one short bridge per owner ask, three quiet seconds after its acknowledgement. It rides the speakable-progress
    * channel (#538), the host's only input to the model while a tool call is pending, so the call is neither ended
    * nor re-issued. An adapter without that channel leaves the wait silent and the receipt says `spoken: false`,
    * which is the honest record instead of a claim the owner heard it.

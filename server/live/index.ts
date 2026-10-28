@@ -3641,7 +3641,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         }
         // A held answer stays for the offer. A cancelled opener stops applying on a barge-in as well as a
         // turn end (LIVE2-R8), so the answer to the owner's words is never silenced by it.
-        if (event.type === 'turnComplete' || event.type === 'interrupted') { handle.mutedResponse = false; handle.dropResponse = false; noteModelOutput(handle.liveSessionId); }
+        if (event.type === 'turnComplete' || event.type === 'interrupted') { handle.mutedResponse = false; handle.dropResponse = false; }
+        if (event.type === 'audio' || (event.type === 'outputTranscription' && event.text.trim())) noteModelOutput(handle.liveSessionId);
         if (event.type === 'turnComplete') handle.answerAt = undefined;
         if (event.type === 'modelTurnStarted') {
           // A trailing modelTurnStarted of the same batch never reopens a cancelled response (LIVE2-R6 F1).

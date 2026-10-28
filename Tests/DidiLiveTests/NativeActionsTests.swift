@@ -79,6 +79,34 @@ import Foundation
         check(OpenDestination.of("https://drive.google.com/file/d/ABC/view", mattermostHost: nil)?.kind == "drive", "a drive file is a drive file")
         check(OpenDestination.of("https://docs.google.com/document/d/ABC/export", mattermostHost: nil) == nil, "a docs export route is refused")
 
+        // C-OPENWEB8: the three web surfaces open_web builds, and a site root with nothing else on it.
+        check(OpenDestination.of("https://www.google.com/search?q=odemira", mattermostHost: nil)?.kind == "web", "a google search opens")
+        check(OpenDestination.of("https://www.google.com/search?q=odemira&hl=en", mattermostHost: nil) == nil, "a search with an extra parameter is refused")
+        check(OpenDestination.of("https://www.google.com/search?q=a&q=b", mattermostHost: nil) == nil, "a repeated search parameter is refused")
+        check(OpenDestination.of("https://www.google.com/search?q=", mattermostHost: nil) == nil, "an empty search is refused")
+        // C-OPENWEB8 review F3: `q` is admitted on the one search shape only, never on a pre-existing one.
+        check(OpenDestination.of("https://mail.google.com/mail/u/0/?q=synthetic", mattermostHost: nil) == nil, "a gmail thread with q is refused")
+        check(OpenDestination.of("https://calendar.google.com/calendar/event?eid=e1&q=synthetic", mattermostHost: nil) == nil, "a calendar event with q is refused")
+        check(OpenDestination.of("https://docs.google.com/document/d/ABC/edit?q=synthetic", mattermostHost: nil) == nil, "a document with q is refused")
+        check(OpenDestination.of("https://www.youtube.com/watch?v=abc&q=synthetic", mattermostHost: nil) == nil, "a video with q is refused")
+        check(OpenDestination.of("https://www.google.com/maps/search/?api=1&query=Odemira", mattermostHost: nil)?.kind == "web", "a maps search opens")
+        check(OpenDestination.of("https://www.google.com/maps/dir/?api=1&destination=Lisbon&origin=Odemira", mattermostHost: nil)?.kind == "web", "directions open")
+        check(OpenDestination.of("https://www.google.com/maps/dir/?api=1&destination=Lisbon", mattermostHost: nil)?.kind == "web", "directions without an origin open")
+        check(OpenDestination.of("https://www.google.com/maps/dir/?api=1&origin=Odemira", mattermostHost: nil) == nil, "directions without a destination are refused")
+        check(OpenDestination.of("https://www.google.com/maps/search/?api=2&query=Odemira", mattermostHost: nil) == nil, "a maps search without api 1 is refused")
+        check(OpenDestination.of("https://plantix.net/", mattermostHost: nil)?.kind == "web", "a site root opens")
+        check(OpenDestination.of("https://www.plantix.net/", mattermostHost: nil)?.kind == "web", "a www site root opens")
+        check(OpenDestination.of("https://plantix.net/?q=secret", mattermostHost: nil) == nil, "a site root with a query is refused")
+        check(OpenDestination.of("https://plantix.net/private", mattermostHost: nil) == nil, "a site path is refused")
+        check(OpenDestination.of("http://plantix.net/", mattermostHost: nil) == nil, "a site over http is refused")
+        check(OpenDestination.of("https://plantix.net:8443/", mattermostHost: nil) == nil, "a site with a port is refused")
+        check(OpenDestination.of("https://user:pw@plantix.net/", mattermostHost: nil) == nil, "a site with user info is refused")
+        check(OpenDestination.of("https://plantix.net", mattermostHost: nil) == nil, "a site address without its slash is not the root the host builds")
+        // Its own instance: the five-a-minute window above is already spent on the scoped actions.
+        let web = NativeActions(home: home, opener: { _, _ in true })
+        check(await web.perform(.openURL, target: "https://www.google.com/search?q=odemira").code == .opened, "a search reaches the opener as a web destination")
+        check(await web.perform(.openURL, target: "https://plantix.net/private").code == .notAllowed, "a site path never reaches the opener")
+
         // C-OPEN 1: the native list answers the same table the host test reads, row for row.
         if let data = FileManager.default.contents(atPath: "server/test/fixtures/open-destinations.json"),
            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

@@ -5,7 +5,7 @@ import { recordHistorySession, historySessionEvidence, recordHistoryDependency }
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
-import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteModelOutput, noteOwnerWords, noteSpoken, openClaimCorrection } from '../tools/open.js';
+import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteModelOutput, noteOwnerWords, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
 import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
@@ -1290,6 +1290,8 @@ export class LiveSessionOwner {
     this.#store = config.store;
     this.#voice = config.voice;
     this.#researchWeb = config.researchWeb;
+    // C-OPENWEB8: a site he names but does not spell out is found with the one web search this host owns.
+    useWebSearchPort(() => this.#researchWeb);
     this.#profile = validateLiveProfile(config.profile);
     this.#timeZonePin = config.timeZone;
     const now = config.now ?? Date.now;

@@ -104,7 +104,7 @@ test('L8-10: a session that can search the web names it among what it can reach'
 });
 
 test('C-LUXSAVE11: Runtime context never duplicates the generated save capability', () => {
-  const base = { now: new Date('2026-10-14T12:35:00Z'), timeZone: 'UTC' };
+  const base = { now: new Date('2026-10-14T12:35:00Z'), timeZone: 'UTC', connected: [] };
   for (const vault of [{ dictation: true, composed: false }, { dictation: true, composed: true }, { dictation: false, composed: false }]) {
     assert.doesNotMatch(buildRuntimeContext({ ...base, vault }), /^Vault:/mu);
   }

@@ -615,7 +615,7 @@ export function researchProjection(response: JsonObject, status: 'completed' | '
   return line.length <= RESEARCH_PROJECTION_CHARS ? line : `${line.slice(0, RESEARCH_PROJECTION_CHARS - 3)}...`;
 }
 /** S4a-R2 (a, e): a call that can change the world. Nothing may claim "nothing changed" around one of these. */
-function isReadOnlyTool(name: string): boolean { return !/^(remember|open)_?/.test(name); }
+function isReadOnlyTool(name: string): boolean { return name !== 'stage_lux_note' && !/^(remember|open)_?/.test(name); }
 
 
 /** The action word a direct tool asks its source for. */

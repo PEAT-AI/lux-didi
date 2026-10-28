@@ -23,7 +23,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const f = await fixture(t);
   const registry = new McpRegistry();
-  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => undefined });
+  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic' });
   t.after(() => port.close());
   let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
   const owner = createToolsOwner({ store, ownerId: store.assistantId, registry, port, lookupAuthority: async (runId, signal) => lookup?.(runId, signal) ?? null });
@@ -54,8 +54,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision,
       executionId: randomUUID(), callId: randomUUID(), toolName: definition.name,
       argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
-      ...(definition.accountId !== undefined ? { accountId: definition.accountId } : {}),
-      ...(definition.resourceId !== undefined ? { resourceId: definition.resourceId } : {}) };
+      accountId: definition.accountId, resourceId: definition.resourceId };
     assert.equal(owner.journal.intent(intent), 'fresh', definition.name);
     await assert.doesNotReject(() => definition.execute(args, { ...intent, signal }), `${definition.name} must accept its stored intent`);
   }

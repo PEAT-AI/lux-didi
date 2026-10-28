@@ -56,9 +56,9 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     open_app: { name: 'Synthetic' }, open_web: { kind: 'site', target: 'plantix dot net' },
     set_alarm: {}, list_alarms: {}, cancel_alarm: { id: 'synthetic-alarm' }, snooze_alarm: { id: 'synthetic-alarm' },
   };
-  const definitions = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
-  for (const name of ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm']) assert.ok(definitions.some(tool => tool.name === name), `registered ${name}`);
-  for (const definition of definitions) {
+  const alarmDefinitions = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
+  for (const name of ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm']) assert.ok(alarmDefinitions.some(tool => tool.name === name), `registered ${name}`);
+  for (const definition of alarmDefinitions) {
     const args = argumentsByName[definition.name];
     assert.ok(args, `valid fixture required for ${definition.name}`);
     assert.equal(definition.validate(args), true, `${definition.name} fixture validates`);

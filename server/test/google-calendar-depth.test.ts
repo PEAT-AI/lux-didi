@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import type { CallResult, CompletedResult, EndpointConfig, McpPort, ResultScope } from '../adapters/mcp/port.js';
 import { createGoogleReader, type GoogleConfig, type GoogleResult } from '../connectors/index.js';
+import { renderGoogleTool } from '../tools/google.js';
 import { noEmptyResult, shapeGmailList } from '../tools/live-shape.js';
 
 const ACCOUNT = 'local';
@@ -64,7 +65,7 @@ function readerFor(port: McpPort, toolNames: string[], family: GoogleConfig['fam
 
 const CALENDAR_TOOLS = ['calendar_list_calendars', 'calendar_list_events'];
 
-function calendarPort(calendars: Record<string, unknown>[], seen: string[]): McpPort {
+function calendarPort(calendars: Record<string, unknown>[], seen: string[], event?: (id: string) => Record<string, unknown>): McpPort {
   return {
     discover: async () => ({ state: 'discovered', endpointId: 'depth-fake', schemaDigest: DIGEST, tools: CALENDAR_TOOLS.map(name => ({ name, inputSchema: { type: 'object' } })), observedAt: 0 }),
     visibleTools: () => [],
@@ -75,7 +76,8 @@ function calendarPort(calendars: Record<string, unknown>[], seen: string[]): Mcp
       if (request.toolName === 'calendar_list_calendars') return completed({ calendars }, 'calendar_list_calendars');
       const id = String(request.arguments['calendarId']);
       seen.push(id);
-      return completed({ events: [{ id: `e-${id}`, summary: `Event ${id}`, start: { dateTime: '2026-10-16T09:00:00+05:30' } }] }, 'calendar_list_events');
+      const entry = event === undefined ? { id: `e-${id}`, summary: `Event ${id}`, start: { dateTime: '2026-10-16T09:00:00+05:30' } } : event(id);
+      return completed({ events: [entry] }, 'calendar_list_events');
     },
   };
 }
@@ -121,6 +123,22 @@ test('C-DEPTH11/#648: a mail helper that answers with no payload is a failure wi
   const result = await readerFor(port, ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message'], 'gmail').gmailList({ q: 'newer_than:2d is:unread' });
   assert.equal(result.state, 'unknown', 'no payload is a failure, never a completed empty search');
   assert.equal(result.state === 'unknown' ? result.reason : '', 'empty-payload', 'the closed code names the no-payload case');
+});
+
+test('C-DEPTH11: the calendar tool output frame carries the attendees the fake connector returned', async () => {
+  const seen: string[] = [];
+  const port = calendarPort([{ id: 'owner@example.invalid', summary: 'Owner', primary: true, accessRole: 'owner' }], seen, id => ({
+    id: `e-${id}`, summary: 'Design review', start: { dateTime: '2026-10-19T15:00:00Z' },
+    organizer: { email: 'robin.vale@example.invalid' },
+    attendees: [
+      { email: 'robin.vale@example.invalid', responseStatus: 'accepted' },
+      { displayName: 'Ari Andor', email: 'ari.andor@example.invalid', responseStatus: 'declined' },
+    ],
+  }));
+  const result = await readerFor(port, CALENDAR_TOOLS, 'calendar').gcalList({});
+  // The frame builder the connector owner uses for every Google result (server/connectors/index.ts googleProject).
+  const frame = renderGoogleTool('calendar_list_events', readOf(result));
+  assert.match(frame.text, /attendees: 2 people: robin\.vale \(organizer, accepted\), Ari Andor \(declined\)/u, 'the people and their answers reach the tool output frame');
 });
 
 test('C-DEPTH11: a calendar list with only subscribed calendars reads no events instead of a public holiday', async () => {

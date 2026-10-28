@@ -3,7 +3,7 @@ import { APPROVAL_REFUSAL_REASONS } from './events.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { TRELLO_CALL_TOOLS, TRELLO_WRITE_ARGUMENT_FIELDS } from '../tools/trello.js';
 import { clientDiagnostic } from '../http/routes.js';
-import { ALARM_LOG_EVENTS, ALARM_LOG_REASONS } from './events.js';
+import { ALARM_LOG_REASONS } from './events.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { TURN_FAILED_REASONS } from '../adapters/live-voice/types.js';
 import { DEBT_PHASES, DEBT_REASONS } from '../trace/kinds.js';
@@ -197,7 +197,8 @@ const TOOL_HANDLER_CLASSES = ['Error', 'TypeError', 'RangeError', 'SyntaxError',
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return;
   const value = raw as Record<string, unknown>;
-  if (ALARM_LOG_EVENTS.some(event => event === value.event)) {
+  if (value.event === 'alarm_set' || value.event === 'alarm_due' || value.event === 'alarm_ring_started'
+    || value.event === 'alarm_acknowledged' || value.event === 'alarm_missed' || value.event === 'alarm_degraded') {
     if (typeof value.alarmId !== 'string' || !/^[A-Za-z0-9:_-]{1,256}$/.test(value.alarmId)
       || typeof value.scheduledMs !== 'number' || !Number.isFinite(value.scheduledMs)
       || typeof value.actualMs !== 'number' || !Number.isFinite(value.actualMs)

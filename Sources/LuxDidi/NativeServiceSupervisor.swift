@@ -18,6 +18,18 @@ enum NativeProbeFailure: String, Error {
     }
 }
 
+// The owned child uses this escalation policy; virtual sleep keeps lifecycle proofs deterministic.
+@MainActor enum NativeServiceStop {
+    static func escalate(sleep: (UInt64) async throws -> Void,
+                         isRunning: () -> Bool, terminate: () -> Void, forceKill: () -> Void) async throws {
+        try await sleep(500_000_000)
+        guard isRunning() else { return }
+        terminate()
+        try await sleep(500_000_000)
+        if isRunning() { forceKill() }
+    }
+}
+
 // One process handle and private pipes. All signals target this live owned handle only.
 @MainActor private final class OwnedServiceChild {
     let process = Process()
@@ -119,13 +131,14 @@ enum NativeProbeFailure: String, Error {
     func stop() async {
         stopping = true; closeInput()
         let escalation = Task { [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: 500_000_000)
-                guard let self else { return }
-                if self.isRunning { self.process.terminate() }
-                try await Task.sleep(nanoseconds: 500_000_000)
-                if self.isRunning && self.pid > 0 { _ = kill(self.pid, SIGKILL) }
-            } catch {}
+            try? await NativeServiceStop.escalate(
+                sleep: { try await Task.sleep(nanoseconds: $0) },
+                isRunning: { self?.isRunning == true },
+                terminate: { self?.process.terminate() },
+                forceKill: {
+                    guard let self, self.isRunning && self.pid > 0 else { return }
+                    _ = kill(self.pid, SIGKILL)
+                })
         }
         await withCheckedContinuation { continuation in
             if !isRunning { continuation.resume() } else { exitWaiters.append(continuation) }

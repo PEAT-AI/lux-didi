@@ -42,13 +42,13 @@ import Darwin
         guard let url = diagnosticURL,
               let data = try? JSONSerialization.data(withJSONObject: extra.merging(["stage": stage]) { _, new in new },
                                                      options: [.sortedKeys]) else { return }
-        try await shutdownGraceProof()
         let fm = FileManager.default
         if !fm.fileExists(atPath: url.path) { fm.createFile(atPath: url.path, contents: nil) }
         guard let handle = try? FileHandle(forWritingTo: url) else { return }
         handle.seekToEndOfFile(); handle.write(data); handle.write(Data("\n".utf8)); try? handle.close()
     }
     static func run(node: String) async throws {
+        try await shutdownGraceProof()
         let started = Date()
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("didi-lifecycle-" + UUID().uuidString)

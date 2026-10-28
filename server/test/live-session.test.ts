@@ -7417,3 +7417,26 @@ test('C-AUDIO10 F1: a plain turn after delegation gets fresh first-audio and dea
   assert.equal(events.filter(row => row.event === 'live_response_latency').length, 2);
   attachment.close();
 });
+
+test('C-AUDIO10 F2: a rebuilt greeting opens a new assistant trace turn', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const session = h.owner.create({ idempotencyKey: 'audio10-rebuilt-trace', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'outputTranscription', text: 'Synthetic first greeting.', finished: true }));
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+  fake.emit({ type: 'goAway', timeLeftMs: 1 });
+  for (let index = 0; index < 100 && fake.sessionsOpened < 2; index += 1) await tick();
+  assert.equal(fake.sessionsOpened, 2);
+  await settlePort();
+  fake.emit(portEvent({ type: 'outputTranscription', text: 'Synthetic rebuilt greeting.', finished: true }));
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+  const rows = h.store.transaction(tx => tx.all("SELECT u.turn_id,u.text,t.origin FROM trace_utterance u JOIN trace_turn t USING(turn_id) WHERE t.live_session_id=? AND u.role='model' AND u.final=1 ORDER BY u.rowid", [session.liveSessionId]));
+  assert.deepEqual(rows.map(row => row['text']), ['Synthetic first greeting.', 'Synthetic rebuilt greeting.']);
+  assert.notEqual(rows[0]!['turn_id'], rows[1]!['turn_id'], 'rebuild must not attribute its greeting to the old closed turn');
+  assert.deepEqual(rows.map(row => row['origin']), ['assistant', 'assistant']);
+  attachment.close();
+});

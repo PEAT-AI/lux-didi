@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import {
   RESEARCH, ResearchLedger, ResearchScheduler, candidateSubs, capReply, chatQuery, compileMailQuery, cutLineOf, fallbackSelection, meetingBounds, namedInsightIds, newestDatedFirst, offerableCandidates, shapeBlock, windowRange,
   configuredSourcesForEndpoints, configuredSourcesForSession, plainReason, unreachableSourcesForSession, UNPUBLISHED_SOURCE_REASON, pUsefulOf, refusalCode, researchDeclaration, researchDescription, researchSourcesForConnector, researchSourcesFromToolNames, runResearch,
-  validateResearch, worthContinuing, parseResearch, researchRepair, topicTerms, entityPreservedQuestion, ResearchAdmission, RESEARCH_REFUSAL_REASONS, researchArgumentShape,
+  validateResearch, worthContinuing, parseResearch, researchRepair, topicTerms, entityPreservedQuestion, resolvedEntityQuestion, ResearchAdmission, RESEARCH_REFUSAL_REASONS, researchArgumentShape,
   researchCallBudgetMs, type ResearchDeps, type ResearchFirstAnswer, type ResearchLateFindings, type ResearchProgress, type ResearchRunLog, type ResearchSourceLog, type ResearchSubcallLog, type SourceKind,
 } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
@@ -2292,4 +2292,27 @@ test('#654: a continuation word never becomes a mail or chat search term', () =>
   assert.match(query, /newer_than:14d/u, `the window the model wrote still stands (${query})`);
   assert.doesNotMatch(query, /finish|read|results/u, `and no continuation word is a mail term (${query})`);
   assert.equal(chatQuery('finish read remainder status complete', 0, 'UTC').trim(), '', 'and none of them becomes a chat term');
+});
+
+// --- #1028: entity first, and two asks in one owner turn -------------------------------------------
+
+test('#1028: a name heard one slip away resolves to the name the owner owns', () => {
+  assert.deepEqual(resolvedEntityQuestion('what did Akme Seats decide about the harvest', ['Acme Seeds']), {
+    question: 'what did Acme Seeds decide about the harvest', name: 'Acme Seeds', heard: 'Akme Seats',
+  }, 'the one mishearing is replaced everywhere the name appears');
+  assert.deepEqual(resolvedEntityQuestion('what did our own team decide', ['Acme Seeds']), {
+    question: 'what did our own team decide',
+  }, 'a question naming none of her names is left exactly as it was spoken');
+});
+
+test('#1028: one owner turn opens two different asks and refuses a repeat or a third', () => {
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start', false, false, 'who owns Acme Seeds'), { admitted: true });
+  assert.deepEqual(admission.admit('start', false, false, 'when is the harvest'), { admitted: true }, 'a second, different ask runs');
+  assert.deepEqual(admission.admit('start', false, false, 'what about the third'), { admitted: false, reason: 'turn_spent' }, 'a third ask waits for the next owner turn');
+  const repeat = new ResearchAdmission();
+  repeat.ownerTurn();
+  assert.deepEqual(repeat.admit('start', false, false, 'who owns Acme Seeds'), { admitted: true });
+  assert.deepEqual(repeat.admit('start', false, false, 'Who owns Acme Seeds '), { admitted: false, reason: 'turn_spent' }, 'the same question again is the turn's one ask');
 });

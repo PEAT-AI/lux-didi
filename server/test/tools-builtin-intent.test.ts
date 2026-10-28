@@ -81,7 +81,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
   });
   assert.equal(batch.error, undefined);
-  const response = JSON.stringify(batch.responses);
+  const response = JSON.stringify(batch.accepted);
   assert.match(response, /executor_intent_mismatch/);
   assert.match(response, /"say"/);
   assert.match(response, /nothing is open/);

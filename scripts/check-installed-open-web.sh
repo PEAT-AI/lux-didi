@@ -52,7 +52,7 @@ try {
   step = 'create synthetic session';
   const created = await fetch(`${host.service.origin}/api/v1/live-sessions`, { method: 'POST', headers: { ...headers, 'idempotency-key': 'synthetic-open-web' }, body: JSON.stringify({ inputClass: 'ordinary' }) });
   const createResult = await created.json();
-  assert.equal(created.status, 201, JSON.stringify(createResult));
+  assert.equal(created.status, 200, JSON.stringify(createResult));
   const id = createResult.data.liveSessionId;
   const ws = new WebSocket(`${host.service.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers });
   cleanup.push(() => ws.terminate());

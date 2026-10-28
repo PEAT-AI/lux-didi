@@ -986,8 +986,8 @@ test('the warm calendar digest keeps one bounded line and trims a day that does 
   assert.equal(typeof digest, 'string');
   assert.ok((digest ?? '').length <= CALENDAR_DIGEST_CHARS, 'the digest never exceeds the bound');
   assert.match(digest ?? '', /^00:00 review with the whole team 0/, 'the first event keeps its local clock time');
-  assert.match(digest ?? '', /team 10$/, 'the last event that fits is kept whole');
-  assert.equal((digest ?? '').endsWith(', '), false, 'a trimmed digest never ends on a separator');
+  // C-CAL8: a digest that cuts ends with the count it left out, so a bounded line is never the whole day.
+  assert.match(digest ?? '', /team 9, \+20 more$/, 'a trimmed digest says how many events it left out');
 });
 
 test('the warm calendar digest renders the day in the host time zone', async () => {

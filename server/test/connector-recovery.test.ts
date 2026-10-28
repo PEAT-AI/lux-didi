@@ -302,7 +302,7 @@ test('a consent family past its cap is parked for sign-in with no wire call', as
   assert.equal(f.requests(), 0);
 });
 
-test('a retryable first call failure retries a bounded number of times and then stops', { timeout: 30000 }, async t => {
+test('a retryable first call failure retries a bounded number of times and then stops', { timeout: 45000 }, async t => {
   // A discovery timeout is a five second wait by construction, which no test here may take; the timeout
   // cause itself is asserted at the projection above. This drives the same retryable first_call path with
   // a fast closed cause: a tool definition the client refuses.
@@ -318,13 +318,14 @@ test('a retryable first call failure retries a bounded number of times and then 
   assert.equal(failed.retrying, true, 'a retry is scheduled');
   assert.equal(f.requests(), 1);
   // Wait on the wire, not on the flag: `retrying` is briefly false between two scheduled attempts.
-  // TR8-R7: the retry COUNT and that the round stops are the assertions; the wait bound is only a
-  // guard against a hung round, so it is generous enough that a loaded host cannot miss it. The test
-  // carries its own timeout above that bound, because check-host.sh runs the suite with
-  // --test-timeout=15000 and a wait bound equal to the runner timeout could only ever be cut off.
-  await until(() => f.requests() >= 4, 15000);
+  // TR8-R7/R8: the retry COUNT and that the round stops are the assertions; the wait bound is only a
+  // guard against a hung round. TRAIN8-R8 bounds every attempt at the endpoint's connect timeout, so a
+  // round whose connects all hang legitimately takes 1 + FAST.length attempts of up to 5s each; the bound
+  // covers that, and the test carries its own timeout above it because check-host.sh runs the suite with
+  // --test-timeout=15000.
+  await until(() => f.requests() >= 4, 28000);
   assert.equal(f.requests(), 4, 'the first connect plus exactly three bounded retries');
-  await until(() => runtime.status().endpoints[0]!.retrying === false, 15000);
+  await until(() => runtime.status().endpoints[0]!.retrying === false, 28000);
   assert.equal(runtime.status().endpoints[0]!.retrying, false, 'the round is over and no further attempt is pending');
 });
 

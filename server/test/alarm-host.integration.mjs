@@ -9,6 +9,7 @@ import { fixture, CANARY } from '../dist/test/live-voice-fixture.js';
 
 const serviceRoot = process.env.DIDI_ALARM_SERVICE_ROOT ?? resolve(import.meta.dirname, '..');
 const { startHost } = await import(pathToFileURL(join(serviceRoot, 'dist/host/runtime.js')));
+const { validateLiveProfile } = await import(pathToFileURL(join(serviceRoot, 'dist/live/index.js')));
 const WebSocket = createRequire(join(serviceRoot, 'package.json'))('ws');
 
 test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and setup-only speech', { timeout: 15000 }, async t => {
@@ -23,7 +24,9 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   await writeFile(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [] }), { mode: 0o600 });
   let now = Date.parse('2026-10-28T00:00:00Z');
   const host = await startHost({ dataDir: join(directory, 'state'), configDir, webRoot: process.env.DIDI_ALARM_WEB_ROOT ?? resolve(import.meta.dirname, '../../web/dist'), port: 0, now: () => now,
-    liveTesting: { socketFactory: f.socketFactory, credentials: { resolve: async () => CANARY } } });
+    liveTesting: { profile: validateLiveProfile({ provider: 'gemini', liveModelId: 'models/synthetic', voice: 'Synthetic', keyReference: 'synthetic',
+      route: { enabled: true, provider: 'gemini', modelId: 'models/synthetic', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic', dataClass: 'ordinary' } }),
+      socketFactory: f.socketFactory, credentials: { resolve: async () => CANARY } } });
   cleanups.push(() => host.close());
   const origin = host.service.origin;
   t.diagnostic(`synthetic host pid=${process.pid} origin=${origin}; no audio frames or real accounts`);

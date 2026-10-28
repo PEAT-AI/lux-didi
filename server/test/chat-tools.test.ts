@@ -505,6 +505,7 @@ test('a slow connector is fenced: the answer lands, the aborted call is not retr
 
 test('the evidence gathered before the fence is answered from even when the answer call fails', async t => {
   const f = await fixture(t, ['ordinary', 'private'], { deadlineMs: 2000 });
+  f.canonicalSource();
   f.repeatCalls(); f.slowCalls(1); f.failAnswerCall();
   const run = await f.turn(f.session());
   assert.equal(run.outcome, 'complete');
@@ -522,7 +523,7 @@ test('the evidence gathered before the fence is answered from even when the answ
 
 
 test('Lux received-body integration: canonical full body survives preview clipping only inside the active run', async t => {
-  const f = await fixture(t); f.canonicalSource(); await f.approveY(); f.exactGet();
+  const f = await fixture(t); await f.approveY(); f.exactGet();
   const raw = JSON.stringify({ id: 42, title: 'Synthetic long insight', content: 'Sentence evidence. '.repeat(1600) + 'LUX_RECEIVED_TAIL' }); f.leak(raw);
   const original = f.owner.resultGate.authorize.bind(f.owner.resultGate); let full = '';
   t.mock.method(f.owner.resultGate, 'authorize', async (...args: Parameters<typeof original>) => {

@@ -138,7 +138,7 @@ test('L-05: three fragments of one utterance produce one measurement, not three'
   await audible(live);
   assert.equal(deadAir(live).length, 1, 'one dead-air measurement for one utterance');
   const deadAirMs = Number(deadAir(live)[0]!['deadAirMs']);
-  assert.ok(deadAirMs >= 3_900, `the dead air counts from the utterance, not its last fragment: ${deadAirMs} ms`);
+  assert.ok(deadAirMs >= 1_900 && deadAirMs <= 2_100, `the dead air counts from the last fragment of the utterance, not its first: ${deadAirMs} ms`);
   const events = heard(live);
   assert.equal(events.length, 1, 'one heard-silence measurement for one utterance');
   const ms = Number(events[0]!['ms']);

@@ -42,7 +42,8 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   const authority = await lookup!(session.liveSessionId, signal);
   assert.ok(authority);
   // No OS opener or native timeout: the receipt port is the unit-test boundary.
-  t.mock.method(nativeActions, 'dispatch', async () => 'opened' as const);
+  let dispatched = 0;
+  t.mock.method(nativeActions, 'dispatch', async () => { dispatched++; return 'opened' as const; });
   noteOwnerWords(session.liveSessionId, 'open plantix dot net and my gmail and Synthetic');
   const argumentsByName: Record<string, Record<string, unknown>> = {
     research: { action: 'start', question: 'what is the synthetic scope', topic: 'synthetic scope', lookups: [{ source: 'knowledge', query: 'synthetic scope' }] }, remember_note: { text: 'Synthetic fact', kind: 'fact' },
@@ -96,13 +97,14 @@ test('A2: each live builtin executes against its exact stored intent', async t =
         executionId: randomUUID(), callId: randomUUID(), toolName: entry.name,
         argumentsHash: createHash('sha256').update(JSON.stringify(entry.args)).digest('hex'), accountId: definition.accountId, resourceId: definition.resourceId };
       assert.equal(owner.journal.intent(intent), 'fresh');
+      const before = dispatched;
       const pending = definition.execute(entry.args, { ...intent, signal });
       // A second finalization releases the one bounded wait without a real clock delay.
       if (mode !== 'ask') await new Promise<void>(resolve => setImmediate(resolve));
       if (mode !== 'ask') noteOwnerWords(session.liveSessionId, mode === 'split ask' ? entry.ask : 'nothing else');
       const outcome = await pending;
       assert.equal(outcome.status, 'completed');
-      assert.match(JSON.stringify(outcome), mode === 'no ask' ? /no_open_intent/ : /opened/, `${entry.name} ${mode}`);
+      assert.equal(dispatched - before, mode === 'no ask' ? 0 : 1, `${entry.name} ${mode} reaches native only with owner intent`);
     });
   }
   const definitions = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);

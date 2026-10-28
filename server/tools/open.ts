@@ -111,12 +111,19 @@ const CLAIMED_KINDS: readonly { words: RegExp; kind: OpenKind }[] = [
  */
 const INTENT_TURNS = 3;
 const INTENT_CHARS = 400;
-interface IntentWindow { turns: string[]; modelSpoke: boolean }
+interface IntentWindow { turns: string[]; modelSpoke: boolean; partial?: string }
 const ownerTurn = new Map<string, IntentWindow>();
+const ownerFinalized = new Map<string, Set<() => void>>();
+export function noteOwnerPartial(runId: string, text: string): void {
+  const window = ownerTurn.get(runId) ?? { turns: [], modelSpoke: false };
+  window.partial = text.slice(-INTENT_CHARS);
+  ownerTurn.set(runId, window);
+}
 export function noteOwnerWords(runId: string, text: string): void {
   const window = ownerTurn.get(runId) ?? { turns: [], modelSpoke: false };
   const turns = window.modelSpoke ? [] : window.turns;
   ownerTurn.set(runId, { turns: [...turns, text.slice(-INTENT_CHARS)].slice(-INTENT_TURNS), modelSpoke: false });
+  for (const resolve of ownerFinalized.get(runId) ?? []) resolve();
 }
 /** The model produced output: the next finalized owner turn opens a fresh intent window. */
 export function noteModelOutput(runId: string): void {
@@ -127,9 +134,30 @@ export function ownerWords(runId: string): string {
   return (ownerTurn.get(runId)?.turns ?? []).join(' ').slice(-INTENT_CHARS);
 }
 
-/** C-OPENWEB8: the turn he just finished, never an earlier one, because a web target binds to this turn alone. */
+/** Only owner transcription contributes to the current unanswered ask. */
 export function ownerTurnWords(runId: string): string {
-  return ownerTurn.get(runId)?.turns.at(-1) ?? '';
+  const window = ownerTurn.get(runId);
+  return [...(window?.modelSpoke ? [] : window?.turns ?? []), window?.partial ?? ''].join(' ').slice(-INTENT_CHARS);
+}
+
+/** One bounded event wait, not a polling loop; cleanup on finalization, abort or timeout. */
+export async function webOwnerWords(runId: string, signal: AbortSignal): Promise<string> {
+  if (WEB_INTENT.test(ownerTurnWords(runId)) || signal.aborted) return ownerTurnWords(runId);
+  await new Promise<void>(resolve => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', finish);
+      listeners.delete(finish);
+      if (!listeners.size) ownerFinalized.delete(runId);
+      resolve();
+    };
+    const listeners = ownerFinalized.get(runId) ?? new Set<() => void>();
+    listeners.add(finish);
+    ownerFinalized.set(runId, listeners);
+    const timer = setTimeout(finish, 1500);
+    signal.addEventListener('abort', finish, { once: true });
+  });
+  return ownerTurnWords(runId);
 }
 
 /** What she said this turn, so the claim check reads her own words and never the owner's. */
@@ -142,7 +170,7 @@ export function noteSpoken(runId: string, text: string): void {
 export function clearOpenLedger(runId: string): void {
   spoken.delete(runId);
   opened.delete(runId);
-  ownerTurn.delete(runId);
+  // Barge-in clears response receipts, not the owner ask that caused it.
 }
 
 /**
@@ -333,7 +361,7 @@ export function validateOpenWeb(args: unknown): args is { kind: WebKind; target:
 }
 
 /** The closed open verbs; a name alone, or a question about a site, is never an open request. */
-const WEB_INTENT = /\b(?:open|opens|opened|opening|show|shows|showing|pull(?:ing)?\s+up|bring(?:ing)?\s+up|go\s+to|going\s+to|take\s+me\s+to|launch|launching|look\s+up\s+on|find\s+on)\b/u;
+const WEB_INTENT = /(?:^|[^\p{L}\p{N}])(?:navigate\s+to|search\s+for|google|look\s+up|directions\s+to|map\s+of|open\s+up|oeffne|öffne|öffnen|zeig|zeige|zeigen|mach\b.{0,80}\bauf|suche?\s+nach|geh\s+auf|open|opens|opened|opening|show|shows|showing|pull(?:ing)?\s+up|bring(?:ing)?\s+up|go\s+to|going\s+to|take\s+me\s+to|launch|launching|look\s+up\s+on|find\s+on)\b/u;
 
 /** His words, normalised: lowercase, punctuation stripped, a spoken "dot" read as one. */
 export function webWords(text: string): string[] {

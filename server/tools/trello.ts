@@ -95,17 +95,16 @@ const READ_USED: Readonly<Record<TrelloReadView, readonly string[]>> = {
   overview: ['view'], recent: ['view'], list: ['view', 'list', 'offset', 'limit'],
   search: ['view', 'query', 'limit'], due: ['view', 'window'], card: ['view', 'card'],
 };
-/** What a property holds when the model fills in one the chosen view does not use. */
-const UNUSED_DEFAULTS: Readonly<Record<string, unknown>> = { offset: 0, limit: 10 };
 /**
- * C-ARGS: the provider schema leaves every property but view (or action) optional, and a model fills in the
- * ones a view or action does not use (an empty string, 0 for offset, the default 10 for limit). Those are
- * absent, not extra keys, so the shape check runs on a copy without them: a property the call does use is
- * validated exactly as before, and a key the tool does not declare still refuses.
+ * C-ARGS: the provider schema leaves every property but view (or action) optional, and the live voice model
+ * fills in every one of them, each with its own non-empty filler (`" "`, `today`, `1`, `25`). A property the
+ * chosen view or action does not use is absent, whatever value it carries, so the shape check runs on a copy
+ * without it: a property the call does use is validated exactly as before, and a key the tool does not
+ * declare still refuses.
  *
  * The copy is deliberate. `call.args` itself is never mutated, because a refused call is logged afterwards
  * (`declarations.ts` `logArgumentsRejected`) and the log must still name every key the provider sent: those
- * empty keys are the evidence that the model fills the schema in.
+ * filled keys are the evidence that the model fills the schema in.
  */
 function withoutUnused(args: Args, used: readonly string[], declared: Record<string, unknown>): Args {
   // A spread creates own data properties, so an own `__proto__` argument stays visible to `only()`; assigning
@@ -113,18 +112,24 @@ function withoutUnused(args: Args, used: readonly string[], declared: Record<str
   const shaped: Args = { ...args };
   for (const key of Object.keys(shaped)) {
     if (used.includes(key) || !Object.hasOwn(declared, key)) continue;
-    const filler = Object.hasOwn(UNUSED_DEFAULTS, key) ? UNUSED_DEFAULTS[key] : '';
-    if (shaped[key] === filler) delete shaped[key];
+    delete shaped[key];
   }
   return shaped;
+}
+
+/** The same copy for a validated read, so a key the chosen view does not use never reaches the board client. */
+export function normalizeTrelloRead(args: Args): Args {
+  if (typeof args.view !== 'string' || !(TRELLO_READ_VIEWS as readonly string[]).includes(args.view)) return args;
+  return withoutUnused(args, READ_USED[args.view as TrelloReadView], TRELLO_READ_PARAMETERS.properties);
 }
 
 /** Each view takes exactly its own arguments; anything else is an unusable shape, refused at the boundary. */
 export function validateTrelloRead(args: unknown): args is Args {
   if (!isRecord(args) || typeof args.view !== 'string' || !(TRELLO_READ_VIEWS as readonly string[]).includes(args.view)) return false;
   const used = READ_USED[args.view as TrelloReadView];
-  const shaped = withoutUnused(args, used, TRELLO_READ_PARAMETERS.properties);
-  const limit = shaped.limit === undefined || Number.isSafeInteger(shaped.limit) && (shaped.limit as number) >= 1 && (shaped.limit as number) <= TRELLO_PAGE_MAX;
+  const shaped = normalizeTrelloRead(args);
+  // TRELLO_PAGE_MAX is a page bound, not a refusal: a larger limit is clamped where the page is taken.
+  const limit = shaped.limit === undefined || Number.isSafeInteger(shaped.limit) && (shaped.limit as number) >= 1;
   const offset = shaped.offset === undefined || Number.isSafeInteger(shaped.offset) && (shaped.offset as number) >= 0 && (shaped.offset as number) <= 10_000;
   if (!limit || !offset) return false;
   switch (args.view) {
@@ -153,13 +158,12 @@ const WRITE_LIMITS: Readonly<Record<string, number>> = { card: TRELLO_NAME_MAX, 
 export const TRELLO_WRITE_ARGUMENT_FIELDS: readonly string[] =
   [...new Set(Object.values(WRITE_SHAPES).flatMap(shape => [...shape.required, ...shape.optional]))];
 
-/** C-FILLER: the value the voice model sends for a property the chosen action does not use. False, 0 and text are
- *  real values, and a property the action does use keeps exactly today's validation. */
-const isFillerWriteArgument = (value: unknown): boolean => value === false || value === undefined || value === null || value === ''
-  || (Array.isArray(value) && value.length === 0) || (isRecord(value) && Object.keys(value).length === 0);
+/** C-FILLER: a declared property the chosen action does not use is absent, whatever value it carries: an empty or
+ *  whitespace-only string, an enum word, `false`, `due:"none"`. A property the action does use keeps exactly
+ *  today's validation, so `false` for checked, complete or remove on the action that uses it stays a real value. */
 
-/** C-FILLER (council 98187): drop the properties this action's shape does not take when they carry a filler value,
- *  and name each one. Everything else, including an unknown property with a real value, is left to the validator. */
+/** C-FILLER (council 98187): drop every declared property this action's shape does not use, and name each one.
+ *  An unknown property still refuses in the validator, and is never named in the log. */
 export function normalizeTrelloWrite(args: unknown): { args: Args; normalized: string[] } {
   if (!isRecord(args) || typeof args.action !== 'string' || !(TRELLO_WRITE_ACTIONS as readonly string[]).includes(args.action)) {
     return { args: isRecord(args) ? args : {}, normalized: [] };
@@ -167,10 +171,10 @@ export function normalizeTrelloWrite(args: unknown): { args: Args; normalized: s
   const shape = WRITE_SHAPES[args.action as TrelloWriteAction];
   const used = ['action', ...shape.required, ...shape.optional];
   const normalized: string[] = [];
-  const kept = Object.fromEntries(Object.entries(args).filter(([key, value]) => {
-    // Only a closed write property is ever named: an invented key with a filler value is left for the validator,
-    // so a log line can never carry text the model made up as a property name.
-    if (!TRELLO_WRITE_ARGUMENT_FIELDS.includes(key) || used.includes(key) || !isFillerWriteArgument(value)) return true;
+  const kept = Object.fromEntries(Object.entries(args).filter(([key]) => {
+    // Only a closed write property is ever named: an invented key is left for the validator, so a log line can
+    // never carry text the model made up as a property name.
+    if (!TRELLO_WRITE_ARGUMENT_FIELDS.includes(key) || used.includes(key)) return true;
     normalized.push(key);
     return false;
   }));
@@ -182,16 +186,15 @@ export function validateTrelloWrite(args: unknown): args is Args {
   if (!isRecord(clean) || typeof clean.action !== 'string' || !(TRELLO_WRITE_ACTIONS as readonly string[]).includes(clean.action)) return false;
   const shape = WRITE_SHAPES[clean.action as TrelloWriteAction];
   // C-ARGS: the same rule as a read view. A model that fills in every declared property sends the ones this
-  // action does not require as an empty string, which is absent, not an extra key. A required property is
-  // never dropped here, a boolean is never dropped (false is a real request), and an undeclared key still refuses.
-  const shaped = withoutUnused(clean, ['action', ...shape.required], TRELLO_WRITE_PARAMETERS.properties);
-  if (!only(shaped, ['action', ...shape.required, ...shape.optional]) || !shape.required.every(key => shaped[key] !== undefined)) return false;
-  for (const [key, value] of Object.entries(shaped)) {
+  // action does not use with values of its own; they are absent, not extra keys. A required property is never
+  // dropped, a property this action does use keeps today's validation, and an undeclared key still refuses.
+  if (!only(clean, ['action', ...shape.required, ...shape.optional]) || !shape.required.every(key => clean[key] !== undefined)) return false;
+  for (const [key, value] of Object.entries(clean)) {
     if (key === 'action') continue;
     if (key === 'checked' || key === 'complete' || key === 'remove') { if (typeof value !== 'boolean') return false; continue; }
     if (!str(value, WRITE_LIMITS[key] ?? 0)) return false;
   }
-  if (shaped.action === 'update' && shaped.name === undefined && shaped.description === undefined) return false;
+  if (clean.action === 'update' && clean.name === undefined && clean.description === undefined) return false;
   return true;
 }
 
@@ -614,13 +617,16 @@ export class TrelloBoard {
 
   /** One read on the pinned board. A failure is a closed code, never an empty success. */
   async read(runId: string, args: Args, signal?: AbortSignal): Promise<JsonObject> {
-    const tool = `read.${String(args.view)}`;
+    // C-ARGS: the properties the chosen view does not use are absent before anything runs, so a key the model
+    // padded never reaches a view. `call.args` is untouched, so the log still names every key it sent.
+    const clean = normalizeTrelloRead(args);
+    const tool = `read.${String(clean.view)}`;
     if (!this.available()) return this.#refusal(new Refusal('not_configured'), tool, 'admit');
     if (this.#boardName === undefined) return this.#refusal(new Refusal('not_configured'), tool, 'admit');
     const session = this.#session(runId);
     try {
       const snapshot = await this.#snapshot(session, signal);
-      const result = await this.#readView(session, snapshot, args, signal);
+      const result = await this.#readView(session, snapshot, clean, signal);
       this.#emit(tool, 'settle', 'ok');
       return { ok: true, board: this.#boardName, ...result, ...(snapshot.complete ? {} : { partial: 'the board has more cards than one read follows; counts are at least these' }) };
     } catch (error) { return this.#refusal(error, tool, 'settle'); }
@@ -638,13 +644,13 @@ export class TrelloBoard {
         const list = this.#list(snapshot, String(args.list));
         const cards = snapshot.cards.filter(card => card.listId === list.id);
         const offset = typeof args.offset === 'number' ? args.offset : 0;
-        const limit = typeof args.limit === 'number' ? args.limit : 10;
+        const limit = Math.min(typeof args.limit === 'number' ? args.limit : 10, TRELLO_PAGE_MAX);
         const page = cards.slice(offset, offset + limit);
         return { view: 'list', list: list.name, total: cards.length, shown: page.length, offset, ...(offset + page.length < cards.length ? { nextOffset: offset + page.length } : {}), cards: page.map(card => this.#view(session, snapshot, card)) };
       }
       case 'search': {
         const words = foldName(String(args.query)).split(' ').filter(word => word.length > 1);
-        const limit = typeof args.limit === 'number' ? args.limit : 10;
+        const limit = Math.min(typeof args.limit === 'number' ? args.limit : 10, TRELLO_PAGE_MAX);
         const hits = snapshot.cards.map(card => ({ card, score: words.filter(word => foldName(`${card.name} ${card.desc}`).includes(word)).length }))
           .filter(entry => entry.score > 0).sort((a, b) => b.score - a.score);
         return { view: 'search', matched: hits.length, shown: Math.min(limit, hits.length), cards: hits.slice(0, limit).map(entry => this.#view(session, snapshot, entry.card)) };

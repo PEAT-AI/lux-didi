@@ -91,4 +91,3 @@ The host parses time in its system IANA zone and commits a fixed UTC instant. Se
 Per W11-R5, a new alarm session carries only alarm instructions, owner display name and scheduled time in non-user setup instructions. An already-live session receives no injected text or rebuild: local chime and menu state continue, with `live_session_no_channel` degradation until owner speech acknowledges it. The generic host-note prefix is not a non-user provider channel and is not used for alarm speech.
 
 These are awake-Mac alarms: closed lids, manual sleep, shutdown and unavailable local services may prevent ringing. A denied notification, failed idle-sleep assertion or unreachable shell is disclosed in the committed receipt. See [voice alarms](alarm.md) for storage, recovery, diagnostics and synthetic verification.
-

@@ -296,3 +296,27 @@ test('#631: a bare source word that is content stays a term', () => {
   assert.match(known('drive growth plan'), /drive/u, 'drive growth is the verb, not the layer');
   assert.match(known('chats about the release'), /chats/u, 'chats is the noun, not the layer');
 });
+
+// --- #1028: an entry that was fetched reaches the round as its body --------------------------------
+
+test('#1028: a fetched knowledge entry reaches the round as its body, not its title alone', async () => {
+  const executed: string[] = [];
+  const deps: ResearchDeps = {
+    now: () => 0, configured: ['knowledge', 'chat'] as readonly SourceKind[], ledger: new ResearchLedger(),
+    emit() {}, log() {}, logSource() {},
+    execute: async (subs: readonly IntentSubCall[]) => {
+      executed.push(...subs.map(call => call.name));
+      if (subs.some(call => call.name === 'get_insight')) {
+        return subs.map(call => sub(call.name, '### Release notes (decision | 2026-10-17) [id 123]\nThe planted rows were harvested on Friday.', true, call.key));
+      }
+      return subs.map(call => call.name === 'search_knowledge'
+        ? sub(call.name, '### Release notes (decision | 2026-10-17) [id 123]\nA short summary line.', true, call.key)
+        : sub(call.name, 'evidence', true, call.key));
+    },
+  };
+  const reply = await runResearch(deps, {
+    action: 'start', question: 'what did we decide about Korbi', lookups: [{ source: 'knowledge', query: 'Korbi' }],
+  }, new AbortController().signal);
+  assert.ok(executed.includes('get_insight'), 'the named entry was fetched');
+  assert.match(JSON.stringify(reply['findings']), /harvested on Friday/u, 'the fetched entry body is in the round');
+});

@@ -586,3 +586,23 @@ test('WEB-1024: fallback query clipping keeps entity date and place tokens befor
   for (const token of ['Herreshoff', 'Caribbean', '50', 'Pune', '2026']) assert.ok(query.includes(token), query);
   assert.doesNotMatch(query, /please|tell me/);
 });
+
+// --- #1028: the name is resolved before the web is asked -------------------------------------------
+
+test('#1028: a misheard organisation resolves to the name her own calendar digest carries', async () => {
+  const h = harness({ ok: false, code: 'web_insufficient', reason: 'empty' });
+  const deps: ResearchDeps = {
+    ...h.deps, configured: ['knowledge', 'calendar', 'web'] as readonly SourceKind[],
+    calendarDigest: () => '09:00 Standup, 11:00 Acme Seeds quarterly review',
+  };
+  const reply = await runResearch(deps, {
+    action: 'start', question: 'what did Akme Seats decide about the harvest',
+    lookups: [{ source: 'web', query: 'Akme Seats harvest' }],
+  }, new AbortController().signal);
+  assert.equal(h.webCalls.length, 1, 'the web was read once');
+  assert.match(h.webCalls[0]!, /Acme Seeds/u, 'the web query names the organisation the owner meant');
+  assert.doesNotMatch(h.webCalls[0]!, /Akme/u, 'the web never searched the mishearing as it was heard');
+  assert.ok(h.executed.includes('search_knowledge'), 'knowledge ran for a named organisation');
+  assert.ok(h.executed.includes('calendar_list_events'), 'calendar ran for a named organisation');
+  assert.ok(reply['researchId'] !== undefined, 'the round answered');
+});

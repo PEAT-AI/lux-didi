@@ -381,6 +381,14 @@ export function webBinding(target: string, ownerWords: string): boolean {
 
 /** The not-for-speech refusal the invalid-arguments path uses: a fix for the model and a line to speak. */
 export interface NotForSpeech { fixNotForSpeech: string; say: string }
+/** A closed, speech-safe receipt even when execution failed before it could open anything. */
+export function openWebFailure(code: string): { code: string; fixNotForSpeech: string; say: string } {
+  const closed = ['executor_intent_mismatch', 'no_open_intent', 'not_owner_words', 'native_timeout', 'not_allowed', 'not_found', 'ambiguous', 'failed', 'invalid_arguments'];
+  const reason = closed.includes(code) ? code : 'failed';
+  const guidance = OPEN_WEB_GUIDANCE[reason as keyof typeof OPEN_WEB_GUIDANCE];
+  return { code: reason, ...(guidance ?? { fixNotForSpeech: 'Nothing opened. Say the browser action failed; do not claim success.', say: 'I could not open that in your browser, so nothing is open.' }) };
+}
+
 export const OPEN_WEB_GUIDANCE: Record<'no_open_intent' | 'not_owner_words' | 'not_found' | 'ambiguous' | 'not_allowed', NotForSpeech> = {
   no_open_intent: {
     fixNotForSpeech: 'I did not hear an open request in his words. Do not call open_web on a name he did not ask to open; if he asks again, call it again with the words he says.',

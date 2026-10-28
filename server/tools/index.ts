@@ -22,7 +22,7 @@ import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, vali
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
-import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, OPEN_WEB_GUIDANCE, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, webOwnerWords, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode } from './open.js';
+import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, webOwnerWords, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode } from './open.js';
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
@@ -347,7 +347,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       const call = callDTO(input);
       return store.transaction(tx => {
         if (callRow(tx, call)) throw Error('refusal_collision'); validateCallRun(tx, call);
-        return persistTerminal(tx, call, 'refused', { response: { status: 'refused', reason }, dataClasses: [] }, true);
+        return persistTerminal(tx, call, 'refused', { response: call.toolName === OPEN_WEB_NAME ? { status: 'refused', reason, ...openWebFailure(reason) } : { status: 'refused', reason }, dataClasses: [] }, true);
       });
     },
     fail(input, status, reason) {
@@ -357,7 +357,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       return store.transaction(tx => {
         if (exactIntent(tx, call).state !== 'intent') throw Error('terminal_immutable'); validateCallRun(tx, call);
         const code = isToolFailureCode(reason) ? reason : status === 'unknown' ? 'tool_unknown' : 'tool_failed';
-        return persistTerminal(tx, call, status, { response: { status, reason: code }, dataClasses: [] });
+        return persistTerminal(tx, call, status, { response: call.toolName === OPEN_WEB_NAME ? { status, reason: code, ...openWebFailure(code) } : { status, reason: code }, dataClasses: [] });
       });
     },
   };
@@ -715,7 +715,6 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           if (code === 'opened' && dispatched) noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });
           // The refusal is the closed code plus the not-for-speech fix and the line she says; a found-only
           // case carries the domains so she asks which one he means.
-          const key = refused ?? (code in OPEN_WEB_GUIDANCE ? code as keyof typeof OPEN_WEB_GUIDANCE : 'not_allowed');
           const found = 'target' in resolved ? undefined : resolved.candidates;
           const payload: JsonObject = code === 'opened' && dispatched
             ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: webOpenedSay(dispatched.title) }

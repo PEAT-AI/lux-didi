@@ -75,7 +75,21 @@ import WebKit
     private var pickingUpLiveCall = false
     private var checkingLiveCalls = false
     let notifications = NativeNotifications()
-    private(set) var client: CompanionClient?
+    @Published private(set) var alarmCaption: String?
+    private var alarmShell: NativeAlarmShell?
+    private(set) var client: CompanionClient? { didSet { bindAlarmShell() } }
+    private func bindAlarmShell() {
+        alarmShell?.stop(); alarmShell = nil
+        guard let client else { return }
+        let shell = NativeAlarmShell(authority: client.authenticatedRequestBuilder(), ring: connectingRing,
+            onDue: { [weak self] id in
+                guard let self else { return }
+                if self.live?.isCapturing == true { self.alarmShell?.noteLiveSession(id) }
+                else { _ = self.startLive(alarmID: id) }
+            }, onCaption: { [weak self] caption in self?.alarmCaption = caption })
+        alarmShell = shell; shell.start()
+    }
+    func stopAlarms() { alarmShell?.stop(); alarmShell = nil }
     /// The one live page-session cookie, obtained once by `bootstrap()` and
     /// handed to every page view (full window and mini orb) so a second view
     /// never revokes the first session.
@@ -321,7 +335,7 @@ import WebKit
     /// #613: the one latch and session epoch presence and the conversation share.
     let ownerStopLatch = OwnerStopLatch()
     @discardableResult
-    func startLive(pickupJobID: String? = nil) -> Bool {
+    func startLive(pickupJobID: String? = nil, alarmID: String? = nil) -> Bool {
         guard let client else { error = "Connect the local service before starting Live voice."; return false }
         stopTrigger.clear()
         if live?.isCapturing == false { liveAuthorityOwner.clear() }
@@ -329,7 +343,7 @@ import WebKit
         let conversation = liveAuthorityOwner.ownerStart {
             NativeLiveConversation(authority: client.authenticatedRequestBuilder(), dictationIsCapturing: { [weak self] in
                 self?.voice.state.phase == .recording
-            }, pickupJobID: pickupJobID, logsDirectory: liveLogsDirectory, latch: ownerStopLatch)
+            }, pickupJobID: pickupJobID, alarmID: alarmID, logsDirectory: liveLogsDirectory, latch: ownerStopLatch)
         }
         conversation.start()
         orbLevels = NativeOrbLevelPublisher(device: conversation.device, bridge: bridge)
@@ -656,6 +670,7 @@ struct RootView: View {
     private var liveCallTimer: Timer?
     private var liveCallBadge: AnyCancellable?
     private var liveCallHealth: AnyCancellable?
+    private var alarmObservation: AnyCancellable?
     private var pickupMenuItem: NSMenuItem?
     private var singleKeyGrantItem: NSMenuItem?
     private var singleKeyGrantTimer: Timer?
@@ -835,6 +850,9 @@ struct RootView: View {
         model.notifications.onOpen = { [weak self] _ in self?.show() }
         model.notifications.onLiveCall = { [weak self] jobID in
             self?.show(); self?.model.pickUpLiveCall(jobID)
+        }
+        alarmObservation = model.$alarmCaption.sink { [weak self] caption in
+            self?.statusItem.button?.title = caption ?? ""
         }
         liveCallBadge = model.$pendingLiveCalls.sink { [weak self] jobs in
             self?.updateLiveStatus(pendingCall: !jobs.isEmpty)
@@ -1470,6 +1488,7 @@ struct RootView: View {
     }
     @objc private func pickupLiveCall() { show(); model.pickUpLiveCall() }
     func applicationWillTerminate(_ notification: Notification) {
+        alarmObservation?.cancel(); model.stopAlarms()
         liveCallTimer?.invalidate(); liveCallBadge?.cancel(); liveCallHealth?.cancel()
         model.stopRecording("Didi quit"); hotkey.unregister(); liveShortcuts.unregister()
         if let keyboardMonitor { NSEvent.removeMonitor(keyboardMonitor) }

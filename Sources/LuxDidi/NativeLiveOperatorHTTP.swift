@@ -34,10 +34,12 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
     let origin: URL
     private let build: NativeLiveRequestBuilder
     private let pickupJobID: String?
+    private let alarmID: String?
     private var pickupCreateKey: String?
     private let session: URLSession
-    init(authority: (origin: URL, request: NativeLiveRequestBuilder), pickupJobID: String? = nil, configuration: URLSessionConfiguration? = nil) {
+    init(authority: (origin: URL, request: NativeLiveRequestBuilder), pickupJobID: String? = nil, alarmID: String? = nil, configuration: URLSessionConfiguration? = nil) {
         self.pickupJobID = pickupJobID
+        self.alarmID = alarmID
         origin = authority.origin
         build = authority.request
         let config = configuration ?? URLSessionConfiguration.ephemeral
@@ -149,8 +151,8 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
     }
     func create(for intent: LiveBeginIntent, key: String) async throws -> LiveSnapshot {
         guard intent.origin == origin else { throw LiveClientError.invalidIntent }
-        let body = try createBody(for: intent, key: key)
-        return try JSONDecoder().decode(Envelope<LiveSnapshot>.self, from: await fetch("/api/v1/live-sessions", epoch: intent.authorityEpoch, method: "POST", body: body, key: key)).data
+        let body = try alarmID.map { try JSONEncoder().encode(["id": $0, "ownerDisplayName": NSFullUserName()]) } ?? createBody(for: intent, key: key)
+        return try JSONDecoder().decode(Envelope<LiveSnapshot>.self, from: await fetch(alarmID == nil ? "/api/v1/live-sessions" : "/v1/alarms/session", epoch: intent.authorityEpoch, method: "POST", body: body, key: key)).data
     }
     func snapshot(sessionID: String, for intent: LiveBeginIntent) async throws -> LiveSnapshot {
         return try JSONDecoder().decode(Envelope<LiveSnapshot>.self, from: await fetch(path(sessionID), epoch: intent.authorityEpoch)).data

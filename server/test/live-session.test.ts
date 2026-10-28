@@ -7123,6 +7123,9 @@ test('C-REBUILD8: the debt rung never nudges or rebuilds inside the owner senten
   await ownerInput(fake, 'when does the bridge reopen');
   fake.emit({ type: 'toolCall', calls: [{ id: 'debt1', name: 'search_knowledge', args: { query: 'bridge', limit: 1 } }] });
   await settlePort();
+  // The settled read owes an answer, so the ladder is armed and the hold below is what keeps it quiet.
+  assert.equal(receipts.filter(record => record['event'] === 'live_debt' && record['phase'] === 'start').length, 1,
+    'the settled read armed the ladder');
   for (let second = 0; second < 15; second += 1) {
     fake.emit({ type: 'inputTranscription', text: `and then number ${second}`, finished: false });
     h.advance(1_000); scheduler.runDue(); await settlePort();
@@ -7131,4 +7134,12 @@ test('C-REBUILD8: the debt rung never nudges or rebuilds inside the owner senten
     'his unfinalized sentence owns the debt silence, so no dead-air nudge fires inside it');
   assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'and no rebuild lands inside his words');
   assert.equal(fake.sessionsOpened, 1, 'the provider session he is talking to is the one he keeps');
+  // Held, not dead: from his final fragment the ladder judges the silence as it always did.
+  await ownerInput(fake, 'book a table for four');
+  for (let spent = 0; spent < AUDIBLE_DEBT_RUNG_MS + 2_000
+    && receipts.filter(record => record['event'] === 'live_dead_air_nudge').length === 0; spent += 250) {
+    h.advance(250); scheduler.runDue(); await settlePort();
+  }
+  assert.equal(receipts.filter(record => record['event'] === 'live_dead_air_nudge').length, 1,
+    'the rung is judged from his final fragment, not before it');
 });

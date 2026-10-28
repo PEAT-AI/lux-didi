@@ -231,6 +231,14 @@ describe('openai gpt-live adapter', () => {
     assert.equal(f.frames[before]!['type'], 'session.commentary.append');
     assert.equal(f.frames[before]!['delegation_id'], 'dlg_open', 'the wire carries the delegation in flight');
     assert.deepEqual(f.rejections, [], 'the provider, which enforces its own rule, refused nothing');
+    // W11-R2: the provider flipped this rule once already (10-21 refused an append that carried a delegation_id
+    // with invalid_request_error, #516; since 10-25 it refuses one that does not, with missing_required_parameter),
+    // so a refusal is never swallowed: the host log keeps the code and the parameter the provider names.
+    f.send({ type: 'error', error: { type: 'command_rejected', code: 'missing_required_parameter', param: 'delegation_id', kind: 'cmt', client_event_id: 'cmt_1' } });
+    await until(() => logged().some(entry => entry['event'] === 'command_rejected'));
+    assert.deepEqual(logged().filter(entry => entry['event'] === 'command_rejected'),
+      [{ event: 'command_rejected', code: 'missing_required_parameter', param: 'delegation_id', kind: 'cmt' }],
+      'a further flip stays visible with the provider own code and the parameter it names');
     session.close();
   });
 

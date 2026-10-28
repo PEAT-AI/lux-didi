@@ -47,11 +47,12 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     research: { action: 'start', question: 'what is the synthetic scope', topic: 'synthetic scope', lookups: [{ source: 'knowledge', query: 'synthetic scope' }] }, remember_note: { text: 'Synthetic fact', kind: 'fact' },
     // history-chat-tool.integration.mjs and vault-write.test.ts synthetic arguments.
     conversation_history: { query: 'Mira violet flags' }, save_to_vault: { content: 'the boat survey is on Tuesday' },
+    stage_lux_note: { title: 'T', body: 'B', evidenceRefs: ['journal:1'] },
     people_lookup: { name: 'Synthetic' }, open_source: { handle: 'L9999' },
     open_home: { app: 'gmail' }, open_file: { path: '~/synthetic' },
     open_app: { name: 'Synthetic' }, open_web: { kind: 'site', target: 'plantix dot net' },
   };
-  for (const definition of owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }))) {
+  for (const definition of owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true)) {
     const args = argumentsByName[definition.name];
     assert.ok(args, `valid fixture required for ${definition.name}`);
     assert.equal(definition.validate(args), true, `${definition.name} fixture validates`);
@@ -69,7 +70,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     assert.doesNotThrow(() => assert.equal(owner.journal.intent(intent), 'fresh'), `${definition.name} stores its intent`);
     await assert.doesNotReject(() => definition.execute(args, { ...intent, signal }), `${definition.name} must accept its stored intent`);
   }
-  const definitions = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }));
+  const definitions = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
   const web = definitions.find(definition => definition.name === 'open_web')!;
   const events: unknown[] = [];
   const detach = attachHostLogSink({ event: event => events.push(event) });

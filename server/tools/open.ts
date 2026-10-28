@@ -70,11 +70,15 @@ export type OpenDestinationClass = 'maps' | 'search' | 'site-root' | 'handle' | 
 /** C-POLISH10: what the call was asked to open, as a kind, so the audit names the shape and not the words. */
 export type OpenAuditKind = 'maps' | 'search' | 'site' | 'source' | 'home' | 'file' | 'app';
 
+/** C-POLISH10: the four model-facing open tools whose destination is fixed by the tool, not by a kind. */
+export type OpenFamilyTool = 'open_source' | 'open_home' | 'open_file' | 'open_app';
+
 /**
  * C-POLISH10: the class one open tool resolves to, read from the tool the model called rather than assumed: an item
- * handle, a home page, a file inside the home folder and an application are four different destinations.
+ * handle, a home page, a file inside the home folder and an application are four different destinations. `open_web`
+ * supplies its own class from the kind it was asked for.
  */
-export function openDestinationClass(tool: string): OpenDestinationClass {
+export function openDestinationClass(tool: OpenFamilyTool): OpenDestinationClass {
   if (tool === 'open_file') return 'file';
   if (tool === 'open_app') return 'app';
   if (tool === 'open_home') return 'site-root';

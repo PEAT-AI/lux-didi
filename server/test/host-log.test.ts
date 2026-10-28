@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { safeEvent } from '../host/log.js';
-import { OPEN_TOOL_NAMES, openAudit, openDestinationClass } from '../tools/open.js';
+import { openAudit, openDestinationClass } from '../tools/open.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { severityOf } from '../host/events.js';
 import { createHostResourceSampler } from '../host/runtime.js';
@@ -701,9 +701,8 @@ test('C-POLISH10: an open call logs closed audit fields and never the words or t
   assert.equal(safeEvent({ event: 'open_audit', tool: 'open_web', kind: 'search', words: 4, bound: 'yes', destination: 'inbox', refusal: 'none' }), undefined);
   assert.equal(safeEvent({ event: 'open_audit', tool: 'open_web', kind: 'search', words: 4, bound: 'maybe', destination: 'search', refusal: 'none' }), undefined);
   // C-POLISH10: each open tool resolves to its own class, so the audit never calls a file or an app a handle.
-  assert.deepEqual(['open_source', 'open_home', 'open_file', 'open_app'].map(openDestinationClass), ['handle', 'site-root', 'file', 'app']);
-  assert.deepEqual([...OPEN_TOOL_NAMES].filter(name => openDestinationClass(name) === 'handle'), ['open_source'],
-    'only an item handle is audited as a handle');
+  assert.deepEqual(['open_source', 'open_home', 'open_file', 'open_app'].map(openDestinationClass), ['handle', 'site-root', 'file', 'app'],
+    'only an item handle is audited as a handle; a home page, a file and an app are three other classes');
   // The knowledge autopen decision is one bucket and one closed reason; an ask or a title is never a field.
   assert.deepEqual(safeEvent({ event: 'knowledge_autopen', decision: 'skipped', bucket: 'low', reason: 'low_score' }),
     { event: 'knowledge_autopen', decision: 'skipped', bucket: 'low', reason: 'low_score' });

@@ -1119,7 +1119,8 @@ test('A1: open_web site is a native_action control frame and its ack is the tool
   await waitFor(() => frames.some(frame => frame.text && JSON.parse(frame.text).type === 'ready'));
 
   // #573: an open call answers the owner's own open intent, so his finalized words reach the host first.
-  h.f.send({ serverContent: { inputTranscription: { text: 'open plantix dot net', finished: true } } });
+  h.f.send({ serverContent: { inputTranscription: { text: 'but can you open', finished: true } } });
+  h.f.send({ serverContent: { inputTranscription: { text: 'plantix dot net in my browser', finished: true } } });
   await waitFor(async () => (await json(h.origin, `/api/v1/live-sessions/${id}/journal`, { headers: bearer(h) })).body.data.fragments
     .some((fragment: { kind: string }) => fragment.kind === 'inputTranscription'), 1_500);
   h.f.send({ toolCall: { functionCalls: [{ id: 'open-call-1', name: 'open_web', args: { kind: 'site', target: 'plantix dot net' } }] } });

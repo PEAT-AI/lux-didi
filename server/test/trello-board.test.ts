@@ -711,3 +711,14 @@ test('C-TRELLO9: gateway pagination is retained for transports advertising curso
   assert.equal(result.total, 2);
   assert.ok(calls.some(call => call.cursor === 'next'));
 });
+
+
+test('C-TRELLO9: inner log reasons are closed codes, not arbitrary server messages', () => {
+  const event = { event: 'connector_call', connector: 'trello', tool: 'read.overview', phase: 'settle', outcome: 'refused' };
+  for (const reason of ['plan_no_tool', 'plan_bad_args', 'plan_no_action', 'dispatch_not_allowed', 'server_not_allowed', 'server_tool_error:unknown', 'server_tool_error:http_400', 'server_tool_error:http_404', 'server_credential_revoked:http_403', 'server_rate_limited:http_429', 'server_unavailable:http_503']) {
+    assert.equal(safeEvent({ ...event, reason })?.reason, reason);
+  }
+  for (const reason of ['server_tool_error:private board name', 'server_tool_error:http_404/private', 'server_tool_error:http_399', 'server_tool_error:http_600', 'server_tool_error:http_4xx', 'server_tool_error:http_404 token=synthetic-secret']) {
+    assert.equal(safeEvent({ ...event, reason }), undefined);
+  }
+});

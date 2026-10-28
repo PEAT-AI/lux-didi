@@ -1,5 +1,5 @@
 {
-  "note": "Synthetic open destinations, one table for the host allowlist (server/tools/open-handles.ts) and the native one (Sources/LuxDidi/NativeActions.swift). kind null means refused. The Mattermost host is learned at run time and has its own tests.",
+  "note": "Synthetic open destinations, one table for the host allowlist (server/tools/open-handles.ts) and the native one (Sources/LuxDidi/NativeActions.swift). kind null means refused. The Mattermost host is learned at run time and has its own tests. The three web shapes open_web builds are the one place the two lists part: the native side accepts them, a handle never mints them, and open-destinations.test.ts and NativeActionsTests prove that apart.",
   "cases": [
     { "url": "https://mail.google.com/mail/u/0/", "kind": "gmail" },
     { "url": "https://mail.google.com/mail/u/0/#all/thread0001", "kind": "gmail" },
@@ -19,7 +19,7 @@
     { "url": "https://www.google.com/calendar/render?eid=c3ludGhldGljLWV2ZW50", "kind": null },
     { "url": "https://www.google.com/calendar/event/sub?eid=c3ludGhldGljLWV2ZW50", "kind": null },
     { "url": "https://www.google.com/event?eid=c3ludGhldGljLWV2ZW50", "kind": null },
-    { "url": "https://www.google.com/search?q=synthetic", "kind": null },
+    { "url": "https://www.google.com/search?q=synthetic&hl=en", "kind": null },
     { "url": "https://www.google.com/url?q=https://evil.example/", "kind": null },
     { "url": "https://www.google.com/", "kind": null },
     { "url": "https://google.com/calendar/event?eid=c3ludGhldGljLWV2ZW50", "kind": null },

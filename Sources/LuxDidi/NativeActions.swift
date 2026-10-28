@@ -83,12 +83,15 @@ public struct OpenDestination: Sendable, Equatable {
     public static func of(_ target: String, mattermostHost: String?) -> OpenDestination? {
         guard let parts = URLComponents(string: target), parts.scheme?.lowercased() == "https",
               parts.user == nil, parts.password == nil, parts.port == nil,
-              let host = parts.host?.lowercased(), !host.isEmpty, !matches(parts.percentEncodedPath, rejected),
-              !(parts.queryItems ?? []).contains(where: { $0.name == "redirect" || $0.name == "export" })
+              let host = parts.host?.lowercased(), !host.isEmpty, !matches(parts.percentEncodedPath, rejected)
         else { return nil }
         // The raw path, as the host reads it: a %2F never becomes a separator here.
         let path = parts.percentEncodedPath
         let items = parts.queryItems ?? []
+        // C-OPENWEB8: exactly one shape carries `q`, a plain Google search. Every other shape refuses it
+        // as before, so a search phrase cannot ride the last-line allowlist on a mail, docs or video link.
+        let googleSearch = host == "www.google.com" && path == "/search" && names(items) == ["q"] && (value(items, "q") ?? "").isEmpty == false
+        if !googleSearch && items.contains(where: { $0.name == "q" || $0.name == "redirect" || $0.name == "export" }) { return nil }
         let eid = items.contains { $0.name == "eid" }
         let video = items.first { $0.name == "v" }?.value?.isEmpty == false
         switch host {
@@ -101,7 +104,7 @@ public struct OpenDestination: Sendable, Equatable {
             // The link the Calendar API returns for an event, and the three web surfaces open_web builds:
             // a maps search, directions and a plain Google search, each with exactly its own parameters.
             if path == "/calendar/event" && eid { return OpenDestination(kind: "calendar") }
-            if path == "/search" && names(items) == ["q"] { return OpenDestination(kind: "web") }
+            if googleSearch { return OpenDestination(kind: "web") }
             if path == "/maps/search/" && names(items) == ["api", "query"] && value(items, "api") == "1" { return OpenDestination(kind: "web") }
             if path == "/maps/dir/", value(items, "api") == "1",
                ["api", "destination", "origin"].contains(names(items)), value(items, "destination")?.isEmpty == false {

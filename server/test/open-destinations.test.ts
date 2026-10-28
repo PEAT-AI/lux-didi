@@ -278,6 +278,10 @@ test('C-OPENWEB8: every web surface is built with URL and URLSearchParams, never
   // A character that would separate a path or a query is encoded by URLSearchParams, never read as one.
   assert.equal(webDestination('search', 'a&b=c')?.url, 'https://www.google.com/search?q=a%26b%3Dc');
   assert.deepEqual(webDestination('site', 'plantix.net'), { url: 'https://plantix.net/', domain: 'plantix.net' });
+  // Review F1: the words he said are the target, so the spoken dot opens the root too.
+  assert.deepEqual(webDestination('site', 'plantix dot net'), { url: 'https://plantix.net/', domain: 'plantix.net' });
+  assert.deepEqual(webDestination('site', 'Plantix dot net.'), { url: 'https://plantix.net/', domain: 'plantix.net' });
+  assert.equal(webDestination('site', 'acme seeds'), undefined, 'two spoken words are a name, not a domain');
   assert.equal(webDestination('site', 'plantix.net/?q=secret'), undefined, 'a path or query is not a spoken domain');
   assert.equal(webDestination('site', 'localhost'), undefined, 'one label is not a registrable domain');
   assert.equal(webDestination('site', 'plantix.net.evil.example'), undefined, 'a deeper label is not its own registrable domain');
@@ -289,6 +293,10 @@ test('C-OPENWEB8: a domain is read back the way she says it, and a root is https
   assert.equal(registrableDomain('en.wikipedia.org'), 'wikipedia.org');
   assert.equal(registrableDomain('shop.example.co.uk'), 'example.co.uk');
   assert.equal(spokenDomain('Plantix.NET'), 'plantix.net');
+  assert.equal(spokenDomain('open plantix dot net'), undefined, 'a whole sentence is not a domain');
+  assert.equal(spokenDomain('acme dot seeds dot com'), undefined, 'a deeper label is not its own registrable domain');
+  assert.equal(spokenDomain('plantix dot net'), 'plantix.net', 'the spoken dot is the address dot');
+  assert.equal(spokenDomain('plantix.net.'), 'plantix.net', 'a closing period is the sentence, not the address');
   assert.equal(spokenDomain('plantix.net/private'), undefined);
   assert.equal(spokenDomain('plantix.net:8443'), undefined);
   assert.equal(spokenDomain('owner@plantix.net'), undefined);

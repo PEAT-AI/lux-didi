@@ -1,4 +1,5 @@
 import type { Credentials } from '../adapters/model/types.js';
+import { registrableDomain } from './open-handles.js';
 
 /**
  * WEB-1021: one typed action, no provider abstraction. Gemini `gemini-3.8-flash` generateContent with
@@ -298,14 +299,6 @@ export const SITE_BLOCKLIST: readonly string[] = [
   'reddit.com', 'quora.com', 'pinterest.com', 'tiktok.com', 'threads.net', 'medium.com', 'yelp.com',
   'tripadvisor.com', 'google.com', 'bing.com', 'duckduckgo.com', 'search.yahoo.com',
 ];
-
-const TWO_LABEL_SUFFIXES = new Set(['co.uk', 'org.uk', 'ac.uk', 'com.au', 'net.au', 'co.nz', 'co.za', 'com.br', 'co.jp', 'com.mx', 'co.in', 'com.sg']);
-/** The registrable domain of a result address, without the www the site answers on. */
-export function registrableDomain(host: string): string {
-  const labels = host.toLowerCase().replace(/^www\./u, '').replace(/\.+$/u, '').split('.').filter(Boolean);
-  const last = labels.slice(-2).join('.');
-  return labels.length > 2 && TWO_LABEL_SUFFIXES.has(last) ? labels.slice(-3).join('.') : last;
-}
 
 export type SitePick = { domain: string } | { candidates: string[] };
 

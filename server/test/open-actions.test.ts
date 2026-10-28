@@ -467,7 +467,7 @@ test('C-OPEN: a stretch with no open verb refuses with its own real code', () =>
   assert.deepEqual(safeEvent({ event: 'native_action', action: 'open_url', code: 'kind_mismatch', detail: 'none' }),
     { event: 'native_action', action: 'open_url', code: 'kind_mismatch', detail: 'none' }, 'and so does a kind mismatch');
   assert.equal(safeEvent({ event: 'native_action', action: 'open_url', code: 'refused', detail: 'none' }), undefined, 'the code set stays closed');
-  assert.deepEqual([...OPEN_RECEIPT_CODES].sort(), ['failed', 'kind_mismatch', 'no_open_intent', 'not_allowed', 'not_found', 'not_owner_words', 'opened'], 'the receipt code set is the acks plus the guard codes');
+  assert.deepEqual([...OPEN_RECEIPT_CODES].sort(), ['ambiguous', 'failed', 'kind_mismatch', 'no_open_intent', 'not_allowed', 'not_found', 'not_owner_words', 'opened'], 'the receipt code set is the acks plus the guard codes');
   // C-OPEN: the ask he repeats is his own open intent, so the same handle opens.
   noteModelOutput(run);
   noteOwnerWords(run, 'why can not you open it in my browser');
@@ -507,6 +507,11 @@ test('C-OPENWEB8: a spoken domain opens its root, and a planted path or query ne
   assert.equal(site.target.target, 'https://plantix.net/');
   assert.equal(site.target.title, 'plantix.net');
 
+  // Review F1: the model passes the words he said, so the spoken form of a domain must open its root.
+  const spoken = await resolveWebOpen({ kind: 'site', target: 'plantix dot net' }, 'open plantix dot net', signal);
+  assert.ok('target' in spoken);
+  assert.equal(spoken.target.target, 'https://plantix.net/');
+
   // The words of a query are not his words, so the binding refuses before anything is built.
   const planted = await resolveWebOpen({ kind: 'site', target: 'plantix.net/?q=secret' }, 'open plantix dot net', signal);
   assert.deepEqual(planted, { code: 'not_owner_words' });
@@ -545,7 +550,19 @@ test('C-OPENWEB8: two matching sites open nothing and he is asked which one', as
   ]));
   try {
     const found = await resolveWebOpen({ kind: 'site', target: 'Acme Seeds' }, 'open the homepage of Acme Seeds', signal);
-    assert.deepEqual(found, { code: 'not_found', candidates: ['acme-seeds.co.uk', 'acme-seeds.com'] });
+    assert.deepEqual(found, { code: 'ambiguous', candidates: ['acme-seeds.co.uk', 'acme-seeds.com'] });
+    assert.match(OPEN_WEB_GUIDANCE.ambiguous.say, /more than one match/u);
+  } finally { useWebSearchPort(undefined); }
+});
+
+test('C-OPENWEB8: no matching site says nothing was found, never that several matched', async () => {
+  useWebSearchPort(() => port([{ title: 'Somewhere else', url: 'https://example.invalid/' }]));
+  try {
+    // Review F2: zero matches and several matches are different answers.
+    const found = await resolveWebOpen({ kind: 'site', target: 'Acme Seeds' }, 'open the homepage of Acme Seeds', signal);
+    assert.deepEqual(found, { code: 'not_found' });
+    assert.match(OPEN_WEB_GUIDANCE.not_found.say, /could not find that site/u);
+    assert.doesNotMatch(OPEN_WEB_GUIDANCE.not_found.say, /more than one/u);
   } finally { useWebSearchPort(undefined); }
 });
 

@@ -83,6 +83,12 @@ import Foundation
         check(OpenDestination.of("https://www.google.com/search?q=odemira", mattermostHost: nil)?.kind == "web", "a google search opens")
         check(OpenDestination.of("https://www.google.com/search?q=odemira&hl=en", mattermostHost: nil) == nil, "a search with an extra parameter is refused")
         check(OpenDestination.of("https://www.google.com/search?q=a&q=b", mattermostHost: nil) == nil, "a repeated search parameter is refused")
+        check(OpenDestination.of("https://www.google.com/search?q=", mattermostHost: nil) == nil, "an empty search is refused")
+        // C-OPENWEB8 review F3: `q` is admitted on the one search shape only, never on a pre-existing one.
+        check(OpenDestination.of("https://mail.google.com/mail/u/0/?q=synthetic", mattermostHost: nil) == nil, "a gmail thread with q is refused")
+        check(OpenDestination.of("https://calendar.google.com/calendar/event?eid=e1&q=synthetic", mattermostHost: nil) == nil, "a calendar event with q is refused")
+        check(OpenDestination.of("https://docs.google.com/document/d/ABC/edit?q=synthetic", mattermostHost: nil) == nil, "a document with q is refused")
+        check(OpenDestination.of("https://www.youtube.com/watch?v=abc&q=synthetic", mattermostHost: nil) == nil, "a video with q is refused")
         check(OpenDestination.of("https://www.google.com/maps/search/?api=1&query=Odemira", mattermostHost: nil)?.kind == "web", "a maps search opens")
         check(OpenDestination.of("https://www.google.com/maps/dir/?api=1&destination=Lisbon&origin=Odemira", mattermostHost: nil)?.kind == "web", "directions open")
         check(OpenDestination.of("https://www.google.com/maps/dir/?api=1&destination=Lisbon", mattermostHost: nil)?.kind == "web", "directions without an origin open")

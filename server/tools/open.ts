@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { hostLogEvent } from './host-events.js';
-import { HOME_APPS, WEB_KINDS, beginHandleSession, endHandleSession, exposeHandles, homeDestination, mattermostOrigin, openDestination, resolveHandle, webDestination, type HomeApp, type OpenKind, type WebKind } from './open-handles.js';
+import { HOME_APPS, WEB_KINDS, beginHandleSession, endHandleSession, exposeHandles, homeDestination, mattermostOrigin, openDestination, resolveHandle, spokenDots, webDestination, type HomeApp, type OpenKind, type WebKind } from './open-handles.js';
 import { pickSiteDomain, publicQueryOf, type WebSearchPort } from './web-search.js';
 
 /** Builtin gateway identity: the open tools are host-native, never a remote connector. */
@@ -11,7 +11,7 @@ export type NativeAction = (typeof OPEN_ACTIONS)[number];
 export const NATIVE_ACTION_CODES = ['opened', 'not_allowed', 'not_found', 'failed'] as const;
 export type NativeActionCode = (typeof NATIVE_ACTION_CODES)[number];
 /** A receipt code: a native ack, or the guard code a refused call never sent to the native side. */
-export const OPEN_RECEIPT_CODES = [...NATIVE_ACTION_CODES, 'no_open_intent', 'kind_mismatch', 'not_owner_words'] as const;
+export const OPEN_RECEIPT_CODES = [...NATIVE_ACTION_CODES, 'no_open_intent', 'kind_mismatch', 'not_owner_words', 'ambiguous'] as const;
 export type OpenReceiptCode = (typeof OPEN_RECEIPT_CODES)[number];
 /** What the model sees; `open_url` is only the internal transport for the two item tools. */
 export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_source', 'open_home', 'open_file', 'open_app', 'open_web']);
@@ -337,14 +337,7 @@ const WEB_INTENT = /\b(?:open|opens|opened|opening|show|shows|showing|pull(?:ing
 
 /** His words, normalised: lowercase, punctuation stripped, a spoken "dot" read as one. */
 export function webWords(text: string): string[] {
-  const joined = (value: string): string => {
-    let out = value.toLowerCase();
-    for (let pass = 0; pass < 5 && /(\p{L}|\p{N})\s+dot\s+(\p{L}|\p{N})/u.test(out); pass += 1) {
-      out = out.replace(/(\p{L}|\p{N})\s+dot\s+(\p{L}|\p{N})/gu, '$1.$2');
-    }
-    return out;
-  };
-  return joined(text)
+  return spokenDots(text)
     .replace(/[^\p{L}\p{N}.]+/gu, ' ')
     .split(/\s+/u)
     .map(word => word.replace(/^\.+|\.+$/gu, ''))
@@ -360,7 +353,7 @@ export function webBinding(target: string, ownerWords: string): boolean {
 
 /** The not-for-speech refusal the invalid-arguments path uses: a fix for the model and a line to speak. */
 export interface NotForSpeech { fixNotForSpeech: string; say: string }
-export const OPEN_WEB_GUIDANCE: Record<'no_open_intent' | 'not_owner_words' | 'not_found' | 'not_allowed', NotForSpeech> = {
+export const OPEN_WEB_GUIDANCE: Record<'no_open_intent' | 'not_owner_words' | 'not_found' | 'ambiguous' | 'not_allowed', NotForSpeech> = {
   no_open_intent: {
     fixNotForSpeech: 'I did not hear an open request in his words. Do not call open_web on a name he did not ask to open; if he asks again, call it again with the words he says.',
     say: 'I did not hear an open request, so nothing is open.',
@@ -370,7 +363,11 @@ export const OPEN_WEB_GUIDANCE: Record<'no_open_intent' | 'not_owner_words' | 'n
     say: 'I did not hear you name that, so nothing is open.',
   },
   not_found: {
-    fixNotForSpeech: 'No site matched that name. Say which names I found and ask which one he means; never open one he did not choose.',
+    fixNotForSpeech: 'No site matched that name, so nothing opened. Say that plainly and ask him to name the site; never open one he did not name.',
+    say: 'I could not find that site, so nothing is open.',
+  },
+  ambiguous: {
+    fixNotForSpeech: 'More than one site matched that name. Say which names I found and ask which one he means; never open one he did not choose.',
     say: 'I found more than one match and did not open any of them.',
   },
   not_allowed: {
@@ -385,7 +382,7 @@ export function webOpenedSay(domain: string): string { return `opening ${domain}
 let webPort: (() => WebSearchPort | undefined) | undefined;
 export function useWebSearchPort(source: (() => WebSearchPort | undefined) | undefined): void { webPort = source; }
 
-export type WebOpenRefusal = { code: 'no_open_intent' | 'not_owner_words' | 'not_found' | 'not_allowed'; candidates?: string[] };
+export type WebOpenRefusal = { code: 'no_open_intent' | 'not_owner_words' | 'not_found' | 'ambiguous' | 'not_allowed'; candidates?: string[] };
 export interface WebOpenTarget { action: NativeAction; target: string; detail: string; kind: OpenKind; title: string }
 
 /**
@@ -405,7 +402,8 @@ export async function resolveWebOpen(args: { kind: WebKind; target: string }, wo
   const outcome = await port.search({ query, signal });
   if (!outcome.ok) return { code: 'not_found' };
   const pick = pickSiteDomain(args.target, outcome.evidence.sources);
-  if ('candidates' in pick) return { code: 'not_found', candidates: pick.candidates };
+  // None and several are different answers: nothing matched, or several did and he must choose.
+  if ('candidates' in pick) return pick.candidates.length === 0 ? { code: 'not_found' } : { code: 'ambiguous', candidates: pick.candidates };
   const root = webDestination('site', pick.domain);
   return root === undefined ? { code: 'not_allowed' } : { target: { action: 'open_url', target: root.url, detail: 'web', kind: 'web', title: root.domain } };
 }

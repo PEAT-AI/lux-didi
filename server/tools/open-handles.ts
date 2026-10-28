@@ -244,9 +244,19 @@ export function registrableDomain(host: string): string {
   return labels.length > 2 && TWO_LABEL_SUFFIXES.has(last) ? labels.slice(-3).join('.') : last;
 }
 
+/** A spoken "dot" between two words is the dot of a domain: "plantix dot net" reads as one address. */
+export function spokenDots(text: string): string {
+  let out = text.toLowerCase();
+  for (let pass = 0; pass < 5 && /(\p{L}|\p{N})\s+dot\s+(\p{L}|\p{N})/u.test(out); pass += 1) {
+    out = out.replace(/(\p{L}|\p{N})\s+dot\s+(\p{L}|\p{N})/gu, '$1.$2');
+  }
+  return out;
+}
+
 /** The domain he spoke, or undefined when the words are a name rather than a domain. */
 export function spokenDomain(target: string): string | undefined {
-  const value = target.trim().toLowerCase();
+  // A closing period or a stray comma is the sentence, not the address.
+  const value = spokenDots(target).trim().replace(/^[^\p{L}\p{N}]+/u, '').replace(/[^\p{L}\p{N}]+$/u, '');
   if (!DOMAIN_SHAPE.test(value)) return undefined;
   return registrableDomain(value) === value ? value : undefined;
 }

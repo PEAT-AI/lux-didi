@@ -164,6 +164,24 @@ test('COMPOSE 3: a source the ask routes to but the session never configured is 
   assert.match(header, /say: /u, 'each unsearched source carries the one clause the voice can say');
 });
 
+// C-CLAIMS9 outcome 3: on the 10-28 call a chat source that was never attempted because the connector was
+// down was reported as provider_failed with ms 0, hiding the real reason. Only an attempted failure is a
+// provider failure.
+test('C-CLAIMS9: an unavailable chat source is not_connected, and only an attempted failure is provider_failed', async () => {
+  const ask = { action: 'start' as const, question: 'what did the team say in chat about the synthetic release',
+    lookups: [{ source: 'chat' as const, query: 'release' }] };
+  const down = harness({ unavailableNow: () => ['chat'] });
+  const downHeader = String((await runResearch(down.deps, ask, new AbortController().signal))['coverage']);
+  assert.match(downHeader, /chat not_connected/u, `a source the connector could not serve was never attempted, so it is not connected (${downHeader})`);
+  assert.doesNotMatch(downHeader, /chat provider_failed/u, 'and it is never a provider failure');
+  const refused = harness({ execute: async (subs: readonly IntentSubCall[]) => subs.map(call => ({ ...sub(call.name, '', false, call.key), code: 'not_connected' })) });
+  const refusedHeader = String((await runResearch(refused.deps, ask, new AbortController().signal))['coverage']);
+  assert.match(refusedHeader, /chat not_connected/u, `a connector that refused for a missing connection is not connected (${refusedHeader})`);
+  const failed = harness({ execute: async (subs: readonly IntentSubCall[]) => subs.map(call => sub(call.name, '', false, call.key)) });
+  const failedHeader = String((await runResearch(failed.deps, ask, new AbortController().signal))['coverage']);
+  assert.match(failedHeader, /chat provider_failed/u, `only a call that was attempted and failed is a provider failure (${failedHeader})`);
+});
+
 test('COMPOSE 4: the allocator clips at a word boundary and the header counts the lines it dropped', async () => {
   const h = harness({
     replyLimit: 480,

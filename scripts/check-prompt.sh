@@ -142,7 +142,7 @@ const runtime = await import(pathToFileURL(`${dist}/prompt/runtime-context.js`).
 const state = runtime.buildRuntimeContext({ now: new Date('2026-10-27T12:00:00Z'), timeZone: 'UTC',
   connected: ['company knowledge'],
   connectors: [{ connector: 'mongoose', state: 'connected' }, { connector: 'google', state: 'error', reasonCode: 'not_signed_in' }] });
-assert.match(state, /^Connectors: company knowledge connected; calendar not signed in; mail not signed in\. Never deny or claim a sign-in or a capability without this line or a live tool check\.$/mu,
+assert.match(state, /^Connectors: company knowledge connected; calendar not signed in; mail not signed in\. Never deny or claim a sign-in or a capability without this line or a live tool check, and never name a place to change it that this line does not name\.$/mu,
   'the runtime line carries the live state and the no-denial rule');
 assert.doesNotMatch(runtime.buildRuntimeContext({ now: new Date('2026-10-27T12:00:00Z'), timeZone: 'UTC', connected: [] }), /^Connectors:/mu,
   'no connector line without host rows');
@@ -164,5 +164,17 @@ assert.doesNotMatch(persona.CLAIM_WITHOUT_CALL_LINE, /[\u2013\u2014]/, 'no dash 
 assert.match(persona.CLAIM_WITHOUT_CALL_LINE, /^Correction: /, 'she hears it as the host correcting her');
 assert.match(persona.CLAIM_WITHOUT_CALL_LINE, /make the call now/i, 'it offers the call');
 assert.match(persona.CLAIM_WITHOUT_CALL_LINE, /say plainly that you are not checking anything/, 'it offers the plain refusal');
-console.log(JSON.stringify({ case: 'own_state_truth', connectorLine: true, noDenialRule: true, voiceRules: 3, claimWithoutCall: true }));
+// C-CLAIMS9 outcome 2: an approval is a closed reason said in plain words, with no invented place to fix it.
+const approval = runtime.buildRuntimeContext({ now: new Date('2026-10-28T10:21:00Z'), timeZone: 'UTC', connected: [],
+  connectors: [{ connector: 'mattermost', state: 'error', configurationError: 'owner-approval-required' }] });
+assert.match(approval, /^Connectors: team chat needs approval, and there is no approval control in the app: she cannot fix it from this call\./mu,
+  'an approval-type reason states that no approval control exists in the app');
+assert.doesNotMatch(approval, /settings|preferences|dashboard|control panel|control centre|control center/iu,
+  'no settings location is named in the connector line');
+assert.match(approval, /never name a place to change it that this line does not name/u,
+  'and the guidance forbids naming a place the line does not name');
+const notConnected = runtime.buildRuntimeContext({ now: new Date('2026-10-28T10:21:00Z'), timeZone: 'UTC', connected: [],
+  connectors: [{ connector: 'mattermost', state: 'error', reasonCode: 'not_connected' }] });
+assert.match(notConnected, /^Connectors: team chat not connected\./mu, 'a connector the host reports as not connected says so in plain words');
+console.log(JSON.stringify({ case: 'connector_truth', approvalNoControl: true, noSettingsLocation: true, notConnected: true }));
 NODE

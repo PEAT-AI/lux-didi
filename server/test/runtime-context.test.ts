@@ -52,9 +52,24 @@ test('W4: the runtime context carries one live connector line and the no-denial-
     ] });
   const lines = text.split('\n').filter(line => line.startsWith('Connectors:'));
   assert.equal(lines.length, 1, 'exactly one connector line');
-  assert.equal(lines[0], 'Connectors: company knowledge connected; calendar not signed in; mail not signed in; team chat needs approval. Never deny or claim a sign-in or a capability without this line or a live tool check.');
+  assert.equal(lines[0], 'Connectors: company knowledge connected; calendar not signed in; mail not signed in; team chat needs approval, and there is no approval control in the app: she cannot fix it from this call. Never deny or claim a sign-in or a capability without this line or a live tool check, and never name a place to change it that this line does not name.');
   const quiet = buildRuntimeContext({ now: new Date('2026-10-27T12:00:00Z'), timeZone: 'UTC', connected: [] });
   assert.doesNotMatch(quiet, /^Connectors:/mu, 'no connector line without host rows');
+});
+
+test('C-CLAIMS9 outcome 2: an approval reason says there is no approval control in the app and names no place to fix it', () => {
+  const text = buildRuntimeContext({ now: new Date('2026-10-28T10:21:00Z'), timeZone: 'UTC', connected: [],
+    connectors: [{ connector: 'mattermost', state: 'error', configurationError: 'owner-approval-required' }] });
+  assert.match(text, /^Connectors: team chat needs approval, and there is no approval control in the app: she cannot fix it from this call\./mu,
+    'the closed reason is said in plain words with the fact that she cannot act on it');
+  assert.doesNotMatch(text, /settings|preferences|dashboard|control panel/iu, 'no settings location is named in the line');
+  assert.match(text, /never name a place to change it that this line does not name/u, 'and her guidance forbids inventing one');
+});
+
+test('C-CLAIMS9 outcome 2: a connector the host reports as not connected says so in plain words', () => {
+  const text = buildRuntimeContext({ now: new Date('2026-10-28T10:21:00Z'), timeZone: 'UTC', connected: [],
+    connectors: [{ connector: 'mattermost', state: 'error', reasonCode: 'not_connected' }] });
+  assert.match(text, /^Connectors: team chat not connected\./mu, 'the closed reason is said in plain words');
 });
 
 test('W4: every credential or identity code the host reports reads as a sign-in, not as plain unavailability', () => {

@@ -51,7 +51,7 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { announcesLookup, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
@@ -6368,6 +6368,40 @@ test('C-TURN8: a save before the owner speaks is refused no_owner_input and writ
   h.owner.revoke(session.liveSessionId);
 });
 
+// C-CLAIMS9 outcome 1: the announcement is a class of first-person lookup promises, not a list of exact
+// sentences. Every positive was said on the 10-28 call or belonged to the old list; every negative is a
+// sentence that promises no lookup of her own.
+test('C-CLAIMS9: a first-person lookup announcement is recognised by its class', () => {
+  for (const said of [
+    'Let me look into that.',
+    "I'll try that.",
+    'Let me look into it.',
+    "I'll look into it.",
+    'Give me a moment to check.',
+    "I'll find out.",
+    'Let me find that.',
+    'Let me see what I can find.',
+    'Yeah, I am checking on that now.',
+    "I'm going to search the thread.",
+    'Let me pull up the thread.',
+    "I'm digging through the archive.",
+    'I will see what the calendar says.',
+    'Let me check that.',
+    'I am looking into it.',
+    'Working on that now.',
+  ]) assert.equal(announcesLookup(said), true, `an announced lookup: ${said}`);
+  for (const said of [
+    'I checked the calendar at nine.',
+    'You can check that in the app.',
+    'Let me know when you want it.',
+    'I will see you at six.',
+    "I'm trying to explain what changed.",
+    'She is checking the archive.',
+    'Nothing in the archive matched.',
+    'Checked, and there is nothing there.',
+  ]) assert.equal(announcesLookup(said), false, `no lookup announced: ${said}`);
+});
+
 // C-TURN8: three times on 10-28 she said she was checking and no call followed. The host gives the call
 // one beat (CLAIM_WITHOUT_CALL_MS) and then says so once, inside the owner's turn.
 test('C-TURN8: a claim with no call gets exactly one correction, and only once per owner turn', async t => {
@@ -6424,6 +6458,28 @@ test('C-TURN8: a claim followed by its call inside the bound is never corrected'
   await settleLiveTool(h, 'vault-2', 'save_to_vault', { text: 'synthetic line' }, { spoke: false });
   h.advance(3_000); scheduler.runDue(); await settlePort();
   assert.equal(corrections().length, 0, 'the call answered the announcement');
+  h.owner.revoke(session.liveSessionId);
+});
+
+// C-CLAIMS9 outcome 1, live path: at 10:23:49Z she said "Let me look into that." and made no call for thirty
+// seconds. The host gives the announcement the same beat and corrects it once.
+test('C-CLAIMS9: "Let me look into that." with no call gets the correction inside the deadline', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 } });
+  const { session } = await attached(h, 'claim-look-into');
+  const corrections = () => h.f.frames.filter(frame => {
+    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
+    return typeof text === 'string' && text.startsWith('Correction:');
+  });
+  const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
+  h.f.send({ serverContent: { inputTranscription: { text: 'what did the synthetic partner say about the contract', finished: true } } });
+  await settlePort();
+  h.f.send({ serverContent: { outputTranscription: { text: 'Let me look into that.', finished: true }, turnComplete: true } });
+  await settlePort();
+  assert.equal(corrections().length, 0, 'the announcement is given its beat before anything is said');
+  await advance(3_000);
+  assert.equal(corrections().length, 1, 'the announced lookup with no call behind it is corrected inside the deadline');
+  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /make the call now/i, 'and it offers the call');
   h.owner.revoke(session.liveSessionId);
 });
 

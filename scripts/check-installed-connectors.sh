@@ -35,8 +35,11 @@ fi
 work="$(mktemp -d "${TMPDIR:-/tmp}/didi-installed-connectors.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
-# The synthetic catalog settles the real host from the installed compiler output.
-[ -f "$root/server/dist/host/mcp.js" ] || bash "$root/scripts/run-local.sh" --build-only >/dev/null
+# The synthetic catalog settles the real host from this checkout's compiler output, rebuilt when a source
+# file is newer than it, so the check never reads a stale build.
+if [ ! -f "$root/server/dist/host/mcp.js" ] || [ -n "$(find "$root/server" -maxdepth 4 -name '*.ts' -newer "$root/server/dist/host/mcp.js" -not -path '*/node_modules/*' -not -path '*/dist/*' -print -quit)" ]; then
+  bash "$root/scripts/run-local.sh" --build-only >/dev/null
+fi
 
 # 1. An 8-entry catalog whose entries all connect, one of them by a widening inside the envelope.
 connected_status=0

@@ -435,7 +435,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       if (current && canonicalJSON(current.policy) === bytes) return false;
       const predecessor = current?.sha256 ?? (row ? String(row.policy_sha256) : null);
       if (expected !== undefined && expected !== predecessor) throw Error('connection_predecessor_mismatch');
-      if (current && (p.generation <= current.generation || canonicalJSON(p.endpoint) !== canonicalJSON(current.policy.endpoint))) throw Error('connection_identity_or_generation');
+      // W2-R1: a new generation may move the endpoint's own command, args or env (a rebuilt child), but
+      // never its id, account or resource: that is the foreign endpoint this guard exists for.
+      const sameIdentity = current !== undefined && current.policy.endpoint.id === p.endpoint.id
+        && current.policy.endpoint.account === p.endpoint.account && current.policy.endpoint.resource === p.endpoint.resource;
+      if (current && (p.generation <= current.generation || (canonicalJSON(p.endpoint) !== canonicalJSON(current.policy.endpoint) && !sameIdentity))) throw Error('connection_identity_or_generation');
       if (row) tx.run('UPDATE tool_connections SET generation=?,enabled=?,policy_json=?,policy_sha256=? WHERE owner_id=? AND connection_id=?', [p.generation, Number(p.enabled), bytes, hash, ownerId, p.connectionId]);
       else tx.run('INSERT INTO tool_connections VALUES (?,?,?,?,?,?,?)', [ownerId, p.connectionId, p.endpoint.id, p.generation, Number(p.enabled), bytes, hash]);
       tx.run("INSERT OR IGNORE INTO tool_connection_semantics VALUES (?,?,'connection')", [ownerId, p.connectionId]);

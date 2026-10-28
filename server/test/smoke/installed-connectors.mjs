@@ -33,7 +33,7 @@ function assertConnected(entries, states) {
   for (const id of entries) {
     const state = states.get(id);
     const connected = state?.state === 'connected' && Number(state.tools) > 0;
-    const detail = `state=${state?.state ?? 'absent'} tools=${Number.isSafeInteger(state?.tools) ? state.tools : 0}${state?.code === undefined ? '' : ` code=${state.code}`}`;
+    const detail = `state=${state?.state ?? 'absent'} tools=${Number.isSafeInteger(state?.tools) ? state.tools : 0}${state?.code === undefined ? '' : ` code=${state.code}`}${state?.exception === undefined ? '' : ` exception=${state.exception.class}:${state.exception.code}`}`;
     if (connected) console.log(`${PREFIX} ${id} ${detail}`);
     else { console.log(`${PREFIX} FAIL ${id} ${detail}`); failed += 1; }
   }
@@ -46,15 +46,17 @@ function statesOf(runtime) {
   const states = new Map();
   for (const report of runtime.status().endpoints) {
     const code = typeof report.configurationError === 'string' ? report.configurationError : report.error;
-    states.set(report.id, { state: report.state, tools: report.tools, ...(code === undefined ? {} : { code }) });
+    states.set(report.id, { state: report.state, tools: report.tools, ...(code === undefined ? {} : { code }), ...(report.exception === undefined ? {} : { exception: report.exception }) });
   }
   return states;
 }
 
 /** The enabled catalog entries, from the installed config's own ids and enabled flags. */
 function installedEntries(configFile) {
+  let bytes;
+  try { bytes = readFileSync(configFile, 'utf8'); } catch { return { entries: [], error: null }; }
   let parsed;
-  try { parsed = JSON.parse(readFileSync(configFile, 'utf8')); } catch { return { entries: [], error: 'config_unreadable' }; }
+  try { parsed = JSON.parse(bytes); } catch { return { entries: [], error: 'config_unreadable' }; }
   if (!Array.isArray(parsed?.endpoints)) return { entries: [], error: 'config_unreadable' };
   return { entries: parsed.endpoints.filter(entry => entry && typeof entry === 'object' && entry.enabled !== false && okId(entry.id)).map(entry => entry.id), error: null };
 }
@@ -108,7 +110,9 @@ async function synthetic(scenario) {
     { ...endpointOf('mattermost-retired', PEOPLE_CHILD, 'people'), enabled: false },
   ].map(endpoint => (endpoint.id === 'mattermost-people' ? { ...endpoint, args: [PEOPLE_CHILD, wideningMode] } : endpoint));
   const write = wideningMode => writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
-    schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: 'owner@example.invalid', endpoints: endpointsFor(wideningMode),
+    // No ownerIdentity: the synthetic children answer no real account, so the catalog states none and the
+    // host does not probe one (the publication suite reads its synthetic children the same way).
+    schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: endpointsFor(wideningMode),
   }), { mode: 0o600 });
   const lifecycle = [];
   let store = new Store(join(dir, 'data'), toolsMigrations);

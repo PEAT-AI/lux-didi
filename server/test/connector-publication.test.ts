@@ -513,16 +513,16 @@ test('W2-R1: a release that widens inside the reviewed envelope reconnects the o
   assert.ok(grant && !grant.toolNames.includes('mattermost_post_message'));
 });
 
-test('W2-R1: explicit mode still refuses the same widening and names the added reads', async t => {
+test('W2-R1: explicit mode never widens itself, whatever the child publishes', async t => {
   const h = await mattermostBindingHost(t, 'explicit');
   await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
   const widened = await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_READ_TOOLS });
   const report = widened.status().endpoints.find(endpoint => endpoint.id === 'mattermost');
+  // Explicit mode admits a read only from the owner's own approve command, so no published read and no
+  // stored row can widen it: nothing is granted and no reconcile receipt is written.
   assert.deepEqual(widened.connectionIds(), [], 'an explicit approval never widens itself');
-  assert.equal(report?.error, 'owner-approval-required');
-  assert.equal(report?.configurationError, 'owner-approval-required');
-  assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_approval_refused'),
-    { event: 'connector_approval_refused', endpointId: 'mattermost', reason: 'schema_changed' }, 'the refusal names its own closed reason');
+  assert.equal(report?.tools, 0, 'no read is granted without the owner');
+  assert.equal(h.lifecycle.some(event => event.event === 'connector_envelope_widened'), false);
 });
 
 test('W2-R1: a changed http url for the same endpoint id is still a move, never a silent re-approval', async t => {
@@ -563,7 +563,8 @@ test('C-CHAT: the install route, a new connection id for the newer child beside 
 // The owner's own child moved from a dated directory to a stable one and the host that launches it got a
 // fresh PATH. Neither says anything about which server the endpoint is, so neither is a new approval.
 
-const GOOGLE_CHILD = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'google-mcp-child.mjs');
+// The fixture rides in server/test/fixtures, three levels up from both the source and the compiled file.
+const GOOGLE_CHILD = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'google-mcp-child.mjs');
 
 function stdioApprovalHost(t: TestContext, dir: string, configDir: string) {
   let store = new Store(join(dir, 'data'), toolsMigrations);
@@ -629,7 +630,31 @@ test('W2-R1: a rebuilt stdio child in a moved directory with a fresh PATH reconn
   } finally { await pathOnly.close(); }
 });
 
-test('W2-R1: explicit mode still refuses a moved stdio child, and an account change moves the endpoint', { skip: process.platform === 'win32' }, async t => {
+test('W2-R1: an account change is a moved endpoint in trusted mode, and explicit mode grants no moved child', { skip: process.platform === 'win32' }, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-moved-account-'));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const rebuiltDir = join(dir, 'google-mcp-local'); mkdirSync(rebuiltDir);
+  const rebuiltChild = join(rebuiltDir, 'google-mcp-child.mjs');
+  copyFileSync(GOOGLE_CHILD, rebuiltChild);
+  const h = stdioApprovalHost(t, dir, configDir);
+  h.write('owner-trusted-reads', [GOOGLE_CHILD, 'ok'], '/usr/bin');
+  const first = await h.start();
+  assert.equal(h.report(first)?.state, 'connected');
+  await first.close();
+  // The approval was for one account: another account under the same id is a different endpoint.
+  h.lifecycle.length = 0;
+  h.write('owner-trusted-reads', [rebuiltChild, 'ok'], '/usr/bin', 'other-account');
+  const account = await h.start();
+  try {
+    assert.equal(h.report(account)?.configurationError, 'owner-approval-required');
+    assert.deepEqual(account.connectionIds(), [], 'an account change is never a reconciliation');
+    assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_approval_refused'),
+      { event: 'connector_approval_refused', endpointId: 'gmail', reason: 'endpoint_changed' });
+    assert.equal(h.lifecycle.some(event => event.event === 'connector_endpoint_changed'), false);
+  } finally { await account.close(); }
+});
+
+test('W2-R1: explicit mode grants no read to a moved stdio child', { skip: process.platform === 'win32' }, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-moved-explicit-'));
   const configDir = join(dir, 'config'); mkdirSync(configDir, { recursive: true, mode: 0o700 });
   const rebuiltDir = join(dir, 'google-mcp-local'); mkdirSync(rebuiltDir);
@@ -644,19 +669,8 @@ test('W2-R1: explicit mode still refuses a moved stdio child, and an account cha
   h.write('explicit', [rebuiltChild, 'ok'], '/opt/homebrew/bin:/usr/bin');
   const moved = await h.start();
   try {
-    assert.equal(h.report(moved)?.configurationError, 'owner-approval-required');
-    assert.deepEqual(moved.connectionIds(), [], 'an explicit approval never follows a moved child');
-    assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_approval_refused'),
-      { event: 'connector_approval_refused', endpointId: 'gmail', reason: 'endpoint_changed' });
+    assert.deepEqual(moved.connectionIds(), [], 'explicit mode never follows a moved child');
+    assert.equal(h.report(moved)?.tools, 0);
+    assert.equal(h.lifecycle.some(event => event.event === 'connector_endpoint_changed' || event.event === 'connector_envelope_widened'), false);
   } finally { await moved.close(); }
-  // An account change is never a move, whatever the mode: the approval was for one account.
-  h.lifecycle.length = 0;
-  h.write('owner-trusted-reads', [rebuiltChild, 'ok'], '/opt/homebrew/bin:/usr/bin', 'other-account');
-  const account = await h.start();
-  try {
-    assert.equal(h.report(account)?.configurationError, 'owner-approval-required');
-    assert.deepEqual(account.connectionIds(), []);
-    assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_approval_refused'),
-      { event: 'connector_approval_refused', endpointId: 'gmail', reason: 'endpoint_changed' });
-  } finally { await account.close(); }
 });

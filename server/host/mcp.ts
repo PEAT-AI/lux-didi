@@ -767,7 +767,7 @@ export async function composeMcpRuntime(options: {
         // command, args or defining env between releases: the owner's approval is the envelope, not a path.
         const stdioMoved = trusted && sameEndpoint && approved && isStdioEndpointRecord(stored.endpoint) && isStdioEndpointRecord(policy.endpoint);
         const endpointMoved = endpointIdentity(stored.endpoint) !== endpointIdentity(policy.endpoint);
-        const reconciledWidening = trusted && approved && addedNames.every(name => envelope.includes(name));
+        const reconciledWidening = widened && trusted && approved && addedNames.every(name => envelope.includes(name));
         const refusal = (endpointMoved || widened) && !approved ? 'row_invalid'
           : endpointMoved && !stdioMoved ? 'endpoint_changed'
           : widened && !reconciledWidening ? 'tools_widened'

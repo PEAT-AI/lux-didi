@@ -9,18 +9,18 @@ export const STAGE_NOTE_IDENTITY = { name: 'stage_lux_note', accountId: 'gateway
 export const STAGE_NOTE_PARAMETERS = { type: 'object', properties: {
   title: { type: 'string', minLength: 1, maxLength: 120, description: 'A short title for the note, from this conversation.' },
   body: { type: 'string', minLength: 1, maxLength: 4000, description: 'The note body, from this conversation.' },
-  evidenceRefs: { type: 'array', minItems: 0, maxItems: 8, items: { type: 'string', minLength: 1, maxLength: 64 }, description: 'Refs of host evidence for this note.' },
-}, required: ['title', 'body', 'evidenceRefs'], additionalProperties: false };
+  evidenceRefs: { type: 'array', minItems: 0, maxItems: 8, items: { type: 'string', minLength: 1, maxLength: 64 }, description: 'Optional owner journal:<id> or held tool:<callId> evidence refs.' },
+}, required: ['title', 'body'], additionalProperties: false };
 
 const REF_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,63}$/;
-export function validateStageNote(args: unknown): args is { title: string; body: string; evidenceRefs: string[] } {
+export function validateStageNote(args: unknown): args is { title: string; body: string; evidenceRefs?: string[] } {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
   const value = args as Record<string, unknown>;
-  if (Object.keys(value).length !== 3) return false;
+  if (Object.keys(value).some(key => !['title', 'body', 'evidenceRefs'].includes(key))) return false;
   const refs = value['evidenceRefs'];
   return typeof value['title'] === 'string' && value['title'].length >= 1 && value['title'].length <= 120
-    && typeof value['body'] === 'string' && value['body'].length >= 1 && value['body'].length <= 4000
-    && Array.isArray(refs) && refs.length <= 8 && refs.every(ref => typeof ref === 'string' && REF_SHAPE.test(ref));
+    && typeof value['body'] === 'string' && value['body'].length >= 1
+    && (refs === undefined || Array.isArray(refs) && refs.length <= 8 && refs.every(ref => typeof ref === 'string' && REF_SHAPE.test(ref)));
 }
 
 /** A note is titled and bodied by the host; title plus body is never truncated, only refused. */
@@ -135,11 +135,11 @@ export type FrozenNote = { readonly state: 'frozen'; readonly payload: string; r
   | { readonly state: 'refused'; readonly code: 'payload_empty' | 'too_long' };
 
 /** The whole save_insight payload and its digest are frozen here; nothing later may change them. */
-export function freezeNote(note: { readonly title: string; readonly body: string }): FrozenNote {
+export function freezeNote(note: { readonly title: string; readonly body: string; readonly externalContextPresent?: boolean }): FrozenNote {
   const title = note.title.replace(/\s+/g, ' ').trim();
   const body = note.body.trim();
   if (!title || !body) return { state: 'refused', code: 'payload_empty' };
-  if (title.length > TITLE_MAX_CHARS || body.length > NOTE_MAX_CHARS) {
+  if (title.length > TITLE_MAX_CHARS || body.length > NOTE_MAX_CHARS + (note.externalContextPresent ? NOTE_PROVENANCE.length + 2 : 0)) {
     return { state: 'refused', code: 'too_long' };
   }
   const payload = canonicalJSON({ content: body, insight_title: title, insight_type: VAULT_TYPE, project: VAULT_PROJECT });
@@ -266,8 +266,9 @@ export function beginStage(input: StageInput): StageOutcome {
   if (ask.decision === 'clarify') return { state: 'refused', code: 'authorization_refused' };
   if (ask.decision === 'append') return { state: 'refused', code: 'append_unsupported' };
   if (!input.evidence.every(ref => input.heldEvidence.has(ref))) return { state: 'refused', code: 'evidence_unknown' };
+  if (input.body.length > NOTE_MAX_CHARS) return { state: 'refused', code: 'too_long' };
   const body = input.externalContextPresent ? `${input.body.trim()}\n\n${NOTE_PROVENANCE}` : input.body.trim();
-  const frozen = freezeNote({ title: input.title, body });
+  const frozen = freezeNote({ title: input.title, body, externalContextPresent: input.externalContextPresent === true });
   if (frozen.state === 'refused') return { state: 'refused', code: frozen.code };
   return { state: 'staged', note: {
     stageId: input.stageId, sessionId: input.sessionId, title: input.title.replace(/\s+/g, ' ').trim(), body, externalContextPresent: input.externalContextPresent === true, ownerJournalIds: input.ownerJournalIds ?? [], watermark: input.watermark ?? 0,
@@ -275,7 +276,7 @@ export function beginStage(input: StageInput): StageOutcome {
   } };
 }
 
-export interface OwnerTurnFacts { readonly inputAt: number | undefined; readonly inputFinal: boolean }
+export interface OwnerTurnFacts { readonly inputAt: number | undefined; readonly inputFinal: boolean; readonly heldEvidence?: ReadonlySet<string> }
 
 /**
  * W6 items 1 to 4: the model stages a composed note and nothing more. The owner's own finalized
@@ -297,9 +298,10 @@ export function stageComposedNote(tx: Transaction, liveSessionId: string, args: 
     return { staged: false, code: read.code };
   }
   const outcome = beginStage({ stageId: randomUUID(), sessionId: liveSessionId, ownerText: read.text,
-    title: args.title, body: args.body, evidence: args.evidenceRefs, heldEvidence: read.evidence, enabled, now, externalContextPresent, ownerJournalIds: request?.ownerJournalIds ?? [], watermark: request?.watermark ?? 0 });
+    title: args.title, body: args.body, evidence: args.evidenceRefs, heldEvidence: new Set([...read.evidence, ...(turn.heldEvidence ?? [])]), enabled, now, externalContextPresent, ownerJournalIds: request?.ownerJournalIds ?? [], watermark: request?.watermark ?? 0 });
   if (outcome.state === 'refused') {
     hostLogEvent({ event: 'lux_note_stage', staged: false, code: outcome.code });
+    if (outcome.code === 'too_long') return { staged: false, code: 'too_long', guidance: 'This note exceeds 4,000 characters; offer to split it into separate notes.' };
     return outcome.code === 'authorization_missing'
       ? { staged: false, code: outcome.code, guidance: AUTHORIZATION_MISSING_GUIDANCE }
       : { staged: false, code: outcome.code };
@@ -434,6 +436,7 @@ export class NoteRequestGate {
   #claimedBlock: number | undefined;
   #request: NoteRequest | undefined;
   externalContextPresent = false;
+  readonly heldEvidence = new Set<string>();
 
   observeOwner(block: number, journalId: number, text: string): void {
     if (block !== this.#block) { this.#block = block; this.#fragments = []; this.#request = undefined; }
@@ -451,7 +454,7 @@ export class NoteRequestGate {
   }
 
   externalRead(): void { this.#request = undefined; this.#claimedBlock = this.#block; }
-  externalResult(): void { this.externalContextPresent = true; }
+  externalResult(refs: readonly string[] = []): void { this.externalContextPresent = true; for (const ref of refs) this.heldEvidence.add(ref); }
   disconnect(): void { this.#request = undefined; this.#fragments = []; this.#claimedBlock = this.#block; }
 }
 

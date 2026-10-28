@@ -636,7 +636,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               const snapshot = validateCallRun(tx, call);
             assertLiveIdentity(tx, call); target(snapshot, call, tx);
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-              return complete(call, stageNote === undefined ? { staged: false, code: 'not_enabled' } : stageNote(tx, runId, args), ['ordinary'], tx);
+              return complete(call, stageNote === undefined ? { staged: false, code: 'not_enabled' } : stageNote(tx, runId, { ...args, evidenceRefs: args.evidenceRefs ?? [] }), ['ordinary'], tx);
             });
             return { status: 'completed', result };
           } catch {

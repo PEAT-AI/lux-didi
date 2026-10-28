@@ -1982,7 +1982,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     const request = gate?.claim();
     if (!request) return { staged: false, code: 'authorization_missing', guidance: 'It was not saved: a fresh owner save request is required.' };
     const result = stageComposedNote(tx, liveSessionId, args,
-      { inputAt: handle?.inputAt, inputFinal: handle?.inputFinal === true }, this.#now(), this.#composedNotes(), request, gate?.externalContextPresent === true);
+      { inputAt: handle?.inputAt, inputFinal: handle?.inputFinal === true, heldEvidence: gate?.heldEvidence ?? new Set() }, this.#now(), this.#composedNotes(), request, gate?.externalContextPresent === true);
     if (result['staged'] === true) {
       this.#noteSessions.add(liveSessionId);
       this.#noteReadback.delete(liveSessionId);
@@ -2091,7 +2091,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       return;
     }
     // The digest frozen at stage time is the only payload that may ever be sent.
-    const frozen = freezeNote({ title: settled.title, body: settled.body });
+    const frozen = freezeNote({ title: settled.title, body: settled.body, externalContextPresent: settled.externalContextPresent === true });
     if (frozen.state !== 'frozen' || frozen.payloadSha !== settled.payloadSha) {
       const invalid = { ...settled, state: 'invalidated' as const, code: 'payload_changed' };
       this.#store.transaction(tx => saveNoteState(tx, invalid));
@@ -4738,7 +4738,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       try {
         if (responses.length) {
           // OPEN2-R4: the one exposure point, on the text these results deliver after every trim.
-          if (event.calls.some(call => !['stage_lux_note', 'remember_note', 'save_to_vault', 'trello_write'].includes(call.name))) this.#noteRequests.get(handle.liveSessionId)?.externalResult();
+          if (event.calls.some(call => !['stage_lux_note', 'remember_note', 'save_to_vault', 'trello_write'].includes(call.name))) this.#noteRequests.get(handle.liveSessionId)?.externalResult(event.calls.filter(call => !['stage_lux_note', 'remember_note', 'save_to_vault', 'trello_write'].includes(call.name)).map(call => `tool:${call.id}`));
           exposeToolResults(responses);
           // C-CONTINUITY item 5: the total-context figure counts every tool payload this call hands the provider,
           // research and intent alike, refusals and errors included, so the number it reports is really the total.
@@ -4775,7 +4775,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
     const total = handle.journalBytes + bytes;
     // W6 item 6: the composed note acts on the persisted turn, so the hook never nests a transaction.
     let pendingOwnerText: string | undefined;
-    let pendingOwnerFragment = false;
+    const pendingOwnerFragment = event.type === 'inputTranscription' && event.finished !== true && event.finalOrigin !== 'typed' && (text ?? '').length > 0;
     const persist = (tx: Transaction) => {
       const transcription = event.type === 'inputTranscription' || event.type === 'outputTranscription' ? event : undefined;
       if (event.type === 'inputTranscription' && !event.finished && text) noteOwnerPartial(handle.liveSessionId, text);

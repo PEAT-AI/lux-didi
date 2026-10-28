@@ -16,6 +16,7 @@ import { createDomainPort, domainMigrations } from '../domain/index.js';
 import { Outbox } from '../runtime/outbox.js';
 import { Store } from '../runtime/store.js';
 import { listenService } from '../http/server.js';
+import { AlarmScheduler, AlarmShellBridge } from './alarm-scheduler.js';
 import { createStaticHandler } from '../http/static.js';
 import { chatMigrations } from '../chat/index.js';
 import { liveMigrations } from '../live/index.js';
@@ -631,8 +632,14 @@ export async function startHost(config: HostConfig) {
     // L2: the same for the first connect of a run, whose start read raced the connector.
     let refreshCalendarFirstConnect = (_endpointId: string): void => { /* bound once the composition exists */ };
     const hostStartedAt = (config.now ?? Date.now)();
+    const alarmShell = new AlarmShellBridge();
+    const alarms = new AlarmScheduler({ store, clock: {
+      now: config.now ?? Date.now,
+      setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref(); return timer; },
+      clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    }, emit: alarm => alarmShell.publish(alarm), changed: rows => alarmShell.state(rows) });
     const trello = createTrelloBoard({ configDir: providerConfigDir, log: event => log.event(event) });
-    const mcp = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, trello, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match, endpointId) => log.event({ event: 'connector_identity', connector, proven, match, ...(endpointId === undefined ? {} : { endpointId }) }), lifecycleLog: connectorLifecycleSink({ log: event => log.event(event), onRecovered: endpointId => refreshCalendarDigest(endpointId), onConnected: endpointId => refreshCalendarFirstConnect(endpointId) }) });
+    const mcp = await composeMcpRuntime({ alarms: { now: config.now ?? Date.now, recheck: () => alarms.recheck('mutation'), health: () => alarmShell.health() }, store, ownerId: store.assistantId, configDir: providerConfigDir, lookupAuthority, trello, deferConnectors: config.deferConnectors === true, log: event => log.event(event), connectorLog: (connector, stage, detail) => log.event({ event: 'connector_failure', connector, stage, ...(detail ?? {}) }), identityLog: (connector, proven, match, endpointId) => log.event({ event: 'connector_identity', connector, proven, match, ...(endpointId === undefined ? {} : { endpointId }) }), lifecycleLog: connectorLifecycleSink({ log: event => log.event(event), onRecovered: endpointId => refreshCalendarDigest(endpointId), onConnected: endpointId => refreshCalendarFirstConnect(endpointId) }) });
     // 1015: the digest's background owner. It reads once at host start and every 15 minutes after, with
     // the connector's own 30 s budget and off every request path, and keeps the fetch time with the text.
     const digestNow = config.now ?? Date.now;
@@ -711,8 +718,9 @@ export async function startHost(config: HostConfig) {
         trelloOwner = outcome.ok ? 'ok' : outcome.code === 'credential_mismatch' ? 'mismatch' : 'unknown';
       }).catch(() => { /* the row stays file based when the probe cannot answer */ });
     }
-    const service = await listenService({ store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), mongooseSignIn: signIn, mongooseSignInAttempt: (endpointId, connected) => signIn.attempt(endpointId, connected), trelloRow: () => trelloConnectionRow(effectiveConfigDir, trelloOwner), webRoot, port, ...(config.now ? { now: config.now } : {}) });
+    const service = await listenService({ alarms: { scheduler: alarms, shell: alarmShell }, store, domain, chat, live, modelStatus: status, ownerProfileStatus: { status: owner.status, displayName: owner.snapshot.displayName }, toolsStatus: () => mcp.status(), mongooseSignIn: signIn, mongooseSignInAttempt: (endpointId, connected) => signIn.attempt(endpointId, connected), trelloRow: () => trelloConnectionRow(effectiveConfigDir, trelloOwner), webRoot, port, ...(config.now ? { now: config.now } : {}) });
     try {
+      alarms.recheck('start');
       const descriptor: RuntimeDescriptor = { schemaVersion: 1, origin: service.origin, authorityEpoch: store.authorityEpoch, assistantId: store.assistantId, pid: process.pid, startedAt: new Date().toISOString() };
       await publish(descriptorPath, descriptor); // Never use a stale descriptor as authority or carry bearer material.
       startupStage = 'ready';
@@ -732,11 +740,12 @@ export async function startHost(config: HostConfig) {
           // C-SUMMARY8: this is where a still-live call is settled, and its terminal hook is what queues
           // the summary. Wait for that summary here, bounded, while the store it writes to is still open;
           // a forced kill skips this and the next host start finishes the work instead.
+          alarms.stop();
           await live.shutdown();
           await mcp.close();
           await summarizer.settleOnExit().catch(() => undefined);
         } finally { logExit('ready', 'close'); store.close(); stopDiagnostics(); }
       } };
-    } catch (error) { await service.close(); throw error; }
+    } catch (error) { alarms.stop(); await service.close(); throw error; }
   } catch (error) { log.error(error); stopDiagnostics(); store.close(); throw error; }
 }

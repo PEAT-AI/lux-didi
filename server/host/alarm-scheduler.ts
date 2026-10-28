@@ -25,7 +25,7 @@ export class AlarmScheduler {
   private timer: unknown;
   private stopped = false;
   private delivered = new Set<string>();
-  constructor(private readonly options: { store: StorePort; clock: AlarmClock; emit(event: AlarmDue): void }) {}
+  constructor(private readonly options: { store: StorePort; clock: AlarmClock; emit(event: AlarmDue): void; changed?(alarms: Alarm[]): void }) {}
   list(): Alarm[] {
     return this.options.store.transaction(tx => tx.all('SELECT * FROM alarms ORDER BY fire_at_utc,id').map(read));
   }
@@ -78,7 +78,9 @@ export class AlarmScheduler {
       this.options.emit(alarm);
       this.delivered.add(alarm.id);
     }
-    const active = this.list().filter(row => row.state === 'pending' || row.state === 'ringing');
+    const rows = this.list();
+    this.options.changed?.(rows);
+    const active = rows.filter(row => row.state === 'pending' || row.state === 'ringing');
     if (active.length) {
       const next = Math.min(...active.map(row => row.state === 'pending' ? row.fireAtUtc : row.ringDeadlineUtc!));
       this.timer = clock.setTimeout(() => this.recheck('timer'), Math.max(0, Math.min(60000, next - now)));
@@ -89,4 +91,35 @@ export class AlarmScheduler {
     if (this.timer !== undefined) this.options.clock.clearTimeout(this.timer);
     this.timer = undefined;
   }
+}
+
+export type AlarmShellReason = 'shell_unreachable' | 'assertion_failed' | 'notifications_denied';
+export type AlarmShellFrame = { type: 'alarm_due'; alarm: AlarmDue } | { type: 'alarm_state'; alarms: Alarm[] };
+/** One local shell transport, independent of the provider session and its availability. */
+export class AlarmShellBridge {
+  private sender: ((frame: AlarmShellFrame) => boolean) | undefined;
+  private capabilities: { assertion: boolean; notifications: boolean } | undefined;
+  bind(sender: (frame: AlarmShellFrame) => boolean): () => void {
+    this.sender = sender;
+    this.capabilities = undefined;
+    return () => {
+      if (this.sender === sender) { this.sender = undefined; this.capabilities = undefined; }
+    };
+  }
+  report(capabilities: { assertion: boolean; notifications: boolean }): void {
+    if (this.sender) this.capabilities = capabilities;
+  }
+  health(): { degraded: boolean; reasons: AlarmShellReason[] } {
+    if (!this.sender) return { degraded: true, reasons: ['shell_unreachable'] };
+    const reasons: AlarmShellReason[] = [];
+    if (!this.capabilities?.assertion) reasons.push('assertion_failed');
+    if (!this.capabilities?.notifications) reasons.push('notifications_denied');
+    return { degraded: reasons.length > 0, reasons };
+  }
+  private send(frame: AlarmShellFrame): void {
+    try { if (this.sender?.(frame) === false) this.sender = undefined; }
+    catch { this.sender = undefined; }
+  }
+  publish(alarm: AlarmDue): void { this.send({ type: 'alarm_due', alarm }); }
+  state(alarms: Alarm[]): void { this.send({ type: 'alarm_state', alarms }); }
 }

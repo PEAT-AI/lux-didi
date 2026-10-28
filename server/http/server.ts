@@ -1,4 +1,5 @@
 import { HostLog } from '../host/log.js';
+import type { AlarmScheduler, AlarmShellBridge, AlarmRecheck } from '../host/alarm-scheduler.js';
 import type { LivePendingService } from '../live/types.js';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse, Server } from 'node:http';
@@ -71,13 +72,14 @@ async function readBody(req: IncomingMessage, limit = 65536): Promise<Record<str
   try { return object(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (error) { if (error instanceof ServiceError) throw error; throw new ServiceError('BAD_REQUEST', 'Malformed JSON'); }
 }
 interface Principal { clientId: string; mode: 'bearer' | 'browser'; tokenHash?: string; csrfToken?: string }
-export interface ServiceOptions { ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; live?: LiveService; toolsStatus?: () => { endpoints: unknown[] }; mongooseSignIn?: (endpoint?: string) => Promise<{ status: 'started'; attemptId: string } | { status: 'failed'; reason: string }>; mongooseSignInAttempt?: (endpointId: string, connected: boolean) => { attemptId: string; phase: string; reason?: string } | undefined; trelloRow?: () => Record<string, unknown> }
+export interface ServiceOptions { alarms?: { scheduler: AlarmScheduler; shell: AlarmShellBridge }; ownerProfileStatus?: { status: 'default' | 'configured'; displayName: string }; store: Store; domain?: DomainPort; port?: number; now?: () => number; webRoot?: string; chat?: ChatPort; modelStatus?: ConnectedStatus; live?: LiveService; toolsStatus?: () => { endpoints: unknown[] }; mongooseSignIn?: (endpoint?: string) => Promise<{ status: 'started'; attemptId: string } | { status: 'failed'; reason: string }>; mongooseSignInAttempt?: (endpointId: string, connected: boolean) => { attemptId: string; phase: string; reason?: string } | undefined; trelloRow?: () => Record<string, unknown> }
 export interface EntryDeletionResponse extends EntryTombstone { liveSessionRetainsUntilRebuild: boolean }
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
   const { store, domain, chat, live } = options;
   const modelStatus = options.modelStatus ?? { status: 'unconfigured' };
   const streamClosers = new Map<string, Set<() => void>>();
+  const alarmStreams = new Set<() => void>();
   let streamCount = 0;
   const serveStatic = options.webRoot === undefined ? undefined : await createStaticHandler(options.webRoot);
   const now = options.now ?? Date.now;
@@ -120,6 +122,40 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       if (url.hash || url.username || url.password) throw new ServiceError('BAD_REQUEST', 'Invalid request target');
       if (serveStatic && await serveStatic(req, res)) return;
       const method = req.method ?? '';
+      if (url.pathname.startsWith('/v1/alarms/') && options.alarms) {
+        const actor = principal(req);
+        if (actor.mode !== 'bearer') throw new ServiceError('FORBIDDEN', 'Native shell only', 403);
+        const { scheduler, shell } = options.alarms;
+        if (method === 'GET' && url.pathname === '/v1/alarms/events') {
+          for (const close of [...alarmStreams]) close();
+          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'Connection': 'keep-alive' });
+          res.flushHeaders();
+          const unbind = shell.bind(frame => !res.destroyed && res.write(`data: ${JSON.stringify(frame)}\n\n`));
+          const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': alarm heartbeat\n\n'); }, 30000);
+          heartbeat.unref();
+          const close = () => { clearInterval(heartbeat); unbind(); alarmStreams.delete(close); res.end(); };
+          alarmStreams.add(close);
+          req.on('close', close);
+          shell.state(scheduler.list());
+          scheduler.recheck('reconnect');
+          return;
+        }
+        if (method === 'POST' && req.headers['x-didi-authority-epoch'] === store.authorityEpoch) {
+          const body = await readBody(req);
+          if (url.pathname === '/v1/alarms/shell' && typeof body.assertion === 'boolean' && typeof body.notifications === 'boolean') {
+            shell.report({ assertion: body.assertion, notifications: body.notifications });
+            send(res, 200, success(shell.health())); return;
+          }
+          const reasons: AlarmRecheck[] = ['wake', 'clock_changed', 'timezone_changed'];
+          if (url.pathname === '/v1/alarms/recheck' && reasons.some(reason => reason === body.reason)) {
+            scheduler.recheck(body.reason as AlarmRecheck); send(res, 200, success({ status: 'ok' })); return;
+          }
+          if (url.pathname === '/v1/alarms/acknowledged' && typeof body.id === 'string') {
+            send(res, 200, success({ acknowledged: scheduler.acknowledge(body.id) })); return;
+          }
+        }
+        throw new ServiceError('BAD_REQUEST', 'Invalid alarm shell request');
+      }
       let route = resolveRoute(method, url);
       if (route.kind === 'health') { send(res, 200, { status: 'ok', version: '0.1.0', serviceMode: 'loopback' }); return; }
       if (route.kind === 'pair') {
@@ -406,6 +442,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
   if (!address || typeof address === 'string') throw new Error('Missing service address');
   origin = `http://127.0.0.1:${address.port}`;
   return { server, origin, close: () => new Promise<void>((resolve, reject) => {
+    for (const close of [...alarmStreams]) close();
     for (const closers of [...streamClosers.values()]) for (const close of [...closers]) close();
     const finish = () => { server.close(error => error ? reject(error) : resolve()); server.closeIdleConnections(); };
     if (upgrader) void upgrader.close().then(finish, finish); else finish();

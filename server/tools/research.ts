@@ -7221,11 +7221,17 @@ export class ResearchAdmission {
     if (action === 'start' && this.#answered) return { admitted: false, reason: 'answer_already_given' };
     if (action === 'start') {
       // #1028 behaviour 3: one owner turn opens at most two research operations, and only for two different
-      // questions. A repeat of the same question is still the turn's one ask, and a third is spent.
+      // questions. A start that asks for the run already reading ("more") is no question at all, so the
+      // loop guard still refuses it, and a repeat or a third real question waits for the next owner turn.
       const asked = question.trim().toLowerCase();
-      if (this.#starts.length >= 2 || this.#starts.includes(asked)) return { admitted: false, reason: 'turn_spent' };
+      const distinct = asked !== '' && !metaOnlyQuestion(asked);
+      if (this.#grant === this.#turns) {
+        this.#starts.push(distinct ? asked : '');
+        this.#grant = undefined;
+        return { admitted: true };
+      }
+      if (!distinct || this.#starts.includes(asked) || this.#starts.length >= 2) return { admitted: false, reason: 'turn_spent' };
       this.#starts.push(asked);
-      this.#grant = undefined;
       return { admitted: true };
     }
     if (this.#grant !== this.#turns) return { admitted: false, reason: 'turn_spent' };

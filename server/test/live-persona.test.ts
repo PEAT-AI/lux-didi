@@ -1028,10 +1028,10 @@ test('S4b: the voice surface carries backchannel and interruption policy section
   assert.match(NAYA_VOICE_SURFACE, /No backchannel words while he is speaking/);
   assert.match(NAYA_VOICE_SURFACE, /after announcing a check, say what it found before the turn ends/);
   assert.match(NAYA_VOICE_SURFACE, /End no answer with "okay\?" as a reflex/);
-  assert.match(NAYA_VOICE_SURFACE, /name the sources you are reading/);
+  assert.match(NAYA_VOICE_SURFACE, /name sources briefly/);
   assert.match(NAYA_VOICE_SURFACE, /Only the host bridges lookups/);
   assert.match(NAYA_VOICE_SURFACE, /progress phrase is not reused/);
-  assert.match(NAYA_VOICE_SURFACE, /# Interruption policy\nStop when he speaks and answer the new words first\. Return to the earlier thread only if it still matters; otherwise let it go\./);
+  assert.match(NAYA_VOICE_SURFACE, /# Interruption policy\nStop when he speaks and answer the new words first\. Return to the prior thread only if it still matters\./);
 });
 
 test('S4b: the accent preset head and tail are byte-identical to the shipped voice anchors', () => {
@@ -1483,10 +1483,10 @@ test('LAT-1023: the first ack before a lookup names the sources it is reading', 
   // The ack rule already lives in the backchannel policy, so the source name rides the same sentence and
   // no new speech path, timer or host cue is added.
   assert.match(NAYA_VOICE_SURFACE, /after announcing a check, say what it found before the turn ends/u);
-  assert.match(NAYA_VOICE_SURFACE, /When announcing a lookup, name the sources you are reading briefly/u);
-  assert.match(NAYA_VOICE_SURFACE, /checking your mail/u);
+  assert.match(NAYA_VOICE_SURFACE, /Announcing a lookup, name sources briefly/u);
+  assert.match(NAYA_VOICE_SURFACE, /checking mail/u);
   assert.match(NAYA_VOICE_SURFACE, /looking in your vault and calendar/u);
-  assert.equal(NAYA_LIVE_BASE.split('name the sources you are reading briefly').length - 1, 1, 'the rule reaches the live persona once');
+  assert.equal(NAYA_LIVE_BASE.split('name sources briefly').length - 1, 1, 'the rule reaches the live persona once');
   assert.doesNotMatch(NAYA_VOICE_SURFACE, /[\u2013\u2014]/u, 'no dash stands in the rule text');
 });
 
@@ -1505,9 +1505,9 @@ test('L11-07/L11-08: agreement needs evidence, and a label or a yes never stands
 
 test('L1-14/L11-05: she never says the stop phrase or a stop line on her own', () => {
   assert.doesNotMatch(NAYA_VOICE_SURFACE, /When his words were not one of those, say the exact phrase/u, 'the old rule had her say the phrase unprompted');
-  assert.match(NAYA_VOICE_SURFACE, /If he asks to end it in other words, tell him the exact phrase once\./u);
-  assert.match(NAYA_VOICE_SURFACE, /You cannot mute or stop yourself; never say you did, that you will stay quiet, or any stop line of your own\./u);
-  assert.equal(NAYA_LIVE_BASE.split('any stop line of your own').length - 1, 1, 'the rule reaches the live persona once');
+  assert.match(NAYA_VOICE_SURFACE, /For other requests to end, give the exact phrase once\./u);
+  assert.match(NAYA_VOICE_SURFACE, /You cannot mute or stop yourself; never say you did, promise silence or give your own stop line\./u);
+  assert.equal(NAYA_LIVE_BASE.split('give your own stop line').length - 1, 1, 'the rule reaches the live persona once');
 });
 
 test('C-CLAIMS9 outcome 2, W3-R2: the voice surface forbids naming a location the connector state line does not name', () => {
@@ -1521,7 +1521,7 @@ test('#589/#590: the voice surface names the stop phrases and promises no silenc
   assert.match(NAYA_VOICE_SURFACE, /Naya, shut down/);
   // The honesty line: what she cannot do, and the way out she names instead of promising.
   assert.match(NAYA_VOICE_SURFACE, /You cannot mute or stop yourself/);
-  assert.match(NAYA_VOICE_SURFACE, /tell him the exact phrase/);
+  assert.match(NAYA_VOICE_SURFACE, /give the exact phrase/);
   // #590: no first-person promise of a silence or a stopped mic stands in for the call ending.
   for (const lie of [/\bI(?:'ll| will) (?:stay quiet|be quiet|go quiet|stop listening)\b/,
     /\bI(?:'ve| have) (?:stopped|muted|turned off)\b/, /\bI(?:'m| am) (?:not recording|muting|stopping)\b/]) {

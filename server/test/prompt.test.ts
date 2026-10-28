@@ -328,7 +328,7 @@ test('PV1: the persona base scopes the spoken cue to an actual lookup and the pr
     assert.equal((NAYA_LIVE_BASE + NAYA_VOICE_TOOLS + instruction).includes(banned), false, `no prompt section carries: ${banned}`);
   }
   // S4b: when the answer is already in the instructions there is no lookup, no preamble and no call.
-  assert.ok(instruction.includes('When the answer is already in these instructions, answer from it without a lookup.'), 'the no-lookup answer rule sits beside the cue');
+  assert.ok(instruction.includes('Answer from these instructions without a lookup when they already answer it.'), 'the no-lookup answer rule sits beside the cue');
   assert.equal(instruction.includes('Before a lookup, say at most five words'), false, 'the unscoped cue is gone');
   // S4b: batching and the second-call rule are the executing model's, never the voice prompt's.
   for (const moved of ['put independent source lookups in one research plan so the host can run them concurrently', 'consuming retained local remainder before another source read']) {

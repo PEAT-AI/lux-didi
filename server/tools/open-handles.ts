@@ -58,7 +58,7 @@ export function openDestination(raw: string): { url: string; kind: OpenKind } | 
   if (REJECT_PATH.test(url.pathname) || url.searchParams.has('q') || url.searchParams.has('redirect') || url.searchParams.has('export')) return undefined;
   const host = url.hostname.toLowerCase();
   const path = url.pathname;
-  if (host === 'mail.google.com') return MAIL_PATH.test(path) ? { url: url.href, kind: 'gmail' } : undefined;
+  if (host === 'mail.google.com') return MAIL_PATH.test(path) && (url.hash === '' || /^#(?:all|inbox|sent)\/[A-Za-z0-9_-]{1,256}$/.test(url.hash)) ? { url: url.href, kind: 'gmail' } : undefined;
   if (host === 'calendar.google.com') {
     if (CALENDAR_HOME.test(path)) return { url: url.href, kind: 'calendar' };
     return CALENDAR_PATH.test(path) && url.searchParams.has('eid') ? { url: url.href, kind: 'calendar' } : undefined;

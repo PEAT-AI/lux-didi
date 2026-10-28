@@ -96,6 +96,7 @@ public struct OpenDestination: Sendable, Equatable {
         let video = items.first { $0.name == "v" }?.value?.isEmpty == false
         switch host {
         case "mail.google.com":
+            guard parts.percentEncodedFragment == nil || parts.percentEncodedFragment == "" || matches(parts.percentEncodedFragment!, "^(all|inbox|sent)/[A-Za-z0-9_-]{1,256}$") else { return nil }
             return matches(path, "^/mail/u/([0-9]{1,2}|[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\\.[A-Za-z0-9-]{1,63})+)/?$") ? OpenDestination(kind: "gmail") : nil
         case "calendar.google.com":
             if path == "/" { return OpenDestination(kind: "calendar") }

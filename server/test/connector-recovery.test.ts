@@ -349,35 +349,38 @@ test('a retryable first call failure retries a bounded number of times and then 
 
 test('TRAIN8-R8: an attempt that never answers is cut by its own deadline, so the round advances and stops', { timeout: 30000 }, async t => {
   // The ruling's case: a connect whose answer never lands. Without a per-attempt deadline this round never
-  // issues another attempt, which is exactly the stall the release train measured. The fixture answers
-  // nothing, the attempt deadline ends each attempt, and the ladder still walks its bounded count and stops.
-  const f = await fixture({ hangFrom: 3, tools: [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: [], required: 'not-an-array' } }] }); t.after(() => f.close());
+  // issues another attempt, which is exactly the stall the release train measured. The fixture leaves every
+  // answer open from the second wire request on, so the attempt deadline is what ends each attempt, and the
+  // ladder still walks its bounded count and stops. The first connect rides the SDK's own five second
+  // connect bound, which is why this test runs a little over five seconds; every attempt after it is cut at
+  // the 50ms test seam.
+  const f = await fixture({ hangFrom: 2, tools: [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: [], required: 'not-an-array' } }] }); t.after(() => f.close());
   const configDir = configDirFor(f.url, 'mongoose-knowledge');
   oauthRecord(configDir, 'mongoose-knowledge', { refreshToken: 'refresh-material', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now() });
   const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-hang-'));
   const store = new Store(join(dir, 'data'), toolsMigrations);
-  const events: Array<{ event?: string; outcome?: string }> = [];
-  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST, recoveryRepeatMs: false, recoveryAttemptDeadlineMs: 50, lifecycleLog: event => { events.push(event as { event?: string; outcome?: string }); } });
+  const retries: Array<{ event?: string; outcome?: string }> = [];
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST, recoveryRepeatMs: false, recoveryAttemptDeadlineMs: 50, lifecycleLog: event => { const line = event as { event?: string; outcome?: string }; if (line.event === 'connector_retry') retries.push(line); } });
   t.after(() => runtime.close());
   await runtime.start();
   // The cut is read on the retry line it writes, not on the projection: a later attempt sets the
   // projection back to connecting before its own answer arrives.
-  const cut = () => events.some(event => event.event === 'connector_retry' && event.outcome === 'identity_timeout');
-  await until(cut, 15000);
-  assert.ok(true, 'the attempt that never answered was cut and logged as the closed transient identity_timeout');
-  // And the round advanced past it: the cut is what lets the ladder schedule the next attempt.
-  await until(() => f.hung() >= 2, 15000);
-  assert.ok(f.hung() >= 2, `the round advances past the hung attempt (${f.hung()})`);
-  // The round is bounded: once it has stopped, no further attempt is issued. Poll for a count that
-  // stops moving rather than for `retrying`, which is briefly false between two scheduled attempts.
+  const cut = () => retries.some(line => line.outcome === 'identity_timeout');
+  await until(cut, 20000);
+  assert.ok(cut(), 'the attempt that never answered was cut and logged as the closed transient identity_timeout');
+  // The round advances past the cut and stops at its bounded count: the first connect plus one attempt per
+  // configured delay. No further attempt follows once it has stopped.
+  const attempts = () => 1 + retries.length;
+  await until(() => attempts() >= 2, 20000);
+  assert.ok(attempts() >= 2, `the round advances past the cut attempt (${attempts()})`);
   let stable = 0;
   for (let poll = 0; poll < 300 && stable < 5; poll += 1) {
-    const before = f.hung();
+    const before = attempts();
     await new Promise(resolve => setTimeout(resolve, 20));
-    stable = f.hung() === before ? stable + 1 : 0;
+    stable = attempts() === before ? stable + 1 : 0;
   }
   assert.equal(runtime.status().endpoints[0]!.retrying, false, 'the round is over and no attempt is pending');
-  assert.ok(f.hung() <= 1 + FAST.length, `the round stops at its bounded count (${f.hung()} <= 1 + ${FAST.length})`);
+  assert.ok(attempts() <= 1 + FAST.length, `the round stops at its bounded count (${attempts()} <= 1 + ${FAST.length})`);
 });
 
 /** Two Google endpoints of one owner account, each proving itself with its own family's tool. */

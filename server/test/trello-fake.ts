@@ -208,7 +208,7 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
     const path = `/${parts.join('/')}`;
     const id = (index: number) => decodeURIComponent(parts[index] ?? '');
     const page = (args: Record<string, unknown>): Record<string, unknown> => query.get('cursor') === null ? args : { ...args, cursor: String(query.get('cursor')) };
-    if (method === 'GET' && path === '/boards') return ['trelloReadBoard', page({ action: 'list' })];
+    if (method === 'GET' && path === '/members/me/boards') return ['trelloReadBoard', { action: 'list' }];
     if (method === 'GET' && parts[0] === 'boards' && parts[2] === 'labels') return ['trelloReadBoard', page({ action: 'list_labels', boardId: id(1) })];
     if (method === 'GET' && parts[0] === 'boards' && parts[2] === 'lists') return ['trelloReadList', page({ action: 'list_by_board', boardId: id(1) })];
     if (method === 'GET' && parts[0] === 'lists' && parts[2] === 'cards') return ['trelloReadCard', page({ action: 'list_by_list', listId: id(1) })];

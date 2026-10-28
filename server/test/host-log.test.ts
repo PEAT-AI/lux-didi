@@ -676,3 +676,18 @@ test('C-CONTINUITY R-10: dead-air and heard-silence lines carry no static cause'
   assert.equal(severityOf('live_recovery').cause, undefined);
   assert.deepEqual(safeEvent({ event: 'live_heard_silence', ms: 1_200, silence: 'provider' }), { event: 'live_heard_silence', ms: 1_200, silence: 'provider' });
 });
+
+test('C-AUDIO10: healthy dead air is informational while stalls stay warnings', () => {
+  assert.equal(severityOf('live_dead_air', { deadAirMs: 400 }).level, 'info');
+  assert.equal(severityOf('live_dead_air', { deadAirMs: 2999 }).level, 'info');
+  assert.equal(severityOf('live_dead_air', { deadAirMs: 3000 }).level, 'warn');
+  assert.equal(severityOf('live_dead_air', { deadAirMs: 3500 }).level, 'warn');
+  assert.equal(severityOf('live_dead_air', { msSinceTool: 400, msSinceAudible: 400 }).level, 'warn');
+});
+
+test('C-AUDIO10: latency exposes owner-final time without mislabeling response age', () => {
+  const receipt = { event: 'live_response_latency', liveSessionId: LIVE_SESSION_ID, generation: 1,
+    msSinceOwnerFinal: 400, msSinceToolOutput: null };
+  assert.deepEqual(safeEvent(receipt), receipt);
+  assert.equal(safeEvent({ ...receipt, msSinceResponseCreated: 116000 }), undefined);
+});

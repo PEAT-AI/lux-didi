@@ -46,7 +46,7 @@ enum NativeNextSteps {
     ]
     /// One fixed sentence per reason code, so no row with a known reason falls back to the failure text.
     private static let reasonSteps: [String: NativeNextStep] = [
-        "configuration_error": NativeNextStep(text: "This connector's tool list changed and needs your approval. Approve the new tool list with the approve command the MCP configuration guide describes, then restart Lux Didi.", command: nil, guideURL: mcpGuide),
+        "configuration_error": NativeNextStep(text: "This connector's tool list changed and needs your approval. Run node server/dist/config/mcp-cli.js approve --config-dir <config dir> --data-dir <data dir> --owner-id <owner> --policy-input <policy file> to approve the added read tools, then restart Lux Didi.", command: "node server/dist/config/mcp-cli.js approve --config-dir <config dir> --data-dir <data dir> --owner-id <owner> --policy-input <policy file>", guideURL: mcpGuide),
         "credential_missing": configureStep,
         "not_configured": NativeNextStep(text: "This connector has no configuration yet. Set it in your protected configuration directory, then reopen Settings. See the MCP configuration guide.", command: nil, guideURL: mcpGuide),
         "needs_sign_in": NativeNextStep(text: "This connector needs a fresh sign-in with its own credentials. Sign in with its own command, then restart Lux Didi.", command: nil, guideURL: setupGuide),

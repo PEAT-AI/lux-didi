@@ -54,6 +54,22 @@ The catalog's `grantMode` defaults to `explicit`. `owner-trusted-reads` is an ex
 
 A stored connection binds its endpoint, discovered schema and policy generation. New published reads can require renewed owner approval. Do not silently widen an existing grant when upgrading a child. Disabling or removing an enabled catalog entry retires its authority for new runs; restoring an entry is not permission to approve a different endpoint under its old identity.
 
+### What reconnects itself, and what needs the owner again
+
+Under `owner-trusted-reads` the reviewed envelope in this repository is the approval, so a release that widens a connector inside that envelope reconnects it with no CLI call: the stored row takes a new generation and `host.log` carries one `connector_envelope_widened` line with the endpoint id and the added read names. A rebuilt child that keeps its endpoint id, descriptor, account and resource may also move its own `command`, `args` and defining environment between releases; that reconnects the same way and logs `connector_endpoint_changed` with which fields moved and never a value. Shell-session variables such as `PATH` are not part of the stored endpoint identity, so relaunching the host with a different `PATH` is not an endpoint change at all.
+
+Everything else still refuses in every mode, and each refusal writes one closed reason (`endpoint_changed`, `tools_widened`, `class_tightened`, `schema_changed`, `row_invalid`): a foreign endpoint id, an account or resource change, a moved http url, a row that was revoked with `enabled: false`, a name outside the reviewed envelope, and any class tightening that would reverse an approval. Explicit mode keeps its refusal for every catalog change, a widening included. A refused row states the command that approves it, with the added read names:
+
+```sh
+node server/dist/config/mcp-cli.js approve --config-dir <config dir> --data-dir <data dir> --owner-id <owner> --policy-input <policy file>
+```
+
+There is no Settings control for an approval; the command is the whole surface.
+
+### The install gate
+
+An install is not finished when a connector is dead. `scripts/install-macos-app.sh` runs every `scripts/check-installed-*.sh` of the checkout that installed, against the app it just installed, and restores the previous app if any of them fails. `scripts/check-installed-connectors.sh` is the connector one: it reads the installed `provider-config/mcp.json` for the enabled entry ids and `logs/host.log` for the receipts after the newest `host_started`, then fails naming every enabled entry that is not `connected` with `tools > 0`. It reads closed status fields only and never a credential file or the store. Its `--ci` mode proves the check itself against a synthetic eight-entry stdio catalog, where one entry widens inside the envelope and connects and one publishes only names outside it and is named.
+
 For the protected single-connection CLI, the compiled entry is:
 
 ```sh

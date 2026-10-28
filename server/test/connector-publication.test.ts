@@ -2,17 +2,18 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { createServer, type Server } from 'node:http';
 import { chmod } from 'node:fs/promises';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Server as McpServer, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { toolsMigrations } from '../tools/schema.js';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { Store } from '../runtime/store.js';
 import { hostMigrations } from '../host/runtime.js';
-import { composeMcpRuntime } from '../host/mcp.js';
+import { composeMcpRuntime, type ConnectorLifecycleEvent } from '../host/mcp.js';
 import type { ConnectionPolicy, RunAcceptance } from '../tools/types.js';
 import { CONNECTOR_COMPOSED_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, composedDeclarationDigest, composedGrantedNames, connectorDescriptor } from '../connectors/index.js';
 import { validatePolicy } from '../tools/index.js';
@@ -445,7 +446,7 @@ test('C-CHAT: a policy may grant the person reads and the chat read, never a wri
 type Endpoint = { id: string; path: string; enabled: boolean };
 
 /** One synthetic Mattermost child per URL path, each publishing its own tool list (plus a write it never gets). */
-async function mattermostBindingHost(t: TestContext) {
+async function mattermostBindingHost(t: TestContext, grantMode: 'owner-trusted-reads' | 'explicit' = 'owner-trusted-reads') {
   const dir = mkdtempSync(join(tmpdir(), 'didi-mattermost-binding-'));
   const configDir = join(dir, 'provider-config');
   await mkdir(configDir, { recursive: true, mode: 0o700 });
@@ -459,6 +460,7 @@ async function mattermostBindingHost(t: TestContext) {
   });
   let store = new Store(join(dir, 'data'), toolsMigrations);
   let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
+  const lifecycle: ConnectorLifecycleEvent[] = [];
   t.after(async () => {
     await runtime?.close();
     for (const { sdk, transport } of servers.values()) { await sdk.close(); await transport.close(); }
@@ -478,11 +480,11 @@ async function mattermostBindingHost(t: TestContext) {
       servers.set(path, { sdk, transport });
     }
     writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
-      schemaVersion: 1, grantMode: 'owner-trusted-reads',
+      schemaVersion: 1, grantMode,
       endpoints: endpoints.map(endpoint => ({ id: endpoint.id, connector: 'mattermost', transport: 'streamable-http', url: `http://127.0.0.1:18766${endpoint.path}`, account: 'mattermost', resource: 'mattermost', credentialRef: null, enabled: endpoint.enabled, allowEgress: true, unknownClass: 'private' })),
     }));
     await chmod(join(configDir, 'mcp.json'), 0o600);
-    runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+    runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, lifecycleLog: event => { lifecycle.push(event); } });
     await runtime.start();
     return runtime;
   };
@@ -490,16 +492,59 @@ async function mattermostBindingHost(t: TestContext) {
     const row = store.transaction(tx => tx.get('SELECT policy_json FROM tool_connections WHERE owner_id=? AND connection_id=?', [store.assistantId, id]));
     return row === undefined ? undefined : JSON.parse(String(row['policy_json'])) as ConnectionPolicy;
   };
-  return { start, policy };
+  return { start, policy, lifecycle };
 }
 
-test('C-CHAT: the same connection serving a child with the person reads needs the owner again, never widens itself', async t => {
+test('W2-R1: a release that widens inside the reviewed envelope reconnects the owner\'s own connector, one generation on', async t => {
   const h = await mattermostBindingHost(t);
   await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
-  assert.deepEqual(h.policy('mattermost')?.toolNames, [...MATTERMOST_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL].sort(), 'the older child: five reads and both composites');
+  const before = h.policy('mattermost');
+  assert.deepEqual(before?.toolNames, [...MATTERMOST_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL].sort(), 'the older child: five reads and both composites');
   const widened = await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_READ_TOOLS });
-  assert.deepEqual(widened.connectionIds(), [], 'a published read the stored approval lacks is never granted by itself');
-  assert.equal(widened.status().endpoints.find(endpoint => endpoint.id === 'mattermost')?.error, 'owner-approval-required');
+  const after = h.policy('mattermost');
+  assert.ok(widened.connectionIds().includes('mattermost'), 'the reviewed envelope is the approval, so the connector reconnects itself');
+  assert.deepEqual(after?.toolNames, [...MATTERMOST_READ_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL].sort(), 'the reconciled row carries the person reads too');
+  assert.equal(after?.generation, Number(before?.generation) + 1, 'a reconciled widening is a new generation');
+  assert.equal(widened.status().endpoints.find(endpoint => endpoint.id === 'mattermost')?.state, 'connected');
+  assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_envelope_widened'),
+    { event: 'connector_envelope_widened', endpointId: 'mattermost', addedToolNames: [...MATTERMOST_PERSON_TOOLS].sort() }, 'the receipt names the added reads and nothing else');
+  // The child also publishes a write tool the envelope never carries, and the widening is not a way in.
+  const grant = widened.registry.currentGrant('mattermost');
+  assert.ok(grant && !grant.toolNames.includes('mattermost_post_message'));
+});
+
+test('W2-R1: explicit mode still refuses the same widening and names the added reads', async t => {
+  const h = await mattermostBindingHost(t, 'explicit');
+  await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
+  const widened = await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_READ_TOOLS });
+  const report = widened.status().endpoints.find(endpoint => endpoint.id === 'mattermost');
+  assert.deepEqual(widened.connectionIds(), [], 'an explicit approval never widens itself');
+  assert.equal(report?.error, 'owner-approval-required');
+  assert.equal(report?.configurationError, 'owner-approval-required');
+  assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_approval_refused'),
+    { event: 'connector_approval_refused', endpointId: 'mattermost', reason: 'schema_changed' }, 'the refusal names its own closed reason');
+});
+
+test('W2-R1: a changed http url for the same endpoint id is still a move, never a silent re-approval', async t => {
+  const h = await mattermostBindingHost(t);
+  await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
+  const moved = await h.start([{ id: 'mattermost', path: '/moved', enabled: true }], { '/old': MATTERMOST_TOOLS, '/moved': MATTERMOST_TOOLS });
+  assert.deepEqual(moved.connectionIds(), [], 'only a stdio child may move its own path');
+  assert.equal(moved.status().endpoints.find(endpoint => endpoint.id === 'mattermost')?.configurationError, 'owner-approval-required');
+  assert.deepEqual(h.lifecycle.filter(event => event.event === 'connector_approval_refused').at(-1),
+    { event: 'connector_approval_refused', endpointId: 'mattermost', reason: 'endpoint_changed' });
+});
+
+test('W2-R1: a widening outside the reviewed envelope is never granted, in any mode', async t => {
+  const h = await mattermostBindingHost(t);
+  await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
+  // The child publishes the person reads plus a name the reviewed envelope does not carry: the host filters
+  // publication through connectionEnvelope before it computes any widening, so the name cannot widen.
+  const widened = await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': [...MATTERMOST_READ_TOOLS, 'mattermost_admin_delete'] });
+  const grant = widened.registry.currentGrant('mattermost');
+  assert.ok(grant && !grant.toolNames.includes('mattermost_admin_delete') && !grant.toolNames.includes('mattermost_post_message'));
+  assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_envelope_widened'),
+    { event: 'connector_envelope_widened', endpointId: 'mattermost', addedToolNames: [...MATTERMOST_PERSON_TOOLS].sort() });
 });
 
 test('C-CHAT: the install route, a new connection id for the newer child beside the disabled old one, settles from the envelope', async t => {
@@ -512,4 +557,106 @@ test('C-CHAT: the install route, a new connection id for the newer child beside 
   let oldGrant: unknown;
   try { oldGrant = moved.registry.currentGrant('mattermost'); } catch { oldGrant = undefined; }
   assert.equal(oldGrant, undefined, 'the old connection grants nothing');
+});
+
+// ---- W2-R1: a rebuilt stdio child keeps its endpoint and reconnects without an approval ----------------
+// The owner's own child moved from a dated directory to a stable one and the host that launches it got a
+// fresh PATH. Neither says anything about which server the endpoint is, so neither is a new approval.
+
+const GOOGLE_CHILD = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'google-mcp-child.mjs');
+
+function stdioApprovalHost(t: TestContext, dir: string, configDir: string) {
+  let store = new Store(join(dir, 'data'), toolsMigrations);
+  const lifecycle: { event: string; endpointId?: string; fields?: readonly string[]; reason?: string; addedToolNames?: readonly string[] }[] = [];
+  const failures: string[] = [];
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const endpoint = (args: readonly string[], path: string, account = 'local', resource = 'google-gmail') => ({
+    id: 'gmail', transport: 'stdio', command: process.execPath, args: [...args],
+    // The whole launch environment, PATH included, exactly as the installing host shapes it.
+    env: { HOME: '/home/fixture', PATH: path, LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+    connector: 'google', account, resource, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'private',
+  });
+  const write = (grantMode: string, args: readonly string[], path: string, account?: string, resource?: string): void => {
+    writeFileSync(join(configDir, 'mcp.json'),
+      JSON.stringify({ schemaVersion: 1, grantMode, ownerIdentity: 'owner@example.invalid', endpoints: [endpoint(args, path, account, resource)] }),
+      { mode: 0o600 });
+  };
+  const start = async () => {
+    const runtime = await composeMcpRuntime({
+      store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+      lifecycleLog: event => { lifecycle.push(event as unknown as { event: string }); },
+      connectorLog: (_connector, _stage, detail) => { failures.push(String(detail?.reason)); },
+    });
+    await runtime.start();
+    return runtime;
+  };
+  const generation = (): number => Number(store.transaction(tx => tx.get("SELECT generation FROM tool_connections WHERE connection_id='gmail'"))?.['generation']);
+  return { endpoint, write, start, generation, lifecycle, failures, report: (runtime: Awaited<ReturnType<typeof composeMcpRuntime>>) => runtime.status().endpoints.find(entry => entry.id === 'gmail') };
+}
+
+test('W2-R1: a rebuilt stdio child in a moved directory with a fresh PATH reconnects without an approval', { skip: process.platform === 'win32' }, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-moved-child-'));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const rebuiltDir = join(dir, 'google-mcp-local'); mkdirSync(rebuiltDir);
+  const rebuiltChild = join(rebuiltDir, 'google-mcp-child.mjs');
+  copyFileSync(GOOGLE_CHILD, rebuiltChild);
+  const h = stdioApprovalHost(t, dir, configDir);
+  h.write('owner-trusted-reads', [GOOGLE_CHILD, 'ok'], '/usr/bin');
+  const first = await h.start();
+  assert.equal(h.report(first)?.state, 'connected', JSON.stringify(h.report(first)));
+  await first.close();
+  const settled = h.generation();
+  h.lifecycle.length = 0;
+  // The moved child and the host's new shell PATH: same id, same descriptor, same account and resource.
+  h.write('owner-trusted-reads', [rebuiltChild, 'ok'], '/opt/homebrew/bin:/usr/bin');
+  const moved = await h.start();
+  try {
+    assert.equal(h.report(moved)?.state, 'connected', JSON.stringify(h.report(moved)));
+    assert.ok((h.report(moved)?.tools ?? 0) > 0, 'the moved child still grants its reads');
+    assert.deepEqual(h.failures, [], 'a moved child is not a refusal');
+    assert.equal(h.generation(), settled + 1, 'the reconciled endpoint is a new generation');
+    assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_endpoint_changed'),
+      { event: 'connector_endpoint_changed', endpointId: 'gmail', fields: ['args', 'env'] }, 'which fields moved, never a value');
+    assert.equal(h.lifecycle.some(event => event.event === 'connector_approval_refused'), false);
+  } finally { await moved.close(); }
+  // A PATH-only change is not an endpoint change at all: nothing moved but the shell that launched it.
+  h.lifecycle.length = 0;
+  h.write('owner-trusted-reads', [rebuiltChild, 'ok'], '/usr/local/bin:/usr/bin');
+  const pathOnly = await h.start();
+  try {
+    assert.equal(h.report(pathOnly)?.state, 'connected');
+    assert.equal(h.lifecycle.some(event => event.event === 'connector_endpoint_changed' || event.event === 'connector_approval_refused'), false, 'PATH is never part of the stored endpoint identity');
+  } finally { await pathOnly.close(); }
+});
+
+test('W2-R1: explicit mode still refuses a moved stdio child, and an account change moves the endpoint', { skip: process.platform === 'win32' }, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-moved-explicit-'));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const rebuiltDir = join(dir, 'google-mcp-local'); mkdirSync(rebuiltDir);
+  const rebuiltChild = join(rebuiltDir, 'google-mcp-child.mjs');
+  copyFileSync(GOOGLE_CHILD, rebuiltChild);
+  const h = stdioApprovalHost(t, dir, configDir);
+  h.write('owner-trusted-reads', [GOOGLE_CHILD, 'ok'], '/usr/bin');
+  const first = await h.start();
+  assert.equal(h.report(first)?.state, 'connected');
+  await first.close();
+  h.lifecycle.length = 0;
+  h.write('explicit', [rebuiltChild, 'ok'], '/opt/homebrew/bin:/usr/bin');
+  const moved = await h.start();
+  try {
+    assert.equal(h.report(moved)?.configurationError, 'owner-approval-required');
+    assert.deepEqual(moved.connectionIds(), [], 'an explicit approval never follows a moved child');
+    assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_approval_refused'),
+      { event: 'connector_approval_refused', endpointId: 'gmail', reason: 'endpoint_changed' });
+  } finally { await moved.close(); }
+  // An account change is never a move, whatever the mode: the approval was for one account.
+  h.lifecycle.length = 0;
+  h.write('owner-trusted-reads', [rebuiltChild, 'ok'], '/opt/homebrew/bin:/usr/bin', 'other-account');
+  const account = await h.start();
+  try {
+    assert.equal(h.report(account)?.configurationError, 'owner-approval-required');
+    assert.deepEqual(account.connectionIds(), []);
+    assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_approval_refused'),
+      { event: 'connector_approval_refused', endpointId: 'gmail', reason: 'endpoint_changed' });
+  } finally { await account.close(); }
 });

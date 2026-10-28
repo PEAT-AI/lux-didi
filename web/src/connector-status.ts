@@ -1,7 +1,18 @@
 // Read-only browser projection. Never interpolate provider error/config payloads.
 import { escapeHtml } from './markdown.ts';
+/**
+ * W2-R1: the one command that approves a refused connector's tool list, verbatim from the CLI's own usage
+ * line (server/config/mcp-cli.ts). There is no Settings control for it, so the row states the command.
+ */
+export const APPROVE_COMMAND = 'node server/dist/config/mcp-cli.js approve --config-dir <config dir> --data-dir <data dir> --owner-id <owner> --policy-input <policy file>';
+/** The added reads a refusal names, as closed tool names only. */
+const addedReads = (row: Record<string, unknown>): string[] => Array.isArray(row['addedToolNames'])
+  ? row['addedToolNames'].filter((name): name is string => typeof name === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name))
+  : [];
+const approvalHint = (added: readonly string[]): string => `approve the added read tools with ${APPROVE_COMMAND}, then restart${added.length ? ` (added: ${added.join(', ')})` : ''}`;
 const REASONS: Record<string, [string, string]> = {
-  configuration_error: ['Approval needed', 'approve the new tool list as the MCP configuration guide describes, then restart'],
+  // W2-R1: no Settings control approves a connector, so a refusal states the command and the added names.
+  configuration_error: ['Approval needed', 'approve the added read tools with the approve command, then restart'],
   credential_missing: ['Credential missing', 'add the credential file under provider-config and restart'],
   not_signed_in: ['Signed out', 'sign in again with this connector\'s own credentials, then restart'],
   needs_sign_in: ['Sign-in needed', 'sign in with the button in Settings, then it reconnects on its own'],
@@ -47,7 +58,7 @@ export function connectionsMarkup(endpoints: unknown, stale = false): string {
     const proofCode = typeof (row.identity as Record<string, unknown> | undefined)?.['code'] === 'string'
       ? String((row.identity as Record<string, unknown>)['code']) : undefined;
     const reasonKey = proofCode !== undefined && Object.hasOwn(REASONS, proofCode) ? proofCode : typeof row.reasonCode === 'string' && Object.hasOwn(REASONS, row.reasonCode) ? row.reasonCode : 'unknown';
-    const reason = REASONS[reasonKey] ?? REASONS.unknown!;
+    const reason: [string, string] = reasonKey === 'configuration_error' ? ['Approval needed', approvalHint(addedReads(row))] : REASONS[reasonKey] ?? REASONS.unknown!;
     const issue = row.reasonCode !== null || state === 'missing' || state === 'error' || proofCode !== undefined;
     const identity = connectionIdentity(row.identity);
     const identityHtml = identity ? ` <span class="connection-identity">${escapeHtml(identity)}</span>` : '';

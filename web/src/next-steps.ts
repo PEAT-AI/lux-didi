@@ -59,7 +59,7 @@ const credentialSteps: Record<string, NextStep> = {
 };
 /** One fixed sentence per reason code, so no row with a known reason falls back to the failure text. */
 const reasonSteps: Record<ReasonCode, NextStep> = {
-  configuration_error: { text: "This connector's tool list changed and needs your approval. Approve the new tool list with the approve command the MCP configuration guide describes, then restart Lux Didi.", guideUrl: mcpGuideUrl },
+  configuration_error: { text: "This connector's tool list changed and needs your approval. Run node server/dist/config/mcp-cli.js approve --config-dir <config dir> --data-dir <data dir> --owner-id <owner> --policy-input <policy file> to approve the added read tools, then restart Lux Didi.", guideUrl: mcpGuideUrl },
   credential_missing: credentialSteps["lux-knowledge"]!,
   needs_sign_in: { text: "This connector needs a fresh sign-in with its own credentials. Sign in with its own command, then restart Lux Didi.", guideUrl: setupGuideUrl },
   not_configured: { text: "This connector has no configuration yet. Add its settings, then restart Lux Didi.", guideUrl: setupGuideUrl },

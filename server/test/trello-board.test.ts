@@ -463,7 +463,7 @@ test('a rate-limited call waits the retry-after once and then reports rate_limit
     assert.deepEqual(waits, [2000], 'the Retry-After header is respected once, not guessed');
     local.rateLimitNextCall(2, 1);
     const limited = await transport.call('trelloReadBoard', { action: 'list' });
-    assert.deepEqual(limited, { ok: false, code: 'rate_limited' }, 'a second 429 in a row is reported, never retried forever');
+    assert.deepEqual(limited, { ok: false, code: 'rate_limited', httpStatus: 429 }, 'a second 429 in a row is reported, never retried forever');
   } finally { await local.close(); }
 });
 
@@ -622,14 +622,16 @@ test('C-TRELLO9: every action maps to a documented REST method and path', () => 
 });
 
 function documentedRestBoard(status?: number) {
+  const boardId = objectId(NOW - 5000);
+  const listId = objectId(NOW - 4000);
   const calls: string[] = [];
   const events: Record<string, unknown>[] = [];
-  const card = { id: objectId(NOW - 1000), name: 'Synthetic task', desc: 'Synthetic description', idBoard: 'board', idList: 'list', idLabels: [], closed: false, due: new Date(NOW + 3600000).toISOString(), dueComplete: false };
+  const card = { id: objectId(NOW - 1000), name: 'Synthetic task', desc: 'Synthetic description', idBoard: boardId, idList: listId, idLabels: [], closed: false, due: new Date(NOW + 3600000).toISOString(), dueComplete: false };
   const payloads: Record<string, unknown> = {
     '/1/members/me': { id: 'member', username: 'synthetic' },
-    '/1/members/me/boards': [{ id: 'board', name: SYNTHETIC_BOARD, closed: false }],
-    '/1/boards/board/lists': [{ id: 'list', name: 'Ideas', idBoard: 'board', closed: false }],
-    '/1/boards/board/labels': [], '/1/lists/list/cards': [card],
+    '/1/members/me/boards': [{ id: boardId, name: SYNTHETIC_BOARD, closed: false }],
+    [`/1/boards/${boardId}/lists`]: [{ id: listId, name: 'Ideas', idBoard: boardId, closed: false }],
+    [`/1/boards/${boardId}/labels`]: [], [`/1/lists/${listId}/cards`]: [card],
     [`/1/cards/${card.id}`]: card,
     [`/1/cards/${card.id}/checklists`]: [{ id: 'checklist', name: 'Steps', checkItems: [{ id: 'item', name: 'Synthetic step', state: 'incomplete' }] }],
     [`/1/cards/${card.id}/actions`]: [{ id: 'comment', data: { text: 'Synthetic comment' } }],
@@ -698,10 +700,10 @@ test('C-TRELLO9: gateway pagination is retained for transports advertising curso
     tools: async () => ({ ok: true, value: trelloSchemas() }),
     call: async (tool, args) => {
       calls.push({ tool, ...args });
-      if (tool === 'trelloReadBoard') return { ok: true, value: [{ id: 'board', name: SYNTHETIC_BOARD, closed: false }] };
-      if (tool === 'trelloReadList') return { ok: true, value: [{ id: 'list', name: 'Ideas', boardId: 'board', closed: false }] };
-      if (args.cursor === undefined) return { ok: true, value: { cards: [{ id: objectId(NOW), name: 'First', listId: 'list', boardId: 'board' }], pageInfo: { hasNextPage: true, endCursor: 'next' } } };
-      return { ok: true, value: { cards: [{ id: objectId(NOW - 1), name: 'Second', listId: 'list', boardId: 'board' }], pageInfo: { hasNextPage: false } } };
+      if (tool === 'trelloReadBoard') return { ok: true, value: [{ id: objectId(NOW - 5000), name: SYNTHETIC_BOARD, closed: false }] };
+      if (tool === 'trelloReadList') return { ok: true, value: [{ id: objectId(NOW - 4000), name: 'Ideas', boardId: objectId(NOW - 5000), closed: false }] };
+      if (args.cursor === undefined) return { ok: true, value: { cards: [{ id: objectId(NOW), name: 'First', listId: objectId(NOW - 4000), boardId: objectId(NOW - 5000) }], pageInfo: { hasNextPage: true, endCursor: 'next' } } };
+      return { ok: true, value: { cards: [{ id: objectId(NOW - 1), name: 'Second', listId: objectId(NOW - 4000), boardId: objectId(NOW - 5000) }], pageInfo: { hasNextPage: false } } };
     },
   } });
   const result = await service.read('paged', { view: 'list', list: 'Ideas' });

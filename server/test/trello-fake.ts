@@ -78,7 +78,7 @@ const TOOL_ACTIONS: Record<string, Record<string, { props: string[]; required: s
   trelloWriteChecklist: {
     create: { props: ['cardId', 'name', 'pos'], required: ['cardId', 'name'] },
     add_item: { props: ['checklistId', 'name', 'pos'], required: ['checklistId', 'name'] },
-    update_item: { props: ['checklistId', 'itemId', 'name', 'state'], required: ['checklistId', 'itemId'] },
+    update_item: { props: ['cardId', 'checklistId', 'itemId', 'name', 'state'], required: ['checklistId', 'itemId'] },
   },
   trelloWriteBoard: { create: { props: ['name'], required: ['name'] } },
   trelloWriteList: { create: { props: ['boardId', 'name'], required: ['boardId', 'name'] }, move: { props: ['listId', 'boardId'], required: ['listId'] } },

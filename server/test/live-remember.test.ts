@@ -303,8 +303,9 @@ for (const order of ['read_then_save', 'save_then_read'] as const) {
     const h = await harness(t, { tools: true });
     const { session, attachment } = await attached(h);
     await ownerBlock(h, order === 'save_then_read' ? 'save all of this' : 'find the synthetic record');
-    const external = await call(h, 'search_knowledge', { query: 'synthetic plan', limit: 1 });
+    const external = await call(h, 'research', { action: 'start', question: 'What does Lux knowledge say about the synthetic plan?', topic: 'synthetic plan in lux knowledge' });
     assert.ok(external);
+    assert.ok(h.calls.some(call => call.name === 'search_knowledge'), 'the external read actually executes');
     if (order === 'read_then_save') { await assistantBlock(h, 'The synthetic record has twelve budget units.'); await ownerBlock(h, 'save all of this'); }
     const journal = h.store.transaction(tx => tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription'", [session.liveSessionId]));
     const result = await call(h, 'stage_lux_note', { ...candidate, evidenceRefs: [`journal:${journal!['id']}`] });

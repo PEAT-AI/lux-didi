@@ -86,7 +86,7 @@ export function trelloRequests(tool: string, args: Args): { requests: Request[];
     case 'trelloWriteChecklist.add_item': case 'trelloWriteChecklist.create_item':
       return { requests: [{ method: 'POST', path: `checklists/${path([String(args.checklistId)])}/checkItems`, body: defined({ name: args.name, pos: args.pos }) }] };
     case 'trelloWriteChecklist.update_item':
-      return { requests: [{ method: 'PUT', path: `cards/${path([card])}/checkItem/${path([String(args.itemId)])}`, body: defined({ name: args.name, state: args.state }) }], ...(card ? { cardId: card } : {}) };
+      return { requests: [{ method: 'PUT', path: `cards/${path([card])}/checkItem/${path([String(args.itemId)])}`, body: defined({ name: args.name, state: args.state }) }] };
     default: return undefined;
   }
 }

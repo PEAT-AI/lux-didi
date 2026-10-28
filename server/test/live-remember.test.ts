@@ -248,7 +248,8 @@ for (const confirmation of ['yes', 'split', 'split_no', 'wrong_readback', 'unarm
     }
     h.advance(2_000); clock.advance(2_000); await drain();
     const expected = ['yes', 'split', 'unavailable'].includes(confirmation) ? 1 : 0;
-    assert.equal(h.saved.length, expected, JSON.stringify(h.saved));
+    const state = h.store.transaction(tx => tx.all('SELECT state,code,armed_at,confirmation_text,settle_at FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
+    assert.equal(h.saved.length, expected, JSON.stringify({ saved: h.saved, state }));
     if (expected) assert.equal(h.saved[0]!.content, candidate.body);
     const rows = h.store.transaction(tx => tx.all('SELECT * FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
     assert.equal(rows.length, 1);
@@ -303,9 +304,9 @@ for (const order of ['read_then_save', 'save_then_read'] as const) {
     const h = await harness(t, { tools: true });
     const { session, attachment } = await attached(h);
     await ownerBlock(h, order === 'save_then_read' ? 'save all of this' : 'find the synthetic record');
-    const external = await call(h, 'research', { action: 'start', question: 'What does Lux knowledge say about the synthetic plan?', topic: 'synthetic plan in lux knowledge' });
+    const external = await call(h, 'research', { action: 'start', question: 'What does Lux knowledge say about the synthetic plan?', topic: 'synthetic plan', sources: 'knowledge', lookups: [{ source: 'knowledge', query: 'synthetic plan' }] });
     assert.ok(external);
-    assert.ok(h.calls.some(call => call.name === 'search_knowledge'), 'the external read actually executes');
+    assert.ok(h.calls.some(call => call.name === 'search_knowledge'), `the external read actually executes: ${JSON.stringify(external)}`);
     if (order === 'read_then_save') { await assistantBlock(h, 'The synthetic record has twelve budget units.'); await ownerBlock(h, 'save all of this'); }
     const journal = h.store.transaction(tx => tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription'", [session.liveSessionId]));
     const result = await call(h, 'stage_lux_note', { ...candidate, evidenceRefs: [`journal:${journal!['id']}`] });

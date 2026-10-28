@@ -602,6 +602,7 @@ interface ActiveSession {
   stopGeneration?: number;
   inputAt?: number;
   lookupBridgeForInput?: number;
+  lookupAckAt?: number | undefined;
   /** #720: the anchor is the owner's last finished fragment of the turn, not the first. */
   inputFinalAt: number | undefined;
   /** First model audio of the current turn; reset at each model turn start. */
@@ -2786,6 +2787,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
   #openTurn(handle: ActiveSession): void {
     // A fresh owner turn restarts the invalid-argument count, so an earlier turn's repeats never shorten this one.
     handle.invalidAttempts = new Map();
+    handle.lookupAckAt = undefined;
     // R7/R8: the owner spoke before the dropped-line opener became audible, so it is cancelled; the
     // provider's barge-in (interrupted) or its turn end frees the answer, never a late opener frame.
     if (handle.dropOpener) { if (openerCancelled(true, handle.spokenThisTurn)) handle.dropResponse = true; handle.dropOpener = false; }
@@ -3829,6 +3831,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
         if (event.type === 'outputTranscription') {
           const said = stripNonLexicalTags(event.text);
+          if (said.trim() && handle.pendingCallIds.size === 0) handle.lookupAckAt = this.#now();
           countTurnScript(handle, said);
           handle.claimText = `${handle.claimText} ${said}`.slice(-300);
           // C-TURN8: the response's transcript is complete, so an announced lookup has its beat from here.
@@ -4215,6 +4218,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    */
   #armStillSearching(handle: ActiveSession, callId: string): { cancel: () => void } {
     const armedAt = this.#now();
+    const ackAt = handle.lookupAckAt;
+    if (ackAt === undefined) return { cancel: () => {} };
     const ownerAt = handle.inputAt;
     const ask = ownerAt ?? 0;
     const timer = this.#schedule(() => {
@@ -4230,7 +4235,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         spoken = typeof speak === 'function' && speak.call(handle.session, { text: 'Still looking, give me a moment.' }) !== false;
       } catch { spoken = false; }
       hostLogEvent({ event: 'research_still_searching', researchId, elapsedMs: 3_000, spoken });
-    }, 3_000);
+    }, Math.max(0, ackAt + 3_000 - this.#now()));
     timer.unref?.();
     return timer;
   }

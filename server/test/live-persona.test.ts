@@ -58,7 +58,7 @@ test('W5: the persona says what carries over between calls and what does not', (
 });
 
 test('the release character holds the installed baseline while issue 455 remains open', () => {
-  assert.equal(sha(NAYA_CHARACTER), 'd927cedccd099bd4375b34453a4d71cae4cdfc10a098f1940d8beea767b11207');
+  assert.equal(sha(NAYA_CHARACTER), '3770fc141efe3b696bcb9c6ec280d9bb603cb15d677565b1131a6d4b70b6b350');
   assert.match(NAYA_CHARACTER, /thirty to ninety seconds/, 'the baseline duration conflict remains open');
   assert.match(NAYA_CHARACTER, /never invent a message, event, date, source or action/);
   assert.match(NAYA_CHARACTER, /Hold him to the commitments he has stated/);
@@ -369,8 +369,8 @@ test('the public character, voice surface and tool conduct are the authored verb
   // TR3-R1: W15's people rule is the ruled 75-char sentence, so the two blocks carrying it are re-pinned.
   // W4: the voice and loop rules are paid for inside the same blocks, so both hashes are re-pinned here.
   // Train: W1 moved the voice-tools block too, so the merged sources re-pin all three at once.
-  assert.equal(sha(NAYA_CHARACTER), 'd927cedccd099bd4375b34453a4d71cae4cdfc10a098f1940d8beea767b11207');
-  assert.equal(sha(NAYA_VOICE_SURFACE), '69d48420aac2471b8343d109c5d48833a25d22a510ef9966b94119a620ef21ab');
+  assert.equal(sha(NAYA_CHARACTER), '3770fc141efe3b696bcb9c6ec280d9bb603cb15d677565b1131a6d4b70b6b350');
+  assert.equal(sha(NAYA_VOICE_SURFACE), '7dcf9b10287f375c6fce3143d587a41958f12da9a49328353a08d700e4557d68');
   // C-OPENWEB8: the open paragraph names open_web for a map, a site or a search, so this block is re-pinned.
   // C-RESEARCH8: the two-ask voice rule and the re-worded evidence procedure land in the same blocks, so the train re-pins all three against the merged sources.
   assert.equal(sha(NAYA_VOICE_TOOLS), '2775aceab4e64cd10cde5994c0c6ad059a1db04b96c307396eb605bf269d87d7');
@@ -672,8 +672,8 @@ test('tool conduct retrieves relevant past context and distinguishes missing evi
     'look in memory or his knowledge vault first unless that evidence is already in the conversation',
     'Put independent lookups for one question into one research request.',
     'One owner turn allows two research operations: after a result arrives, never call research again until the owner speaks, except to stop.',
-    'Lead with your position or verdict in one sentence, then think in connected steps.',
-    'Land on the recommendation and what it costs.',
+    'Lead with a verdict.',
+    'Land on a recommendation and its cost.',
   ]) assert.equal(wrapper.split(sentence).length - 1, 1);
   assert.match(NAYA_VOICE_TOOLS, /never call a partial result complete/);
   assert.match(NAYA_VOICE_TOOLS, /State a material gap briefly while giving the useful confirmed result/);
@@ -715,7 +715,7 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
     // asserted where it now lives, at the same strength.
     'Vary your phrasing. Do not reuse the same framing phrase twice in one conversation.',
     'Write each query for its source, preserve the requested time window, and follow the actual returned coverage.',
-    'Depth follows the topic, never the turn.',
+    'Depth follows the ask.',
   ];
   const wrapper = `${NAYA_LIVE_BASE}\n\n${NAYA_TOOLS}`;
   for (const rule of rules) assert.equal(wrapper.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
@@ -1022,7 +1022,12 @@ test('S4b: each D7/D8 rule is stated once, and the old opener sentence is replac
 });
 
 test('S4b: the voice surface carries backchannel and interruption policy sections', () => {
-  assert.match(NAYA_VOICE_SURFACE, /# Backchannel policy\nA pause inside his turn is not your turn: no "Hmm", "Yeah" or "Okay" while he is still speaking; after announcing a check, say what it found before the turn ends\. End no answer with "okay\?" as a reflex: once in a few answers at most\. When that first line announces a lookup, name the sources you are reading in a few words, such as checking your mail or looking in your vault and calendar\. Never fill the silence while a lookup runs\./);
+  assert.match(NAYA_VOICE_SURFACE, /No backchannel words while he is speaking/);
+  assert.match(NAYA_VOICE_SURFACE, /after announcing a check, say what it found before the turn ends/);
+  assert.match(NAYA_VOICE_SURFACE, /End no answer with "okay\?" as a reflex/);
+  assert.match(NAYA_VOICE_SURFACE, /name the sources you are reading/);
+  assert.match(NAYA_VOICE_SURFACE, /Only the host bridges lookups/);
+  assert.match(NAYA_VOICE_SURFACE, /progress phrase is not reused/);
   assert.match(NAYA_VOICE_SURFACE, /# Interruption policy\nStop when he speaks and answer the new words first\. Return to the earlier thread only if it still matters; otherwise let it go\./);
 });
 
@@ -1546,5 +1551,16 @@ test('C-CONVO9: conversational rules remain explicit inside existing ceilings', 
   assert.match(NAYA_LIVE_BASE, /under thirty seconds.*at most two spoken numbers/);
   assert.match(NAYA_LIVE_BASE, /no backchannel words while.*speaking/i);
   assert.match(NAYA_LIVE_BASE, /put it in a document.*stage_lux_note/i);
-  assert.match(NAYA_LIVE_BASE, /never.*mood.*physical.state/i);
+  assert.match(NAYA_LIVE_BASE, /Never.*mood.*physical.state/i);
+});
+
+test('W6-R1: conversation rules are paid for within each original persona section', () => {
+  assert.ok(NAYA_CHARACTER.length <= 2868, `character grew: ${NAYA_CHARACTER.length}`);
+  assert.ok(NAYA_VOICE_SURFACE.length <= 2206, `voice surface grew: ${NAYA_VOICE_SURFACE.length}`);
+});
+
+test('C-CONVO9: tool_failure cannot become an opener topic', () => {
+  const plan = buildOpeningOptions({ candidates: [pastSummary(0, 'The owner said tool_failure remains unresolved.')],
+    openLoops: [storedLoop('The owner said tool_failure needs attention.')], now: NOW_3U, timeZone: 'UTC', rotation: 0 });
+  assert.doesNotMatch(JSON.stringify(plan.options), /tool_failure/);
 });

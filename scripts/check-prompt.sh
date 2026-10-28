@@ -109,7 +109,15 @@ for (const rule of [
   'If research answers blocked, do not call it again in this turn',
 ]) assert.ok(procedure.includes(rule), `backend rule missing: ${rule}`);
 // The no-filler rule and the eight-line reply bound stay as they were.
-assert.ok(persona.NAYA_LIVE_BASE.includes('Never fill the silence while a lookup runs'), 'the no-filler rule is kept');
+assert.ok(persona.NAYA_LIVE_BASE.includes('Only the host bridges lookups'), 'the no-filler rule is kept');
+// C-CONVO9 and W6-R1: new conversation rules pay for themselves within the existing sections.
+assert.ok(persona.NAYA_CHARACTER.length <= 2868);
+assert.ok(persona.NAYA_VOICE_SURFACE.length <= 2206);
+for (const rule of ['at most once per call', 'under thirty seconds with at most two spoken numbers',
+  'put it in a document', 'stage_lux_note', 'host note, not the owner', 'never agree with the host',
+  'A progress phrase is not reused', 'No backchannel words while he is speaking']) {
+  assert.ok(persona.NAYA_LIVE_BASE.includes(rule), `conversation rule missing: ${rule}`);
+}
 // C-OPEN: a failed open is never given an invented reason, and the guidance names the real refusal.
 assert.ok(persona.NAYA_OPEN_SURFACE.includes('Never invent a failed-open reason'), 'the open surface bans an invented reason');
 assert.ok(persona.NAYA_OPEN_SURFACE.includes('retry once with the same handle'), 'the open surface retries on a repeated ask');

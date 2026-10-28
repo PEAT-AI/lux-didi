@@ -4107,9 +4107,9 @@ test('Q5-R4: a fresh call carries the previous opener assembled from its fragmen
   });
   const second = h.owner.create({ idempotencyKey: 'opener-second', inputClass: 'ordinary' }, h.ctx);
   const text = accepted(h, second.liveSessionId).system;
-  assert.equal(text.includes('"Morning. The release branch merged cleanly last night."'), true, 'the assembled opener is named');
+  assert.equal(text.includes('Morning. The release branch merged cleanly last night.'), false, 'earlier sentences never enter the instruction');
   assert.equal(text.includes('A trailing line'), false, 'a fragment after the finished fragment is not carried');
-  assert.equal(text.split('earlier openers').length - 1, 1, 'the context appears once');
+  assert.equal(text.split('Earlier opener topic classes').length - 1, 1, 'the context appears once');
 });
 
 test('S4b: composeLive gives the OpenAI backend the procedure and Gemini keeps the shared voice conduct', async t => {
@@ -4532,6 +4532,8 @@ test('C-CONVO9: a pending lookup bridges at three seconds only once per ask', as
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'progress-first');
   // The lookup is still running: this is the delegation the owner is waiting on.
+  fake.emit({ type: 'outputTranscription', text: 'Checking the knowledge base.', finished: true });
+  await settlePort();
   fake.emit({ type: 'toolCall', calls: [{ id: 'svc1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   // VOICE-R1: the host injects no waiting text, so a research call sends none and the owner hears silence.
@@ -4592,7 +4594,7 @@ test('VOICE-R4: no commentary goes out over three beats inside one lookup', asyn
   // C-LIVE: the lookup answers by its operation deadline, so its beats are inside that bound.
   for (const beat of [1, 2, 3]) {
     h.advance(1_900); scheduler.runDue(); await settlePort();
-    assert.deepEqual(fake.commentary, beat === 1 ? [] : ['Still looking, give me a moment.'], `beat ${beat} never repeats the bridge`);
+    assert.deepEqual(fake.commentary, [], `beat ${beat} without an acknowledgement stays silent`);
   }
   const sent = receipts.filter(entry => entry['event'] === 'commentary_sent');
   assert.deepEqual(sent, [], 'the host-composed status line is gone from the ledger too');
@@ -4674,7 +4676,7 @@ test('R6: a source that settles after the first answer is appended once, and sai
   assert.equal(late[0]!['source'], 'chat');
   assert.equal(late[0]!['destination'], 'response', 'a quiet turn hears it through the response channel, the one the provider accepts');
   assert.deepEqual(fake.thinking, [], 'no provider append carries a late finding (#438)');
-  assert.deepEqual(fake.texts.map(text => text.split(':')[0]), ['One more thing from chat'], 'one spoken line, naming the source');
+  assert.deepEqual(fake.texts.map(text => text.split(':')[0]), ['[host note, not the owner] One more thing from chat'], 'one spoken line, naming the source');
   assert.deepEqual(fake.commentary, [], 'the refused commentary append is no longer the door a finding takes');
   h.owner.revoke(session.liveSessionId);
 });
@@ -4745,7 +4747,7 @@ test('#472: a late source result reaches the model while the session is live', a
   assert.equal(late.length, 1, 'one receipt for the source that landed later');
   assert.equal(late[0]!['source'], 'chat');
   assert.notEqual(late[0]!['destination'], 'dropped', `the late result is not dropped: ${JSON.stringify(late[0])}`);
-  assert.ok(fake.texts.some(text => text.startsWith('One more thing from chat')), 'the model carries the late finding on the response channel');
+  assert.ok(fake.texts.some(text => text.startsWith('[host note, not the owner] One more thing from chat')), 'the model carries the late finding on the response channel');
   h.owner.revoke(session.liveSessionId);
 });
 

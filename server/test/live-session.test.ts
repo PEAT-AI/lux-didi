@@ -7365,3 +7365,17 @@ test('C-AUDIO10: repeated start notifications do not duplicate first audio for a
   assert.equal(events.filter(row => row.event === 'live_first_audio').length, 2);
   attachment.close();
 });
+
+test('C-AUDIO10: the opening model utterance has its own assistant trace turn', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const session = h.owner.create({ idempotencyKey: 'audio10-opener-trace', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'outputTranscription', text: 'Synthetic welcome.', finished: true }));
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+  const rows = h.store.transaction(tx => tx.all("SELECT u.text, t.origin FROM trace_utterance u JOIN trace_turn t USING(turn_id) WHERE t.live_session_id=? AND u.role='model' AND u.final=1", [session.liveSessionId]));
+  assert.deepEqual(rows.map(row => [row['text'], row['origin']]), [['Synthetic welcome.', 'assistant']]);
+  attachment.close();
+});

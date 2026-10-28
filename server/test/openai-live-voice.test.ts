@@ -2232,3 +2232,28 @@ test('C-AUDIO10: speech loss sends one repeat-end host note and one receipt per 
   assert.equal(receipts().filter(row => row.event === 'uplink_speech_shed').length, 1);
   assert.equal(session.diagnostics?.().connection?.quality, 'weak');
 });
+
+test('C-AUDIO10: overflowing speech never retains silence heartbeats ahead of speech', async t => {
+  const receipts = hostReceipts(t);
+  const clock = new FakeClock();
+  const { socket, session } = await fakeReady(t, { clock });
+  socket.bufferedAmount = 100_000;
+  // A queue contains both speech and silence, including the 400 ms silence heartbeat boundary.
+  for (let index = 0; index < 200; index += 1) {
+    session.sendAudio({ pcm: pcm16(320, index % 2 ? 1200 : 0), dataClass: 'ordinary' });
+    clock.advance(20);
+  }
+  assert.equal(receipts().filter(row => row.event === 'uplink_speech_shed').length, 1);
+  // End with speech and trigger the next overflow; any surviving silence would be an older heartbeat.
+  for (let index = 0; index < 60; index += 1) {
+    session.sendAudio({ pcm: pcm16(320, 1200), dataClass: 'ordinary' });
+    clock.advance(20);
+  }
+  const before = micAudio(socket).length;
+  socket.drain(1_000_000);
+  clock.advance(100);
+  session.sendAudio({ pcm: pcm16(320, 1200), dataClass: 'ordinary' });
+  const drained = micAudio(socket).slice(before).map(encoded => Buffer.from(encoded, 'base64'));
+  assert.ok(drained.length > 0, 'retained speech actually drains onto the wire');
+  assert.ok(drained.every(pcm => pcm.readInt16LE(0) !== 0), 'all older silence is gone before speech is discarded');
+});

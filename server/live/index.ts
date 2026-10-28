@@ -4752,6 +4752,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         // #573: the open tools are checked against the owner's words since the model last spoke, so a
         // provider that finalizes one utterance as two turns still carries the whole ask.
         if (ownerTurn) noteOwnerWords(handle.liveSessionId, ownerTurn);
+        if (ownerTurn && transcription?.finalOrigin !== 'typed') this.#tools?.owner.observeAlarmOwner(handle.liveSessionId, String(journalId), ownerTurn, now);
         if (ownerTurn && transcription?.finalOrigin !== 'typed') this.#vault.observe(tx, handle.liveSessionId, String(journalId), ownerTurn, previousOwnerTurn(tx, handle.liveSessionId));
         // W6 item 6: the composed note listens to the same finalized owner turn, and to nothing else.
         if (ownerTurn && transcription?.finalOrigin !== 'typed') pendingOwnerText = ownerTurn;

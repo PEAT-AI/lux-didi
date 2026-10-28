@@ -22,6 +22,7 @@ import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, vali
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
+import { ALARM_NAMES, ALARM_IDENTITY, AlarmOwnerGate, parseAlarmTime, validateAlarmArguments } from './alarm.js';
 import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, webOwnerWords, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode } from './open.js';
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
@@ -146,6 +147,7 @@ export function classifiedFailureEvent(input: { endpointId: string; connector: s
 
 export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveRunConnections {
   const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
+  const alarmGate = new AlarmOwnerGate();
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
   ownedStores.add(store);
   // Failure latch is not authority: it only prevents fallback journal writes after failed persistence.
@@ -250,6 +252,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       // W7: the owner's own Trello board, a gateway tool pinned to one board on Didi's side.
       if (options.grantMode !== 'owner-trusted-reads' || !options.trello) throw Error('builtin_grant_denied');
       return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 65536 } } };
+    }
+    if (call.accountId === ALARM_IDENTITY.accountId && call.resourceId === ALARM_IDENTITY.resourceId && ALARM_NAMES.some(name => name === call.toolName)) {
+      if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
+      return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 4096, maxSliceBytes: 1024 } } };
     }
     if (call.accountId === OPEN_IDENTITY.accountId && call.resourceId === OPEN_IDENTITY.resourceId && OPEN_TOOL_NAMES.has(call.toolName)) {
       // Host-native open tools; the native side re-checks the allowlist before anything opens.
@@ -470,6 +476,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
   });
   const owner: ToolsOwner & LiveRunConnections = {
     journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port,
+    observeAlarmOwner: (session, journalId, words, at) => alarmGate.observeOwnerFinal(session, journalId, words, at),
     releaseHistoryConversation(conversationId) { historyReader.releaseConversation(conversationId); },
     releaseEvidence(runId, bindings) {
       pruneEvidence();
@@ -669,6 +676,56 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           if (staged.claim.state !== 'dispatch') hostLogEvent(vaultAttemptEvent(receipt, 0));
           const result = store.transaction(tx => complete(staged.call, vaultReceiptJson(receipt), ['ordinary'], tx));
           return { status: 'completed', result };
+        },
+      });
+      for (const name of ALARM_NAMES) definitions.push({
+        name, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId, effect: 'read',
+        description: `${name}: host-owned awake-Mac alarm. Mutations require the owner's fresh finalized spoken request; time is parsed from those words. Never claim a closed lid or sleeping Mac will ring.`,
+        parameters: { type: 'object', properties: { id: { type: 'string' }, fire_at_utc: { type: 'number', description: 'Optional consistency check only, UTC milliseconds.' } }, additionalProperties: false },
+        validate: validateAlarmArguments,
+        async execute(args, context) {
+          if (context.runId !== runId || !validateAlarmArguments(args) || context.signal.aborted) return { status: 'failed' as const };
+          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
+          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
+          let consumed: string | undefined;
+          const result = store.transaction(tx => {
+            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
+            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+            const call = storedCall(tx, row);
+            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision,
+              executionId: context.executionId, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
+              ...ALARM_IDENTITY, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
+            if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
+            const snapshot = validateCallRun(tx, call);
+            assertLiveIdentity(tx, call); target(snapshot, call, tx);
+            if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
+            const finish = (response: JsonObject) => complete(call as ToolCallIntent, response, ['ordinary'], tx);
+            if (name === 'list_alarms') return finish({ alarms: tx.all("SELECT id,fire_at_utc,tz,label,state FROM alarms WHERE state IN ('pending','ringing') ORDER BY fire_at_utc,id").map(alarm => ({ id: String(alarm.id), fire_at_utc: Number(alarm.fire_at_utc), tz: String(alarm.tz), label: String(alarm.label), state: String(alarm.state) })) });
+            const now = options.alarms?.now() ?? Date.now();
+            const ask = alarmGate.authorize(runId, name, now);
+            if (!ask) return finish({ status: 'refused', reason: 'owner_alarm_intent_required' });
+            if (name === 'cancel_alarm') {
+              if (!args.id || !tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND state IN ('pending','ringing')", [args.id])) return finish({ status: 'refused', reason: 'alarm_not_active' });
+              consumed = ask.journalId;
+              return finish({ status: 'cancelled', id: args.id, say: 'Alarm cancelled.' });
+            }
+            const parsed = parseAlarmTime(name === 'snooze_alarm' ? ask.words.replace(/\bfor\b/i, 'in') : ask.words, now, Intl.DateTimeFormat().resolvedOptions().timeZone, args.fire_at_utc);
+            if (parsed.status !== 'ready') return finish(parsed);
+            let alarmTz = parsed.tz;
+            if (name === 'snooze_alarm') {
+              const old = args.id ? tx.get("SELECT tz FROM alarms WHERE id=? AND state IN ('pending','ringing')", [args.id]) : undefined;
+              if (!old || !args.id) return finish({ status: 'refused', reason: 'alarm_not_active' });
+              alarmTz = String(old.tz);
+              tx.run("UPDATE alarms SET state='done' WHERE id=?", [args.id]);
+            }
+            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [context.executionId, parsed.fireAtUtc, alarmTz, '', ask.journalId]);
+            consumed = ask.journalId;
+            const health = options.alarms?.health() ?? { degraded: true, reasons: ['shell_unreachable'] };
+            return finish({ status: 'set', id: context.executionId, fire_at_utc: parsed.fireAtUtc, tz: alarmTz,
+              say: parsed.confirmation + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });
+          });
+          if (consumed) { alarmGate.consume(runId, consumed); options.alarms?.recheck(); }
+          return { status: 'completed' as const, result };
         },
       });
       // Host-native open actions: the frame goes down the local Live socket and the ack is the result.

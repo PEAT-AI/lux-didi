@@ -57,3 +57,39 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
   }
   return { status: 'ready', fireAtUtc, tz, confirmation };
 }
+
+export const ALARM_NAMES = ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm'] as const;
+export type AlarmToolName = typeof ALARM_NAMES[number];
+export const ALARM_IDENTITY = { accountId: 'gateway:live-voice', resourceId: 'owner-alarms' } as const;
+interface OwnerAsk { journalId: string; words: string; at: number }
+/** Only the finalized microphone transcription branch may feed this authority window. */
+export class AlarmOwnerGate {
+  private turns = new Map<string, OwnerAsk[]>();
+  observeOwnerFinal(session: string, journalId: string, words: string, at: number): void {
+    const old = (this.turns.get(session) ?? []).filter(turn => at - turn.at <= 120000);
+    this.turns.set(session, [...old, { journalId, words: words.slice(0, 2000), at }].slice(-2));
+  }
+  authorize(session: string, operation: AlarmToolName, now: number): OwnerAsk | undefined {
+    const turns = this.turns.get(session) ?? [];
+    const last = turns.at(-1);
+    if (!last || now < last.at || now - last.at > 120000) return;
+    const words = turns.map(turn => turn.words).join(' ');
+    const pattern = operation === 'set_alarm' ? /\bwake me\b|\b(?:set|make|create)\b.*\balarm\b/i
+      : operation === 'cancel_alarm' ? /\b(?:cancel|delete|remove|stop)\b.*\balarm\b/i
+      : operation === 'snooze_alarm' ? /\bsnooze\b/i : /./;
+    return pattern.test(words) ? { ...last, words } : undefined;
+  }
+  consume(session: string, journalId: string): void {
+    if (this.turns.get(session)?.at(-1)?.journalId === journalId) this.turns.delete(session);
+  }
+  clear(session: string): void { this.turns.delete(session); }
+}
+
+export interface AlarmArguments { id?: string; fire_at_utc?: number }
+export function validateAlarmArguments(args: unknown): args is AlarmArguments {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+  const value = args as Record<string, unknown>;
+  return Object.keys(value).every(key => key === 'id' || key === 'fire_at_utc')
+    && (value.id === undefined || typeof value.id === 'string' && value.id.length > 0 && value.id.length < 200)
+    && (value.fire_at_utc === undefined || typeof value.fire_at_utc === 'number' && Number.isFinite(value.fire_at_utc));
+}

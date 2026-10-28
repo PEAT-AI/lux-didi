@@ -502,13 +502,14 @@ const ANSWER_AUDIO_HOLD_MS = 3_000;
 const CLAIM_WITHOUT_CALL_MS = 3_000;
 /**
  * C-TURN8, C-CLAIMS9 outcome 1: the class of first-person lookup announcements, not a list of exact sentences.
- * "let me", "I'll", "I'm going to" or "I'm" plus a lookup verb is a promise to act, and so is the "give me a
- * moment" form. Past tense ("I checked"), another person ("you can check") and "let me know" are not her own
- * lookup, and "I'll see you" is a farewell, so bare "see" waits for a question word.
+ * "let me", "let's", "I'll", "I'm going to" or "I'm" plus a lookup verb is a promise to act, and so is the
+ * "give me a moment" form. Past tense ("I checked"), another person ("you can check") and "let me know" are
+ * not her own lookup, and "I'll see you" is a farewell, so bare "see" waits for a question word.
  */
 const LOOKUP_VERBS = 'look|check|find|search|dig|try|take a look|pull (?:up|(?:that|this|it) up)';
 const LOOKUP_CLAIM = new RegExp([
   `\\blet me (?:${LOOKUP_VERBS}|see)\\b`,
+  `\\blet'?s (?:${LOOKUP_VERBS}|see)\\b`,
   `\\bi(?:'?ll| will) (?:${LOOKUP_VERBS})\\b`,
   `\\bi(?:'?ll| will) see (?:if|what|whether)\\b`,
   `\\bi(?:'?m| am) going to (?:${LOOKUP_VERBS}|see (?:if|what|whether))\\b`,

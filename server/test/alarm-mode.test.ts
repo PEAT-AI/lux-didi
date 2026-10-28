@@ -1,3 +1,4 @@
+import { toolGroupNames } from '../prompt/runtime-context.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -38,5 +39,9 @@ test('alarm mode: only the display name and scheduled time enter setup instructi
 
 test('alarm guidance names all four tools and states the sleep and closed-lid limits', async () => {
   const { NAYA_VOICE_TOOLS } = await import('../prompt/live-persona.js');
-  assert.ok(NAYA_VOICE_TOOLS.includes('set_alarm/list_alarms/cancel_alarm/snooze_alarm may fail asleep or lid closed.'));
+  assert.ok(NAYA_VOICE_TOOLS.includes('You can set, list, cancel and snooze an alarm by voice; it rings only on an awake Mac.'));
+});
+
+test('alarm tools name their runtime capability group', () => {
+  for (const name of ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm']) assert.deepEqual(toolGroupNames([name]), ['alarms']);
 });

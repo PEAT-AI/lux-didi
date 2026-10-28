@@ -125,7 +125,8 @@ export function toolGroupNames(toolNames: readonly string[]): string[] {
   const groups: string[] = [];
   const add = (group: string): void => { if (!groups.includes(group)) groups.push(group); };
   for (const name of toolNames) {
-    if (name.startsWith('gmail_')) add('mail');
+    if (['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm'].includes(name)) add('alarms');
+    else if (name.startsWith('gmail_')) add('mail');
     else if (name.startsWith('calendar_')) add('calendar');
     else if (name.startsWith('mattermost_')) add('team chat');
     else if (name === 'search_knowledge' || name === 'get_insight') add('knowledge base');

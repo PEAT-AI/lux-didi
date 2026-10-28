@@ -461,11 +461,12 @@ describe('openai gpt-live adapter', () => {
 
   test('#1023: the opening directive asks for one short dry line, never a canned greeting', () => {
     assert.match(FRESH_OPENING, /twelve words at most/);
-    assert.match(FRESH_OPENING, /^Start the call /, 'written as an instruction');
-    assert.match(FRESH_OPENING, /no greeting formula/);
-    assert.match(FRESH_OPENING, /no offer of help/);
-    assert.match(FRESH_OPENING, /no tool call before it/);
-    assert.match(FRESH_OPENING, /a subject from the earlier conversation above in new words/,
+    assert.match(FRESH_OPENING, /^Internal startup direction, not words to speak:/);
+    assert.doesNotMatch(FRESH_OPENING, /\b(start the call|give me|say |tell him|speak |after that line, wait)\b/i, 'no imperative that can be mistaken for the spoken opener');
+    assert.match(FRESH_OPENING, /No greeting formula/);
+    assert.match(FRESH_OPENING, /offer of help/);
+    assert.match(FRESH_OPENING, /tool call precedes it/);
+    assert.match(FRESH_OPENING, /subject comes from an opening option or earlier conversation, in new words/,
       'the seed history is an allowed subject, so a pending summary still grounds the line');
     assert.doesNotMatch(FRESH_OPENING, /\b(hello|hi|hey|good morning|good evening|how can i help|what can i do)\b/i);
   });
@@ -475,8 +476,8 @@ describe('openai gpt-live adapter', () => {
     // call's closing line.
     assert.doesNotMatch(FRESH_OPENING, /stop and listen/u);
     assert.doesNotMatch(FRESH_OPENING, /the last thing you and the owner were on/u);
-    assert.match(FRESH_OPENING, /never its closing lines/u);
-    assert.match(FRESH_OPENING, /never anything about stopping, ending or listening/u);
+    assert.match(FRESH_OPENING, /never the closing lines/u);
+    assert.match(FRESH_OPENING, /or stopping, ending or listening/u);
     assert.match(FRESH_OPENING, /when he speaks first, answer his words/u);
     assert.doesNotMatch(FRESH_OPENING, /[\u2013\u2014]/u);
   });

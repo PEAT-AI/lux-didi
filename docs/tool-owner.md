@@ -91,3 +91,9 @@ The host parses time in its system IANA zone and commits a fixed UTC instant. Se
 Per W11-R5, a new alarm session carries only alarm instructions, owner display name and scheduled time in non-user setup instructions. An already-live session receives no injected text or rebuild: local chime and menu state continue, with `live_session_no_channel` degradation until owner speech acknowledges it. The generic host-note prefix is not a non-user provider channel and is not used for alarm speech.
 
 These are awake-Mac alarms: closed lids, manual sleep, shutdown and unavailable local services may prevent ringing. A denied notification, failed idle-sleep assertion or unreachable shell is disclosed in the committed receipt. See [voice alarms](alarm.md) for storage, recovery, diagnostics and synthetic verification.
+
+### Live catalog coverage
+
+The host declares `set_alarm`, `list_alarms`, `cancel_alarm` and `snooze_alarm` through the same live registry composition as its other owner-facing tools. Both Gemini setup and OpenAI responses delegation receive these declarations. Alarms ring only on an awake Mac; finalized owner speech authorizes mutations and the host parses the time.
+
+`LIVE_NOT_MODEL_FACING` in `server/tools/declarations.ts` is the single explicit exception list for registered internal reads, with a reason per name. Research owns those reads. Release 10 removes `remember_note` and `save_to_vault` from the live registry; `stage_lux_note` is the live vault-write path. The catalog guard in `server/test/tools-builtin-intent.test.ts`, run by `scripts/check-tool-owner.sh`, compares real host registrations with both adapters' first fake-provider wire frames. New registered owner tools must reach that wire catalog or have an explicit exception.

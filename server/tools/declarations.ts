@@ -6,6 +6,34 @@ import { isToolFailureCode } from '../adapters/model/types.js';
 import { hostLogEvent } from './host-events.js';
 import type { Authority, DataClass, FunctionDeclaration, HostContext, JsonObject, ModelControl, Part, ToolCallIntent, ToolCallJournal, ToolCallRefusal, ToolDefinition, ToolOutcome, ToolRecord, ToolResultBinding, ToolResultGate, ToolResultRef, LoopResult } from '../adapters/model/types.js';
 
+/** Internal reads remain dispatchable by research, not directly callable by the voice model.
+ * The provider-wire catalog guard requires every omitted registered name to be explained here. */
+export const LIVE_NOT_MODEL_FACING: Readonly<Record<string, string>> = Object.freeze({
+  conversation_history: 'Research owns local conversation recall.',
+  people_lookup: 'Research resolves people against the host roster.',
+  search_knowledge: 'Research owns knowledge search.',
+  get_insight: 'Research owns knowledge detail.',
+  gmail_get_profile: 'Research owns mailbox identity reads.',
+  gmail_search_messages: 'Research owns mail search.',
+  gmail_read_message: 'Research owns mail detail.',
+  calendar_list_calendars: 'Research owns calendar discovery.',
+  calendar_list_events: 'Research owns calendar reads.',
+  drive_search_files: 'Research owns Drive search.',
+  drive_get_file: 'Research owns Drive detail.',
+  mattermost_whoami: 'Research owns team-chat identity reads.',
+  mattermost_get_channel_history: 'Research owns channel reads.',
+  mattermost_get_thread: 'Research owns thread reads.',
+  mattermost_search: 'Research owns team-chat search.',
+  mattermost_list_channels: 'Research owns channel discovery.',
+  mattermost_resolve_person: 'Research owns team-chat person resolution.',
+  mattermost_conversation_overview: 'Research owns person conversation reads.',
+  ask_mongoose: 'Research owns company knowledge questions.',
+  search_mongoose: 'Research owns company knowledge search.',
+  get_knowledge_item: 'Research owns company knowledge detail.',
+  get_knowledge_item_schema: 'Research owns company knowledge schema reads.',
+  read_knowledge_body: 'Research owns company knowledge body reads.',
+});
+
 /** Provider schemas are presentation only. Validation and approval retain the originals. */
 /**
  * The Gemini provider dialect: uppercase scalar type names, ARRAY/BOOLEAN/enum collapsed to STRING, and the

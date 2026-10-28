@@ -22,7 +22,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { noteModelOutput, noteOwnerWords, noteOwnerPartial, ownerTurnWords, webOwnerWords, resolveWebOpen, NativeActionBus, openWebFailure, nativeActions } from '../tools/open.js';
 import type { LiveAuthority } from '../tools/types.js';
 import type { ToolCallIntent } from '../adapters/model/types.js';
-import { runToolCalls } from '../tools/declarations.js';
+import { LIVE_NOT_MODEL_FACING, runToolCalls } from '../tools/declarations.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { beginHandleSession, endHandleSession, mintOpenLine, exposeHandles } from '../tools/open-handles.js';
 import { fixture } from './live-voice-fixture.js';
@@ -235,10 +235,22 @@ for (const provider of ['gemini', 'openai'] as const) test(`live owner catalog r
   const declarations = provider === 'gemini' ? frame.setup!.tools!.flatMap(group => group.functionDeclarations) : frame.session!.delegation.responses.tools!;
   const names = declarations.map(tool => tool.name);
   for (const tool of owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }))) {
-    if (tool.name !== 'conversation_history') assert.ok(names.includes(tool.name), `${provider} omitted registered owner tool ${tool.name}`);
+    if (!Object.hasOwn(LIVE_NOT_MODEL_FACING, tool.name)) assert.ok(names.includes(tool.name), `${provider} omitted registered owner tool ${tool.name}`);
   }
   for (const name of ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm']) assert.ok(names.includes(name), `${provider}: ${name}`);
   assert.ok(!names.includes('remember_note') && !names.includes('save_to_vault'));
   f.send(provider === 'gemini' ? { setupComplete: {} } : { type: 'session.started' });
   await attachment.ready;
+  if (provider === 'gemini') {
+    // The fake provider selects only an advertised tool; the host receives real wire events,
+    // parses the owner's words, journals the call and commits the alarm in a synthetic store.
+    await f.frame(2); // startup nudge
+    f.send({ serverContent: { inputTranscription: { text: 'wake me at 7 tomorrow morning', finished: true }, turnComplete: true } });
+    f.send({ toolCall: { functionCalls: [{ id: 'synthetic-wake', name: 'set_alarm', args: {} }] } });
+    await f.frame(3);
+    const response = f.frames[2] as { toolResponse: { functionResponses: { name: string; response: unknown }[] } };
+    assert.equal(response.toolResponse.functionResponses[0]!.name, 'set_alarm');
+    assert.equal(store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1, JSON.stringify(response));
+    assert.equal(store.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM tool_calls WHERE tool_name='set_alarm'")?.n), 1);
+  }
 });

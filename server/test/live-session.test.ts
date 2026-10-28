@@ -4685,8 +4685,10 @@ test('R6: a source that settles after the first answer is appended once, and sai
   assert.equal(late[0]!['source'], 'chat');
   assert.equal(late[0]!['destination'], 'response', 'a quiet turn hears it through the response channel, the one the provider accepts');
   assert.deepEqual(fake.thinking, [], 'no provider append carries a late finding (#438)');
-  assert.deepEqual(fake.texts.map(text => text.split(':')[0]), ['Late findings from your lookup, not supplied by the owner'], 'one spoken line, naming the source');
-  assert.deepEqual(fake.texts.map(text => text.split(':')[0]), ['[host note, not the owner] One more thing from chat'], 'one spoken line, naming the source');
+  assert.equal(fake.texts.length, 1, 'exactly one response carries the late findings');
+  assert.match(fake.texts[0]!, /^\[host note, not the owner\] Late findings from your lookup, not supplied by the owner:\nfrom your chat: /u, 'W6 host framing and W5 per-item source framing both survive');
+  assert.equal(fake.texts[0]!.split('\n').length, 2, 'the one returned chat item is projected exactly once');
+  assert.match(fake.texts[0]!.split('\n')[1]!, /^from your chat: .*Standup at ten/u, 'every returned item keeps its source and finding');
   assert.deepEqual(fake.commentary, [], 'the refused commentary append is no longer the door a finding takes');
   h.owner.revoke(session.liveSessionId);
 });
@@ -4757,8 +4759,10 @@ test('#472: a late source result reaches the model while the session is live', a
   assert.equal(late.length, 1, 'one receipt for the source that landed later');
   assert.equal(late[0]!['source'], 'chat');
   assert.notEqual(late[0]!['destination'], 'dropped', `the late result is not dropped: ${JSON.stringify(late[0])}`);
-  assert.ok(fake.texts.some(text => text.includes('from your chat:')), 'the model carries the late finding on the response channel');
-  assert.ok(fake.texts.some(text => text.startsWith('[host note, not the owner] One more thing from your chat:')), 'the model carries the late finding on the response channel');
+  assert.equal(fake.texts.length, 1, 'exactly one response carries the late findings');
+  assert.match(fake.texts[0]!, /^\[host note, not the owner\] Late findings from your lookup, not supplied by the owner:\nfrom your chat: /u, 'W6 host framing and W5 per-item source framing both survive');
+  assert.equal(fake.texts[0]!.split('\n').length, 2, 'the one returned chat item is projected exactly once');
+  assert.match(fake.texts[0]!.split('\n')[1]!, /^from your chat: .*Standup at ten/u, 'every returned item keeps its source and finding');
   h.owner.revoke(session.liveSessionId);
 });
 

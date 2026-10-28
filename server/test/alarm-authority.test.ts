@@ -32,3 +32,14 @@ test('alarm authority: split finalized turns join, but consumed asks cannot auth
   gate.observeOwnerFinal('s', 'j3', 'cancel the alarm', 2002);
   assert.ok(gate.authorize('s', 'cancel_alarm', 2002));
 });
+
+test('alarm authority: an unrelated latest owner turn cannot reuse an earlier unresolved ask', () => {
+  for (const [operation, words] of [
+    ['set_alarm', 'wake me at 8'], ['cancel_alarm', 'cancel my alarm'], ['snooze_alarm', 'snooze my alarm in five minutes'],
+  ] as const) {
+    const gate = new AlarmOwnerGate();
+    gate.observeOwnerFinal('s', 'j1', words, 1000);
+    gate.observeOwnerFinal('s', 'j2', 'what is the weather', 1001);
+    assert.equal(gate.authorize('s', operation, 1001), undefined);
+  }
+});

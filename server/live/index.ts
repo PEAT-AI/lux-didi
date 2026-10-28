@@ -4699,6 +4699,14 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
     const limits = this.#profile.limits;
     if (handle.journalEvents + 1 > limits.journalMaxEvents || handle.journalBytes + bytes > limits.journalMaxBytes) return 'overflow';
     const now = this.#now();
+    // An unsolicited opening answer has no owner utterance to open its trace turn.
+    if (event.type === 'outputTranscription' && text?.length && handle.connection.turnId === undefined && handle.traceOutputTurnId === undefined) {
+      const turnIndex = ++handle.connection.turnIndex;
+      const turnId = `${handle.liveSessionId}:t${turnIndex}`;
+      handle.connection.turnId = turnId;
+      handle.traceOutputTurnId = turnId;
+      this.#receipt(handle, 'turn.opened', { turnId }, { origin: 'assistant', turnIndex, openedAt: now, monoMs: hostMonotonicMs() });
+    }
     const events = handle.journalEvents + 1;
     const total = handle.journalBytes + bytes;
     // W6 item 6: the composed note acts on the persisted turn, so the hook never nests a transaction.

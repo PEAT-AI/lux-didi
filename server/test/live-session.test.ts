@@ -4691,7 +4691,7 @@ test('R6: a source that settles after the first answer is appended once, and sai
   assert.deepEqual(reply['pending'], ['chat'], `the reply names the source it is still reading: ${JSON.stringify(reply).slice(0, 500)}`);
   assert.ok((reply['findings'] as unknown[]).length > 0, 'and carries what is already in hand');
   assert.equal(receipts.filter(entry => entry['event'] === 'research_first_answer').length, 1, 'one receipt for the answer point');
-  assert.deepEqual(fake.texts.filter(text => text.startsWith('One more thing from')), [], 'nothing is spoken before the reader lands');
+  assert.deepEqual(fake.texts.filter(text => text.startsWith('Late findings from your lookup')), [], 'nothing is spoken before the reader lands');
   release();
   await settlePort();
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
@@ -4699,7 +4699,7 @@ test('R6: a source that settles after the first answer is appended once, and sai
   assert.equal(late[0]!['source'], 'chat');
   assert.equal(late[0]!['destination'], 'response', 'a quiet turn hears it through the response channel, the one the provider accepts');
   assert.deepEqual(fake.thinking, [], 'no provider append carries a late finding (#438)');
-  assert.deepEqual(fake.texts.map(text => text.split(':')[0]), ['One more thing from chat'], 'one spoken line, naming the source');
+  assert.deepEqual(fake.texts.map(text => text.split(':')[0]), ['Late findings from your lookup, not supplied by the owner'], 'one spoken line, naming the source');
   assert.deepEqual(fake.commentary, [], 'the refused commentary append is no longer the door a finding takes');
   h.owner.revoke(session.liveSessionId);
 });
@@ -4740,7 +4740,7 @@ test('#472: a late result for a run the model stopped is named a cut, never a so
   const journal = safeEvent(late.at(-1));
   assert.ok(journal, 'the cut receipt passes the host log whitelist, so it lands in the journal');
   assert.equal(journal['reason'], 'run_cut', 'and the journal keeps the reason the drop point named');
-  assert.deepEqual(fake.texts.filter(text => text.startsWith('One more thing from')), [], 'and nothing is claimed to the model for a read the stop voided');
+  assert.deepEqual(fake.texts.filter(text => text.startsWith('Late findings from your lookup')), [], 'and nothing is claimed to the model for a read the stop voided');
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -4770,7 +4770,7 @@ test('#472: a late source result reaches the model while the session is live', a
   assert.equal(late.length, 1, 'one receipt for the source that landed later');
   assert.equal(late[0]!['source'], 'chat');
   assert.notEqual(late[0]!['destination'], 'dropped', `the late result is not dropped: ${JSON.stringify(late[0])}`);
-  assert.ok(fake.texts.some(text => text.startsWith('One more thing from chat')), 'the model carries the late finding on the response channel');
+  assert.ok(fake.texts.some(text => text.includes('from your chat:')), 'the model carries the late finding on the response channel');
   h.owner.revoke(session.liveSessionId);
 });
 

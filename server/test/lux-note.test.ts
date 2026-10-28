@@ -15,7 +15,7 @@ import { runToolCalls } from '../tools/declarations.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import type { RunAcceptance, StageNotePort } from '../tools/types.js';
 import {
-  AUTHORIZATION_MISSING_GUIDANCE,
+  AUTHORIZATION_MISSING_GUIDANCE, NoteRequestGate, NOTE_PROVENANCE, noteReadbackText, readbackMatches,
   beginStage, composedAsk, confirmAsk, CONFIRM_MAX_TOKENS, CONFIRM_WINDOW_MS, currentOwnerTurn, freezeNote, NOTE_MAX_CHARS, OWNER_WINDOW_CHARS,
   noteOwnerFragment, noteOwnerUtterance, noteReadback, noteSegmentSignal, noteSettle, stageComposedNote, STAGE_NOTE_IDENTITY,
   validateStageNote, type PlaybackSignal, type ReadbackBinding,
@@ -513,4 +513,63 @@ test('C-LUXSAVE11: confirmation is a closed phrase, not an arbitrary affirmative
   for (const text of ['right', 'perfect', 'go', 'do', 'yes but not yet', 'yes save it no', 'yes save it after lunch']) {
     assert.equal(confirmAsk(text), 'cancel', text);
   }
+});
+
+
+test('C-LUXSAVE11: host request tokens merge provider splits and are single use', () => {
+  const gate = new NoteRequestGate();
+  gate.observeOwner(10, 11, 'save all');
+  gate.observeOwner(10, 12, 'of this in great detail');
+  assert.deepEqual(gate.claim(), { ownerText: 'save all of this in great detail', ownerJournalIds: [11, 12], watermark: 12 });
+  assert.equal(gate.claim(), undefined);
+  gate.observeOwner(10, 13, 'save that too');
+  assert.equal(gate.claim(), undefined, 'a consumed block cannot mint another token');
+  gate.observeOwner(20, 21, 'save this');
+  assert.equal(gate.claim()?.watermark, 21, 'a new save block can mint a token');
+});
+
+test('C-LUXSAVE11: intervening external reads, non-save blocks and disconnect revoke authority', () => {
+  for (const revoke of [(gate: NoteRequestGate) => gate.externalRead(),
+    (gate: NoteRequestGate) => gate.observeOwner(20, 21, 'what time is it'),
+    (gate: NoteRequestGate) => gate.disconnect()]) {
+    const gate = new NoteRequestGate();
+    gate.observeOwner(1, 2, 'save this');
+    revoke(gate);
+    assert.equal(gate.claim(), undefined);
+    gate.observeOwner(30, 31, 'store all of this');
+    assert.equal(gate.claim()?.watermark, 31);
+  }
+});
+
+test('C-LUXSAVE11 W12-R2: external results taint owner-only citations and every paragraph is read', () => {
+  const gate = new NoteRequestGate();
+  gate.externalResult();
+  gate.observeOwner(1, 2, 'save all of this');
+  const result = beginStage({ stageId: 'tainted', sessionId: 'synthetic', ownerText: gate.claim()!.ownerText,
+    title: 'Synthetic plan', body: 'First paragraph. More details.\n\nHidden budget change. Another sentence.\n\n- First bullet. Detail.\n- Second bullet. Detail.',
+    evidence: ['journal:11'], heldEvidence: HELD, enabled: true, now: 1, externalContextPresent: gate.externalContextPresent });
+  assert.equal(result.state, 'staged');
+  if (result.state !== 'staged') return;
+  assert.equal(result.note.externalContextPresent, true);
+  assert.ok(result.note.body.endsWith(NOTE_PROVENANCE));
+  const readback = noteReadbackText(result.note);
+  for (const line of ['Synthetic plan', NOTE_PROVENANCE, 'First paragraph.', 'Hidden budget change.', 'First bullet.', 'Second bullet.']) assert.ok(readback.includes(line), line);
+  assert.ok(!readback.includes('More details.'));
+  assert.equal(readbackMatches(readback, readback), true);
+  assert.equal(readbackMatches(readback, 'Would you like me to save something else?'), false);
+  assert.ok(noteReadbackText({ ...result.note, fullReadback: true }).includes('More details.'));
+  const clean = beginStage({ stageId: 'clean', sessionId: 'synthetic', ownerText: 'save this', title: 'Plan', body: 'Synthetic only.', evidence: [], heldEvidence: HELD, enabled: true, now: 1 });
+  assert.equal(clean.state, 'staged');
+  if (clean.state === 'staged') assert.equal(clean.note.body.includes(NOTE_PROVENANCE), false);
+});
+
+test('C-LUXSAVE11: split confirmation merges, trailing negation and early onset never commit', () => {
+  const first = noteOwnerUtterance(armed(), { text: 'yes', now: 3_000, onsetAt: 2_500 });
+  const pending = noteOwnerFragment(first, 3_100);
+  assert.equal(noteSettle(pending, 9_000).state, 'settling', 'partial speech suspends commit');
+  const second = noteOwnerUtterance(pending, { text: 'save it', now: 3_200, onsetAt: 3_100 });
+  assert.equal(noteSettle(second, 5_000).state, 'committed');
+  const negated = noteOwnerUtterance(second, { text: 'no', now: 3_400, onsetAt: 3_300 });
+  assert.equal(noteSettle(negated, 5_000).state, 'cancelled');
+  assert.equal(noteOwnerUtterance(armed(), { text: 'yes', now: 3_000, onsetAt: 1_000 }).state, 'cancelled');
 });

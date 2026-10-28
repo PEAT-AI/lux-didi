@@ -9,7 +9,7 @@ import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteModelOutput, n
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
 import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
-import { NoteRequestGate, noteReadbackText, readbackMatches, freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, stageComposedNote, type PlaybackSignalKind } from '../tools/lux-note.js';
+import { NoteRequestGate, noteKey, noteReadbackText, readbackMatches, freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, stageComposedNote, type PlaybackSignalKind } from '../tools/lux-note.js';
 import { NotesExporter } from '../tools/notes-export.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
@@ -2043,7 +2043,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       this.#noteSpeech.delete(handle.liveSessionId);
       this.#noteNotSaved(handle, 'readback_mismatch');
     } else if (speech.drainedAt !== undefined) {
-      this.#store.transaction(tx => saveNoteState(tx, { ...note, state: 'armed', armedAt: speech.drainedAt }));
+      const armedAt = speech.drainedAt;
+      this.#store.transaction(tx => saveNoteState(tx, { ...note, state: 'armed', armedAt }));
     }
   }
 
@@ -2052,6 +2053,13 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     if (!this.#noteSessions.has(handle.liveSessionId)) return;
     const open = this.#store.transaction(tx => openNote(tx, handle.liveSessionId));
     if (!open) return;
+    if (open.state === 'armed' && noteKey(text) === 'read it all' && (handle.inputAt ?? this.#now()) >= (open.armedAt ?? Infinity)) {
+      const next = { ...open, state: 'staged' as const, fullReadback: true, confirmationText: '' };
+      this.#store.transaction(tx => saveNoteState(tx, next));
+      this.#noteReadback.delete(handle.liveSessionId);
+      this.#noteSpeech.set(handle.liveSessionId, { stageId: open.stageId, text: '', matched: false });
+      return;
+    }
     const next = noteOwnerUtterance(open, { text, now: this.#now(), ...(handle.inputAt === undefined ? {} : { onsetAt: handle.inputAt }) });
     if (next === open) return;
     this.#store.transaction(tx => saveNoteState(tx, next));

@@ -236,6 +236,7 @@ export interface NoteState {
   readonly ownerJournalIds?: readonly number[];
   readonly watermark?: number;
   readonly confirmationText?: string;
+  readonly fullReadback?: boolean;
 }
 
 export type StageCode = 'not_enabled' | 'authorization_missing' | 'authorization_refused' | 'append_unsupported'
@@ -374,6 +375,7 @@ export const luxNoteMigrations: readonly SchemaMigration[] = [{
   "ALTER TABLE lux_note_stages ADD COLUMN owner_journal_ids_json TEXT NOT NULL DEFAULT '[]'",
   'ALTER TABLE lux_note_stages ADD COLUMN conversation_watermark INTEGER NOT NULL DEFAULT 0',
   "ALTER TABLE lux_note_stages ADD COLUMN confirmation_text TEXT NOT NULL DEFAULT ''",
+  'ALTER TABLE lux_note_stages ADD COLUMN full_readback INTEGER NOT NULL DEFAULT 0',
 ] }];
 
 const noteFromRow = (row: { readonly [key: string]: unknown }): NoteState => ({
@@ -387,6 +389,7 @@ const noteFromRow = (row: { readonly [key: string]: unknown }): NoteState => ({
   ownerJournalIds: JSON.parse(String(row['owner_journal_ids_json'] ?? '[]')) as number[],
   watermark: Number(row['conversation_watermark'] ?? 0),
   confirmationText: String(row['confirmation_text'] ?? ''),
+  fullReadback: Number(row['full_readback'] ?? 0) === 1,
   ...(row['code'] === null || row['code'] === undefined ? {} : { code: String(row['code']) }),
 });
 
@@ -395,8 +398,8 @@ export function saveNoteState(tx: Transaction, note: NoteState): void {
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(stage_id) DO UPDATE SET state=excluded.state, code=excluded.code, armed_at=excluded.armed_at, settle_at=excluded.settle_at, ended_at=excluded.ended_at`,
   [note.stageId, note.sessionId, note.title, note.body, note.payload, note.payloadSha, '[]', note.state, note.code ?? null,
     note.stagedAt, note.armedAt ?? null, note.settleAt ?? null, note.endedAt ?? null]);
-  tx.run('UPDATE lux_note_stages SET external_context_present=?,owner_journal_ids_json=?,conversation_watermark=?,confirmation_text=? WHERE stage_id=?',
-    [note.externalContextPresent ? 1 : 0, JSON.stringify(note.ownerJournalIds ?? []), note.watermark ?? 0, note.confirmationText ?? '', note.stageId]);
+  tx.run('UPDATE lux_note_stages SET external_context_present=?,owner_journal_ids_json=?,conversation_watermark=?,confirmation_text=?,full_readback=? WHERE stage_id=?',
+    [note.externalContextPresent ? 1 : 0, JSON.stringify(note.ownerJournalIds ?? []), note.watermark ?? 0, note.confirmationText ?? '', note.fullReadback ? 1 : 0, note.stageId]);
 }
 
 /** The one stage this session may still act on, newest first; a closed stage is never reopened. */
@@ -450,13 +453,13 @@ export class NoteRequestGate {
 }
 
 /** Every paragraph or bullet contributes a first sentence; the model cannot choose what is read. */
-export function noteReadbackText(note: Pick<NoteState, 'title' | 'body'>): string {
+export function noteReadbackText(note: Pick<NoteState, 'title' | 'body' | 'fullReadback'>): string {
   const paragraphs = note.body.split(/\n\s*\n|\n(?=\s*(?:[-*+]\s|\d+[.)]\s))/u)
     .map(paragraph => paragraph.trim()).filter(Boolean);
   const tainted = paragraphs.includes(NOTE_PROVENANCE);
   const sentences = paragraphs.filter(paragraph => paragraph !== NOTE_PROVENANCE).map(paragraph => {
     const text = paragraph.replace(/^\s*(?:[-*+]\s|\d+[.)]\s)/u, '');
-    return text.match(/^.*?[.!?](?=\s|$)/u)?.[0] ?? text;
+    return note.fullReadback ? text : text.match(/^.*?[.!?](?=\s|$)/u)?.[0] ?? text;
   });
   return [note.title, ...(tainted ? [NOTE_PROVENANCE] : []), ...sentences].join('\n');
 }

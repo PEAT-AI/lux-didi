@@ -852,8 +852,9 @@ test('the warm calendar digest keeps one bounded line and trims a day that does 
   assert.equal(typeof digest, 'string');
   assert.ok((digest ?? '').length <= CALENDAR_DIGEST_CHARS, 'the digest never exceeds the bound');
   assert.match(digest ?? '', /^00:00 review with the whole team 0/, 'the first event keeps its local clock time');
-  assert.match(digest ?? '', /team 10$/, 'the last event that fits is kept whole');
-  assert.equal((digest ?? '').endsWith(', '), false, 'a trimmed digest never ends on a separator');
+  assert.match(digest ?? '', /team 10, \+\d+ more$/, 'a trimmed digest says how many events it left out');
+  const more = /\+(\d+) more$/u.exec(digest ?? '');
+  assert.ok(Number(more?.[1]) > 0, 'the count names the events the bound left out');
 });
 
 test('the warm calendar digest renders the day in the host time zone', async () => {
@@ -1075,4 +1076,23 @@ test('C-OPEN 2: a Drive endpoint connects with only the Drive pair and its sourc
     rmSync(dir, { recursive: true, force: true });
     rmSync(childDir, { recursive: true, force: true });
   }
+});
+
+test('C-CAL8: the warm calendar digest keeps the next meetings ahead of the ones already past', async () => {
+  const at = Date.parse('2026-10-18T13:43:00Z');
+  const events = ['09:00', '10:00', '12:00', '14:00', '15:00', '16:00'].map((clock, index) => ({ id: 'c' + index, summary: 'synthetic ' + clock, start: { dateTime: `2026-10-18T${clock}:00Z` } }));
+  const digest = await buildCalendarDigest(digestReader(events), { now: at, timeZone: 'UTC' });
+  assert.equal(typeof digest, 'string');
+  const order = ['14:00', '15:00', '16:00', '09:00', '10:00', '12:00'].map(clock => (digest ?? '').indexOf(clock));
+  assert.ok(order.every(index => index >= 0), `every event is named: ${digest}`);
+  assert.deepEqual([...order].sort((a, b) => a - b), order, `the meetings still ahead come first: ${digest}`);
+});
+
+test('C-CAL8: a warm calendar digest that cuts ends with +N more', async () => {
+  const at = Date.parse('2026-10-18T13:43:00Z');
+  const events = Array.from({ length: 20 }, (_, index) => ({ id: 'm' + index, summary: 'synthetic meeting about the release plan ' + index, start: { dateTime: `2026-10-18T${String(10 + (index % 8)).padStart(2, '0')}:00:00Z` } }));
+  const digest = await buildCalendarDigest(digestReader(events), { now: at, timeZone: 'UTC' });
+  assert.ok((digest ?? '').length <= CALENDAR_DIGEST_CHARS, 'the digest never exceeds the bound');
+  assert.match(digest ?? '', /^1[4-7]:00 synthetic/, `the next meeting opens the digest: ${digest}`);
+  assert.match(digest ?? '', /, \+\d+ more$/, `a cut digest ends with its count: ${digest}`);
 });

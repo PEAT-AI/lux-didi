@@ -543,12 +543,13 @@ export async function readCalendarDigest(read: CalendarDigestRead | undefined, i
   // C-CAL8: the meetings still ahead come first, then the clockless all-day entries, then what is past, so a
   // bounded digest always carries the next events instead of the ones the owner already sat through.
   const now = input.now();
-  const ahead = events.filter(event => (atOf(event) ?? Number.POSITIVE_INFINITY) >= now && atOf(event) !== undefined).sort((a, b) => atOf(a)! - atOf(b)!);
-  const allDay = events.filter(event => atOf(event) === undefined);
-  const past = events.filter(event => atOf(event) !== undefined && atOf(event)! < now).sort((a, b) => atOf(a)! - atOf(b)!);
-  const lines = [...ahead, ...allDay, ...past].map(event => {
-    const summary = typeof event['summary'] === 'string' ? event['summary'].trim() : '';
-    return clockOf(event) + ' ' + (summary.length ? summary : 'untitled');
+  const timed = events.map(event => ({ event, at: atOf(event) }));
+  const ahead = timed.filter(item => item.at !== undefined && item.at >= now);
+  const allDay = timed.filter(item => item.at === undefined);
+  const past = timed.filter(item => item.at !== undefined && item.at < now);
+  const lines = [...ahead, ...allDay, ...past].map(item => {
+    const summary = typeof item.event['summary'] === 'string' ? item.event['summary'].trim() : '';
+    return clockOf(item.event) + ' ' + (summary.length ? summary : 'untitled');
   });
   if (lines.length === 0) return absent('empty');
   const digestText = (kept: number): string => (kept < lines.length ? `${lines.slice(0, kept).join(', ')}, +${lines.length - kept} more` : lines.join(', '));

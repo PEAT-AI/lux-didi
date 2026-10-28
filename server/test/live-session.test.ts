@@ -6370,7 +6370,7 @@ test('C-TURN8: a save before the owner speaks is refused no_owner_input and writ
 
 // C-TURN8: three times on 10-28 she said she was checking and no call followed. The host gives the call
 // one beat (CLAIM_WITHOUT_CALL_MS) and then says so once, inside the owner's turn.
-test('C-TURN8: a claim with no call gets exactly one correction, and only once per owner turn', async t => {
+for (const progress of ['Checking.', 'On it.', 'One sec.']) test(`C-TURN8: ${progress} with no call gets exactly one correction, and only once per owner turn`, async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-claim-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));
   t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
@@ -6389,7 +6389,7 @@ test('C-TURN8: a claim with no call gets exactly one correction, and only once p
   h.f.send({ serverContent: { inputTranscription: { text: 'what did Priya send me about the synthetic contract', finished: true } } });
   for (let attempt = 0; attempt < 200 && !turnOpen(); attempt++) await tick();
   assert.ok(turnOpen(), 'the owner turn is open before she answers it');
-  h.f.send({ serverContent: { outputTranscription: { text: "Checking.", finished: true }, turnComplete: true } });
+  h.f.send({ serverContent: { outputTranscription: { text: progress, finished: true }, turnComplete: true } });
   for (let attempt = 0; attempt < 300 && !armed(); attempt++) await tick();
   assert.ok(armed(), 'the announced lookup armed its three-second bound');
   await advance(2_000);
@@ -7355,4 +7355,5 @@ test('R9-W5 late findings all retain source and lookup provenance', () => {
 test('R9-W5 web query drops directory-only proper nouns, keeps conversational names', () => {
   assert.deepEqual(bindResearchQuery('cost for Cedarworks and Unrelatedname', 'what does Cedarworks cost'), { query: 'cost for Cedarworks and', dropped: 1 });
   assert.deepEqual(bindResearchQuery('news about Soraya', 'tell me about Soraya'), { query: 'news about Soraya', dropped: 0 });
+  assert.deepEqual(bindResearchQuery('news about Toolsource', 'Recent tool finding: Toolsource'), { query: 'news about Toolsource', dropped: 0 });
 });

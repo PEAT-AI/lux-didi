@@ -3860,6 +3860,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         if (event.type === 'outputTranscription') {
           const said = stripNonLexicalTags(event.text);
           countTurnScript(handle, said);
+          handle.researchQueryContext = `${handle.researchQueryContext ?? ''} ${said}`.slice(-12000);
           handle.claimText = `${handle.claimText} ${said}`.slice(-300);
           // C-TURN8: the response's transcript is complete, so an announced lookup has its beat from here.
           if (event.finished === true) this.#armClaimCheck(handle, event.sequence);
@@ -4681,6 +4682,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
           handle.contextToolChars += responses.reduce((sum, entry) => sum + JSON.stringify(entry.response ?? {}).length, 0);
           // #538: what the write did is the host's to read, not a receipt to log and then forget.
           const outcome = handle.session.sendToolResponse({ responses });
+          handle.researchQueryContext = `${handle.researchQueryContext ?? ''} ${responses.map(entry => JSON.stringify(entry.response)).join(' ')}`.slice(-12000);
           // #451: the function_call_output write itself, measured from the frame that asked for it.
           const askedAt = event.calls.map(call => arrivedAt.get(call.id)).find(started => started !== undefined);
           hostLogEvent({ event: 'tool_output_sent', liveSessionId: handle.liveSessionId, generation, tools: responses.length, outcome,

@@ -68,6 +68,7 @@ async function harness(t: TestContext, overrides: {
   overlay?: { schemaVersion: 1; text: string; accent?: string };
   memoryFailure?: boolean;
   vaultUnavailable?: boolean;
+  crashAfterInsert?: boolean;
 } = {}): Promise<Harness> {
   const trace: unknown[] = [];
   const detach = attachHostLogSink({ event: raw => { if (raw && typeof raw === 'object' && ['live_trace_rejected', 'lux_note_readback', 'lux_note_stage'].includes(String((raw as { event?: unknown }).event))) trace.push(raw); } });
@@ -144,7 +145,7 @@ async function harness(t: TestContext, overrides: {
   const saved: import('../tools/vault-write.js').VaultSaveArgs[] = [];
   const vaultTransport: import('../adapters/lux-write/client.js').LuxWriteTransport = {
     nearDuplicate: async () => undefined,
-    save: async args => { saved.push(args); return overrides.vaultUnavailable ? { outcome: 'unavailable' } : { outcome: 'inserted', insightId: 'synthetic-81' }; },
+    save: async args => { saved.push(args); if (overrides.crashAfterInsert) throw Error('synthetic crash after insert'); return overrides.vaultUnavailable ? { outcome: 'unavailable' } : { outcome: 'inserted', insightId: 'synthetic-81' }; },
   };
   owner = createLiveSessionOwner({ store, voice, profile, vaultTransport, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -215,9 +216,9 @@ function playback(attachment: Awaited<ReturnType<typeof attached>>['attachment']
 const candidate = { title: 'Synthetic plan', body: `The team chose the blue plan. Supporting detail.
 
 The budget is twelve units. Final detail.`, evidenceRefs: [] };
-async function stagedHost(t: TestContext, unavailable = false) {
+async function stagedHost(t: TestContext, unavailable = false, crashAfterInsert = false) {
   const clock = new RememberClock();
-  const h = await harness(t, { tools: true, scheduler: clock, vaultUnavailable: unavailable });
+  const h = await harness(t, { tools: true, scheduler: clock, vaultUnavailable: unavailable, crashAfterInsert });
   const attachedSession = await attached(h);
   for (const [owner, assistant] of [['Compare the plans', 'The blue plan fits.'], ['Explain the cost', 'It costs twelve units.'], ['What is the conclusion', 'The blue plan is the recommendation.']]) {
     await ownerBlock(h, owner!); await assistantBlock(h, assistant!);
@@ -229,9 +230,9 @@ async function stagedHost(t: TestContext, unavailable = false) {
   return { h, clock, ...attachedSession, result };
 }
 
-for (const confirmation of ['yes', 'split', 'split_no', 'wrong_readback', 'unarmed', 'early', 'unavailable'] as const) {
+for (const confirmation of ['yes', 'split', 'split_no', 'wrong_readback', 'unarmed', 'early', 'unavailable', 'read_all', 'crash'] as const) {
   test(`C-LUXSAVE11 host: delayed synthesis, tool-output readback and ${confirmation}`, async t => {
-    const { h, clock, attachment, session, result } = await stagedHost(t, confirmation === 'unavailable');
+    const { h, clock, attachment, session, result } = await stagedHost(t, confirmation === 'unavailable', confirmation === 'crash');
     assert.equal(h.requests[0]!.tools?.some(tool => tool.name === 'remember_note' || tool.name === 'save_to_vault'), false);
     assert.equal(h.requests[0]!.tools?.some(tool => tool.name === 'stage_lux_note'), true);
     const readback = String(result['readBack']);
@@ -248,11 +249,19 @@ for (const confirmation of ['yes', 'split', 'split_no', 'wrong_readback', 'unarm
       playback(attachment, 'started', 2, NOW + 100);
       h.advance(100); clock.advance(100);
       playback(attachment, 'drained', 3, NOW + 200);
-      if (['yes', 'split', 'unavailable'].includes(confirmation)) {
+      if (['yes', 'split', 'unavailable', 'read_all', 'crash'].includes(confirmation)) {
         const armed = h.store.transaction(tx => tx.get('SELECT state,code,staged_at FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
         const seen = h.store.transaction(tx => tx.all("SELECT kind,text FROM live_journal WHERE live_session_id=? AND kind IN ('outputTranscription','turnComplete') ORDER BY journal_id", [session.liveSessionId]));
         assert.equal(armed?.['state'], 'armed', JSON.stringify({ armed, seen, trace: h.trace }));
       }
+    }
+    if (confirmation === 'read_all') {
+      await ownerBlock(h, 'read it all');
+      await assistantBlock(h, `${candidate.title}\n${candidate.body}`);
+      h.advance(100); clock.advance(100);
+      playback(attachment, 'received', 4, NOW + 300, 2);
+      playback(attachment, 'started', 5, NOW + 300, 2);
+      playback(attachment, 'drained', 6, NOW + 300, 2);
     }
     await ownerBlock(h, confirmation === 'early' ? '' : 'yes');
     if (confirmation === 'split' || confirmation === 'split_no') {
@@ -260,17 +269,22 @@ for (const confirmation of ['yes', 'split', 'split_no', 'wrong_readback', 'unarm
       if (confirmation === 'split_no') await ownerBlock(h, 'no');
     }
     h.advance(2_000); clock.advance(2_000); await drain();
-    const expected = ['yes', 'split', 'unavailable'].includes(confirmation) ? 1 : 0;
+    const expected = ['yes', 'split', 'unavailable', 'read_all', 'crash'].includes(confirmation) ? 1 : 0;
     const state = h.store.transaction(tx => tx.all('SELECT state,code,armed_at,confirmation_text,settle_at FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
     assert.equal(h.saved.length, expected, JSON.stringify({ saved: h.saved, state }));
     if (expected) assert.equal(h.saved[0]!.content, candidate.body);
     const rows = h.store.transaction(tx => tx.all('SELECT * FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
     assert.equal(rows.length, 1);
     assert.equal(h.store.transaction(tx => tx.all('SELECT * FROM entries')).length, 0, 'no local memory fallback');
+    if (expected) await until(() => JSON.stringify(h.f.frames).includes(confirmation === 'unavailable' ? 'vault_unavailable' : confirmation === 'crash' ? 'outcome_unknown' : 'synthetic-81'));
     const spokenInstructions = JSON.stringify(h.f.frames);
     if (confirmation === 'unavailable') {
       assert.ok(spokenInstructions.includes('vault_unavailable'));
       assert.ok(!spokenInstructions.includes('Saved \\"Synthetic plan'));
+    } else if (confirmation === 'crash') {
+      assert.ok(spokenInstructions.includes('outcome_unknown'));
+      await ownerBlock(h, 'yes'); h.advance(2_000); clock.advance(2_000); await drain();
+      assert.equal(h.saved.length, 1, 'a retry after an uncertain commit cannot dispatch a second insert');
     } else if (expected) {
       assert.ok(spokenInstructions.includes('synthetic-81'));
       assert.ok(spokenInstructions.includes('Synthetic plan'));
@@ -314,7 +328,8 @@ test('C-LUXSAVE11 host: existing local memories remain readable after retiring t
 
 for (const order of ['read_then_save', 'save_then_read'] as const) {
   test(`C-LUXSAVE11 host: ${order} controls authority while external results always taint`, async t => {
-    const h = await harness(t, { tools: true });
+    const clock = new RememberClock();
+    const h = await harness(t, { tools: true, scheduler: clock });
     const { session, attachment } = await attached(h);
     await ownerBlock(h, order === 'save_then_read' ? 'save all of this' : 'find the synthetic record');
     const external = await call(h, 'research', { action: 'start', question: 'What does Lux knowledge say about the synthetic plan?', topic: 'synthetic plan', sources: 'knowledge', lookups: [{ source: 'knowledge', query: 'synthetic plan' }] });
@@ -330,8 +345,21 @@ for (const order of ['read_then_save', 'save_then_read'] as const) {
       assert.ok(String(result['body']).endsWith('Provenance: this note includes content from mail, web or chat read in that session.'));
       const row = h.store.transaction(tx => tx.get('SELECT external_context_present FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
       assert.equal(row?.['external_context_present'], 1, 'owner-only citations cannot clear host taint');
+      await assistantBlock(h, String(result['readBack']));
+      playback(attachment, 'received', 1, NOW);
+      playback(attachment, 'started', 2, NOW);
+      playback(attachment, 'drained', 3, NOW);
+      await ownerBlock(h, 'yes');
+      h.advance(2_000); clock.advance(2_000);
+      await until(() => h.saved.length === 1);
+      assert.equal(h.saved[0]!.content, result['body']);
+      const receipt = h.store.transaction(tx => tx.get('SELECT external_context_present,candidate_digest FROM vault_writes WHERE live_session_id=?', [session.liveSessionId]));
+      const digest = h.store.transaction(tx => tx.get('SELECT payload_sha256 FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
+      assert.equal(receipt?.['external_context_present'], 1);
+      assert.equal(receipt?.['candidate_digest'], digest?.['payload_sha256']);
+
     }
-    assert.equal(h.saved.length, 0);
+    assert.equal(h.saved.length, order === 'read_then_save' ? 1 : 0);
     attachment.close();
   });
 }

@@ -3970,38 +3970,13 @@ test('P3: an inaudible output frame never puts the orb in SPEAKING, and the turn
 
 // --- Q5-R4: a fresh call never repeats the last calls' openers --------------------------------
 
-test('Q5-R4: the opener context names at most three earlier openers, one or two sentences each, and stays under 450 chars', () => {
-  assert.equal(openersNote([]), undefined, 'no earlier call means no context at all');
-  const one = openersNote(['Morning. The release branch merged cleanly. A third line follows.']);
-  assert.equal(one!.includes('Morning. The release branch merged cleanly.'), true, 'two short sentences are carried so the subject shows');
-  assert.equal(one!.includes('A third line'), false, 'a third sentence is not carried');
-  const three = openersNote(['Morning. Then more.', 'Evening. Then more.', 'Night. A third call.', 'Dawn. A fourth call.']);
-  assert.equal(three!.split('"').length - 1, 6, 'only the three most recent openers are quoted');
-  assert.equal(three!.includes('Dawn.'), false, 'the fourth call is beyond the three the host passes');
-  assert.ok(three!.startsWith('Open on a different subject and different words than these earlier openers:'), 'the note asks for a different subject, not only different words');
-  const long = openersNote([`${'A'.repeat(200)} first.`, `${'B'.repeat(200)} second.`, `${'C'.repeat(200)} third.`]);
-  assert.ok(long!.length <= OPENER_CONTEXT_CHARS, `the note is bounded at ${OPENER_CONTEXT_CHARS} chars (${long!.length})`);
-  assert.ok(!long!.includes('B'), 'an opener that does not fit is dropped whole, never cut mid sentence');
-});
-
-test('L8-09/L11-05: the earlier-openers note names one sentence once, even when two calls opened with it', () => {
-  const note = openersNote(['Morning. The release branch merged cleanly.', 'Morning.  The release branch merged cleanly.', 'Evening. The deck is out.'],
-    ['the release branch merge', 'the release branch merge', 'the deck']);
-  assert.equal(note!.split('Morning. The release branch merged cleanly.').length - 1, 1, `a repeated opener is quoted once: ${note}`);
-  assert.ok(note!.includes('Evening. The deck is out.'), 'a different opener is still named');
-});
-
-test('3u: the anti-repeat note names the topic each earlier opener came from, still under the cap', () => {
-  const note = openersNote(['Morning. The release branch merged cleanly.'], ['the release branch merge']);
-  assert.ok(note!.includes('"Morning. The release branch merged cleanly."'), 'the sentence is still quoted');
-  assert.ok(note!.includes('(about the release branch merge)'), 'the topic the earlier plan offered is named beside it');
-  assert.ok(note!.length <= OPENER_CONTEXT_CHARS, `the note stays bounded (${note!.length})`);
-  const unnamed = openersNote(['Morning. Then more.'], [undefined]);
-  assert.equal(unnamed!.includes('(about'), false, 'no topic is invented for an opener the plan cannot name');
-  const long = openersNote([`${'A'.repeat(200)} first.`, `${'B'.repeat(200)} second.`], [`${'C'.repeat(200)} topic.`, undefined]);
-  assert.ok(long!.length <= OPENER_CONTEXT_CHARS, `a long topic never breaks the cap (${long!.length})`);
-  const full = openersNote([`${'A'.repeat(150)} first.`], [`${'T'.repeat(150)} topic.`]);
-  assert.ok(full!.includes(`(about ${'T'.repeat(60)})`), 'the topic is clipped to one short clause');
+test('C-CONVO9: earlier openers carry only closed topic classes, never sentences or free text', () => {
+  assert.equal(openersNote([]), undefined);
+  const note = openersNote(['Morning. The synthetic branch merged.', 'My tools failed again.'], ['the synthetic branch merge', 'tool_failure']);
+  assert.ok(note);
+  assert.doesNotMatch(note, /Morning|synthetic|My tools|branch merge/);
+  assert.match(note, /tool_failure/);
+  assert.ok(note.length <= OPENER_CONTEXT_CHARS);
 });
 
 test('3u: consecutive starts offer different stored open loops and record the plan as metadata', async t => {

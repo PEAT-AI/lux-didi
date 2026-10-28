@@ -278,6 +278,10 @@ describe('openai gpt-live adapter', () => {
     const creates = (): number => f.frames.filter(frame => frame['type'] === 'response.create').length;
     const before = creates();
     session.sendText({ text: 'Synthetic late line.' });
+    await until(() => f.frames.some(frame => frame['type'] === 'response.item.create'));
+    const framed = f.frames.find(frame => frame['type'] === 'response.item.create')!;
+    assert.match(JSON.stringify(framed), /\[host note, not the owner\] Synthetic late line\./);
+
     for (let wait = 0; wait < 20; wait += 1) await tick();
     assert.equal(creates(), before, `no continuation is written while call_677 owes its output (${JSON.stringify(f.frames.map(frame => frame['event_id'] ?? frame['type']))})`);
     session.sendToolResponse({ responses: [{ id: 'call_677', name: 'research', response: { ok: true } }] });

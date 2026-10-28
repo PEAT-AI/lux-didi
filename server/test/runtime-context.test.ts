@@ -97,3 +97,10 @@ test('W6 item 14: the Connected block names the vault capability this session re
   const silent = buildRuntimeContext({ ...base, vault: { dictation: false, composed: false } });
   assert.doesNotMatch(silent, /^Vault:/mu, 'no capability line when the owner has no vault write at all');
 });
+
+ test('C-CONVO9: refused connector is absent from Connected now', () => {
+  const text = buildRuntimeContext({ now: new Date('2026-01-01T00:00:00Z'), timeZone: 'UTC', connected: ['team chat', 'web search'],
+    connectors: [{ connector: 'mattermost', state: 'refused', reasonCode: 'owner-approval-required' }] });
+  assert.equal(text.split('\n').find(line => line.startsWith('Connected now:')), 'Connected now: web search.');
+  assert.match(text, /team chat needs approval/);
+});

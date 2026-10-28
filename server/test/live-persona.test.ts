@@ -1537,3 +1537,14 @@ test('HONESTY: the rendered voice instruction carries each honesty rule once and
   for (const rule of HONESTY_RULES) assert.equal(voice.text.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
   for (const gone of HONESTY_CONTRADICTIONS) assert.equal(voice.text.includes(gone), false, `no rule contradicts it: ${gone}`);
 });
+
+test('C-CONVO9: conversational rules remain explicit inside existing ceilings', () => {
+  assert.match(NAYA_LIVE_BASE, /host note, not the owner/);
+  assert.match(NAYA_LIVE_BASE, /never agree with.*host/i);
+  assert.match(NAYA_LIVE_BASE, /at most once per call/);
+  assert.match(NAYA_LIVE_BASE, /progress phrase.*not.*reus/i);
+  assert.match(NAYA_LIVE_BASE, /under thirty seconds.*at most two spoken numbers/);
+  assert.match(NAYA_LIVE_BASE, /no backchannel words while.*speaking/i);
+  assert.match(NAYA_LIVE_BASE, /put it in a document.*stage_lux_note/i);
+  assert.match(NAYA_LIVE_BASE, /never.*mood.*physical.state/i);
+});

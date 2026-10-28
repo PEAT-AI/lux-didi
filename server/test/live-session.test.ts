@@ -2128,15 +2128,59 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   assert.equal(h.owner.lookupAuthority(session.liveSessionId), null);
 });
 
+type RefusalShape = { error?: string; fixNotForSpeech?: string; say?: string; speakingRule?: string };
+const refusalAt = (h: Harness, index: number): RefusalShape =>
+  (h.f.frames[index] as { toolResponse: { functionResponses: { response: RefusalShape }[] } }).toolResponse.functionResponses[0]!.response;
+const badInsight = (h: Harness, id: string): void => {
+  h.f.send({ toolCall: { functionCalls: [{ id, name: 'get_insight', args: { ids: '[123]', include_links: 'false' } }] } });
+};
+
 test('Live refuses undeclared tools and original-schema-invalid arguments without dispatch', async t => {
   const h = await harness(t, { tools: true }); const { attachment } = await attached(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'bad1', name: 'get_insight', args: { ids: '[123]', include_links: 'false' } }, { id: 'bad2', name: 'not_granted', args: {} }] } });
   await h.f.frame(2); assert.equal(h.calls.length, 0);
-  const response = h.f.frames[1] as { toolResponse: { functionResponses: { response: { error: string } }[] } };
-  const errors = response.toolResponse.functionResponses.map(r => r.response.error);
-  assert.match(errors[0]!, /Invalid arguments for get_insight/, 'an invalid get_insight refusal carries one-try guidance');
-  assert.equal(errors[1], 'unknown_tool');
+  const response = h.f.frames[1] as { toolResponse: { functionResponses: { response: RefusalShape }[] } };
+  const responses = response.toolResponse.functionResponses.map(entry => entry.response);
+  assert.equal(responses[0]!.error, 'invalid_arguments');
+  assert.match(responses[0]!.fixNotForSpeech!, /Invalid arguments for get_insight/, 'an invalid get_insight refusal carries one-try guidance');
+  assert.equal(responses[0]!.say, 'That lookup failed on my side.');
+  assert.equal(responses[1]!.error, 'unknown_tool');
   assert.equal(h.owner.current().entries.filter(e => e.kind === 'toolResult' && e.tool?.status === 'error').length, 2);
+  attachment.close(); await attachment.done;
+});
+
+test('an invalid-arguments refusal marks the fix not for speech and names no argument value', async t => {
+  const h = await harness(t, { tools: true }); const { attachment } = await attached(h);
+  badInsight(h, 'shape1'); await h.f.frame(2);
+  const refusal = refusalAt(h, 1);
+  assert.equal(refusal.error, 'invalid_arguments');
+  assert.match(refusal.fixNotForSpeech!, /Invalid arguments for get_insight/);
+  assert.match(refusal.speakingRule!, /never read fixNotForSpeech aloud/i);
+  assert.equal(refusal.say, 'That lookup failed on my side.');
+  assert.equal(JSON.stringify(refusal).includes('[123]'), false, 'no argument value reaches the model');
+  attachment.close(); await attachment.done;
+});
+
+test('the invalid-argument retry suffix stops at the next owner turn', async t => {
+  const h = await harness(t, { tools: true }); const { attachment } = await attached(h);
+  badInsight(h, 'a1'); await h.f.frame(2);
+  badInsight(h, 'a2'); await h.f.frame(3);
+  // The owner speaks again: the next owner turn opens and its invalid-argument count starts at zero.
+  h.f.send({ serverContent: { inputTranscription: { text: 'Anything on my plate?', finished: true } } });
+  await tick();
+  badInsight(h, 'b1'); await h.f.frame(4);
+  assert.match(refusalAt(h, 3).fixNotForSpeech!, /Invalid arguments for get_insight/);
+  assert.doesNotMatch(refusalAt(h, 3).fixNotForSpeech!, /Stop retrying/, 'a repeat in an earlier turn never shortens this one');
+  attachment.close(); await attachment.done;
+});
+
+test('three invalid calls inside one owner turn keep the stop-retrying suffix', async t => {
+  const h = await harness(t, { tools: true }); const { attachment } = await attached(h);
+  badInsight(h, 'a1'); await h.f.frame(2);
+  badInsight(h, 'a2'); await h.f.frame(3);
+  badInsight(h, 'a3'); await h.f.frame(4);
+  assert.doesNotMatch(refusalAt(h, 2).fixNotForSpeech!, /Stop retrying/);
+  assert.match(refusalAt(h, 3).fixNotForSpeech!, /Stop retrying this tool in this turn\./);
   attachment.close(); await attachment.done;
 });
 

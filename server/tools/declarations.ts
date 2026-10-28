@@ -35,6 +35,8 @@ export function declarationsFor(registry: readonly ToolDefinition[]): { declarat
 export interface ToolCallsContext {
   registry: readonly ToolDefinition[]; host: HostContext; authority: Authority; control: ModelControl;
   step: number; contentIndex: number; seenIds: Set<string>; baseClasses: readonly DataClass[];
+  /** The counter scope of one owner turn; the live session replaces it when a turn opens. Omitted, this run's call ids scope it. */
+  invalidAttempts?: Map<string, number>;
   /** Per-call abort signals, keyed by call id, so a provider cancellation aborts exactly its call. */
   signals?: ReadonlyMap<string, AbortSignal>;
   /** Text's gate runs on the complete continuation in the next loop iteration. */
@@ -43,16 +45,16 @@ export interface ToolCallsContext {
 const validRef = (ref: ToolResultRef | undefined): ref is ToolResultRef =>
   !!ref && typeof ref.id === 'string' && !!ref.id && typeof ref.sha256 === 'string' && /^[a-f0-9]{64}$/.test(ref.sha256);
 
-const invalidAttempts = new WeakMap<Set<string>, Map<string, number>>();
+const invalidAttempts = new WeakMap<object, Map<string, number>>();
 /** The closed set an error class may name in host.log: a class, never a message or a stack. */
 const HANDLER_ERROR_CLASSES = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'URIError', 'AggregateError', 'SqliteError'];
 const handlerErrorClass = (error: unknown): string => {
   const name = error instanceof Error ? error.constructor.name : '';
   return HANDLER_ERROR_CLASSES.includes(name) ? name : 'Unknown';
 };
-function recordInvalidAttempt(seenIds: Set<string>, key: string): number {
-  let counts = invalidAttempts.get(seenIds);
-  if (counts === undefined) { counts = new Map(); invalidAttempts.set(seenIds, counts); }
+function recordInvalidAttempt(scope: object, key: string): number {
+  let counts = invalidAttempts.get(scope);
+  if (counts === undefined) { counts = new Map(); invalidAttempts.set(scope, counts); }
   const count = (counts.get(key) ?? 0) + 1; counts.set(key, count); return count;
 }
 function jsonTypeOf(value: unknown): string {
@@ -66,6 +68,18 @@ function logArgumentsRejected(name: string, args: unknown): void {
   const declared = diagnosticInputFields(name);
   const fields = Object.keys(record).slice(0,24).map(key => `${declared.includes(key) ? key : 'unknown'}:${jsonTypeOf(record[key])}`);
   hostLogEvent({ event: 'tool_arguments_rejected', tool: name, fields });
+}
+/** The one line the model may speak when a call is refused for its arguments: owner-facing, no host prose. */
+export const INVALID_ARGUMENTS_SPEECH = 'That lookup failed on my side.';
+/** The closed tool response for an invalid-arguments refusal: the fix is for the model alone, never read aloud. */
+export function invalidArgumentsResponse(reason: string): JsonObject | undefined {
+  if (!reason.startsWith('Invalid arguments for ')) return undefined;
+  return {
+    error: 'invalid_arguments',
+    fixNotForSpeech: reason,
+    say: INVALID_ARGUMENTS_SPEECH,
+    speakingRule: 'Never read fixNotForSpeech aloud; it is instruction for you. Say only the say line, once.',
+  };
 }
 /** For every declared tool: the tool name and its expected argument shape, never the bad values. */
 function invalidArgumentsGuidance(name: string, guidance: string | undefined, parameters: Record<string, unknown>): string {
@@ -103,7 +117,7 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
           if (call.id !== undefined && seenIds.has(call.id)) { record.reason = 'duplicate_call_id'; return; }
           if (call.id !== undefined) seenIds.add(call.id);
           if (typeof call.args !== 'object' || call.args === null || Array.isArray(call.args) || !tool.validate(call.args)) {
-            const attempts = recordInvalidAttempt(seenIds, `${call.name}:${createHash('sha256').update(JSON.stringify(call.args)).digest('hex').slice(0, 16)}`);
+            const attempts = recordInvalidAttempt(ctx.invalidAttempts ?? seenIds, `${call.name}:${createHash('sha256').update(JSON.stringify(call.args)).digest('hex').slice(0, 16)}`);
             const guidance = invalidArgumentsGuidance(call.name, tool.guidance, tool.parameters);
             record.reason = attempts >= 3 ? `${guidance} Stop retrying this tool in this turn.` : guidance;
             logArgumentsRejected(call.name, call.args);

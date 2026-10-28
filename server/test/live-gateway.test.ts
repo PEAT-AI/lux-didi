@@ -1093,7 +1093,14 @@ test('OC1: an open action is a native_action control frame and its ack is the to
   assert.equal(ws.readyState, WebSocket.OPEN, 'a duplicate ack is ignored, not fatal');
 });
 
-test('A1: open_web site is a native_action control frame and its ack is the tool result', async t => {
+for (const scenario of [
+  { name: 'late transcript', late: true, turns: ['open plantix dot net'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
+  { name: 'barge in', barge: true, turns: ['open plantix dot net'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
+  { name: 'split site ask', turns: ['but can you open', 'plantix dot net in my browser'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
+  { name: 'maps', turns: ['open the map of Odemira'], kind: 'maps', target: 'Odemira', url: 'https://www.google.com/maps/search/?api=1&query=Odemira', say: 'opening' },
+  { name: 'search', turns: ['search for drip irrigation'], kind: 'search', target: 'drip irrigation', url: 'https://www.google.com/search?q=drip+irrigation', say: 'opening' },
+  { name: 'German maps', turns: ['öffne die Karte von Odemira'], kind: 'maps', target: 'Odemira', url: 'https://www.google.com/maps/search/?api=1&query=Odemira', say: 'opening' },
+]) test(`A1: open_web ${scenario.name} round trip`, async t => {
   let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
   const h = await harness(t, { config: configJson(true), toolsFactory: store => {
     const registry = new McpRegistry();
@@ -1119,23 +1126,33 @@ test('A1: open_web site is a native_action control frame and its ack is the tool
   await waitFor(() => frames.some(frame => frame.text && JSON.parse(frame.text).type === 'ready'));
 
   // #573: an open call answers the owner's own open intent, so his finalized words reach the host first.
-  h.f.send({ serverContent: { inputTranscription: { text: 'but can you open', finished: true } } });
-  h.f.send({ serverContent: { inputTranscription: { text: 'plantix dot net in my browser', finished: true } } });
-  await waitFor(async () => (await json(h.origin, `/api/v1/live-sessions/${id}/journal`, { headers: bearer(h) })).body.data.fragments
-    .some((fragment: { kind: string }) => fragment.kind === 'inputTranscription'), 1_500);
-  h.f.send({ toolCall: { functionCalls: [{ id: 'open-call-1', name: 'open_web', args: { kind: 'site', target: 'plantix dot net' } }] } });
+  const ask = () => {
+    for (const text of scenario.turns) h.f.send({ serverContent: { inputTranscription: { text, finished: true } } });
+    if ('barge' in scenario) h.f.send({ serverContent: { interrupted: true } });
+  };
+  if (!('late' in scenario)) {
+    ask();
+    await waitFor(async () => (await json(h.origin, `/api/v1/live-sessions/${id}/journal`, { headers: bearer(h) })).body.data.fragments
+      .some((fragment: { kind: string }) => fragment.kind === 'inputTranscription'), 1_500);
+  }
+  h.f.send({ toolCall: { functionCalls: [{ id: 'open-call-1', name: 'open_web', args: { kind: scenario.kind, target: scenario.target } }] } });
+  // Real provider ordering regression: one late event, never a retry or a polling producer.
+  if ('late' in scenario) {
+    const timer = setTimeout(ask, 300);
+    t.after(() => clearTimeout(timer));
+  }
   await waitFor(() => frames.some(frame => frame.text && (JSON.parse(frame.text) as { type?: string }).type === 'native_action'));
   const parsed = frames.map(frame => (frame.text ? JSON.parse(frame.text) as Record<string, unknown> : null));
   const action = parsed.find(frame => frame?.type === 'native_action')!;
   assert.deepEqual(Object.keys(action).sort(), ['action', 'id', 'target', 'type'], 'the control frame is exactly typed');
   assert.equal(action.action, 'open_url', 'the home tool rides the internal url transport');
-  assert.equal(action.target, 'https://plantix.net/', 'the host fixes the gmail home destination');
+  assert.equal(action.target, scenario.url, 'the host constructs the destination');
 
   ws.send(JSON.stringify({ type: 'native_action_result', id: action.id, ok: true, code: 'opened' }));
   const toolResponses = () => (h.f.frames as Record<string, unknown>[]).filter(frame => 'toolResponse' in frame);
   await waitFor(() => toolResponses().length > 0);
   const response = JSON.stringify(toolResponses().at(-1));
-  assert.match(response, /opening plantix\.net/);
+  assert.ok(response.includes(scenario.say), 'the receipt includes the spoken line');
   assert.match(response, /"opened"/, 'the ack code reaches the model as the tool result');
 
   // A duplicate ack settles nothing and never closes the conversation socket.

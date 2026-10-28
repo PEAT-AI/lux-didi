@@ -141,7 +141,12 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
           for (const close of [...alarmStreams]) close();
           res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'Connection': 'keep-alive' });
           res.flushHeaders();
-          const unbind = shell.bind(frame => !res.destroyed && res.write(`data: ${JSON.stringify(frame)}\n\n`));
+          const unbind = shell.bind(frame => {
+            if (res.destroyed) return false;
+            if (res.writableLength > 65536) { res.destroy(); return false; }
+            res.write(`data: ${JSON.stringify(frame)}\n\n`);
+            return true; // write(false) is backpressure, not a disconnected shell.
+          });
           const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': alarm heartbeat\n\n'); }, 30000);
           heartbeat.unref();
           const close = () => { clearInterval(heartbeat); unbind(); alarmStreams.delete(close); res.end(); };
@@ -165,7 +170,11 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
           }
           if (url.pathname === '/api/v1/alarms/shell' && typeof body.assertion === 'boolean' && typeof body.notifications === 'boolean') {
             shell.report({ assertion: body.assertion, notifications: body.notifications });
-            send(res, 200, success(shell.health())); return;
+            const health = shell.health();
+            if (health.degraded) for (const alarm of scheduler.list().filter(row => row.state === 'pending' || row.state === 'ringing')) {
+              for (const reason of health.reasons) diagnosticLog.event({ event: 'alarm_degraded', alarmId: alarm.id, scheduledMs: alarm.fireAtUtc, actualMs: now(), reason });
+            }
+            send(res, 200, success(health)); return;
           }
           const reasons: AlarmRecheck[] = ['wake', 'clock_changed', 'timezone_changed'];
           if (url.pathname === '/api/v1/alarms/recheck' && reasons.some(reason => reason === body.reason)) {

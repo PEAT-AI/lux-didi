@@ -419,7 +419,7 @@ final class ConnectingRing {
                 self.output?.stopOutput()
             }
         }
-        after(min(45_000, deadline - now())) { [weak self] in self?.alarmPulse(token: token) }
+        after(max(1, min(45_000, deadline - now()))) { [weak self] in self?.alarmPulse(token: token) }
     }
 
     func stopAlarm() {
@@ -575,6 +575,11 @@ struct ShellAlarm: Codable, Equatable, Sendable {
             formatter.timeZone = TimeZone(identifier: next.tz); formatter.dateFormat = "HH:mm"
             caption = "Alarm " + formatter.string(from: Date(timeIntervalSince1970: Double(next.fireAtUtc) / 1000)) + (degraded ? " !" : "")
         } else { caption = nil }
+    }
+    func refreshNotifications(_ alarms: [ShellAlarm], notificationsAllowed: Bool) {
+        for id in registered { remove(id) }
+        registered.removeAll()
+        apply(alarms, notificationsAllowed: notificationsAllowed)
     }
     func stop() { apply([], notificationsAllowed: true) }
 }

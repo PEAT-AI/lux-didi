@@ -11,6 +11,7 @@ import UserNotifications
     private let onDue: (String) -> Void
     private let onCaption: (String?) -> Void
     private var task: Task<Void, Never>?
+    private var stopped = false
     private var assertion = IOPMAssertionID(0)
     private var epoch: String?
     private var alarms: [ShellAlarm] = []
@@ -36,7 +37,7 @@ import UserNotifications
         self.authority = authority; self.ring = ring; self.onDue = onDue; self.onCaption = onCaption
     }
     func start() {
-        guard task == nil else { return }
+        guard task == nil, !stopped else { return }
         observe(NSWorkspace.shared.notificationCenter, NSWorkspace.didWakeNotification, reason: "wake")
         observe(.default, .NSSystemClockDidChange, reason: "clock_changed")
         observe(.default, .NSSystemTimeZoneDidChange, reason: "timezone_changed")
@@ -65,6 +66,7 @@ import UserNotifications
         }
     }
     func stop() {
+        stopped = true
         task?.cancel(); task = nil
         for (center, token) in observers { center.removeObserver(token) }
         observers.removeAll(); policy.stop(); ring.stopAlarm(); onCaption(nil)
@@ -77,6 +79,7 @@ import UserNotifications
         observers.append((center, token))
     }
     private func receive(_ frame: Frame) {
+        guard !stopped else { return }
         if let rows = frame.alarms {
             alarms = rows
             policy.apply(rows, notificationsAllowed: notificationsAllowed)
@@ -88,10 +91,11 @@ import UserNotifications
                 permissionRequested = true
                 Task { [weak self] in
                     guard let self else { return }
-                    self.notificationsAllowed = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])) == true
+                    let allowed = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])) == true
+                    guard !self.stopped else { return }
+                    self.notificationsAllowed = allowed
                     // Re-register pending rows after permission resolves, never more than one request per id.
-                    self.policy.stop()
-                    self.policy.apply(self.alarms, notificationsAllowed: self.notificationsAllowed)
+                    self.policy.refreshNotifications(self.alarms, notificationsAllowed: self.notificationsAllowed)
                     self.onCaption(self.policy.caption); self.report()
                 }
             }
@@ -124,9 +128,14 @@ import UserNotifications
         date.timeZone = calendar.timeZone
         let request = UNNotificationRequest(identifier: "alarm:" + alarm.id, content: content, trigger: UNCalendarNotificationTrigger(dateMatching: date, repeats: false))
         Task { [weak self] in
-            do { try await UNUserNotificationCenter.current().add(request) }
+            do {
+                try await UNUserNotificationCenter.current().add(request)
+                if self?.stopped != false || self?.alarms.contains(where: { $0.id == alarm.id && $0.state == "pending" }) != true {
+                    UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [request.identifier])
+                }
+            }
             catch {
-                guard let self else { return }
+                guard let self, !self.stopped else { return }
                 self.notificationsAllowed = false; self.policy.apply(self.alarms, notificationsAllowed: false)
                 self.onCaption(self.policy.caption); self.report()
             }

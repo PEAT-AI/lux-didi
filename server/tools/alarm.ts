@@ -24,9 +24,9 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
     fireAtUtc = now + amount * (relative[2]!.startsWith('hour') ? 3600000 : 60000);
     confirmation = `Alarm set for ${new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' }).format(fireAtUtc)}.`;
   } else {
-    const match = /\b(?:at|for)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/.exec(text);
+    const match = /\b(?:at|for)\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?::(\d{2}))?\s*(am|pm)?\b/.exec(text);
     if (!match) return { status: 'clarify', reason: 'missing_time' };
-    let hour = Number(match[1]);
+    let hour = quantities[match[1]!] ?? Number(match[1]);
     const minute = Number(match[2] ?? 0);
     const morning = /\bmorning\b|\bwake me\b/.test(text);
     const evening = /\bevening\b|\btonight\b/.test(text);

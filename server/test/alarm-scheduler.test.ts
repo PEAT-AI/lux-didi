@@ -12,15 +12,16 @@ function fixture(t: { after(fn: () => void): void }) {
   const store = new Store(dir, toolsMigrations);
   let now = Date.parse('2026-10-28T00:00:00Z');
   const due: AlarmDue[] = [];
+  const timers: Array<() => void> = [];
   const clock = {
     now: () => now,
-    setTimeout: (_fn: () => void, ms: number) => { assert.ok(ms >= 0 && ms <= 60000); return 1; },
+    setTimeout: (fn: () => void, ms: number) => { assert.ok(ms >= 0 && ms <= 60000); timers.push(fn); return timers.length; },
     clearTimeout: (_id: unknown) => {},
   };
   const create = () => new AlarmScheduler({ store, clock, emit: event => due.push(event) });
   const scheduler = create();
   t.after(() => { scheduler.stop(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { store, scheduler, due, create, now: () => now, advance: (ms: number) => { now += ms; } };
+  return { store, scheduler, due, timers, create, now: () => now, advance: (ms: number) => { now += ms; } };
 }
 
 test('alarm scheduler: due commit precedes delivery and reconnect preserves the deadline', t => {
@@ -59,7 +60,7 @@ test('alarm scheduler: nineteen minutes late rings; twenty-one is missed', t => 
   assert.deepEqual(f.scheduler.list().map(row => row.state).sort(), ['missed', 'ringing']);
 });
 
-test('alarm scheduler: bounded waits, backwards clock jump and simultaneous alarms', t => {
+test('alarm scheduler: bounded waits and simultaneous alarms', t => {
   const f = fixture(t);
   const at = f.now() + 86400000;
   for (let i = 0; i < 2; i++) f.scheduler.set({ fireAtUtc: at, tz: 'Asia/Singapore', label: '', createdJournalId: `j${i}` });
@@ -109,4 +110,29 @@ test('alarm scheduler: persisted instant and zone survive a real process time-zo
     if (priorZone === undefined) delete process.env.TZ;
     else process.env.TZ = priorZone;
   }
+});
+
+test('alarm scheduler: a queued due timer rechecks the instant after a backward clock jump', t => {
+  const f = fixture(t);
+  const at = f.now() + 1000;
+  const alarm = f.scheduler.set({ fireAtUtc: at, tz: 'UTC', label: '', createdJournalId: 'backward' });
+  f.scheduler.recheck('start');
+  const queued = f.timers.at(-1)!;
+  assert.equal(typeof queued, 'function');
+  f.advance(1001); // The original timer is due, but its callback has not run yet.
+  f.advance(-2000);
+  queued(); // Deliver the already-queued callback against the new wall clock.
+  assert.equal(f.due.length, 0);
+  assert.equal(f.scheduler.list().find(row => row.id === alarm.id)?.state, 'pending');
+  assert.equal(f.scheduler.list().find(row => row.id === alarm.id)?.fireAtUtc, at);
+  f.advance(2000);
+  f.scheduler.recheck('clock_changed');
+  assert.equal(f.due.length, 1);
+  const deadline = f.due[0]!.ringDeadlineUtc;
+  f.advance(-2000);
+  f.scheduler.recheck('clock_changed');
+  assert.equal(f.due.length, 1);
+  const ringing = f.scheduler.list().find(row => row.id === alarm.id)!;
+  assert.equal(ringing.state, 'ringing');
+  assert.equal(ringing.ringDeadlineUtc, deadline);
 });

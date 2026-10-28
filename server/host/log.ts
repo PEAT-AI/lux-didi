@@ -1493,13 +1493,6 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.assembled !== 'boolean') return;
     return { event: 'warm_prewarm', ageBeforeMs: value.ageBeforeMs, ageAfterMs: value.ageAfterMs, assembled: value.assembled };
   }
-  if (value.event === 'commentary_skipped') {
-    // C-REBUILD8: a progress line the host never sent because no delegation was open is a closed skip of its own,
-    // never a provider refusal; the reason is the closed set and no line of speech rides here.
-    if (!closedKeys(value, ['event', 'reason'])) return;
-    if (!isSafeMember(value.reason, ['no_delegation'])) return;
-    return { event: 'commentary_skipped', reason: value.reason };
-  }
   if (value.event === 'calendar_digest') {
     // R7: the warm digest used to be silent when it was suppressed or failed. One closed line says which
     // of four states it reached, how many events rode it and how old it was, never an event's text.

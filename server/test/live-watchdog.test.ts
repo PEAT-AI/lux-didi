@@ -488,7 +488,9 @@ test('C-REBUILD8: a fifteen second owner sentence is never nudged or rebuilt ins
   }
   assert.deepEqual(phases(live), ['armed'], 'his unfinalized sentence owns the silence, so no nudge fires inside it');
   assert.equal(live.fake.sessionsOpened, 1, 'and the provider session is never rebuilt mid-sentence');
-  assert.equal(live.receipts.some(record => record.event === 'live_dead_air'), false, 'the dead-air rung stays silent while he speaks');
+  // The debt ladder's own nudge is guarded at its layer and pinned in live-dead-air.test.ts; this line is the
+  // watchdog callback's copy of the rung, which the same hold must keep silent.
+  assert.equal(live.receipts.some(record => record.event === 'live_dead_air'), false, 'no dead-air line from the watchdog while he speaks');
   await live.emit({ type: 'inputTranscription', text: 'book a table for four', finished: true });
   await until(live, () => phases(live).includes('nudged'), RESPONSE_WATCHDOG_NUDGE_MS + 2_000);
   assert.deepEqual(phases(live), ['armed', 'nudged'], 'the clock starts at his final fragment, not before it');

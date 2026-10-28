@@ -222,6 +222,11 @@ describe('openai gpt-live adapter', () => {
     // the host writes nothing and logs a closed skip instead of a frame the provider would refuse by name.
     assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), false, 'no delegation open, no line sent');
     await until(() => logged().some(entry => entry['event'] === 'commentary_skipped'));
+    // The skip is only logged if the host log whitelist accepts it, so the schema is proven here, not assumed.
+    const skipped = logged().filter(entry => entry['event'] === 'commentary_skipped');
+    assert.deepEqual(skipped, [{ event: 'commentary_skipped', delegationKey: 'none', reason: 'no_delegation' }],
+      'the closed skip names the delegation that asked (none) and why it stayed silent');
+    for (const entry of skipped) assert.ok(safeEvent(entry), 'the host log whitelist accepts the skip record');
     assert.equal(f.frames.some(frame => frame['type'] === 'session.commentary.append'), false, 'nothing reached the wire');
     f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_open', response_id: 'resp_open', offset_ms: 0 } });
     await until(() => logged().some(entry => entry['event'] === 'delegation_open'));

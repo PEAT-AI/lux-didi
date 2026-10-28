@@ -2322,6 +2322,14 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     if (this.#settled(handle) || generation !== handle.generation || handle.debtSince === undefined) return;
     handle.debtTimer = undefined;
     if (handle.debtBargeIn) return;
+    // C-REBUILD8: the speaking hold the sliding watchdog keeps, at the layer that owns the dead-air nudge. The
+    // 2026-10-28 N12 nudge came from here (`live_debt phase=rung reason=dead_air` then `live_dead_air_nudge`), so a
+    // sentence still being spoken holds the rung and its rebuild back; the ladder re-anchors and judges the
+    // silence from his final fragment. No timer value changes.
+    if (handle.inputFinal !== true && handle.inputAt !== undefined && this.#now() - handle.inputAt < SPEAKING_HOLD_MS) {
+      this.#scheduleDebt(handle, SPEAKING_HOLD_MS, step);
+      return;
+    }
     const turnAgeMs = Math.max(0, this.#now() - handle.debtSince);
     // #656: a tool call the model issued owns the silence through the dead-air path (#538 speaks progress while a call
     // runs), so the ladder never nudges or rebuilds over it: it stands down and #armDebt re-anchors the clock on that

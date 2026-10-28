@@ -1801,7 +1801,12 @@ class Session implements LiveVoiceSession {
     // C-REBUILD8: with no delegation open the provider requires a parameter the host cannot supply, so the line
     // is skipped and logged as a closed skip instead of being written and refused.
     const delegationId = this.delegationInFlight();
-    if (delegationId === undefined) { hostLogEvent({ event: 'commentary_skipped', reason: 'no_delegation' }); return false; }
+    if (delegationId === undefined) {
+      // C-REBUILD8: the closed skip the host log schema already has for a progress line that stayed silent
+      // (W4: `delegationKey` plus a reason from its closed set). No delegation asked, so the key says none.
+      hostLogEvent({ event: 'commentary_skipped', delegationKey: 'none', reason: 'no_delegation' });
+      return false;
+    }
     // The documented ceiling is 500 tokens per append; a short character bound keeps every line well under it.
     if (!object(input) || typeof input.text !== 'string' || !input.text.length || input.text.length > APPEND_CHAR_LIMIT) { fail('invalid_request'); return false; }
     if (!this.write(JSON.stringify({ type, event_id: this.commandId(kind), content: input.text, delegation_id: delegationId }))) { fail(this.terminal!.code); return false; }

@@ -5822,12 +5822,9 @@ function finishedAnswer(run: RunState): boolean {
 }
 
 /** The closed reply a continue on a finished run gets: the id, the state and a pointer, never the payload. */
-function alreadyDelivered(deps: ResearchDeps, run: RunState): JsonObject {
-  // C-POLISH10: the pointer carries no evidence, so the run's retained evidence is released here, as a stop would,
-  // rather than held for a payload this call will never send.
-  deps.ledger.discardEvidence(deps.ledger.evidenceBindings(run.researchId));
+function alreadyDelivered(researchId: string): JsonObject {
   return {
-    researchId: run.researchId, status: 'complete', findings: [], alreadyDelivered: true, delivery: 'already_delivered', canContinue: false,
+    researchId, status: 'complete', findings: [], alreadyDelivered: true, delivery: 'already_delivered', canContinue: false,
     note: 'This run already gave its answer and has nothing more to fetch, so continue was not needed. Answer from the findings you already have; start a new research only for a new question.',
   };
 }
@@ -6018,7 +6015,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
     // C-POLISH10: a bare continue on a run that already gave its whole answer has nothing left to fetch, so it answers
     // with a closed pointer instead of spending a round to re-render the same findings. A direction or a lookup names
     // more than the run already gave, and keeps its own path.
-    if (priorRun !== undefined && bareContinue(call) && continuesRun(priorRun, call, question) && finishedAnswer(priorRun)) return alreadyDelivered(deps, priorRun);
+    if (priorRun !== undefined && bareContinue(call) && continuesRun(priorRun, call, question) && finishedAnswer(priorRun)) return alreadyDelivered(priorRun.researchId);
     if (priorRun !== undefined && !continuesRun(priorRun, call, question)) {
       // #654: an id from an older run never carries a new source or a new topic, so that ask starts fresh.
       deps.ledger.cancelActive();

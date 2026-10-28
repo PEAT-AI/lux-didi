@@ -5466,9 +5466,9 @@ test('calendar integration: actual Google projector and Live ledger deliver ever
     assert.doesNotMatch(JSON.stringify(reply), /next-events|more-calendars/, 'opaque page tokens stay inside the host ledger');
     if (revoked) h.toolRegistry!.revoke('calendar');
     await settleLiveTool(h, 'calendar-continue', 'research', { action: 'continue', researchId: reply['researchId'] });
-    // C-POLISH10: a continue on a finished run is a pointer, and a revoked source is still denied at delivery, so
-    // the assertion is the security property itself: nothing the calendar retained crosses, and nothing is offered.
-    if (revoked) { assert.equal(JSON.stringify(last()).includes('Synthetic event'), false, JSON.stringify(last())); assert.notEqual(last()['canContinue'], true); }
+    // C-POLISH10: a continue on a finished run is a pointer, and a source whose grant was revoked is denied at
+    // delivery before that pointer: the closed denial is the whole reply and nothing the calendar retained crosses.
+    if (revoked) assert.deepEqual(last(), { error: 'tool_result_denied' });
     else { assert.match(JSON.stringify(reply['findings']), /Synthetic event 14/, 'the whole window was already spoken'); assert.equal(last()['canContinue'], false); }
     assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 2, 'neither retained delivery nor denial rereads completed pages');
   }

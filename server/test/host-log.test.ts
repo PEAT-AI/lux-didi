@@ -106,7 +106,7 @@ test('a research event keeps the scoped callKey and still drops a malformed one'
   assert.equal(safeEvent({ ...routed, callKey: `call:${'A1'.repeat(32)}` }), undefined, 'uppercase hex is refused');
   assert.equal(safeEvent({ ...routed, callKey: `call:${'a1'.repeat(31)}` }), undefined, 'a short digest is refused');
   assert.equal(safeEvent({ ...routed, callKey: 'call:the owners question' }), undefined, 'free text is refused');
-  assert.equal(safeEvent({ ...routed, callKey: 'research-window' }), { ...routed, callKey: 'research-window' }, 'a plain safe id still passes');
+  assert.deepEqual(safeEvent({ ...routed, callKey: 'research-window' }), { ...routed, callKey: 'research-window' }, 'a plain safe id still passes');
 
   const subcall = { event: 'research_subcall', researchId: 'r1', kind: 'calendar_window', tool: 'calendar_list_events', ok: true, items: 1, rawBytes: 10, keptBytes: 8, queryChars: 0, queryAuthor: 'routed' };
   assert.deepEqual(safeEvent({ ...subcall, callKey }), { ...subcall, callKey }, 'the subcall keeps it too');

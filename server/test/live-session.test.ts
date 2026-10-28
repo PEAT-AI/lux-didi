@@ -7107,3 +7107,28 @@ test('research admission names its closed reason and admits a paging continue of
   second.delivered('run-2');
   assert.deepEqual(second.admit('continue'), { admitted: false, reason: 'no_turn_since_result' });
 });
+
+// C-REBUILD8 (review BL1): the debt ladder owns the same speaking hold the sliding watchdog keeps. On 2026-10-28
+// the N12 nudge came from this path, not from the watchdog: `live_debt phase=rung reason=dead_air` then
+// `live_dead_air_nudge elapsedMs=8000` with no `live_watchdog phase=nudged` anywhere near it. A sentence still
+// being spoken holds the rung and the rebuild that follows one RESPONSE_WATCHDOG_RECOVERY_MS later.
+test('C-REBUILD8: the debt rung never nudges or rebuilds inside the owner sentence', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const scheduler = new DeadlineClock();
+  const fake = progressPort();
+  const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
+  await openPort(h, 'debt-speaking-hold-1028');
+  await ownerInput(fake, 'when does the bridge reopen');
+  fake.emit({ type: 'toolCall', calls: [{ id: 'debt1', name: 'search_knowledge', args: { query: 'bridge', limit: 1 } }] });
+  await settlePort();
+  for (let second = 0; second < 15; second += 1) {
+    fake.emit({ type: 'inputTranscription', text: `and then number ${second}`, finished: false });
+    h.advance(1_000); scheduler.runDue(); await settlePort();
+  }
+  assert.equal(receipts.filter(record => record['event'] === 'live_dead_air_nudge').length, 0,
+    'his unfinalized sentence owns the debt silence, so no dead-air nudge fires inside it');
+  assert.equal(rebuildReceipts(receipts, 'live_rebuild').length, 0, 'and no rebuild lands inside his words');
+  assert.equal(fake.sessionsOpened, 1, 'the provider session he is talking to is the one he keeps');
+});

@@ -1005,20 +1005,23 @@ test('C-START10: identity proof survives startup recovery passes but not a chang
   writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT,
     endpoints: [{ ...googleConfig(gmail.url, 'gmail', 'mail'), credentialRef: 'synthetic-seat' }],
   }), { mode: 0o600 });
-  const store = new Store(join(dir, 'data'), toolsMigrations);
+  let store = new Store(join(dir, 'data'), toolsMigrations);
   let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
   t.after(async () => { await runtime?.close(); store.close(); await gmail.close(); rmSync(dir, { recursive: true, force: true }); });
   const compose = () => composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryRepeatMs: false });
   runtime = await compose();
   assert.equal(runtime.status().endpoints[0]!.state, 'connected');
   await runtime.recover();
-  await runtime.refresh();
   await runtime.recover();
-  assert.equal(probes, 1, 'one host reuses its proven identity across real reconnect and recover passes');
+  assert.equal(probes, 1, 'one host reuses its proven identity across actual recover passes');
+  await runtime.refresh();
+  assert.equal(probes, 2, 'an explicit refresh still re-verifies, including the existing generation fence contract');
   credential('synthetic-token-two');
   await runtime.refresh();
-  assert.equal(probes, 2, 'a changed credential must prove its own identity');
+  assert.equal(probes, 3, 'a changed credential must prove its own identity');
   await runtime.close();
+  store.close();
+  store = new Store(join(dir, 'data'), toolsMigrations);
   runtime = await compose();
-  assert.equal(probes, 3, 'proofs do not leak across host starts');
+  assert.equal(probes, 4, 'proofs do not leak across host starts');
 });

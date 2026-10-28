@@ -418,7 +418,7 @@ export async function composeMcpRuntime(options: {
   // sign-in always is, whichever shape the endpoint stores (OAuth record or pasted bearer).
   const needsSignIn = new Map<string, string>();
   // One proof per endpoint/credential for this host; failures still evict inside the memo.
-  const identityForHost = identityProofMemo();
+  let identityForHost = identityProofMemo();
   const storedCredentialDigest = (reference: string): string => {
     let pasted = '';
     try { pasted = readMcpCredential(configDir, reference); } catch { pasted = ''; }
@@ -935,7 +935,7 @@ export async function composeMcpRuntime(options: {
       retrying: recovery.pending(report.id),
       connector: connectors.get(report.id) ?? report.id })) }),
     start: () => (startPromise ??= run()),
-    refresh: async () => { startPromise = undefined; await run(); },
+    refresh: async () => { identityForHost = identityProofMemo(); startPromise = undefined; await run(); },
     recover: async () => {
       // A sign-in that landed since the last settle reconnects here: the parked endpoint is settled
       // again with a new generation, exactly as a first connect would (R9), and that connect proves the

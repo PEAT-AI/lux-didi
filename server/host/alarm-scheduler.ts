@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { AlarmLogEvent } from './events.js';
 import type { StorePort, SQLRow, Transaction } from '../contracts/storage.js';
 
 export type AlarmState = 'pending' | 'ringing' | 'done' | 'cancelled' | 'missed';
@@ -25,7 +26,11 @@ export class AlarmScheduler {
   private timer: unknown;
   private stopped = false;
   private delivered = new Set<string>();
-  constructor(private readonly options: { store: StorePort; clock: AlarmClock; emit(event: AlarmDue): void; changed?(alarms: Alarm[]): void }) {}
+  constructor(private readonly options: { store: StorePort; clock: AlarmClock; emit(event: AlarmDue): void; changed?(alarms: Alarm[]): void; log?(event: AlarmLogEvent): void }) {}
+  private record(alarm: Alarm, event: AlarmLogEvent['event'], reason: AlarmLogEvent['reason']): void {
+    try { this.options.log?.({ event, reason, alarmId: alarm.id, scheduledMs: alarm.fireAtUtc, actualMs: this.options.clock.now() }); }
+    catch { /* Diagnostic storage must never become the ringing reliability path. */ }
+  }
   list(): Alarm[] {
     return this.options.store.transaction(tx => tx.all('SELECT * FROM alarms ORDER BY fire_at_utc,id').map(read));
   }
@@ -37,6 +42,7 @@ export class AlarmScheduler {
   }
   set(input: { fireAtUtc: number; tz: string; label: string; createdJournalId: string }): Alarm {
     const row = this.options.store.transaction(tx => this.insert(tx, input));
+    this.record(row, 'alarm_set', 'owner_request');
     this.recheck('mutation');
     return row;
   }
@@ -46,9 +52,15 @@ export class AlarmScheduler {
     return changed === 1;
   }
   acknowledge(id: string): boolean {
-    const changed = this.options.store.transaction(tx => tx.run("UPDATE alarms SET state='done' WHERE id=? AND state='ringing'", [id]));
+    const alarm = this.options.store.transaction(tx => {
+      const row = tx.get("SELECT * FROM alarms WHERE id=? AND state='ringing'", [id]);
+      if (!row) return undefined;
+      tx.run("UPDATE alarms SET state='done' WHERE id=?", [id]);
+      return read(row);
+    });
+    if (alarm) this.record(alarm, 'alarm_acknowledged', 'owner_speech');
     this.recheck('mutation');
-    return changed === 1;
+    return alarm !== undefined;
   }
   snooze(id: string, fireAtUtc: number, createdJournalId: string): Alarm {
     const row = this.options.store.transaction(tx => {
@@ -59,6 +71,7 @@ export class AlarmScheduler {
       tx.run('INSERT INTO alarm_snoozes(alarm_id,next_alarm_id) VALUES(?,?)', [id, next.id]);
       return next;
     });
+    this.record(row, 'alarm_set', 'owner_request');
     this.recheck('mutation');
     return row;
   }
@@ -68,17 +81,23 @@ export class AlarmScheduler {
     if (this.timer !== undefined) clock.clearTimeout(this.timer);
     this.timer = undefined;
     const now = clock.now();
-    const ringing = store.transaction(tx => {
+    const { ringing, missed } = store.transaction(tx => {
+      const before = tx.all("SELECT * FROM alarms WHERE state IN ('pending','ringing')").map(read);
       tx.run("UPDATE alarms SET state='missed' WHERE state='pending' AND fire_at_utc<=?", [now - 1200000]);
       tx.run("UPDATE alarms SET state='missed' WHERE state='ringing' AND ring_deadline_utc<=?", [now]);
       tx.run("UPDATE alarms SET state='ringing',ring_started_at_utc=?,ring_deadline_utc=? WHERE state='pending' AND fire_at_utc<=?", [now, now + 600000, now]);
-      return tx.all("SELECT * FROM alarms WHERE state='ringing' ORDER BY fire_at_utc,id").map(read) as AlarmDue[];
+      return {
+        ringing: tx.all("SELECT * FROM alarms WHERE state='ringing' ORDER BY fire_at_utc,id").map(read) as AlarmDue[],
+        missed: before.filter(row => row.state === 'pending' ? row.fireAtUtc <= now - 1200000 : row.ringDeadlineUtc! <= now),
+      };
     });
+    for (const alarm of missed) this.record(alarm, 'alarm_missed', alarm.state === 'pending' ? 'too_late' : 'deadline_elapsed');
     // Reconnect replays the same id and persisted deadline. The shell deduplicates occurrences.
     for (const alarm of ringing) {
       if (this.delivered.has(alarm.id) && reason !== 'reconnect') continue;
-      this.options.emit(alarm);
-      this.delivered.add(alarm.id);
+      this.record(alarm, 'alarm_due', alarm.ringStartedAtUtc === now && !this.delivered.has(alarm.id) ? 'due' : 'recovered');
+      try { this.options.emit(alarm); this.delivered.add(alarm.id); }
+      catch { this.record(alarm, 'alarm_degraded', 'shell_unreachable'); }
     }
     const rows = this.list();
     this.options.changed?.(rows);

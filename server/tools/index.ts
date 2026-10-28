@@ -729,7 +729,18 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             return finish({ status: 'set', id: context.executionId, fire_at_utc: parsed.fireAtUtc, tz: alarmTz,
               say: parsed.confirmation + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });
           });
-          if (consumed) { alarmGate.consume(runId, consumed); options.alarms?.recheck(); }
+          if (consumed) {
+            alarmGate.consume(runId, consumed);
+            if (name !== 'cancel_alarm') {
+              const alarm = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [context.executionId]));
+              const actualMs = options.alarms?.now() ?? Date.now();
+              if (alarm) {
+                hostLogEvent({ event: 'alarm_set', alarmId: context.executionId, scheduledMs: Number(alarm.fire_at_utc), actualMs, reason: 'owner_request' });
+                for (const reason of options.alarms?.health().reasons ?? ['shell_unreachable']) hostLogEvent({ event: 'alarm_degraded', alarmId: context.executionId, scheduledMs: Number(alarm.fire_at_utc), actualMs, reason });
+              }
+            }
+            options.alarms?.recheck();
+          }
           return { status: 'completed' as const, result };
         },
       });

@@ -311,22 +311,32 @@ test('a retryable first call failure retries a bounded number of times and then 
   oauthRecord(configDir, 'mongoose-knowledge', { refreshToken: 'refresh-material', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now() });
   const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-store-'));
   const store = new Store(join(dir, 'data'), toolsMigrations);
-  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST });
+  // TRAIN8-R9: the claim is the number of ATTEMPTS and that the round stops. An attempt the per-attempt
+  // deadline cuts before `tools/list` is still an attempt, so the count is read from the closed
+  // `connector_retry` lines the recovery writes; the wire count stays as a sanity bound.
+  const retries: Array<{ event?: string; outcome?: string; attempt?: number }> = [];
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST, lifecycleLog: event => { if ((event as { event?: string }).event === 'connector_retry') retries.push(event as { event?: string; outcome?: string; attempt?: number }); } });
   t.after(() => runtime.close());
   const failed = runtime.status().endpoints[0]!;
   assert.equal(failed.state, 'error', 'the endpoint did not connect');
   assert.equal(failed.retrying, true, 'a retry is scheduled');
   assert.equal(f.requests(), 1);
-  // Wait on the wire, not on the flag: `retrying` is briefly false between two scheduled attempts.
-  // TR8-R7/R8: the retry COUNT and that the round stops are the assertions; the wait bound is only a
-  // guard against a hung round. TRAIN8-R8 bounds every attempt at the endpoint's connect timeout, so a
-  // round whose connects all hang legitimately takes 1 + FAST.length attempts of up to 5s each; the bound
-  // covers that, and the test carries its own timeout above it because check-host.sh runs the suite with
+  // The attempt count: the first connect plus the bounded retries. The wait bound is only a guard against
+  // a hung round, and the test carries its own timeout above it because check-host.sh runs the suite with
   // --test-timeout=15000.
-  await until(() => f.requests() >= 4, 28000);
-  assert.equal(f.requests(), 4, 'the first connect plus exactly three bounded retries');
+  const attempts = () => 1 + retries.length;
+  await until(() => attempts() >= 4, 28000);
+  assert.equal(attempts(), 4, 'the first connect plus exactly three bounded retries');
+  // The wire sanity bound: at least one attempt reached the tools, and none exceeded the attempt count.
+  assert.ok(f.requests() >= 1, `at least one attempt reached the tools (${f.requests()})`);
+  assert.ok(f.requests() <= attempts(), `no wire read outnumbers the attempts (${f.requests()} <= ${attempts()})`);
+  // The round stops: `retrying` is briefly false between two scheduled attempts, so wait for a stop that
+  // holds for at least one more full delay, then prove no further attempt was issued.
   await until(() => runtime.status().endpoints[0]!.retrying === false, 28000);
+  await new Promise(resolve => setTimeout(resolve, Math.max(...FAST) * 2));
   assert.equal(runtime.status().endpoints[0]!.retrying, false, 'the round is over and no further attempt is pending');
+  assert.equal(attempts(), 4, 'no further attempt is issued after the round stops');
+  assert.ok(f.requests() <= attempts(), `the stopped round issues no wire read beyond its attempts (${f.requests()} <= ${attempts()})`);
 });
 
 test('TRAIN8-R8: an attempt that never answers is cut by its own deadline, so the round advances and stops', { timeout: 30000 }, async t => {

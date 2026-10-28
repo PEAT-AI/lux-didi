@@ -7341,7 +7341,7 @@ test('R9-W5 refusal retains delivered findings and projection uses closed refusa
   assert.doesNotMatch(String(reply['directive']), /nothing|empty|blocked/iu);
   assert.equal(reply['status'], 'blocked', 'W5-R2 preserves accepted admission envelope');
   assert.match(researchProjection(reply, 'completed'), /refused:turn_spent/u);
-  assert.match(researchProjection({ findings: [{ source: 'calendar', text: 'Calendar: 1 of 1 shown\nSynthetic meeting' }] }, 'completed'), /1 findings from calendar/u);
+  assert.match(researchProjection({ findings: [{ source: 'calendar', text: 'Calendar: 1 of 1 shown\nSynthetic meeting' }] }, 'completed'), /findings from calendar; 1 delivered items/u);
 });
 
 test('R9-W5 late findings all retain source and lookup provenance', () => {

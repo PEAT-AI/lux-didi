@@ -7299,11 +7299,10 @@ export function findingCount(finding: JsonObject): number {
 }
 
 export function admissionBlocked(reason: AdmissionBlockReason, delivered?: JsonObject): JsonObject {
-  const findings = Array.isArray(delivered?.['findings']) ? delivered['findings'] as JsonObject[] : [];
-  const deliveredCount = findings.reduce((count, finding) => count + findingCount(finding), 0);
-  return { status: 'blocked', reason, code: reason, deliveredCount,
-    ...(delivered === undefined ? {} : { deliveredResults: delivered }),
-    directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false };
+  const base: JsonObject = { status: 'blocked', reason, directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false };
+  if (delivered === undefined) return base;
+  const findings = Array.isArray(delivered['findings']) ? delivered['findings'] as JsonObject[] : [];
+  return { ...base, code: reason, deliveredCount: findings.reduce((count, finding) => count + findingCount(finding), 0), deliveredResults: delivered };
 }
 export const ADMISSION_BLOCK_REASONS = ['no_owner_turn', 'turn_spent', 'no_turn_since_result', 'answer_already_given'] as const;
 export type AdmissionBlockReason = typeof ADMISSION_BLOCK_REASONS[number];

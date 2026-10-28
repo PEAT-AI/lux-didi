@@ -597,7 +597,7 @@ const RESEARCH_PROJECTION_CHARS = 240;
 export function researchProjection(response: JsonObject, status: 'completed' | 'error'): string {
   const text = (value: unknown): string | undefined => (typeof value === 'string' && value.length > 0 ? value : undefined);
   const detail = (): string => {
-    if (response['status'] === 'refused' || response['status'] === 'blocked' || response['state'] === 'refused') return `refused:${text(response['code']) ?? text(response['reason']) ?? 'unknown'}`;
+    if (response['status'] === 'blocked') return `refused:${text(response['code']) ?? text(response['reason']) ?? 'unknown'}`;
     if (status === 'error') {
       const reason = text(response['reason']) ?? text(response['error']) ?? 'failed';
       return text(response['state']) === 'refused' ? `refused (${reason})` : `error (${reason})`;
@@ -606,7 +606,7 @@ export function researchProjection(response: JsonObject, status: 'completed' | '
     const sources = [...new Set(findings.map(finding => text(finding['source'])).filter((source): source is string => source !== undefined))];
     const note = text(response['note']);
     const count = findings.reduce((n, finding) => n + findingCount(finding), 0);
-    const head = count > 0 ? `${count} findings from ${sources.join(', ')}` : 'no findings';
+    const head = count > 0 ? `findings from ${sources.join(', ')}; ${count} delivered items` : 'no findings';
     return `completed, ${note === undefined ? head : `${head}; ${note}`}`;
   };
   const line = `research: ${detail()}`;
@@ -4181,7 +4181,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         response = researchRepair(parsed.reason);
       } else if (verdict !== undefined && !verdict.admitted) {
         hostLogEvent({ event: 'research_blocked', liveSessionId: handle.liveSessionId, generation, action: parsed.call.action, reason: verdict.reason });
-        response = admissionBlocked(verdict.reason, handle.researchAdmission.deliveredReply());
+        response = admissionBlocked(verdict.reason, parsed.call.action === 'continue' ? handle.researchAdmission.deliveredReply() : undefined);
       } else {
         const firstStep = handle.toolStep;
         // R2: the one "still searching" line this call may earn, armed for its own 10 s and cancelled by its answer.

@@ -1,6 +1,7 @@
 import './alarm.test.js';
 import './alarm-scheduler.test.js';
 import './alarm-authority.test.js';
+import './alarm-shell.test.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';

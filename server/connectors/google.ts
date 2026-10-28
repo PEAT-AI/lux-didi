@@ -223,7 +223,7 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     if (signal?.aborted) return { state: 'unknown', reason: 'cancelled-after-dispatch' };
     // C-DEPTH11/#648: no payload at all is a failed read with the adapter's own closed code for a result it
     // cannot use, never a completed read that reaches the model as an honest empty.
-    if (!hasEnvelope(result)) return { state: 'unknown', reason: 'invalid_result' };
+    if (result.state === 'completed' && !hasEnvelope(result)) return { state: 'unknown', reason: 'invalid_result' };
     const evidence: GoogleEvidence = {
       state: result.state,
       tool,

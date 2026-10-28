@@ -50,6 +50,19 @@ Only the configured board is in scope. A list or card reference does not authori
 
 A due date can support the owner's Trello notification workflow; it is not a promise that Naya can call back. Setup and browser consent belong in [mcp-configuration.md](mcp-configuration.md).
 
+## Calendar reads and who is in the meeting (C-DEPTH11)
+
+The Google calendar read is one merged window over the calendars the accepted grant covers (`createGoogleReader` in `server/connectors/google.ts`).
+
+- The default read selects the owner's own calendars: the primary one and the ones whose `accessRole` is `owner`. A calendar entry with no `accessRole` at all is still selected, so a helper that omits the field never hides the owner's own calendar.
+- A subscribed group calendar (holidays, week numbers, contacts' birthdays, ids ending in `@group.v.calendar.google.com`) is read only when the ask names it in `calendarIds` or `calendarId`. Reading every subscription spent the 40 s read window and answered a schedule question with public holidays.
+- The attendee projection requests `include: ['attendees', 'organizer']` only when the accepted helper advertises that property; an older helper is never sent an argument it does not declare.
+- Each attendee reaches the model as its display name, else the local part of its address, with its `responseStatus` (`accepted`, `declined`, `tentative`, `not answered`) and an `organizer` mark. One event line names at most eight people and counts the rest.
+- An event with no attendee list says `attendees: none listed for this event`. An event whose helper could not be asked for attendees says `attendees: not available from this source`. Neither ever reads as an invite that hides its guests, and the prompt says who is in the meeting comes only from that line.
+- A completed helper result with no JSON envelope at all is the closed failure code `empty-payload` with its own spoken line, kept apart from a search that matched nothing. An honest empty names the query it ran.
+
+Field provenance: `calendarList.accessRole` and `primary` in the Calendar API v3 calendarList resource, and `attendees[].responseStatus` plus `organizer` in the events resource.
+
 ## Text and Live share the owner
 
 Text consumes the host's tools through `ChatToolsComposition`; Live consumes its accepted definitions through the Live composition boundary. Do not create a second connection registry or approve tools in a renderer to work around a missing host grant. [Text chat](text-chat.md) and [live-call.md](live-call.md) own their lifecycle differences.

@@ -163,7 +163,10 @@ export function buildRuntimeContext(input: RuntimeContextInput): string {
   const sunday = new Date(monday.getTime() + 6 * day);
   const weekYmd = (date: Date): string => ymd({ y: date.getUTCFullYear(), m: date.getUTCMonth() + 1, d: date.getUTCDate() });
   const weekOffset = (date: Date): string => offset(new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 12)), input.timeZone);
-  const connected = input.connected.length ? input.connected.join(', ') : 'none';
+  const refused = new Set((input.connectors ?? []).filter(row => row.state !== 'connected')
+    .flatMap(row => connectorGroupNames(row.connector)));
+  const available = input.connected.filter(group => !refused.has(group));
+  const connected = available.length ? available.join(', ') : 'none';
   return [
     '# Runtime context',
     '',

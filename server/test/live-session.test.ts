@@ -3970,38 +3970,13 @@ test('P3: an inaudible output frame never puts the orb in SPEAKING, and the turn
 
 // --- Q5-R4: a fresh call never repeats the last calls' openers --------------------------------
 
-test('Q5-R4: the opener context names at most three earlier openers, one or two sentences each, and stays under 450 chars', () => {
-  assert.equal(openersNote([]), undefined, 'no earlier call means no context at all');
-  const one = openersNote(['Morning. The release branch merged cleanly. A third line follows.']);
-  assert.equal(one!.includes('Morning. The release branch merged cleanly.'), true, 'two short sentences are carried so the subject shows');
-  assert.equal(one!.includes('A third line'), false, 'a third sentence is not carried');
-  const three = openersNote(['Morning. Then more.', 'Evening. Then more.', 'Night. A third call.', 'Dawn. A fourth call.']);
-  assert.equal(three!.split('"').length - 1, 6, 'only the three most recent openers are quoted');
-  assert.equal(three!.includes('Dawn.'), false, 'the fourth call is beyond the three the host passes');
-  assert.ok(three!.startsWith('Open on a different subject and different words than these earlier openers:'), 'the note asks for a different subject, not only different words');
-  const long = openersNote([`${'A'.repeat(200)} first.`, `${'B'.repeat(200)} second.`, `${'C'.repeat(200)} third.`]);
-  assert.ok(long!.length <= OPENER_CONTEXT_CHARS, `the note is bounded at ${OPENER_CONTEXT_CHARS} chars (${long!.length})`);
-  assert.ok(!long!.includes('B'), 'an opener that does not fit is dropped whole, never cut mid sentence');
-});
-
-test('L8-09/L11-05: the earlier-openers note names one sentence once, even when two calls opened with it', () => {
-  const note = openersNote(['Morning. The release branch merged cleanly.', 'Morning.  The release branch merged cleanly.', 'Evening. The deck is out.'],
-    ['the release branch merge', 'the release branch merge', 'the deck']);
-  assert.equal(note!.split('Morning. The release branch merged cleanly.').length - 1, 1, `a repeated opener is quoted once: ${note}`);
-  assert.ok(note!.includes('Evening. The deck is out.'), 'a different opener is still named');
-});
-
-test('3u: the anti-repeat note names the topic each earlier opener came from, still under the cap', () => {
-  const note = openersNote(['Morning. The release branch merged cleanly.'], ['the release branch merge']);
-  assert.ok(note!.includes('"Morning. The release branch merged cleanly."'), 'the sentence is still quoted');
-  assert.ok(note!.includes('(about the release branch merge)'), 'the topic the earlier plan offered is named beside it');
-  assert.ok(note!.length <= OPENER_CONTEXT_CHARS, `the note stays bounded (${note!.length})`);
-  const unnamed = openersNote(['Morning. Then more.'], [undefined]);
-  assert.equal(unnamed!.includes('(about'), false, 'no topic is invented for an opener the plan cannot name');
-  const long = openersNote([`${'A'.repeat(200)} first.`, `${'B'.repeat(200)} second.`], [`${'C'.repeat(200)} topic.`, undefined]);
-  assert.ok(long!.length <= OPENER_CONTEXT_CHARS, `a long topic never breaks the cap (${long!.length})`);
-  const full = openersNote([`${'A'.repeat(150)} first.`], [`${'T'.repeat(150)} topic.`]);
-  assert.ok(full!.includes(`(about ${'T'.repeat(60)})`), 'the topic is clipped to one short clause');
+test('C-CONVO9: earlier openers carry only closed topic classes, never sentences or free text', () => {
+  assert.equal(openersNote([]), undefined);
+  const note = openersNote(['Morning. The synthetic branch merged.', 'My tools failed again.'], ['the synthetic branch merge', 'tool_failure']);
+  assert.ok(note);
+  assert.doesNotMatch(note, /Morning|synthetic|My tools|branch merge/);
+  assert.match(note, /tool_failure/);
+  assert.ok(note.length <= OPENER_CONTEXT_CHARS);
 });
 
 test('3u: consecutive starts offer different stored open loops and record the plan as metadata', async t => {
@@ -4132,9 +4107,9 @@ test('Q5-R4: a fresh call carries the previous opener assembled from its fragmen
   });
   const second = h.owner.create({ idempotencyKey: 'opener-second', inputClass: 'ordinary' }, h.ctx);
   const text = accepted(h, second.liveSessionId).system;
-  assert.equal(text.includes('"Morning. The release branch merged cleanly last night."'), true, 'the assembled opener is named');
+  assert.equal(text.includes('Morning. The release branch merged cleanly last night.'), false, 'earlier sentences never enter the instruction');
   assert.equal(text.includes('A trailing line'), false, 'a fragment after the finished fragment is not carried');
-  assert.equal(text.split('earlier openers').length - 1, 1, 'the context appears once');
+  assert.equal(text.split('Earlier opener topic classes').length - 1, 1, 'the context appears once');
 });
 
 test('S4b: composeLive gives the OpenAI backend the procedure and Gemini keeps the shared voice conduct', async t => {
@@ -4546,32 +4521,41 @@ function progressPort() {
 
 const openaiLimits = { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 };
 
-test('VOICE-R4: a lookup sends no host-authored commentary, not on dead air and not on the six second beat', async t => {
+test('C-CONVO9: a pending lookup bridges at three seconds only once per ask', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
   const scheduler = new DeadlineClock();
   const fake = progressPort();
   let release!: () => void;
-  const held = new Promise<void>(resolve => { release = resolve; });
+  let held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'progress-first');
   // The lookup is still running: this is the delegation the owner is waiting on.
+  fake.emit({ type: 'outputTranscription', text: 'Checking the knowledge base.', finished: true });
+  await settlePort();
   fake.emit({ type: 'toolCall', calls: [{ id: 'svc1', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   // VOICE-R1: the host injects no waiting text, so a research call sends none and the owner hears silence.
   assert.deepEqual(fake.thinking, [], 'no host-authored waiting line reaches the provider');
   assert.deepEqual(fake.texts, [], 'no host-authored text reaches the provider during the call');
   assert.equal(receipts.filter(entry => entry['event'] === 'thinking_sent').length, 0);
-  h.advance(5_999); scheduler.runDue(); await settlePort();
+  h.advance(2_999); scheduler.runDue(); await settlePort();
   assert.deepEqual(fake.commentary, [], 'nothing is said before the first deadline');
   h.advance(1); scheduler.runDue(); await settlePort();
-  assert.deepEqual(fake.commentary, [], 'dead air is silent: the host speaks no status line');
+  assert.deepEqual(fake.commentary, ['Still looking, give me a moment.'], 'one bounded bridge at three seconds');
   h.advance(12_000); scheduler.runDue(); await settlePort();
-  assert.deepEqual(fake.commentary, [], 'and it stays silent however long the lookup runs');
+  assert.deepEqual(fake.commentary, ['Still looking, give me a moment.'], 'no second bridge for the same ask');
   assert.equal(receipts.filter(entry => entry['event'] === 'commentary_sent').length, 0, 'no commentary send was ever recorded');
   release();
   await settlePort();
+  // A second pending leg in this same owner ask cannot earn another bridge.
+  held = new Promise<void>(resolve => { release = resolve; });
+  fake.emit({ type: 'toolCall', calls: [{ id: 'svc1-second', name: 'search_knowledge', args: { query: 'second synthetic leg', limit: 1 } }] });
+  await settlePort();
+  h.advance(3_000); scheduler.runDue(); await settlePort();
+  assert.deepEqual(fake.commentary, ['Still looking, give me a moment.'], 'second pending interval sends none');
+  release(); await settlePort();
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -4582,10 +4566,12 @@ test('no commentary steps on the owner while a lookup runs', async t => {
   const held = new Promise<void>(resolve => { release = resolve; });
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'progress-suppressed');
+  fake.emit({ type: 'outputTranscription', text: 'Checking the knowledge base.', finished: true });
+  await settlePort();
   fake.emit({ type: 'toolCall', calls: [{ id: 'svc2', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   // The owner is talking over the lookup: the line would step on her.
-  h.advance(5_000); scheduler.runDue();
+  h.advance(2_000); scheduler.runDue();
   fake.emit({ type: 'inputTranscription', text: 'wait a moment', finished: false });
   await settlePort();
   h.advance(1_000); scheduler.runDue(); await settlePort();
@@ -4617,7 +4603,7 @@ test('VOICE-R4: no commentary goes out over three beats inside one lookup', asyn
   // C-LIVE: the lookup answers by its operation deadline, so its beats are inside that bound.
   for (const beat of [1, 2, 3]) {
     h.advance(1_900); scheduler.runDue(); await settlePort();
-    assert.deepEqual(fake.commentary, [], `beat ${beat} of the lookup is silent`);
+    assert.deepEqual(fake.commentary, [], `beat ${beat} without an acknowledgement stays silent`);
   }
   const sent = receipts.filter(entry => entry['event'] === 'commentary_sent');
   assert.deepEqual(sent, [], 'the host-composed status line is gone from the ledger too');
@@ -4700,6 +4686,7 @@ test('R6: a source that settles after the first answer is appended once, and sai
   assert.equal(late[0]!['destination'], 'response', 'a quiet turn hears it through the response channel, the one the provider accepts');
   assert.deepEqual(fake.thinking, [], 'no provider append carries a late finding (#438)');
   assert.deepEqual(fake.texts.map(text => text.split(':')[0]), ['Late findings from your lookup, not supplied by the owner'], 'one spoken line, naming the source');
+  assert.deepEqual(fake.texts.map(text => text.split(':')[0]), ['[host note, not the owner] One more thing from chat'], 'one spoken line, naming the source');
   assert.deepEqual(fake.commentary, [], 'the refused commentary append is no longer the door a finding takes');
   h.owner.revoke(session.liveSessionId);
 });
@@ -4771,6 +4758,7 @@ test('#472: a late source result reaches the model while the session is live', a
   assert.equal(late[0]!['source'], 'chat');
   assert.notEqual(late[0]!['destination'], 'dropped', `the late result is not dropped: ${JSON.stringify(late[0])}`);
   assert.ok(fake.texts.some(text => text.includes('from your chat:')), 'the model carries the late finding on the response channel');
+  assert.ok(fake.texts.some(text => text.startsWith('[host note, not the owner] One more thing from your chat:')), 'the model carries the late finding on the response channel');
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -6423,7 +6411,7 @@ for (const progress of ['Checking.', 'On it.', 'One sec.']) test(`C-TURN8: ${pro
   const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
   const corrections = () => h.f.frames.filter(frame => {
     const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
-    return typeof text === 'string' && text.startsWith('Correction:');
+    return typeof text === 'string' && text.startsWith('[host note, not the owner] Correction:');
   });
   const counted = () => readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').split('\n').filter(line => line.startsWith('{'))
     .map(line => JSON.parse(line) as { event: string; ms?: number }).filter(line => line.event === 'live_claim_without_call');
@@ -6458,7 +6446,7 @@ test('C-TURN8: a claim followed by its call inside the bound is never corrected'
   const { session } = await attached(h, 'claim-with-call');
   const corrections = () => h.f.frames.filter(frame => {
     const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
-    return typeof text === 'string' && text.startsWith('Correction:');
+    return typeof text === 'string' && text.startsWith('[host note, not the owner] Correction:');
   });
   h.f.send({ serverContent: { inputTranscription: { text: 'save the synthetic line to my vault', finished: true } } });
   await settlePort();
@@ -6524,7 +6512,7 @@ test('OPEN2-5: an open claim the turn did not make gets one correction, never tw
   h.f.send({ serverContent: { outputTranscription: { text: "I found it, it's open now, the OCP alignment deck.", finished: true }, turnComplete: true } });
   const corrections = () => h.f.frames.filter(frame => {
     const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
-    return typeof text === 'string' && text.startsWith('Correction:');
+    return typeof text === 'string' && text.startsWith('[host note, not the owner] Correction:');
   });
   for (let attempt = 0; attempt < 40 && corrections().length === 0; attempt++) await tick();
   assert.equal(corrections().length, 1, 'exactly one correction for the turn');

@@ -356,7 +356,7 @@ test('W5: the compiled Gemini voice instruction carries the four audit rules onc
     'Vary how you start replies; never open two replies in a row with the same word.',
     'Never hand ordinary continuation back to the owner as a permission question',
   ]) assert.equal(instruction.includes(gone), false, `replaced sentence is gone: ${gone}`);
-  assert.equal(instruction.split('Never fill the silence while a lookup runs.').length - 1, 1, 'the silence rule is still stated once');
+  assert.equal(instruction.split('Only the host bridges lookups.').length - 1, 1, 'the silence rule is still stated once');
 });
 
 test('#665: the research procedure answers with what it has instead of chasing a page-limit note', () => {

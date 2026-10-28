@@ -6,7 +6,8 @@ import {runInNewContext} from 'node:vm';
 import {NAYA_CHARACTER,NAYA_VOICE_SURFACE,NAYA_LIVE_BASE,NAYA_TOOLS,composeLiveInstruction} from '../dist/prompt/live-persona.js';
 import {OpenAiLiveVoiceAdapter,openAiInstructions,OPENAI_TOOLS_SECTION,OPENAI_DELIVERY_SECTION} from '../dist/adapters/live-voice/openai.js';
 import {fixture,options,request,control} from '../dist/test/openai-live-voice-fixture.js';
-const baselineCommit='31cc08d54248fe00562e7506dbed7ce28fbaf019';
+// Freeze the accepted pre-alarm train, not the superseded pre-release authored character.
+const baselineCommit='af4370aa339fb727f5a78bc615bbc917ba0eea68';
 const baseline=execFileSync('git',['show',baselineCommit+':server/prompt/live-persona.ts'],{encoding:'utf8'});
 // C-ALARM11 adds exactly this public sentence; preserve the historical byte guard for every other byte.
 const alarmGuidance='\n\nAwake-Mac: set_alarm, list_alarms, cancel_alarm, snooze_alarm; trust receipts.';

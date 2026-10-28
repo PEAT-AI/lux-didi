@@ -68,7 +68,10 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     }
     // journal.intent invokes callDTO, the same canonicalization used by the gateway.
     assert.doesNotThrow(() => assert.equal(owner.journal.intent(intent), 'fresh'), `${definition.name} stores its intent`);
-    await assert.doesNotReject(() => definition.execute(args, { ...intent, signal }), `${definition.name} must accept its stored intent`);
+    await assert.doesNotReject(async () => {
+      const outcome = await definition.execute(args, { ...intent, signal });
+      assert.equal(outcome.status, 'completed', `${definition.name} reaches its receipt transaction`);
+    }, `${definition.name} must accept its stored intent`);
   }
   const definitions = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
   const web = definitions.find(definition => definition.name === 'open_web')!;

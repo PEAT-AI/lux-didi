@@ -511,6 +511,12 @@ const LATE_SPOKEN_CHARS = 280;
 export interface LateCommentaryState {
   now: number; answeredAt: number; alreadySpoken: boolean;
   inputAt?: number | undefined; ownerWords: number; lastModelAudioAt?: number | undefined;
+  /**
+   * #1028 behaviour 4: when a newer research operation started, or a newer tool call was made, after the
+   * answer. A question the host acted on is that; a raw owner input is not, because room speech arrives as
+   * one and used to park a finding the owner had asked for.
+   */
+  newerWorkAt?: number | undefined;
 }
 
 /**
@@ -524,7 +530,12 @@ export function lateCommentarySilence(state: LateCommentaryState): string | null
   if (state.now - state.answeredAt >= LATE_WINDOW_MS) return 'window_elapsed';
   const filler = state.ownerWords > 0 && state.ownerWords <= FILLER_WORDS;
   const immediate = state.inputAt !== undefined && state.inputAt - state.answeredAt < SPEAKING_HOLD_MS;
-  if (state.inputAt !== undefined && state.inputAt > state.answeredAt && !filler && !immediate) return 'new_question';
+  // #1028 behaviour 4: a new question is one the host acted on, a research operation it started or a tool call
+  // it made after the answer. Without that evidence the owner's input is room speech, and the finding lands.
+  const askedAgain = state.newerWorkAt !== undefined
+    ? state.newerWorkAt > state.answeredAt
+    : state.inputAt !== undefined && state.inputAt > state.answeredAt && !filler && !immediate;
+  if (askedAgain) return 'new_question';
   if (state.inputAt !== undefined && state.now - state.inputAt < SPEAKING_HOLD_MS) return 'owner_speaking';
   if (state.lastModelAudioAt !== undefined && state.now - state.lastModelAudioAt < ANSWER_AUDIO_HOLD_MS) return 'answer_playing';
   return null;
@@ -651,6 +662,13 @@ interface ActiveSession {
   delegationTimer?: ReturnType<JobTimer> | undefined;
   /** R6: when this call's first answer went out with sources still reading, and which call spoke a late line. */
   researchAnsweredAt?: number | undefined; lateCommentaryFor?: string | undefined;
+  /**
+   * #1028 behaviour 4: the last research start and the last tool call this turn made, so a late finding is
+   * parked by work the host actually did after the answer and never by a raw owner input.
+   */
+  researchStartedAt?: number | undefined; lastToolCallAt?: number | undefined;
+  /** #1028: the one delayed re-offer of a late finding a hold postponed, so a hold never discards it. */
+  lateHoldTimer?: ReturnType<JobTimer> | undefined;
   /** R6: the research this turn may collect once without a new owner turn, and how many sources it still reads. */
   pendingResearch?: { id: string; count: number } | undefined;
   /** R5: the word count of the owner's last finished utterance, so a filler sound is not read as a new question. */
@@ -3986,6 +4004,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       authorizeEvidence: (bindings, signal) => !signal.aborted && generation === handle.generation && !this.#settled(handle)
         && this.#tools!.owner.authorizeDelivery(host, bindings, [handle.inputClass], this.lookupAuthority(host.runId), signal).state === 'allowed',
       configured, configuredNow: () => this.#researchSources(handle),
+      // #1028 behaviour 1: the digest this host already read is where the names of the owner's own
+      // organisations live, so a misheard one is resolved before any source reads.
+      calendarDigest: () => this.#calendar,
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
       unavailableNow: () => this.#unreachableSources(handle), execute,
@@ -4047,7 +4068,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       // spends no admission turn and cannot be refused for want of a fresh owner turn.
       const sameRun = parsed.ok && parsed.call.action === 'continue' && pagesCurrentRun(parsed.call) && parsed.call.researchId === handle.researchAdmission.currentRun();
       const pages = parsed.ok && parsed.call.pageCursor !== undefined && handle.voicePages.holds(parsed.call.pageCursor);
-      const verdict = parsed.ok && !pages ? handle.researchAdmission.admit(parsed.call.action, this.#ownPendingResults(handle, parsed.call.action, parsed.call.researchId), sameRun) : undefined;
+      const verdict = parsed.ok && !pages ? handle.researchAdmission.admit(parsed.call.action, this.#ownPendingResults(handle, parsed.call.action, parsed.call.researchId), sameRun, parsed.call.question ?? '') : undefined;
+      // #1028 behaviour 4: an admitted start is the work that makes a later late finding a new question.
+      if (verdict?.admitted === true && parsed.ok && parsed.call.action === 'start') handle.researchStartedAt = this.#now();
       return { call, parsed, verdict };
     });
     // F6: every research call in one model message runs concurrently; the adapter bounds each source.
@@ -4199,6 +4222,16 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // spoken once through the response channel or kept in the ledger for the next continuation. Never a
     // provider frame the wire refuses.
     const reason = this.#lateCommentaryReason(handle, event);
+    // #1028 behaviour 4: a hold postpones the line, it never discards the finding, so a block held by room
+    // speech is offered once the hold is over. A new question, a closed turn or a spoken line still ends it.
+    if (reason === 'owner_speaking') {
+      handle.lateHoldTimer?.cancel();
+      handle.lateHoldTimer = this.#schedule(() => {
+        handle.lateHoldTimer = undefined;
+        if (this.#settled(handle) || generation !== handle.generation) return;
+        this.#lateFindings(handle, generation, event);
+      }, SPEAKING_HOLD_MS);
+    }
     if (reason !== null) return hostLogEvent({ ...receipt, destination: 'ledger', reason });
     const line = `One more thing from ${event.source}: ${event.items[0]!.slice(0, LATE_SPOKEN_CHARS)}`;
     try { handle.session.sendText({ text: line }); } catch { return hostLogEvent({ ...receipt, destination: 'ledger', reason: 'send_failed' }); }
@@ -4233,12 +4266,16 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       inputAt: handle.inputAt,
       ownerWords: handle.ownerLastWords,
       lastModelAudioAt: handle.lastModelAudioAt,
+      newerWorkAt: Math.max(handle.researchStartedAt ?? 0, handle.lastToolCallAt ?? 0),
     });
   }
 
   /** A fresh turn of tool work: the step list restarts and every direct call opens its own line.
    *  A `research` call opens one line per source from inside the run instead. */
   #openSteps(handle: ActiveSession, calls: readonly { id: string; name: string; args: JsonObject }[]): void {
+    // #1028 behaviour 4: a tool call the owner's new ask made holds a late finding back; a continue of the run
+    // already reading is that run's own work, not a new question.
+    if (calls.some(call => call.name !== RESEARCH_TOOL_NAME)) handle.lastToolCallAt = this.#now();
     const running = new Set([...handle.exec].filter(([, entry]) => entry.status === 'running').map(([id]) => id));
     handle.liveSteps = handle.liveSteps.filter(step => running.has(step.stepId) || running.has(step.callId));
     handle.liveStepItems = new Map();

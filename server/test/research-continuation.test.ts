@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ResearchLedger, RESEARCH, VoiceReplyBook, VOICE_CURSOR_ERROR, VOICE_REPLY_CUT, capVoiceReply, runResearch, type ResearchDeps } from '../tools/research.js';
 import type { IntentSubResult } from '../tools/intent.js';
+import { lateCommentarySilence } from '../live/index.js';
 
 const signal = (): AbortSignal => new AbortController().signal;
 
@@ -182,4 +183,14 @@ test('C-CONTINUITY T-11: a body page is capped and pages its slices with exact o
   assert.equal(current['pageCursor'], undefined, 'the last body page names no further page');
   assert.equal(current['pagesRemaining'], undefined, 'and owes no further pages');
   assert.equal(reassembled, body, 'the whole body is readable through the pages, and nothing was handed over uncapped');
+});
+
+// --- #1028: a late finding is parked by work the host did, never by room speech ---------------------
+
+test('#1028: room speech after the answer does not park a late finding', () => {
+  const answeredAt = 1_000;
+  assert.equal(lateCommentarySilence({ now: 5_000, answeredAt, alreadySpoken: false, ownerWords: 9, inputAt: 2_000, newerWorkAt: 500 }), null,
+    'no research start and no tool call after the answer, so the finding is offered');
+  assert.equal(lateCommentarySilence({ now: 3_000, answeredAt, alreadySpoken: false, ownerWords: 0, newerWorkAt: 2_000 }), 'new_question',
+    'a research operation that started after the answer parks it');
 });

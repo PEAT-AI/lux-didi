@@ -18,13 +18,15 @@ export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_sourc
 /** The one sentence the model says when an item open is refused or unknown. */
 export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch', string> = {
   not_found: 'I could not find that item. Look it up again and use the handle the result gives you.',
-  not_allowed: 'For a browser, tab, Chrome or link request, use open_source with a shown web handle or open_web for a site, never open_file or open_app. That link is not one I am allowed to open. Tell him plainly which link failed and offer the app home page instead; if he asks again, call open again with the same handle.',
+  not_allowed: 'That link is not one I am allowed to open. Tell him plainly which link failed and offer the app home page instead; if he asks again, call open again with the same handle.',
   no_open_intent: 'I did not hear an open request in his words. Say plainly that I did not hear one and that nothing is open; when he asks again, call open again with the same handle, never invent a reason.',
   kind_mismatch: 'That item is not the kind he asked for. Say what it actually is and ask before opening it.',
 };
 /** A control frame and its ack, exactly as they cross the local Live socket. */
 export interface NativeActionFrame { type: 'native_action'; id: string; action: NativeAction; target: string; origin?: string }
 export interface NativeActionResult { type: 'native_action_result'; id: string; ok: boolean; code: NativeActionCode }
+
+export const OPEN_BROWSER_GUIDANCE = 'For a browser, tab, Chrome or link request, use open_source with a shown web handle or open_web for a site, never open_file or open_app. If a held result has no web link, say so and offer the home page or a web search in one sentence.';
 
 const OPEN_ONLY = 'These tools only open things: they never type, click, send or change anything.';
 

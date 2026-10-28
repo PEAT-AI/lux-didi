@@ -223,6 +223,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       const resolve = (tx: Transaction) => target(snapshot, originalCall(tx, call.runId, page.parent), tx);
       return transaction ? resolve(transaction) : store.transaction(resolve);
     }
+    if (call.toolName === PEOPLE_LOOKUP_DECLARATION.name && call.accountId === 'gateway:live-voice' && call.resourceId === 'intent') {
+      if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
+      return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 65536 } } };
+    }
     if (call.toolName === HISTORY_IDENTITY.name && call.accountId === HISTORY_IDENTITY.accountId && call.resourceId === HISTORY_IDENTITY.resourceId) {
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
       return { connectionId: HISTORY_IDENTITY.accountId, policy: { sourcePolicy: { allowedClasses: snapshot.acceptance.allowedClasses }, route: { allowedClasses: snapshot.acceptance.route.allowedClasses }, bounds: { maxResultBytes: 65536 } } };

@@ -318,6 +318,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.detail !== 'string' || !/^[a-z0-9]{1,16}$/.test(value.detail)) return;
     return { event: 'native_action', action: value.action, code: value.code, detail: value.detail };
   }
+  if (value.event === 'live_claim_without_call') {
+    // C-TURN8: a claim the turn never acted on is counted from the turn's sequence and its bound, nothing else.
+    if (Object.keys(value).sort().join(',') !== ['event', 'ms', 'sequence'].join(',')) return;
+    if (!isSafeCount(value.sequence) || !isSafeCount(value.ms)) return;
+    return { event: 'live_claim_without_call', sequence: value.sequence, ms: value.ms };
+  }
+  if (value.event === 'live_tool_refused') {
+    // C-TURN8: a tool the host refused before the owner spoke, by name and closed reason, never an argument.
+    if (Object.keys(value).sort().join(',') !== ['event', 'reason', 'sequence', 'tool'].join(',')) return;
+    if (!isSafeCount(value.sequence) || !SAFE_TOKEN.test(String(value.tool)) || value.reason !== 'no_owner_input') return;
+    return { event: 'live_tool_refused', sequence: value.sequence, tool: value.tool, reason: value.reason };
+  }
   if (value.event === 'open_claim_corrected') {
     // Open2: the correction is counted, never quoted: one closed reason, no words of hers.
     if (Object.keys(value).sort().join(',') !== ['event', 'reason'].join(',')) return;

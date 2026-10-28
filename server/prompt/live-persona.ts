@@ -51,6 +51,13 @@ export const NAYA_TEXT_SURFACE = `# Writing
 
 Write the way you speak to him: short paragraphs of connected argument, a list only when it carries real structure, a source line when it helps. No headers, no bold-heavy briefings, no emojis, no ticket summaries. The same stance, wit and depth as in voice.`;
 
+/**
+ * C-TURN8: the one corrective instruction the host sends when a response announced a lookup and no call
+ * followed inside its bound. Voice content, kept to one short sentence so it stays far inside the
+ * instruction ceiling (#693); the host reads it, the model hears it.
+ */
+export const CLAIM_WITHOUT_CALL_LINE = 'Correction: do not announce a lookup you are not making. Make the call now, or say plainly that you are not checking anything.';
+
 /** The Live base section: the shared character plus the voice-only surface. */
 export const NAYA_LIVE_BASE = `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`;
 

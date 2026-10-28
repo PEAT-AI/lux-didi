@@ -27,7 +27,16 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
     liveTesting: { profile: validateLiveProfile({ provider: 'gemini', liveModelId: 'models/synthetic', voice: 'Synthetic', keyReference: 'synthetic',
       route: { enabled: true, provider: 'gemini', modelId: 'models/synthetic', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic', dataClass: 'ordinary' } }),
       socketFactory: f.socketFactory, credentials: { resolve: async () => CANARY } } });
-  cleanups.push(() => host.close());
+  cleanups.push(async () => {
+    await host.close();
+    const { createConnection } = await import('node:net');
+    await new Promise((resolve, reject) => {
+      const socket = createConnection({ host: '127.0.0.1', port: new URL(host.service.origin).port });
+      socket.once('connect', () => { socket.destroy(); reject(Error('synthetic host port still open')); });
+      socket.once('error', error => error.code === 'ECONNREFUSED' ? resolve() : reject(error));
+    });
+    t.diagnostic('synthetic host closed; port refuses new connections');
+  });
   const origin = host.service.origin;
   t.diagnostic(`synthetic host pid=${process.pid} origin=${origin}; no audio frames or real accounts`);
   const headers = { authorization: `Bearer ${host.store.adminCredential}`, 'x-didi-authority-epoch': host.store.authorityEpoch, 'content-type': 'application/json' };
@@ -142,10 +151,28 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   const afterMissed = await post('/api/v1/live-sessions', { inputClass: 'ordinary' }, 'synthetic-after-missed');
   assert.equal(afterMissed.status, 200);
   const missedSetupStart = f.frames.length;
-  peer = await attach(afterMissed.body.data.liveSessionId);
+  sessionId = afterMissed.body.data.liveSessionId;
+  peer = await attach(sessionId);
   assert.match(JSON.stringify(f.frames.slice(missedSetupStart).find(frame => frame.setup)), /missed alarm/i);
+  await owner('wake me in one minute');
+  assert.match(await call('set_alarm'), /Alarm set/);
+  const outageAlarm = rows().find(row => row.state === 'pending');
+  await post(`/api/v1/live-sessions/${sessionId}/revoke`, {}); peer.terminate();
+  now += 60000;
+  await post('/api/v1/alarms/recheck', { reason: 'wake' });
+  f.refuseUpgrades(503);
+  const outageCreated = await post('/api/v1/alarms/session', { id: String(outageAlarm.id), ownerDisplayName: 'Synthetic Owner' });
+  assert.equal(outageCreated.status, 201);
+  const beforeOutage = f.attempts;
+  const failedPeer = new WebSocket(`${origin.replace('http', 'ws')}/api/v1/live-sessions/${outageCreated.body.data.liveSessionId}/audio`, { headers });
+  cleanups.push(() => failedPeer.terminate());
+  await new Promise((resolve, reject) => { failedPeer.once('close', resolve); failedPeer.once('error', reject); });
+  assert.equal(f.attempts, beforeOutage + 1, 'provider outage cannot open a second alarm session');
+  assert.equal(rows().find(row => row.id === outageAlarm.id).state, 'ringing', 'provider outage leaves local ringing active');
+  assert.equal((await post('/api/v1/alarms/session', { id: String(outageAlarm.id), ownerDisplayName: 'Synthetic Owner' })).status, 409);
   const log = (await readFile(join(directory, 'state/logs/host.log'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
   for (const event of ['alarm_set', 'alarm_due', 'alarm_acknowledged', 'alarm_degraded']) assert.ok(log.some(row => row.event === event), event);
   assert.ok(log.some(row => row.event === 'alarm_degraded' && row.reason === 'live_session_no_channel'));
+  assert.ok(log.some(row => row.event === 'alarm_degraded' && row.reason === 'provider_unavailable'));
   for (const row of log.filter(row => row.event.startsWith('alarm_'))) assert.doesNotMatch(JSON.stringify(row), /wake me|Synthetic Owner|snooze my/);
 });

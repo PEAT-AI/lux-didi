@@ -191,7 +191,7 @@ import Foundation
         let alarmOutput = RecordingRingOutput()
         var alarmWaits: [(Int, @MainActor () -> Void)] = []
         let alarmRing = ConnectingRing(output: alarmOutput, now: { alarmClock.ms }, deferStart: { $0() }, after: { alarmWaits.append(($0, $1)) })
-        alarmRing.startAlarm(deadlineMs: 600_000)
+        try require(alarmRing.startAlarm(deadlineMs: 600_000), "ring-started receipt requires accepted local audio output")
         alarmRing.startAlarm(deadlineMs: 600_000)
         try require(alarmOutput.chimes == 1, "duplicate due frames cannot stack chimes")
         alarmClock.ms = 45_000
@@ -203,6 +203,12 @@ import Foundation
         alarmClock.ms = 90_000
         alarmWaits.last { $0.0 == 45_000 }?.1()
         try require(alarmOutput.chimes == stoppedCount, "stopped alarm cannot be restarted by stale repeat")
+        let refusedOutput = RecordingRingOutput(); refusedOutput.chimeResult = false
+        let refusedRing = ConnectingRing(output: refusedOutput, now: { 0 }, deferStart: { $0() }, after: { _, _ in })
+        try require(!refusedRing.startAlarm(deadlineMs: 600_000), "failed output cannot report ring started")
+        let degradedPolicy = AlarmShellPolicy(acquire: { false }, release: {}, register: { _ in }, remove: { _ in })
+        degradedPolicy.apply([pendingAlarm], notificationsAllowed: false)
+        try require(degradedPolicy.degraded && degradedPolicy.caption?.hasSuffix(" !") == true, "power and notification failure is visible")
         // Example 1: connecting for 4.0 s then live plays once, ramps once over 30 ms, and leaves
         // one record with 4000 ms.
         let clock = TestClock()

@@ -4,6 +4,7 @@ import './alarm-authority.test.js';
 import './alarm-shell.test.js';
 import './alarm-mode.test.js';
 import './alarm-logs.test.js';
+import './alarm-atomic.test.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';

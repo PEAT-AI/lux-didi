@@ -180,9 +180,6 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
           if (url.pathname === '/api/v1/alarms/recheck' && reasons.some(reason => reason === body.reason)) {
             scheduler.recheck(body.reason as AlarmRecheck); send(res, 200, success({ status: 'ok' })); return;
           }
-          if (url.pathname === '/api/v1/alarms/acknowledged' && typeof body.id === 'string') {
-            send(res, 200, success({ acknowledged: scheduler.acknowledge(body.id) })); return;
-          }
         }
         throw new ServiceError('BAD_REQUEST', 'Invalid alarm shell request');
       }

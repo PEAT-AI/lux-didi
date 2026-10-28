@@ -66,6 +66,13 @@ test('alarm shell: real HTTP delivers a persisted due frame to an authenticated 
   const alarm = scheduler.set({ fireAtUtc: now + 1000, tz: 'UTC', label: '', createdJournalId: 'synthetic-journal' });
   now += 1000;
   scheduler.recheck('clock_changed');
+  const forgedAck = await fetch(`${service.origin}/api/v1/alarms/acknowledged`, {
+    method: 'POST', headers: { authorization: `Bearer ${store.adminCredential}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ id: alarm.id }),
+  });
+  assert.equal(forgedAck.status, 400, 'an authenticated id alone cannot assert owner speech');
+  await forgedAck.arrayBuffer();
+  assert.equal(scheduler.list().find(row => row.id === alarm.id)?.state, 'ringing');
   for (let reads = 0; reads < 4 && !wire.includes('alarm_due'); reads++) wire += new TextDecoder().decode((await reader.read()).value);
   const frames = wire.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)) as { type: string; alarm?: AlarmDue });
   const due = frames.find(frame => frame.type === 'alarm_due');

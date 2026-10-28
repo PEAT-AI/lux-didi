@@ -284,6 +284,11 @@ function googleProject(evidence: ConnectorEvidence, port: McpPort, policy: Conne
   };
 }
 function googleStatus(evidence: ConnectorResult, endpoint?: ConnectionEndpoint): { state: 'configured' | 'error'; reason: string; code: string; log?: ToolFailureEvent } | undefined {
+  // C-DEPTH11/#648: a helper that answered with no payload at all is its own closed failure, said in the
+  // owner's words and kept apart from a search that matched nothing.
+  if (evidence.state === 'unknown' && evidence.reason === 'empty-payload') {
+    return { state: 'error', code: 'empty-payload', reason: 'the mail helper returned no result, so this was not a search that found nothing: ask again' };
+  }
   // Ruling TR4-R8: a latched endpoint refuses the read before the wire, so the connector answers for that
   // refusal too: the closed code's own line from the one table, with the family the endpoint names.
   if (evidence.state === 'refused') {

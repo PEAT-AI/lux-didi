@@ -34,9 +34,9 @@ export const CHAT_READ_TOOL = 'mattermost_chat';
 const CHAT_SEARCH_TOOL = 'mattermost_search';
 
 const NAME = String.raw`(\p{L}[\p{L}'’.-]*(?:\s+\p{L}[\p{L}'’.-]*)?)`;
-const SAID_VERBS = 'write|wrote|written|say|said|send|sent|post|posted|tell|told|message|messaged|ask|asked|share|shared|reply|replied|answer|answered';
-/** "what did Ada write me", "what has Ada said": only their side. */
-const PERSON_SAID = new RegExp(String.raw`\bwhat (?:did|has|have|had) ${NAME} (?:${SAID_VERBS})\b`, 'iu');
+const SAID_VERBS = 'write|wrote|written|writing|say|said|saying|send|sent|post|posted|tell|told|telling|message|messaged|messaging|ask|asked|asking|share|shared|sharing|reply|replied|answering|answer|answered';
+/** "what did Ada write me", "what has Ada said", "what is Ada telling me": only their side. */
+const PERSON_SAID = new RegExp(String.raw`\bwhat (?:did|does|has|have|had|is|are|was|were) ${NAME} (?:${SAID_VERBS})\b`, 'iu');
 /**
  * "messages from Ada", "posts by Ada": only their side. A news word ("news from Bayer", "the latest from
  * Bayer") is never a person, because what follows it is usually a company (W2B-R5).
@@ -44,8 +44,12 @@ const PERSON_SAID = new RegExp(String.raw`\bwhat (?:did|has|have|had) ${NAME} (?
 const PERSON_FROM = new RegExp(String.raw`\b(?:messages?|posts?|dms?|notes?) (?:from|by) ${NAME}`, 'iu');
 /** "my DMs with Ada", "my chat with Ada": both sides of the direct conversation. */
 const PERSON_WITH = new RegExp(String.raw`\b(?:dms?|direct messages?|direct chats?|private chats?|chats?|conversations?|messages?|thread) with ${NAME}`, 'iu');
-/** "what did I discuss with Ada", "what have Ada and I talked about": everything the two exchanged. */
-const PERSON_DISCUSS = new RegExp(String.raw`\b(?:discuss|discussed|talk about|talked about|talk|talked|chat about|chatted about|chatted|speak about|spoke about|speak|spoke) with ${NAME}`, 'iu');
+/**
+ * "what did I discuss with Ada", "what have Ada and I talked about", "what I exchanged with Ada",
+ * "what Ada wrote to me": everything the two exchanged. R8-W9: "exchanged with", "talked to",
+ * "chatted with" and "wrote to" are the same ask said another way, never a topic search.
+ */
+const PERSON_DISCUSS = new RegExp(String.raw`\b(?:discuss|discussed|talk|talked|talk about|talked about|chat|chatted|chat about|chatted about|speak|spoke|speak about|spoke about|exchange|exchanged|write|wrote|written|message|messaged) (?:with|to) ${NAME}`, 'iu');
 const PERSON_AND_I = new RegExp(String.raw`\b${NAME} and (?:i|me) (?:discuss|discussed|talk|talked|chat|chatted|spoke|speak)\b`, 'iu');
 /** "my group chat with Ada and Kim". */
 const GROUP_WITH = /\bgroup (?:chats?|dms?|messages?|conversations?|threads?)? ?with ((?:\p{L}[\p{L}'’.-]*)(?:(?:\s*,\s*|\s+and\s+|\s*&\s*)\p{L}[\p{L}'’.-]*){1,3})/iu;
@@ -60,11 +64,33 @@ const CHANNEL_NEW_IN = /\b(?:what'?s?|what is|anything)\s+new\s+(?:in|on|with)\s
 /** Words that are never a person: pronouns, "anyone", the team. */
 const NOT_A_PERSON = new Set(['i', 'me', 'we', 'us', 'you', 'they', 'them', 'he', 'him', 'she', 'her', 'it', 'anyone', 'anybody', 'someone', 'somebody', 'everyone', 'everybody', 'people', 'team', 'the', 'my', 'our', 'your', 'nobody', 'this', 'that']);
 /** Words a captured name may carry on its right edge that belong to the sentence, never to the name. */
-const NAME_TAIL = new Set(['about', 'on', 'in', 'this', 'last', 'today', 'yesterday', 'lately', 'recently', 'me', 'us', 'and', 'or', 'the', 'week', 'month', 'morning', 'so', 'far', 'since', 'over', 'from', 'for', 'to', 'at', 'regarding', 'yet', 'please', 'again', 'there', 'here']);
+const NAME_TAIL = new Set(['about', 'on', 'in', 'this', 'last', 'today', 'yesterday', 'lately', 'recently', 'me', 'us', 'and', 'or', 'the', 'week', 'month', 'morning', 'so', 'far', 'since', 'over', 'from', 'for', 'to', 'at', 'regarding', 'yet', 'please', 'again', 'there', 'here', 'telling', 'saying', 'speaking', 'writing', 'messaging', 'asking', 'sharing', 'replying', 'answering', 'discussing', 'talking', 'chatting', 'exchanged', 'weeks', 'days', 'two', 'three', 'every', 'much', 'any']);
 /** Words a spoken channel name opens or closes with that are never part of the name (#664, L1-01). */
-const CHANNEL_EDGE = new Set(['a', 'an', 'the', 'my', 'our', 'this', 'that', 'named', 'called', 'is', 'team', 'chat', 'channel', 'group', 'mattermost', 'slack']);
+const CHANNEL_EDGE = new Set(['a', 'an', 'the', 'my', 'our', 'this', 'that', 'named', 'called', 'is', 'team', 'chat', 'channel', 'group', 'mattermost', 'slack', 'metamos', 'metamost', 'meta', 'most', 'metamouse', 'mouse', 'matter', 'read']);
 /** A placeholder a model writes where a name belongs (#664). */
 const CHANNEL_PLACEHOLDER = /^(?:name|channel|exact|string|called|exact name)$/iu;
+
+/** The words that say "chat" and "what was said", never a topic to search for. */
+/**
+ * C-CHAT R8-W9: the closed list of spoken forms of the chat product's own name. Speech recognition never
+ * said "Mattermost" (8 owner asks: Metamos, Metamost, MetaMost, MetaMouse), so these forms route the ask
+ * to the chat source and are never a channel name, a person or a search term. Lowercase, compared with
+ * whitespace folded, so "meta most" and "MetaMost" are the same word.
+ */
+export const CHAT_PRODUCT_NAMES: readonly string[] = ['metamos', 'metamost', 'meta most', 'metamouse', 'meta mouse', 'matter most', 'mattermost'];
+
+const escapeWord = (word: string): string => word.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+/** The same list as one alternation, a space between its words optional so "meta most" is one form. */
+export const CHAT_PRODUCT_SOURCE = `(?<![\\p{L}\\p{N}])(?:${CHAT_PRODUCT_NAMES.map(name => name.split(' ').map(escapeWord).join('\\s*')).join('|')})(?![\\p{L}\\p{N}])`;
+const CHAT_PRODUCT = new RegExp(CHAT_PRODUCT_SOURCE, 'iu');
+
+/** Whether the ask says the chat product's own name in one of its spoken forms. */
+export function chatProductName(spoken: string): boolean { return CHAT_PRODUCT.test(spoken); }
+
+/** The same text with every spoken form of the product's name gone, so it never becomes a search term. */
+export function withoutChatProduct(spoken: string): string {
+  return spoken.replace(new RegExp(CHAT_PRODUCT_SOURCE, 'giu'), ' ').replace(/\s+/gu, ' ').trim();
+}
 
 /** The words that say "chat" and "what was said", never a topic to search for. */
 const CHAT_FILLER = new Set([
@@ -81,6 +107,8 @@ function cleanName(raw: string): string | undefined {
   if (parts.length === 0) return undefined;
   const name = parts.join(' ');
   if (NOT_A_PERSON.has(parts[0]!.toLowerCase())) return undefined;
+  // R8-W9: a spoken form of the chat product's own name is the source, never a person ("Metamost").
+  if (chatProductName(name)) return undefined;
   // W15: a name the owner's roster resolves routes as the roster's own canonical name.
   return canonicalName(name) ?? name;
 }
@@ -90,7 +118,7 @@ const SOURCE_WORDS = /\b(?:mails?|e-?mails?|inbox|calendar|knowledge|memory|vaul
 
 function cleanChannel(raw: string): string | undefined {
   if (/[,;]/u.test(raw) || SOURCE_WORDS.test(raw)) return undefined;
-  const parts = raw.trim().replace(/[.!?,;:]+$/u, '').split(/\s+/u).filter(Boolean);
+  const parts = withoutChatProduct(raw).trim().replace(/[.!?,;:]+$/u, '').split(/\s+/u).filter(Boolean);
   while (parts.length > 0 && CHANNEL_EDGE.has(parts[0]!.toLowerCase())) parts.shift();
   while (parts.length > 0 && CHANNEL_EDGE.has(parts[parts.length - 1]!.toLowerCase())) parts.pop();
   const name = parts.join(' ');
@@ -118,6 +146,8 @@ function groupPeople(question: string): string[] | undefined {
 
 /** Whether the ask is one of the person, group or channel chat shapes, so the chat source is routed for it. */
 export function chatAsk(question: string): boolean {
+  // R8-W9: "can you read Metamost" names the chat by its own spoken name, so the ask routes to the chat.
+  if (chatProductName(question)) return true;
   if (groupPeople(question) !== undefined) return true;
   for (const shape of [PERSON_SAID, PERSON_FROM, PERSON_WITH, PERSON_DISCUSS, PERSON_AND_I]) {
     const found = shape.exec(question)?.[1];
@@ -160,7 +190,9 @@ export function chatWindow(question: string, nowMs: number, timeZone: string): C
   if (/\byesterday\b/u.test(text)) { const day = shift(today, -1); return { from: day, to: day }; }
   if (/\blast week\b/u.test(text)) { const monday = shift(mondayOf(today), -7); return { from: monday, to: shift(monday, 6) }; }
   if (/\bthis week\b/u.test(text)) return { from: mondayOf(today) };
-  if (/\b(?:past|last) (?:7|seven) days\b|\bpast week\b|\bthis past week\b/u.test(text)) return { from: shift(today, -7) };
+  if (/\b(?:past|last) (?:7|seven) days\b|\bpast week\b|\bthis past week\b|\b(?:lately|recently)\b/u.test(text)) return { from: shift(today, -7) };
+  // R8-W9: "last two weeks" is fourteen days, never the thirty a read without a window covers.
+  if (/\b(?:past|last) (?:(?:2|two|14|fourteen) weeks|14 days)\b|\bfortnight\b/u.test(text)) return { from: shift(today, -14) };
   if (/\bthis month\b/u.test(text)) return { from: `${today.slice(0, 7)}-01` };
   if (/\blast month\b/u.test(text)) {
     const first = `${today.slice(0, 7)}-01`;
@@ -212,7 +244,8 @@ export function chatIntent(question: string, options: { terms: string; nowMs: nu
   if (said !== undefined) return { kind: 'person-said', person: said, sides: 'theirs', terms: aboutTerms(question, [said]), window };
   const channel = spokenChannel(question);
   if (channel !== undefined) return { kind: 'channel-recent', channel, terms: aboutTerms(question, [channel]), window };
-  return { kind: 'topic-search', terms: options.terms, window };
+  // R8-W9: the product's own spoken name is the source, never a search term ("can you read Metamost").
+  return { kind: 'topic-search', terms: withoutChatProduct(options.terms), window };
 }
 
 /** The one sub-call a chat intent issues. A topic search keeps the plain search; the rest use the chat read. */

@@ -371,7 +371,7 @@ test('the public character, voice surface and tool conduct are the authored verb
   // W4: the voice and loop rules are paid for inside the same blocks, so both hashes are re-pinned here.
   // Train: W1 moved the voice-tools block too, so the merged sources re-pin all three at once.
   assert.equal(sha(NAYA_CHARACTER), '3770fc141efe3b696bcb9c6ec280d9bb603cb15d677565b1131a6d4b70b6b350');
-  assert.equal(sha(NAYA_VOICE_SURFACE), '67802d637673d2257c4031fd06339a83c550ee2a968a3badfb9d5e35663bacbd');
+  assert.equal(sha(NAYA_VOICE_SURFACE), '10ef8ccc225ac0df8e24c45f315148300fee034c715bfbe1f4ccdaa2b1f6db77');
   // C-OPENWEB8: the open paragraph names open_web for a map, a site or a search, so this block is re-pinned.
   // C-RESEARCH8: the two-ask voice rule and the re-worded evidence procedure land in the same blocks, so the train re-pins all three against the merged sources.
   assert.equal(sha(NAYA_VOICE_TOOLS), '2775aceab4e64cd10cde5994c0c6ad059a1db04b96c307396eb605bf269d87d7');
@@ -1011,9 +1011,9 @@ test('S4b: the Gemini composition still carries every NAYA_TOOLS sentence', () =
 test('S4b: each D7/D8 rule is stated once, and the old opener sentence is replaced rather than duplicated', () => {
   const wrapper = `${NAYA_LIVE_BASE}\n\n${NAYA_TOOLS}`;
   for (const rule of [
-    'When the answer is already in these instructions, answer from it without a lookup.',
+    'Answer from these instructions without a lookup when they already answer it.',
     'Never claim or imply a check that did not run.',
-    'Never explain a pause as thinking: say what is actually happening, or simply answer.',
+    'Never call a pause thinking: say what is happening or simply answer.',
     'never open on health, fitness, sleep, family or personal habits, even when earlier conversations mention them',
   ]) assert.equal(wrapper.split(rule).length - 1, 1, `stated exactly once: ${rule}`);
   assert.equal(wrapper.split('Open a fresh call').length - 1, 1, 'one opener rule only');

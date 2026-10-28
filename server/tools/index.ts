@@ -49,8 +49,20 @@ function positive(value: unknown): void { if (!Number.isSafeInteger(value) || (v
 function classSet(value: unknown): asserts value is DataClass[] {
   if (!Array.isArray(value) || new Set(value).size !== value.length || value.some(c => !classes.includes(c))) throw Error('invalid_classes');
 }
+/** C-DEPTH11: the pre-rename Google read names a durable policy may still hold, old name to current name. */
+const LEGACY_GOOGLE_READ_NAMES: Readonly<Record<string, string>> = {
+  gcal_calendars: 'calendar_list_calendars',
+  gcal_list: 'calendar_list_events',
+  gmail_list: 'gmail_search_messages',
+  gmail_read: 'gmail_read_message',
+};
+
 export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
   const p = detached(input);
+  // C-DEPTH11 (W16-R1 F1): a stored policy may still carry the pre-rename Google read names (the app keeps
+  // gcal_ for old rows, web/src/markdown.ts:272). They are resolved to the current names here, so an upgraded
+  // owner keeps reading instead of the whole connection being refused as invalid_read_tools.
+  if (Array.isArray(p.toolNames)) p.toolNames = [...new Set(p.toolNames.map(name => typeof name === 'string' ? LEGACY_GOOGLE_READ_NAMES[name] ?? name : name))];
   exact(p, ['schemaVersion', 'ownerId', 'connectionId', 'generation', 'enabled', 'connector', 'endpoint', 'toolNames', 'schemaDigest', 'sourcePolicy', 'route', 'bounds'], ['bindingMode']);
   if (p.bindingMode !== undefined && p.bindingMode !== 'connection') throw Error('invalid_policy_binding_mode');
   if (p.schemaVersion !== 1 || typeof p.enabled !== 'boolean') throw Error('invalid_policy_version');

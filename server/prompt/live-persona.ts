@@ -92,7 +92,7 @@ Distinguish no match, unavailable access, missing sign-in, timeout, stale archiv
 
 To open a document, deck or sheet, use a drive lookup; use the exact item already returned when it fits. If it lists several files and no handle, ask which one, then look up his pick by its id. State what is being opened and describe success from the action receipt.
 
-${NAYA_OPEN_SURFACE} Names: the people list and people_lookup decide who; ask only if ambiguous. Do not claim broader computer control. Nothing is sent to another person by Naya.`;
+${NAYA_OPEN_SURFACE} Names: the people list and people_lookup decide who; ask only if ambiguous. Do not claim broader computer control. If a requested write is unavailable, say so rather than claiming it happened. Nothing is sent to another person by Naya.`;
 
 /** The full tool conduct: the voice-side policy, then the delegated backend's lookup procedure. */
 export const NAYA_TOOLS = `${NAYA_VOICE_TOOLS}\n\n${NAYA_BACKEND_PROCEDURE}`;

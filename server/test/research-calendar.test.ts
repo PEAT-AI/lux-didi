@@ -700,5 +700,5 @@ test('C-CAL8: under cap pressure the calendar drops the events already past, kee
   assert.match(text, /Synthetic 17\b/, 'the last meeting of the day survives the cap');
   assert.doesNotMatch(text, /Synthetic 8\b/, 'the earliest meeting is the first one dropped');
   assert.match(text, /plus \d+ earlier events? left out/, `the reply names what it left out by count: ${text.slice(0, 300)}`);
-  assert.match(text, /calendar \d+ of 10 shown/u, `the calendar count is still spoken: ${text.slice(0, 200)}`);
+  assert.match(text, /calendar: \d+ of 10 shown/u, `the calendar count is still spoken: ${text.slice(0, 200)}`);
 });

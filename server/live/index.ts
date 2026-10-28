@@ -12,7 +12,7 @@ import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
 import { freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteSegmentSignal, noteSettle, openNote, saveNoteState, stageComposedNote, type PlaybackSignalKind } from '../tools/lux-note.js';
 import { NotesExporter } from '../tools/notes-export.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
-import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
+import { runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
 import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
 import { admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook } from '../tools/research.js';
@@ -705,6 +705,8 @@ interface ActiveSession {
   liveStepItems: Map<string, number>;
   toolCalls: number;
   seenIds: Set<string>;
+  /** The invalid-arguments count of the owner turn in flight, so the retry suffix never survives a turn. */
+  invalidAttempts: Map<string, number>;
   thinking: boolean;
   pendingCallIds: Set<string>;
   bargeInCallIds: Set<string>;
@@ -1824,7 +1826,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
       researchAdmission: new ResearchAdmission(), researchRetention: { retainedChars: 0, rebuilds: 0 },
       researchLedgerLog: new ResearchLedgerLog(), voicePages: new VoiceReplyBook(), contextToolChars: 0,
-      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
+      registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), invalidAttempts: new Map(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
       consumerState: 'attached', journalEvents: 0, journalBytes: 0, markerSequence: 0, adapterOutcome: undefined,
@@ -2681,6 +2683,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
 
   /** The turn opens at the owner-utterance boundary O1a defined: the first transcription of what she said. */
   #openTurn(handle: ActiveSession): void {
+    // A fresh owner turn restarts the invalid-argument count, so an earlier turn's repeats never shorten this one.
+    handle.invalidAttempts = new Map();
     // R7/R8: the owner spoke before the dropped-line opener became audible, so it is cancelled; the
     // provider's barge-in (interrupted) or its turn end frees the answer, never a late opener frame.
     if (handle.dropOpener) { if (openerCancelled(true, handle.spokenThisTurn)) handle.dropResponse = true; handle.dropOpener = false; }
@@ -3864,7 +3868,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       const calls = subs.map((sub, n) => ({ id: `r${step}~${n}~${sub.key}`, name: sub.name, args: sub.args }));
       const signalMap = new Map<string, AbortSignal>(calls.map(call => [call.id, signal]));
       const control = { signal, deadlineMs: handle.deadlineMs };
-      const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals: signalMap, authority: gateAuthority, control, step, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
+      const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals: signalMap, authority: gateAuthority, control, step, contentIndex: 0, seenIds: handle.seenIds, invalidAttempts: handle.invalidAttempts, baseClasses: [handle.inputClass] });
       const authorized = (this.lookupAuthority(host.runId) || this.lookupJobAuthority(host.runId)) ? await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] }) : raw;
       if (signal.aborted || generation !== handle.generation || this.#settled(handle)) {
         this.#tools!.owner.releaseEvidence(host.runId, [...raw.bindings, ...authorized.bindings]);
@@ -4267,7 +4271,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         if (this.#settled(handle) || generation !== handle.generation) throw new LiveError('invalidated');
         const raw = await runToolCalls(this.#tools!.owner, calls, { registry: handle.registry, host, signals,
           authority: { isCurrent: async (_host, _tool, signal) => dispatchGate.state === 'allowed' && !signal.aborted && generation === handle.generation && !this.#settled(handle) }, control,
-          step: useStep, contentIndex: 0, seenIds: handle.seenIds, baseClasses: [handle.inputClass] });
+          step: useStep, contentIndex: 0, seenIds: handle.seenIds, invalidAttempts: handle.invalidAttempts, baseClasses: [handle.inputClass] });
         // Completion never sends to the old transport. With no active authority, retain references for pickup.
         if (!this.lookupAuthority(host.runId) && !this.lookupJobAuthority(host.runId)) return raw;
         return await authorizeToolBatch(this.#tools!.owner, raw, { host, control, baseClasses: [handle.inputClass] });
@@ -4327,6 +4331,9 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       const followBatch = await runBatch(phase2, ++handle.toolStep);
       if ((this.#settled(handle) || generation !== handle.generation)) return;
       for (const unit of pending) handle.callAborts.delete(unit.call.id);
+      // C-REFUSAL8: an invalid-arguments refusal answers with the fix marked not for speech and one fixed
+      // spoken line, so the model can never read the host's guidance aloud; every other refusal stays a code.
+      const refusalResponse = (why: string): JsonObject => invalidArgumentsResponse(why) ?? { error: why };
       responses = event.calls.map((call, index) => {
         const hit = cached.get(index);
         if (hit) { projections[index] = hit.projection; return { id: call.id, name: call.name, response: hit.response }; }
@@ -4343,7 +4350,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
           projections[index] = { name: call.name, status: ok ? 'completed' : 'error', markdown: noEmptyResult(digest.text, call.name, typeof call.args['query'] === 'string' ? call.args['query'] : undefined), sources: [] };
           // The count the voice view shows is the items the source returned, never the citation count.
           if (ok && digest.itemCount !== undefined) handle.liveStepItems.set(call.id, digest.itemCount);
-          return { id: call.id, name: call.name, response: ok ? intentResponse(digest, unit.intent) : { error: reason } };
+          return { id: call.id, name: call.name, response: ok ? intentResponse(digest, unit.intent) : refusalResponse(reason) };
         }
         const accepted = batch?.accepted.find(result => result.binding.callId === call.id && result.binding.name === call.name);
         const completed = accepted !== undefined && record?.status === 'completed';
@@ -4352,7 +4359,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         const projection: LiveToolProjection = { name: call.name, status: completed ? 'completed' : 'error', markdown, sources };
         projections[index] = projection;
         if (completed && cache.cacheable(call.name)) cache.set(call.name, call.args, { response: accepted.response, projection, binding: accepted.binding });
-        return { id: call.id, name: call.name, response: completed ? accepted.response : { error: reason } };
+        return { id: call.id, name: call.name, response: completed ? accepted.response : refusalResponse(reason) };
       });
       // Per-turn metadata only: the traces the council requires before any playback fence.
       const latency: { tool: string; ms: number }[] = [];

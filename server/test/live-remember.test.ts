@@ -354,6 +354,10 @@ test(`C-LUXSAVE11 F1: legacy ${kind} remains readable without teardown export (c
   await drain();
   assert.ok(JSON.stringify(h.requests).includes('the synthetic launch is Friday'));
   nextAttachment.close();
+  await until(() => h.owner.lookupAuthority(next.liveSessionId!) === null);
+  await drain();
+  assert.equal(h.store.transaction(tx => tx.all("SELECT journal_id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription'", [next.liveSessionId!]).length), 0, 'the recall session had no owner request at all');
+  assert.equal(h.saved.length, 0, 'closing a request-free recall session never exports the legacy note');
 });
 }
 }

@@ -4102,9 +4102,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     if (events !== undefined) {
       if (events.length <= 1) return false;
       const now = new Date(run.startedAt).toISOString();
-      const past = events.findIndex(event => event.start < now);
-      events.splice(past >= 0 ? past : events.length - 1, 1);
-      if (past >= 0) droppedPast += 1;
+      // The earliest event first: every event already past goes before any meeting still ahead, and once
+      // only the afternoon is left the earliest of those goes, so the last meeting of the day always stays.
+      if (events[0]!.start < now) droppedPast += 1;
+      events.splice(0, 1);
       group.days = compactCalendarWindow(events, run.timeZone);
       group.lines.splice(0, group.lines.length, ...calendarDayLines(group.days),
         ...(droppedPast > 0 ? [`- plus ${droppedPast} earlier ${droppedPast === 1 ? 'event' : 'events'} left out of this answer`] : []));

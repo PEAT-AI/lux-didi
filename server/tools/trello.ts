@@ -213,6 +213,12 @@ export function ownerAskedForChange(words: string): boolean { return WRITE_CUE.t
 /** The server's own words for one call outcome, closed: never a body, never a token. */
 export type TrelloCallCode = 'not_signed_in' | 'auth_failed' | 'credential_revoked' | 'credential_mismatch' | 'rate_limited' | 'unavailable' | 'unknown' | 'tool_error' | 'protocol_error' | 'not_allowed';
 export type TrelloCallResult = { ok: true; value: unknown } | { ok: false; code: TrelloCallCode; httpStatus?: number };
+/** Closed diagnostic metadata only; never a server message or response body. */
+function serverReason(result: { code: TrelloCallCode; httpStatus?: number }): string {
+  const status = result.httpStatus;
+  return `server_${result.code}${status !== undefined && Number.isInteger(status) && status >= 400 && status <= 599 ? `:http_${status}` : result.code === 'tool_error' ? ':unknown' : ''}`;
+}
+
 export interface TrelloServerTool { name: string; inputSchema: unknown }
 /** The one door to the server: the advertised tools, and one call. It never retries. */
 export interface TrelloTransport {
@@ -462,7 +468,7 @@ export class TrelloBoard {
     const allowed = TRELLO_SERVER_ALLOW[planned.tool];
     if (!allowed || !allowed.includes(String(planned.args.action))) throw new Refusal('unsupported', {}, 'dispatch_not_allowed');
     const result = await this.#transport.call(planned.tool, planned.args, signal);
-    if (!result.ok) throw new Refusal(result.code === 'unknown' || result.code === 'protocol_error' ? 'unavailable' : result.code === 'tool_error' || result.code === 'not_allowed' ? 'unsupported' : result.code, {}, result.code === 'tool_error' ? `server_tool_error:${result.httpStatus !== undefined && Number.isInteger(result.httpStatus) && result.httpStatus >= 400 && result.httpStatus <= 599 ? `http_${result.httpStatus}` : 'unknown'}` : `server_${result.code}`);
+    if (!result.ok) throw new Refusal(result.code === 'unknown' || result.code === 'protocol_error' ? 'unavailable' : result.code === 'tool_error' || result.code === 'not_allowed' ? 'unsupported' : result.code, {}, serverReason(result));
     return result.value;
   }
 
@@ -749,7 +755,7 @@ export class TrelloBoard {
         // A refused first step changed nothing; anything after a sent step is not known.
         const definite = step === 0 && (result.code === 'tool_error' || result.code === 'auth_failed' || result.code === 'credential_revoked' || result.code === 'credential_mismatch' || result.code === 'not_signed_in' || result.code === 'rate_limited' || result.code === 'unavailable' || result.code === 'not_allowed');
         const code = definite ? (result.code === 'auth_failed' || result.code === 'credential_revoked' || result.code === 'credential_mismatch' || result.code === 'not_signed_in' || result.code === 'rate_limited' || result.code === 'unavailable' ? result.code : 'write_failed') : 'outcome_unknown';
-        this.#emit(tool, 'settle', definite ? 'failed' : 'unknown', error instanceof Refusal ? error.reason : code, normalized);
+        this.#emit(tool, 'settle', definite ? 'failed' : 'unknown', serverReason(result), normalized);
         session.snapshot = undefined;
         const receipt: JsonObject = { ok: false, code, guidance: TRELLO_GUIDANCE[code]! };
         if (!definite) session.ledger.set(plan.key, receipt);

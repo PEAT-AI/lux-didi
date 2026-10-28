@@ -137,7 +137,7 @@ export function createTrelloRestTransport(options: TrelloRestOptions): TrelloTra
   const base = (options.url ?? TRELLO_API_URL).replace(/\/+$/, '');
   const doFetch = options.fetch ?? fetch;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>(resolve => { setTimeout(resolve, ms); }));
-  let verified: Promise<{ ok: true; value: unknown } | { ok: false; code: TrelloCallCode }> | undefined;
+  let verified: Promise<TrelloCallResult> | undefined;
 
   return {
     async tools(): Promise<{ ok: true; value: readonly TrelloServerTool[] } | { ok: false; code: TrelloCallCode }> {
@@ -151,7 +151,7 @@ export function createTrelloRestTransport(options: TrelloRestOptions): TrelloTra
       const credentials = await options.credentials();
       if (!credentials.ok) return { ok: false, code: credentials.code };
       /** One request, its typed refusal, and the body read under the byte bound. */
-      const perform = async (request: Request, key: string, token: string): Promise<{ ok: true; value: unknown } | { ok: false; code: TrelloCallCode }> => {
+      const perform = async (request: Request, key: string, token: string): Promise<TrelloCallResult> => {
         const url = new URL(`${base}/${request.path}`);
         url.searchParams.set('key', key);
         url.searchParams.set('token', token);
@@ -176,11 +176,11 @@ export function createTrelloRestTransport(options: TrelloRestOptions): TrelloTra
           await sleep(retryAfterMs(response));
           response = await attempt();
           if (!(response instanceof Response)) return response;
-          if (response.status === 429) return { ok: false, code: 'rate_limited' };
+          if (response.status === 429) return { ok: false, code: 'rate_limited', httpStatus: response.status };
         }
-        if (response.status === 401 || response.status === 403) return { ok: false, code: 'credential_revoked' };
+        if (response.status === 401 || response.status === 403) return { ok: false, code: 'credential_revoked', httpStatus: response.status };
         if (response.status === 404) return { ok: false, code: 'tool_error', httpStatus: response.status };
-        if (response.status >= 500) return { ok: false, code: 'unavailable' };
+        if (response.status >= 500) return { ok: false, code: 'unavailable', httpStatus: response.status };
         if (!response.ok) return { ok: false, code: 'tool_error', httpStatus: response.status };
         const text = await readBounded(response, REPLY_LIMIT);
         if (text === undefined) return { ok: false, code: 'protocol_error' };

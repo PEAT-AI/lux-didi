@@ -64,11 +64,11 @@ test('the envelope check has teeth: an unmarked host line is caught', () => {
  */
 const EMITTERS: readonly { expression: string; count: number; channel: 'host' | 'owner'; covers: readonly { file: string; title: string }[] }[] = [
   {
-    expression: 'correction.text', count: 1, channel: 'host',
+    expression: 'hostNote(correction.text)', count: 1, channel: 'host',
     covers: [{ file: 'live-session.test.ts', title: 'OPEN2-5: an open claim the turn did not make gets one correction, never two' }],
   },
   {
-    expression: 'line', count: 2, channel: 'host',
+    expression: 'hostNote(line)', count: 2, channel: 'host',
     covers: [
       { file: 'live-memory-note.test.ts', title: 'a mismatch says the note was not saved and asks for one sentence' },
       { file: 'live-session.test.ts', title: 'R6: a source that settles after the first answer is appended once, and said once on a quiet turn' },
@@ -79,13 +79,18 @@ const EMITTERS: readonly { expression: string; count: number; channel: 'host' | 
     covers: [{ file: 'live-mute.test.ts', title: 'an answer that arrives while muted is held, never played, and offered once after two silent seconds' }],
   },
   {
-    expression: 'CLAIM_WITHOUT_CALL_LINE', count: 1, channel: 'host',
+    expression: 'hostNote(CLAIM_WITHOUT_CALL_LINE)', count: 1, channel: 'host',
     covers: [{ file: 'live-session.test.ts', title: 'C-TURN8: a claim with no call gets exactly one correction, and only once per owner turn' }],
   },
   {
-    expression: 'text', count: 2, channel: 'host',
+    expression: 'hostNote(text)', count: 1, channel: 'host',
     covers: [
       { file: 'live-session.test.ts', title: '#660: a stalled delegation with nothing in flight delivers the unspoken result once' },
+    ],
+  },
+  {
+    expression: 'text', count: 1, channel: 'owner',
+    covers: [
       { file: 'live-session.test.ts', title: 'typed text reaches the adapter as a realtime text turn and journals a You turn' },
     ],
   },

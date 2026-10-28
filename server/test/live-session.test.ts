@@ -7341,3 +7341,27 @@ test('C-AUDIO10: a long continuation survives a completed preamble and later bar
   assert.deepEqual(finals.map(row => row['text']), ['Okay, I am on it.', parts.join('').trim()]);
   attachment.close();
 });
+
+test('C-AUDIO10: repeated start notifications do not duplicate first audio for a response', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const events: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(detach);
+  const session = h.owner.create({ idempotencyKey: 'audio10-first-audio', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const start = (responseId: string) => portEvent({ type: 'modelTurnStarted', ...{ responseId } });
+  fake.emit(start('synthetic-response-1'));
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  fake.emit(start('synthetic-response-1'));
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  assert.equal(events.filter(row => row.event === 'live_first_audio').length, 1);
+  fake.emit(start('synthetic-response-2'));
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  assert.equal(events.filter(row => row.event === 'live_first_audio').length, 2);
+  attachment.close();
+});

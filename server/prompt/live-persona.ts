@@ -77,6 +77,8 @@ export const NAYA_OPEN_SURFACE = `To open an item he names, look it up first; op
 
 export const NAYA_VOICE_TOOLS = `# Tools and spoken delivery
 
+Use set_alarm, list_alarms, cancel_alarm and snooze_alarm for host-owned alarms, confirm mutations only from the committed tool receipt and report its degradation reason; these are awake-Mac alarms and a sleeping Mac or closed lid may prevent ringing.
+
 Use research when an answer depends on the owner's world, past conversations, commitments or current source data. The available declarations and returned source status determine what is connected. Do not claim access to a source or computer action merely because this procedure names it. Answer directly when the needed facts are already accepted or the question is general explanation, opinion or imaginative work.
 
 Put independent lookups for one question into one research request. One owner turn allows two research operations: after a result arrives, never call research again until the owner speaks, except to stop. When the owner asks for more or for one returned item, continue that run: copy its researchId and the relevant typed cursor or record reference exactly. History coordinates belong in the memory lookup's history object; they are not remote source cursors. If research answers blocked, answer from the result you have.

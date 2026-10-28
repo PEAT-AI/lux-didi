@@ -57,3 +57,12 @@ Text consumes the host's tools through `ChatToolsComposition`; Live consumes its
 ## Verification
 
 Use [checks.md](checks.md) for tool, connector, prompt and native check routing. Test remote effects with fakes and receipt assertions, never real accounts. [Diagnostic store](diagnostic-store.md) explains canonical tool and source records without mistaking a bounded model projection for complete source content.
+## Awake-Mac alarm tools
+
+`set_alarm`, `list_alarms`, `cancel_alarm` and `snooze_alarm` are host-owned Live builtins under `gateway:live-voice` / `owner-alarms`. They participate in the exact stored-intent checks, rather than bypassing the registry. Mutation authority is separately derived from fresh finalized microphone transcription, never model arguments, typed text, host notes or alarm prompts. Split asks may span two finalized owner turns; the latest must still continue the alarm request.
+
+The host parses time in its system IANA zone and commits a fixed UTC instant. Set and snooze return confirmation only with the durable tool receipt; snooze and old-occurrence completion share that transaction. Model timestamps are consistency checks, not write authority. Local scheduling and ringing do not depend on provider availability.
+
+Per W11-R5, a new alarm session carries only alarm instructions, owner display name and scheduled time in non-user setup instructions. An already-live session receives no injected text or rebuild: local chime and menu state continue, with `live_session_no_channel` degradation until owner speech acknowledges it. The generic host-note prefix is not a non-user provider channel and is not used for alarm speech.
+
+These are awake-Mac alarms: closed lids, manual sleep, shutdown and unavailable local services may prevent ringing. A denied notification, failed idle-sleep assertion or unreachable shell is disclosed in the committed receipt. See [voice alarms](alarm.md) for storage, recovery, diagnostics and synthetic verification.

@@ -308,7 +308,7 @@ const LOOKUP_LIMIT_TEXT = `at most ${MAX_LOOKUPS} lookups, each with source (${L
 export const LOOKUP_COUNT_RULE = `${LOOKUP_LIMIT_TEXT}; a status or test-all ask may name one lookup per source, up to ${STATUS_ASK_LOOKUP_LIMIT}`;
 
 export type MailLookup = { id: string; format?: 'full' | 'metadata' } | { q: string; maxResults?: number };
-export interface ResearchLookup { source: LookupSource; query: string; history?: HistoryArguments; mail?: MailLookup }
+export interface ResearchLookup { source: LookupSource; query: string; history?: HistoryArguments; mail?: MailLookup; /** Host-resolved entity, never a generic calendar window. */ calendarEntity?: string }
 /**
  * Per-source outcome of a routed call: read something, read nothing, unreachable, the read failed, or
  * the read was cut short by a deadline. `timeout` is its own value because a cut read is not an empty
@@ -4653,6 +4653,9 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
   // it always came back empty and the owner heard nothing; the full merge stays on the calendar intent.
   // The calendar list rides along only so the result can say what it did not read.
   if (lookup.source === 'calendar') {
+    if (lookup.calendarEntity !== undefined) return { source: 'calendar', kind: 'calendar_window', subs: [
+      { key: 'cal0', name: INTERNAL.calendarList, args: { calendarId: 'primary', q: lookup.calendarEntity, maxResults: RESEARCH.pageResults.calendar } as JsonObject },
+    ] };
     let range: { timeMin: string; timeMax: string };
     // An unnamed window is unresolved, never widened: only the declared grammar resolves here.
     // C-CAL8: a schedule lookup reads today from now, exactly as the plan surface does, so the model's own
@@ -5406,7 +5409,7 @@ async function depthRead(deps: ResearchDeps, run: RunState, question: string, si
  */
 function withOwnedSources(run: RunState, question: string, lookups: readonly ResearchLookup[], configured: readonly SourceKind[]): ResearchLookup[] {
   if (run.resolvedName === undefined) return [...lookups];
-  const missing = (['knowledge', 'calendar'] as const).filter(source => (source !== 'calendar' || ownerScheduleQuestion(question)) && configured.includes(source) && !lookups.some(lookup => lookup.source === source));
+  const missing = (['knowledge', 'calendar'] as const).filter(source => configured.includes(source) && !lookups.some(lookup => lookup.source === source));
   if (missing.length === 0) return [...lookups];
   const asked = fallbackQuery('knowledge_search', question).query ?? run.resolvedName ?? '';
   const window = fallbackQuery('calendar_window', question).window ?? 'today';
@@ -5414,7 +5417,8 @@ function withOwnedSources(run: RunState, question: string, lookups: readonly Res
   for (const source of missing) {
     // #1028: a batch the model already filled is never cut down to make room; the owner's own source is
     // deferred to the next call, where its coverage is said, instead of a lookup the model asked for vanishing.
-    if (batch.length < MAX_LOOKUPS) batch.push({ source, query: source === 'knowledge' ? asked : window });
+    if (batch.length < MAX_LOOKUPS) batch.push({ source, query: source === 'knowledge' ? asked : window,
+      ...(source === 'calendar' && !ownerScheduleQuestion(question) ? { calendarEntity: run.resolvedName } : {}) });
     else run.deferredSources = [...new Set([...(run.deferredSources ?? []), source])];
   }
   return batch;
@@ -7373,7 +7377,15 @@ export class ResearchAdmission {
   }
   /** C-RESEARCH-CONTRACT Q-08: the run a paging or narrowing continue may name without a new owner turn. */
   currentRun(): string | undefined { return this.#currentRun; }
-  deliveredReply(reply?: JsonObject): JsonObject | undefined { if (reply !== undefined) this.#deliveredReply = reply; return this.#deliveredReply; }
+  deliveredReply(reply?: JsonObject): JsonObject | undefined {
+    if (reply !== undefined) {
+      const findings = Array.isArray(reply['findings']) ? reply['findings'] as JsonObject[] : [];
+      // A stop or a duplicate page does not erase the evidence this run already handed the model.
+      if (this.#deliveredReply === undefined || reply['researchId'] !== this.#deliveredReply['researchId']
+        || findings.some(finding => findingCount(finding) > 0)) this.#deliveredReply = reply;
+    }
+    return this.#deliveredReply;
+  }
   /**
    * C-RESEARCH-CONTRACT Q-08: the model spoke after this owner turn's result was delivered, so the owner has
    * heard the answer for this turn and a new research run would be an orphan.

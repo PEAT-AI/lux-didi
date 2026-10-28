@@ -50,6 +50,6 @@ export function calendarRange(window: string, nowMs: number, timeZone: string, f
     }
     return unresolved();
   };
-  const start = fromNow && days === 1 && date === Date.UTC(year!, month! - 1, day!) ? new Date(nowMs).toISOString() : midnight(date);
+  const start = fromNow && days === 1 && date === Date.UTC(year!, month! - 1, day!) ? new Date(Math.floor(nowMs / 60_000) * 60_000).toISOString() : midnight(date);
   return { timeMin: start, timeMax: midnight(date + days * 86400000) };
 }

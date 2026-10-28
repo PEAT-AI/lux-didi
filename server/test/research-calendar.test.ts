@@ -230,7 +230,10 @@ test('calendar R4: the plan resolves the window itself, with no selector round',
   await runResearch(plain.deps, { action: 'start', question: 'what is on my calendar' }, signal());
   const today = plain.calls.find(call => call.name === 'calendar_list_events');
   assert.ok(today !== undefined, 'the plan reads the calendar with no window word');
-  assert.equal(today.args['timeMin'], windowRange('today', fixedNow, 'UTC').timeMin, 'the default window is today');
+  // C-CAL8: the default window is today, and today means the rest of the day from now, so a schedule ask
+  // never offers a meeting the owner has already sat through.
+  assert.equal(today.args['timeMin'], windowRange('today', fixedNow, 'UTC', true).timeMin, 'the default window is today from now');
+  assert.ok(Date.parse(String(today.args['timeMin'])) >= fixedNow, 'the read never starts before now');
 });
 
 test('calendar R5: scheduler Stop invalidates a completed retained run before later Continue', async () => {

@@ -4232,6 +4232,9 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // The floor: one line per source. A line wider than the whole room is clipped, never left half a word.
     const widest = groups.filter(group => shownOf(group) > 0).sort((a, b) => b.lines.join(' ').length - a.lines.join(' ').length)[0];
     if (widest === undefined) break;
+    // C-CAL8: a calendar line is a list of whole events, so the floor drops one event instead of clipping the
+    // day: a clip would swallow the last meeting of the day while the header still claimed it was shown.
+    if (widest.days !== undefined && trimCalendarEvent(widest)) continue;
     const last = widest.lines[widest.lines.length - 1]!;
     const room = last.length - (rendered - limit) - 1;
     const clipped = room >= FLOOR_CLIP_CHARS ? sentencePrefix(last, room) || clip(last, room) : '';

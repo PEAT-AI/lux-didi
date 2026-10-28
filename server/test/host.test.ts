@@ -1337,7 +1337,8 @@ test('C-RECOVERY (f): a rejected live write is a host_error that names its close
 test('C-SUMMARY8: an interrupted summary cannot hold the ready frame past its start budget', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-summary-start-'));
   const configDir = join(dir, 'provider-config');
-  const endedAt = 1_760_000_000_000;
+  // Within the retry age cap, so the start pass treats the interrupted call as work it must finish.
+  const endedAt = Date.now() - 60_000;
   try {
     await mkdir(configDir, { mode: 0o700 });
     // The summary route must be ready, so the start pass really reaches the model.

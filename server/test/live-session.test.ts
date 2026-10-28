@@ -6357,7 +6357,7 @@ test('C-TURN8: a claim with no call gets exactly one correction, and only once p
   const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
   const corrections = () => h.f.frames.filter(frame => {
     const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
-    return typeof text === 'string' && text.startsWith('Correction:');
+    return typeof text === 'string' && text.startsWith('[host note, not the owner] Correction:');
   });
   const counted = () => readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').split('\n').filter(line => line.startsWith('{'))
     .map(line => JSON.parse(line) as { event: string; ms?: number }).filter(line => line.event === 'live_claim_without_call');
@@ -6392,7 +6392,7 @@ test('C-TURN8: a claim followed by its call inside the bound is never corrected'
   const { session } = await attached(h, 'claim-with-call');
   const corrections = () => h.f.frames.filter(frame => {
     const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
-    return typeof text === 'string' && text.startsWith('Correction:');
+    return typeof text === 'string' && text.startsWith('[host note, not the owner] Correction:');
   });
   h.f.send({ serverContent: { inputTranscription: { text: 'save the synthetic line to my vault', finished: true } } });
   await settlePort();
@@ -6436,7 +6436,7 @@ test('OPEN2-5: an open claim the turn did not make gets one correction, never tw
   h.f.send({ serverContent: { outputTranscription: { text: "I found it, it's open now, the OCP alignment deck.", finished: true }, turnComplete: true } });
   const corrections = () => h.f.frames.filter(frame => {
     const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
-    return typeof text === 'string' && text.startsWith('Correction:');
+    return typeof text === 'string' && text.startsWith('[host note, not the owner] Correction:');
   });
   for (let attempt = 0; attempt < 40 && corrections().length === 0; attempt++) await tick();
   assert.equal(corrections().length, 1, 'exactly one correction for the turn');

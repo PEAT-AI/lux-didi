@@ -370,7 +370,7 @@ test('the public character, voice surface and tool conduct are the authored verb
   // W4: the voice and loop rules are paid for inside the same blocks, so both hashes are re-pinned here.
   // Train: W1 moved the voice-tools block too, so the merged sources re-pin all three at once.
   assert.equal(sha(NAYA_CHARACTER), '3770fc141efe3b696bcb9c6ec280d9bb603cb15d677565b1131a6d4b70b6b350');
-  assert.equal(sha(NAYA_VOICE_SURFACE), '7dcf9b10287f375c6fce3143d587a41958f12da9a49328353a08d700e4557d68');
+  assert.equal(sha(NAYA_VOICE_SURFACE), 'c325a528a6814d1ac27d6b745b9e8031fc99e47ca737bcaae1a4e8b34528e353');
   // C-OPENWEB8: the open paragraph names open_web for a map, a site or a search, so this block is re-pinned.
   // C-RESEARCH8: the two-ask voice rule and the re-worded evidence procedure land in the same blocks, so the train re-pins all three against the merged sources.
   assert.equal(sha(NAYA_VOICE_TOOLS), '2775aceab4e64cd10cde5994c0c6ad059a1db04b96c307396eb605bf269d87d7');
@@ -710,7 +710,7 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   const rules = [
     'Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
     'Never speak stage directions or bracketed sound cues such as [sigh] or (laughs); express tone through the words.',
-    'Never ask yourself a question and answer it; say the answer.',
+    'Never ask and answer your own question.',
     // Rule 4 re-pointed (W5-R1): the variety sentence of 3p was the duplicate of this one, so the rule is
     // asserted where it now lives, at the same strength.
     'Vary your phrasing. Do not reuse the same framing phrase twice in one conversation.',

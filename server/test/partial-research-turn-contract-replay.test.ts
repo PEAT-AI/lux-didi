@@ -517,15 +517,17 @@ test('L8-06: a web read still running at the first answer is still_reading in th
 function commentaries(h: Harness): string[] { return h.provider.generations.flatMap(generation => generation.commentaries); }
 const stillSearching = (h: Harness): Record<string, unknown>[] => h.receipts.filter(record => record['event'] === 'research_still_searching');
 
-test('R2: an owner still waiting at 10 s hears one short still-searching line, and never a second one', async t => {
+test('C-CONVO9: a pending research leg bridges three seconds after acknowledgement, once per ask', async t => {
   const h = await harness(t);
   h.hold();
   await ownerSays(h);
+  h.provider.emit({ type: 'outputTranscription', text: 'Checking the web.', finished: true });
+  await flush();
   await research(h, 'd1', start);
-  await h.advance(9_500);
-  assert.deepEqual(commentaries(h), [], 'nothing is said while the wait is under 10 s');
-  await h.advance(1_000);
-  assert.deepEqual(commentaries(h), [RESEARCH.stillSearchingLine], 'one short line, at 10 s');
+  await h.advance(2_900);
+  assert.deepEqual(commentaries(h), [], 'nothing is said while the wait is under 3 s');
+  await h.advance(200);
+  assert.deepEqual(commentaries(h), ['Still looking, give me a moment.'], 'one short line, after 3 s');
   assert.equal(stillSearching(h).length, 1, 'one receipt for the line');
   assert.equal(stillSearching(h)[0]!['spoken'], true, 'the adapter carried it, so the owner heard it');
   assert.match(String(stillSearching(h)[0]!['researchId']), /^[0-9a-f-]{36}$/u, 'the line names the research it is about');

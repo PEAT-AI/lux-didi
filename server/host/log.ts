@@ -931,8 +931,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'live_heard_silence', ms: value.ms, silence: value.silence as string };
   }
   if (value.event === 'uplink_speech_shed') {
-    if (!closedKeys(value, ['event', 'ms']) || !isSafeCount(value.ms)) return;
-    return { event: 'uplink_speech_shed', ms: value.ms };
+    if (!closedKeys(value, ['event', 'ms', 'silenceFramesBeforeSpeechShed']) || !isSafeCount(value.ms) || !isSafeCount(value.silenceFramesBeforeSpeechShed)) return;
+    return { event: 'uplink_speech_shed', ms: value.ms, silenceFramesBeforeSpeechShed: value.silenceFramesBeforeSpeechShed };
   }
   if (value.event === 'live_response_latency') {
     // C-DEADAIR: the provider's share of a wait, kept apart from the host's dead-air clock. Three durations and

@@ -315,7 +315,7 @@ test('a retryable first call failure retries a bounded number of times and then 
   // deadline cuts before `tools/list` is still an attempt, so the count is read from the closed
   // `connector_retry` lines the recovery writes; the wire count stays as a sanity bound.
   const retries: Array<{ event?: string; outcome?: string; attempt?: number }> = [];
-  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST, lifecycleLog: event => { if ((event as { event?: string }).event === 'connector_retry') retries.push(event as { event?: string; outcome?: string; attempt?: number }); } });
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST, recoveryRepeatMs: false, lifecycleLog: event => { if ((event as { event?: string }).event === 'connector_retry') retries.push(event as { event?: string; outcome?: string; attempt?: number }); } });
   t.after(() => runtime.close());
   const failed = runtime.status().endpoints[0]!;
   assert.equal(failed.state, 'error', 'the endpoint did not connect');
@@ -324,9 +324,12 @@ test('a retryable first call failure retries a bounded number of times and then 
   // The attempt count: the first connect plus the bounded retries. The wait bound is only a guard against
   // a hung round, and the test carries its own timeout above it because check-host.sh runs the suite with
   // --test-timeout=15000.
+  // The schedule's bound is the first connect plus one attempt per configured delay; FAST mirrors
+  // CONNECTOR_RECOVERY_DELAYS_MS, so that is 1 + FAST.length attempts and the round then stops.
+  const bounded = 1 + FAST.length;
   const attempts = () => 1 + retries.length;
-  await until(() => attempts() >= 4, 28000);
-  assert.equal(attempts(), 4, 'the first connect plus exactly three bounded retries');
+  await until(() => attempts() >= bounded, 28000);
+  assert.equal(attempts(), bounded, `the first connect plus exactly ${FAST.length} bounded retries`);
   // The wire sanity bound: at least one attempt reached the tools, and none exceeded the attempt count.
   assert.ok(f.requests() >= 1, `at least one attempt reached the tools (${f.requests()})`);
   assert.ok(f.requests() <= attempts(), `no wire read outnumbers the attempts (${f.requests()} <= ${attempts()})`);
@@ -335,7 +338,7 @@ test('a retryable first call failure retries a bounded number of times and then 
   await until(() => runtime.status().endpoints[0]!.retrying === false, 28000);
   await new Promise(resolve => setTimeout(resolve, Math.max(...FAST) * 2));
   assert.equal(runtime.status().endpoints[0]!.retrying, false, 'the round is over and no further attempt is pending');
-  assert.equal(attempts(), 4, 'no further attempt is issued after the round stops');
+  assert.equal(attempts(), bounded, 'no further attempt is issued after the round stops');
   assert.ok(f.requests() <= attempts(), `the stopped round issues no wire read beyond its attempts (${f.requests()} <= ${attempts()})`);
 });
 

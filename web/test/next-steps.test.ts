@@ -90,6 +90,11 @@ test('every production row has a real next step for every reason the host can se
 test('a changed tool list is approved by name, and a mismatch names the account', () => {
   const approval = nextStep('gmail', 'error', 'configuration_error');
   assert.match(approval.text, /node server\/dist\/config\/mcp-cli\.js approve --config-dir/);
+  // F4: the sentence names the reads the approval would add when the row carries them, and only those.
+  const named = nextStep('mattermost-people', 'error', 'configuration_error', false, ['mattermost_resolve_person']);
+  assert.match(named.text, /to approve mattermost_resolve_person, then restart/);
+  assert.doesNotMatch(approval.text, /to approve ,/);
+  assert.doesNotMatch(approval.text, /Settings/);
   assert.match(approval.guideUrl!, /docs\/mcp-configuration\.md/);
   const mismatch = nextStep('gmail', 'error', 'identity_mismatch');
   assert.match(mismatch.text, /different account/);

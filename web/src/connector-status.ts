@@ -1,10 +1,7 @@
 // Read-only browser projection. Never interpolate provider error/config payloads.
 import { escapeHtml } from './markdown.ts';
-/**
- * W2-R1: the one command that approves a refused connector's tool list, verbatim from the CLI's own usage
- * line (server/config/mcp-cli.ts). There is no Settings control for it, so the row states the command.
- */
-export const APPROVE_COMMAND = 'node server/dist/config/mcp-cli.js approve --config-dir <config dir> --data-dir <data dir> --owner-id <owner> --policy-input <policy file>';
+// W2-R1: one command string for both refusal surfaces, so the Settings row and the next step cannot drift.
+import { approveCommand as APPROVE_COMMAND } from './next-steps.ts';
 /** The added reads a refusal names, as closed tool names only. */
 const addedReads = (row: Record<string, unknown>): string[] => Array.isArray(row['addedToolNames'])
   ? row['addedToolNames'].filter((name): name is string => typeof name === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name))

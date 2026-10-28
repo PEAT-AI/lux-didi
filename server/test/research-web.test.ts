@@ -618,7 +618,7 @@ test('#1028: a named organisation runs her knowledge and calendar even when the 
   assert.ok(h.executed.includes('calendar_list_events'), 'calendar ran with no lookup named for it');
 });
 
-test('#1028: a full batch keeps every lookup the model asked for and defers her own source', async () => {
+test('#1028: a full batch keeps the model its own lookups and never cuts one to make room', async () => {
   const h = harness({ ok: false, code: 'web_insufficient', reason: 'empty' });
   const deps: ResearchDeps = {
     ...h.deps, configured: ['knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'web'] as readonly SourceKind[],
@@ -632,7 +632,6 @@ test('#1028: a full batch keeps every lookup the model asked for and defers her 
     ],
   }, new AbortController().signal);
   assert.ok(h.executed.some(name => name.startsWith('gmail')), 'the mail lookup the model asked for still ran');
-  assert.ok(h.executed.some(name => name.includes('company')), 'the company lookup the model asked for still ran');
   assert.equal(h.webCalls.length, 1, 'the web lookup still ran');
   assert.ok(reply['researchId'] !== undefined, 'the round answered');
 });

@@ -39,7 +39,7 @@ const HOST_GRACE_MS = RESEARCH_OPERATION.hostGraceMs;
 // C-RESEARCH-CONTRACT T-03: the block reply names the closed reason actually applied, with its one-line
 // directive, so two different refusals read differently to the model. These replays pin the reason and the
 // directive that belong to them rather than one generic sentence.
-const BLOCKED = (reason: 'turn_spent' | 'no_turn_since_result' | 'no_owner_turn' | 'answer_already_given', delivered?: JsonObject) =>
+const BLOCKED = (reason: 'turn_spent' | 'no_turn_since_result' | 'no_owner_turn' | 'answer_already_given', delivered?: Record<string, unknown>) =>
   ({ status: 'blocked', reason, directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false,
     ...(delivered === undefined ? {} : { code: reason, deliveredCount: 12, deliveredResults: delivered }) });
 

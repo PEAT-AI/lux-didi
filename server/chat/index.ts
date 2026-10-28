@@ -515,7 +515,7 @@ export class ChatService implements ChatPort {
         if (value.state === 'allowed' && value.evidence.kind === 'local-history') history.set(binding.executionId, structuredClone(value.evidence.sources));
       }
       this.#config.store.transaction(tx => captureDiagnosticContext(tx, owner, runId, request.dataClasses, evidence?.bindings ?? [], history, this.#toolEvidence(request)));
-    } catch (error) { console.error('CHAT11 diagnostic capture', error); withholdDiagnostics(this.#config.store, owner, runId); }
+    } catch { withholdDiagnostics(this.#config.store, owner, runId); }
   }
   #resultClasses(runId: string): DataClass[] | null {
     const evidence = this.#resultEvidence.get(runId);

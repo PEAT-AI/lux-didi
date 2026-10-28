@@ -126,7 +126,9 @@ export function connectorState(value: unknown): { id: string; state: string; nex
   if (state === 'configured') return withIdentity({ id, state: 'Configured', next: nextStep(id, state).text });
   const reason = typeof row.reasonCode === 'string' && reasonCodes.some(reason => reason === row.reasonCode) ? row.reasonCode : 'unknown';
   const label = state === 'missing' || reason === 'credential_missing' ? 'Credential missing' : reason === 'needs_sign_in' ? 'Sign-in needed' : 'Failed';
-  const step = nextStep(id, state, reason, row.retrying === true);
+  // W2-R1 / F4: the added reads a refusal names ride to the sentence, closed names only.
+  const added = Array.isArray(row.addedToolNames) ? row.addedToolNames.filter((name): name is string => typeof name === 'string') : [];
+  const step = nextStep(id, state, reason, row.retrying === true, added);
   const wantsSignIn = reason === 'needs_sign_in' || step.signIn === true;
   const endpoint = signInTarget(id);
   // A live attempt says where it is; a failed one speaks only while the row still needs that sign-in.

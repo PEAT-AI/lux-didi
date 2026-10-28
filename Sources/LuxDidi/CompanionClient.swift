@@ -274,6 +274,8 @@ struct NativeLiveConnection: Decodable, Identifiable {
     let id: String
     let state: String
     let reasonCode: String?
+    /// W2-R1 / F4: the reads a refused approval would add, closed names only, when the host said them.
+    let addedToolNames: [String]?
     var reason: String? {
         switch reasonCode {
         case "credential_missing": return "Credential missing or invalid"

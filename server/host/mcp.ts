@@ -2,15 +2,16 @@ import { CONNECTOR_COMPOSED_TOOLS, CONNECTOR_DESCRIPTORS, ConnectorCompositionEr
 import type { Store } from '../runtime/store.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { assertToolsOwnerBinding, createToolsOwner, validatePolicy } from '../tools/index.js';
-import type { ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, ToolsOwner, ToolsOwnerOptions } from '../tools/types.js';
+import type { ConnectionEndpoint, ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from '../tools/types.js';
 import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '../config/mcp.js';
+import type { ApprovalRefusalReason } from './events.js';
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter, HTTP_CONNECT_TIMEOUT_MS, STDIO_CONNECT_TIMEOUT_MS, type McpTransportState } from '../adapters/mcp/adapter.js';
 import { mongooseCredentialAtStart, mongooseFailureStage, mongoosePublishCatalogue, mongoosePublishedTool, mongooseReadOnly } from '../connectors/mongoose.js';
 import { MongooseCredentialError, MONGOOSE_CONSENT_CAP_MS, mongooseAccessToken, mongooseCredentialPresent, mongooseEntryBinding, readMongooseOAuth } from './mongoose-auth.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
+import { bindingDigestOf, definingStdioEnv, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { identityAction, identityFailureRetryable, identityProofMemo, proveIdentity, refusalCode, IDENTITY_TIMEOUT_MS, type IdentityErrorCode, type IdentityProof } from '../connectors/identity.js';
 import { googleAccountPinRefused, googleMcpPathUnsafe } from '../connectors/google.js';
@@ -69,7 +70,7 @@ export function composeMcpConnection(options: { store: Store; owner: ToolsOwner;
 }
 
 export type McpEndpointState = 'missing' | 'configured' | 'connecting' | 'connected' | 'error';
-export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; reasonCode?: 'identity_mismatch' | 'not_signed_in' | IdentityErrorCode; identity?: IdentityProof; /** C-OPEN 6: a closed wiring notice the Settings row names; it never stops the connector. */ warning?: 'google_mcp_path_unsafe'; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'identity_mismatch' | 'owner-approval-required' | 'ambiguous-legacy-policy'; exception?: { class: string; code: string } }
+export interface McpEndpointReport { id: string; state: McpEndpointState; tools: number; lastHandshakeAt: string | null; error?: string; reasonCode?: 'identity_mismatch' | 'not_signed_in' | IdentityErrorCode; identity?: IdentityProof; /** C-OPEN 6: a closed wiring notice the Settings row names; it never stops the connector. */ warning?: 'google_mcp_path_unsafe'; configurationError?: 'unknown-class-missing' | 'unknown-class-invalid' | 'identity_mismatch' | 'owner-approval-required' | 'ambiguous-legacy-policy'; /** W2-R1: the added read names a remaining refusal names, closed tool names only. */ addedToolNames?: readonly string[]; exception?: { class: string; code: string } }
 export interface McpRuntimeComposition {
   registry: McpRegistry;
   port: McpPort;
@@ -201,7 +202,7 @@ export function createRecoverySchedule(delays: readonly number[] = CONNECTOR_REC
  */
 export type ConnectorLifecycleEvent =
   | { event: 'mongoose_tool_schema_refused'; endpointId: string; tool: string }
-  | { event: 'connector_connected'; endpointId: string; connectMs: number }
+  | { event: 'connector_connected'; endpointId: string; connectMs: number; tools?: number }
   | { event: 'connector_recovered'; endpointId: string; attempts: number; connectMs: number }
   /** One background retry of a transient failure, with the closed code it ended on. */
   | { event: 'connector_retry'; connector: string; endpointId: string; attempt: number; outcome: string }
@@ -210,7 +211,39 @@ export type ConnectorLifecycleEvent =
   | { event: 'connector_helper_stderr'; endpointId: string; bytes: number }
   /** One identity failure latched this endpoint until an explicit sign-in or a host restart. */
   | { event: 'connector_latched'; endpointId: string; code: string }
-  | { event: 'google_mcp_path_unsafe'; endpointId: string };
+  | { event: 'google_mcp_path_unsafe'; endpointId: string }
+  /** W2-R1: a widening inside the reviewed envelope reconciled itself; tool names only, never a schema. */
+  | { event: 'connector_envelope_widened'; endpointId: string; addedToolNames: readonly string[] }
+  /** W2-R1: a rebuilt child kept its id; which fields moved, never a value. */
+  | { event: 'connector_endpoint_changed'; endpointId: string; fields: readonly string[] }
+  /** W2-R1: the one closed reason a stored approval refused this connect. */
+  | { event: 'connector_approval_refused'; endpointId: string; reason: ApprovalRefusalReason };
+
+/** A stored stdio endpoint, told apart by its own transport field: an http endpoint has none. */
+const isStdioEndpointRecord = (endpoint: ConnectionEndpoint): endpoint is StdioConnectionEndpoint => (endpoint as { transport?: unknown }).transport === 'stdio';
+
+/** What defines the server an endpoint names: everything but the shell session that launched it. */
+function endpointIdentity(endpoint: ConnectionEndpoint): string {
+  if (!isStdioEndpointRecord(endpoint)) return canonicalJSON(endpoint);
+  const env = Object.entries(definingStdioEnv(endpoint.env)).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  return canonicalJSON({ ...endpoint, env });
+}
+
+/** A whole approval with the launching shell session excluded, so a PATH move is not a policy change. */
+function policyIdentity(policy: ConnectionPolicy): string {
+  return canonicalJSON({ ...policy, endpoint: isStdioEndpointRecord(policy.endpoint) ? { ...policy.endpoint, env: definingStdioEnv(policy.endpoint.env) } : policy.endpoint });
+}
+
+/** The stdio fields that moved between two releases' endpoint records, as closed names only. */
+function changedEndpointFields(stored: ConnectionEndpoint, next: ConnectionEndpoint): string[] {
+  if (!isStdioEndpointRecord(stored) || !isStdioEndpointRecord(next)) return [];
+  const defining = (env: Readonly<Record<string, string>> | undefined): string => canonicalJSON(definingStdioEnv(env));
+  const fields: string[] = [];
+  if (stored.command !== next.command) fields.push('command');
+  if (canonicalJSON(stored.args) !== canonicalJSON(next.args)) fields.push('args');
+  if (defining(stored.env) !== defining(next.env)) fields.push('env');
+  return fields;
+}
 
 /** Compose the inert MCP runtime once at startup: config, owner and registry only, no remote work. */
 export async function composeMcpRuntime(options: {
@@ -581,6 +614,15 @@ export async function composeMcpRuntime(options: {
     const previous = reports.get(entry.id);
     ready.delete(entry.id);
     const stale = (): boolean => closed || generations.get(entry.id) !== token;
+    // W2-R1: one refusal per closed reason, so an owner (and the install gate) learns which condition held
+    // instead of one vague code. The status row keeps `owner-approval-required`: it is the one code the
+    // Settings row and the approve command speak, and the added names ride along for the exact text.
+    const refuseApproval = (reason: ApprovalRefusalReason, addedToolNames: readonly string[] = []): { retryable: false } => {
+      reportFailure(entry, 'handshake', attempt, 'owner-approval-required');
+      options.lifecycleLog?.({ event: 'connector_approval_refused', endpointId: entry.id, reason });
+      reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required', ...(addedToolNames.length ? { addedToolNames: [...addedToolNames].sort() } : {}) });
+      return { retryable: false };
+    };
     // A latched endpoint is never probed again: it stays loudly uncallable with its closed code, and the
     // other endpoints keep working.
     const latchedCode = latched.get(entry.id);
@@ -648,7 +690,7 @@ export async function composeMcpRuntime(options: {
       if (!names.length) {
         const proof = provenIdentity.get(entry.id);
         if (proof) options.identityLog?.('mongoose', proof.proven, proof.match, entry.id, proof.code);
-        options.lifecycleLog?.({ event: 'connector_connected', endpointId: entry.id, connectMs: Math.max(0, now() - roundStarted) });
+        options.lifecycleLog?.({ event: 'connector_connected', endpointId: entry.id, connectMs: Math.max(0, now() - roundStarted), tools: 0 });
         everConnected.add(entry.id);
         reports.set(entry.id, { id: entry.id, state: 'connected', tools: 0, lastHandshakeAt: new Date(discovery.observedAt).toISOString() });
         return { retryable: false };
@@ -693,10 +735,10 @@ export async function composeMcpRuntime(options: {
         } catch { stored = null; }
         // Only the same endpoint's own approval may be reconciled, and never a revoked one: a tampered,
         // foreign or revoked row keeps the owner-approval refusal.
-        if (!stored && (!trusted || !sameEndpoint || !enabledInRow)) {
-          reportFailure(entry, 'handshake', attempt, 'owner-approval-required');
-          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required' }); return { retryable: false };
-        }
+        // W2-R1: each condition names its own closed reason. An explicit-mode row is not an approval
+        // this mode accepts, a row for another id, account or resource moved the endpoint, and a row
+        // that no longer validates or was revoked is not an approval at all.
+        if (!stored && (!trusted || !sameEndpoint || !enabledInRow)) return refuseApproval(!sameEndpoint ? 'endpoint_changed' : 'row_invalid');
         if (stored) {
         if (stored.ownerId !== ownerId || stored.connectionId !== entry.id || stored.generation !== Number(row.generation)) throw Error('connection_policy_binding');
         const legacy = stored.bindingMode === undefined;
@@ -708,7 +750,6 @@ export async function composeMcpRuntime(options: {
         const oldClass = stored.sourcePolicy.unknownClass;
         // Only a published name the stored approval lacks widens the envelope. A composed name is
         // derived from the children that approval already covers, so it is never a widening.
-        const widened = names.some(name => !stored.toolNames.includes(name));
         const previousSchemas = approvedSchemas.get(entry.id);
         // A contract change to any approved name needs the owner again; a name the previous settle
         // never saw is either a widening (above) or a composite's first appearance.
@@ -716,10 +757,25 @@ export async function composeMcpRuntime(options: {
         // Only an explicit approval mode needs a fresh owner approval for any catalog change: under
         // owner-trusted-reads the reviewed envelope is the approval, so only a change to the contract of
         // a name that envelope already makes readable needs the owner again.
-        if (canonicalJSON(stored.endpoint) !== canonicalJSON(policy.endpoint) || widened || (oldClass !== null && rank[entry.unknownClass] < rank[oldClass]) || (trusted ? readableChanged : stored.schemaDigest !== policy.schemaDigest)) {
-          reportFailure(entry, 'handshake', attempt, 'owner-approval-required');
-          reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required' }); return { retryable: false };
-        }
+        // W2-R1: the added names are this host's envelope-filtered publication, so membership in
+        // `envelope` is decided by in-repo reviewed code, never by what the child chose to advertise.
+        const addedNames = names.filter(name => !stored.toolNames.includes(name));
+        const widened = addedNames.length > 0;
+        const approved = stored.enabled === true;
+        // A rebuilt child keeps its endpoint id, account, resource and descriptor and may move its own
+        // command, args or defining env between releases: the owner's approval is the envelope, not a path.
+        const stdioMoved = trusted && sameEndpoint && approved && isStdioEndpointRecord(stored.endpoint) && isStdioEndpointRecord(policy.endpoint);
+        const endpointMoved = endpointIdentity(stored.endpoint) !== endpointIdentity(policy.endpoint);
+        const reconciledWidening = widened && trusted && approved && addedNames.every(name => envelope.includes(name));
+        const refusal = (endpointMoved || widened) && !approved ? 'row_invalid'
+          : endpointMoved && !stdioMoved ? 'endpoint_changed'
+          : widened && !reconciledWidening ? 'tools_widened'
+          : oldClass !== null && rank[entry.unknownClass] < rank[oldClass] ? 'class_tightened'
+          : (trusted ? readableChanged : stored.schemaDigest !== policy.schemaDigest) ? 'schema_changed'
+          : null;
+        if (refusal !== null) return refuseApproval(refusal, addedNames);
+        if (endpointMoved) options.lifecycleLog?.({ event: 'connector_endpoint_changed', endpointId: entry.id, fields: changedEndpointFields(stored.endpoint, policy.endpoint) });
+        if (reconciledWidening) options.lifecycleLog?.({ event: 'connector_envelope_widened', endpointId: entry.id, addedToolNames: [...addedNames].sort() });
         // Persisted approval fields are authoritative. A restart cannot re-enable a revocation.
         policy.enabled = stored.enabled; policy.bounds = stored.bounds;
         policy.sourcePolicy = { ...stored.sourcePolicy, unknownClass: entry.unknownClass };
@@ -733,7 +789,10 @@ export async function composeMcpRuntime(options: {
           policy.route = { ...stored.route, allowedClasses: replaceClass(stored.route.allowedClasses) };
         }
         }
-        if (!stored || canonicalJSON(policy) !== bytes) { policy.generation += 1; owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy }); }
+        // W2-R4: the launch environment is the current entry's env (registry.register below, adapter.ts:362),
+        // so the stored copy carrying an older PATH is not a policy change: the shell session is excluded from
+        // the compared identity, and a PATH move alone neither bumps the generation nor rewrites policy_sha256.
+        if (!stored || policyIdentity(stored) !== policyIdentity(policy)) { policy.generation += 1; owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy }); }
       } else owner.applyConnectionIntent({ expectedPolicySha256: null, policy });
       approvedSchemas.set(entry.id, schemas);
       // Identity proof before any read grant. A failed proof never falls back to publication.
@@ -816,7 +875,7 @@ export async function composeMcpRuntime(options: {
       ready.add(entry.id);
       const tokenProof = provenIdentity.get(entry.id);
       if (entry.connector === 'mongoose' && tokenProof) options.identityLog?.('mongoose', tokenProof.proven, tokenProof.match, entry.id, tokenProof.code);
-      if (attempt === 'first-connect') options.lifecycleLog?.({ event: 'connector_connected', endpointId: entry.id, connectMs: Math.max(0, now() - roundStarted) });
+      if (attempt === 'first-connect') options.lifecycleLog?.({ event: 'connector_connected', endpointId: entry.id, connectMs: Math.max(0, now() - roundStarted), tools: granted.length });
       // R1: the count includes a granted composite, so the owner sees every callable read tool.
       everConnected.add(entry.id);
       // A Mongoose endpoint proved its account from its own minted token, not from a tool probe.
@@ -906,9 +965,14 @@ export async function composeMcpRuntime(options: {
       // Only an endpoint whose first connect failed is retried: it never published a grant, so no read and no
       // approved binding exists to disturb. An endpoint that connected once and then failed a read keeps the
       // refusal rules above, so a changed catalog, binding, revocation or late close is still refused.
+      // W2-R2: a terminal refusal is not re-handshaken. `entry.configurationError` is the static catalog
+      // field, while a refusal at settle is stored on the report, so a per-utterance recover() used to
+      // handshake an owner-refused endpoint again and again (114 handshakes in 11 minutes on 10-28).
+      // The report clears when this host settles the endpoint again, which is a start or a new policy.
       const parkedOnError = active.filter(entry => !closed && !eligible.has(entry.id) && !needsSignIn.has(entry.id)
         && reports.get(entry.id)?.state === 'error' && !everConnected.has(entry.id)
-        && entry.configurationError === undefined && entry.unknownClass !== null);
+        && entry.configurationError === undefined && reports.get(entry.id)?.configurationError === undefined
+        && entry.unknownClass !== null);
       await Promise.all(parkedOnError.map(async entry => {
         const token = (generations.get(entry.id) ?? 0) + 1;
         generations.set(entry.id, token);

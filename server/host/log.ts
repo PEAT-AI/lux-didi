@@ -1,4 +1,5 @@
 import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_LIMITS, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
+import { APPROVAL_REFUSAL_REASONS } from './events.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { TRELLO_CALL_TOOLS, TRELLO_WRITE_ARGUMENT_FIELDS } from '../tools/trello.js';
 import { clientDiagnostic } from '../http/routes.js';
@@ -182,6 +183,7 @@ const isSafeCloseReason = (value: unknown): value is string =>
 const UNKNOWN_FRAME_TYPE = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/;
 const isSafeMember = (value: unknown, allowed: readonly string[]): value is string => typeof value === 'string' && allowed.includes(value);
 const isSafeMembers = (value: unknown, allowed: readonly string[]): value is string[] => Array.isArray(value) && value.length <= 16 && value.every(item => isSafeMember(item, allowed));
+
 /** A closed shape: exactly these keys, so no field a later caller adds can slip through the whitelist. */
 const closedKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
   Object.keys(value).sort().join(',') === [...keys].sort().join(',');
@@ -445,8 +447,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(v);
     if (!isSafeId(value.endpointId)) return;
     if (value.event === 'connector_connected') {
-      if (!closedKeys(value, ['connectMs', 'endpointId', 'event']) || !ms(value.connectMs)) return;
-      return { event: 'connector_connected', endpointId: value.endpointId, connectMs: value.connectMs };
+      // W2-R1: the granted read count is optional, so a producer without it still writes a valid line, and
+      // the install gate can tell a connect with no readable tool from a real one.
+      const withTools = Object.prototype.hasOwnProperty.call(value, 'tools');
+      if (!closedKeys(value, withTools ? ['connectMs', 'endpointId', 'event', 'tools'] : ['connectMs', 'endpointId', 'event']) || !ms(value.connectMs)) return;
+      if (!withTools) return { event: 'connector_connected', endpointId: value.endpointId, connectMs: value.connectMs };
+      if (!count(value.tools, 4096)) return;
+      return { event: 'connector_connected', endpointId: value.endpointId, connectMs: value.connectMs, tools: value.tools };
     }
     if (value.event === 'connector_recovered') {
       // A transient failure is retried every two minutes for the host's life, so an attempt count is not
@@ -474,6 +481,30 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     }
     if (!closedKeys(value, ['bytes', 'endpointId', 'event']) || !count(value.bytes, 16_777_216)) return;
     return { event: 'connector_helper_stderr', endpointId: value.endpointId, bytes: value.bytes };
+  }
+  if (value.event === 'connector_envelope_widened') {
+    // W2-R1: the reviewed read names this connect added. Names only: never a schema, a description or a
+    // declaration a child published.
+    if (!closedKeys(value, ['addedToolNames', 'endpointId', 'event']) || !isSafeId(value.endpointId)) return;
+    if (!Array.isArray(value.addedToolNames) || value.addedToolNames.length < 1 || value.addedToolNames.length > 64) return;
+    const added: string[] = [];
+    for (const name of value.addedToolNames) {
+      if (typeof name !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name)) return;
+      added.push(name);
+    }
+    return { event: 'connector_envelope_widened', endpointId: value.endpointId, addedToolNames: added };
+  }
+  if (value.event === 'connector_endpoint_changed') {
+    // W2-R1: which fields of a rebuilt child's own endpoint moved, never a value, a path or a token.
+    if (!closedKeys(value, ['endpointId', 'event', 'fields']) || !isSafeId(value.endpointId)) return;
+    if (!isSafeMembers(value.fields, ['command', 'args', 'env']) || value.fields.length < 1) return;
+    return { event: 'connector_endpoint_changed', endpointId: value.endpointId, fields: value.fields };
+  }
+  if (value.event === 'connector_approval_refused') {
+    // W2-R1: one closed refusal reason, so the install gate and an owner read which condition held.
+    if (!closedKeys(value, ['endpointId', 'event', 'reason']) || !isSafeId(value.endpointId)) return;
+    if (!isSafeMember(value.reason, APPROVAL_REFUSAL_REASONS)) return;
+    return { event: 'connector_approval_refused', endpointId: value.endpointId, reason: value.reason };
   }
   if (value.event === 'mattermost_shape') {
     // Closed shape: tool, recognised shape kind and sizes only, never any message content.

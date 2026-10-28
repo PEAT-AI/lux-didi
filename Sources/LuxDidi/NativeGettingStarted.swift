@@ -21,8 +21,9 @@ struct NativeGettingStartedItem: Identifiable {
     var guideURL: URL? = nil
 }
 enum NativeGettingStartedItems {
+    /// W2-R1 / F4: a connection row carries the reads a refused approval would add, so the sentence can name them.
     static func rows(microphone: String, notifications: String, login: String,
-                     connections: [(String, String, String?)]) -> [NativeGettingStartedItem] {
+                     connections: [(String, String, String?, [String])]) -> [NativeGettingStartedItem] {
         var rows = [
             NativeGettingStartedItem(title: "Microphone", detail: microphone, command: nil),
             NativeGettingStartedItem(title: "Notifications", detail: notifications, command: nil),
@@ -30,8 +31,8 @@ enum NativeGettingStartedItems {
             NativeGettingStartedItem(title: "Open Naya app", detail: "Menu bar, or Control Option Space", command: nil),
             NativeGettingStartedItem(title: "Live shortcuts", detail: "Start: Control Option Shift L; mute: Control Option Shift M; stop: Escape", command: nil),
         ]
-        rows += connections.map { id, state, reason in
-            let step = NativeNextSteps.lookup(id: id, state: state, reason: reason)
+        rows += connections.map { id, state, reason, added in
+            let step = NativeNextSteps.lookup(id: id, state: state, reason: reason, added: added)
             return NativeGettingStartedItem(title: id, detail: "\(state): \(step.text)", command: step.command, guideURL: step.guideURL)
         }
         return rows

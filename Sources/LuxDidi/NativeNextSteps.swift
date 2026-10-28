@@ -44,9 +44,21 @@ enum NativeNextSteps {
         "mongoose-data": mongooseCredentialStep("Mongoose data"),
         "mongoose-crm": mongooseCredentialStep("Mongoose CRM"),
     ]
+    /// The one command that approves a refused connector, verbatim from the CLI's own usage line.
+    private static let approveCommand = "node server/dist/config/mcp-cli.js approve --config-dir <config dir> --data-dir <data dir> --owner-id <owner> --policy-input <policy file>"
+    /// W2-R1 / F4: the sentence names the exact command and, when the host said which reads an approval
+    /// would add, those reads too. Closed tool names only, so nothing a server published can reach it.
+    private static func approvalStep(_ added: [String]) -> NativeNextStep {
+        let named = added.filter { name in
+            guard let first = name.first, first.isLetter, name.count <= 64 else { return false }
+            return name.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
+        }.prefix(64)
+        let reads = named.isEmpty ? "" : " " + named.joined(separator: ", ")
+        return NativeNextStep(text: "This connector's tool list changed and needs your approval. Run \(approveCommand) to approve\(reads), then restart Lux Didi.", command: approveCommand, guideURL: mcpGuide)
+    }
     /// One fixed sentence per reason code, so no row with a known reason falls back to the failure text.
     private static let reasonSteps: [String: NativeNextStep] = [
-        "configuration_error": NativeNextStep(text: "This connector's tool list changed and needs your approval. Approve the new tool list with the approve command the MCP configuration guide describes, then restart Lux Didi.", command: nil, guideURL: mcpGuide),
+        "configuration_error": approvalStep([]),
         "credential_missing": configureStep,
         "not_configured": NativeNextStep(text: "This connector has no configuration yet. Set it in your protected configuration directory, then reopen Settings. See the MCP configuration guide.", command: nil, guideURL: mcpGuide),
         "needs_sign_in": NativeNextStep(text: "This connector needs a fresh sign-in with its own credentials. Sign in with its own command, then restart Lux Didi.", command: nil, guideURL: setupGuide),
@@ -63,7 +75,7 @@ enum NativeNextSteps {
                        command: nil,
                        guideURL: URL(string: SingleKeyTrigger.grantSettingsURL))
     }
-    static func lookup(id: String, state: String, reason: String?) -> NativeNextStep {
+    static func lookup(id: String, state: String, reason: String?, added: [String] = []) -> NativeNextStep {
         if state == "connected" { return NativeNextStep(text: "no action needed", command: nil) }
         if state == "configured" { return NativeNextStep(text: "a Live session connects on demand", command: nil) }
         if let step = endpointSignInSteps[id], reason == "needs_sign_in" || reason == "not_signed_in" { return step }
@@ -73,6 +85,8 @@ enum NativeNextSteps {
         if state == "missing" || reason == "credential_missing" {
             return credentialSteps[id] ?? configureStep
         }
+        // W2-R1 / F4: a refused row names the reads its approval would add, so it cannot be a fixed entry.
+        if reason == "configuration_error" { return approvalStep(added) }
         return reasonSteps[reason ?? "unknown"] ?? failureStep
     }
 }

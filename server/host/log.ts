@@ -326,7 +326,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!['maps', 'search', 'site', 'source', 'home', 'file', 'app'].includes(String(value.kind))) return;
     if (!isSafeCount(value.words) || Number(value.words) > 64) return;
     if (value.bound !== 'yes' && value.bound !== 'no') return;
-    if (!['maps', 'search', 'site-root', 'handle'].includes(String(value.destination))) return;
+    if (!['maps', 'search', 'site-root', 'handle', 'file', 'app'].includes(String(value.destination))) return;
     if (!isSafeMember(value.refusal, OPEN_RECEIPT_CODES) && value.refusal !== 'none') return;
     return { event: 'open_audit', tool: value.tool, kind: value.kind, words: value.words, bound: value.bound, destination: value.destination, refusal: value.refusal };
   }

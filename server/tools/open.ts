@@ -66,9 +66,20 @@ export function nativeActionReceipt(action: NativeAction, code: OpenReceiptCode,
 }
 
 /** C-POLISH10: the closed classes an open call resolves to, so a failed open is auditable without its words. */
-export type OpenDestinationClass = 'maps' | 'search' | 'site-root' | 'handle';
+export type OpenDestinationClass = 'maps' | 'search' | 'site-root' | 'handle' | 'file' | 'app';
 /** C-POLISH10: what the call was asked to open, as a kind, so the audit names the shape and not the words. */
 export type OpenAuditKind = 'maps' | 'search' | 'site' | 'source' | 'home' | 'file' | 'app';
+
+/**
+ * C-POLISH10: the class one open tool resolves to, read from the tool the model called rather than assumed: an item
+ * handle, a home page, a file inside the home folder and an application are four different destinations.
+ */
+export function openDestinationClass(tool: string): OpenDestinationClass {
+  if (tool === 'open_file') return 'file';
+  if (tool === 'open_app') return 'app';
+  if (tool === 'open_home') return 'site-root';
+  return 'handle';
+}
 
 /**
  * C-POLISH10: the one audit line an open call writes. It counts the target's words and says whether his own words

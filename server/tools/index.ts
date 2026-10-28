@@ -22,7 +22,7 @@ import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, vali
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
-import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, OPEN_WEB_GUIDANCE, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openAudit, openParameters, openTarget, ownerTurnWords, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenAuditKind, type OpenReceiptCode } from './open.js';
+import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, OPEN_WEB_GUIDANCE, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openAudit, openDestinationClass, openParameters, openTarget, ownerTurnWords, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenAuditKind, type OpenReceiptCode } from './open.js';
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
@@ -683,7 +683,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           // refused handle is traceable without ever logging the handle or his words.
           openAudit({
             tool: openTool.name, kind: openTool.name.slice('open_'.length) as OpenAuditKind,
-            target: String(args[openTool.parameter] ?? ''), ownerWords: ownerWords(context.runId), destination: 'handle', code,
+            target: String(args[openTool.parameter] ?? ''), ownerWords: ownerWords(context.runId), destination: openDestinationClass(openTool.name), code,
           });
           // Open2: the opened ack names what opened, and only an ack of `opened` becomes a turn receipt.
           if (code === 'opened' && dispatched) noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });

@@ -76,10 +76,12 @@ bash "$root/scripts/run-installed-checks.sh" "$work/target" --checks-dir "$work/
 grep -q 'INSTALLED-CHECK PASS check-installed-alpha.sh' "$work/gate.log" || { echo 'check-installed-connectors.sh: the gate skipped a passing check' >&2; cat "$work/gate.log" >&2; exit 1; }
 grep -q 'INSTALLED-CHECK FAIL check-installed-beta.sh' "$work/gate.log" || { echo 'check-installed-connectors.sh: the gate did not name the failing check' >&2; cat "$work/gate.log" >&2; exit 1; }
 grep -q 'INSTALLED-CHECKS FAIL ran=2 failed=1' "$work/gate.log" || { echo 'check-installed-connectors.sh: the gate did not count both checks' >&2; cat "$work/gate.log" >&2; exit 1; }
+# F2: a gate that ran nothing proves nothing, so an empty checks dir must fail and say so.
 mkdir -p "$work/checks-pass"
-gate_ok=0
-bash "$root/scripts/run-installed-checks.sh" "$work/target" --checks-dir "$work/checks-pass" 2>/dev/null || gate_ok=$?
-[ "$gate_ok" -eq 0 ] || { echo 'check-installed-connectors.sh: the gate fails with no installed checks' >&2; exit 1; }
+empty_gate=0
+bash "$root/scripts/run-installed-checks.sh" "$work/target" --checks-dir "$work/checks-pass" > "$work/gate-empty.log" 2>&1 || empty_gate=$?
+[ "$empty_gate" -eq 1 ] || { echo "check-installed-connectors.sh: an empty checks dir exited $empty_gate, expected 1" >&2; cat "$work/gate-empty.log" >&2; exit 1; }
+grep -q 'INSTALLED-CHECKS FAIL ran=0' "$work/gate-empty.log" || { echo 'check-installed-connectors.sh: an empty checks dir did not fail loudly' >&2; cat "$work/gate-empty.log" >&2; exit 1; }
 
 # 4. The install path must run the gate after the app is in place, and a red gate must fail the install:
 #    the block containing the call restores the prior app and exits non-zero.

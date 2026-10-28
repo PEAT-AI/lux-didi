@@ -36,4 +36,9 @@ if [ "$failed" -ne 0 ]; then
   printf 'INSTALLED-CHECKS FAIL ran=%d failed=%d\n' "$ran" "$failed" >&2
   exit 1
 fi
+# F2: a gate that ran nothing proves nothing, so a release that ships no installed check fails its own install.
+if [ "$ran" -eq 0 ]; then
+  echo "INSTALLED-CHECKS FAIL ran=0: no $checks_dir/check-installed-*.sh to prove the installed release" >&2
+  exit 1
+fi
 printf 'INSTALLED-CHECKS PASS ran=%d failed=0\n' "$ran"

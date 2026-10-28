@@ -89,3 +89,24 @@ test('alarm scheduler: snooze completes old occurrence atomically and cannot res
   f.scheduler.recheck('wake');
   assert.equal(f.due.length, 1);
 });
+
+test('alarm scheduler: persisted instant and zone survive a real process time-zone change', t => {
+  const f = fixture(t);
+  const priorZone = process.env.TZ;
+  try {
+    process.env.TZ = 'America/New_York';
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    assert.equal(zone, 'America/New_York');
+    const row = f.scheduler.set({ fireAtUtc: f.now() + 86400000, tz: zone, label: '', createdJournalId: 'zone-change' });
+    process.env.TZ = 'Europe/London';
+    assert.equal(Intl.DateTimeFormat().resolvedOptions().timeZone, 'Europe/London');
+    f.scheduler.recheck('timezone_changed');
+    const stored = f.store.transaction(tx => tx.get('SELECT fire_at_utc,tz FROM alarms WHERE id=?', [row.id]));
+    assert.equal(stored?.fire_at_utc, row.fireAtUtc);
+    assert.equal(stored?.tz, 'America/New_York');
+    assert.equal(f.scheduler.list().find(alarm => alarm.id === row.id)?.fireAtUtc, row.fireAtUtc);
+  } finally {
+    if (priorZone === undefined) delete process.env.TZ;
+    else process.env.TZ = priorZone;
+  }
+});

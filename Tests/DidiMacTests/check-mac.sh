@@ -37,12 +37,27 @@ start=$SECONDS
 # The compile lock is per user on the machine, so pin it before HOME is invented.
 export LUX_COMPILE_LOCK="${LUX_COMPILE_LOCK:-$HOME/.lux/state/compile.lock}"
 export HOME="$artifacts/home" CFFIXED_USER_HOME="$artifacts/home"
-if "$app/Contents/MacOS/LuxDidi" --installed-proof >"$artifacts/invalid-proof.log" 2>&1; then
+# Direct self/UI proofs do not perform the observer handshake, but must resolve to the same
+# verification LaunchKind exemption. These are test-only launch environments, never product defaults.
+verification_launch() {
+  local label="$1"; shift
+  local proof="${LUX_REAL_HOST_PROOF_DIR:-$artifacts}/mac-$label"
+  mkdir -p "$proof/home" "$proof/gate"
+  chmod 700 "$proof" "$proof/home" "$proof/gate"
+  local nonce
+  nonce="$(uuidgen)"
+  printf '%s' "$nonce" >"$proof/gate/nonce"
+  chmod 600 "$proof/gate/nonce"
+  HOME="$proof/home" CFFIXED_USER_HOME="$proof/home" \
+    LUX_VERIFICATION_GATE_ROOT="$proof/gate" LUX_VERIFICATION_GATE_NONCE="$nonce" \
+    "$app/Contents/MacOS/LuxDidi" "$@" >"$proof/stdout.log" 2>"$proof/stderr.log"
+}
+if verification_launch invalid-proof --installed-proof; then
   echo 'MAC-PROOF FAIL: malformed installed proof flags accepted' >&2; exit 1
 fi
-grep -q 'INSTALLED-PROOF INVALID' "$artifacts/invalid-proof.log"
-"$app/Contents/MacOS/LuxDidi" --self-check
-"$app/Contents/MacOS/LuxDidi" --ui-proof "${LUX_MAC_SCREENSHOT:-$artifacts/native-ui.png}"
+grep -q 'INSTALLED-PROOF INVALID' "${LUX_REAL_HOST_PROOF_DIR:-$artifacts}/mac-invalid-proof/stderr.log"
+verification_launch self-check --self-check
+verification_launch ui-proof --ui-proof "${LUX_MAC_SCREENSHOT:-$artifacts/native-ui.png}"
 printf 'MAC-NATIVE PASS total=%ss\n' "$((SECONDS-start))"
 
 if [ -n "${LUX_REAL_HOST_PROOF_DIR:-}" ]; then

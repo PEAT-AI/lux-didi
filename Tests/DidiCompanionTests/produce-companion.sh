@@ -56,7 +56,8 @@ PY
   # Phase 3: single external kernel/LaunchServices observer under renderer admission.
   export LUX_VERIFICATION_DRIVER="$work/verification-observer"
   mkdir -p "$proof/fixture-launch"
-  if "$LUX_VERIFICATION_DRIVER" --verification "$app" "$proof/fixture-launch" "$(uuidgen)" run "$work/port" "$proof" "$node"; then
+  if "$LUX_VERIFICATION_DRIVER" --verification "$app" "$proof/fixture-launch" "$(uuidgen)" run "$work/port" "$proof" "$node" \
+    >"$proof/fixture-launch/observer.stdout.log" 2>"$proof/fixture-launch/observer.stderr.log"; then
     record verification-observer pass
   else
     record verification-observer fail

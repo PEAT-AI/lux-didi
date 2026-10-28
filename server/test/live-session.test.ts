@@ -2524,6 +2524,64 @@ test('L7: the muted time is excluded from live_dead_air', async t => {
   assert.ok(Number(deadAir!['deadAirMs']) < 5_000, `the 25 s mute is not dead air the owner heard, got ${deadAir!['deadAirMs']}`);
 });
 
+// #720: a burst of the owner's own fragments used to anchor the receipt at the first one, so the receipt named the
+// length of his sentence instead of the wait that followed it.
+test('#720: dead air is measured from the owner last fragment, not the first', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { attachment } = await attached(h, 'dead-air-last-fragment');
+  const events: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(() => sink());
+  h.f.send({ serverContent: { inputTranscription: { text: 'synthetic one', finished: true } } });
+  await tick();
+  h.advance(1_000);
+  h.f.send({ serverContent: { inputTranscription: { text: 'synthetic two', finished: true } } });
+  await tick();
+  h.advance(1_000);
+  h.f.send({ serverContent: { inputTranscription: { text: 'synthetic three', finished: true } } });
+  await tick();
+  // Four seconds after his last fragment, the answer becomes audible.
+  h.advance(4_000);
+  h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+  for (let i = 0; i < 40 && !events.some(entry => entry.event === 'live_dead_air' && typeof entry['deadAirMs'] === 'number'); i++) await tick();
+  const deadAir = events.find(entry => entry.event === 'live_dead_air' && typeof entry['deadAirMs'] === 'number');
+  assert.ok(deadAir, 'the first audible frame logs the dead air it followed');
+  const ms = Number(deadAir!['deadAirMs']);
+  assert.ok(ms >= 3_900 && ms <= 4_100, `the wait after his last fragment is about 4 s, not the 6 s from his first, got ${ms}`);
+  attachment.close();
+  await attachment.done;
+});
+
+// #720: the mute sits between his last fragment and the answer, so it belongs to the span and must be excluded.
+test('#720: a mute inside the span is excluded from live_dead_air', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const { attachment } = await attached(h, 'dead-air-muted-span');
+  const events: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(() => sink());
+  h.f.send({ serverContent: { inputTranscription: { text: 'synthetic first', finished: true } } });
+  await tick();
+  h.advance(1_000);
+  h.f.send({ serverContent: { inputTranscription: { text: 'synthetic last', finished: true } } });
+  await tick();
+  h.advance(500);
+  attachment.setInputMuted(true);
+  h.advance(14_500);
+  scheduler.runDue();
+  attachment.setInputMuted(false);
+  h.advance(1_000);
+  h.f.send({ serverContent: { modelTurn: { role: 'model', parts: [audio()] } } });
+  for (let i = 0; i < 40 && !events.some(entry => entry.event === 'live_dead_air' && typeof entry['deadAirMs'] === 'number'); i++) await tick();
+  const deadAir = events.find(entry => entry.event === 'live_dead_air' && typeof entry['deadAirMs'] === 'number');
+  assert.ok(deadAir, 'the first audible frame logs the dead air it followed');
+  const ms = Number(deadAir!['deadAirMs']);
+  assert.ok(ms >= 1_400 && ms <= 1_600, `the 14.5 s mute is not dead air the owner heard, got ${ms}`);
+  attachment.close();
+  await attachment.done;
+});
+
 test('L19: a call seeded after a dead one marks its last answer heard and never repeats it', async t => {
   const scheduler = new DeadlineClock();
   const h = await harness(t, { scheduler, limits: { idleMs: 600_000, sessionMs: 600_000 } });

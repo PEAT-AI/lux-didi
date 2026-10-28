@@ -97,6 +97,25 @@ test('research_subcall carries the calendar window kind as a closed enum', () =>
   assert.equal(safeEvent({ ...base, window: 'tomorrow', extra: 1 }), undefined, 'an extra key fails closed');
 });
 
+// #689: the live owner stamps a research event's callKey with the scoped trace key, `call:` plus 64 lowercase hex.
+// SAFE_ID refused it, so a completed run left no routed or subcall receipt at all.
+test('a research event keeps the scoped callKey and still drops a malformed one', () => {
+  const callKey = `call:${'a1'.repeat(32)}`;
+  const routed = { event: 'research_routed', researchId: 'r1', sources: ['calendar'], lookups: 1, ms: [12], outcomes: ['ok'] };
+  assert.deepEqual(safeEvent({ ...routed, callKey }), { ...routed, callKey }, 'the scoped callKey is kept');
+  assert.equal(safeEvent({ ...routed, callKey: `call:${'A1'.repeat(32)}` }), undefined, 'uppercase hex is refused');
+  assert.equal(safeEvent({ ...routed, callKey: `call:${'a1'.repeat(31)}` }), undefined, 'a short digest is refused');
+  assert.equal(safeEvent({ ...routed, callKey: 'call:the owners question' }), undefined, 'free text is refused');
+  assert.equal(safeEvent({ ...routed, callKey: 'research-window' }), { ...routed, callKey: 'research-window' }, 'a plain safe id still passes');
+
+  const subcall = { event: 'research_subcall', researchId: 'r1', kind: 'calendar_window', tool: 'calendar_list_events', ok: true, items: 1, rawBytes: 10, keptBytes: 8, queryChars: 0, queryAuthor: 'routed' };
+  assert.deepEqual(safeEvent({ ...subcall, callKey }), { ...subcall, callKey }, 'the subcall keeps it too');
+  assert.equal(safeEvent({ ...subcall, callKey: 'call: ' }), undefined, 'a malformed subcall key is dropped');
+
+  const progress = { event: 'research_progress', researchId: 'r1', phase: 'round', sourcesDone: [], sourcesPending: [], elapsedMs: 3 };
+  assert.deepEqual(safeEvent({ ...progress, callKey }), { ...progress, callKey }, 'progress keeps it too');
+});
+
 test('conversation_summary events keep the session id, counts, ms and reason codes only', () => {
   const started = { event: 'conversation_summary_started', liveSessionId: 's-1', inputChars: 120, truncated: false };
   assert.deepEqual(safeEvent(started), started);

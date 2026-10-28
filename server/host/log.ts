@@ -133,6 +133,13 @@ function mailQueryShape(value: unknown): { terms: number; operators: string[]; w
 }
 const isSafeId = (value: unknown): value is string => typeof value === 'string' && SAFE_ID.test(value);
 /**
+ * #689: the live owner stamps a research event's callKey with `scopedTraceKey`, `call:` plus the 64 lowercase hex
+ * of a sha256. That shape is closed, so it can carry no text and no provider id can imitate it; SAFE_ID stays as it
+ * is for every other field. A plain safe id is still accepted, because the ledger also carries provider call ids.
+ */
+const SCOPED_CALL_KEY = /^call:[0-9a-f]{64}$/;
+const isCallKey = (value: unknown): value is string => isSafeId(value) || (typeof value === 'string' && SCOPED_CALL_KEY.test(value));
+/**
  * Z1: a research line whose id fails SAFE_ID used to be dropped whole, so a run that really happened left
  * no receipt and read as a run that never happened. The replacement names the event and the field only,
  * never the value.
@@ -1162,7 +1169,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeId(value.researchId)) return rejectResearchId('research_progress');
     if (!isSafeMember(value.phase, RESEARCH_PHASES) || !isSafeCount(value.elapsedMs)) return;
     if (!isSafeMembers(value.sourcesDone, RESEARCH_SOURCES) || !isSafeMembers(value.sourcesPending, RESEARCH_SOURCES)) return;
-    if (hasCall && !isSafeId(value.callKey)) return;
+    if (hasCall && !isCallKey(value.callKey)) return;
     return { event: 'research_progress', researchId: value.researchId, ...(hasCall ? { callKey: value.callKey } : {}), phase: value.phase, sourcesDone: value.sourcesDone, sourcesPending: value.sourcesPending, elapsedMs: value.elapsedMs };
   }
   if (value.event === 'research_run') {
@@ -1242,7 +1249,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return;
     if (normalized !== undefined && !isNormalizedPaths(normalized)) return;
     if (!isSafeId(value.researchId)) return rejectResearchId('research_routed');
-    if (routedCall && !isSafeId(value.callKey)) return;
+    if (routedCall && !isCallKey(value.callKey)) return;
     if (!isSafeCount(value.lookups)) return;
     if (!Array.isArray(value.sources) || value.sources.length > 4 || !isSafeMembers(value.sources, ROUTED_SOURCES)) return;
     if (!Array.isArray(value.outcomes) || value.outcomes.length !== value.sources.length || !isSafeMembers(value.outcomes, ROUTED_OUTCOMES)) return;
@@ -1390,7 +1397,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     // A resolved window is two calendar dates in the id form, never a query and never an event title.
     if (hasFrom !== hasTo) return;
     if (hasFrom && (!isSafeId(value.windowFrom) || !isSafeId(value.windowTo))) return;
-    if (hasCall && !isSafeId(value.callKey)) return;
+    if (hasCall && !isCallKey(value.callKey)) return;
     return { event: 'research_subcall', researchId: value.researchId, ...(hasCall ? { callKey: value.callKey } : {}), kind: value.kind, tool: value.tool, ok: value.ok, ...(hasError ? { errorCode: value.errorCode } : {}), items: value.items, rawBytes: value.rawBytes, keptBytes: value.keptBytes, queryChars: value.queryChars, queryAuthor: value.queryAuthor, ...(hasWindow ? { window: value.window } : {}), ...(hasUnread ? { unread: value.unread } : {}), ...(hasFrom ? { windowFrom: value.windowFrom, windowTo: value.windowTo } : {}) };
   }
   if (value.event === 'conversation_summary_recovery') {

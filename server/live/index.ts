@@ -566,7 +566,7 @@ interface ActiveSession {
   stopAfterJournalId?: number;
   stopGeneration?: number;
   inputAt?: number;
-  /** When the owner's turn finished, to measure dead air until the first model audio. */
+  /** #720: the anchor is the owner's last finished fragment of the turn, not the first. */
   inputFinalAt: number | undefined;
   /** First model audio of the current turn; reset at each model turn start. */
   firstAudioAt: number | undefined;
@@ -2076,7 +2076,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       this.#armIdle(handle, this.#profile.limits.idleMs, 'unmuted');
       // L7: the muted time is not dead air the owner heard, and a response that began under the mute is not
       // played at unmute: the owner speaks next, and the held-answer offer names it in one sentence.
-      handle.mutedMs += Math.max(0, now - (handle.mutedAt ?? now));
+      // #720: only the muted time inside the dead-air span counts, so a mute that opened before the owner's last
+      // fragment is trimmed to that fragment instead of being subtracted from a wait it never made longer.
+      handle.mutedMs += Math.max(0, now - Math.max(handle.mutedAt ?? now, handle.inputFinalAt ?? now));
       // A response whose first audio arrived under the mute is cancelled at once; if in doubt, it is dropped.
       handle.dropResponse = handle.mutedResponse;
       // The held answer offer owns the reply the mute deferred; only the next owner turn or provider
@@ -3687,8 +3689,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           if (handle.inputFinal) handle.ownerLastWords = typeof event.text === 'string' && event.text.trim() !== '' ? event.text.trim().split(/\s+/u).length : 0;
           if (handle.inputFinal) {
             // L-05: the provider sends the finished fragments of one utterance one after another, and the dead-air
-            // receipt is owed one measurement per utterance, so only the first of them arms it.
-            if (handle.inputFinalAt === undefined) handle.inputFinalAt = handle.inputAt;
+            // receipt is owed one measurement per utterance, so it is armed once and written once per span.
+            // #720: the span runs from the owner's LAST fragment, not the first, so the anchor moves with every one.
+            handle.inputFinalAt = handle.inputAt;
             // L-04: her speech is audible, so the wait the owner hears starts at its last fragment.
             handle.heardSince = handle.inputAt; handle.mutedMs = 0;
             if (ownerTurnOpen) {
@@ -3769,7 +3772,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       }
       handle.inputFinal = true;
       // L-05: the quiet-timer finalization of one utterance is the same utterance the provider already ended.
-      if (handle.inputFinalAt === undefined) handle.inputFinalAt = this.#now();
+      // #720: it is also the owner's last word of the turn so far, so the dead-air anchor moves to it.
+      handle.inputFinalAt = this.#now();
       handle.heardSince = this.#now(); handle.mutedMs = 0;
       for (const resolve of handle.inputFinalWaiters ?? []) resolve();
     }, Math.max(0, 300 - (this.#now() - handle.inputAt)));

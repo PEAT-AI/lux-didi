@@ -60,7 +60,7 @@ import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js'
 import { bindResearchQuery, ADMISSION_BLOCK_REASONS, ADMISSION_DIRECTIVES, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, admissionBlocked, pagesCurrentRun, RESEARCH } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 import { luxNoteMigrations } from '../tools/lux-note.js';
-import { notesExportMigrations } from '../tools/notes-export.js';
+import { notesExportMigrations } from '../live/schema.js';
 
 const MODEL = 'models/live-session-test';
 const NOW = 1_700_000_000_000;

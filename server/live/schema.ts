@@ -1,7 +1,26 @@
 import type { SchemaMigration } from '../contracts/storage.js';
 import { vaultMigrations } from '../tools/vault-schema.js';
 import { luxNoteMigrations } from '../tools/lux-note.js';
-import { notesExportMigrations } from '../tools/notes-export.js';
+
+// Historical shipped export ledger: preserve owner, version and statement bytes. No runtime exporter remains.
+export const notesExportMigrations: readonly SchemaMigration[] = [{
+  owner: 'notes-export',
+  version: 1,
+  statements: [
+    `CREATE TABLE note_exports (
+       export_key TEXT PRIMARY KEY,
+       entry_id TEXT NOT NULL,
+       live_session_id TEXT NOT NULL,
+       body_sha256 TEXT NOT NULL,
+       state TEXT NOT NULL CHECK (state IN ('dispatching','inserted','duplicate','failed','unknown')),
+       attempted_at INTEGER NOT NULL,
+       settled_at INTEGER,
+       insight_id TEXT,
+       code TEXT
+     )`,
+    `CREATE INDEX note_exports_attempted ON note_exports(attempted_at)`,
+  ],
+}];
 
 // Live-owned additive migrations on the SAME Store. No CHAT table is altered and no
 // second SQLite connection or database is created.

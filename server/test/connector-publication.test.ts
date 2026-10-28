@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { createServer, type Server } from 'node:http';
 import { chmod } from 'node:fs/promises';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Server as McpServer, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { toolsMigrations } from '../tools/schema.js';
@@ -602,6 +602,9 @@ test('W2-R1: a rebuilt stdio child in a moved directory with a fresh PATH reconn
   const rebuiltDir = join(dir, 'google-mcp-local'); mkdirSync(rebuiltDir);
   const rebuiltChild = join(rebuiltDir, 'google-mcp-child.mjs');
   copyFileSync(GOOGLE_CHILD, rebuiltChild);
+  // The child resolves its MCP SDK from the tree it was installed with, as an installed release ships its
+  // own node_modules; the moved directory keeps that resolution through one symlink.
+  symlinkSync(join(dirname(GOOGLE_CHILD), '..', '..', 'node_modules'), join(dir, 'node_modules'), 'dir');
   const h = stdioApprovalHost(t, dir, configDir);
   h.write('owner-trusted-reads', [GOOGLE_CHILD, 'ok'], '/usr/bin');
   const first = await h.start();
@@ -637,6 +640,9 @@ test('W2-R1: an account change is a moved endpoint in trusted mode, and explicit
   const rebuiltDir = join(dir, 'google-mcp-local'); mkdirSync(rebuiltDir);
   const rebuiltChild = join(rebuiltDir, 'google-mcp-child.mjs');
   copyFileSync(GOOGLE_CHILD, rebuiltChild);
+  // The child resolves its MCP SDK from the tree it was installed with, as an installed release ships its
+  // own node_modules; the moved directory keeps that resolution through one symlink.
+  symlinkSync(join(dirname(GOOGLE_CHILD), '..', '..', 'node_modules'), join(dir, 'node_modules'), 'dir');
   const h = stdioApprovalHost(t, dir, configDir);
   h.write('owner-trusted-reads', [GOOGLE_CHILD, 'ok'], '/usr/bin');
   const first = await h.start();
@@ -661,6 +667,9 @@ test('W2-R1: explicit mode grants no read to a moved stdio child', { skip: proce
   const rebuiltDir = join(dir, 'google-mcp-local'); mkdirSync(rebuiltDir);
   const rebuiltChild = join(rebuiltDir, 'google-mcp-child.mjs');
   copyFileSync(GOOGLE_CHILD, rebuiltChild);
+  // The child resolves its MCP SDK from the tree it was installed with, as an installed release ships its
+  // own node_modules; the moved directory keeps that resolution through one symlink.
+  symlinkSync(join(dirname(GOOGLE_CHILD), '..', '..', 'node_modules'), join(dir, 'node_modules'), 'dir');
   const h = stdioApprovalHost(t, dir, configDir);
   h.write('owner-trusted-reads', [GOOGLE_CHILD, 'ok'], '/usr/bin');
   const first = await h.start();

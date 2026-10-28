@@ -6262,7 +6262,6 @@ test('C-TURN8: a claim with no call gets exactly one correction, and only once p
   assert.ok(turnOpen(), 'the owner turn is open before she answers it');
   h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that now.", finished: true }, turnComplete: true } });
   for (let attempt = 0; attempt < 300 && !armed(); attempt++) await tick();
-  t.diagnostic(`claim debug: ${JSON.stringify(counted().map(line => line.ms))}`);
   assert.ok(armed(), 'the announced lookup armed its three-second bound');
   await advance(2_000);
   assert.equal(corrections().length, 0, 'nothing is said before the bound has passed');

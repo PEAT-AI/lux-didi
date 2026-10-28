@@ -2418,6 +2418,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     handle.awaitingAnswer = false;
     handle.answerAt = undefined;
     this.#cancelTimers(handle);
+    // C-TURN8: a failed turn earns no correction for what it never said.
+    this.#resetClaimCheck(handle);
     this.#cancelWatchdog(handle);
     this.#noteState(handle, 'tool');
     if (typeof handle.session.sendCommentary === 'function') {
@@ -2434,7 +2436,6 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
 
   #cancelTimers(handle: ActiveSession): void {
     handle.delegationTimer?.cancel(); handle.delegationTimer = undefined;
-    handle.claimTimer?.cancel(); handle.claimTimer = undefined;
   }
 
   /** C-TURN8: a turn boundary carries no claim over, spends no correction and leaves no timer armed. */
@@ -2450,12 +2451,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    */
   #armClaimCheck(handle: ActiveSession, sequence: number): void {
     const claim = LOOKUP_CLAIM.test(handle.claimText);
-    const debugText = handle.claimText;
     handle.claimText = '';
     handle.claimTimer?.cancel(); handle.claimTimer = undefined;
-    hostLogEvent({ event: 'live_claim_without_call', sequence, ms: claim ? 9 : debugText.length >= 1 ? 8 : 0 });
     if (!claim || handle.claimCorrected || handle.claimToolSeen || handle.muted) return;
-    hostLogEvent({ event: 'live_claim_without_call', sequence, ms: handle.claimCorrected ? 1 : handle.claimToolSeen ? 2 : 3 });
     handle.claimTimer = this.#schedule(() => {
       handle.claimTimer = undefined;
       if (this.#settled(handle) || handle.claimToolSeen || handle.inputFinal === false || handle.muted) return;

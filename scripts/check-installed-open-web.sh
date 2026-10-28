@@ -41,7 +41,7 @@ let step = 'fake provider';
 try {
   const f = await fixture({ after: callback => cleanup.push(callback) });
   const configDir = join(work, 'config'); mkdirSync(configDir, { mode: 0o700 });
-  writeFileSync(join(configDir, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/live-gateway-test', voice: 'LiveVoice', keyReference: 'synthetic', dataClasses: ['ordinary'] }), { mode: 0o600 });
+  writeFileSync(join(configDir, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/live-gateway-test', voice: 'LiveVoice', keyReference: 'gemini-primary', dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' } }), { mode: 0o600 });
   step = 'start installed host';
   const host = await startHost({ dataDir: join(work, 'state'), configDir, webRoot: join(resources, 'web/dist'), port: 0,
     liveTesting: { socketFactory: f.socketFactory, credentials: { resolve: async () => CANARY } } });
@@ -50,8 +50,9 @@ try {
   const headers = { authorization: `Bearer ${host.store.adminCredential}`, 'x-didi-authority-epoch': host.store.authorityEpoch, 'content-type': 'application/json' };
   step = 'create synthetic session';
   const created = await fetch(`${host.service.origin}/api/v1/live-sessions`, { method: 'POST', headers: { ...headers, 'idempotency-key': 'synthetic-open-web' } });
-  assert.equal(created.status, 201);
-  const id = (await created.json()).data.liveSessionId;
+  const createResult = await created.json();
+  assert.equal(created.status, 201, JSON.stringify(createResult));
+  const id = createResult.data.liveSessionId;
   const ws = new WebSocket(`${host.service.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers });
   cleanup.push(() => ws.terminate());
   const urls = [];

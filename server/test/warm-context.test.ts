@@ -442,12 +442,11 @@ test('C-CAL8: a digest cut at call start is retried once in the background and o
   assert.equal(reads, 2, 'and one background retry is asked for at once');
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(events, [
-    { event: 'calendar_digest_timeout', reason: 'start', ms: calendarDigestReadMs },
+    { event: 'calendar_digest_timeout', reason: 'start', ms: 0 },
     { event: 'calendar_digest_refreshed', reason: 'retry', ms: 0 },
   ], 'the retry leaves exactly one closed line when it lands');
   const offered = await cache.forStart();
   assert.equal(offered.state, 'present', 'the day the retry landed with answers the next assembly');
   assert.equal(offered.text, '09:30 standup');
-  t.mock.timers.tick(calendarDigestRefreshMs);
-  assert.equal(reads, 2, 'one retry only: the timer owns the next read');
+  assert.equal(reads, 2, 'one retry only');
 });

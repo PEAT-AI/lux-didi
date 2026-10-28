@@ -301,7 +301,7 @@ export class CalendarDigestCache {
           this.#log?.({ event: 'calendar_digest_timeout', reason, ms: Math.max(0, this.#now() - startedAt) });
           // C-CAL8: the call started with no day, so one background read is asked for at once and the digest
           // it lands with answers the next assembly rather than waiting out the refresh timer.
-          if (!this.#retried) {
+          if (reason === 'start' && !this.#retried) {
             this.#retried = true;
             void this.refresh('retry').catch(() => undefined);
           }

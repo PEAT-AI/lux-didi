@@ -1,3 +1,4 @@
+import { attachHostLogSink } from '../tools/host-events.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -302,4 +303,47 @@ test('C-LUXSAVE11 W12-R1: outbound save obeys the upstream schema and accepts it
   for (const key of ['content', 'insight_title', 'insight_type', 'project']) assert.equal(typeof params.arguments[key], 'string');
   assert.ok(['TECHNICAL_DECISION', 'BUG_GOTCHA', 'PATTERN', 'MEETING', 'USER_PREFERENCE', 'PROJECT_CONSTRAINT', 'UNCATEGORIZED'].includes(String(params.arguments['insight_type'])));
   assert.deepEqual(result, { outcome: 'inserted', insightId: '81' });
+});
+
+
+for (const phase of ['initialize_http', 'initialize_transport', 'initialized_notify', 'endpoint_rejected', 'call_http', 'call_transport', 'schema_rejected'] as const) {
+  test(`C-LUXSAVE11 W12-R4: ${phase} is a closed host diagnostic with a paired successful save`, async () => {
+    for (const refuse of [true, false]) {
+      const events: unknown[] = [];
+      const detach = attachHostLogSink({ event: event => events.push(event) });
+      try {
+        const fakeFetch: typeof fetch = async (_url, init) => {
+          const call = JSON.parse(String(init?.body)) as { method: string; id?: number };
+          if (refuse && ((phase === 'initialize_transport' && call.method === 'initialize')
+            || (phase === 'initialized_notify' && call.method === 'notifications/initialized')
+            || (phase === 'call_transport' && call.method === 'tools/call'))) throw Error('synthetic transport failure');
+          if (refuse && ((phase === 'initialize_http' && call.method === 'initialize')
+            || (phase === 'call_http' && call.method === 'tools/call'))) return new Response(null, { status: 503 });
+          const headers = { 'content-type': 'application/json', 'mcp-session-id': 'synthetic-session' };
+          if (call.method === 'notifications/initialized') return new Response(null, { status: 202, headers });
+          const result = call.method === 'initialize' ? { protocolVersion: '2025-06-18', capabilities: {} }
+            : { content: [{ type: 'text', text: JSON.stringify(refuse && phase === 'schema_rejected'
+              ? { unrelated: true } : { action: 'inserted', insight_id: 81 }) }] };
+          return new Response(JSON.stringify({ jsonrpc: '2.0', id: call.id, result }), { headers });
+        };
+        const transport = createLuxWriteTransport({ url: refuse && phase === 'endpoint_rejected'
+          ? 'https://example.invalid/mcp' : 'http://127.0.0.1:12345/mcp' }, fakeFetch);
+        const result = await transport.save({ title: 'Synthetic', content: 'Synthetic body.', insightType: 'UNCATEGORIZED', project: 'didi-voice' });
+        const diagnostics = events.filter(event => event && typeof event === 'object' && (event as { event?: string }).event === 'vault_transport');
+        if (refuse) {
+          assert.equal(result.outcome, ['initialize_http', 'initialize_transport', 'initialized_notify', 'endpoint_rejected'].includes(phase) ? 'unavailable' : 'failed');
+          assert.deepEqual(diagnostics, [{ event: 'vault_transport', phase }]);
+          assert.deepEqual(safeEvent(diagnostics[0]), { event: 'vault_transport', phase });
+          assert.equal(safeEvent({ event: 'vault_transport', phase, url: 'synthetic private value' }), undefined);
+        } else {
+          assert.deepEqual(result, { outcome: 'inserted', insightId: '81' });
+          assert.deepEqual(diagnostics, []);
+        }
+      } finally { detach(); }
+    }
+  });
+}
+
+test('C-LUXSAVE11 W12-R4: arbitrary transport phases cannot enter host.log', () => {
+  assert.equal(safeEvent({ event: 'vault_transport', phase: 'arbitrary model text' }), undefined);
 });

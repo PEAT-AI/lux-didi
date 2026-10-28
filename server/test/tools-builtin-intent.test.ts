@@ -227,8 +227,8 @@ for (const provider of ['gemini', 'openai'] as const) test(`live owner catalog r
   const { service } = composeLive(store, dir, { profile, socketFactory: f.socketFactory, credentials: { resolve: async () => 'synthetic' } }, undefined, undefined,
     { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } });
   t.after(async () => { await service.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  const context = { clientId: store.clientId, authorityEpoch: 0 };
-  const session = service.create({ idempotencyKey: `catalog-${provider}`, inputClass: 'ordinary' }, context);
+  const context = { clientId: 'synthetic-actor', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
+  const session = service.create('ordinary', randomUUID(), context);
   const attachment = service.attach(session.liveSessionId, context);
   await f.frame(1);
   const frame = f.frames[0] as { setup?: { tools?: { functionDeclarations: { name: string }[] }[] }; session?: { delegation: { responses: { tools?: { name: string }[] } } } };

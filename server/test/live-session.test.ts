@@ -7322,3 +7322,21 @@ test('research admission names its closed reason and admits a paging continue of
   second.delivered('run-2');
   assert.deepEqual(second.admit('continue'), { admitted: false, reason: 'no_turn_since_result' });
 });
+
+// C-POLISH10: the open audit is asserted through the real tool definition and registry, so a wrong or missing
+// call-site value cannot pass on the helper's own arguments. No native peer is bound, so the open fails and the audit
+// line is the only record of what was asked to open.
+test('C-POLISH10: an open_web call through the tool registry logs its closed audit line', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const h = await harness(t, { tools: true, history: true });
+  await attached(h);
+  await ownerSpoke(h, 'open the Margit Halden deck');
+  await settleLiveTool(h, 'open-web-audit', 'open_web', { kind: 'search', target: 'Margit Halden deck' });
+  const frame = h.f.frames.filter(entry => typeof entry === 'object' && entry !== null && 'toolResponse' in entry).at(-1) as { toolResponse: { functionResponses: { response: unknown }[] } };
+  const audit = receipts.filter(record => record.event === 'open_audit');
+  assert.deepEqual(audit, [{ event: 'open_audit', tool: 'open_web', kind: 'search', words: 3, bound: 'yes', destination: 'search', refusal: 'failed' }],
+    `the registry audited the call: tool, kind, counted words, binding, destination class and the closed code; reply ${JSON.stringify(frame.toolResponse.functionResponses[0]!.response)}`);
+  assert.equal(/Margit|Halden|deck|https?:/u.test(JSON.stringify(audit)), false, 'the audit names no target word and no address');
+});

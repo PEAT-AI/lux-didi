@@ -8,7 +8,9 @@ import {OpenAiLiveVoiceAdapter,openAiInstructions,OPENAI_TOOLS_SECTION,OPENAI_DE
 import {fixture,options,request,control} from '../dist/test/openai-live-voice-fixture.js';
 const baselineCommit='31cc08d54248fe00562e7506dbed7ce28fbaf019';
 const baseline=execFileSync('git',['show',baselineCommit+':server/prompt/live-persona.ts'],{encoding:'utf8'});
-assert.equal(readFileSync(new URL('../prompt/live-persona.ts',import.meta.url),'utf8'),baseline);
+// C-ALARM11 adds exactly this public sentence; preserve the historical byte guard for every other byte.
+const alarmGuidance='\n\nAwake-Mac: set_alarm, list_alarms, cancel_alarm, snooze_alarm; trust receipts.';
+assert.equal(readFileSync(new URL('../prompt/live-persona.ts',import.meta.url),'utf8').replace(alarmGuidance,''),baseline);
 const oldAdapter=execFileSync('git',['show',baselineCommit+':server/adapters/live-voice/openai.ts'],{encoding:'utf8'});
 const extract=name=>baseline.match(new RegExp('export const '+name+' = `([\\s\\S]*?)`;'))[1];
 const extractSection=name=>runInNewContext(oldAdapter.match(new RegExp("(?:export )?const "+name+" = ('[^']*');"))[1]);

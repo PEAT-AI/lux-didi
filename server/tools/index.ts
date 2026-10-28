@@ -22,7 +22,7 @@ import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, vali
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
-import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, OPEN_WEB_GUIDANCE, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, ownerTurnWords, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode } from './open.js';
+import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, webOwnerWords, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode } from './open.js';
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
@@ -223,6 +223,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       const resolve = (tx: Transaction) => target(snapshot, originalCall(tx, call.runId, page.parent), tx);
       return transaction ? resolve(transaction) : store.transaction(resolve);
     }
+    if (call.toolName === PEOPLE_LOOKUP_DECLARATION.name && call.accountId === 'gateway:live-voice' && call.resourceId === 'intent') {
+      if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
+      return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 65536 } } };
+    }
     if (call.toolName === HISTORY_IDENTITY.name && call.accountId === HISTORY_IDENTITY.accountId && call.resourceId === HISTORY_IDENTITY.resourceId) {
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
       return { connectionId: HISTORY_IDENTITY.accountId, policy: { sourcePolicy: { allowedClasses: snapshot.acceptance.allowedClasses }, route: { allowedClasses: snapshot.acceptance.route.allowedClasses }, bounds: { maxResultBytes: 65536 } } };
@@ -347,7 +351,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       const call = callDTO(input);
       return store.transaction(tx => {
         if (callRow(tx, call)) throw Error('refusal_collision'); validateCallRun(tx, call);
-        return persistTerminal(tx, call, 'refused', { response: { status: 'refused', reason }, dataClasses: [] }, true);
+        return persistTerminal(tx, call, 'refused', { response: call.toolName === OPEN_WEB_NAME ? { status: 'refused', reason, ...openWebFailure(reason) } : { status: 'refused', reason }, dataClasses: [] }, true);
       });
     },
     fail(input, status, reason) {
@@ -357,7 +361,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       return store.transaction(tx => {
         if (exactIntent(tx, call).state !== 'intent') throw Error('terminal_immutable'); validateCallRun(tx, call);
         const code = isToolFailureCode(reason) ? reason : status === 'unknown' ? 'tool_unknown' : 'tool_failed';
-        return persistTerminal(tx, call, status, { response: { status, reason: code }, dataClasses: [] });
+        return persistTerminal(tx, call, status, { response: call.toolName === OPEN_WEB_NAME ? { status, reason: code, ...openWebFailure(code) } : { status, reason: code }, dataClasses: [] });
       });
     },
   };
@@ -706,25 +710,24 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           if (context.runId !== runId || !validateOpenWeb(args) || context.signal.aborted) return { status: 'failed' as const };
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
-          const resolved = await resolveWebOpen(args, ownerTurnWords(context.runId), context.signal);
+          const resolved = await resolveWebOpen(args, await webOwnerWords(context.runId, context.signal), context.signal);
           const dispatched = 'target' in resolved ? resolved.target : undefined;
           const refused = 'target' in resolved ? undefined : resolved.code;
-          const code: OpenReceiptCode = dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
+          const code: OpenReceiptCode = dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target, 'native_timeout');
           if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
           else nativeActionReceipt('open_url', code, 'web');
           if (code === 'opened' && dispatched) noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });
           // The refusal is the closed code plus the not-for-speech fix and the line she says; a found-only
           // case carries the domains so she asks which one he means.
-          const key = refused ?? (code in OPEN_WEB_GUIDANCE ? code as keyof typeof OPEN_WEB_GUIDANCE : 'not_allowed');
           const found = 'target' in resolved ? undefined : resolved.candidates;
           const payload: JsonObject = code === 'opened' && dispatched
             ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: webOpenedSay(dispatched.title) }
-            : { code: refused ?? code, ...OPEN_WEB_GUIDANCE[key], ...(found === undefined ? {} : { candidates: found }) };
+            : { ...openWebFailure(refused ?? code), ...(found === undefined ? {} : { candidates: found }) };
           const result = store.transaction(tx => {
             const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
             if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
             const call = storedCall(tx, row);
-            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: OPEN_WEB_NAME };
+            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision, executionId: context.executionId, toolName: OPEN_WEB_NAME, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'), accountId: OPEN_IDENTITY.accountId, resourceId: OPEN_IDENTITY.resourceId, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
             if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
             const snapshot = validateCallRun(tx, call);
             assertLiveIdentity(tx, call); target(snapshot, call, tx);

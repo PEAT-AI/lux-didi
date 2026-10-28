@@ -2316,3 +2316,16 @@ test('#1028: one owner turn opens two different asks and refuses a repeat or a t
   assert.deepEqual(repeat.admit('start', false, false, 'who owns Acme Seeds'), { admitted: true });
   assert.deepEqual(repeat.admit('start', false, false, 'Who owns Acme Seeds '), { admitted: false, reason: 'turn_spent' }, "the same question again is the turn's one ask");
 });
+
+// The twin of every answer_already_given refusal: the next finalized owner turn grants a fresh start, so the
+// refusal is the turn boundary and not an admission that closes after one answer.
+test('C-RESEARCH-CONTRACT: the next owner turn admits the start the answered turn refused', () => {
+  const admission = new ResearchAdmission();
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start'), { admitted: true }, 'the first turn starts its research');
+  admission.delivered('run-1');
+  admission.answered();
+  assert.deepEqual(admission.admit('start'), { admitted: false, reason: 'answer_already_given' }, 'a second start after the answer is the orphan run');
+  admission.ownerTurn();
+  assert.deepEqual(admission.admit('start'), { admitted: true }, 'the owner speaking again is a fresh grant, so the state reset with the turn');
+});

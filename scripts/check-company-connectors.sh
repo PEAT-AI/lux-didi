@@ -54,6 +54,9 @@ cp "$root/server/adapters/trello/client.ts" "$out/source/adapters/trello/"
 cp "$root/server/test/trello-board.test.ts" "$root/server/test/trello-fake.ts" "$out/source/test/"
 # C-CHECKS10: the Trello transport contract, against Atlassian's published spec copied in beside it.
 cp "$root/server/test/trello-contract.test.ts" "$out/source/test/"
+# C-CHECKS10: the Lux Knowledge connector shares the approval gate the company connectors use, and its
+# approved-grant twin runs beside the refusals it pairs with.
+cp "$root/server/test/knowledge-connector.test.ts" "$out/source/test/"
 cp "$root/server/test/mattermost-attention.test.ts" "$out/source/test/"
 cp "$root/server/test/mattermost-people.test.ts" "$out/source/test/"
 mkdir -p "$out/source/test/fixtures"
@@ -76,4 +79,4 @@ mkdir -p "$out/test/fixtures/specs"
 cp "$root/server/test/fixtures/specs/trello-openapi.json" "$root/server/test/fixtures/specs/trello-openapi.source.json" "$out/test/fixtures/specs/"
 cp "$root/server/test/fixtures/mongoose-literal-sanitized.json" "$out/test/fixtures/"
 cp "$root/server/test/fixtures/mongoose-discovery.json" "$root/server/test/fixtures/mongoose-data-live.json" "$out/test/fixtures/"
-node_test_files --test-timeout=15000 "$out/dist/test/mongoose-connector.test.js" "$out/dist/test/mongoose-cold-start.test.js" "$out/dist/test/research-data-route.test.js" "$out/dist/test/mongoose-auth.test.js" "$out/dist/test/mongoose-signin-contract.test.js" "$out/dist/test/mattermost-connector.test.js" "$out/dist/test/mattermost-attention.test.js" "$out/dist/test/trello-board.test.js" "$out/dist/test/mattermost-people.test.js" "$out/dist/test/trello-contract.test.js"
+node_test_files --test-timeout=15000 "$out/dist/test/mongoose-connector.test.js" "$out/dist/test/mongoose-cold-start.test.js" "$out/dist/test/research-data-route.test.js" "$out/dist/test/mongoose-auth.test.js" "$out/dist/test/mongoose-signin-contract.test.js" "$out/dist/test/mattermost-connector.test.js" "$out/dist/test/mattermost-attention.test.js" "$out/dist/test/trello-board.test.js" "$out/dist/test/mattermost-people.test.js" "$out/dist/test/trello-contract.test.js" "$out/dist/test/knowledge-connector.test.js"

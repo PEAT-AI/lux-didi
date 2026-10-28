@@ -229,6 +229,11 @@ function endpointIdentity(endpoint: ConnectionEndpoint): string {
   return canonicalJSON({ ...endpoint, env });
 }
 
+/** A whole approval with the launching shell session excluded, so a PATH move is not a policy change. */
+function policyIdentity(policy: ConnectionPolicy): string {
+  return canonicalJSON({ ...policy, endpoint: isStdioEndpointRecord(policy.endpoint) ? { ...policy.endpoint, env: definingStdioEnv(policy.endpoint.env) } : policy.endpoint });
+}
+
 /** The stdio fields that moved between two releases' endpoint records, as closed names only. */
 function changedEndpointFields(stored: ConnectionEndpoint, next: ConnectionEndpoint): string[] {
   if (!isStdioEndpointRecord(stored) || !isStdioEndpointRecord(next)) return [];
@@ -702,9 +707,7 @@ export async function composeMcpRuntime(options: {
         schemaVersion: 1, bindingMode: 'connection', ownerId, connectionId: entry.id, generation: row ? Number(row.generation) : 1,
         enabled: true, connector: entry.connector,
         endpoint: entry.transport === 'stdio'
-          // W2-R1(b): the approval stores what defines the server, never the shell session that launched
-          // it; the launch reads the live catalog entry (registry.register below, adapter.ts:362).
-          ? { id: entry.id, transport: 'stdio', command: entry.command, args: [...entry.args], env: definingStdioEnv(entry.env), account: entry.account, resource: entry.resource, credentialRef: null }
+          ? { id: entry.id, transport: 'stdio', command: entry.command, args: [...entry.args], env: { ...entry.env }, account: entry.account, resource: entry.resource, credentialRef: null }
           : { id: entry.id, url: entry.url, account: entry.account, resource: entry.resource, credentialRef: entry.credentialRef },
         toolNames: granted, schemaDigest: discovery.schemaDigest,
         sourcePolicy: { id: entry.id, revision: 1, unknownClass: entry.unknownClass, allowedClasses: [entry.unknownClass] },
@@ -786,7 +789,10 @@ export async function composeMcpRuntime(options: {
           policy.route = { ...stored.route, allowedClasses: replaceClass(stored.route.allowedClasses) };
         }
         }
-        if (!stored || canonicalJSON(policy) !== bytes) { policy.generation += 1; owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy }); }
+        // W2-R4: the launch environment is the current entry's env (registry.register below, adapter.ts:362),
+        // so the stored copy carrying an older PATH is not a policy change: the shell session is excluded from
+        // the compared identity, and a PATH move alone neither bumps the generation nor rewrites policy_sha256.
+        if (!stored || policyIdentity(stored) !== policyIdentity(policy)) { policy.generation += 1; owner.applyConnectionIntent({ expectedPolicySha256: String(row.policy_sha256), policy }); }
       } else owner.applyConnectionIntent({ expectedPolicySha256: null, policy });
       approvedSchemas.set(entry.id, schemas);
       // Identity proof before any read grant. A failed proof never falls back to publication.

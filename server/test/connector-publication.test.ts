@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { createServer, type Server } from 'node:http';
 import { chmod } from 'node:fs/promises';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Server as McpServer, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { toolsMigrations } from '../tools/schema.js';
@@ -585,12 +585,16 @@ test('C-CHAT: the install route, a new connection id for the newer child beside 
 // synthetic child is the Mattermost reader the owner actually runs, never a real account or service.
 
 const PEOPLE_CHILD = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'stdio-mattermost-people-child.mjs');
+const ECHO_CHILD = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'stdio-mcp-child.mjs');
 
 function stdioApprovalHost(t: TestContext, dir: string, configDir: string) {
   let store = new Store(join(dir, 'data'), toolsMigrations);
   const lifecycle: { event: string; endpointId?: string; fields?: readonly string[]; reason?: string; addedToolNames?: readonly string[] }[] = [];
   const failures: string[] = [];
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  // W2-R4: a second endpoint whose child dumps its own environment, so the launch env is observable.
+  const envFile = join(dir, 'launch-env');
+  const launchEnvEndpoint = { id: 'mattermost-env', transport: 'stdio', command: process.execPath, args: [ECHO_CHILD, 'ok', envFile], env: { HOME: '/home/fixture', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, connector: 'mattermost', account: 'mattermost', resource: 'mattermost', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'private' };
   const endpoint = (args: readonly string[], path: string, account = 'mattermost', home = '/home/fixture') => ({
     id: 'mattermost-people', transport: 'stdio', command: process.execPath, args: [...args],
     // The whole launch environment, PATH included, exactly as the installing host shapes it.
@@ -600,7 +604,7 @@ function stdioApprovalHost(t: TestContext, dir: string, configDir: string) {
   const write = (grantMode: string, args: readonly string[], path: string, account?: string, home?: string): void => {
     // No ownerIdentity: the synthetic child answers no real account, so the catalog states none.
     writeFileSync(join(configDir, 'mcp.json'),
-      JSON.stringify({ schemaVersion: 1, grantMode, endpoints: [endpoint(args, path, account, home)] }),
+      JSON.stringify({ schemaVersion: 1, grantMode, endpoints: [endpoint(args, path, account, home), { ...launchEnvEndpoint, env: { ...launchEnvEndpoint.env, PATH: path } }] }),
       { mode: 0o600 });
   };
   const start = async () => {
@@ -617,8 +621,11 @@ function stdioApprovalHost(t: TestContext, dir: string, configDir: string) {
   };
   const generation = (): number => Number(store.transaction(tx => tx.get("SELECT generation FROM tool_connections WHERE connection_id='mattermost-people'"))?.['generation']);
   /** The stored approval's own env: the shell session must never be part of it (W2-R1(b), F1). */
-  const storedEnv = (): Record<string, string> => (JSON.parse(String(store.transaction(tx => tx.get("SELECT policy_json FROM tool_connections WHERE connection_id='mattermost-people'"))?.['policy_json'] ?? '{}')) as { endpoint?: { env?: Record<string, string> } }).endpoint?.env ?? {};
-  return { write, start, generation, storedEnv, lifecycle, failures, report: (runtime: Awaited<ReturnType<typeof composeMcpRuntime>>) => runtime.status().endpoints.find(entry => entry.id === 'mattermost-people') };
+  const rowOf = (id: string): { policy_json?: string; policy_sha256?: string } => (store.transaction(tx => tx.get("SELECT policy_json,policy_sha256 FROM tool_connections WHERE connection_id=?", [id])) ?? {}) as { policy_json?: string; policy_sha256?: string };
+  const policySha = (id = 'mattermost-people'): string => String(rowOf(id).policy_sha256 ?? '');
+  /** What the last launched child saw as its own environment (the synthetic child dumps it). */
+  const launchEnv = (): Record<string, string> => JSON.parse(readFileSync(`${envFile}.env`, 'utf8')) as Record<string, string>;
+  return { write, start, generation, policySha, launchEnv, lifecycle, failures, report: (runtime: Awaited<ReturnType<typeof composeMcpRuntime>>) => runtime.status().endpoints.find(entry => entry.id === 'mattermost-people') };
 }
 
 /** The rebuilt child's new house, three releases of this suite have lived in a dated directory. */
@@ -640,9 +647,6 @@ test('W2-R1: a rebuilt stdio child in a moved directory with a fresh PATH reconn
   h.write('owner-trusted-reads', [PEOPLE_CHILD, 'people'], '/usr/bin');
   const first = await h.start();
   assert.equal(h.report(first)?.state, 'connected', JSON.stringify(h.report(first)));
-  // F1: the approval stores what defines the server, so the launching PATH is never in the row.
-  assert.equal('PATH' in h.storedEnv(), false, 'the stored endpoint env carries no shell session');
-  assert.equal(h.storedEnv()['HOME'], '/home/fixture', 'the defining env is still stored');
   await first.close();
   const settled = h.generation();
   h.lifecycle.length = 0;
@@ -658,16 +662,19 @@ test('W2-R1: a rebuilt stdio child in a moved directory with a fresh PATH reconn
       { event: 'connector_endpoint_changed', endpointId: 'mattermost-people', fields: ['args', 'env'] }, 'which fields moved, never a value');
     assert.equal(h.lifecycle.some(event => event.event === 'connector_approval_refused'), false);
   } finally { await moved.close(); }
-  // A PATH-only change is not an endpoint change at all: nothing moved but the shell that launched it,
-  // so the approval row is not even rewritten.
+  // W2-R4: a PATH-only change is not an endpoint change at all. The approval keeps its generation and its
+  // sha256, and the child is still launched with the host's new PATH.
   h.lifecycle.length = 0;
   const settledGeneration = h.generation();
+  const settledSha = h.policySha();
   h.write('owner-trusted-reads', [rebuiltChild, 'people'], '/usr/local/bin:/usr/bin', 'mattermost', '/home/fixture-rebuilt');
   const pathOnly = await h.start();
   try {
     assert.equal(h.report(pathOnly)?.state, 'connected');
     assert.equal(h.lifecycle.some(event => event.event === 'connector_endpoint_changed' || event.event === 'connector_approval_refused'), false, 'PATH is never part of the stored endpoint identity');
-    assert.equal(h.generation(), settledGeneration, 'a PATH-only relaunch never rewrites the owner approval row');
+    assert.equal(h.generation(), settledGeneration, 'a PATH-only relaunch never bumps the approval generation');
+    assert.equal(h.policySha(), settledSha, 'a PATH-only relaunch leaves policy_sha256 unchanged');
+    assert.equal(h.launchEnv()['PATH'], '/usr/local/bin:/usr/bin', 'the child is launched with the live catalog entry\'s PATH');
   } finally { await pathOnly.close(); }
   // The shared binding identity ignores the shell session too, so a runtime update does not move it.
   const binding = (path: string): string => endpointBinding({ id: 'mattermost-people', transport: 'stdio', command: 'node', args: ['child.mjs'], env: { HOME: '/home/fixture', PATH: path }, account: 'mattermost', resource: 'mattermost' });

@@ -255,9 +255,10 @@ test('declarations add the tools section verbatim between base and overlay with 
 test('PV2: the target budget yields memory whole and then the tools conduct whole, and never drops the overlay', () => {
   // Under the target nothing yields at all.
   const ownerProfile = syntheticOwner('S'.repeat(6_000), 'OWNER LORE BLOCK');
-  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(20_000) };
+  const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(19_900) };
   // C-OPENWEB8: the memory fixture is sized to the instruction, so it still sits under the target.
-  const roomy = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', tools: ['search_knowledge'], memory: 'M'.repeat(19_800) });
+  // W3-R2: the instruction gains the reviewer's 89-char rule, so the overlay gives back the same room.
+  const roomy = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', tools: ['search_knowledge'], memory: 'M'.repeat(19_700) });
   assert.ok(roomy.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `composed text ${roomy.text.length} must fit the target`);
   assert.equal(roomy.sections.some(section => section.chars === 0), false, 'nothing yields under the target');
   // Past it the memory goes first and whole, and the tools conduct stays complete rather than trimmed. The
@@ -267,7 +268,7 @@ test('PV2: the target budget yields memory whole and then the tools conduct whol
   const result = composeLiveInstruction({ ...base, tools: ['search_knowledge'], memory: 'M'.repeat(1_500),
     runtimeContext: 'R'.repeat(LIVE_INSTRUCTION_TARGET_CHARS - withoutMemory.text.length - 1_000) });
   assert.ok(result.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `composed text ${result.text.length} must fit the target`);
-  assert.ok(result.text.includes('O'.repeat(20_000)), 'the overlay never yields');
+  assert.ok(result.text.includes('O'.repeat(19_900)), 'the overlay never yields');
   assert.ok(result.text.includes('LANGUAGE:'), 'anchor never yields');
   assert.equal(result.sections.find(section => section.id === 'memory')?.chars, 0, 'memory yields first');
   const toolsSection = result.sections.find(s => s.id === 'tools');
@@ -370,9 +371,9 @@ test('the public character, voice surface and tool conduct are the authored verb
   // W4: the voice and loop rules are paid for inside the same blocks, so both hashes are re-pinned here.
   // Train: W1 moved the voice-tools block too, so the merged sources re-pin all three at once.
   assert.equal(sha(NAYA_CHARACTER), 'd927cedccd099bd4375b34453a4d71cae4cdfc10a098f1940d8beea767b11207');
-  // W3-R2: the settings-or-approval-location ban enters the voice surface, paid for by trimming the language
-  // aside, the accent aside and the orb clause inside the same block, so this block is re-pinned.
-  assert.equal(sha(NAYA_VOICE_SURFACE), '9974878a19fec53a2d0ff6342c2ef00ce899cfe1e260c7c3404430452d8f0ea4');
+  // W3-R2: the settings-or-approval-location ban is a reviewed rule, so no authored rule is trimmed for it and
+  // the block is re-pinned at the measured text (TR-R5: re-pin, never trim).
+  assert.equal(sha(NAYA_VOICE_SURFACE), 'dc4464d95c08334db0cd780db740fe9a05fa7672d7e466389b09533275707c68');
   // C-OPENWEB8: the open paragraph names open_web for a map, a site or a search, so this block is re-pinned.
   // C-RESEARCH8: the two-ask voice rule and the re-worded evidence procedure land in the same blocks, so the train re-pins all three against the merged sources.
   assert.equal(sha(NAYA_VOICE_TOOLS), '2775aceab4e64cd10cde5994c0c6ad059a1db04b96c307396eb605bf269d87d7');
@@ -707,7 +708,8 @@ const WRAPPER_3O_CHARS = 6603;
 // C-OPENWEB8: the open_web clause measures 14_474; the bound carries it, never a trimmed reviewed rule.
 // C-RESEARCH8: the two-ask rule and the re-worded evidence sentence add 2 chars on top, so the merged measure is
 // 14_476; the bound carries the merged measure and both wagons' reviewed rules stay (TR-R5).
-const WRAPPER_W5_CHARS = 14_476;
+// W3-R2: the settings-or-approval-location rule measures 14_559; the bound carries it, never a trimmed rule.
+const WRAPPER_W5_CHARS = 14_559;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',
@@ -737,7 +739,8 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // merged measure is 7_700; the bound carries it, exactly as TR-R5 re-pins a house budget to the
   // merged measure and no reviewed rule is trimmed for it.
   // C-OPENWEB8: the open_web clause in the open paragraph is the growth this bound carries (7_871).
-  const cap = 7_880;
+  // W3-R2: the settings-or-approval-location rule grows the wrapper to 7_956; the bound carries it.
+  const cap = 7_960;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
@@ -1393,7 +1396,9 @@ const W5_REPLACED = [
 // TR-R5: the owner rule for authored text is re-pin, never trim, so the cap carries the merged voice instruction.
 // TR-R15: measured 10_507 once W7's write-honesty clause was restored.
 // C-OPENWEB8: the open_web clause adds 183 chars to the open paragraph; the frozen measure is re-pinned to it.
-const W5_VOICE_BEFORE = 10_760;
+// W3-R2: the settings-or-approval-location rule is a reviewed rule, so the frozen measure is re-pinned to 10_841
+// rather than any authored rule trimmed (TR-R5).
+const W5_VOICE_BEFORE = 10_841;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],

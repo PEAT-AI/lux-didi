@@ -351,7 +351,7 @@ test('TRAIN8-R8: an attempt that never answers is cut by its own deadline, so th
   // The ruling's case: a connect whose answer never lands. Without a per-attempt deadline this round never
   // issues another attempt, which is exactly the stall the release train measured. The fixture answers
   // nothing, the attempt deadline ends each attempt, and the ladder still walks its bounded count and stops.
-  const f = await fixture({ hangFrom: 2, tools: [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: [], required: 'not-an-array' } }] }); t.after(() => f.close());
+  const f = await fixture({ hangFrom: 3, tools: [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: [], required: 'not-an-array' } }] }); t.after(() => f.close());
   const configDir = configDirFor(f.url, 'mongoose-knowledge');
   oauthRecord(configDir, 'mongoose-knowledge', { refreshToken: 'refresh-material', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now() });
   const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-hang-'));

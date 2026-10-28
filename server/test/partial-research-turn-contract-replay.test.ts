@@ -15,7 +15,7 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
-import { ADMISSION_DIRECTIVES, RESEARCH, RESEARCH_OPERATION, ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
+import { ADMISSION_DIRECTIVES, RESEARCH_OPERATION, ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';

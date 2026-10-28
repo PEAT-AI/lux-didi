@@ -19,7 +19,7 @@ function fixture(execute: ResearchDeps['execute'], configured: ResearchDeps['con
 }
 
 test('C-DEPTH11/#648: a mail helper that answered with no payload is voiced as a failed read, never as nothing matched', async () => {
-  const deps = fixture(async subs => subs.map(call => ({ key: call.key, name: call.name, ok: false, code: 'empty-payload', text: '', originalCharacters: 0, omittedCharacters: 0 })));
+  const deps = fixture(async subs => subs.map(call => ({ key: call.key, name: call.name, ok: false, code: 'invalid_result', text: '', originalCharacters: 0, omittedCharacters: 0 })));
   const reply = await runResearch(deps, {
     action: 'start', question: 'any unread mail',
     lookups: [{ source: 'mail', query: 'newer_than:2d is:unread' }],
@@ -35,6 +35,6 @@ test('C-DEPTH11/#648: the paired opposite, a search that matched nothing, says h
     lookups: [{ source: 'mail', query: 'newer_than:2d is:unread' }],
   }, signal());
   const note = `${String(reply['note'] ?? '')} ${String(reply['coverage'] ?? '')}`;
-  assert.equal(/empty-payload/u.test(note), false, 'an honest empty never borrows the failure code');
+  assert.equal(/invalid_result/u.test(note), false, 'an honest empty never borrows the failure code');
   assert.match(note, /newer_than:2d|is:unread|unread/u, `the words name the query that ran: ${note}`);
 });

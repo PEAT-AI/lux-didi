@@ -3745,7 +3745,7 @@ const REASON_WORDS: Record<string, string> = {
   cursor_stale: 'that page of results expired, search again',
   cursor_invalid: 'that page of results was not readable, search again',
   // C-DEPTH11/#648: a helper that answered with nothing at all is a failed read, never an inbox with no mail.
-  'empty-payload': 'the mail helper returned no result, ask again',
+  invalid_result: 'the mail helper returned no result, ask again',
   // #637: the ask named a channel the chat connector does not know, so no read was made at all.
   channel_not_found: 'no channel by that name',
 };

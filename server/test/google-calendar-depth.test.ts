@@ -122,7 +122,7 @@ test('C-DEPTH11/#648: a mail helper that answers with no payload is a failure wi
   };
   const result = await readerFor(port, ['gmail_get_profile', 'gmail_search_messages', 'gmail_read_message'], 'gmail').gmailList({ q: 'newer_than:2d is:unread' });
   assert.equal(result.state, 'unknown', 'no payload is a failure, never a completed empty search');
-  assert.equal(result.state === 'unknown' ? result.reason : '', 'empty-payload', 'the closed code names the no-payload case');
+  assert.equal(result.state === 'unknown' ? result.reason : '', 'invalid_result', 'the closed code names the no-payload case');
 });
 
 test('C-DEPTH11: the calendar tool output frame carries the attendees the fake connector returned', async () => {
@@ -169,5 +169,5 @@ test('C-DEPTH11/#648: an honest empty is the paired opposite, and it carries the
   const words = noEmptyResult(shaped.text, 'mail', 'newer_than:2d is:unread');
   assert.match(words, /came back empty/u, 'a search that matched nothing is said in words');
   assert.match(words, /newer_than:2d is:unread/u, 'the words name the query that ran, so an empty can be checked');
-  assert.doesNotMatch(words, /empty-payload/u, 'an honest empty never borrows the failure code');
+  assert.doesNotMatch(words, /invalid_result/u, 'an honest empty never borrows the failure code');
 });

@@ -59,7 +59,7 @@ The Google calendar read is one merged window over the calendars the accepted gr
 - The attendee projection requests `include: ['attendees', 'organizer']` only when the accepted helper advertises that property; an older helper is never sent an argument it does not declare.
 - Each attendee reaches the model as its display name, else the local part of its address, with its `responseStatus` (`accepted`, `declined`, `tentative`, `not answered`) and an `organizer` mark. One event line names at most eight people and counts the rest.
 - An event with no attendee list says `attendees: none listed for this event`. An event whose helper could not be asked for attendees says `attendees: not available from this source`. Neither ever reads as an invite that hides its guests, and the prompt says who is in the meeting comes only from that line.
-- A completed helper result with no JSON envelope at all is the closed failure code `empty-payload` with its own spoken line, kept apart from a search that matched nothing. An honest empty names the query it ran.
+- A completed helper result with no JSON envelope at all is the adapter's closed failure code `invalid_result`, spoken as the mail helper returning no result, kept apart from a search that matched nothing. An honest empty names the query it ran.
 
 Field provenance: `calendarList.accessRole` and `primary` in the Calendar API v3 calendarList resource, and `attendees[].responseStatus` plus `organizer` in the events resource.
 

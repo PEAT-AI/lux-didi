@@ -16,7 +16,13 @@ function fixture(events: Record<string, unknown>[], opts: { token?: string; page
       if (call.name === 'calendar_list_calendars') return { key: call.key, name: call.name, ok: true, text: '- Main [primary]', originalCharacters: 16, omittedCharacters: 0 };
       const start = Date.parse(String(call.args['timeMin']));
       const end = Date.parse(String(call.args['timeMax']));
-      const all = events.filter(event => Date.parse(String(event['start'])) >= start && Date.parse(String(event['start'])) < end);
+      // C-CAL8: Google reads an all-day entry by its day, so a day inside the window is returned even though
+      // its start is midnight; a timed entry still has to fall inside the window.
+      const dayStart = Date.parse(String(call.args['timeMin']).slice(0, 10) + 'T00:00:00Z');
+      const all = events.filter(event => {
+        const at = Date.parse(String(event['start']));
+        return (/^\d{4}-\d{2}-\d{2}$/u.test(String(event['start'])) ? at >= dayStart : at >= start) && at < end;
+      });
       const offset = call.args['pageToken'] === 'second' ? (opts.pageSize ?? 12) : 0;
       const received = all.slice(offset, offset + (opts.pageSize ?? 50));
       const page = shapeGcalList({ events: received, ...(offset === 0 && opts.token ? { nextPageToken: opts.token } : {}) });
@@ -539,7 +545,7 @@ test('release 4: a window the grammar cannot resolve names its own reason instea
 
 test('#574: a day read prints the attendee names it was given', async () => {
   const party = Array.from({ length: 12 }, (_, n) => ({ displayName: `Person ${n}` }));
-  const h = fixture([{ id: 'a1', start: '2026-10-19T09:00:00Z', summary: 'Design review', attendees: party }]);
+  const h = fixture([{ id: 'a1', start: '2026-10-19T15:00:00Z', summary: 'Design review', attendees: party }]);
   const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
   const text = JSON.stringify(reply['findings']);
   assert.match(text, /Person 7/);
@@ -551,9 +557,9 @@ test('#574: a day read prints the attendee names it was given', async () => {
 
 test('L8-01: a day read carries the organizer and the true head count, never a character marker', async () => {
   const party = [{ displayName: 'Robin Vale' }, { displayName: 'Ari Andor' }, { email: 'dana.d@example.invalid' }, { email: 'kim.l@example.invalid' }];
-  const h = fixture([{ id: `${'e'.repeat(60)}_${'7'.repeat(79)}`, start: '2026-10-19T09:00:00Z', summary: 'Re: demo / Example', attendees: party,
+  const h = fixture([{ id: `${'e'.repeat(60)}_${'7'.repeat(79)}`, start: '2026-10-19T15:00:00Z', summary: 'Re: demo / Example', attendees: party,
     organizer: { displayName: 'Wes Rowan' }, htmlLink: 'https://calendar.google.com/event?eid=e1', description: 'Agenda. '.repeat(40) },
-    { id: 'b2', start: '2026-10-19T11:00:00Z', summary: 'Second meeting', attendees: [{ displayName: 'Robin Vale' }] }]);
+    { id: 'b2', start: '2026-10-19T17:00:00Z', summary: 'Second meeting', attendees: [{ displayName: 'Robin Vale' }] }]);
   const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
   const text = JSON.stringify(reply['findings']);
   assert.match(text, /attendees: 4 people: Robin Vale, Ari Andor, dana\.d@example\.invalid, kim\.l@example\.invalid/u, `every attendee reaches the answer: ${text}`);
@@ -634,7 +640,7 @@ test('#7: a single-day read drops the previous day all-day entry and keeps the d
   const h = fixture([
     { id: 'allday-prev', start: '2026-10-18', summary: 'Company offsite' },
     { id: 'allday-today', start: '2026-10-19', summary: 'Release day' },
-    { id: 'timed', start: '2026-10-19T09:00:00Z', summary: 'Standup' },
+    { id: 'timed', start: '2026-10-19T15:00:00Z', summary: 'Standup' },
   ]);
   const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
   const text = JSON.stringify(reply['findings']);
@@ -657,7 +663,12 @@ function dayFixture(events: Record<string, unknown>[], opts: { now?: number; rep
       if (call.name === 'calendar_list_events') {
         const start = Date.parse(String(call.args['timeMin']));
         const end = Date.parse(String(call.args['timeMax']));
-        const within = events.filter(event => Date.parse(String(event['start'])) >= start && Date.parse(String(event['start'])) < end);
+        // C-CAL8: an all-day entry is read by its day, as Google does; a timed entry falls inside the window.
+        const dayStart = Date.parse(String(call.args['timeMin']).slice(0, 10) + 'T00:00:00Z');
+        const within = events.filter(event => {
+          const at = Date.parse(String(event['start']));
+          return (/^\d{4}-\d{2}-\d{2}$/u.test(String(event['start'])) ? at >= dayStart : at >= start) && at < end;
+        });
         return { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: within }) } as IntentSubResult;
       }
       return { key: call.key, name: call.name, ok: true, text: '- Synthetic evidence line', originalCharacters: 26, omittedCharacters: 0 } as IntentSubResult;

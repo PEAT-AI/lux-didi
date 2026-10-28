@@ -713,7 +713,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const resolved = await resolveWebOpen(args, await webOwnerWords(context.runId, context.signal), context.signal);
           const dispatched = 'target' in resolved ? resolved.target : undefined;
           const refused = 'target' in resolved ? undefined : resolved.code;
-          const code: OpenReceiptCode = dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
+          const code: OpenReceiptCode = dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target, 'native_timeout');
           if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
           else nativeActionReceipt('open_url', code, 'web');
           if (code === 'opened' && dispatched) noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });

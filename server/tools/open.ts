@@ -11,7 +11,7 @@ export type NativeAction = (typeof OPEN_ACTIONS)[number];
 export const NATIVE_ACTION_CODES = ['opened', 'not_allowed', 'not_found', 'failed'] as const;
 export type NativeActionCode = (typeof NATIVE_ACTION_CODES)[number];
 /** A receipt code: a native ack, or the guard code a refused call never sent to the native side. */
-export const OPEN_RECEIPT_CODES = [...NATIVE_ACTION_CODES, 'no_open_intent', 'kind_mismatch', 'not_owner_words', 'ambiguous'] as const;
+export const OPEN_RECEIPT_CODES = [...NATIVE_ACTION_CODES, 'no_open_intent', 'kind_mismatch', 'not_owner_words', 'ambiguous', 'native_timeout'] as const;
 export type OpenReceiptCode = (typeof OPEN_RECEIPT_CODES)[number];
 /** What the model sees; `open_url` is only the internal transport for the two item tools. */
 export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_source', 'open_home', 'open_file', 'open_app', 'open_web']);
@@ -258,7 +258,7 @@ function resolveOpenTarget(toolName: string, args: Record<string, string>): { ta
   return { code: 'not_allowed' };
 }
 
-interface Pending { runId: string; resolve(code: NativeActionCode): void; timer: ReturnType<typeof setTimeout> }
+interface Pending { runId: string; resolve(code: NativeActionCode | 'native_timeout'): void; timer: ReturnType<typeof setTimeout> }
 
 /**
  * Host to native dispatch over the existing local Live socket. The host owns the frame id and the
@@ -284,12 +284,12 @@ export class NativeActionBus {
     for (const [id, pending] of this.#pending) if (pending.runId === runId) { clearTimeout(pending.timer); this.#pending.delete(id); pending.resolve('failed'); }
   }
 
-  dispatch(runId: string, action: NativeAction, target: string): Promise<NativeActionCode> {
+  dispatch(runId: string, action: NativeAction, target: string, timeoutCode: NativeActionCode | 'native_timeout' = 'failed'): Promise<NativeActionCode | 'native_timeout'> {
     const send = this.#senders.get(runId);
     if (!send) return Promise.resolve('failed');
     const id = randomUUID();
-    return new Promise<NativeActionCode>(resolve => {
-      const timer = setTimeout(() => { if (this.#pending.delete(id)) resolve('failed'); }, this.#timeoutMs);
+    return new Promise<NativeActionCode | 'native_timeout'>(resolve => {
+      const timer = setTimeout(() => { if (this.#pending.delete(id)) resolve(timeoutCode); }, this.#timeoutMs);
       timer.unref?.();
       this.#pending.set(id, { runId, resolve, timer });
       // OPEN2-R1: a Mattermost frame names the one origin the host learned from a connector permalink, so

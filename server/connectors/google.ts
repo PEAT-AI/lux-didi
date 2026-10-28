@@ -563,6 +563,8 @@ export async function readCalendarDigest(read: CalendarDigestRead | undefined, i
   }
   // C-CAL8: a digest that cuts ends with `+N more`, so a bounded line is never read as the whole day.
   while (kept > 1 && digestText(kept).length > CALENDAR_DIGEST_CHARS) kept -= 1;
+  // C-CAL8 F3: no event fits the bound at all, so the slot says nothing rather than a comma and a count.
+  if (kept === 0) return absent('empty');
   return { state: 'present', text: digestText(kept), items: kept, fetchedAt: input.now() };
 }
 

@@ -681,6 +681,17 @@ test('C-CAL8: a schedule ask at 13:43 reads and speaks the rest of the day from 
   for (const hour of [8, 9, 10, 11, 12, 13]) assert.doesNotMatch(text, new RegExp(`Synthetic ${hour}\\b`), `a meeting already past is not offered as the rest of the day: ${hour}`);
 });
 
+test('C-CAL8: the model own calendar lookup reads today from now, and an afternoon ask is not a past ask', async () => {
+  const now = Date.parse('2026-10-19T13:43:00Z');
+  const lookup = dayFixture(dayHours.map(hour => syntheticHour(hour)), { now });
+  await runResearch(lookup.deps, { action: 'start', question: 'what is my schedule today', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
+  const routed = lookup.calls.find(call => call.name === 'calendar_list_events');
+  assert.equal(routed?.args['timeMin'], '2026-10-19T13:43:00.000Z', 'the lookup surface reads the rest of the day from now too');
+  const afternoon = dayFixture(dayHours.map(hour => syntheticHour(hour)), { now });
+  await runResearch(afternoon.deps, { action: 'start', question: 'what is on my calendar this afternoon' }, signal());
+  assert.equal(afternoon.calls.find(call => call.name === 'calendar_list_events')?.args['timeMin'], '2026-10-19T13:43:00.000Z', 'the afternoon at 13:43 is still ahead, so it is not a past-events ask');
+});
+
 test('C-CAL8: a schedule ask that names the morning keeps the past, and tomorrow is unchanged', async () => {
   const now = Date.parse('2026-10-19T13:43:00Z');
   const morning = dayFixture(dayHours.map(hour => syntheticHour(hour)), { now });
@@ -695,7 +706,9 @@ test('C-CAL8: under cap pressure the calendar drops the events already past, kee
   const now = Date.parse('2026-10-19T13:43:00Z');
   const events = dayHours.map(hour => syntheticHour(hour, `Synthetic ${hour} ${'detail '.repeat(20).trim()}`));
   const h = dayFixture(events, { now, replyLimit: 1200 });
-  const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: '2026-10-19' }] }, signal());
+  // A what-happened ask keeps local midnight, so the whole day is in the window and the cap has past events
+  // to drop before the afternoon.
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what happened on my calendar today' }, signal());
   const text = JSON.stringify(reply['findings']);
   assert.match(text, /Synthetic 17\b/, 'the last meeting of the day survives the cap');
   assert.doesNotMatch(text, /Synthetic 8\b/, 'the earliest meeting is the first one dropped');

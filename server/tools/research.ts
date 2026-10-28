@@ -1237,8 +1237,9 @@ export function ownerScheduleQuestion(question: string): boolean {
  * C-CAL8: today, my schedule, what is next and the next meeting mean the rest of the day from now on.
  * The one ask that keeps the past is the one that names the morning or what already happened, and its
  * words are read here rather than inferred, so a plain schedule ask never speaks a finished meeting.
+ * An afternoon ask is not one of them: at 13:43 the afternoon is still ahead.
  */
-const PAST_EVENTS_ASK = /\b(morning|earlier|already|so far|what happened|happened (?:already|so far)|this morning|this afternoon|been through)\b/u;
+const PAST_EVENTS_ASK = /\b(morning|earlier|already|so far|what happened|happened (?:already|so far)|this morning|been through)\b/u;
 export function pastEventsAsked(question: string): boolean {
   return PAST_EVENTS_ASK.test(question.toLowerCase());
 }
@@ -4514,7 +4515,9 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
   if (lookup.source === 'calendar') {
     let range: { timeMin: string; timeMax: string };
     // An unnamed window is unresolved, never widened: only the declared grammar resolves here.
-    try { range = windowRange(calendarWindowOf(query) || calendarWindowOf(context.question), context.now(), context.timeZone); }
+    // C-CAL8: a schedule lookup reads today from now, exactly as the plan surface does, so the model's own
+    // `query: 'today'` lookup never hands back the morning the owner already sat through.
+    try { range = windowRange(calendarWindowOf(query) || calendarWindowOf(context.question), context.now(), context.timeZone, !pastEventsAsked(context.question ?? '')); }
     catch { return { source: 'calendar', kind: 'calendar_window', subs: [], unresolved: true, reason: 'window_unparsed' }; }
     return { source: 'calendar', kind: 'calendar_window', subs: [
       { key: 'cal0', name: INTERNAL.calendarList, args: { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar } as JsonObject },

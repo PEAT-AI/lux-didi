@@ -29,3 +29,45 @@ test('alarm shell: delivery failure cannot acknowledge an occurrence or claim a 
   assert.doesNotThrow(() => shell.publish(occurrence));
   assert.equal(shell.health().degraded, true);
 });
+
+test('alarm shell: real HTTP delivers a persisted due frame to an authenticated fake shell', async t => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { Store } = await import('../runtime/store.js');
+  const { toolsMigrations } = await import('../tools/schema.js');
+  const { AlarmScheduler } = await import('../host/alarm-scheduler.js');
+  const { listenService } = await import('../http/server.js');
+  const directory = mkdtempSync(join(tmpdir(), 'synthetic-alarm-http-'));
+  const store = new Store(directory, toolsMigrations);
+  let now = 1000000;
+  const shell = new AlarmShellBridge();
+  const scheduler = new AlarmScheduler({ store, clock: {
+    now: () => now, setTimeout: () => 1, clearTimeout: () => {},
+  }, emit: alarm => {
+    assert.equal(scheduler.list().find(row => row.id === alarm.id)?.state, 'ringing', 'commit before frame');
+    shell.publish(alarm);
+  }, changed: rows => shell.state(rows) });
+  const service = await listenService({ store, now: () => now, alarms: { scheduler, shell } });
+  const abort = new AbortController();
+  t.after(async () => { abort.abort(); scheduler.stop(); await service.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const denied = await fetch(`${service.origin}/v1/alarms/events`);
+  assert.equal(denied.status, 401);
+  await denied.arrayBuffer();
+  const response = await fetch(`${service.origin}/v1/alarms/events`, {
+    headers: { authorization: `Bearer ${store.adminCredential}` }, signal: abort.signal,
+  });
+  assert.equal(response.status, 200);
+  const reader = response.body!.getReader();
+  let wire = new TextDecoder().decode((await reader.read()).value);
+  assert.match(wire, /alarm_state/);
+  const alarm = scheduler.set({ fireAtUtc: now + 1000, tz: 'UTC', label: '', createdJournalId: 'synthetic-journal' });
+  now += 1000;
+  scheduler.recheck('clock_changed');
+  for (let reads = 0; reads < 4 && !wire.includes('alarm_due'); reads++) wire += new TextDecoder().decode((await reader.read()).value);
+  const frames = wire.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)) as { type: string; alarm?: AlarmDue });
+  const due = frames.find(frame => frame.type === 'alarm_due');
+  assert.equal(due?.alarm?.id, alarm.id);
+  assert.equal(due?.alarm?.ringDeadlineUtc, now + 600000);
+  await reader.cancel();
+});

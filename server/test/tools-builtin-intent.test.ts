@@ -1,5 +1,6 @@
 import './alarm.test.js';
 import './alarm-scheduler.test.js';
+import './alarm-authority.test.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -53,8 +54,11 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     people_lookup: { name: 'Synthetic' }, open_source: { handle: 'L9999' },
     open_home: { app: 'gmail' }, open_file: { path: '~/synthetic' },
     open_app: { name: 'Synthetic' }, open_web: { kind: 'site', target: 'plantix dot net' },
+    set_alarm: {}, list_alarms: {}, cancel_alarm: { id: 'synthetic-alarm' }, snooze_alarm: { id: 'synthetic-alarm' },
   };
-  for (const definition of owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true)) {
+  const definitions = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
+  for (const name of ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm']) assert.ok(definitions.some(tool => tool.name === name), `registered ${name}`);
+  for (const definition of definitions) {
     const args = argumentsByName[definition.name];
     assert.ok(args, `valid fixture required for ${definition.name}`);
     assert.equal(definition.validate(args), true, `${definition.name} fixture validates`);

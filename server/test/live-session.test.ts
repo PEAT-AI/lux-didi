@@ -6389,6 +6389,11 @@ test('C-CLAIMS9: a first-person lookup announcement is recognised by its class',
     'Let me check that.',
     'I am looking into it.',
     'Working on that now.',
+    // F1: the base detector tolerated a missing apostrophe, and a voice transcript may carry the typographic one.
+    'Im checking on that now.',
+    'ill check that.',
+    'I\u2019ll look into it.',
+    'I\u2019m going to search the thread.',
   ]) assert.equal(announcesLookup(said), true, `an announced lookup: ${said}`);
   for (const said of [
     'I checked the calendar at nine.',

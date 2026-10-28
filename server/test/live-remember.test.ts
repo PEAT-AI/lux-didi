@@ -484,8 +484,15 @@ test('C-TURN8: a trello read before the owner speaks is refused no_owner_input a
   const h = await harness(t, { tools: true, trello: board });
   const { session } = await attached(h);
   h.f.send({ toolCall: { functionCalls: [{ id: 'trello-early', name: 'trello_read', args: { view: 'list', list: 'Sprint' } }] } });
-  await h.f.frame(1);
-  const response = (h.f.frames[0] as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!.response;
+  const answered = (): Record<string, unknown>[] => {
+    for (const frame of h.f.frames as { toolResponse?: { functionResponses: { response: Record<string, unknown> }[] } }[]) {
+      const response = frame.toolResponse?.functionResponses[0]?.response;
+      if (response !== undefined) return [response];
+    }
+    return [];
+  };
+  await until(() => answered().length > 0);
+  const response = answered()[0]!;
   assert.deepEqual({ error: response.error, state: response.state, reason: response.reason },
     { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input' }, 'the board read is refused before his first word');
   assert.deepEqual(seen, [], 'the board was never read');

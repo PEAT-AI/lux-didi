@@ -3673,8 +3673,6 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           // must not show the previous turn's sources as if they were running (review finding F2).
           if (handle.pendingCallIds.size === 0) handle.liveSteps = [];
           correctOpenClaim(handle);
-          // C-TURN8: a claim that named a lookup gives the call the same beat the host gives a turn's pause.
-          this.#armClaimCheck(handle, event.sequence);
           logTurnScript(handle);
           this.#noteState(handle, 'turn_complete');
           // O1b-A: the answer is over. A turn that produced no audible output is closed as silent, which is the
@@ -3737,7 +3735,13 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue;
         }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
-        if (event.type === 'outputTranscription') { countTurnScript(handle, stripNonLexicalTags(event.text)); handle.claimText = `${handle.claimText} ${stripNonLexicalTags(event.text)}`.slice(-300); }
+        if (event.type === 'outputTranscription') {
+          const said = stripNonLexicalTags(event.text);
+          countTurnScript(handle, said);
+          handle.claimText = `${handle.claimText} ${said}`.slice(-300);
+          // C-TURN8: the response's transcript is complete, so an announced lookup has its beat from here.
+          if (event.finished === true) this.#armClaimCheck(handle, event.sequence);
+        }
         if (event.type === 'inputTranscription') {
           if (!ownerTurnOpen) {
             ownerTurnOpen = true;

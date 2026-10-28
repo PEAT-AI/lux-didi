@@ -6253,7 +6253,7 @@ test('C-TURN8: a claim with no call gets exactly one correction, and only once p
     const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
     return typeof text === 'string' && text.startsWith('Correction:');
   });
-  const counted = () => readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n')
+  const counted = () => readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').split('\n').filter(line => line.startsWith('{'))
     .map(line => JSON.parse(line) as { event: string; ms?: number }).filter(line => line.event === 'live_claim_without_call');
   const armed = (): boolean => [...scheduler.pending].some(entry => entry.due === scheduler.now + 3_000);
   h.f.send({ serverContent: { inputTranscription: { text: 'what did Priya send me about the synthetic contract', finished: true } } });

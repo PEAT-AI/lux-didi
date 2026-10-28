@@ -691,7 +691,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCloseReason(value.closeReason)) return;
     if (!isSafeCount(value.seedTurns) || !isSafeCount(value.seedChars)) return;
     // C-PICKUP: which pickup the rebuilt session was opened with; a closed set, so no spoken text rides here.
-    if (!isSafeMember(value.pickup, ['mute', 'connection'])) return;
+    if (!isSafeMember(value.pickup, ['mute', 'connection', 'quiet', 'none'])) return;
     return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, cause: value.cause, closeCode: value.closeCode, closeReason: value.closeReason, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, msSinceDrop: value.msSinceDrop, pickup: value.pickup, liveSessionId: value.liveSessionId, generation: value.generation };
   }
   if (value.event === 'live_provider_open' || value.event === 'live_provider_ready') {
@@ -1492,6 +1492,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!age(value.ageBeforeMs) || !age(value.ageAfterMs)) return;
     if (typeof value.assembled !== 'boolean') return;
     return { event: 'warm_prewarm', ageBeforeMs: value.ageBeforeMs, ageAfterMs: value.ageAfterMs, assembled: value.assembled };
+  }
+  if (value.event === 'commentary_skipped') {
+    // C-REBUILD8: a progress line the host never sent because no delegation was open is a closed skip of its own,
+    // never a provider refusal; the reason is the closed set and no line of speech rides here.
+    if (!closedKeys(value, ['event', 'reason'])) return;
+    if (!isSafeMember(value.reason, ['no_delegation'])) return;
+    return { event: 'commentary_skipped', reason: value.reason };
   }
   if (value.event === 'calendar_digest') {
     // R7: the warm digest used to be silent when it was suppressed or failed. One closed line says which

@@ -296,6 +296,28 @@ export function isBareAcknowledgement(text: string): boolean {
   if (words.length === 0 || words.length > 3) return false;
   return words.every(word => ACKNOWLEDGEMENT_WORDS.has(word));
 }
+/** C-REBUILD8: the fillers a model says while it is stalling instead of answering. A response made only of these
+ *  answers nothing, so the silence after it is a model mute and not a turn that was served. */
+const ACK_RESPONSE_PHRASES = new Set([
+  'one second', 'one sec', 'one moment', 'one minute', 'a second', 'a sec', 'a moment', 'just a second',
+  'just a moment', 'just one second', 'hold on', 'hold', 'let me check', 'let me see', 'let me look',
+  'let me check that', 'let me look that up', 'checking', 'checking now', 'looking', 'looking now', 'searching',
+]);
+/** C-REBUILD8: the single words a stalling response may be built from, all already acknowledgements. */
+const ACK_RESPONSE_WORDS = new Set([...ACKNOWLEDGEMENT_WORDS, 'second', 'sec', 'moment', 'minute', 'hold', 'on', 'just',
+  'a', 'let', 'me', 'check', 'checking', 'see', 'look', 'looking', 'now', 'searching', 'so']);
+/** C-REBUILD8: the bound a whole filler response fits in; a real answer is longer than this. */
+export const ACK_RESPONSE_CHAR_LIMIT = 40;
+/** C-REBUILD8: whether a whole model response filed a filler and nothing else ("One second."). It takes no
+ *  question mark and never a full sentence with content, so a real answer can never be read as a filler. */
+export function isAckOnlyResponse(text: string): boolean {
+  const trimmed = stripNonLexicalTags(text).trim();
+  if (trimmed.length === 0 || trimmed.length > ACK_RESPONSE_CHAR_LIMIT || trimmed.includes('?')) return false;
+  const words = trimmed.toLowerCase().replace(/[.,!\u2026\u2019']/g, ' ').split(/\s+/).filter(word => word.length > 0);
+  if (words.length === 0) return false;
+  if (ACK_RESPONSE_PHRASES.has(words.join(' '))) return true;
+  return words.every(word => ACK_RESPONSE_WORDS.has(word));
+}
 /** The seeded history is bounded by dropping whole oldest turns until it fits this many characters. */
 /** GL2-R1: the closed set of reasons a projected state changes, shared with the host log whitelist. */
 type LiveStateCause = (typeof LIVE_STATE_CAUSES)[number];
@@ -578,6 +600,8 @@ interface ActiveSession {
   turnAudioAt?: number | undefined;
   /** Spoken output script codes of the current turn, counted and then reported as counts only. */
   turnLatin: number; turnDevanagari: number; turnChars: number;
+  /** C-REBUILD8: the words this turn's response spoke, kept so a filler-only answer is recognisable. Bounded. */
+  turnSpoken?: string | undefined;
   /** Whether this turn followed tool work and whether the owner cut it off. */
   turnAfterTool: boolean; turnInterrupted: boolean;
   inputJournalId?: number;
@@ -588,6 +612,8 @@ interface ActiveSession {
   generation: number; attempts: number; rebuilding: boolean;
   /** #591: a rebuild nothing asked for stays quiet: no reconnect marker, no pickup, no instruction to open. */
   quietRebuild: boolean;
+  /** C-PICKUP: the pickup the last recovery attempt opened with, so the receipt names what was sent. */
+  recoveryPickup?: 'none' | 'quiet' | 'mute' | 'connection' | undefined;
   /** #591: model text or an output transcript since this turn opened, so a turn that spoke is never called ambient. */
   modelTextSinceOpen: boolean;
   /** #451: when this connection generation's provider socket was opened, and when the provider said ready. */
@@ -826,6 +852,9 @@ function journalKind(type: string): JournalKind | null { return (persistedKinds 
  */
 function countTurnScript(handle: ActiveSession, text: string): void {
   noteSpoken(handle.liveSessionId, text);
+  // C-REBUILD8: the response's own words, bounded at four hundred characters; a longer answer keeps its head,
+  // which is never a filler, so the bound can only ever make the check say "not a filler".
+  handle.turnSpoken = `${handle.turnSpoken ?? ''} ${text}`.slice(0, 400);
   for (const character of text) {
     if (/\s/u.test(character)) continue;
     handle.turnChars += 1;
@@ -836,7 +865,7 @@ function countTurnScript(handle: ActiveSession, text: string): void {
 
 function resetTurnScript(handle: ActiveSession): void {
   handle.turnLatin = 0; handle.turnDevanagari = 0; handle.turnChars = 0;
-  handle.turnAfterTool = false; handle.turnInterrupted = false; handle.inaudibleMs = 0;
+  handle.turnAfterTool = false; handle.turnInterrupted = false; handle.inaudibleMs = 0; handle.turnSpoken = '';
 }
 
 /** One metadata-only record per turn. A turn with no spoken output reports nothing. */
@@ -2491,6 +2520,14 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     handle.watchdogTimer = this.#schedule(() => {
       if (this.#settled(handle) || generation !== handle.generation) return;
       if (handle.pendingCallIds.size > 0) return;
+      // C-REBUILD8: a sentence still being spoken owns the silence. A non-final transcript younger than the
+      // speaking hold means his words are not finished, so neither the dead-air rung nor the recovery speaks or
+      // rebuilds inside that sentence; the clock restarts at his final fragment (the final transcription arms
+      // this watchdog again). No timer value moves: only the moment the silence begins is judged.
+      if (handle.inputFinal !== true && handle.inputAt !== undefined && this.#now() - handle.inputAt < SPEAKING_HOLD_MS) {
+        this.#scheduleWatchdog(handle, delayMs, generation, step);
+        return;
+      }
       const turnAgeMs = this.#now() - (handle.watchdogSince ?? this.#now());
       const sinceTool = handle.watchdogSinceTool === true;
       if (step === 'nudge') {
@@ -2851,6 +2888,25 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     return isBareAcknowledgement(typeof row?.['text'] === 'string' ? String(row['text']) : '');
   }
 
+  /** C-REBUILD8: whether the model's own last response was a filler the owner already heard before it went mute
+   *  ("One second."). Such a response answers the turn it acknowledged no more than the owner's "Okay" does, so
+   *  the silence after it is a model mute on the question underneath and never the ambient case. */
+  #ackAnsweredOwner(liveSessionId: string): boolean {
+    const rows = this.#store.transaction(tx => tx.all(
+      "SELECT kind,text FROM live_journal WHERE live_session_id=? AND kind IN ('inputTranscription','outputTranscription')"
+      + ' ORDER BY journal_id DESC LIMIT 400', [liveSessionId]));
+    // The model's newest run of speech, the way the seed reads a turn: every fragment back to the owner's words.
+    let index = 0;
+    const said: string[] = [];
+    while (index < rows.length && String(rows[index]!['kind']) === 'outputTranscription') { said.unshift(String(rows[index]!['text'] ?? '')); index += 1; }
+    if (said.length === 0 || !isAckOnlyResponse(said.join(' '))) return false;
+    // The owner spoke before it, so that turn is the question this filler never answered.
+    for (; index < rows.length && String(rows[index]!['kind']) === 'inputTranscription'; index += 1) {
+      if (String(rows[index]!['text'] ?? '').trim() !== '') return true;
+    }
+    return false;
+  }
+
   #seedHistory(liveSessionId: string, inputClass: DataClass, deadLine = false): { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number } {
     const conversationId = this.#conversationOf(liveSessionId);
     const rows = this.#store.transaction(tx => tx.all(
@@ -2950,7 +3006,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    * network one again.
    */
   #rebuildTrigger(handle: ActiveSession, reason: string | null): (typeof LIVE_REBUILD_TRIGGERS)[number] {
-    if (reason === 'model_mute') return this.#ownerWordsSinceModelOutput(handle.liveSessionId) ? 'no_output_after_owner' : 'no_output_after_ambient';
+    if (reason === 'model_mute') return this.#ownerWordsSinceModelOutput(handle.liveSessionId) || this.#ackAnsweredOwner(handle.liveSessionId) ? 'no_output_after_owner' : 'no_output_after_ambient';
     if (reason === 'research_context') return 'research_context';
     if (reason === 'session_deadline' || reason === 'deadline' || reason === 'session_timeout' || reason === 'idle_timeout'
       || reason === 'handshake_timeout') return 'session_window';
@@ -3040,15 +3096,33 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // C-PICKUP: a model mute is not a dropped line, so a rebuild that owes the owner an answer is told the
     // model went quiet instead of the call coming back. A quiet rebuild owes nothing and keeps its base shape.
     const muteRebuild = reason === 'model_mute' && !handle.quietRebuild;
+    // C-REBUILD8: the filler the model filed before it went mute is not the last word the new session inherits.
+    // The owner's question under it is, so the pickup answers that question instead of continuing a stale line. A
+    // quiet rebuild has no such turn to drop, so its seed is byte-identical.
+    if (muteRebuild) {
+      const tail = seed.turns.at(-1);
+      if (tail !== undefined && tail.role === 'model' && seed.turns.length > 1 && isAckOnlyResponse(tail.text)) {
+        seed.turns.pop(); seed.chars = Math.max(0, seed.chars - tail.text.length);
+      }
+    }
+    // C-REBUILD8: a rebuild inherits the conversation, never the call's own opener line. The opener belongs to
+    // the session that spoke it, so a stale one is never sent again as new output; the request is rebuilt from a
+    // base that carries no line of its own.
+    const base = structuredClone(handle.request);
+    delete base.openingText;
     const request = path === 'fresh_seeded'
-      ? { ...structuredClone(handle.request), history: seed.turns, ...(unspokenOpening
+      ? { ...base, history: seed.turns, ...(unspokenOpening
         ? { opening: 'model_first' as const }
         : handle.quietRebuild ? { opening: 'user_first' as const }
           : { openingText: muteRebuild ? LIVE_MUTE_PICKUP : LIVE_RECOVERY_PICKUP }) }
-      : { ...structuredClone(handle.request), resumptionHandle: savedHandle as string };
+      : { ...base, resumptionHandle: savedHandle as string };
     // #591: a quiet rebuild asks for nothing, so an opener line the call inherited (a silent start after a lost
     // line) is cleared as well as the pickup that was never set.
     if (handle.quietRebuild && !unspokenOpening) delete request.openingText;
+    // C-PICKUP: the recovery line names the pickup this request really opens with, never the one its reason
+    // implies. A quiet rebuild with nothing asked for sends none, and a mute names the silence.
+    handle.recoveryPickup = path === 'resume' ? 'none' : muteRebuild ? 'mute'
+      : handle.quietRebuild && !unspokenOpening ? 'quiet' : unspokenOpening ? 'none' : 'connection';
     try {
       handle.session = this.#voice.open(request, {
         signal: handle.abort.signal, deadlineMs: handle.deadlineMs, idleResetMs: this.#profile.limits.idleMs,
@@ -3106,8 +3180,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // reader knows how the previous session really ended instead of inferring it from the outcome code alone.
     const closeReason = handle.adapterOutcome?.upstream?.closeReason ?? '';
     hostLogEvent({ event: 'live_recovery', path, attempt: handle.recoveries + 1, code, cause: this.#upstreamCause(handle, reason), closeCode, closeReason, reason, seedTurns: seed.turns.length, seedChars: seed.chars,
-      // C-PICKUP: which pickup the rebuilt session was opened with, so a mute is never logged as a drop.
-      pickup: reason === 'model_mute' ? 'mute' : 'connection',
+      // C-PICKUP: which pickup the rebuilt session was opened with, read off the request that was sent, so a mute
+      // is never logged as a drop and a pickup that was never sent is never logged as mute.
+      pickup: handle.recoveryPickup ?? 'none',
       msSinceDrop: handle.dropEpisodeAt === undefined ? 0 : Math.max(0, this.#now() - handle.dropEpisodeAt),
       liveSessionId: handle.liveSessionId, generation: handle.generation });
   }
@@ -3610,6 +3685,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           // must not show the previous turn's sources as if they were running (review finding F2).
           if (handle.pendingCallIds.size === 0) handle.liveSteps = [];
           correctOpenClaim(handle);
+          // C-REBUILD8: a response that only filed a filler ("One second.") answered nothing, so it never spends
+          // the turn's answer: a start that follows it is not the orphan run the admission refuses by name.
+          if (isAckOnlyResponse(handle.turnSpoken ?? '')) handle.researchAdmission.acknowledgedOnly();
           logTurnScript(handle);
           this.#noteState(handle, 'turn_complete');
           // O1b-A: the answer is over. A turn that produced no audible output is closed as silent, which is the

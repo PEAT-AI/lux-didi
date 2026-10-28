@@ -209,34 +209,28 @@ describe('openai gpt-live adapter', () => {
     assert.deepEqual(f.frames.slice(1).map(frame => frame['event_id']), ['tool_out_call_1', 'cont_1', 'cmt_2']);
     assert.ok(f.frames.slice(1).every(frame => typeof frame['event_id'] === 'string'));
     assert.equal(f.frames[3]!['type'], 'session.commentary.append');
-    // #516: an append that named a delegation_id was refused every time, so no append names one.
-    assert.equal('delegation_id' in f.frames[3]!, false, 'the commentary names no delegation');
+    // C-REBUILD8: the append names the delegation it belongs to, which the provider requires by name.
+    assert.equal(f.frames[3]!['delegation_id'], 'dlg_s4a', 'the commentary names the delegation in flight');
     assert.equal(f.frames[3]!['content'], 'Still reading the mail.');
   });
 
-  test('W4/#516: a commentary append names no delegation, with none open or several', async t => {
+  test('C-REBUILD8: a commentary append names the delegation in flight, and is skipped with none open', async t => {
     const logged = hostReceipts(t);
     const { f, session } = await ready(t);
-    // #516: the provider bound the append to whatever turn was open and refused every frame carrying a
-    // delegation_id, so the accepted wire shape carries none at all.
-    assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), true, 'a commentary needs no delegation');
-    await tally(f.frames, 2);
-    assert.equal(f.frames[1]!['type'], 'session.commentary.append');
-    assert.equal('delegation_id' in f.frames[1]!, false, 'no delegation_id on the wire');
+    // 2026-10-28 N10: the provider refused a progress line with
+    // `command_rejected code=missing_required_parameter param=delegation_id kind=cmt`, so with no delegation open
+    // the host writes nothing and logs a closed skip instead of a frame the provider would refuse by name.
+    assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), false, 'no delegation open, no line sent');
+    await until(() => logged().some(entry => entry['event'] === 'commentary_skipped'));
+    assert.equal(f.frames.some(frame => frame['type'] === 'session.commentary.append'), false, 'nothing reached the wire');
     f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_open', response_id: 'resp_open', offset_ms: 0 } });
     await until(() => logged().some(entry => entry['event'] === 'delegation_open'));
     const before = f.frames.length;
-    assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), true, 'the open turn carries it');
+    assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), true, 'the open delegation carries the line');
     await tally(f.frames, before + 1);
-    assert.equal('delegation_id' in f.frames[before]!, false, 'still no delegation_id with one open');
-    // A second delegation changes nothing: the id was never the thing the wire needed.
-    f.send({ type: 'session.delegation.created', delegation: { id: 'dlg_second', response_id: 'resp_second', offset_ms: 0 } });
-    await until(() => logged().filter(entry => entry['event'] === 'delegation_open').length === 2);
-    const held = f.frames.length;
-    assert.equal(session.sendCommentary!({ text: 'Still reading the mail.' }), true, 'two open delegations, still sent');
-    await tally(f.frames, held + 1);
-    assert.equal(f.frames[held]!['type'], 'session.commentary.append');
-    assert.equal('delegation_id' in f.frames[held]!, false, 'and never a delegation_id');
+    assert.equal(f.frames[before]!['type'], 'session.commentary.append');
+    assert.equal(f.frames[before]!['delegation_id'], 'dlg_open', 'the wire carries the delegation in flight');
+    assert.deepEqual(f.rejections, [], 'the provider, which enforces its own rule, refused nothing');
     session.close();
   });
 

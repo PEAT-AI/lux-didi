@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chatMigrations } from '../chat/index.js';
 import { domainMigrations } from '../domain/schema.js';
-import { createLiveSessionOwner, IDLE_RESET_CAUSES, isBareAcknowledgement, LIVE_DROPPED_LINE_MARK, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
+import { ACK_RESPONSE_CHAR_LIMIT, createLiveSessionOwner, IDLE_RESET_CAUSES, isAckOnlyResponse, isBareAcknowledgement, LIVE_DROPPED_LINE_MARK, liveMigrations, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS,
   validateLiveProfile, type LiveAttachment, type LiveContext, type LiveOutputChunk, type LiveSessionOwner } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -456,4 +456,51 @@ test('C-RECOVERY (d): the acknowledgement class is three closed words at most, a
   for (const text of ['okay?', 'no', 'what is next', 'okay what is next on my calendar', 'right, what about tomorrow']) {
     assert.equal(isBareAcknowledgement(text), false, text);
   }
+});
+
+// C-REBUILD8: "One second." is a filler, not an answer. A model that files one and then goes mute leaves the
+// owner's question unanswered, so the silence is a model mute that takes the mute pickup, never the ambient case
+// that spends no pickup and never the turn's answer.
+test('C-REBUILD8: a mute after an ack-only response takes the mute pickup and resumes the question', async t => {
+  const live = await openLive(t);
+  await ownerTurnEnd(live);
+  await live.emit({ type: 'outputTranscription', text: 'One second.', finished: true });
+  await until(live, () => phases(live).includes('recovered'), RESPONSE_WATCHDOG_NUDGE_MS + RESPONSE_WATCHDOG_RECOVERY_MS + 20_000);
+  assert.deepEqual(rebuildTriggers(live), ['no_output_after_owner'], 'the filler answered nothing, so the owner is still owed an answer');
+  assert.equal(openingText(live), LIVE_MUTE_PICKUP, 'the rebuilt session is told the model went quiet and to continue');
+  assert.equal(live.receipts.filter(record => record.event === 'live_recovery').at(-1)?.pickup, 'mute',
+    'the receipt names the pickup that was actually sent');
+  const history = live.fake.requests.at(-1)!.history ?? [];
+  assert.deepEqual(history.at(-1), { role: 'user', text: 'what is on my plate', dataClass: 'ordinary' },
+    'the new session resumes the pending question as its last word');
+  assert.equal(history.some(turn => /one second/i.test(turn.text)), false, 'and her filler is not replayed as history');
+});
+
+// C-REBUILD8: nothing speaks or rebuilds inside the owner's sentence. The watchdog's clocks start at his final
+// fragment, so fifteen seconds of non-final deltas never reach a nudge, a dead-air line or a rebuild.
+test('C-REBUILD8: a fifteen second owner sentence is never nudged or rebuilt inside it', async t => {
+  const live = await openLive(t);
+  await live.emit({ type: 'modelTurnStarted' });
+  assert.deepEqual(phases(live), ['armed'], 'the model turned over and owes whatever the owner says next');
+  for (let second = 0; second < 15; second += 1) {
+    await live.emit({ type: 'inputTranscription', text: `and then number ${second}`, finished: false });
+    await live.advance(1_000);
+  }
+  assert.deepEqual(phases(live), ['armed'], 'his unfinalized sentence owns the silence, so no nudge fires inside it');
+  assert.equal(live.fake.sessionsOpened, 1, 'and the provider session is never rebuilt mid-sentence');
+  assert.equal(live.receipts.some(record => record.event === 'live_dead_air'), false, 'the dead-air rung stays silent while he speaks');
+  await live.emit({ type: 'inputTranscription', text: 'book a table for four', finished: true });
+  await until(live, () => phases(live).includes('nudged'), RESPONSE_WATCHDOG_NUDGE_MS + 2_000);
+  assert.deepEqual(phases(live), ['armed', 'nudged'], 'the clock starts at his final fragment, not before it');
+});
+
+// C-REBUILD8: the filler class is closed and short, so no real answer can hide inside it.
+test('C-REBUILD8: the ack-only response class is a closed short set and never a question', () => {
+  for (const text of ['One second.', 'one moment', 'Hold on.', 'let me check', 'Sure', 'ok', 'hmm', 'checking now']) {
+    assert.equal(isAckOnlyResponse(text), true, text);
+  }
+  for (const text of ['One second, your three o\'clock is free', 'okay?', 'Your first meeting is at nine', 'still searching']) {
+    assert.equal(isAckOnlyResponse(text), false, text);
+  }
+  assert.equal(isAckOnlyResponse('x'.repeat(ACK_RESPONSE_CHAR_LIMIT + 1)), false, 'a longer line is never a filler');
 });

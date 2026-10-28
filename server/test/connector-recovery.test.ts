@@ -337,7 +337,7 @@ test('TRAIN8-R8: an attempt that never answers is cut by its own deadline, so th
   oauthRecord(configDir, 'mongoose-knowledge', { refreshToken: 'refresh-material', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now() });
   const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-hang-'));
   const store = new Store(join(dir, 'data'), toolsMigrations);
-  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST, callDeadlineMs: 50 });
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST, recoveryAttemptDeadlineMs: 50 });
   t.after(() => runtime.close());
   await runtime.start();
   // The first connect hung and was cut, so at least one more attempt must follow: that is the advance.

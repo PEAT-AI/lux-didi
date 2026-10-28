@@ -6,7 +6,7 @@ import type { ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, ToolsOwn
 import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '../config/mcp.js';
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
-import { createMcpAdapter, type McpTransportState } from '../adapters/mcp/adapter.js';
+import { createMcpAdapter, HTTP_CONNECT_TIMEOUT_MS, STDIO_CONNECT_TIMEOUT_MS, type McpTransportState } from '../adapters/mcp/adapter.js';
 import { mongooseCredentialAtStart, mongooseFailureStage, mongoosePublishCatalogue, mongoosePublishedTool, mongooseReadOnly } from '../connectors/mongoose.js';
 import { MongooseCredentialError, MONGOOSE_CONSENT_CAP_MS, mongooseAccessToken, mongooseCredentialPresent, mongooseEntryBinding, readMongooseOAuth } from './mongoose-auth.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
@@ -226,6 +226,11 @@ export async function composeMcpRuntime(options: {
   callDeadlineMs?: number;
   /** Test seam: override the recovery delays; production uses {@link CONNECTOR_RECOVERY_DELAYS_MS}. */
   recoveryDelaysMs?: readonly number[];
+  /**
+   * Test seam: override one recovery attempt's deadline; production uses the endpoint's own connect
+   * timeout, {@link HTTP_CONNECT_TIMEOUT_MS} or {@link STDIO_CONNECT_TIMEOUT_MS}.
+   */
+  recoveryAttemptDeadlineMs?: number;
   /** Test seam: override the steady retry interval; `false` bounds the round; production uses {@link CONNECTOR_RECOVERY_REPEAT_MS}. */
   recoveryRepeatMs?: number | false;
   /** Hold connector initialization until `start()`; the supervised host writes the ready frame first. */
@@ -476,15 +481,18 @@ export async function composeMcpRuntime(options: {
   const rearm = new Set<string>();
   const identityTimeouts = new Set<string>();
   /**
-   * TRAIN8-R8: one recovery attempt runs under the endpoint's own call deadline (ENDPOINT_CALL_DEADLINE_MS,
-   * `options.callDeadlineMs`), the same existing bound the identity call inside `settle` already carries, so
-   * no new timer is invented. Without it an attempt whose connect never answers holds the round forever and
-   * the ladder never schedules the next one: the endpoint sits "retrying" with nothing pending. On expiry the
-   * attempt's client is retired and the attempt counts as a transient failure under the closed
-   * `identity_timeout` code, which already means "the proof did not answer in time" and is already retryable.
+   * TRAIN8-R8: one recovery attempt runs under the endpoint's own connect timeout, the existing bound
+   * {@link HTTP_CONNECT_TIMEOUT_MS} or {@link STDIO_CONNECT_TIMEOUT_MS} the connect itself already carries,
+   * so no new timer value is invented. Without it an attempt whose connect never answers holds the round
+   * forever and the ladder never schedules the next one: the endpoint sits "retrying" with nothing pending.
+   * On expiry the attempt's client is retired, its generation is advanced so a late result is fenced out,
+   * and the attempt counts as a transient failure under the closed `identity_timeout` code, which already
+   * means "the proof did not answer in time" and is already retryable.
    */
   const settleWithin = async (entry: McpEndpointEntry, token: number, attempt: 'first-connect' | 'refresh',
-    identityOnce: ReturnType<typeof identityProofMemo>, deadlineMs: number): Promise<{ retryable: boolean }> => {
+    identityOnce: ReturnType<typeof identityProofMemo>): Promise<{ retryable: boolean }> => {
+    const deadlineMs = options.recoveryAttemptDeadlineMs
+      ?? (entry.transport === 'stdio' ? STDIO_CONNECT_TIMEOUT_MS : HTTP_CONNECT_TIMEOUT_MS);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const expired = new Promise<'expired'>(resolve => { timer = setTimeout(() => resolve('expired'), deadlineMs); });
     try {
@@ -493,6 +501,8 @@ export async function composeMcpRuntime(options: {
         expired,
       ]);
       if (raced !== 'expired') return raced;
+      // Fence the attempt that never answered: a late result must not overwrite this outcome.
+      generations.set(entry.id, token + 1);
       await port.retire(entry.id).catch(() => undefined);
       reportFailure(entry, 'handshake', attempt, 'identity_timeout');
       const previous = reports.get(entry.id);
@@ -511,7 +521,7 @@ export async function composeMcpRuntime(options: {
     registry.suspend(entry.id);
     if (replaceSession.delete(entry.id)) await port.retire(entry.id);
     const started = now();
-    const result = await settleWithin(entry, token, 'refresh', identityProofMemo(), callDeadlineMs);
+    const result = await settleWithin(entry, token, 'refresh', identityProofMemo());
     // One closed line per retry outcome: the endpoint, its connector, which attempt this was and the code
     // it ended on. A recovery is its own code, never a helper message or an address.
     options.lifecycleLog?.({ event: 'connector_retry', connector: entry.connector, endpointId: entry.id, attempt: recovery.attempts(entry.id),

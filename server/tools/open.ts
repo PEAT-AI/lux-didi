@@ -137,7 +137,7 @@ export function ownerWords(runId: string): string {
 /** Only owner transcription contributes to the current unanswered ask. */
 export function ownerTurnWords(runId: string): string {
   const window = ownerTurn.get(runId);
-  return [...(window?.modelSpoke ? [] : window?.turns ?? []), window?.partial ?? ''].join(' ').slice(-INTENT_CHARS);
+  return [...(window?.modelSpoke ? [] : window?.turns ?? []), ...(window?.partial ? [window.partial] : [])].join(' ').slice(-INTENT_CHARS);
 }
 
 /** One bounded event wait, not a polling loop; cleanup on finalization, abort or timeout. */

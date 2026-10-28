@@ -467,7 +467,7 @@ test('C-OPEN: a stretch with no open verb refuses with its own real code', () =>
   assert.deepEqual(safeEvent({ event: 'native_action', action: 'open_url', code: 'kind_mismatch', detail: 'none' }),
     { event: 'native_action', action: 'open_url', code: 'kind_mismatch', detail: 'none' }, 'and so does a kind mismatch');
   assert.equal(safeEvent({ event: 'native_action', action: 'open_url', code: 'refused', detail: 'none' }), undefined, 'the code set stays closed');
-  assert.deepEqual([...OPEN_RECEIPT_CODES].sort(), ['ambiguous', 'failed', 'kind_mismatch', 'no_open_intent', 'not_allowed', 'not_found', 'not_owner_words', 'opened'], 'the receipt code set is the acks plus the guard codes');
+  assert.deepEqual([...OPEN_RECEIPT_CODES].sort(), ['ambiguous', 'failed', 'kind_mismatch', 'native_timeout', 'no_open_intent', 'not_allowed', 'not_found', 'not_owner_words', 'opened'], 'the receipt code set is the acks plus the guard codes');
   // C-OPEN: the ask he repeats is his own open intent, so the same handle opens.
   noteModelOutput(run);
   noteOwnerWords(run, 'why can not you open it in my browser');

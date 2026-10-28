@@ -10,6 +10,7 @@ import type { Authority, DataClass, FunctionDeclaration, HostContext, JsonObject
  * The provider-wire catalog guard requires every omitted registered name to be explained here. */
 export const LIVE_NOT_MODEL_FACING: Readonly<Record<string, string>> = Object.freeze({
   conversation_history: 'Research owns local conversation recall.',
+  read_received_body: 'Research owns paging of authorized received bodies.',
   people_lookup: 'Research resolves people against the host roster.',
   search_knowledge: 'Research owns knowledge search.',
   get_insight: 'Research owns knowledge detail.',

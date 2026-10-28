@@ -718,7 +718,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const found = 'target' in resolved ? undefined : resolved.candidates;
           const payload: JsonObject = code === 'opened' && dispatched
             ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: webOpenedSay(dispatched.title) }
-            : { code: refused ?? code, ...OPEN_WEB_GUIDANCE[key], ...(found === undefined ? {} : { candidates: found }) };
+            : { ...openWebFailure(refused ?? code), ...(found === undefined ? {} : { candidates: found }) };
           const result = store.transaction(tx => {
             const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
             if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');

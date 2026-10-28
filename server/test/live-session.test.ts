@@ -3315,6 +3315,8 @@ test('E1: provider barge-in writes one metadata-only live_interrupted host recor
 test('an intent call answers with one model tool call from one host-side fan-out', async t => {
   const h = await harness(t, { tools: true });
   await attached(h, 'intent-search');
+  // C-TURN8: an owner-data tool answers the owner's turn, so the turn exists before the call.
+  await ownerSpoke(h, 'what do we know about lux didi');
   h.f.send({ toolCall: { functionCalls: [{ id: 'i1', name: 'search', args: { query: 'lux didi' } }] } });
   while (toolResponseCount(h) === 0) await tick();
   assert.equal(toolResponseCount(h), 1, 'exactly one response for the one intent call');
@@ -3412,6 +3414,8 @@ test('a model turn that stops generating without turnComplete is logged open (#3
 test('the calendar intent reads events from every calendar the owner keeps', async t => {
   const h = await harness(t, { tools: true, calendar: true });
   await attached(h, 'calendar-all');
+  // C-TURN8: the calendar reads the owner's data, so his turn comes first.
+  await ownerSpoke(h, 'what is on my calendar this week');
   h.f.send({ toolCall: { functionCalls: [{ id: 'cal', name: 'calendar', args: {} }] } });
   for (let i = 0; i < 2000 && toolResponseCount(h) === 0; i++) await tick();
   assert.equal(toolResponseCount(h), 1, 'one response for the calendar intent');
@@ -6216,21 +6220,22 @@ test('MUTE: the owner who speaks right after the unmute gets no held answer offe
 
 // C-TURN8: on 10-28 a trello read and a research start ran 0.7 s into a call, before the owner said
 // anything. Research was refused; every other owner-data tool went as far as its argument check.
-test('C-TURN8: an owner-data tool other than research is refused no_owner_input before the owner speaks', async t => {
+test('C-TURN8: an owner-data read other than research is refused no_owner_input before the owner speaks', async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-preowner-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));
   t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
   const h = await harness(t, { tools: true });
   const { session } = await attached(h, 'preowner-gate');
-  await settleLiveTool(h, 'vault-1', 'save_to_vault', { text: 'synthetic note' }, { spoke: false });
+  await settleLiveTool(h, 'search-1', 'search', { query: 'lux didi' }, { spoke: false });
   const response = (h.f.frames[1] as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!.response;
   assert.deepEqual({ error: response.error, state: response.state, reason: response.reason },
     { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input' }, 'the same shape and reason research already sends');
   const gated = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
-  assert.equal(String(gated?.tool?.markdown ?? ''), 'save_to_vault: refused (no_owner_input)', 'the model is told nothing ran');
+  assert.equal(String(gated?.tool?.markdown ?? ''), 'search: refused (no_owner_input)', 'the model is told nothing ran');
+  assert.deepEqual(h.calls.map(call => call.name), [], 'no read reached a source');
   const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; tool?: string; reason?: string });
   const refused = lines.filter(line => line.event === 'live_tool_refused');
-  assert.deepEqual(refused.map(line => [line.tool, line.reason]), [['save_to_vault', 'no_owner_input']], 'one closed refusal line per call');
+  assert.deepEqual(refused.map(line => [line.tool, line.reason]), [['search', 'no_owner_input']], 'one closed refusal line per call');
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -6256,13 +6261,14 @@ test('C-TURN8: a claim with no call gets exactly one correction, and only once p
   await advance(2_000);
   assert.equal(corrections().length, 0, 'a call still has its beat');
   await advance(1_000);
+  const counted = () => readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; ms?: number }).filter(line => line.event === 'live_claim_without_call');
+  assert.deepEqual(counted().map(line => line.ms), [3_000], 'the claim is counted with its bound');
   assert.equal(corrections().length, 1, 'exactly one correction for the announcement');
   assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /say plainly that you are not checking anything/);
   h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that again now.", finished: true }, turnComplete: true } });
   await advance(3_000);
   assert.equal(corrections().length, 1, 'the turn spends its one correction and never a second');
-  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; ms?: number });
-  assert.deepEqual(lines.filter(line => line.event === 'live_claim_without_call').map(line => line.ms), [3_000], 'the refusal is counted with its bound');
+  assert.equal(counted().length, 1, 'and it is logged once');
   h.owner.revoke(session.liveSessionId);
 });
 

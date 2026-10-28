@@ -484,14 +484,16 @@ const CLAIM_WITHOUT_CALL_MS = 3_000;
  */
 const LOOKUP_CLAIM = /\b(?:i'?m checking|i am checking|checking (?:that|this|it)|working on (?:that|it)|i'?ll check|let me check|looking (?:that|it|this) up)\b/iu;
 /**
- * C-TURN8: every tool that reads or writes the owner's own data (Trello, research, mail, calendar, chat,
- * knowledge, saves). None of them runs before his first word: research keeps its own gate in
- * `#researchBatch`, every other name here is refused by `#toolBatch` with the same shape. The `open_*` tools
- * stay open: they read nothing of his and the opener never calls them.
+ * C-TURN8: every tool that reads the owner's own data (Trello, research, mail, calendar, chat, knowledge,
+ * conversation history). None of them runs before his first word: research keeps its own gate in
+ * `#researchBatch`, every other name here is refused by `#toolBatch` with the same shape. The write tools
+ * (`save_to_vault`, `stage_lux_note`, `remember_note`, `trello_write`) keep their own before-owner gate,
+ * `#waitForOwnerTranscript`, which already refuses them with `owner_transcript_not_final`; the `open_*`
+ * tools stay open, because they read nothing of his and the opener never calls them.
  */
 const OWNER_DATA_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   ...INTENT_TOOL_NAMES, RESEARCH_TOOL_NAME, ...TRELLO_TOOL_NAMES,
-  'save_to_vault', 'stage_lux_note', 'remember_note', 'conversation_history',
+  'conversation_history',
 ]);
 /** C-TURN8: the one corrective instruction, voice content and short (prompt ceiling #693). */
 const CLAIM_WITHOUT_CALL_LINE = 'Correction: do not announce a lookup you are not making. Make the call now, or say plainly that you are not checking anything.';

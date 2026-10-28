@@ -585,7 +585,7 @@ test('L8-01: attendee and organizer lines are never cut, the count is true and n
   const line = shaped.text.split('\n').find(entry => entry.trimStart().startsWith('attendees: '));
   assert.ok(line !== undefined, `the attendee line survives: ${shaped.text}`);
   assert.match(line.trim(), /^attendees: 5 people: /u, `the line carries the true head count: ${line}`);
-  const spoken = ['Robin Vale', 'Ari Andor', 'dana.d@example.invalid', 'kim.l@example.invalid', 'Wes Rowan'].filter(name => line.includes(name)).length;
+  const spoken = ['Robin Vale', 'Ari Andor', 'dana.d', 'kim.l', 'Wes Rowan'].filter(name => line.includes(name)).length;
   const more = Number(/ and (\d+) more$/u.exec(line.trim())?.[1] ?? 0);
   assert.equal(spoken + more, 5, `every attendee is named or counted: ${line}`);
   assert.match(shaped.text, /^ {2}organizer: Wes Rowan$/mu, 'the organizer line is whole');

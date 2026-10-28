@@ -13,6 +13,8 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import type { CallResult, CompletedResult, EndpointConfig, McpPort, ResultScope } from '../adapters/mcp/port.js';
 import { createGoogleReader, type GoogleConfig, type GoogleResult } from '../connectors/index.js';
@@ -46,7 +48,11 @@ function readOf(result: GoogleResult): Record<string, unknown> {
 function readerFor(port: McpPort, toolNames: string[], family: GoogleConfig['family'], overrides: Partial<GoogleConfig> = {}) {
   const id = 'depth-fake';
   const registry = new McpRegistry();
-  const endpoint = { id, transport: 'stdio', command: process.execPath, args: [], env: {}, account: ACCOUNT, resource: RESOURCE } as unknown as EndpointConfig;
+  const endpoint = {
+    id, transport: 'stdio', command: process.execPath, args: ['fixture'],
+    env: { HOME: join(tmpdir(), 'didi-depth-home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+    account: ACCOUNT, resource: RESOURCE,
+  } as unknown as EndpointConfig;
   registry.register(endpoint);
   registry.enable(id);
   registry.allowEgress(id);

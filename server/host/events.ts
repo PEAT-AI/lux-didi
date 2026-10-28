@@ -54,7 +54,9 @@ const NAMED: Readonly<Record<string, Severity>> = {
 /** A degradation is a warn, an unclassified host_error is an error, and the rest is routine. */
 const FAILURE_SUFFIX = /(?:^|_)(?:failed|failure|error|rejected|refused|unavailable|dropped|lost|timeout|stalled)$/;
 
-export function severityOf(name: string): Severity {
+export function severityOf(name: string, fields?: { deadAirMs?: unknown; msSinceTool?: unknown; msSinceAudible?: unknown }): Severity {
+  if (name === 'live_dead_air' && typeof fields?.deadAirMs === 'number' && fields.deadAirMs >= 0 && fields.deadAirMs < 3000
+      && fields.msSinceTool === undefined && fields.msSinceAudible === undefined) return { level: 'info' };
   const named = NAMED[name];
   if (named) return named;
   if (FAILURE_SUFFIX.test(name)) return { level: 'warn' };

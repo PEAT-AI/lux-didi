@@ -57,3 +57,12 @@ Text consumes the host's tools through `ChatToolsComposition`; Live consumes its
 ## Verification
 
 Use [checks.md](checks.md) for tool, connector, prompt and native check routing. Test remote effects with fakes and receipt assertions, never real accounts. [Diagnostic store](diagnostic-store.md) explains canonical tool and source records without mistaking a bounded model projection for complete source content.
+## Open destinations
+
+All five open tools acquire the owner's current intent through the same bounded finalization wait. Only merged finalized owner words authorize a native action; a partial transcript alone is not permission. The public prompt generates one usage line per open tool from its owning definition.
+
+A browser, tab, Chrome or link request means a web page. Use a shown `open_source` handle for an email, calendar event or Drive/Docs/Slides item with a web link. Use `open_web` for a domain or site name, including a request for a new tab. Do not substitute `open_file` or `open_app` for a web page. Those tools are for local files and installed applications, respectively.
+
+A held lookup result without a web link has no open handle. Say in one sentence that there is no web link and offer the app home page or a web search. Never invent a handle, URL or successful open. An open is done only when the native acknowledgement returns `opened`.
+
+Gmail web destinations admit the account home or an `all`, `inbox` or `sent` fragment followed by one message/thread identifier. The shared host policy and Swift native policy reject other Gmail fragments. Calendar event, Docs/Slides and Drive viewer links retain their existing narrow HTTPS shapes.

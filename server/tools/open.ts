@@ -17,8 +17,8 @@ export type OpenReceiptCode = (typeof OPEN_RECEIPT_CODES)[number];
 export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_source', 'open_home', 'open_file', 'open_app', 'open_web']);
 /** The one sentence the model says when an item open is refused or unknown. */
 export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch', string> = {
-  not_found: 'I could not find that item. Look it up again and use the handle the result gives you.',
-  not_allowed: 'That link is not one I am allowed to open. Tell him plainly which link failed and offer the app home page instead; if he asks again, call open again with the same handle.',
+  not_found: 'There is no web link for that item; offer the app home page or a web search in one sentence. Never substitute a local file for a browser request.',
+  not_allowed: 'For a browser, tab, Chrome or link request, use open_source with a shown web handle or open_web for a site, never open_file or open_app. That link is not one I am allowed to open. Tell him plainly which link failed and offer the app home page instead; if he asks again, call open again with the same handle.',
   no_open_intent: 'I did not hear an open request in his words. Say plainly that I did not hear one and that nothing is open; when he asks again, call open again with the same handle, never invent a reason.',
   kind_mismatch: 'That item is not the kind he asked for. Say what it actually is and ask before opening it.',
 };
@@ -31,8 +31,8 @@ const OPEN_ONLY = 'These tools only open things: they never type, click, send or
 export const OPEN_TOOLS: readonly { name: string; description: string; parameter: string; pattern: RegExp }[] = [
   { name: 'open_source', description: `Open one item the owner named, using the handle its lookup result carried in a line starting "open:". ${OPEN_ONLY}`, parameter: 'handle', pattern: /^L[0-9]{1,4}$/ },
   { name: 'open_home', description: `Open the home page of Gmail, Google Calendar or Mattermost. ${OPEN_ONLY}`, parameter: 'app', pattern: /^(gmail|calendar|mattermost)$/ },
-  { name: 'open_file', description: `Open an existing file or folder inside the owner's home folder with its default app. ${OPEN_ONLY}`, parameter: 'path', pattern: /^\/|^~/ },
-  { name: 'open_app', description: `Open an installed application by name. ${OPEN_ONLY}`, parameter: 'name', pattern: /^\S(?:.*\S)?$/ },
+  { name: 'open_file', description: `Only for an explicitly local file request, never a browser, tab or link request: open an existing file or folder inside the owner's home folder with its default app. ${OPEN_ONLY}`, parameter: 'path', pattern: /^\/|^~/ },
+  { name: 'open_app', description: `Only launch an installed application by name; never use this for a domain or site name, or to open a page in a browser. ${OPEN_ONLY}`, parameter: 'name', pattern: /^\S(?:.*\S)?$/ },
 ];
 
 export function openParameters(tool: (typeof OPEN_TOOLS)[number]): Record<string, unknown> {
@@ -142,7 +142,10 @@ export function ownerTurnWords(runId: string): string {
 
 /** One bounded event wait, not a polling loop; cleanup on finalization, abort or timeout. */
 export async function webOwnerWords(runId: string, signal: AbortSignal): Promise<string> {
-  if (WEB_INTENT.test(ownerTurnWords(runId)) || signal.aborted) return ownerTurnWords(runId);
+  // All five open tools share this acquisition. Partial words tell us finalization is pending,
+  // but only finalized owner words authorize a native action.
+  const finalized = () => ownerTurn.get(runId)?.modelSpoke ? '' : ownerWords(runId);
+  if ((!ownerTurn.get(runId)?.partial && (OPEN_INTENT.test(finalized()) || WEB_INTENT.test(finalized()))) || signal.aborted) return finalized();
   await new Promise<void>(resolve => {
     const finish = () => {
       clearTimeout(timer);
@@ -157,7 +160,7 @@ export async function webOwnerWords(runId: string, signal: AbortSignal): Promise
     const timer = setTimeout(finish, 1500);
     signal.addEventListener('abort', finish, { once: true });
   });
-  return ownerTurnWords(runId);
+  return finalized();
 }
 
 /** What she said this turn, so the claim check reads her own words and never the owner's. */
@@ -224,8 +227,13 @@ const ASK_KINDS: readonly { words: RegExp; kinds: readonly OpenKind[] }[] = [
 ];
 
 /** A handle resolves to a kind the ask named: a mail thread is never opened as the deck he asked for. */
-function openRefusal(toolName: string, words: string, kind: OpenKind): 'no_open_intent' | 'kind_mismatch' | undefined {
+function openRefusal(toolName: string, words: string, kind: OpenKind): 'no_open_intent' | 'kind_mismatch' | 'not_allowed' | undefined {
   if (!OPEN_INTENT.test(words)) return 'no_open_intent';
+  // A web request must never degrade into a local default-app action. A site name
+  // introduced as 'the ...' is ambiguous, not evidence of an installed application.
+  const browser = /\b(?:browser|tabs?|links?|website|site)\b|\b(?:in|using|with)\s+(?:my\s+)?(?:chrome|safari)\b|\b[\w-]+\.(?:com|net|org|io|ai|co|de|uk)\b/iu.test(spokenDots(words));
+  if ((toolName === 'open_file' || toolName === 'open_app') && browser) return 'not_allowed';
+  if (toolName === 'open_app' && /\bopen\s+the\s+/iu.test(words) && !/\b(?:app|application)\b/iu.test(words)) return 'not_allowed';
   if (toolName !== 'open_source') return undefined;
   const named = ASK_KINDS.filter(entry => entry.words.test(words));
   return named.length > 0 && !named.some(entry => entry.kinds.includes(kind)) ? 'kind_mismatch' : undefined;
@@ -443,3 +451,9 @@ export async function resolveWebOpen(args: { kind: WebKind; target: string }, wo
   const root = webDestination('site', pick.domain);
   return root === undefined ? { code: 'not_allowed' } : { target: { action: 'open_url', target: root.url, detail: 'web', kind: 'web', title: root.domain } };
 }
+
+/** One generated usage line per registered open tool, shared by the public prompt. */
+export const OPEN_TOOL_GUIDANCE = [
+  ...OPEN_TOOLS.map(tool => `${tool.name}: ${tool.description}`),
+  `${OPEN_WEB_NAME}: ${OPEN_WEB_DESCRIPTION}`,
+].join('\n');

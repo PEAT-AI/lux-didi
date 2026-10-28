@@ -679,7 +679,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           if (context.runId !== runId || !validateOpen(args, openTool) || context.signal.aborted) return { status: 'failed' as const };
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
-          const resolved = openTarget(openTool.name, args, ownerWords(context.runId));
+          const resolved = openTarget(openTool.name, args, await webOwnerWords(context.runId, context.signal));
           const refused = 'target' in resolved ? undefined : resolved.code;
           const dispatched = 'target' in resolved ? resolved.target : undefined;
           // A guard refusal never reached the native side, so its receipt is the closed policy code, while the

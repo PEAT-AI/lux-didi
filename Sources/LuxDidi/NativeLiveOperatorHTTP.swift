@@ -152,7 +152,7 @@ struct NativePendingLiveJob: Decodable, Equatable, Sendable {
     func create(for intent: LiveBeginIntent, key: String) async throws -> LiveSnapshot {
         guard intent.origin == origin else { throw LiveClientError.invalidIntent }
         let body = try alarmID.map { try JSONEncoder().encode(["id": $0, "ownerDisplayName": NSFullUserName()]) } ?? createBody(for: intent, key: key)
-        return try JSONDecoder().decode(Envelope<LiveSnapshot>.self, from: await fetch(alarmID == nil ? "/api/v1/live-sessions" : "/v1/alarms/session", epoch: intent.authorityEpoch, method: "POST", body: body, key: key)).data
+        return try JSONDecoder().decode(Envelope<LiveSnapshot>.self, from: await fetch(alarmID == nil ? "/api/v1/live-sessions" : "/api/v1/alarms/session", epoch: intent.authorityEpoch, method: "POST", body: body, key: key)).data
     }
     func snapshot(sessionID: String, for intent: LiveBeginIntent) async throws -> LiveSnapshot {
         return try JSONDecoder().decode(Envelope<LiveSnapshot>.self, from: await fetch(path(sessionID), epoch: intent.authorityEpoch)).data

@@ -133,11 +133,11 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       if (url.hash || url.username || url.password) throw new ServiceError('BAD_REQUEST', 'Invalid request target');
       if (serveStatic && await serveStatic(req, res)) return;
       const method = req.method ?? '';
-      if (url.pathname.startsWith('/v1/alarms/') && options.alarms) {
+      if (url.pathname.startsWith('/api/v1/alarms/') && options.alarms) {
         const actor = principal(req);
         if (actor.mode !== 'bearer') throw new ServiceError('FORBIDDEN', 'Native shell only', 403);
         const { scheduler, shell } = options.alarms;
-        if (method === 'GET' && url.pathname === '/v1/alarms/events') {
+        if (method === 'GET' && url.pathname === '/api/v1/alarms/events') {
           for (const close of [...alarmStreams]) close();
           res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'Connection': 'keep-alive' });
           res.flushHeaders();
@@ -153,25 +153,25 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         }
         if (method === 'POST' && req.headers['x-didi-authority-epoch'] === store.authorityEpoch) {
           const body = await readBody(req);
-          if (url.pathname === '/v1/alarms/session' && typeof body.id === 'string' && typeof body.ownerDisplayName === 'string' && body.ownerDisplayName.length > 0 && body.ownerDisplayName.length <= 120) {
+          if (url.pathname === '/api/v1/alarms/session' && typeof body.id === 'string' && typeof body.ownerDisplayName === 'string' && body.ownerDisplayName.length > 0 && body.ownerDisplayName.length <= 120) {
             const attempt = alarmSessions?.attempt(body.id, body.ownerDisplayName);
             if (attempt?.status === 'created' && attempt.liveSessionId && live) { send(res, 201, success(live.snapshot(attempt.liveSessionId))); return; }
             send(res, 409, { error: { code: 'ALARM_SPEECH_UNAVAILABLE', message: 'Local ringing continues.' }, requestId }); return;
           }
-          if (url.pathname === '/v1/alarms/ring-started' && typeof body.id === 'string') {
+          if (url.pathname === '/api/v1/alarms/ring-started' && typeof body.id === 'string') {
             const alarm = scheduler.list().find(row => row.id === body.id && row.state === 'ringing');
             if (alarm) diagnosticLog.event({ event: 'alarm_ring_started', alarmId: alarm.id, scheduledMs: alarm.fireAtUtc, actualMs: now(), reason: 'local_ring' });
             send(res, 200, success({ status: 'ok' })); return;
           }
-          if (url.pathname === '/v1/alarms/shell' && typeof body.assertion === 'boolean' && typeof body.notifications === 'boolean') {
+          if (url.pathname === '/api/v1/alarms/shell' && typeof body.assertion === 'boolean' && typeof body.notifications === 'boolean') {
             shell.report({ assertion: body.assertion, notifications: body.notifications });
             send(res, 200, success(shell.health())); return;
           }
           const reasons: AlarmRecheck[] = ['wake', 'clock_changed', 'timezone_changed'];
-          if (url.pathname === '/v1/alarms/recheck' && reasons.some(reason => reason === body.reason)) {
+          if (url.pathname === '/api/v1/alarms/recheck' && reasons.some(reason => reason === body.reason)) {
             scheduler.recheck(body.reason as AlarmRecheck); send(res, 200, success({ status: 'ok' })); return;
           }
-          if (url.pathname === '/v1/alarms/acknowledged' && typeof body.id === 'string') {
+          if (url.pathname === '/api/v1/alarms/acknowledged' && typeof body.id === 'string') {
             send(res, 200, success({ acknowledged: scheduler.acknowledge(body.id) })); return;
           }
         }

@@ -49,7 +49,7 @@ import UserNotifications
                     let root = try JSONSerialization.jsonObject(with: data) as? [String: Any]
                     let status = root?["data"] as? [String: Any] ?? root
                     self.epoch = status?["authorityEpoch"] as? String
-                    var request = try self.authority.request(self.authority.origin.appendingPathComponent("v1/alarms/events"), self.epoch)
+                    var request = try self.authority.request(self.authority.origin.appendingPathComponent("api/v1/alarms/events"), self.epoch)
                     request.timeoutInterval = 65
                     let (bytes, response) = try await self.session.bytes(for: request)
                     guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
@@ -111,7 +111,7 @@ import UserNotifications
         post("session", body: ["id": id, "ownerDisplayName": NSFullUserName()])
     }
     private func post(_ route: String, body: [String: Any]) {
-        guard var request = try? authority.request(authority.origin.appendingPathComponent("v1/alarms/" + route), epoch),
+        guard var request = try? authority.request(authority.origin.appendingPathComponent("api/v1/alarms/" + route), epoch),
               let data = try? JSONSerialization.data(withJSONObject: body) else { return }
         request.httpMethod = "POST"; request.httpBody = data; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         Task { _ = try? await session.data(for: request) }

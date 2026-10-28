@@ -33,12 +33,12 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
     return { status: response.status, body: await response.json() };
   }
   const eventsAbort = new AbortController();
-  const events = await fetch(origin + '/v1/alarms/events', { headers, signal: eventsAbort.signal });
+  const events = await fetch(origin + '/api/v1/alarms/events', { headers, signal: eventsAbort.signal });
   assert.equal(events.status, 200);
   const reader = events.body.getReader();
   cleanups.push(async () => { eventsAbort.abort(); await reader.cancel().catch(() => {}); });
   let eventWire = new TextDecoder().decode((await reader.read()).value);
-  await post('/v1/alarms/shell', { assertion: true, notifications: true });
+  await post('/api/v1/alarms/shell', { assertion: true, notifications: true });
   const created = await post('/api/v1/live-sessions', { inputClass: 'ordinary' });
   assert.equal(created.status, 200, JSON.stringify(created.body));
   let sessionId = created.body.data.liveSessionId;
@@ -96,13 +96,13 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.match(await call('set_alarm'), /Alarm set/);
   const due = rows().find(row => row.state === 'pending');
   now += 60000;
-  assert.equal((await post('/v1/alarms/recheck', { reason: 'clock_changed' })).status, 200);
+  assert.equal((await post('/api/v1/alarms/recheck', { reason: 'clock_changed' })).status, 200);
   for (let count = 0; count < 10 && !eventWire.includes('alarm_due'); count++) eventWire += new TextDecoder().decode((await reader.read()).value);
   assert.match(eventWire, /alarm_due/);
   assert.match(eventWire, new RegExp(String(due.id)));
   assert.equal(rows().find(row => row.id === due.id).state, 'ringing');
   const attempts = f.attempts;
-  assert.equal((await post('/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' })).status, 409);
+  assert.equal((await post('/api/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' })).status, 409);
   assert.equal(f.attempts, attempts, 'W11-R5: live session has no second provider attempt or injection');
   await owner('snooze my alarm for five minutes'); now += 120001;
   assert.match(await call('snooze_alarm', { id: String(due.id) }), /owner_alarm_intent_required/);
@@ -114,8 +114,8 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   await post(`/api/v1/live-sessions/${sessionId}/revoke`, {});
   peer.terminate();
   now += 300000;
-  await post('/v1/alarms/recheck', { reason: 'wake' });
-  const alarmCreated = await post('/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' });
+  await post('/api/v1/alarms/recheck', { reason: 'wake' });
+  const alarmCreated = await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' });
   assert.equal(alarmCreated.status, 201, JSON.stringify(alarmCreated.body));
   sessionId = alarmCreated.body.data.liveSessionId;
   const setupStart = f.frames.length;
@@ -124,7 +124,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   assert.match(JSON.stringify(setup), /\[alarm mode\]/);
   assert.match(JSON.stringify(setup), /Synthetic Owner/);
   assert.doesNotMatch(JSON.stringify(f.frames.slice(setupStart).filter(frame => !frame.setup)), /Synthetic Owner/);
-  assert.equal((await post('/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' })).status, 409);
+  assert.equal((await post('/api/v1/alarms/session', { id: String(next.id), ownerDisplayName: 'Synthetic Owner' })).status, 409);
   const log = (await readFile(join(directory, 'state/logs/host.log'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
   for (const event of ['alarm_set', 'alarm_due', 'alarm_acknowledged', 'alarm_degraded']) assert.ok(log.some(row => row.event === event), event);
   assert.ok(log.some(row => row.event === 'alarm_degraded' && row.reason === 'live_session_no_channel'));

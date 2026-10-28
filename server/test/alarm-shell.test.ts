@@ -53,10 +53,10 @@ test('alarm shell: real HTTP delivers a persisted due frame to an authenticated 
   t.after(async () => { abort.abort(); scheduler.stop(); await closeService?.(); store.close(); rmSync(directory, { recursive: true, force: true }); });
   const service = await listenService({ port: 0, store, now: () => now, alarms: { scheduler, shell } });
   closeService = service.close;
-  const denied = await fetch(`${service.origin}/v1/alarms/events`);
+  const denied = await fetch(`${service.origin}/api/v1/alarms/events`);
   assert.equal(denied.status, 401);
   await denied.arrayBuffer();
-  const response = await fetch(`${service.origin}/v1/alarms/events`, {
+  const response = await fetch(`${service.origin}/api/v1/alarms/events`, {
     headers: { authorization: `Bearer ${store.adminCredential}` }, signal: abort.signal,
   });
   assert.equal(response.status, 200);

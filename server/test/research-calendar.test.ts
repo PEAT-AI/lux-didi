@@ -723,8 +723,11 @@ test('C-CAL8: under cap pressure the calendar drops the events already past, kee
   const text = JSON.stringify(reply['findings']);
   assert.match(text, /Synthetic 17\b/, 'the last meeting of the day survives the cap');
   assert.doesNotMatch(text, /Synthetic 8\b/, 'the earliest meeting is the first one dropped');
-  assert.match(text, /plus \d+ earlier events? left out/, `the reply names what it left out by count: ${text.slice(0, 300)}`);
-  assert.match(text, /calendar: \d+ of 10 shown/u, `the calendar count is still spoken: ${text.slice(0, 200)}`);
+  assert.match(text, /plus \d+ earlier and \d+ later events left out/, `the reply names what it left out by count: ${text.slice(0, 300)}`);
+  const shown = /calendar: (\d+) of 10 shown/u.exec(text);
+  assert.ok(shown !== null, `the calendar count is still spoken: ${text.slice(0, 200)}`);
+  const note = /plus (\d+) earlier and (\d+) later events left out/u.exec(text);
+  assert.equal(Number(shown[1]) + Number(note?.[1]) + Number(note?.[2]), 10, 'shown plus the earlier and the later left out equals the ten events');
 });
 
 test('C-CAL8: a schedule ask speaks the calendar first, and the knowledge about it follows', async () => {

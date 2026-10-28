@@ -4092,6 +4092,14 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   let dropped = 0;
   let droppedEvents = 0;
   let droppedPast = 0;
+  let droppedAhead = 0;
+  // C-CAL8 F4: once the past is gone the earliest meeting still ahead goes, and the reply names that count
+  // too, so the note never accounts for fewer events than the header says are missing.
+  const leftOutNote = (): string[] => {
+    if (droppedPast === 0 && droppedAhead === 0) return [];
+    const counted = [droppedPast > 0 ? `${droppedPast} earlier` : '', droppedAhead > 0 ? `${droppedAhead} later` : ''].filter(part => part.length > 0).join(' and ');
+    return [`- plus ${counted} ${droppedPast + droppedAhead === 1 ? 'event' : 'events'} left out of this answer`];
+  };
   const shownOf = (group: { lines: string[]; days?: { day: string; entries: string[] }[] }): number => group.days === undefined ? group.lines.length : group.days.reduce((n, day) => n + day.entries.length, 0);
   // A calendar trim drops one event, never a whole day, so a full window loses as little as the budget needs.
   // C-CAL8: it drops what is already past first, oldest first, and never a meeting still ahead, so a capped
@@ -4105,11 +4113,10 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       const now = new Date(run.startedAt).toISOString();
       // The earliest event first: every event already past goes before any meeting still ahead, and once
       // only the afternoon is left the earliest of those goes, so the last meeting of the day always stays.
-      if (events[0]!.start < now) droppedPast += 1;
+      if (events[0]!.start < now) droppedPast += 1; else droppedAhead += 1;
       events.splice(0, 1);
       group.days = compactCalendarWindow(events, run.timeZone);
-      group.lines.splice(0, group.lines.length, ...calendarDayLines(group.days),
-        ...(droppedPast > 0 ? [`- plus ${droppedPast} earlier ${droppedPast === 1 ? 'event' : 'events'} left out of this answer`] : []));
+      group.lines.splice(0, group.lines.length, ...calendarDayLines(group.days), ...leftOutNote());
     } else {
       days[days.length - 1]!.entries.pop();
       while (days.length > 0 && days[days.length - 1]!.entries.length === 0) days.pop();

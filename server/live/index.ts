@@ -1327,7 +1327,7 @@ export class LiveSessionOwner {
   /** W3: the last uplink measurement shown to the web, kept so the ended page can still say why it ended. */
   #uplink: LivePageProjection['connection'] = undefined;
 
-  constructor(config: LiveOwnerConfig) {
+  constructor(config: LiveOwnerConfig & { vaultTransport?: ReturnType<typeof createLuxWriteTransport> }) {
     if (!config || typeof config !== 'object' || !config.store || !config.voice) throw new LiveError('invalid_config');
     this.#tools = config.tools;
     const summaryHooks = config.tools as unknown as SummaryHooks | undefined;
@@ -1356,7 +1356,7 @@ export class LiveSessionOwner {
       const timer = setTimeout(callback, delayMs);
       return { unref: () => { timer.unref(); }, cancel: () => { clearTimeout(timer); } };
     });
-    this.#luxWrite = createLuxWriteTransport(luxWriteEndpoint());
+    this.#luxWrite = config.vaultTransport ?? createLuxWriteTransport(luxWriteEndpoint());
     this.#vault = new VaultWriter({ store: this.#store, transport: this.#luxWrite, now: this.#now, log: event => hostLogEvent(event) });
     this.#jobs = new LiveToolJobs(this.#store, this.#now);
     this.#profileIdentity = liveProfileIdentity(this.#profile);
@@ -2026,6 +2026,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       speech.text += this.#profile.provider === 'openai' ? text : ` ${text}`;
       return;
     }
+    if (!speech.text.trim()) return;
     speech.matched = readbackMatches(noteReadbackText(note), speech.text);
     if (!speech.matched) {
       this.#store.transaction(tx => saveNoteState(tx, { ...note, state: 'invalidated', code: 'readback_mismatch' }));
@@ -5005,7 +5006,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
 }
 
 /** Factory composition: the host supplies the validated profile, the real LiveVoicePort and its credentials. */
-export function createLiveSessionOwner(config: LiveOwnerConfig): LiveSessionOwner {
+export function createLiveSessionOwner(config: LiveOwnerConfig & { vaultTransport?: ReturnType<typeof createLuxWriteTransport> }): LiveSessionOwner {
   return new LiveSessionOwner(config);
 }
 

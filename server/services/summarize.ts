@@ -31,10 +31,16 @@ export const SUMMARY_RETRY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 export const SUMMARY_RETRY_MAX_ATTEMPTS = (SUMMARY_MAX_RETRIES + 1) * SUMMARY_HOST_START_LIMIT;
 /** The default wall-clock budget, in milliseconds, for one distillation model call. */
 export const SUMMARY_DEADLINE_BUDGET_MS = 30_000;
-/** C-SUMMARY8: how long a host start, or an exit the app did not force, waits for an unfinished call's
- *  summary. Well under one model attempt's 30 s budget, so a slow provider cannot hold the ready frame
- *  or the exit; when it runs out the opener plans without that call. */
-export const SUMMARY_SETTLE_BUDGET_MS = 8_000;
+/** C-SUMMARY8: how long a host start waits for an unfinished call's summary before it serves a call.
+ *  The native supervisor fails a launch that has no ready frame within 6 s (NativeServiceSupervisor
+ *  `firstFrame(timeout:)`, 6_000_000_000 ns), and boot plus migration spends part of that, so this
+ *  bound is the 2 s left over rather than the 30 s a model attempt may take. On expiry the opener
+ *  plans without that call and the distillation finishes in the background. */
+export const SUMMARY_START_SETTLE_BUDGET_MS = 2_000;
+/** C-SUMMARY8: how long a non-forced exit waits for the summary the call just queued. The supervisor
+ *  sends SIGTERM 500 ms and SIGKILL 1000 ms after it starts a native-initiated stop, so anything
+ *  longer is a wait the process would not survive; the next start finishes what this leaves. */
+export const SUMMARY_EXIT_SETTLE_BUDGET_MS = 800;
 /** The newest retryable sessions a single host start re-queues; older ones wait for a later start. */
 export const SUMMARY_RECOVERY_LIMIT = 30;
 export const SUMMARY_MIN_OWNER_TURNS = 2;
@@ -443,7 +449,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
     distill(liveSessionId: string, runOptions?: { deadHost?: boolean }): Promise<void> {
       return serialize(() => distill(liveSessionId, runOptions));
     },
-    recoverAtStart(budgetMs: number = SUMMARY_SETTLE_BUDGET_MS): Promise<SummarySettleOutcome> {
+    recoverAtStart(budgetMs: number = SUMMARY_START_SETTLE_BUDGET_MS): Promise<SummarySettleOutcome> {
       // C-SUMMARY8: the interrupted in-flight markers first, then the calls that never got one, both before
       // the listener serves a call and therefore before any opener plan is fixed.
       const work = (async () => {
@@ -457,7 +463,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
       })();
       return within(work, budgetMs);
     },
-    settleOnExit(budgetMs: number = SUMMARY_SETTLE_BUDGET_MS): Promise<SummarySettleOutcome> {
+    settleOnExit(budgetMs: number = SUMMARY_EXIT_SETTLE_BUDGET_MS): Promise<SummarySettleOutcome> {
       return within(chain, budgetMs);
     },
     requeueFailed,

@@ -22,6 +22,9 @@ import { toolsMigrations } from '../tools/schema.js';
 import { SUPERVISION_FLAG, supervisionRequested } from '../host/supervision.js';
 import { HostLog, clearLogContext, safeEvent } from '../host/log.js';
 import { Store } from '../runtime/store.js';
+import { historySessionEvidence, recordHistorySession } from '../domain/history-lifecycle.js';
+import { markSummaryPending } from '../domain/summaries.js';
+import { SUMMARY_START_SETTLE_BUDGET_MS } from '../services/summarize.js';
 import { CalendarDigestCache, WarmContextCache, chooseStartContext, withProvenance } from '../live/warm-context.js';
 import { createLiveSessionOwner } from '../live/index.js';
 import { loadLiveConfig } from '../config/live.js';
@@ -1326,4 +1329,57 @@ test('C-RECOVERY (f): a rejected live write is a host_error that names its close
     ]);
     assert.equal(text.includes('SECRET'), false, 'no message or stack ever reaches the log');
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// C-SUMMARY8: the app closes the host's stdin at every call end, so the next start inherits a call whose
+// summary never finished. Requirement 1 puts that finish before the opener plan can be fixed, and the
+// native launch fails when no ready frame arrives inside 6 s, so the wait has to fit inside that budget.
+test('C-SUMMARY8: an interrupted summary cannot hold the ready frame past its start budget', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'didi-summary-start-'));
+  const configDir = join(dir, 'provider-config');
+  const endedAt = 1_760_000_000_000;
+  try {
+    await mkdir(configDir, { mode: 0o700 });
+    // The summary route must be ready, so the start pass really reaches the model.
+    await writeFile(join(configDir, 'profile.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini',
+      modelId: 'gemini-synthetic-summary', keyReference: 'gemini-primary', dataClasses: ['ordinary', 'private'],
+      preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'off', verbosity: 'balanced' } }), { mode: 0o600 });
+    await writeFile(join(configDir, 'gemini-primary.json'),
+      JSON.stringify({ schemaVersion: 1, keyReference: 'gemini-primary', key: 'synthetic-not-a-real-key' }), { mode: 0o600 });
+    const seed = new Store(dir, hostMigrations);
+    try {
+      seed.transaction(tx => {
+        tx.run(`INSERT INTO live_sessions (live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint,
+            client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes,
+            journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at, memory_provenance)
+          VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,1,'ended',?,?,?,?,?)`,
+          ['s-interrupted', seed.assistantId, seed.authorityEpoch, 'key-s-interrupted', 'fp-s-interrupted', 'client', 'audit',
+            'profile', 'prompt', 'terminal', JSON.stringify({ state: 'closed', code: 'normal' }), endedAt, endedAt, endedAt, null]);
+        for (const text of ['one', 'two']) {
+          tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,?,?)',
+            ['s-interrupted', 'inputTranscription', text, text.length, endedAt]);
+        }
+        recordHistorySession(tx, 's-interrupted', 'owner', ['ordinary', 'private'], [], endedAt);
+        const source = historySessionEvidence(tx, 's-interrupted')!;
+        // The production writer: the in-flight row a host that exits mid-summary leaves behind.
+        markSummaryPending(tx, 's-interrupted', endedAt, { dataClass: source.dataClass, sourceRevision: source.revision });
+      });
+    } finally { seed.close(); }
+    let modelCalls = 0;
+    const started = performance.now();
+    const host = await startHost({ dataDir: dir, webRoot, configDir, port: 0,
+      modelTesting: {
+        deadlineMs: 400,
+        credentials: { resolve: async () => 'synthetic-not-a-real-key' },
+        transport: () => { modelCalls += 1; return new Promise<Response>(() => { /* deliberately no response */ }); },
+      } });
+    const elapsed = Math.round(performance.now() - started);
+    try {
+      t.diagnostic(`C-SUMMARY8 boot-to-ready with an interrupted summary: ${elapsed} ms (budget ${SUMMARY_START_SETTLE_BUDGET_MS} ms)`);
+      assert.ok(modelCalls >= 1, 'the start pass reached the model for the interrupted call');
+      assert.ok(elapsed < SUMMARY_START_SETTLE_BUDGET_MS + 1_500,
+        `the ready frame took ${elapsed} ms: an unanswered provider cannot hold it past the start budget`);
+      assert.ok(elapsed < 6_000, 'and it stays inside the native six second ready-frame cap');
+    } finally { await host.close(); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

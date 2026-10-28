@@ -724,15 +724,18 @@ export async function startHost(config: HostConfig) {
           await live.prewarm(),
         start: () => mcp.start(), async close() {
         if (closed) return; closed = true;
-        // C-SUMMARY8: the terminal hook queued this call's summary, and the process is about to go. Wait
-        // for it, bounded, before the store it writes to closes; a forced kill skips this and the next
-        // host start finishes the work instead.
-        await summarizer.settleOnExit().catch(() => undefined);
-        logExit('ready', 'close');
         removeOwnDescriptor(descriptorPath);
         chat.shutdown();
         calendarDigest.stop();
-        try { await service.close(); await live.shutdown(); await mcp.close(); } finally { store.close(); stopDiagnostics(); }
+        try {
+          await service.close();
+          // C-SUMMARY8: this is where a still-live call is settled, and its terminal hook is what queues
+          // the summary. Wait for that summary here, bounded, while the store it writes to is still open;
+          // a forced kill skips this and the next host start finishes the work instead.
+          await live.shutdown();
+          await mcp.close();
+          await summarizer.settleOnExit().catch(() => undefined);
+        } finally { logExit('ready', 'close'); store.close(); stopDiagnostics(); }
       } };
     } catch (error) { await service.close(); throw error; }
   } catch (error) { log.error(error); stopDiagnostics(); store.close(); throw error; }

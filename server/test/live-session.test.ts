@@ -1,3 +1,4 @@
+import { fakeReady as readyOpenAi, FakeClock as OpenAiClock } from './openai-live-voice-fixture.js';
 import { createHash, randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
@@ -7418,4 +7419,123 @@ test('R9-W5 web query drops directory-only proper nouns, keeps conversational na
   assert.deepEqual(bindResearchQuery('cost for Cedarworks and Unrelatedname', 'what does Cedarworks cost'), { query: 'cost for Cedarworks and', dropped: 1 });
   assert.deepEqual(bindResearchQuery('news about Soraya', 'tell me about Soraya'), { query: 'news about Soraya', dropped: 0 });
   assert.deepEqual(bindResearchQuery('news about Toolsource', 'Recent tool finding: Toolsource'), { query: 'news about Toolsource', dropped: 0 });
+});
+
+test('C-AUDIO10: a long continuation survives a completed preamble and later barge-in in trace', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const session = h.owner.create({ idempotencyKey: 'audio10-long-trace', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'Explain the synthetic plan.', finished: true }));
+  fake.emit(portEvent({ type: 'outputTranscription', text: 'Okay, I am on it.', finished: true }));
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+  const parts = Array.from({ length: 90 }, (_, index) => `Synthetic second ${index}: the plan continues. `);
+  fake.emit(portEvent({ type: 'modelTurnStarted' }));
+  for (const text of parts) fake.emit(portEvent({ type: 'outputTranscription', text, finished: false }));
+  fake.emit(portEvent({ type: 'outputTranscription', text: '', finished: true }));
+  fake.emit(portEvent({ type: 'interrupted' }));
+  await settlePort();
+  const finals = h.store.transaction(tx => tx.all("SELECT text FROM trace_utterance WHERE role='model' AND final=1 ORDER BY rowid"));
+  assert.deepEqual(finals.map(row => row['text']), ['Okay, I am on it.', parts.join('').trim()]);
+  attachment.close();
+});
+
+test('C-AUDIO10: repeated start notifications do not duplicate first audio for a response', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const events: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(detach);
+  const session = h.owner.create({ idempotencyKey: 'audio10-first-audio', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const start = (responseId: string) => portEvent({ type: 'modelTurnStarted', ...{ responseId } });
+  fake.emit(start('synthetic-response-1'));
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  fake.emit(start('synthetic-response-1'));
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  assert.equal(events.filter(row => row.event === 'live_first_audio').length, 1);
+  fake.emit(start('synthetic-response-2'));
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  assert.equal(events.filter(row => row.event === 'live_first_audio').length, 2);
+  attachment.close();
+});
+
+test('C-AUDIO10: the opening model utterance has its own assistant trace turn', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const session = h.owner.create({ idempotencyKey: 'audio10-opener-trace', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'outputTranscription', text: 'Synthetic welcome.', finished: true }));
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+  const rows = h.store.transaction(tx => tx.all("SELECT u.text, t.origin FROM trace_utterance u JOIN trace_turn t USING(turn_id) WHERE t.live_session_id=? AND u.role='model' AND u.final=1", [session.liveSessionId]));
+  assert.deepEqual(rows.map(row => [row['text'], row['origin']]), [['Synthetic welcome.', 'assistant']]);
+  attachment.close();
+});
+
+
+test('C-AUDIO10 F1: a plain turn after delegation gets fresh first-audio and dead-air receipts', async t => {
+  const clock = new OpenAiClock();
+  const adapter = await readyOpenAi(t, { clock });
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const events: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(detach);
+  const session = h.owner.create({ idempotencyKey: 'audio10-delegated-plain', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  adapter.socket.deliver({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'response_delegated' } } });
+  await settlePort();
+  const delegated = adapter.captured.events.find(event => event.type === 'modelTurnStarted');
+  assert.ok(delegated);
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'Synthetic lookup.', finished: true }));
+  fake.emit(portEvent(delegated));
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+  adapter.socket.deliver({ type: 'session.input_transcript.delta', delta: 'Synthetic plain question.' });
+  clock.advance(701);
+  await settlePort();
+  const starts = adapter.captured.events.filter(event => event.type === 'modelTurnStarted');
+  assert.equal(starts.length, 2);
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'Synthetic plain question.', finished: true }));
+  fake.emit(portEvent(starts[1]!));
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  assert.equal(events.filter(row => row.event === 'live_first_audio').length, 2);
+  assert.equal(events.filter(row => row.event === 'live_dead_air' && 'deadAirMs' in row).length, 2);
+  assert.equal(events.filter(row => row.event === 'live_response_latency').length, 2);
+  attachment.close();
+});
+
+test('C-AUDIO10 F2: a rebuilt greeting opens a new assistant trace turn', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const session = h.owner.create({ idempotencyKey: 'audio10-rebuilt-trace', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'outputTranscription', text: 'Synthetic first greeting.', finished: true }));
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+  fake.emit({ type: 'goAway', timeLeftMs: 1 });
+  for (let index = 0; index < 100 && fake.sessionsOpened < 2; index += 1) await tick();
+  assert.equal(fake.sessionsOpened, 2);
+  await settlePort();
+  fake.emit(portEvent({ type: 'outputTranscription', text: 'Synthetic rebuilt greeting.', finished: true }));
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+  const rows = h.store.transaction(tx => tx.all("SELECT u.turn_id,u.text,t.origin FROM trace_utterance u JOIN trace_turn t USING(turn_id) WHERE t.live_session_id=? AND u.role='model' AND u.final=1 ORDER BY u.rowid", [session.liveSessionId]));
+  assert.deepEqual(rows.map(row => row['text']), ['Synthetic first greeting.', 'Synthetic rebuilt greeting.']);
+  assert.notEqual(rows[0]!['turn_id'], rows[1]!['turn_id'], 'rebuild must not attribute its greeting to the old closed turn');
+  assert.deepEqual(rows.map(row => row['origin']), ['assistant', 'assistant']);
+  attachment.close();
 });

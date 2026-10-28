@@ -2243,3 +2243,49 @@ test('C-CONVO9 replay: progress phrases vary within one synthetic call', () => {
   assert.throws(() => assertFreshProgressPhrases(['Checking.', 'Checking.']));
   assert.throws(() => assertFreshProgressPhrases(["I am on it.", "I am on it."]));
 });
+
+test('C-AUDIO10: speech loss sends one repeat-end host note and one receipt per weak episode', async t => {
+  const receipts = hostReceipts(t);
+  const clock = new FakeClock();
+  const { socket, session } = await fakeReady(t, { clock });
+  socket.trackBuffer = true;
+  for (let index = 0; index < 400; index += 1) {
+    session.sendAudio({ pcm: pcm16(320, index % 3 === 0 ? 0 : 1200), dataClass: 'ordinary' });
+    clock.advance(20);
+  }
+  const notes = socket.sent.map(frame => JSON.parse(frame)).filter(frame => frame.type === 'response.item.create'
+    && JSON.stringify(frame).includes('weak connection'));
+  assert.equal(notes.length, 1);
+  assert.match(JSON.stringify(notes[0]), /ask.*repeat.*end/i);
+  assert.equal(receipts().filter(row => row.event === 'uplink_speech_shed').length, 1);
+  assert.equal(session.diagnostics?.().connection?.quality, 'weak');
+});
+
+test('C-AUDIO10: overflowing speech never retains silence heartbeats ahead of speech', async t => {
+  const receipts = hostReceipts(t);
+  const clock = new FakeClock();
+  const { socket, session } = await fakeReady(t, { clock });
+  socket.bufferedAmount = 100_000;
+  // A queue contains both speech and silence, including the 400 ms silence heartbeat boundary.
+  for (let index = 0; index < 200; index += 1) {
+    session.sendAudio({ pcm: pcm16(320, index % 2 ? 1200 : 0), dataClass: 'ordinary' });
+    clock.advance(20);
+  }
+  const speechLoss = receipts().filter(row => row.event === 'uplink_speech_shed');
+  assert.equal(speechLoss.length, 1);
+  assert.equal(speechLoss[0]!.silenceFramesBeforeSpeechShed, 0,
+    'at the speech-shed decision every non-speech frame, including heartbeats, is already gone');
+  assert.ok(safeEvent(speechLoss[0]!), 'the ordering receipt is a closed counts-only event');
+  // End with speech and trigger the next overflow; any surviving silence would be an older heartbeat.
+  for (let index = 0; index < 60; index += 1) {
+    session.sendAudio({ pcm: pcm16(320, 1200), dataClass: 'ordinary' });
+    clock.advance(20);
+  }
+  const before = micAudio(socket).length;
+  socket.drain(1_000_000);
+  clock.advance(100);
+  session.sendAudio({ pcm: pcm16(320, 1200), dataClass: 'ordinary' });
+  const drained = micAudio(socket).slice(before).map(encoded => Buffer.from(encoded, 'base64'));
+  assert.ok(drained.length > 0, 'retained speech actually drains onto the wire');
+  assert.ok(drained.every(pcm => pcm.readInt16LE(0) !== 0), 'all older silence is gone before speech is discarded');
+});

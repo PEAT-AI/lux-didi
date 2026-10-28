@@ -941,6 +941,7 @@ class Session implements LiveVoiceSession {
       });
       return;
     }
+    // Plain owner-end notices have no provider response id: currentResponse may belong to an old delegation.
     this.emit({ type: 'modelTurnStarted' });
     this.touch();
   }
@@ -1046,7 +1047,7 @@ class Session implements LiveVoiceSession {
         // pre-tool turn can never complete this one before it has spoken.
         this.audioSinceCompletion = false;
         this.responseCreated(event, message);
-        this.emit({ type: 'modelTurnStarted' });
+        this.emit({ type: 'modelTurnStarted', ...this.providerIds() });
         this.touch();
         return;
       }
@@ -1666,7 +1667,10 @@ class Session implements LiveVoiceSession {
    * one frame per 200 ms of dropped silence kept so the provider's timing advances. If the queue is still over
    * the bound, the oldest speech goes as one contiguous run; the newest 500 ms of speech is never touched.
    */
+  private speechLossNoted = false;
+
   private shedMicPending(): void {
+    const speechBefore = this.speechShedMs;
     const before = this.micPending.length;
     const afterSilence: { frame: string; bytes: number; speech: boolean }[] = [];
     let droppedSinceHeartbeatMs = 0;
@@ -1681,6 +1685,16 @@ class Session implements LiveVoiceSession {
       droppedSinceHeartbeatMs = 0;
       afterSilence.push(entry);
     }
+    let pendingWireBytes = afterSilence.reduce((sum, entry) => sum + Buffer.byteLength(entry.frame), 0);
+    if (pendingWireBytes > UPLINK_SHED_BYTES) {
+      for (let index = 0; index < afterSilence.length;) {
+        const entry = afterSilence[index]!;
+        if (entry.speech) { index += 1; continue; }
+        this.shedMicFrame(entry, false);
+        pendingWireBytes -= Buffer.byteLength(entry.frame);
+        afterSilence.splice(index, 1);
+      }
+    }
     let floorMs = 0;
     let protectedSpeech = 0;
     for (let index = afterSilence.length - 1; index >= 0 && floorMs < UPLINK_SPEECH_FLOOR_MS; index -= 1) {
@@ -1693,6 +1707,8 @@ class Session implements LiveVoiceSession {
     // One contiguous run down to the floor, never the frame or two that would leave 20 ms islands: what stays on
     // the wire after a shed is a run of consecutive speech, which is what the model can hear as words.
     let toShed = remaining > UPLINK_SHED_BYTES ? Math.max(0, afterSilence.filter(entry => entry.speech).length - protectedSpeech) : 0;
+    // Sample the queue at the decision, not after it drains: the receipt proves silence-first ordering.
+    const silenceFramesBeforeSpeechShed = afterSilence.filter(entry => !entry.speech).length;
     const kept: typeof afterSilence = [];
     for (const entry of afterSilence) {
       if (toShed > 0 && entry.speech) { this.shedMicFrame(entry, true); remaining -= Buffer.byteLength(entry.frame); toShed -= 1; continue; }
@@ -1701,6 +1717,15 @@ class Session implements LiveVoiceSession {
     this.micPending = kept;
     this.micPendingBytes = remaining;
     if (kept.length < before) this.shedRuns += 1;
+    if (this.speechShedMs > speechBefore && !this.speechLossNoted) {
+      this.speechLossNoted = true;
+      this.markUplinkLoss(this.clock.now());
+      hostLogEvent({ event: 'uplink_speech_shed', ms: Math.round(this.speechShedMs - speechBefore), silenceFramesBeforeSpeechShed });
+      // The existing host-note carrier is a user message. Do not request an extra response mid capture.
+      this.write(JSON.stringify({ type: 'response.item.create', event_id: this.commandId('cont'), item: {
+        type: 'message', role: 'user', content: [{ type: 'input_text', text: '[host note: Part of the owner’s last sentence was lost on a weak connection. Do not answer the truncated question; ask him to repeat the end.]' }],
+      } }));
+    }
   }
 
   /** Count one shed frame in its own half of the split: audio milliseconds and wire bytes, counts only. */
@@ -1745,6 +1770,7 @@ class Session implements LiveVoiceSession {
     else if (covered && pinned) this.markUplinkLoss(now);
     else if (this.connectionQuality === 'weak' && (this.lastUplinkLossAt === undefined || now - this.lastUplinkLossAt >= CONNECTION_OK_MS)) {
       this.connectionQuality = 'ok';
+      this.speechLossNoted = false;
       hostLogEvent({ event: 'connection_quality', quality: 'ok', uploadKbps: Math.round(this.drainBytesPerSec * 8 / 1_000) });
     }
   }

@@ -136,7 +136,7 @@ test('C-DEADAIR: the provider latency is recorded apart from the wait, owner fin
   const record = live.receipts.find(entry => entry.event === 'live_response_latency');
   assert.ok(record !== undefined, 'the first audible answer records the provider latency');
   assert.equal(typeof record['msSinceOwnerFinal'], 'number');
-  assert.equal(typeof record['msSinceResponseCreated'], 'number');
+  assert.equal(record['msSinceResponseCreated'], undefined, 'response age is not provider latency');
   assert.equal(typeof record['msSinceToolOutput'], 'number');
   assert.ok(Number(record['msSinceOwnerFinal']) >= 1_000, 'the wait is measured from the owner final words');
 });

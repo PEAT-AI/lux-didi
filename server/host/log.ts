@@ -971,16 +971,19 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.ms) || !SILENCE_OWNERS.includes(String(value.silence))) return;
     return { event: 'live_heard_silence', ms: value.ms, silence: value.silence as string };
   }
+  if (value.event === 'uplink_speech_shed') {
+    if (!closedKeys(value, ['event', 'ms', 'silenceFramesBeforeSpeechShed']) || !isSafeCount(value.ms) || !isSafeCount(value.silenceFramesBeforeSpeechShed)) return;
+    return { event: 'uplink_speech_shed', ms: value.ms, silenceFramesBeforeSpeechShed: value.silenceFramesBeforeSpeechShed };
+  }
   if (value.event === 'live_response_latency') {
     // C-DEADAIR: the provider's share of a wait, kept apart from the host's dead-air clock. Three durations and
     // the session they belong to, never any turn content.
-    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'msSinceOwnerFinal', 'msSinceResponseCreated', 'msSinceToolOutput'])) return;
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'msSinceOwnerFinal', 'msSinceToolOutput'])) return;
     if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
     if (!isSafeCount(value.generation) || !isSafeCount(value.msSinceOwnerFinal)) return;
-    if (!(value.msSinceResponseCreated === null || isSafeCount(value.msSinceResponseCreated))) return;
     if (!(value.msSinceToolOutput === null || isSafeCount(value.msSinceToolOutput))) return;
     return { event: 'live_response_latency', liveSessionId: value.liveSessionId, generation: value.generation,
-      msSinceOwnerFinal: value.msSinceOwnerFinal, msSinceResponseCreated: value.msSinceResponseCreated, msSinceToolOutput: value.msSinceToolOutput };
+      msSinceOwnerFinal: value.msSinceOwnerFinal, msSinceToolOutput: value.msSinceToolOutput };
   }
   if (value.event === 'live_turn_open') {
     // #303: the provider streamed model audio and then went quiet without a turnComplete.
@@ -1646,7 +1649,7 @@ export class HostLog {
     // C-LOG-ENVELOPE: one envelope, written here and nowhere else. A field the event already carries keeps
     // its own value, so no existing event shape changes meaning; the call context fills only what is absent.
     const name = typeof event.event === 'string' ? event.event : '';
-    const severity = severityOf(name);
+    const severity = severityOf(name, event);
     // A line whose name says nothing about its domain carries no cause; an event that already names its
     // own cause keeps it, so no existing shape changes meaning.
     const record = { timestamp: new Date().toISOString(), monoMs: monoMilliseconds(), pid: process.pid, seq: nextSeq(),

@@ -640,6 +640,8 @@ interface ActiveSession {
   inputFinalAt: number | undefined;
   /** First model audio of the current turn; reset at each model turn start. */
   firstAudioAt: number | undefined;
+  audioResponseId?: string | undefined;
+  traceOutputTurnId?: string | undefined;
   /** L-04: the end of the last audible frame, owner speech end or model audio end, whichever came later, and whether
    *  the wait that followed began after a tool result. The wait to the next model audio is the silence the owner heard. */
   heardSince?: number | undefined; heardAfterTool: boolean;
@@ -2843,6 +2845,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     connection.turnIndex += 1;
     const turnId = `${handle.liveSessionId}:t${connection.turnIndex}`;
     connection.turnId = turnId;
+    handle.traceOutputTurnId = turnId;
     this.#receipt(handle, 'turn.opened', { turnId }, {
       origin: 'owner', turnIndex: connection.turnIndex, openedAt: this.#now(), monoMs: hostMonotonicMs(),
       ...(supersedes === undefined ? {} : { supersedesTurnId: supersedes }),
@@ -3195,6 +3198,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // L8-Q03: the turn the dead socket was answering is closed under its own epoch, never left open forever.
     if (handle.connection.turnId !== undefined) this.#closeTurn(handle, 'recovered');
     handle.connection = { seq: handle.connection.seq + 1, epoch: `e${handle.connection.seq + 1}`, turnId: undefined, turnIndex: handle.connection.turnIndex };
+    // Continuation attribution is local to the socket epoch, never inherited by a rebuilt greeting.
+    handle.traceOutputTurnId = undefined;
+    handle.audioResponseId = undefined;
     handle.deadlineAt = this.#now() + remaining; handle.deadlineMs = Date.now() + remaining;
     // #660: a result that returned unspoken is why this window exists, so the new session opens model-first and
     // speaks as soon as the delivery below lands, instead of waiting for the owner to ask again.
@@ -3664,7 +3670,12 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           if (handle.turnCompleteSeen) { handle.dropResponse = false; handle.outputJournalled = false; handle.turnCompleteSeen = false; }
           if (handle.muted) handle.mutedResponse = true;
           resetTurnScript(handle);
-          handle.firstAudioAt = undefined; handle.turnAudioAt = undefined;
+          // Synthesized owner-end notifications do not identify a new provider response.
+          const responseId = 'responseId' in event && typeof event.responseId === 'string' ? event.responseId : undefined;
+          if (responseId !== undefined ? responseId !== handle.audioResponseId : true) {
+            handle.firstAudioAt = undefined; handle.turnAudioAt = undefined;
+          }
+          if (responseId !== undefined) handle.audioResponseId = responseId;
           this.#beginModelTurn(handle);
           // A generation start is the think time. gpt-live-1 sends none for a plain turn, so the adapter
           // synthesizes one when the owner's episode ends, and this is what puts the orb in THINKING.
@@ -3846,7 +3857,6 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
               // speak, and the tool-output offset is what the host's own ladder is measured against.
               hostLogEvent({ event: 'live_response_latency', liveSessionId: handle.liveSessionId, generation,
                 msSinceOwnerFinal: Math.max(0, handle.firstAudioAt - handle.inputFinalAt - handle.mutedMs),
-                msSinceResponseCreated: handle.responseCreatedAt === undefined ? null : Math.max(0, handle.firstAudioAt - handle.responseCreatedAt),
                 msSinceToolOutput: handle.answerAt === undefined ? null : Math.max(0, handle.firstAudioAt - handle.answerAt) });
               handle.inputFinalAt = undefined;
             }
@@ -4719,6 +4729,14 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
     const limits = this.#profile.limits;
     if (handle.journalEvents + 1 > limits.journalMaxEvents || handle.journalBytes + bytes > limits.journalMaxBytes) return 'overflow';
     const now = this.#now();
+    // An unsolicited opening answer has no owner utterance to open its trace turn.
+    if (event.type === 'outputTranscription' && text?.length && handle.connection.turnId === undefined && handle.traceOutputTurnId === undefined) {
+      const turnIndex = ++handle.connection.turnIndex;
+      const turnId = `${handle.liveSessionId}:t${turnIndex}`;
+      handle.connection.turnId = turnId;
+      handle.traceOutputTurnId = turnId;
+      this.#receipt(handle, 'turn.opened', { turnId }, { origin: 'assistant', turnIndex, openedAt: now, monoMs: hostMonotonicMs() });
+    }
     const events = handle.journalEvents + 1;
     const total = handle.journalBytes + bytes;
     // W6 item 6: the composed note acts on the persisted turn, so the hook never nests a transaction.
@@ -4738,7 +4756,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       const journalId = Number(tx.get('SELECT journal_id FROM live_journal WHERE live_session_id=? ORDER BY journal_id DESC LIMIT 1', [handle.liveSessionId])!['journal_id']);
       if (handle.pendingDiagnosticLoss) tx.run("UPDATE live_sessions SET diagnostic_metadata_state='partial',diagnostic_content_state='partial',diagnostic_failures=MAX(COALESCE(diagnostic_failures,0),1),diagnostic_last_reason='store_unavailable' WHERE live_session_id=?", [handle.liveSessionId]);
       if (transcription) {
-        const turnId = handle.connection.turnId;
+        const turnId = handle.connection.turnId ?? (transcription.type === 'outputTranscription' ? handle.traceOutputTurnId : undefined);
         if (turnId !== undefined) {
           // L2-R1: live_journal keeps its fragments and its empty closing row; the audit row is where the
           // assembled utterance belongs, so trace_utterance final=1 answers "what was said".

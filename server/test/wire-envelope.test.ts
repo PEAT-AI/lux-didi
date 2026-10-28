@@ -80,7 +80,7 @@ const EMITTERS: readonly { expression: string; count: number; channel: 'host' | 
   },
   {
     expression: 'hostNote(CLAIM_WITHOUT_CALL_LINE)', count: 1, channel: 'host',
-    covers: [{ file: 'live-session.test.ts', title: 'C-TURN8: a claim with no call gets exactly one correction, and only once per owner turn' }],
+    covers: [{ file: 'live-session.test.ts', title: 'C-TURN8: ${progress} with no call gets exactly one correction, and only once per owner turn' }],
   },
   {
     expression: 'hostNote(text)', count: 1, channel: 'host',
@@ -114,7 +114,7 @@ test('every host-note emitter in the shipped live host is registered and covered
     assert.ok(row.covers.length > 0, `${row.expression} names the test that covers it`);
     for (const cover of row.covers) {
       const source = readFileSync(new URL(`../../test/${cover.file}`, import.meta.url), 'utf8');
-      assert.ok(source.includes(`test('${cover.title}'`), `${row.expression} is covered by ${cover.file}: ${cover.title}`);
+      assert.ok(source.includes(`test('${cover.title}'`) || source.includes('test(`' + cover.title + '`'), `${row.expression} is covered by ${cover.file}: ${cover.title}`);
     }
   }
 });

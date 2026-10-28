@@ -136,13 +136,13 @@ test('C-LOGS11: every line inside a turn names the turn, and a tool-call line na
   const detach = attachHostLogSink(log);
   t.after(() => { detach(); clearLogContext(); return rm(root, { recursive: true, force: true }); });
   setLogContext({ liveSessionId: SESSION, generation: 0, turnId: `${SESSION}:t1` });
-  hostLogEvent({ event: 'live_heard_silence', ms: 900 });
+  hostLogEvent({ event: 'live_heard_silence', ms: 900, silence: 'provider' });
   hostLogEvent({ event: 'tool_call_admitted', callKey: 'call:0123456789abcdef', tool: 'gmail_search_messages' });
   hostLogEvent({ event: 'tool_call_dispatched', callKey: 'call:0123456789abcdef', tool: 'gmail_search_messages' });
   hostLogEvent({ event: 'tool_call_outcome', callKey: 'call:0123456789abcdef', tool: 'gmail_search_messages', outcome: 'refused', ms: 12, refusalCode: 'grant_not_permitted' });
   // The turn closes: the next line inside the same call carries no turn.
   setLogContext({ turnId: null });
-  hostLogEvent({ event: 'live_heard_silence', ms: 900 });
+  hostLogEvent({ event: 'live_heard_silence', ms: 900, silence: 'provider' });
   const records = await lines(root);
   assert.equal(records.length, 5);
   for (const record of records.slice(0, 4)) assert.equal(record.turnId, `${SESSION}:t1`, `${record.event} names the turn`);

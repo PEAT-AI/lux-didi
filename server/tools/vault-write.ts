@@ -18,7 +18,7 @@ export const VAULT_PROJECT = 'didi-voice';
 /** Spoken guidance, never a save claim. */
 export const VAULT_SAY_SAVE_PHRASE = 'say: save this to lux, then the note';
 export const VAULT_SAY_UNKNOWN = 'I am not sure it landed, check the vault';
-export const VAULT_SAY_FAILED = 'the vault did not take the note, say it again';
+export const VAULT_SAY_FAILED = 'I could not confirm that the vault saved the note; do not retry it automatically';
 export const VAULT_SAY_UNAVAILABLE = 'the vault is not reachable right now';
 
 export type VaultCode = 'not_owner_requested' | 'write_failed' | 'outcome_unknown' | 'vault_unavailable';
@@ -30,6 +30,9 @@ export interface VaultReceipt {
   readonly insightId?: string;
   readonly guidance?: string;
 }
+
+export const VAULT_TRANSPORT_PHASES = ['initialize_http', 'initialize_transport', 'initialized_notify', 'endpoint_rejected', 'call_http', 'call_transport', 'schema_rejected'] as const;
+export type VaultTransportPhase = (typeof VAULT_TRANSPORT_PHASES)[number];
 
 export type VaultTransportResult =
   | { readonly outcome: 'inserted'; readonly insightId: string }

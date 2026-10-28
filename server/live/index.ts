@@ -2101,7 +2101,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     if (this.#settled(handle)) return;
     const line = receipt.saved
       ? `The vault returned insight ${receipt.insightId}. Say: Saved ${JSON.stringify(settled.title)} in Lux.`
-      : `The note was not saved (${receipt.code ?? 'unknown'}). Say plainly that it was not saved.`;
+      : `The vault did not confirm the save (${receipt.code ?? 'unknown'}). Say that plainly; do not claim success or retry it.`;
     try { handle.session.sendText({ text: hostNote(line) }); } catch { /* a closed transport settles on its own */ }
   }
 

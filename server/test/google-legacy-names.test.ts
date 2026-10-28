@@ -11,7 +11,7 @@ import type { ConnectionPolicy } from '../tools/types.js';
 
 const stored: ConnectionPolicy = {
   schemaVersion: 1, ownerId: 'owner-fixture', connectionId: 'calendar', generation: 2, enabled: true, connector: 'google',
-  endpoint: { id: 'calendar', transport: 'streamable-http', url: 'https://helper.example.invalid/mcp', account: 'owner@example.invalid', resource: 'calendar', credentialRef: null },
+  endpoint: { id: 'calendar', url: 'https://helper.example.invalid/mcp', account: 'owner@example.invalid', resource: 'calendar', credentialRef: null },
   toolNames: ['gcal_calendars', 'gcal_list'],
   schemaDigest: 'a'.repeat(64),
   sourcePolicy: { id: 'google-read', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },

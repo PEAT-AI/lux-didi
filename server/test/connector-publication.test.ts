@@ -561,26 +561,26 @@ test('C-CHAT: the install route, a new connection id for the newer child beside 
 
 // ---- W2-R1: a rebuilt stdio child keeps its endpoint and reconnects without an approval ----------------
 // The owner's own child moved from a dated directory to a stable one and the host that launches it got a
-// fresh PATH. Neither says anything about which server the endpoint is, so neither is a new approval.
+// fresh PATH. Neither says anything about which server the endpoint is, so neither is a new approval. The
+// synthetic child is the Mattermost reader the owner actually runs, never a real account or service.
 
-// The fixture rides in server/test/fixtures, three levels up from both the source and the compiled file.
-const GOOGLE_CHILD = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'google-mcp-child.mjs');
+const PEOPLE_CHILD = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'stdio-mattermost-people-child.mjs');
 
 function stdioApprovalHost(t: TestContext, dir: string, configDir: string) {
   let store = new Store(join(dir, 'data'), toolsMigrations);
   const lifecycle: { event: string; endpointId?: string; fields?: readonly string[]; reason?: string; addedToolNames?: readonly string[] }[] = [];
   const failures: string[] = [];
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
-  const endpoint = (args: readonly string[], path: string, account = 'local', resource = 'google-gmail') => ({
-    id: 'gmail', transport: 'stdio', command: process.execPath, args: [...args],
+  const endpoint = (args: readonly string[], path: string, account = 'mattermost') => ({
+    id: 'mattermost-people', transport: 'stdio', command: process.execPath, args: [...args],
     // The whole launch environment, PATH included, exactly as the installing host shapes it.
     env: { HOME: '/home/fixture', PATH: path, LOGNAME: '', SHELL: '', TERM: '', USER: '' },
-    connector: 'google', account, resource, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'private',
+    connector: 'mattermost', account, resource: 'mattermost', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'private',
   });
-  const write = (grantMode: string, args: readonly string[], path: string, account?: string, resource?: string): void => {
+  const write = (grantMode: string, args: readonly string[], path: string, account?: string): void => {
+    // No ownerIdentity: the synthetic child answers no real account, so the catalog states none.
     writeFileSync(join(configDir, 'mcp.json'),
-      // The google child pins its own account, so the catalog states the owner it must prove.
-      JSON.stringify({ schemaVersion: 1, grantMode, ownerIdentity: 'owner@example.invalid', endpoints: [endpoint(args, path, account, resource)] }),
+      JSON.stringify({ schemaVersion: 1, grantMode, endpoints: [endpoint(args, path, account)] }),
       { mode: 0o600 });
   };
   const start = async () => {
@@ -592,28 +592,34 @@ function stdioApprovalHost(t: TestContext, dir: string, configDir: string) {
     await runtime.start();
     return runtime;
   };
-  const generation = (): number => Number(store.transaction(tx => tx.get("SELECT generation FROM tool_connections WHERE connection_id='gmail'"))?.['generation']);
-  return { endpoint, write, start, generation, lifecycle, failures, report: (runtime: Awaited<ReturnType<typeof composeMcpRuntime>>) => runtime.status().endpoints.find(entry => entry.id === 'gmail') };
+  const generation = (): number => Number(store.transaction(tx => tx.get("SELECT generation FROM tool_connections WHERE connection_id='mattermost-people'"))?.['generation']);
+  return { write, start, generation, lifecycle, failures, report: (runtime: Awaited<ReturnType<typeof composeMcpRuntime>>) => runtime.status().endpoints.find(entry => entry.id === 'mattermost-people') };
+}
+
+/** The rebuilt child's new house, three releases of this suite have lived in a dated directory. */
+function movedChild(dir: string): string {
+  const rebuiltDir = join(dir, 'mattermost-mcp-local'); mkdirSync(rebuiltDir);
+  const rebuiltChild = join(rebuiltDir, 'stdio-mattermost-people-child.mjs');
+  copyFileSync(PEOPLE_CHILD, rebuiltChild);
+  // The child resolves its MCP SDK from the tree it was installed with, as an installed release ships its
+  // own node_modules; the moved directory keeps that resolution through one symlink.
+  symlinkSync(join(dirname(PEOPLE_CHILD), '..', '..', 'node_modules'), join(dir, 'node_modules'), 'dir');
+  return rebuiltChild;
 }
 
 test('W2-R1: a rebuilt stdio child in a moved directory with a fresh PATH reconnects without an approval', { skip: process.platform === 'win32' }, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-moved-child-'));
   const configDir = join(dir, 'config'); mkdirSync(configDir, { recursive: true, mode: 0o700 });
-  const rebuiltDir = join(dir, 'google-mcp-local'); mkdirSync(rebuiltDir);
-  const rebuiltChild = join(rebuiltDir, 'google-mcp-child.mjs');
-  copyFileSync(GOOGLE_CHILD, rebuiltChild);
-  // The child resolves its MCP SDK from the tree it was installed with, as an installed release ships its
-  // own node_modules; the moved directory keeps that resolution through one symlink.
-  symlinkSync(join(dirname(GOOGLE_CHILD), '..', '..', 'node_modules'), join(dir, 'node_modules'), 'dir');
+  const rebuiltChild = movedChild(dir);
   const h = stdioApprovalHost(t, dir, configDir);
-  h.write('owner-trusted-reads', [GOOGLE_CHILD, 'ok'], '/usr/bin');
+  h.write('owner-trusted-reads', [PEOPLE_CHILD, 'people'], '/usr/bin');
   const first = await h.start();
   assert.equal(h.report(first)?.state, 'connected', JSON.stringify(h.report(first)));
   await first.close();
   const settled = h.generation();
   h.lifecycle.length = 0;
   // The moved child and the host's new shell PATH: same id, same descriptor, same account and resource.
-  h.write('owner-trusted-reads', [rebuiltChild, 'ok'], '/opt/homebrew/bin:/usr/bin');
+  h.write('owner-trusted-reads', [rebuiltChild, 'people'], '/opt/homebrew/bin:/usr/bin');
   const moved = await h.start();
   try {
     assert.equal(h.report(moved)?.state, 'connected', JSON.stringify(h.report(moved)));
@@ -621,12 +627,12 @@ test('W2-R1: a rebuilt stdio child in a moved directory with a fresh PATH reconn
     assert.deepEqual(h.failures, [], 'a moved child is not a refusal');
     assert.equal(h.generation(), settled + 1, 'the reconciled endpoint is a new generation');
     assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_endpoint_changed'),
-      { event: 'connector_endpoint_changed', endpointId: 'gmail', fields: ['args', 'env'] }, 'which fields moved, never a value');
+      { event: 'connector_endpoint_changed', endpointId: 'mattermost-people', fields: ['args', 'env'] }, 'which fields moved, never a value');
     assert.equal(h.lifecycle.some(event => event.event === 'connector_approval_refused'), false);
   } finally { await moved.close(); }
   // A PATH-only change is not an endpoint change at all: nothing moved but the shell that launched it.
   h.lifecycle.length = 0;
-  h.write('owner-trusted-reads', [rebuiltChild, 'ok'], '/usr/local/bin:/usr/bin');
+  h.write('owner-trusted-reads', [rebuiltChild, 'people'], '/usr/local/bin:/usr/bin');
   const pathOnly = await h.start();
   try {
     assert.equal(h.report(pathOnly)?.state, 'connected');
@@ -634,29 +640,24 @@ test('W2-R1: a rebuilt stdio child in a moved directory with a fresh PATH reconn
   } finally { await pathOnly.close(); }
 });
 
-test('W2-R1: an account change is a moved endpoint in trusted mode, and explicit mode grants no moved child', { skip: process.platform === 'win32' }, async t => {
+test('W2-R1: an account change is a moved endpoint in trusted mode', { skip: process.platform === 'win32' }, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-moved-account-'));
   const configDir = join(dir, 'config'); mkdirSync(configDir, { recursive: true, mode: 0o700 });
-  const rebuiltDir = join(dir, 'google-mcp-local'); mkdirSync(rebuiltDir);
-  const rebuiltChild = join(rebuiltDir, 'google-mcp-child.mjs');
-  copyFileSync(GOOGLE_CHILD, rebuiltChild);
-  // The child resolves its MCP SDK from the tree it was installed with, as an installed release ships its
-  // own node_modules; the moved directory keeps that resolution through one symlink.
-  symlinkSync(join(dirname(GOOGLE_CHILD), '..', '..', 'node_modules'), join(dir, 'node_modules'), 'dir');
+  const rebuiltChild = movedChild(dir);
   const h = stdioApprovalHost(t, dir, configDir);
-  h.write('owner-trusted-reads', [GOOGLE_CHILD, 'ok'], '/usr/bin');
+  h.write('owner-trusted-reads', [PEOPLE_CHILD, 'people'], '/usr/bin');
   const first = await h.start();
   assert.equal(h.report(first)?.state, 'connected');
   await first.close();
   // The approval was for one account: another account under the same id is a different endpoint.
   h.lifecycle.length = 0;
-  h.write('owner-trusted-reads', [rebuiltChild, 'ok'], '/usr/bin', 'other-account');
+  h.write('owner-trusted-reads', [rebuiltChild, 'people'], '/opt/homebrew/bin:/usr/bin', 'other-account');
   const account = await h.start();
   try {
     assert.equal(h.report(account)?.configurationError, 'owner-approval-required');
     assert.deepEqual(account.connectionIds(), [], 'an account change is never a reconciliation');
     assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_approval_refused'),
-      { event: 'connector_approval_refused', endpointId: 'gmail', reason: 'endpoint_changed' });
+      { event: 'connector_approval_refused', endpointId: 'mattermost-people', reason: 'endpoint_changed' });
     assert.equal(h.lifecycle.some(event => event.event === 'connector_endpoint_changed'), false);
   } finally { await account.close(); }
 });
@@ -664,19 +665,14 @@ test('W2-R1: an account change is a moved endpoint in trusted mode, and explicit
 test('W2-R1: explicit mode grants no read to a moved stdio child', { skip: process.platform === 'win32' }, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-moved-explicit-'));
   const configDir = join(dir, 'config'); mkdirSync(configDir, { recursive: true, mode: 0o700 });
-  const rebuiltDir = join(dir, 'google-mcp-local'); mkdirSync(rebuiltDir);
-  const rebuiltChild = join(rebuiltDir, 'google-mcp-child.mjs');
-  copyFileSync(GOOGLE_CHILD, rebuiltChild);
-  // The child resolves its MCP SDK from the tree it was installed with, as an installed release ships its
-  // own node_modules; the moved directory keeps that resolution through one symlink.
-  symlinkSync(join(dirname(GOOGLE_CHILD), '..', '..', 'node_modules'), join(dir, 'node_modules'), 'dir');
+  const rebuiltChild = movedChild(dir);
   const h = stdioApprovalHost(t, dir, configDir);
-  h.write('owner-trusted-reads', [GOOGLE_CHILD, 'ok'], '/usr/bin');
+  h.write('owner-trusted-reads', [PEOPLE_CHILD, 'people'], '/usr/bin');
   const first = await h.start();
   assert.equal(h.report(first)?.state, 'connected');
   await first.close();
   h.lifecycle.length = 0;
-  h.write('explicit', [rebuiltChild, 'ok'], '/opt/homebrew/bin:/usr/bin');
+  h.write('explicit', [rebuiltChild, 'people'], '/opt/homebrew/bin:/usr/bin');
   const moved = await h.start();
   try {
     assert.deepEqual(moved.connectionIds(), [], 'explicit mode never follows a moved child');

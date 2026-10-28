@@ -5459,7 +5459,9 @@ test('calendar integration: actual Google projector and Live ledger deliver ever
     assert.doesNotMatch(JSON.stringify(reply), /next-events|more-calendars/, 'opaque page tokens stay inside the host ledger');
     if (revoked) h.toolRegistry!.revoke('calendar');
     await settleLiveTool(h, 'calendar-continue', 'research', { action: 'continue', researchId: reply['researchId'] });
-    if (revoked) { assert.deepEqual(last()['findings'], []); assert.equal(last()['canContinue'], false); }
+    // C-POLISH10: a continue on a finished run is a pointer, and a source whose grant was revoked is denied at
+    // delivery before that pointer: the closed denial is the whole reply and nothing the calendar retained crosses.
+    if (revoked) assert.deepEqual(last(), { error: 'tool_result_denied' });
     else { assert.match(JSON.stringify(reply['findings']), /Synthetic event 14/, 'the whole window was already spoken'); assert.equal(last()['canContinue'], false); }
     assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 2, 'neither retained delivery nor denial rereads completed pages');
   }
@@ -7538,4 +7540,22 @@ test('C-AUDIO10 F2: a rebuilt greeting opens a new assistant trace turn', async 
   assert.notEqual(rows[0]!['turn_id'], rows[1]!['turn_id'], 'rebuild must not attribute its greeting to the old closed turn');
   assert.deepEqual(rows.map(row => row['origin']), ['assistant', 'assistant']);
   attachment.close();
+});
+
+// C-POLISH10: the open audit is asserted through the real tool definition and registry, so a wrong or missing
+// call-site value cannot pass on the helper's own arguments. No native peer is bound, so the open fails and the audit
+// line is the only record of what was asked to open.
+test('C-POLISH10: an open_web call through the tool registry logs its closed audit line', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const h = await harness(t, { tools: true, history: true });
+  await attached(h);
+  await ownerSpoke(h, 'open the Margit Halden deck');
+  await settleLiveTool(h, 'open-web-audit', 'open_web', { kind: 'search', target: 'Margit Halden deck' });
+  const frame = h.f.frames.filter(entry => typeof entry === 'object' && entry !== null && 'toolResponse' in entry).at(-1) as { toolResponse: { functionResponses: { response: unknown }[] } };
+  const audit = receipts.filter(record => record.event === 'open_audit');
+  assert.deepEqual(audit, [{ event: 'open_audit', tool: 'open_web', kind: 'search', words: 3, bound: 'yes', destination: 'search', refusal: 'failed' }],
+    `the registry audited the call: tool, kind, counted words, binding, destination class and the closed code; reply ${JSON.stringify(frame.toolResponse.functionResponses[0]!.response)}`);
+  assert.equal(/Margit|Halden|deck|https?:/u.test(JSON.stringify(audit)), false, 'the audit names no target word and no address');
 });

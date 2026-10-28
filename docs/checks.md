@@ -58,7 +58,7 @@ Release 8 shipped four live failures with every test green: an untested tool ent
 - A transport calls an external API: it validates every outbound method and path against a pinned vendor-published spec, checked in under `server/test/fixtures/specs/` with its retrieval URL and date, and an agent-written extract is never a source.
 - A guard judges the owner's words: test it with the ask split across two finalized owner turns.
 - A refusal or a gate gets a test: pair it with a test that the valid case passes.
-- Host-originated text moves toward the model: it travels only through the host-note channel (`hostNote` in `server/live/index.ts`) and is asserted at the wire frame, not at the caller.
+- Host-originated text moves toward the model: it carries the host-note mark (`[host note, not the owner]`) at the wire frame, never an unmarked user turn, and `server/test/wire-envelope.test.ts` lists every emitter so a new one cannot reach the model unregistered.
 - Per-turn state is added (admission, budgets, ledgers): add a two-turn reset test.
 - An install is declared done: `scripts/run-installed-checks.sh` passes on the installed bundle, and that script fails when zero checks ran (the script arrives with the release 9 install gate).
 - A test looks wrong against new code: never edit the test to match the code, and an accepted assertion changes only under a ruling that names it.

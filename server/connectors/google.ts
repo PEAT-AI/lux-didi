@@ -531,20 +531,38 @@ export async function readCalendarDigest(read: CalendarDigestRead | undefined, i
   const data = isRecord(envelope) && isRecord(envelope['data']) ? envelope['data'] : {};
   const events = Array.isArray(data['events']) ? data['events'].filter(isRecord) : [];
   const clock = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: input.timeZone });
-  const lines: string[] = [];
-  let length = 0;
-  for (const event of events) {
+  const clockOf = (event: Record<string, unknown>): string => {
     const start = event['start'];
-    const stamp = isRecord(start) && typeof start['dateTime'] === 'string' ? clock.format(new Date(start['dateTime'])) : 'all day';
+    return isRecord(start) && typeof start['dateTime'] === 'string' ? clock.format(new Date(start['dateTime'])) : 'all day';
+  };
+  const atOf = (event: Record<string, unknown>): number | undefined => {
+    const start = event['start'];
+    const at = isRecord(start) && typeof start['dateTime'] === 'string' ? Date.parse(start['dateTime']) : Number.NaN;
+    return Number.isFinite(at) ? at : undefined;
+  };
+  // C-CAL8: the meetings still ahead come first, then the clockless all-day entries, then what is past, so a
+  // bounded digest always carries the next events instead of the ones the owner already sat through.
+  const now = input.now();
+  const ahead = events.filter(event => (atOf(event) ?? Number.POSITIVE_INFINITY) >= now && atOf(event) !== undefined).sort((a, b) => atOf(a)! - atOf(b)!);
+  const allDay = events.filter(event => atOf(event) === undefined);
+  const past = events.filter(event => atOf(event) !== undefined && atOf(event)! < now).sort((a, b) => atOf(a)! - atOf(b)!);
+  const lines = [...ahead, ...allDay, ...past].map(event => {
     const summary = typeof event['summary'] === 'string' ? event['summary'].trim() : '';
-    const line = stamp + ' ' + (summary.length ? summary : 'untitled');
-    const next = lines.length ? ', ' + line : line;
+    return clockOf(event) + ' ' + (summary.length ? summary : 'untitled');
+  });
+  if (lines.length === 0) return absent('empty');
+  const digestText = (kept: number): string => (kept < lines.length ? `${lines.slice(0, kept).join(', ')}, +${lines.length - kept} more` : lines.join(', '));
+  let kept = 0;
+  let length = 0;
+  for (const line of lines) {
+    const next = kept === 0 ? line : ', ' + line;
     if (length + next.length > CALENDAR_DIGEST_CHARS) break;
-    lines.push(line);
+    kept += 1;
     length += next.length;
   }
-  if (lines.length === 0) return absent('empty');
-  return { state: 'present', text: lines.join(', '), items: lines.length, fetchedAt: input.now() };
+  // C-CAL8: a digest that cuts ends with `+N more`, so a bounded line is never read as the whole day.
+  while (kept > 1 && digestText(kept).length > CALENDAR_DIGEST_CHARS) kept -= 1;
+  return { state: 'present', text: digestText(kept), items: kept, fetchedAt: input.now() };
 }
 
 /**

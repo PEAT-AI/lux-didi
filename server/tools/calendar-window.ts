@@ -1,8 +1,14 @@
 const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 const unresolved = (): never => { throw Error('unresolved_calendar_window'); };
 
-/** Resolve each boundary in the declared zone; the two offsets may differ. */
-export function calendarRange(window: string, nowMs: number, timeZone: string): { timeMin: string; timeMax: string } {
+/**
+ * Resolve each boundary in the declared zone; the two offsets may differ.
+ *
+ * C-CAL8: today is the owner's day from now on, not from local midnight, so a schedule ask at 13:43 reads
+ * the meetings still ahead instead of calling three of them already past. The local midnight stays the
+ * right boundary for every other window, and the tomorrow, week and date forms are untouched.
+ */
+export function calendarRange(window: string, nowMs: number, timeZone: string, fromNow = false): { timeMin: string; timeMax: string } {
   let format: Intl.DateTimeFormat;
   try { format = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }); }
   catch { return unresolved(); }
@@ -44,5 +50,6 @@ export function calendarRange(window: string, nowMs: number, timeZone: string): 
     }
     return unresolved();
   };
-  return { timeMin: midnight(date), timeMax: midnight(date + days * 86400000) };
+  const start = fromNow && days === 1 && date === Date.UTC(year!, month! - 1, day!) ? new Date(nowMs).toISOString() : midnight(date);
+  return { timeMin: start, timeMax: midnight(date + days * 86400000) };
 }

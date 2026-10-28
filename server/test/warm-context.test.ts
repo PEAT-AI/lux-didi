@@ -421,3 +421,32 @@ test('a newly connected Mongoose endpoint is announced once, in one sentence, an
   assert.equal(notes.take([row('knowledge', false), row('data', true), row('crm', false)]), undefined);
   assert.equal(notes.take([row('knowledge', true), row('data', true), row('crm', false)]), 'Mongoose knowledge is now connected as Rob; data was already connected.');
 });
+
+// C-CAL8: a call start that found no digest asked the connector, the read outlived its deadline, and the day
+// it landed with must be offered on the next assembly instead of waiting out the fifteen minute timer.
+test('C-CAL8: a digest cut at call start is retried once in the background and offered when it lands', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const clock = { now: digestMonday };
+  const events: unknown[] = [];
+  let reads = 0;
+  const cache = new CalendarDigestCache(async signal => {
+    reads += 1;
+    if (reads === 1) return await new Promise(resolve => {
+      signal.addEventListener('abort', () => resolve({ state: 'timeout' as const, text: undefined, items: 0, fetchedAt: clock.now }), { once: true });
+    });
+    return { state: 'present' as const, text: '09:30 standup', items: 1, fetchedAt: clock.now };
+  }, { now: () => clock.now, timeZone: 'Asia/Kolkata', log: event => events.push(event) });
+  const reading = cache.refresh('start');
+  t.mock.timers.tick(calendarDigestReadMs);
+  assert.equal((await reading).state, 'timeout', 'the first read is cut at the deadline');
+  assert.equal(reads, 2, 'and one background retry is asked for at once');
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(events, [
+    { event: 'calendar_digest_timeout', reason: 'start', ms: 0 },
+    { event: 'calendar_digest_refreshed', reason: 'retry', ms: 0 },
+  ], 'the retry leaves exactly one closed line when it lands');
+  const offered = await cache.forStart();
+  assert.equal(offered.state, 'present', 'the day the retry landed with answers the next assembly');
+  assert.equal(offered.text, '09:30 standup');
+  assert.equal(reads, 2, 'one retry only');
+});

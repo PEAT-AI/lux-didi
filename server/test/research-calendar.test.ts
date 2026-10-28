@@ -16,7 +16,13 @@ function fixture(events: Record<string, unknown>[], opts: { token?: string; page
       if (call.name === 'calendar_list_calendars') return { key: call.key, name: call.name, ok: true, text: '- Main [primary]', originalCharacters: 16, omittedCharacters: 0 };
       const start = Date.parse(String(call.args['timeMin']));
       const end = Date.parse(String(call.args['timeMax']));
-      const all = events.filter(event => Date.parse(String(event['start'])) >= start && Date.parse(String(event['start'])) < end);
+      // C-CAL8: Google reads an all-day entry by its day, so a day inside the window is returned even though
+      // its start is midnight; a timed entry still has to fall inside the window.
+      const dayStart = Date.parse(String(call.args['timeMin']).slice(0, 10) + 'T00:00:00Z');
+      const all = events.filter(event => {
+        const at = Date.parse(String(event['start']));
+        return (/^\d{4}-\d{2}-\d{2}$/u.test(String(event['start'])) ? at >= dayStart : at >= start) && at < end;
+      });
       const offset = call.args['pageToken'] === 'second' ? (opts.pageSize ?? 12) : 0;
       const received = all.slice(offset, offset + (opts.pageSize ?? 50));
       const page = shapeGcalList({ events: received, ...(offset === 0 && opts.token ? { nextPageToken: opts.token } : {}) });
@@ -230,7 +236,10 @@ test('calendar R4: the plan resolves the window itself, with no selector round',
   await runResearch(plain.deps, { action: 'start', question: 'what is on my calendar' }, signal());
   const today = plain.calls.find(call => call.name === 'calendar_list_events');
   assert.ok(today !== undefined, 'the plan reads the calendar with no window word');
-  assert.equal(today.args['timeMin'], windowRange('today', fixedNow, 'UTC').timeMin, 'the default window is today');
+  // C-CAL8: the default window is today, and today means the rest of the day from now, so a schedule ask
+  // never offers a meeting the owner has already sat through.
+  assert.equal(today.args['timeMin'], windowRange('today', fixedNow, 'UTC', true).timeMin, 'the default window is today from now');
+  assert.ok(Date.parse(String(today.args['timeMin'])) >= fixedNow, 'the read never starts before now');
 });
 
 test('calendar R5: scheduler Stop invalidates a completed retained run before later Continue', async () => {
@@ -536,7 +545,7 @@ test('release 4: a window the grammar cannot resolve names its own reason instea
 
 test('#574: a day read prints the attendee names it was given', async () => {
   const party = Array.from({ length: 12 }, (_, n) => ({ displayName: `Person ${n}` }));
-  const h = fixture([{ id: 'a1', start: '2026-10-19T09:00:00Z', summary: 'Design review', attendees: party }]);
+  const h = fixture([{ id: 'a1', start: '2026-10-19T15:00:00Z', summary: 'Design review', attendees: party }]);
   const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
   const text = JSON.stringify(reply['findings']);
   assert.match(text, /Person 7/);
@@ -548,9 +557,9 @@ test('#574: a day read prints the attendee names it was given', async () => {
 
 test('L8-01: a day read carries the organizer and the true head count, never a character marker', async () => {
   const party = [{ displayName: 'Robin Vale' }, { displayName: 'Ari Andor' }, { email: 'dana.d@example.invalid' }, { email: 'kim.l@example.invalid' }];
-  const h = fixture([{ id: `${'e'.repeat(60)}_${'7'.repeat(79)}`, start: '2026-10-19T09:00:00Z', summary: 'Re: demo / Example', attendees: party,
+  const h = fixture([{ id: `${'e'.repeat(60)}_${'7'.repeat(79)}`, start: '2026-10-19T15:00:00Z', summary: 'Re: demo / Example', attendees: party,
     organizer: { displayName: 'Wes Rowan' }, htmlLink: 'https://calendar.google.com/event?eid=e1', description: 'Agenda. '.repeat(40) },
-    { id: 'b2', start: '2026-10-19T11:00:00Z', summary: 'Second meeting', attendees: [{ displayName: 'Robin Vale' }] }]);
+    { id: 'b2', start: '2026-10-19T17:00:00Z', summary: 'Second meeting', attendees: [{ displayName: 'Robin Vale' }] }]);
   const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
   const text = JSON.stringify(reply['findings']);
   assert.match(text, /attendees: 4 people: Robin Vale, Ari Andor, dana\.d@example\.invalid, kim\.l@example\.invalid/u, `every attendee reaches the answer: ${text}`);
@@ -631,11 +640,102 @@ test('#7: a single-day read drops the previous day all-day entry and keeps the d
   const h = fixture([
     { id: 'allday-prev', start: '2026-10-18', summary: 'Company offsite' },
     { id: 'allday-today', start: '2026-10-19', summary: 'Release day' },
-    { id: 'timed', start: '2026-10-19T09:00:00Z', summary: 'Standup' },
+    { id: 'timed', start: '2026-10-19T15:00:00Z', summary: 'Standup' },
   ]);
   const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
   const text = JSON.stringify(reply['findings']);
   assert.doesNotMatch(text, /Company offsite/, 'the prior day all-day entry is not part of this answer');
   assert.match(text, /Release day/, 'the day own all-day entry stays, with no invented time');
   assert.match(text, /Standup/);
+});
+
+// C-CAL8: a synthetic day at a fixed local time, so a window, a cap and an ordering are read as the owner sees them.
+function dayFixture(events: Record<string, unknown>[], opts: { now?: number; replyLimit?: number; configured?: readonly SourceKind[] } = {}) {
+  const calls: { name: string; args: Record<string, unknown> }[] = [];
+  const now = opts.now ?? fixedNow;
+  const deps: ResearchDeps = {
+    now: () => now, configured: opts.configured ?? ['calendar'], ledger: new ResearchLedger(), timeZone: 'UTC',
+    ...(opts.replyLimit === undefined ? {} : { replyLimit: opts.replyLimit }),
+    emit() {}, log() {}, step() {}, logSource() {}, logSubcall() {}, logRouted() {},
+    execute: async subs => subs.map(call => {
+      calls.push({ name: call.name, args: { ...call.args } });
+      if (call.name === 'calendar_list_calendars') return { key: call.key, name: call.name, ok: true, text: '- Main [primary]', originalCharacters: 16, omittedCharacters: 0 } as IntentSubResult;
+      if (call.name === 'calendar_list_events') {
+        const start = Date.parse(String(call.args['timeMin']));
+        const end = Date.parse(String(call.args['timeMax']));
+        // C-CAL8: an all-day entry is read by its day, as Google does; a timed entry falls inside the window.
+        const dayStart = Date.parse(String(call.args['timeMin']).slice(0, 10) + 'T00:00:00Z');
+        const within = events.filter(event => {
+          const at = Date.parse(String(event['start']));
+          return (/^\d{4}-\d{2}-\d{2}$/u.test(String(event['start'])) ? at >= dayStart : at >= start) && at < end;
+        });
+        return { key: call.key, name: call.name, ok: true, ...shapeGcalList({ events: within }) } as IntentSubResult;
+      }
+      return { key: call.key, name: call.name, ok: true, text: '- Synthetic evidence line', originalCharacters: 26, omittedCharacters: 0 } as IntentSubResult;
+    }),
+  };
+  return { deps, calls };
+}
+const syntheticHour = (hour: number, summary = `Synthetic ${hour}`): Record<string, unknown> => ({ id: `s${hour}`, start: `2026-10-19T${String(hour).padStart(2, '0')}:00:00Z`, summary });
+const dayHours = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
+
+test('C-CAL8: a schedule ask at 13:43 reads and speaks the rest of the day from now, never the meetings already past', async () => {
+  const now = Date.parse('2026-10-19T13:43:00Z');
+  const h = dayFixture(dayHours.map(hour => syntheticHour(hour)), { now });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is my schedule today' }, signal());
+  const read = h.calls.find(call => call.name === 'calendar_list_events');
+  assert.ok(read !== undefined, 'the schedule ask reads the calendar');
+  assert.equal(read.args['timeMin'], '2026-10-19T13:43:00.000Z', 'today starts at now, not at local midnight');
+  assert.equal(read.args['timeMax'], '2026-10-20T00:00:00.000Z', 'the end of the owner day is unchanged');
+  const text = JSON.stringify(reply['findings']);
+  for (const hour of [14, 15, 16, 17]) assert.match(text, new RegExp(`Synthetic ${hour}\\b`), `the meetings still ahead are spoken: ${hour}`);
+  for (const hour of [8, 9, 10, 11, 12, 13]) assert.doesNotMatch(text, new RegExp(`Synthetic ${hour}\\b`), `a meeting already past is not offered as the rest of the day: ${hour}`);
+});
+
+test('C-CAL8: the model own calendar lookup reads today from now, and an afternoon ask is not a past ask', async () => {
+  const now = Date.parse('2026-10-19T13:43:00Z');
+  const lookup = dayFixture(dayHours.map(hour => syntheticHour(hour)), { now });
+  await runResearch(lookup.deps, { action: 'start', question: 'what is my schedule today', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
+  const routed = lookup.calls.find(call => call.name === 'calendar_list_events');
+  assert.equal(routed?.args['timeMin'], '2026-10-19T13:43:00.000Z', 'the lookup surface reads the rest of the day from now too');
+  const afternoon = dayFixture(dayHours.map(hour => syntheticHour(hour)), { now });
+  await runResearch(afternoon.deps, { action: 'start', question: 'what is on my calendar this afternoon' }, signal());
+  assert.equal(afternoon.calls.find(call => call.name === 'calendar_list_events')?.args['timeMin'], '2026-10-19T13:43:00.000Z', 'the afternoon at 13:43 is still ahead, so it is not a past-events ask');
+});
+
+test('C-CAL8: a schedule ask that names the morning keeps the past, and tomorrow is unchanged', async () => {
+  const now = Date.parse('2026-10-19T13:43:00Z');
+  const morning = dayFixture(dayHours.map(hour => syntheticHour(hour)), { now });
+  await runResearch(morning.deps, { action: 'start', question: 'what happened on my calendar this morning' }, signal());
+  assert.equal(morning.calls.find(call => call.name === 'calendar_list_events')?.args['timeMin'], '2026-10-19T00:00:00.000Z', 'the morning ask reads from local midnight');
+  const tomorrow = dayFixture(dayHours.map(hour => syntheticHour(hour)), { now });
+  await runResearch(tomorrow.deps, { action: 'start', question: 'what is on my calendar tomorrow' }, signal());
+  assert.equal(tomorrow.calls.find(call => call.name === 'calendar_list_events')?.args['timeMin'], '2026-10-20T00:00:00.000Z', 'tomorrow still starts at its own midnight');
+});
+
+test('C-CAL8: under cap pressure the calendar drops the events already past, keeps the last of the day and counts what it left out', async () => {
+  const now = Date.parse('2026-10-19T13:43:00Z');
+  const events = dayHours.map(hour => syntheticHour(hour, `Synthetic ${hour} ${'detail '.repeat(20).trim()}`));
+  const h = dayFixture(events, { now, replyLimit: 1200 });
+  // A what-happened ask keeps local midnight, so the whole day is in the window and the cap has past events
+  // to drop before the afternoon.
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what happened on my calendar today' }, signal());
+  const text = JSON.stringify(reply['findings']);
+  assert.match(text, /Synthetic 17\b/, 'the last meeting of the day survives the cap');
+  assert.doesNotMatch(text, /Synthetic 8\b/, 'the earliest meeting is the first one dropped');
+  assert.match(text, /plus \d+ earlier and \d+ later events left out/, `the reply names what it left out by count: ${text.slice(0, 300)}`);
+  const shown = /calendar: (\d+) of 10 shown/u.exec(text);
+  assert.ok(shown !== null, `the calendar count is still spoken: ${text.slice(0, 200)}`);
+  const note = /plus (\d+) earlier and (\d+) later events left out/u.exec(text);
+  assert.equal(Number(shown[1]) + Number(note?.[1]) + Number(note?.[2]), 10, 'shown plus the earlier and the later left out equals the ten events');
+});
+
+test('C-CAL8: a schedule ask speaks the calendar first, and the knowledge about it follows', async () => {
+  const now = Date.parse('2026-10-19T13:43:00Z');
+  const h = dayFixture(dayHours.map(hour => syntheticHour(hour)), { now, configured: ['knowledge', 'calendar'] });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my schedule today' }, signal());
+  const findings = reply['findings'] as Record<string, unknown>[];
+  assert.ok(findings.length > 0, 'the ask answers with findings');
+  assert.equal(findings[0]?.['source'], 'calendar', `the calendar leads a schedule ask: ${JSON.stringify(findings.map(finding => finding['source']))}`);
+  assert.match(String(findings[0]?.['text']), /Synthetic 14\b/, 'and its first finding carries the meetings still ahead');
 });

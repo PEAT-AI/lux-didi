@@ -829,8 +829,8 @@ function spokenNames(question: string): string[] {
 }
 
 /** The RFC3339 window in the session timezone, independent of the process timezone. */
-export function windowRange(window: string, nowMs: number, timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone): { timeMin: string; timeMax: string } {
-  return calendarRange(window, nowMs, timeZone);
+export function windowRange(window: string, nowMs: number, timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone, fromNow = false): { timeMin: string; timeMax: string } {
+  return calendarRange(window, nowMs, timeZone, fromNow);
 }
 
 /** The resolved window kind, a closed enum for the host log: today, tomorrow, week or a single date. */
@@ -1321,6 +1321,17 @@ const SCHEDULE_WORDS = new RegExp(`${OWNER_SCHEDULE.source}|\\b(next week|weekda
 
 export function ownerScheduleQuestion(question: string): boolean {
   return OWNER_SCHEDULE.test(question.toLowerCase());
+}
+
+/**
+ * C-CAL8: today, my schedule, what is next and the next meeting mean the rest of the day from now on.
+ * The one ask that keeps the past is the one that names the morning or what already happened, and its
+ * words are read here rather than inferred, so a plain schedule ask never speaks a finished meeting.
+ * An afternoon ask is not one of them: at 13:43 the afternoon is still ahead.
+ */
+const PAST_EVENTS_ASK = /\b(morning|earlier|already|so far|what happened|happened (?:already|so far)|this morning|been through)\b/u;
+export function pastEventsAsked(question: string): boolean {
+  return PAST_EVENTS_ASK.test(question.toLowerCase());
 }
 
 /** Whether a question asks what came in, rather than naming something to look up. */
@@ -1881,7 +1892,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     let range: { timeMin: string; timeMax: string };
     // A question that names no window reads today, the connector's own default; an ambiguous or
     // unreadable one dispatches nothing.
-    try { range = windowRange(config.window ?? calendarWindowOf(config.question, 'today'), config.nowMs ?? Date.now(), config.timeZone); }
+    try { range = windowRange(config.window ?? calendarWindowOf(config.question, 'today'), config.nowMs ?? Date.now(), config.timeZone, !pastEventsAsked(config.question ?? '')); }
     catch { return []; }
     return [search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar }, 'cal0')];
   }
@@ -1937,7 +1948,7 @@ export function candidateSubs(kind: CandidateKind, config: { question: string; t
     const named = new Set(ROUTE_CLASSES.filter(route => routeWanted(route, config.question)).map(route => route.source));
     // A brief reads primary events; calendar names alone are not findings.
     if (config.configured.includes('calendar') && named.has('calendar')) {
-      const range = windowRange('today', config.nowMs ?? Date.now(), config.timeZone);
+      const range = windowRange('today', config.nowMs ?? Date.now(), config.timeZone, !pastEventsAsked(config.question ?? ''));
       subs.push(search(INTERNAL.calendarList, { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar }, 'b0'));
     }
     if (config.configured.includes('mail') && named.has('mail')) subs.push(search(INTERNAL.mailList, { q: 'newer_than:2d' }, 'b1'));
@@ -2900,6 +2911,13 @@ const SOURCE_LABEL: Record<SourceKind, string> = { memory: 'memory', knowledge: 
 const spokenLabelOf = (source: SourceKind): string => SOURCE_LABELS.find(([name]) => name === source)?.[1] ?? SOURCE_LABEL[source];
 /** Findings order: her own memory and the owner's knowledge base lead, company sources follow. */
 const SOURCE_ORDER: readonly SourceKind[] = ['memory', 'knowledge', 'calendar', 'mail', 'chat', 'mongoose', 'data', 'drive', 'web'];
+/**
+ * C-CAL8: a schedule ask is answered by the calendar first, so its reply opens with the meetings and the
+ * knowledge behind them follows. Every other ask keeps the declared order.
+ */
+const sourceOrderFor = (question: string): readonly SourceKind[] => ownerScheduleQuestion(question)
+  ? ['calendar', ...SOURCE_ORDER.filter(source => source !== 'calendar')]
+  : SOURCE_ORDER;
 /** #621: the smallest room a floor clip may leave, so one source's last line always fits the bound. */
 const FLOOR_CLIP_CHARS = 8;
 const LINE_CAP: Partial<Record<CandidateKind, number>> = {
@@ -4068,7 +4086,7 @@ export function capReply(reply: JsonObject, limit: number, refresh?: () => void)
 function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 'unavailable', configured: readonly SourceKind[], canContinue: boolean, limit: number, sources?: JsonObject, skipBodies = false, bodyLimit = RESEARCH.bodyLimitChars): JsonObject {
   const bodyReply = skipBodies ? undefined : receivedBodyReply(run, configured, bodyLimit);
   if (bodyReply) { if (Array.isArray((bodyReply as JsonObject)['bodySlices'])) run.bodyReplies += 1; return bodyReply; }
-  const groups: { source: SourceKind; label: string; lines: string[]; total: number; days?: { day: string; entries: string[] }[]; meta?: string[] }[] = [];
+  const groups: { source: SourceKind; label: string; lines: string[]; total: number; days?: { day: string; entries: string[] }[]; events?: RetainedCalendarEvent[]; meta?: string[] }[] = [];
   const shownLines = new Set<string>();
   for (const entry of run.ledger.values()) {
     if (entry.bodyOnly || !entry.lines || entry.lines.length === 0 || entry.source === null || (entry.source === 'calendar' && run.calendar.size > 0) || (entry.source === 'mail' && run.mail.size > 0)) continue;
@@ -4101,7 +4119,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const remaining = [...calendarEvents].filter(([key]) => !run.calendarDelivered.has(key)).sort(([, a], [, b]) => a.start.localeCompare(b.start));
   // E8: the whole window comes back, one line per day, so a week is never re-asked day by day.
   const calendarDays = compactCalendarWindow(remaining.map(([, event]) => event), run.timeZone);
-  if (remaining.length > 0) groups.push({ source: 'calendar', label: SOURCE_LABEL.calendar, lines: calendarDayLines(calendarDays), days: calendarDays, total: Math.max(calendarEvents.size, remaining.length) });
+  if (remaining.length > 0) groups.push({ source: 'calendar', label: SOURCE_LABEL.calendar, lines: calendarDayLines(calendarDays), days: calendarDays, events: remaining.map(([, event]) => event), total: Math.max(calendarEvents.size, remaining.length) });
   const calendarReads = [...run.calendar.values()];
   const calendarUpstream = calendarReads.some(read => !read.failed && !read.exhausted);
   const calendarPartial = calendarReads.some(read => read.failed || read.unread > 0 || read.upstreamIncomplete || !read.exhausted);
@@ -4127,7 +4145,8 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const unchecked = configured.filter(source => !readSources.has(source));
   // Outcome 2: name the sources this run could not reach, in one short clause the model can voice,
   // so an outage is never hidden behind a narrow answer. `knowledge` leads the findings.
-  groups.sort((a, b) => SOURCE_ORDER.indexOf(a.source) - SOURCE_ORDER.indexOf(b.source));
+  const order = sourceOrderFor(run.question ?? '');
+  groups.sort((a, b) => order.indexOf(a.source) - order.indexOf(b.source));
   // #635: a chat read that failed by timing out is said as a timeout with its budget, never as a chat out of
   // reach. #569 keeps its timeout reason on the web's endpoint; #655 says that timeout as the web taking too long.
   const chatTimedOut = run.sourcesFailed.has('chat') && TIMED_OUT.has(run.unavailableReasons.get('chat') ?? '');
@@ -4192,14 +4211,37 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
   const unavailableReasons = run.unavailableReasons.size === 0 ? undefined : Object.fromEntries(run.unavailableReasons);
   let dropped = 0;
   let droppedEvents = 0;
+  let droppedPast = 0;
+  let droppedAhead = 0;
+  // C-CAL8 F4: once the past is gone the earliest meeting still ahead goes, and the reply names that count
+  // too, so the note never accounts for fewer events than the header says are missing.
+  const leftOutNote = (): string[] => {
+    if (droppedPast === 0 && droppedAhead === 0) return [];
+    const counted = [droppedPast > 0 ? `${droppedPast} earlier` : '', droppedAhead > 0 ? `${droppedAhead} later` : ''].filter(part => part.length > 0).join(' and ');
+    return [`- plus ${counted} ${droppedPast + droppedAhead === 1 ? 'event' : 'events'} left out of this answer`];
+  };
   const shownOf = (group: { lines: string[]; days?: { day: string; entries: string[] }[] }): number => group.days === undefined ? group.lines.length : group.days.reduce((n, day) => n + day.entries.length, 0);
   // A calendar trim drops one event, never a whole day, so a full window loses as little as the budget needs.
-  const trimCalendarEvent = (group: { lines: string[]; days?: { day: string; entries: string[] }[] }): boolean => {
+  // C-CAL8: it drops what is already past first, oldest first, and never a meeting still ahead, so a capped
+  // answer keeps the afternoon and names the earlier events it left out instead of cutting the last one.
+  const trimCalendarEvent = (group: { lines: string[]; days?: { day: string; entries: string[] }[]; events?: RetainedCalendarEvent[] }): boolean => {
     const days = group.days;
     if (days === undefined || days.length === 0) return false;
-    days[days.length - 1]!.entries.pop();
-    while (days.length > 0 && days[days.length - 1]!.entries.length === 0) days.pop();
-    group.lines.splice(0, group.lines.length, ...calendarDayLines(days));
+    const events = group.events;
+    if (events !== undefined) {
+      if (events.length <= 1) return false;
+      const now = new Date(run.startedAt).toISOString();
+      // The earliest event first: every event already past goes before any meeting still ahead, and once
+      // only the afternoon is left the earliest of those goes, so the last meeting of the day always stays.
+      if (events[0]!.start < now) droppedPast += 1; else droppedAhead += 1;
+      events.splice(0, 1);
+      group.days = compactCalendarWindow(events, run.timeZone);
+      group.lines.splice(0, group.lines.length, ...calendarDayLines(group.days), ...leftOutNote());
+    } else {
+      days[days.length - 1]!.entries.pop();
+      while (days.length > 0 && days[days.length - 1]!.entries.length === 0) days.pop();
+      group.lines.splice(0, group.lines.length, ...calendarDayLines(days));
+    }
     droppedEvents += 1;
     return true;
   };
@@ -4296,9 +4338,12 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       // C-DEPTH item 2: an ask that names a person or a document gives her memory no allocation at all, unless
       // the ask refers to a past conversation, so her own notes can never crowd out the evidence she was asked for.
       const names = requestedEntities(run.question ?? '').length > 0 && !pastConversationAsk(run.question ?? '');
+      // C-CAL8: on a schedule ask the calendar yields last, so the meetings the ask was about survive a cap.
+      const scheduleAsk = ownerScheduleQuestion(run.question ?? '');
+      const pool = scheduleAsk && fillable.some(group => group.source !== 'calendar') ? fillable.filter(group => group.source !== 'calendar') : fillable;
       const memory = names || !run.route.has('memory') ? fillable.find(group => group.source === 'memory') : undefined;
       const trimmed = memory !== undefined && groups.some(group => group.source !== 'memory' && shownOf(group) > 0) ? memory
-        : fillable.reduce((worst, group) => (kept(group) > kept(worst) ? group : worst));
+        : pool.reduce((worst, group) => (kept(group) > kept(worst) ? group : worst));
       // #4: a calendar day line is a list of whole events, so it loses one event at a time, the count it
       // reports is the count of events it really dropped, and it is never clipped: a clip would swallow an
       // event while the header still claimed it. Its last event stays, so the answer keeps the day it read.
@@ -4316,6 +4361,9 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // The floor: one line per source. A line wider than the whole room is clipped, never left half a word.
     const widest = groups.filter(group => shownOf(group) > 0).sort((a, b) => b.lines.join(' ').length - a.lines.join(' ').length)[0];
     if (widest === undefined) break;
+    // C-CAL8: a calendar line is a list of whole events, so the floor drops one event instead of clipping the
+    // day: a clip would swallow the last meeting of the day while the header still claimed it was shown.
+    if (widest.days !== undefined && trimCalendarEvent(widest)) continue;
     const last = widest.lines[widest.lines.length - 1]!;
     const room = last.length - (rendered - limit) - 1;
     const clipped = room >= FLOOR_CLIP_CHARS ? sentencePrefix(last, room) || clip(last, room) : '';
@@ -4594,7 +4642,9 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
   if (lookup.source === 'calendar') {
     let range: { timeMin: string; timeMax: string };
     // An unnamed window is unresolved, never widened: only the declared grammar resolves here.
-    try { range = windowRange(calendarWindowOf(query) || calendarWindowOf(context.question), context.now(), context.timeZone); }
+    // C-CAL8: a schedule lookup reads today from now, exactly as the plan surface does, so the model's own
+    // `query: 'today'` lookup never hands back the morning the owner already sat through.
+    try { range = windowRange(calendarWindowOf(query) || calendarWindowOf(context.question), context.now(), context.timeZone, !pastEventsAsked(context.question ?? '')); }
     catch { return { source: 'calendar', kind: 'calendar_window', subs: [], unresolved: true, reason: 'window_unparsed' }; }
     return { source: 'calendar', kind: 'calendar_window', subs: [
       { key: 'cal0', name: INTERNAL.calendarList, args: { calendarId: 'primary', timeMin: range.timeMin, timeMax: range.timeMax, maxResults: RESEARCH.pageResults.calendar } as JsonObject },

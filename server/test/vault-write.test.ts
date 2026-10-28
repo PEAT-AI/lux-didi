@@ -1,3 +1,4 @@
+import { attachHostLogSink } from '../tools/host-events.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -137,12 +138,12 @@ test('a dispatched row at host start becomes uncertain and is never re-sent', as
   assert.equal(fake.calls.length, 0, 'an uncertain row is never re-sent');
 });
 
-test('a drop after the vault committed is outcome_unknown with one request and no retry', async t => {
+test('a dropped call has no confirmed receipt, is write_failed, and never retries', async t => {
   const fake = await fakeLux(t, 'drop');
   const h = harness(t, fake.url);
   speak(h, '14', `save to my vault: ${NOTE}`);
   const receipt = await save(h, NOTE);
-  assert.deepEqual(receipt, { saved: false, code: 'outcome_unknown', guidance: 'I am not sure it landed, check the vault' });
+  assert.deepEqual(receipt, { saved: false, code: 'write_failed', guidance: 'I could not confirm that the vault saved the note; do not retry it automatically' });
   assert.equal(fake.calls.length, 1, 'exactly one request, no retry');
 });
 
@@ -151,7 +152,7 @@ test('a 503 is write_failed after exactly one request', async t => {
   const h = harness(t, fake.url);
   speak(h, '15', `save to my vault: ${NOTE}`);
   const receipt = await save(h, NOTE);
-  assert.deepEqual(receipt, { saved: false, code: 'write_failed', guidance: 'the vault did not take the note, say it again' });
+  assert.deepEqual(receipt, { saved: false, code: 'write_failed', guidance: 'I could not confirm that the vault saved the note; do not retry it automatically' });
   assert.equal(fake.calls.length, 1);
 });
 
@@ -160,7 +161,7 @@ test('a duplicate refusal is never reported as saved', async t => {
   const h = harness(t, fake.url);
   speak(h, '16', `save to my vault: ${NOTE}`);
   const receipt = await save(h, NOTE);
-  assert.deepEqual(receipt, { saved: false, code: 'write_failed', guidance: 'the vault did not take the note, say it again' });
+  assert.deepEqual(receipt, { saved: false, code: 'write_failed', guidance: 'I could not confirm that the vault saved the note; do not retry it automatically' });
   assert.equal(fake.calls.length, 1);
 });
 
@@ -201,7 +202,7 @@ test('the grammar is anchored, takes his natural asks, and the content key ignor
 const flush = async (): Promise<void> => { for (let i = 0; i < 6; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
 
 /** The shipped adapter journals deltas (finished 0) and one empty finished transcription; a boundary test must too. */
-test('the adapter-shaped transcript mints the authorization from the assembled owner turn', async t => {
+test('the adapter-shaped transcript never mints a legacy dictation write authorization', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'vault-boundary-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations]);
@@ -227,23 +228,17 @@ test('the adapter-shaped transcript mints the authorization from the assembled o
   await emit({ type: 'inputTranscription', text: 'survey is on Tuesday', finished: false });
   assert.equal(rows().length, 0, 'a delta alone is not an owner turn');
   await emit({ type: 'inputTranscription', text: '', finished: true });
-  const minted = rows();
-  assert.equal(minted.length, 1, 'the finished boundary mints exactly one authorization');
-  assert.equal(minted[0]?.['content'], 'the boat survey is on Tuesday');
-  assert.equal(minted[0]?.['state'], 'authorized');
-
+  assert.equal(rows().length, 0, 'a finalized save request is not a legacy vault-write authorization');
   await emit({ type: 'inputTranscription', text: '', finished: true });
-  assert.equal(rows().length, 1, 'a blank finished turn mints nothing and never re-mints the turn before it');
-
+  assert.equal(rows().length, 0, 'a blank final cannot mint a legacy authorization');
   await emit({ type: 'inputTranscription', text: 'what is the weather', finished: false });
   await emit({ type: 'inputTranscription', text: '', finished: true });
-  assert.equal(rows().length, 1, 'an ordinary turn mints nothing');
-
+  assert.equal(rows().length, 0, 'an ordinary owner turn cannot mint a legacy authorization');
   owner.text('save to my vault: the typed note');
   await flush();
-  assert.equal(rows().length, 1, 'operator-typed text is not a dictation');
+  assert.equal(rows().length, 0, 'typed text cannot mint a legacy authorization');
   await emit({ type: 'inputTranscription', text: '', finished: true });
-  assert.equal(rows().length, 1, 'and the blank turn after it never carries the typed words forward');
+  assert.equal(rows().length, 0, 'a blank turn never carries typed words forward');
 
   attachment.close();
   await drained;
@@ -277,4 +272,78 @@ test('the words he actually dictated are still a referent', async t => {
   speak(h, '46', 'store it in Lux Knowledge', 'the survey boat is moored at pontoon three');
   const rows = h.store.transaction(tx => tx.all('SELECT content FROM vault_writes'));
   assert.deepEqual(rows.map(row => row['content']), ['the survey boat is moored at pontoon three']);
+});
+
+
+// Upstream src/lux_knowledge/server.py:517, schema SHA256
+// cdd259f3d686f24298ed6444880930a0648590730890fe27c98bc9329c7c38a1.
+// SaveInsightResult in core.py declares insight_id: int | None.
+test('C-LUXSAVE11 W12-R1: outbound save obeys the upstream schema and accepts its numeric receipt', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const fakeFetch: typeof fetch = async (_url, init) => {
+    const call = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    calls.push(call);
+    const headers = { 'content-type': 'application/json', 'mcp-session-id': 'synthetic-session' };
+    if (call['method'] === 'notifications/initialized') return new Response(null, { status: 202, headers });
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: call['id'], result: call['method'] === 'initialize'
+      ? { protocolVersion: '2025-06-18', capabilities: {} }
+      : { content: [{ type: 'text', text: JSON.stringify({ action: 'inserted', insight_id: 81, candidates: [] }) }] } }), { headers });
+  };
+  const transport = createLuxWriteTransport({ url: 'http://127.0.0.1:12345/mcp' }, fakeFetch);
+  const result = await transport.save({ content: 'Synthetic candidate.', title: 'Synthetic title', insightType: 'UNCATEGORIZED', project: 'didi-voice' });
+  const call = calls.find(entry => entry['method'] === 'tools/call');
+  assert.ok(call);
+  const params = call['params'] as { name: string; arguments: Record<string, unknown> };
+  assert.equal(params.name, 'save_insight');
+  // Required and optional names from the unmodified upstream signature, no invented metadata argument.
+  const required = ['content', 'insight_title', 'insight_type'];
+  const allowed = [...required, 'project', 'force'];
+  assert.ok(required.every(key => key in params.arguments));
+  assert.ok(Object.keys(params.arguments).every(key => allowed.includes(key)));
+  for (const key of ['content', 'insight_title', 'insight_type', 'project']) assert.equal(typeof params.arguments[key], 'string');
+  assert.ok(['TECHNICAL_DECISION', 'BUG_GOTCHA', 'PATTERN', 'MEETING', 'USER_PREFERENCE', 'PROJECT_CONSTRAINT', 'UNCATEGORIZED'].includes(String(params.arguments['insight_type'])));
+  assert.deepEqual(result, { outcome: 'inserted', insightId: '81' });
+});
+
+
+for (const phase of ['initialize_http', 'initialize_transport', 'initialized_notify', 'endpoint_rejected', 'call_http', 'call_transport', 'schema_rejected'] as const) {
+  test(`C-LUXSAVE11 W12-R4: ${phase} is a closed host diagnostic with a paired successful save`, async () => {
+    for (const refuse of [true, false]) {
+      const events: unknown[] = [];
+      const detach = attachHostLogSink({ event: event => events.push(event) });
+      try {
+        const fakeFetch: typeof fetch = async (_url, init) => {
+          const call = JSON.parse(String(init?.body)) as { method: string; id?: number };
+          if (refuse && ((phase === 'initialize_transport' && call.method === 'initialize')
+            || (phase === 'initialized_notify' && call.method === 'notifications/initialized')
+            || (phase === 'call_transport' && call.method === 'tools/call'))) throw Error('synthetic transport failure');
+          if (refuse && ((phase === 'initialize_http' && call.method === 'initialize')
+            || (phase === 'call_http' && call.method === 'tools/call'))) return new Response(null, { status: 503 });
+          const headers = { 'content-type': 'application/json', 'mcp-session-id': 'synthetic-session' };
+          if (call.method === 'notifications/initialized') return new Response(null, { status: 202, headers });
+          const result = call.method === 'initialize' ? { protocolVersion: '2025-06-18', capabilities: {} }
+            : { content: [{ type: 'text', text: JSON.stringify(refuse && phase === 'schema_rejected'
+              ? { unrelated: true } : { action: 'inserted', insight_id: 81 }) }] };
+          return new Response(JSON.stringify({ jsonrpc: '2.0', id: call.id, result }), { headers });
+        };
+        const transport = createLuxWriteTransport({ url: refuse && phase === 'endpoint_rejected'
+          ? 'https://example.invalid/mcp' : 'http://127.0.0.1:12345/mcp' }, fakeFetch);
+        const result = await transport.save({ title: 'Synthetic', content: 'Synthetic body.', insightType: 'UNCATEGORIZED', project: 'didi-voice' });
+        const diagnostics = events.filter(event => event && typeof event === 'object' && (event as { event?: string }).event === 'vault_transport');
+        if (refuse) {
+          assert.equal(result.outcome, ['initialize_http', 'initialize_transport', 'initialized_notify', 'endpoint_rejected'].includes(phase) ? 'unavailable' : 'failed');
+          assert.deepEqual(diagnostics, [{ event: 'vault_transport', phase }]);
+          assert.deepEqual(safeEvent(diagnostics[0]), { event: 'vault_transport', phase });
+          assert.equal(safeEvent({ event: 'vault_transport', phase, url: 'synthetic private value' }), undefined);
+        } else {
+          assert.deepEqual(result, { outcome: 'inserted', insightId: '81' });
+          assert.deepEqual(diagnostics, []);
+        }
+      } finally { detach(); }
+    }
+  });
+}
+
+test('C-LUXSAVE11 W12-R4: arbitrary transport phases cannot enter host.log', () => {
+  assert.equal(safeEvent({ event: 'vault_transport', phase: 'arbitrary model text' }), undefined);
 });

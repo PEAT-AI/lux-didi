@@ -12,7 +12,7 @@ import { domainMigrations } from '../domain/schema.js';
 import { createLiveSessionOwner, liveMigrations, validateLiveProfile, type LiveContext } from '../live/index.js';
 import { Store } from '../runtime/store.js';
 import { beginStage, composedAsk, confirmAsk, stageComposedNote } from '../tools/lux-note.js';
-import { VAULT_PROJECT, VAULT_REMOTE_TOOL, VaultWriter, vaultContentKey, type VaultReceipt } from '../tools/vault-write.js';
+import { VAULT_REMOTE_TOOL, VaultWriter, type VaultReceipt } from '../tools/vault-write.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { fakeLux } from './fixtures/fake-lux-vault.js';
 
@@ -67,44 +67,39 @@ async function claimAndSave(store: Store, url: string, sessionId: string, conten
   return claim.state === 'dispatch' ? writer.dispatch(claim) : claim.receipt;
 }
 
-test('his dictated note, then "save this to lux", reaches the vault as save_insight under didi-voice', async t => {
+test('a natural save request cannot bypass staging through a legacy dictated-content claim', async t => {
   const fake = await fakeLux(t, 'inserted', 'insight-42');
   const r = await replay(t);
   await r.speak(NOTE);
   await r.speak('save this to lux');
-  assert.deepEqual(await claimAndSave(r.store, fake.url, r.sessionId, NOTE), { saved: true, insightId: 'insight-42' });
-  assert.equal(fake.calls.length, 1);
-  assert.equal(fake.calls[0]?.name, VAULT_REMOTE_TOOL);
-  assert.deepEqual(fake.calls[0]?.arguments, { content: NOTE, insight_title: NOTE, insight_type: 'UNCATEGORIZED', project: VAULT_PROJECT });
-  const row = r.store.transaction(tx => tx.get('SELECT state,insight_id,content_key FROM vault_writes WHERE live_session_id=?', [r.sessionId]));
-  assert.equal(row?.['state'], 'confirmed');
-  assert.equal(row?.['content_key'], vaultContentKey(NOTE), 'the authorization is his own words, not the ask');
+  const result = await claimAndSave(r.store, fake.url, r.sessionId, NOTE);
+  assert.equal(result.saved, false);
+  assert.equal(result.code, 'not_owner_requested');
+  assert.equal(fake.calls.length, 0);
+  assert.equal(r.store.transaction(tx => tx.all('SELECT * FROM vault_writes WHERE live_session_id=?', [r.sessionId])).length, 0);
 });
 
-test('the same save ask in his other words routes to the same one write', async t => {
+test('natural save variants do not mint a legacy write authorization', async t => {
   for (const ask of ['put that in my knowledge', 'remember this in lux', 'save to my vault']) {
-    const fake = await fakeLux(t, 'inserted', 'insight-9');
+    const fake = await fakeLux(t, 'inserted');
     const r = await replay(t);
-    await r.speak(NOTE);
-    await r.speak(ask);
-    assert.deepEqual(await claimAndSave(r.store, fake.url, r.sessionId, NOTE), { saved: true, insightId: 'insight-9' }, ask);
-    assert.equal(fake.calls[0]?.name, VAULT_REMOTE_TOOL, ask);
+    await r.speak(NOTE); await r.speak(ask);
+    const result = await claimAndSave(r.store, fake.url, r.sessionId, NOTE);
+    assert.equal(result.saved, false, ask);
+    assert.equal(result.code, 'not_owner_requested', ask);
+    assert.equal(fake.calls.length, 0, ask);
   }
 });
 
-test('the vault failing or going silent speaks the honest line and never claims a save', async t => {
-  const cases = [
-    ['fail', 'write_failed', 'the vault did not take the note, say it again'],
-    ['drop', 'outcome_unknown', 'I am not sure it landed, check the vault'],
-  ] as const;
-  for (const [mode, code, guidance] of cases) {
+test('legacy dictated content never falls back to a vault call on failure or a dropped transport', async t => {
+  for (const mode of ['fail', 'drop'] as const) {
     const fake = await fakeLux(t, mode);
     const r = await replay(t);
-    await r.speak(NOTE);
-    await r.speak('save this to lux');
-    const receipt = await claimAndSave(r.store, fake.url, r.sessionId, NOTE);
-    assert.deepEqual(receipt, { saved: false, code, guidance }, mode);
-    assert.equal(fake.calls.length, 1, 'one request, no retry');
+    await r.speak(NOTE); await r.speak('save this to lux');
+    const result = await claimAndSave(r.store, fake.url, r.sessionId, NOTE);
+    assert.equal(result.saved, false);
+    assert.equal(result.code, 'not_owner_requested');
+    assert.equal(fake.calls.length, 0, 'the retired authorization path cannot reach any writer');
   }
 });
 

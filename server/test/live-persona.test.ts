@@ -209,17 +209,8 @@ test('the tools conduct names conditional capabilities and preserves source iden
   assert.match(NAYA_BACKEND_PROCEDURE, /put independent source lookups in one research plan so the host can run them concurrently/);
   assert.match(NAYA_VOICE_TOOLS, /Distinguish no match, unavailable access, missing sign-in, timeout, stale archive, partial content and unread pages/);
   assert.match(NAYA_VOICE_TOOLS, /Do not promise an unsolicited callback, future monitoring or work after this session/);
-  // Release 4 and C-LUX-SAVE: the vault is lux, memory is remember_note, his own natural words carry the save, and only a true receipt is a save.
-  assert.match(NAYA_VOICE_TOOLS, /The vault is lux, his knowledge base; remember_note is Naya's memory of him/);
-  assert.match(NAYA_VOICE_TOOLS, /in any words, "save this to lux", "put that in my knowledge", "save to my vault"/);
-  assert.match(NAYA_VOICE_TOOLS, /after a bare "save this" the note is what he said just before/);
-  assert.match(NAYA_VOICE_TOOLS, /Say saved only on saved:true/);
-  // W6 item 11: a composed note is staged, read back word for word, and saved only after the owner says yes.
-  assert.match(NAYA_VOICE_TOOLS, /For a note worked out together or about the conversation call stage_lux_note/);
-  assert.match(NAYA_VOICE_TOOLS, /read the frozen title and body back word for word/);
-  assert.match(NAYA_VOICE_TOOLS, /the host saves only after he says yes/);
-  assert.match(NAYA_VOICE_TOOLS, /Add or change is not supported: offer a new note\./);
-  assert.match(NAYA_VOICE_TOOLS, /on outcome_unknown say you are not sure it landed and to check the vault, never claiming a save/);
+  // Save guidance belongs to the generated stage_lux_note declaration, not a second persona policy.
+  assert.doesNotMatch(NAYA_VOICE_TOOLS, /remember_note|save_to_vault|stage_lux_note|The vault is lux/);
   assert.doesNotMatch(NAYA_TOOLS, /three to five word|never announce progress|One moment|or call it at once/i);
   assert.doesNotMatch(NAYA_TOOLS, /[\u2013\u2014]/);
 });
@@ -374,9 +365,9 @@ test('the public character, voice surface and tool conduct are the authored verb
   assert.equal(sha(NAYA_VOICE_SURFACE), '10ef8ccc225ac0df8e24c45f315148300fee034c715bfbe1f4ccdaa2b1f6db77');
   // C-OPENWEB8: the open paragraph names open_web for a map, a site or a search, so this block is re-pinned.
   // C-RESEARCH8: the two-ask voice rule and the re-worded evidence procedure land in the same blocks, so the train re-pins all three against the merged sources.
-  assert.equal(sha(NAYA_VOICE_TOOLS), '2775aceab4e64cd10cde5994c0c6ad059a1db04b96c307396eb605bf269d87d7');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '793800bd9cbeecc8eaf6332e8f098a96b9fd8dcc73e80811743563919bef8f43');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'a80497ba29a5d2c8ef5183486956f6707d5fca5663282a6cb86480d1d1eb093b');
-  assert.equal(sha(NAYA_TOOLS), 'f04a7e394729613864aeb352ad81499c5f7512e3a59a829a0122715de8779fc3');
+  assert.equal(sha(NAYA_TOOLS), 'a4a8be9df5d7e8755b678d3ce7ac4469cc05ba8f125c3681735d253b52c77eaa');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));

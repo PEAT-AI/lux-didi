@@ -1,3 +1,4 @@
+import { VAULT_TRANSPORT_PHASES } from '../tools/vault-write.js';
 import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_LIMITS, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
 import { APPROVAL_REFUSAL_REASONS } from './events.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
@@ -712,6 +713,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (hasReason && !isSafeMember(value.reason, TRELLO_CALL_REASONS)) return;
     return { event: 'connector_call', connector: 'trello', tool: value.tool, phase: value.phase, outcome: value.outcome, ...(hasReason ? { reason: value.reason } : {}),
       ...(normalized === undefined ? {} : { normalized: normalized.slice(0, TRELLO_WRITE_ARGUMENT_FIELDS.length) }) };
+  }
+  if (value.event === 'vault_transport') {
+    if (!closedKeys(value, ['event', 'phase']) || !isSafeMember(value.phase, VAULT_TRANSPORT_PHASES)) return;
+    return { event: 'vault_transport', phase: value.phase };
   }
   if (value.event === 'vault_write') {
     // Closed shape: the attempt outcome, the closed failure code, the vault's own insight id on a confirmed save, and the wire latency. Never text.

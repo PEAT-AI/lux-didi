@@ -22,10 +22,7 @@ New reads and later connection setup must not include the deleted memory. An alr
 
 ## Export is a separate write
 
-The note exporter in `server/tools/notes-export.ts` is distinct from local selection, dictated `save_to_vault` and staged composed notes. `exportPlan` owns candidate selection and the implementation owns its deduplication and ceilings. Do not describe a local memory save as proof that a remote insight was created.
-
-`liveFeatures` in `server/live/config.ts` keeps `notesExport` and `composedNotes` as separate switches. In particular, composed notes default off; enabling or disabling one flow is not permission to change the other's authority. Consult [tool-owner.md](tool-owner.md) before changing any export path.
-
+Legacy local memories of every kind remain readable for recall. They are never automatically exported when a live session closes. Vault writes use only `stage_lux_note`: a fresh owner request, frozen candidate, verified readback and confirmation are required. `composedNotes` defaults on and an explicit false disables saving; the legacy `notesExport` setting grants no write authority. The historical export ledger migration is retained unchanged in `server/live/schema.ts` solely for database compatibility. See [tool-owner.md](tool-owner.md).
 ## Verification
 
 Use the selected-memory and memory-context producers named in [checks.md](checks.md). Tests should prove selection, omission, classification, stale/deleted records and observable UI state with synthetic records. A successful context compile proves neither real-account permission nor model recall quality. For a specific accepted run, inspect authorized metadata through [diagnostic-store.md](diagnostic-store.md).

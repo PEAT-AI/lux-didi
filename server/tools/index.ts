@@ -18,7 +18,7 @@ import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history
 import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
-import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, validateStageNote } from './lux-note.js';
+import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, validateStageNote } from './lux-note.js';
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
@@ -614,7 +614,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       });
       // Item 1/10: the composed stage is declared to the live model only while the capability switch is
       // on, and it can never write: the host commits after its own read-back boundary and confirmation.
-      if (composedNotes) definitions.push({ ...STAGE_NOTE_IDENTITY, description: 'Stage a note composed from this conversation for the Lux vault. The host reads it back and saves it only after the owner confirms. It never saves by itself.', effect: 'write', parameters: STAGE_NOTE_PARAMETERS, validate: validateStageNote,
+      if (composedNotes !== false) definitions.push({ ...STAGE_NOTE_IDENTITY, description: STAGE_NOTE_GUIDANCE, effect: 'write', parameters: STAGE_NOTE_PARAMETERS, validate: validateStageNote,
         async execute(args, context) {
           if (context.runId !== runId || !validateStageNote(args) || context.signal.aborted) return { status: 'failed' };
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
@@ -636,7 +636,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               const snapshot = validateCallRun(tx, call);
             assertLiveIdentity(tx, call); target(snapshot, call, tx);
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-              return complete(call, stageNote === undefined ? { staged: false, code: 'not_enabled' } : stageNote(tx, runId, args), ['ordinary'], tx);
+              return complete(call, stageNote === undefined ? { staged: false, code: 'not_enabled' } : stageNote(tx, runId, { ...args, evidenceRefs: args.evidenceRefs ?? [] }), ['ordinary'], tx);
             });
             return { status: 'completed', result };
           } catch {
@@ -782,7 +782,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           },
         });
       }
-      return definitions;
+      return definitions.filter(tool => !['remember_note', 'save_to_vault'].includes(tool.name));
     },
     definitions(runId, tx?: Transaction) {
       let lease = bodyLeases.get(runId);

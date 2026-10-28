@@ -103,14 +103,18 @@ test('L8-10: a session that can search the web names it among what it can reach'
   assert.deepEqual(toolGroupNames(['search_knowledge']), ['knowledge base'], 'no web group without the web read');
 });
 
-test('W6 item 14: the Connected block names the vault capability this session really has', () => {
-  const base = { now: new Date('2026-10-25T08:00:00Z'), timeZone: 'Asia/Kolkata', connected: ['knowledge base'] };
-  const dictationOnly = buildRuntimeContext({ ...base, vault: { dictation: true, composed: false } });
-  assert.match(dictationOnly, /^Vault: Naya saves exactly the note the owner dictates; composed notes are switched off\.$/mu);
-  const composed = buildRuntimeContext({ ...base, vault: { dictation: true, composed: true } });
-  assert.match(composed, /^Vault: .*only when he asks and confirms the read-back\.$/mu);
-  const silent = buildRuntimeContext({ ...base, vault: { dictation: false, composed: false } });
-  assert.doesNotMatch(silent, /^Vault:/mu, 'no capability line when the owner has no vault write at all');
+test('C-LUXSAVE11: Runtime context never duplicates the generated save capability', () => {
+  const base = { now: new Date('2026-10-14T12:35:00Z'), timeZone: 'UTC', connected: [] };
+  for (const vault of [{ dictation: true, composed: false }, { dictation: true, composed: true }, { dictation: false, composed: false }]) {
+    assert.doesNotMatch(buildRuntimeContext({ ...base, vault }), /^Vault:/mu);
+  }
+});
+
+ test('C-CONVO9: refused connector is absent from Connected now', () => {
+  const text = buildRuntimeContext({ now: new Date('2026-01-01T00:00:00Z'), timeZone: 'UTC', connected: ['team chat', 'web search'],
+    connectors: [{ connector: 'mattermost', state: 'refused', reasonCode: 'owner-approval-required' }] });
+  assert.equal(text.split('\n').find(line => line.startsWith('Connected now:')), 'Connected now: web search.');
+  assert.match(text, /team chat needs approval/);
 });
 
  test('C-CONVO9: refused connector is absent from Connected now', () => {

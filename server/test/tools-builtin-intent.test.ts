@@ -54,7 +54,10 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     open_home: { app: 'gmail' }, open_file: { path: '~/synthetic' },
     open_app: { name: 'Synthetic' }, open_web: { kind: 'site', target: 'plantix dot net' },
   };
-  for (const definition of owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true)) {
+  const live = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
+  assert.ok(live.some(tool => tool.name === 'stage_lux_note'), 'stage owns its own registry intent name');
+  assert.equal(live.some(tool => tool.name === 'remember_note' || tool.name === 'save_to_vault'), false, 'retired write tools are not catalog capabilities');
+  for (const definition of live) {
     const args = argumentsByName[definition.name];
     assert.ok(args, `valid fixture required for ${definition.name}`);
     assert.equal(definition.validate(args), true, `${definition.name} fixture validates`);

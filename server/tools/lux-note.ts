@@ -8,27 +8,28 @@ import { hostLogEvent } from './host-events.js';
 export const STAGE_NOTE_IDENTITY = { name: 'stage_lux_note', accountId: 'gateway:live-voice', resourceId: 'owner-vault' } as const;
 export const STAGE_NOTE_PARAMETERS = { type: 'object', properties: {
   title: { type: 'string', minLength: 1, maxLength: 120, description: 'A short title for the note, from this conversation.' },
-  body: { type: 'string', minLength: 1, maxLength: 2000, description: 'The note body, from this conversation.' },
-  evidenceRefs: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', minLength: 1, maxLength: 64 }, description: 'Refs of host evidence for this note.' },
-}, required: ['title', 'body', 'evidenceRefs'], additionalProperties: false };
+  body: { type: 'string', minLength: 1, maxLength: 4000, description: 'The note body, from this conversation.' },
+  evidenceRefs: { type: 'array', minItems: 0, maxItems: 8, items: { type: 'string', minLength: 1, maxLength: 64 }, description: 'Optional owner journal:<id> or held tool:<callId> evidence refs.' },
+}, required: ['title', 'body'], additionalProperties: false };
 
 const REF_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,63}$/;
-export function validateStageNote(args: unknown): args is { title: string; body: string; evidenceRefs: string[] } {
+export function validateStageNote(args: unknown): args is { title: string; body: string; evidenceRefs?: string[] } {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
   const value = args as Record<string, unknown>;
-  if (Object.keys(value).length !== 3) return false;
+  if (Object.keys(value).some(key => !['title', 'body', 'evidenceRefs'].includes(key))) return false;
   const refs = value['evidenceRefs'];
   return typeof value['title'] === 'string' && value['title'].length >= 1 && value['title'].length <= 120
-    && typeof value['body'] === 'string' && value['body'].length >= 1 && value['body'].length <= 2000
-    && Array.isArray(refs) && refs.length >= 1 && refs.length <= 8 && refs.every(ref => typeof ref === 'string' && REF_SHAPE.test(ref));
+    && typeof value['body'] === 'string' && value['body'].length >= 1
+    && (refs === undefined || Array.isArray(refs) && refs.length <= 8 && refs.every(ref => typeof ref === 'string' && REF_SHAPE.test(ref)));
 }
 
 /** A note is titled and bodied by the host; title plus body is never truncated, only refused. */
-export const NOTE_MAX_CHARS = 2000;
+export const NOTE_MAX_CHARS = 4000;
+export const STAGE_NOTE_GUIDANCE = 'Saving into Lux uses only stage_lux_note: supply a title and conversation synthesis of at most 4,000 characters after an owner save request. Speak the host readBack verbatim from the tool result, including provenance; it is not owner speech. Wait for playback to finish and the owner to confirm. On read it all, speak the complete title and body before asking again. Say saved and name the title only after the host reports an insight id. authorization_missing means a fresh owner save request is required. authorization_refused means the request was qualified or negated. evidence_unknown means a citation is not held by this conversation. too_long means it was not staged; offer to split it. not_enabled means saving is disabled. payload_empty means a title and body are required. vault_unavailable means the vault could not be reached; it was not saved. outcome_unknown means the write result is unknown; do not retry or claim success. readback_mismatch means confirmation was not armed; it was not saved. not_affirmative means the note was not saved.';
 /** What the model says when the host could not stage the note at all: a closed code in plain words. */
-export const STAGE_FAILED_GUIDANCE = 'The note was not staged. Tell the owner it was not saved and ask them to say it again in one sentence.';
+export const STAGE_FAILED_GUIDANCE = 'The note was not staged or saved; explain the refusal and ask for a fresh save request.';
 /** R7-W1: a refusal is never named as a Lux failure; she asks him for the words that stage it. */
-export const AUTHORIZATION_MISSING_GUIDANCE = "I did not hear a save request in your own words this turn; say 'save it to Lux' and I will stage it.";
+export const AUTHORIZATION_MISSING_GUIDANCE = "It was not saved; a fresh owner save request is required before staging.";
 export const TITLE_MAX_CHARS = 120;
 export const CONFIRM_WINDOW_MS = 30_000;
 /** W1-R1: the open guard's bounds, on the journal rows of one owner stretch: six splits, 600 characters. */
@@ -87,9 +88,10 @@ const NOTE_SOURCE = /\b(?:note|summary)\b[^\p{L}\p{N}]+(?:about|from|of)\b[^\p{L
  */
 export function composedAsk(text: string): ComposedAsk {
   const value = text.normalize('NFKC').replace(/\s+/g, ' ').trim();
-  const key = noteKey(value);
+  let key = noteKey(value);
   if (!key) return { decision: 'none' };
   if (APPEND.test(key)) return { decision: 'append' };
+  key = key.replace(/\bnote(?=\s+(?:this|that|all|to|in|into)\b)/gu, 'save');
   if (/"[^"]*"|'[^']*'|\u201c[^\u201d]*\u201d/u.test(value)) return { decision: 'clarify', reason: 'quoted' };
   if (QUESTION.test(key)) return { decision: 'clarify', reason: 'reported' };
   if (REPORTED.test(key)) return { decision: 'clarify', reason: 'reported' };
@@ -116,38 +118,29 @@ export function composedAsk(text: string): ComposedAsk {
   if (destination < 0) {
     // A note about this conversation names its source instead of a store. Staging is still not saving:
     // the frozen read-back and his own confirmation are what authorize the write.
-    if (!NOTE_SOURCE.test(key)) return { decision: 'none' };
+    if (!NOTE_SOURCE.test(key) && !/\b(?:this|all of this|that)\b/u.test(key)) return { decision: 'none' };
     return asked ? { decision: 'grant' } : { decision: 'clarify', reason: 'negated' };
   }
   return asked ? { decision: 'grant' } : { decision: 'clarify', reason: 'negated' };
 }
 
-const AFFIRM = new Set(['yes', 'yeah', 'yep', 'yup', 'correct', 'right', 'sure', 'ok', 'okay', 'exactly', 'perfect', 'confirm', 'affirmative', 'save', 'do', 'go']);
-const AFFIRM_FILLER = new Set(['it', 'that', 'is', 'this', 'ahead', 'please', 'then', 'now', 'thanks', 'thank', 'you', 'the', 'note']);
-const DISQUALIFIER = new Set(['no', 'not', 'dont', 'stop', 'cancel', 'wait', 'hold', 'wrong', 'change', 'instead', 'actually', 'but', 'except', 'edit', 'fix', 'never', 'yet', 'and', 'also', 'or']);
+const CLOSED_AFFIRMATIVES = new Set(['yes', 'yes save it', 'save it', 'go ahead', 'do it', 'save this note']);
 
-/**
- * The confirmation is an exact affirmative under normalisation, at most six tokens, with a closed
- * disqualifier set, so a VAD-split sentence that keeps talking is a cancel and not a consent.
- */
+/** Only a closed owner affirmative can authorize this candidate, never a word bag. */
 export function confirmAsk(text: string): 'affirm' | 'cancel' {
-  const tokens = words(text);
-  if (tokens.length === 0 || tokens.length > CONFIRM_MAX_TOKENS) return 'cancel';
-  for (const token of tokens) if (DISQUALIFIER.has(token)) return 'cancel';
-  const drawn = tokens.every(token => AFFIRM.has(token) || AFFIRM_FILLER.has(token));
-  return drawn && tokens.some(token => AFFIRM.has(token)) ? 'affirm' : 'cancel';
+  return CLOSED_AFFIRMATIVES.has(noteKey(text)) ? 'affirm' : 'cancel';
 }
 
 export type FrozenNote = { readonly state: 'frozen'; readonly payload: string; readonly payloadSha: string }
-  | { readonly state: 'refused'; readonly code: 'payload_empty' | 'payload_too_long' };
+  | { readonly state: 'refused'; readonly code: 'payload_empty' | 'too_long' };
 
 /** The whole save_insight payload and its digest are frozen here; nothing later may change them. */
-export function freezeNote(note: { readonly title: string; readonly body: string }): FrozenNote {
+export function freezeNote(note: { readonly title: string; readonly body: string; readonly externalContextPresent?: boolean }): FrozenNote {
   const title = note.title.replace(/\s+/g, ' ').trim();
-  const body = note.body.replace(/\s+/g, ' ').trim();
+  const body = note.body.trim();
   if (!title || !body) return { state: 'refused', code: 'payload_empty' };
-  if (title.length > TITLE_MAX_CHARS || body.length > NOTE_MAX_CHARS || title.length + body.length > NOTE_MAX_CHARS) {
-    return { state: 'refused', code: 'payload_too_long' };
+  if (title.length > TITLE_MAX_CHARS || body.length > NOTE_MAX_CHARS + (note.externalContextPresent ? NOTE_PROVENANCE.length + 2 : 0)) {
+    return { state: 'refused', code: 'too_long' };
   }
   const payload = canonicalJSON({ content: body, insight_title: title, insight_type: VAULT_TYPE, project: VAULT_PROJECT });
   return { state: 'frozen', payload, payloadSha: sha256(payload) };
@@ -240,10 +233,15 @@ export interface NoteState {
   readonly settleAt?: number;
   readonly endedAt?: number;
   readonly code?: string;
+  readonly externalContextPresent?: boolean;
+  readonly ownerJournalIds?: readonly number[];
+  readonly watermark?: number;
+  readonly confirmationText?: string;
+  readonly fullReadback?: boolean;
 }
 
 export type StageCode = 'not_enabled' | 'authorization_missing' | 'authorization_refused' | 'append_unsupported'
-  | 'evidence_missing' | 'evidence_unknown' | 'payload_empty' | 'payload_too_long';
+  | 'evidence_missing' | 'evidence_unknown' | 'payload_empty' | 'too_long';
 export type StageOutcome = { readonly state: 'staged'; readonly note: NoteState } | { readonly state: 'refused'; readonly code: StageCode };
 
 export interface StageInput {
@@ -256,6 +254,9 @@ export interface StageInput {
   readonly heldEvidence: ReadonlySet<string>;
   readonly enabled: boolean;
   readonly now: number;
+  readonly externalContextPresent?: boolean;
+  readonly ownerJournalIds?: readonly number[];
+  readonly watermark?: number;
 }
 
 export function beginStage(input: StageInput): StageOutcome {
@@ -264,17 +265,18 @@ export function beginStage(input: StageInput): StageOutcome {
   if (ask.decision === 'none') return { state: 'refused', code: 'authorization_missing' };
   if (ask.decision === 'clarify') return { state: 'refused', code: 'authorization_refused' };
   if (ask.decision === 'append') return { state: 'refused', code: 'append_unsupported' };
-  if (input.evidence.length === 0) return { state: 'refused', code: 'evidence_missing' };
   if (!input.evidence.every(ref => input.heldEvidence.has(ref))) return { state: 'refused', code: 'evidence_unknown' };
-  const frozen = freezeNote({ title: input.title, body: input.body });
+  if (input.body.length > NOTE_MAX_CHARS) return { state: 'refused', code: 'too_long' };
+  const body = input.externalContextPresent ? `${input.body.trim()}\n\n${NOTE_PROVENANCE}` : input.body.trim();
+  const frozen = freezeNote({ title: input.title, body, externalContextPresent: input.externalContextPresent === true });
   if (frozen.state === 'refused') return { state: 'refused', code: frozen.code };
   return { state: 'staged', note: {
-    stageId: input.stageId, sessionId: input.sessionId, title: input.title.replace(/\s+/g, ' ').trim(), body: input.body.replace(/\s+/g, ' ').trim(),
+    stageId: input.stageId, sessionId: input.sessionId, title: input.title.replace(/\s+/g, ' ').trim(), body, externalContextPresent: input.externalContextPresent === true, ownerJournalIds: input.ownerJournalIds ?? [], watermark: input.watermark ?? 0,
     payload: frozen.payload, payloadSha: frozen.payloadSha, state: 'staged', stagedAt: input.now,
   } };
 }
 
-export interface OwnerTurnFacts { readonly inputAt: number | undefined; readonly inputFinal: boolean }
+export interface OwnerTurnFacts { readonly inputAt: number | undefined; readonly inputFinal: boolean; readonly heldEvidence?: ReadonlySet<string> }
 
 /**
  * W6 items 1 to 4: the model stages a composed note and nothing more. The owner's own finalized
@@ -283,31 +285,33 @@ export interface OwnerTurnFacts { readonly inputAt: number | undefined; readonly
  * the stage state machine so the tool-owner check can drive the shipped function, not a copy.
  */
 export function stageComposedNote(tx: Transaction, liveSessionId: string, args: { title: string; body: string; evidenceRefs: string[] },
-  turn: OwnerTurnFacts, now: number, enabled: boolean): JsonObject {
+  turn: OwnerTurnFacts, now: number, enabled: boolean, request?: NoteRequest, externalContextPresent = false): JsonObject {
   const rows = tx.all("SELECT journal_id,text,final_origin,finalized_at FROM live_journal WHERE live_session_id=? AND kind='inputTranscription' AND finished=1 ORDER BY journal_id DESC LIMIT 50", [liveSessionId])
     .map(row => ({ journalId: Number(row['journal_id']), text: String(row['text'] ?? ''),
       finalOrigin: String(row['final_origin'] ?? 'unknown'), finalizedAt: Number(row['finalized_at'] ?? 0) }));
   // W6-R2 B1: only this turn's finalized mic transcript can authorize, never the previous turn.
   // R7-W1: his words before the model answered are an earlier stretch, never this ask.
   const spoken = tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE live_session_id=? AND kind='outputTranscription' AND finished=1", [liveSessionId]);
-  const read = currentOwnerTurn(rows, turn.inputAt, turn.inputFinal, now, Number(spoken?.['id'] ?? 0) || undefined);
+  const read: OwnerTurnRead = request ? { state: 'owner_turn', text: request.ownerText, evidence: new Set(rows.filter(row => row.journalId <= request.watermark).map(row => `journal:${row.journalId}`)) } : currentOwnerTurn(rows, turn.inputAt, turn.inputFinal, now, Number(spoken?.['id'] ?? 0) || undefined);
   if (read.state === 'refused') {
     hostLogEvent({ event: 'lux_note_stage', staged: false, code: read.code });
     return { staged: false, code: read.code };
   }
   const outcome = beginStage({ stageId: randomUUID(), sessionId: liveSessionId, ownerText: read.text,
-    title: args.title, body: args.body, evidence: args.evidenceRefs, heldEvidence: read.evidence, enabled, now });
+    title: args.title, body: args.body, evidence: args.evidenceRefs, heldEvidence: new Set([...read.evidence, ...(turn.heldEvidence ?? [])]), enabled, now, externalContextPresent, ownerJournalIds: request?.ownerJournalIds ?? [], watermark: request?.watermark ?? 0 });
   if (outcome.state === 'refused') {
     hostLogEvent({ event: 'lux_note_stage', staged: false, code: outcome.code });
+    if (outcome.code === 'too_long') return { staged: false, code: 'too_long', guidance: 'This note exceeds 4,000 characters; offer to split it into separate notes.' };
     return outcome.code === 'authorization_missing'
       ? { staged: false, code: outcome.code, guidance: AUTHORIZATION_MISSING_GUIDANCE }
       : { staged: false, code: outcome.code };
   }
   const note = outcome.note;
+  tx.run("UPDATE lux_note_stages SET state='invalidated',code='replaced' WHERE live_session_id=? AND state IN ('staged','armed','settling')", [liveSessionId]);
   saveNoteState(tx, note);
   hostLogEvent({ event: 'lux_note_stage', staged: true, digest: note.payloadSha.slice(0, 12) });
   return { staged: true, stageId: note.stageId, title: note.title, body: note.body,
-    readBack: `Read the note back exactly, then wait for the owner: ${note.title}. ${note.body}` };
+    readBack: noteReadbackText(note), instruction: 'Say readBack verbatim, then wait for the owner to confirm. This is a host note, not owner speech. Do not claim it is saved.' };
 }
 
 const ended = (note: NoteState, state: 'cancelled' | 'invalidated', code: string, now: number): NoteState => ({ ...note, state, code, endedAt: now });
@@ -320,26 +324,25 @@ export function noteReadback(note: NoteState, now: number, receipt: 'drained' | 
 }
 
 /** A confirmation is the next finalized owner-mic turn after the read-back, inside its window. */
-export function noteOwnerUtterance(note: NoteState, input: { readonly text: string; readonly now: number }): NoteState {
-  // Before the read-back no owner turn is a confirmation; a stage that never hears one goes stale.
-  if (note.state === 'staged') {
-    return input.now - note.stagedAt > CONFIRM_WINDOW_MS ? ended(note, 'cancelled', 'not_armed', input.now) : note;
-  }
-  if (note.state !== 'armed') return note;
+export function noteOwnerUtterance(note: NoteState, input: { readonly text: string; readonly now: number; readonly onsetAt?: number }): NoteState {
+  if (note.state !== 'staged' && note.state !== 'armed' && note.state !== 'settling') return note;
+  if (note.state === 'staged') return ended(note, 'cancelled', 'not_armed', input.now);
+  if ((input.onsetAt ?? input.now) < (note.armedAt ?? Infinity)) return ended(note, 'cancelled', 'speech_before_readback_end', input.now);
   if (input.now - (note.armedAt ?? note.stagedAt) > CONFIRM_WINDOW_MS) return ended(note, 'cancelled', 'confirm_expired', input.now);
-  if (confirmAsk(input.text) !== 'affirm') return ended(note, 'cancelled', 'not_affirmative', input.now);
-  return { ...note, state: 'settling', settleAt: input.now + CONFIRM_SETTLE_MS };
+  const confirmationText = [note.confirmationText ?? '', input.text].filter(Boolean).join(' ');
+  return { ...note, state: 'settling', confirmationText, settleAt: input.now + CONFIRM_SETTLE_MS };
 }
 
-/** Any further owner fragment inside the settle window cancels: "yes ... wait, make it fifty". */
-export function noteOwnerFragment(note: NoteState, now: number): NoteState {
+/** A partial suspends the settlement until its finalized fragment can be merged. */
+export function noteOwnerFragment(note: NoteState, _now: number): NoteState {
   if (note.state !== 'settling') return note;
-  if ((note.settleAt ?? 0) > now) return ended(note, 'cancelled', 'late_fragment', now);
-  return note;
+  const { settleAt: _settleAt, ...pending } = note;
+  return pending;
 }
 
 export function noteSettle(note: NoteState, now: number): NoteState {
-  if (note.state !== 'settling' || (note.settleAt ?? 0) > now) return note;
+  if (note.state !== 'settling' || note.settleAt === undefined || note.settleAt > now) return note;
+  if (confirmAsk(note.confirmationText ?? '') !== 'affirm') return ended(note, 'cancelled', 'not_affirmative', now);
   return { ...note, state: 'committed', endedAt: now };
 }
 
@@ -372,7 +375,13 @@ export const luxNoteMigrations: readonly SchemaMigration[] = [{
      )`,
     `CREATE INDEX lux_note_stages_open ON lux_note_stages(live_session_id, staged_at)`,
   ],
-}];
+}, { owner: 'lux-note', version: 2, statements: [
+  'ALTER TABLE lux_note_stages ADD COLUMN external_context_present INTEGER NOT NULL DEFAULT 0',
+  "ALTER TABLE lux_note_stages ADD COLUMN owner_journal_ids_json TEXT NOT NULL DEFAULT '[]'",
+  'ALTER TABLE lux_note_stages ADD COLUMN conversation_watermark INTEGER NOT NULL DEFAULT 0',
+  "ALTER TABLE lux_note_stages ADD COLUMN confirmation_text TEXT NOT NULL DEFAULT ''",
+  'ALTER TABLE lux_note_stages ADD COLUMN full_readback INTEGER NOT NULL DEFAULT 0',
+] }];
 
 const noteFromRow = (row: { readonly [key: string]: unknown }): NoteState => ({
   stageId: String(row['stage_id']), sessionId: String(row['live_session_id']), title: String(row['title']), body: String(row['body']),
@@ -381,6 +390,11 @@ const noteFromRow = (row: { readonly [key: string]: unknown }): NoteState => ({
   ...(row['armed_at'] === null || row['armed_at'] === undefined ? {} : { armedAt: Number(row['armed_at']) }),
   ...(row['settle_at'] === null || row['settle_at'] === undefined ? {} : { settleAt: Number(row['settle_at']) }),
   ...(row['ended_at'] === null || row['ended_at'] === undefined ? {} : { endedAt: Number(row['ended_at']) }),
+  externalContextPresent: Number(row['external_context_present'] ?? 0) === 1,
+  ownerJournalIds: JSON.parse(String(row['owner_journal_ids_json'] ?? '[]')) as number[],
+  watermark: Number(row['conversation_watermark'] ?? 0),
+  confirmationText: String(row['confirmation_text'] ?? ''),
+  fullReadback: Number(row['full_readback'] ?? 0) === 1,
   ...(row['code'] === null || row['code'] === undefined ? {} : { code: String(row['code']) }),
 });
 
@@ -389,6 +403,8 @@ export function saveNoteState(tx: Transaction, note: NoteState): void {
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(stage_id) DO UPDATE SET state=excluded.state, code=excluded.code, armed_at=excluded.armed_at, settle_at=excluded.settle_at, ended_at=excluded.ended_at`,
   [note.stageId, note.sessionId, note.title, note.body, note.payload, note.payloadSha, '[]', note.state, note.code ?? null,
     note.stagedAt, note.armedAt ?? null, note.settleAt ?? null, note.endedAt ?? null]);
+  tx.run('UPDATE lux_note_stages SET external_context_present=?,owner_journal_ids_json=?,conversation_watermark=?,confirmation_text=?,full_readback=? WHERE stage_id=?',
+    [note.externalContextPresent ? 1 : 0, JSON.stringify(note.ownerJournalIds ?? []), note.watermark ?? 0, note.confirmationText ?? '', note.fullReadback ? 1 : 0, note.stageId]);
 }
 
 /** The one stage this session may still act on, newest first; a closed stage is never reopened. */
@@ -404,4 +420,66 @@ export function noteById(tx: Transaction, stageId: string): NoteState | undefine
 
 export function markCommitted(tx: Transaction, stageId: string, insightId: string | undefined): void {
   tx.run("UPDATE lux_note_stages SET state='committed', insight_id=? WHERE stage_id=?", [insightId ?? null, stageId]);
+}
+
+export const NOTE_PROVENANCE = 'Provenance: this note includes content from mail, web or chat read in that session.';
+export interface NoteRequest {
+  readonly ownerText: string;
+  readonly ownerJournalIds: readonly number[];
+  readonly watermark: number;
+}
+
+/** Session-owned authority. Model arguments can neither mint nor refresh this token. */
+export class NoteRequestGate {
+  #block: number | undefined;
+  #fragments: { id: number; text: string }[] = [];
+  #claimedBlock: number | undefined;
+  #request: NoteRequest | undefined;
+  externalContextPresent = false;
+  readonly heldEvidence = new Set<string>();
+
+  observeOwner(block: number, journalId: number, text: string): void {
+    if (block !== this.#block) { this.#block = block; this.#fragments = []; this.#request = undefined; }
+    this.#fragments.push({ id: journalId, text });
+    const ownerText = this.#fragments.map(fragment => fragment.text).join(' ');
+    this.#request = block !== this.#claimedBlock && composedAsk(ownerText).decision === 'grant'
+      ? { ownerText, ownerJournalIds: this.#fragments.map(fragment => fragment.id), watermark: journalId } : undefined;
+  }
+
+  claim(): NoteRequest | undefined {
+    const request = this.#request;
+    this.#request = undefined;
+    this.#claimedBlock = this.#block;
+    return request;
+  }
+
+  externalRead(): void { this.#request = undefined; this.#claimedBlock = this.#block; }
+  externalResult(refs: readonly string[] = []): void { this.externalContextPresent = true; for (const ref of refs) this.heldEvidence.add(ref); }
+  disconnect(): void { this.#request = undefined; this.#fragments = []; this.#claimedBlock = this.#block; }
+}
+
+/** Every paragraph or bullet contributes a first sentence; the model cannot choose what is read. */
+export function noteReadbackText(note: Pick<NoteState, 'title' | 'body' | 'fullReadback'>): string {
+  const paragraphs = note.body.split(/\n\s*\n|\n(?=\s*(?:[-*+]\s|\d+[.)]\s))/u)
+    .map(paragraph => paragraph.trim()).filter(Boolean);
+  const tainted = paragraphs.includes(NOTE_PROVENANCE);
+  const sentences = paragraphs.filter(paragraph => paragraph !== NOTE_PROVENANCE).map(paragraph => {
+    const text = paragraph.replace(/^\s*(?:[-*+]\s|\d+[.)]\s)/u, '');
+    return note.fullReadback ? text : text.match(/^.*?[.!?](?=\s|$)/u)?.[0] ?? text;
+  });
+  return [note.title, ...(tainted ? [NOTE_PROVENANCE] : []), ...sentences].join('\n');
+}
+
+/** Multiset overlap counts repeated words too; extra unrelated speech also lowers the score. */
+export function readbackMatches(expected: string, spoken: string): boolean {
+  const left = words(expected), right = words(spoken);
+  if (left.length === 0 || right.length === 0) return false;
+  const counts = new Map<string, number>();
+  for (const word of left) counts.set(word, (counts.get(word) ?? 0) + 1);
+  let shared = 0;
+  for (const word of right) {
+    const count = counts.get(word) ?? 0;
+    if (count > 0) { shared += 1; counts.set(word, count - 1); }
+  }
+  return shared / Math.max(left.length, right.length) >= 0.9;
 }

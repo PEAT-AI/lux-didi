@@ -1094,6 +1094,7 @@ test('OC1: an open action is a native_action control frame and its ack is the to
 });
 
 for (const scenario of [
+  { name: 'no transcript', none: true, turns: [], kind: 'site', target: 'plantix dot net', url: '', say: 'nothing is open' },
   { name: 'late transcript', late: true, turns: ['open plantix dot net'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
   { name: 'barge in', barge: true, turns: ['open plantix dot net'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
   { name: 'split site ask', turns: ['but can you open', 'plantix dot net in my browser'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
@@ -1130,7 +1131,7 @@ for (const scenario of [
     for (const text of scenario.turns) h.f.send({ serverContent: { inputTranscription: { text, finished: true } } });
     if ('barge' in scenario) h.f.send({ serverContent: { interrupted: true } });
   };
-  if (!('late' in scenario)) {
+  if (!('late' in scenario) && !('none' in scenario)) {
     ask();
     await waitFor(async () => (await json(h.origin, `/api/v1/live-sessions/${id}/journal`, { headers: bearer(h) })).body.data.fragments
       .some((fragment: { kind: string }) => fragment.kind === 'inputTranscription'), 1_500);
@@ -1140,6 +1141,15 @@ for (const scenario of [
   if ('late' in scenario) {
     const timer = setTimeout(ask, 300);
     t.after(() => clearTimeout(timer));
+  }
+  if ('none' in scenario) {
+    await waitFor(() => h.f.frames.some(frame => 'toolResponse' in (frame as Record<string, unknown>)), 1800);
+    const response = JSON.stringify(h.f.frames.filter(frame => 'toolResponse' in (frame as Record<string, unknown>)).at(-1));
+    assert.match(response, /no_open_intent/);
+    assert.match(response, /"say"/);
+    assert.ok(response.includes(scenario.say));
+    assert.equal(frames.some(frame => frame.text && JSON.parse(frame.text).type === 'native_action'), false);
+    return;
   }
   await waitFor(() => frames.some(frame => frame.text && (JSON.parse(frame.text) as { type?: string }).type === 'native_action'));
   const parsed = frames.map(frame => (frame.text ? JSON.parse(frame.text) as Record<string, unknown> : null));

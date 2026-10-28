@@ -177,6 +177,9 @@ import Foundation
         // Alarm policy has no OS calls in this fixture: power, notifications and audio are injected.
         var acquired = 0, released = 0
         var registered: [String] = [], removed: [String] = []
+        try require(AlarmShellPolicy.menuTitle(alarmCaption: "Alarm 08:00 !", pendingCall: true) == "Alarm 08:00 !", "live updates preserve the alarm and degraded caption")
+        try require(AlarmShellPolicy.menuTitle(alarmCaption: nil, pendingCall: true) == "•", "ending alarms restores the pending-call marker")
+        try require(AlarmShellPolicy.menuTitle(alarmCaption: nil, pendingCall: false).isEmpty, "empty shell clears the menu caption")
         let alarms = AlarmShellPolicy(acquire: { acquired += 1; return true }, release: { released += 1 },
             register: { registered.append($0.id) }, remove: { removed.append($0) })
         let pendingAlarm = ShellAlarm(id: "synthetic", fireAtUtc: 60_000, tz: "UTC", state: "pending", ringDeadlineUtc: nil)

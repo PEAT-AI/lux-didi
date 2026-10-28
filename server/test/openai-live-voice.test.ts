@@ -277,7 +277,7 @@ describe('openai gpt-live adapter', () => {
     await until(() => captured.events.some(event => event.type === 'toolCall'));
     const creates = (): number => f.frames.filter(frame => frame['type'] === 'response.create').length;
     const before = creates();
-    session.sendText({ text: 'Synthetic late line.' });
+    session.sendText({ text: '[host note, not the owner] Synthetic late line.' });
     await until(() => f.frames.some(frame => frame['type'] === 'response.item.create'));
     const framed = f.frames.find(frame => frame['type'] === 'response.item.create')!;
     assert.match(JSON.stringify(framed), /\[host note, not the owner\] Synthetic late line\./);

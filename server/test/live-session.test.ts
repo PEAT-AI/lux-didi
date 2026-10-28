@@ -4521,7 +4521,7 @@ function progressPort() {
 
 const openaiLimits = { idleMs: 600_000, sessionMs: 600_000, callMaxMs: 600_000 };
 
-test('VOICE-R4: a lookup sends no host-authored commentary, not on dead air and not on the six second beat', async t => {
+test('C-CONVO9: a pending lookup bridges at three seconds only once per ask', async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
@@ -4538,12 +4538,12 @@ test('VOICE-R4: a lookup sends no host-authored commentary, not on dead air and 
   assert.deepEqual(fake.thinking, [], 'no host-authored waiting line reaches the provider');
   assert.deepEqual(fake.texts, [], 'no host-authored text reaches the provider during the call');
   assert.equal(receipts.filter(entry => entry['event'] === 'thinking_sent').length, 0);
-  h.advance(5_999); scheduler.runDue(); await settlePort();
+  h.advance(2_999); scheduler.runDue(); await settlePort();
   assert.deepEqual(fake.commentary, [], 'nothing is said before the first deadline');
   h.advance(1); scheduler.runDue(); await settlePort();
-  assert.deepEqual(fake.commentary, [], 'dead air is silent: the host speaks no status line');
+  assert.deepEqual(fake.commentary, ['Still looking, give me a moment.'], 'one bounded bridge at three seconds');
   h.advance(12_000); scheduler.runDue(); await settlePort();
-  assert.deepEqual(fake.commentary, [], 'and it stays silent however long the lookup runs');
+  assert.deepEqual(fake.commentary, ['Still looking, give me a moment.'], 'no second bridge for the same ask');
   assert.equal(receipts.filter(entry => entry['event'] === 'commentary_sent').length, 0, 'no commentary send was ever recorded');
   release();
   await settlePort();
@@ -4560,7 +4560,7 @@ test('no commentary steps on the owner while a lookup runs', async t => {
   fake.emit({ type: 'toolCall', calls: [{ id: 'svc2', name: 'search_knowledge', args: { query: 'x', limit: 1 } }] });
   await settlePort();
   // The owner is talking over the lookup: the line would step on her.
-  h.advance(5_000); scheduler.runDue();
+  h.advance(2_000); scheduler.runDue();
   fake.emit({ type: 'inputTranscription', text: 'wait a moment', finished: false });
   await settlePort();
   h.advance(1_000); scheduler.runDue(); await settlePort();
@@ -4592,7 +4592,7 @@ test('VOICE-R4: no commentary goes out over three beats inside one lookup', asyn
   // C-LIVE: the lookup answers by its operation deadline, so its beats are inside that bound.
   for (const beat of [1, 2, 3]) {
     h.advance(1_900); scheduler.runDue(); await settlePort();
-    assert.deepEqual(fake.commentary, [], `beat ${beat} of the lookup is silent`);
+    assert.deepEqual(fake.commentary, beat === 1 ? [] : ['Still looking, give me a moment.'], `beat ${beat} never repeats the bridge`);
   }
   const sent = receipts.filter(entry => entry['event'] === 'commentary_sent');
   assert.deepEqual(sent, [], 'the host-composed status line is gone from the ledger too');

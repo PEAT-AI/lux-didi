@@ -77,6 +77,11 @@ export class AlarmOwnerGate {
     const pattern = operation === 'set_alarm' ? /\bwake me\b|\b(?:set|make|create)\b.*\balarm\b/i
       : operation === 'cancel_alarm' ? /\b(?:cancel|delete|remove|stop)\b.*\balarm\b/i
       : operation === 'snooze_alarm' ? /\bsnooze\b/i : /./;
+    if (!pattern.test(last.words)) {
+      const continuation = operation === 'cancel_alarm' ? /^(?:my|the|that|this)?\s*alarm\b/i
+        : /^(?:at|for|in|tomorrow|this|next|tonight|morning|evening|\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/i;
+      if (!continuation.test(last.words.trim())) return;
+    }
     return pattern.test(words) ? { ...last, words } : undefined;
   }
   consume(session: string, journalId: string): void {

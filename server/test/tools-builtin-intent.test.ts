@@ -42,8 +42,8 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   t.mock.method(nativeActions, 'dispatch', async () => 'opened' as const);
   noteOwnerWords(session.liveSessionId, 'open plantix dot net and my gmail and Synthetic');
   const argumentsByName: Record<string, Record<string, unknown>> = {
-    research: { query: 'synthetic' }, remember: { text: 'Synthetic fact', kind: 'fact' },
-    people_lookup: { query: 'Synthetic' }, open_source: { handle: 'L9999' },
+    research: { action: 'start', question: 'what is the synthetic scope', topic: 'synthetic scope', lookups: [{ source: 'knowledge', query: 'synthetic scope' }] }, remember: { text: 'Synthetic fact', kind: 'fact' },
+    people_lookup: { name: 'Synthetic' }, open_source: { handle: 'L9999' },
     open_home: { app: 'gmail' }, open_file: { path: '~/synthetic' },
     open_app: { name: 'Synthetic' }, open_web: { kind: 'site', target: 'plantix dot net' },
   };

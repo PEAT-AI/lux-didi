@@ -1118,9 +1118,9 @@ for (const scenario of [
   await h.f.frame(1);
   const declared = (h.f.frames[0] as { setup: { tools?: { functionDeclarations: { name: string; description: string }[] }[] } }).setup.tools
     ?.flatMap(entry => entry.functionDeclarations) ?? [];
-  const openHome = declared.find(entry => entry.name === 'open_home');
-  assert.ok(openHome, 'the model is offered open_home');
-  assert.match(openHome.description, /only open things/);
+  const openWeb = declared.find(entry => entry.name === 'open_web');
+  assert.ok(openWeb, 'the model is offered open_web');
+  assert.match(openWeb.description, /owner/);
   assert.equal(declared.some(entry => entry.name === 'open_url'), false, 'a free https url is no longer a tool');
   h.f.send({ setupComplete: {} });
   await waitFor(() => frames.some(frame => frame.text && JSON.parse(frame.text).type === 'ready'));
@@ -1145,7 +1145,7 @@ for (const scenario of [
   const parsed = frames.map(frame => (frame.text ? JSON.parse(frame.text) as Record<string, unknown> : null));
   const action = parsed.find(frame => frame?.type === 'native_action')!;
   assert.deepEqual(Object.keys(action).sort(), ['action', 'id', 'target', 'type'], 'the control frame is exactly typed');
-  assert.equal(action.action, 'open_url', 'the home tool rides the internal url transport');
+  assert.equal(action.action, 'open_url', 'the web tool rides the internal URL transport');
   assert.equal(action.target, scenario.url, 'the host constructs the destination');
 
   ws.send(JSON.stringify({ type: 'native_action_result', id: action.id, ok: true, code: 'opened' }));

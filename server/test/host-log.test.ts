@@ -700,4 +700,11 @@ test('C-POLISH10: an open call logs closed audit fields and never the words or t
   assert.equal(safeEvent({ event: 'open_audit', tool: 'open_web', kind: 'search', words: 4, bound: 'yes', destination: 'search', refusal: 'none', target: 'Margit' }), undefined);
   assert.equal(safeEvent({ event: 'open_audit', tool: 'open_web', kind: 'search', words: 4, bound: 'yes', destination: 'inbox', refusal: 'none' }), undefined);
   assert.equal(safeEvent({ event: 'open_audit', tool: 'open_web', kind: 'search', words: 4, bound: 'maybe', destination: 'search', refusal: 'none' }), undefined);
+  // The knowledge autopen decision is one bucket and one closed reason; an ask or a title is never a field.
+  assert.deepEqual(safeEvent({ event: 'knowledge_autopen', decision: 'skipped', bucket: 'low', reason: 'low_score' }),
+    { event: 'knowledge_autopen', decision: 'skipped', bucket: 'low', reason: 'low_score' });
+  assert.deepEqual(safeEvent({ event: 'knowledge_autopen', decision: 'opened', bucket: 'high', reason: 'none' }),
+    { event: 'knowledge_autopen', decision: 'opened', bucket: 'high', reason: 'none' });
+  assert.equal(safeEvent({ event: 'knowledge_autopen', decision: 'opened', bucket: 'high', reason: 'none', ask: 'Margit' }), undefined);
+  assert.equal(safeEvent({ event: 'knowledge_autopen', decision: 'maybe', bucket: 'high', reason: 'none' }), undefined);
 });

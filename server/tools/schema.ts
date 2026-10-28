@@ -170,4 +170,13 @@ export const toolsMigrations: readonly SchemaMigration[] = [{ owner: 'tools', ve
     `CREATE TRIGGER tool_dispatch_reuse_no_update BEFORE UPDATE ON tool_dispatch_reuse BEGIN SELECT RAISE(ABORT,'reuse_immutable'); END`,
     `CREATE TRIGGER tool_dispatch_reuse_no_delete BEFORE DELETE ON tool_dispatch_reuse BEGIN SELECT RAISE(ABORT,'reuse_delete_forbidden'); END`,
   ],
+}, {
+  owner: 'tools', version: 5, statements: [
+    `CREATE TABLE alarms (
+      id TEXT PRIMARY KEY, fire_at_utc INTEGER NOT NULL, tz TEXT NOT NULL, label TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('pending','ringing','done','cancelled','missed')),
+      created_journal_id TEXT NOT NULL, ring_started_at_utc INTEGER, ring_deadline_utc INTEGER,
+      CHECK((state='ringing' AND ring_started_at_utc IS NOT NULL AND ring_deadline_utc IS NOT NULL) OR state!='ringing'))`,
+    `CREATE INDEX alarms_active_fire ON alarms(state,fire_at_utc)`,
+  ],
 }];

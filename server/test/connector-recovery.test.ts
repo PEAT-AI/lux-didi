@@ -311,7 +311,7 @@ test('a retryable first call failure retries a bounded number of times and then 
   oauthRecord(configDir, 'mongoose-knowledge', { refreshToken: 'refresh-material', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now() });
   const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-store-'));
   const store = new Store(join(dir, 'data'), toolsMigrations);
-  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST, recoveryAttemptDeadlineMs: 500 });
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST });
   t.after(() => runtime.close());
   const failed = runtime.status().endpoints[0]!;
   assert.equal(failed.state, 'error', 'the endpoint did not connect');

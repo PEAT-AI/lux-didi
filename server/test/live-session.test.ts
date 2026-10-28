@@ -2104,7 +2104,7 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   const setup = (h.f.frames[0] as { setup: { tools: { functionDeclarations: { name: string; parameters: any }[] }[] } }).setup;
   // OC1 (#228): the host-native open tools are declared beside research, remember_note and the vault write.
   // C-OPENWEB8: open_web joins them for a map, a site or a search he names.
-  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['open_app', 'open_file', 'open_home', 'open_source', 'open_web', 'remember_note', 'research', 'save_to_vault']);
+  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['open_app', 'open_file', 'open_home', 'open_source', 'open_web', 'research', 'stage_lux_note']);
   const derived = setup.tools[0]!.functionDeclarations.find(d => d.name === 'research')!;
   assert.equal(derived.parameters.properties.question.type, 'STRING');
   const outputs = attachment.output[Symbol.asyncIterator]();
@@ -4918,10 +4918,10 @@ test('S4a-R2 (a): a write past the ceiling settles as uncertain, and a late call
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'ceiling-write');
   // The note waits for the owner's transcript, so the batch is dispatched once that lands.
-  fake.emit({ type: 'inputTranscription', text: 'remember this', finished: true });
+  fake.emit({ type: 'inputTranscription', text: 'save all of this', finished: true });
   await settlePort();
   fake.emit({ type: 'toolCall', calls: [
-    { id: 'w1', name: 'remember_note', args: { text: 'synthetic note', kind: 'note' } },
+    { id: 'w1', name: 'stage_lux_note', args: { text: 'synthetic note', kind: 'note' } },
     { id: 'r1', name: 'search_knowledge', args: { query: 'x', limit: 1 } },
   ] });
   await settlePort();
@@ -4929,13 +4929,13 @@ test('S4a-R2 (a): a write past the ceiling settles as uncertain, and a late call
   assert.equal(fake.toolResponses.length, 1, 'one settlement reaches the backend');
   // A read that ran past the ceiling timed out; a write the host cannot prove is uncertain, never a plain timeout.
   assert.deepEqual(fake.toolResponses[0], [
-    { id: 'w1', name: 'remember_note', response: { error: 'outcome_uncertain' } },
+    { id: 'w1', name: 'stage_lux_note', response: { error: 'outcome_uncertain' } },
     { id: 'r1', name: 'search_knowledge', response: { error: 'timeout' } },
   ]);
   // The settlements are distinct statuses, and none of them claims the remote side stopped.
   const hits = receipts.filter(entry => entry['event'] === 'tool_ceiling_hit');
   assert.deepEqual(hits, [
-    { event: 'tool_ceiling_hit', tool: 'remember_note', ms: 12_000, outcome: 'uncertain' },
+    { event: 'tool_ceiling_hit', tool: 'stage_lux_note', ms: 12_000, outcome: 'uncertain' },
     { event: 'tool_ceiling_hit', tool: 'search_knowledge', ms: 12_000, outcome: 'timeout' },
   ]);
   // The callback lands after the settlement: it may not rewrite it or write a second output.
@@ -4944,7 +4944,7 @@ test('S4a-R2 (a): a write past the ceiling settles as uncertain, and a late call
   assert.deepEqual(receipts.filter(entry => entry['event'] === 'tool_ceiling_late').map(entry => entry['outcome']), ['completed', 'completed'],
     'a late callback is a receipt, never a second answer');
   assert.equal(fake.toolResponses.length, 1, 'a late callback never produces a second output');
-  assert.deepEqual(fake.toolResponses[0]?.[0], { id: 'w1', name: 'remember_note', response: { error: 'outcome_uncertain' } });
+  assert.deepEqual(fake.toolResponses[0]?.[0], { id: 'w1', name: 'stage_lux_note', response: { error: 'outcome_uncertain' } });
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -6339,24 +6339,15 @@ test('C-TURN8: an owner-data read other than research is refused no_owner_input 
 
 // C-TURN8: a save is owner data too, so the same gate answers it before he has spoken, rather than letting
 // it reach the note or vault gates that name a different cause.
-test('C-TURN8: a save before the owner speaks is refused no_owner_input and writes nothing', async t => {
-  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-preowner-save-'));
-  const stop = captureHostDiagnostics(new HostLog(captureDir));
-  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+test('C-TURN8: legacy save before owner speech is retired and writes nothing', async t => {
   const h = await harness(t, { tools: true });
   const { session } = await attached(h, 'preowner-save');
-  const written = (): number => h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n']));
-  const before = written();
+  const before = h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n']));
   await settleLiveTool(h, 'vault-1', 'save_to_vault', { text: 'synthetic line' }, { spoke: false });
   const response = (h.f.frames[1] as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!.response;
-  assert.deepEqual({ error: response.error, state: response.state, reason: response.reason },
-    { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input' }, 'the save is refused with the read gate reason');
-  const gated = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
-  assert.equal(String(gated?.tool?.markdown ?? ''), 'save_to_vault: refused (no_owner_input)', 'the model is told nothing was saved');
-  assert.equal(written(), before, 'nothing was written before he spoke');
-  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').split('\n').filter(line => line.startsWith('{'))
-    .map(line => JSON.parse(line) as { event: string; tool?: string; reason?: string });
-  assert.deepEqual(lines.filter(line => line.event === 'live_tool_refused').map(line => [line.tool, line.reason]), [['save_to_vault', 'no_owner_input']]);
+  assert.equal(response['saved'], false);
+  assert.equal(response['code'], 'tool_retired');
+  assert.equal(h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n'])), before);
   h.owner.revoke(session.liveSessionId);
 });
 

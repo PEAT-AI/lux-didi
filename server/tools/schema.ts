@@ -178,5 +178,8 @@ export const toolsMigrations: readonly SchemaMigration[] = [{ owner: 'tools', ve
       created_journal_id TEXT NOT NULL, ring_started_at_utc INTEGER, ring_deadline_utc INTEGER,
       CHECK((state='ringing' AND ring_started_at_utc IS NOT NULL AND ring_deadline_utc IS NOT NULL) OR state!='ringing'))`,
     `CREATE INDEX alarms_active_fire ON alarms(state,fire_at_utc)`,
+    `CREATE TABLE alarm_session_attempts (alarm_id TEXT PRIMARY KEY REFERENCES alarms(id), live_session_id TEXT)`,
+    `CREATE TABLE alarm_snoozes (alarm_id TEXT PRIMARY KEY REFERENCES alarms(id), next_alarm_id TEXT NOT NULL REFERENCES alarms(id))`,
+    `CREATE TABLE alarm_missed_mentions (alarm_id TEXT PRIMARY KEY REFERENCES alarms(id))`,
   ],
 }];

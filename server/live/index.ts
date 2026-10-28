@@ -77,6 +77,10 @@ export function openersNote(openers: readonly string[], topics: readonly (string
 
 /** Host instructions are never owner words, including on adapters with only a user text channel. */
 export const hostNote = (text: string): string => `[host note, not the owner] ${text}`;
+const ALARM_MODE_MARKER = '[alarm mode]';
+export function alarmSessionInstructions(input: import('./types.js').AlarmSessionSetup): string {
+  return `${ALARM_MODE_MARKER} Wake ${JSON.stringify(input.ownerDisplayName)} for the alarm at ${JSON.stringify(input.scheduledTime)}. Address them by name and briefly invite a spoken answer. Continue brief wake-up reminders until they answer. You are Naya. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
+}
 
 /** The most of a recorded option's topic the note names, so a long fragment stays one clause. */
 
@@ -1465,7 +1469,7 @@ export class LiveSessionOwner {
     this.#guardOpen();
     if (!input || typeof input !== 'object' || typeof input.idempotencyKey !== 'string' || !keyPattern.test(input.idempotencyKey)) throw new LiveError('invalid_request');
     this.#contextShape(context);
-    const fingerprintFor = (prompt: string) => identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt, pickupJobId: input.pickupJobId ?? null });
+    const fingerprintFor = (prompt: string) => identity({ inputClass: input.inputClass, profile: this.#profileIdentity, prompt, pickupJobId: input.pickupJobId ?? null, alarm: input.alarm ?? null });
     const now = this.#now();
     // #595: the owner travels, so the zone is read when this call is composed, never at host start.
     const timeZone = this.#ownerTimeZone();
@@ -1574,7 +1578,7 @@ export class LiveSessionOwner {
       const summaryClasses = storedSummaries.filter(row => injectedSummaryIds.includes(row.id)).map(row => row.dataClass);
       const selectedClasses = new Set([...configuredPrompt.dataClasses, ...summaryClasses, ...injectedOpeners.map(row => row.dataClass), ...(composed.selectedIds.length ? ['ordinary' as const] : [])]);
       if (injectedSummaryIds.length || earlier.omitted.length) this.#summaryLog?.({ event: 'conversation_summary_injection', injected: injectedSummaryIds.length, omitted: earlier.omitted.length, chars: composed.sections.find(section => section.id === 'earlier-conversations')?.chars ?? 0 });
-      const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: composed.text, dataClasses: classes.filter(value => selectedClasses.has(value)), memory, ...(pickup ? { pickup } : {}) }, assistantId);
+      const acceptedPrompt = validateAcceptedPrompt({ ...configuredPrompt, system: input.alarm ? alarmSessionInstructions(input.alarm) : composed.text, dataClasses: input.alarm ? ['ordinary'] : classes.filter(value => selectedClasses.has(value)), memory: input.alarm ? { status: 'empty', selectedIds: [], omitted: [] } : memory, ...(!input.alarm && pickup ? { pickup } : {}) }, assistantId);
       const promptIdentity = identity({ text: acceptedPrompt.system, dataClass: this.#profile.prompt.dataClass });
       const fingerprint = fingerprintFor(promptIdentity);
       tx.run('INSERT INTO live_sessions(live_session_id, owner_assistant_id, authority_epoch, idempotency_key, fingerprint, client_id, audit_id, profile_identity, prompt_identity, lifecycle, dispatch_intent, ready, journal_events, journal_bytes, journal_complete, consumer_state, terminal_outcome, terminal_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,0,0,0,0,?,NULL,NULL,?,?)',
@@ -3150,6 +3154,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    * synchronous refusal; an asynchronous failure surfaces as rebuilding && !ready on the next loop pass.
    */
   async #openRecovery(handle: ActiveSession, path: 'resume' | 'fresh_seeded', savedHandle: string | undefined, remaining: number, idle: number, window: number, seed: { turns: { role: 'user' | 'model'; text: string; dataClass: DataClass }[]; chars: number }, reason: string | null, awaitReady = true): Promise<boolean> {
+    // An alarm occurrence has one provider attempt. Local ringing is independent of recovery.
+    if (handle.request.system.text.startsWith(ALARM_MODE_MARKER)) return false;
     handle.sessionTimer?.cancel();
     handle.attempts += 1; handle.generation += 1; handle.rebuilding = true; handle.ready = false;
     // C-LOG-ENVELOPE F1: the rebuild opens a new provider session inside the same call, so every later

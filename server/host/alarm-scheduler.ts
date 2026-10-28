@@ -52,10 +52,12 @@ export class AlarmScheduler {
   }
   snooze(id: string, fireAtUtc: number, createdJournalId: string): Alarm {
     const row = this.options.store.transaction(tx => {
-      const old = tx.get("SELECT * FROM alarms WHERE id=? AND state IN ('pending','ringing')", [id]);
+      const old = tx.get("SELECT * FROM alarms WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [id, this.options.clock.now()]);
       if (!old) throw Error('alarm_not_active');
       tx.run("UPDATE alarms SET state='done' WHERE id=?", [id]);
-      return this.insert(tx, { fireAtUtc, tz: String(old.tz), label: String(old.label), createdJournalId });
+      const next = this.insert(tx, { fireAtUtc, tz: String(old.tz), label: String(old.label), createdJournalId });
+      tx.run('INSERT INTO alarm_snoozes(alarm_id,next_alarm_id) VALUES(?,?)', [id, next.id]);
+      return next;
     });
     this.recheck('mutation');
     return row;
@@ -122,4 +124,34 @@ export class AlarmShellBridge {
   }
   publish(alarm: AlarmDue): void { this.send({ type: 'alarm_due', alarm }); }
   state(alarms: Alarm[]): void { this.send({ type: 'alarm_state', alarms }); }
+}
+
+/** Reserve an occurrence before creating a session, so failures and reconnects cannot retry it. */
+export class AlarmSessionCoordinator {
+  constructor(private readonly options: {
+    store: StorePort; hasLiveSession(): boolean;
+    open(setup: { ownerDisplayName: string; scheduledTime: string }, idempotencyKey: string): string;
+    degraded(id: string, reason: 'live_session_no_channel' | 'provider_unavailable'): void;
+  }) {}
+  attempt(id: string, ownerDisplayName: string): { status: 'live' | 'unavailable' | 'attempted' | 'created'; liveSessionId?: string } {
+    const alarm = this.options.store.transaction(tx => {
+      const row = tx.get("SELECT * FROM alarms WHERE id=? AND state='ringing'", [id]);
+      if (!row || !tx.run('INSERT OR IGNORE INTO alarm_session_attempts(alarm_id) VALUES(?)', [id])) return undefined;
+      return read(row);
+    });
+    if (!alarm) return { status: 'attempted' };
+    if (this.options.hasLiveSession()) {
+      this.options.degraded(id, 'live_session_no_channel');
+      return { status: 'live' };
+    }
+    try {
+      const scheduledTime = new Intl.DateTimeFormat('en-GB', { timeZone: alarm.tz, hour: '2-digit', minute: '2-digit' }).format(alarm.fireAtUtc);
+      const liveSessionId = this.options.open({ ownerDisplayName, scheduledTime }, `alarm:${id}`);
+      this.options.store.transaction(tx => tx.run('UPDATE alarm_session_attempts SET live_session_id=? WHERE alarm_id=?', [liveSessionId, id]));
+      return { status: 'created', liveSessionId };
+    } catch {
+      this.options.degraded(id, 'provider_unavailable');
+      return { status: 'unavailable' };
+    }
+  }
 }

@@ -1,5 +1,5 @@
 import { HostLog } from '../host/log.js';
-import type { AlarmScheduler, AlarmShellBridge, AlarmRecheck } from '../host/alarm-scheduler.js';
+import { AlarmSessionCoordinator, type AlarmScheduler, type AlarmShellBridge, type AlarmRecheck } from '../host/alarm-scheduler.js';
 import type { LivePendingService } from '../live/types.js';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse, Server } from 'node:http';
@@ -87,6 +87,17 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
   const pairing = new Map<string, number>();
   const selection = new ConversationSelection();
   const diagnosticLog = new HostLog(store.directory);
+  const alarmSessions = options.alarms && live ? new AlarmSessionCoordinator({ store,
+    hasLiveSession: () => !['idle', 'ended', 'error'].includes(live.current().state),
+    open: (setup, key) => {
+      if (!live.createAlarm) throw Error('alarm_speech_unavailable');
+      return live.createAlarm(setup, key, { clientId: 'local-admin', auditId: randomUUID(), authorityEpoch: store.authorityEpoch }).liveSessionId;
+    },
+    degraded: (id, reason) => {
+      const alarm = options.alarms!.scheduler.list().find(row => row.id === id);
+      if (alarm) diagnosticLog.event({ event: 'alarm_degraded', alarmId: id, scheduledMs: alarm.fireAtUtc, actualMs: now(), reason });
+    },
+  }) : undefined;
   const diagnosticTimes = new Map<string, number[]>();
   const liveClients = () => new Set(store.transaction(tx => tx.all('SELECT DISTINCT client_id FROM runtime_sessions WHERE expires_at>?', [now()])).map(row => String(row.client_id)));
   const send = (res: ServerResponse, status: number, payload: unknown) => {
@@ -142,6 +153,16 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
         }
         if (method === 'POST' && req.headers['x-didi-authority-epoch'] === store.authorityEpoch) {
           const body = await readBody(req);
+          if (url.pathname === '/v1/alarms/session' && typeof body.id === 'string' && typeof body.ownerDisplayName === 'string' && body.ownerDisplayName.length > 0 && body.ownerDisplayName.length <= 120) {
+            const attempt = alarmSessions?.attempt(body.id, body.ownerDisplayName);
+            if (attempt?.status === 'created' && attempt.liveSessionId && live) { send(res, 201, success(live.snapshot(attempt.liveSessionId))); return; }
+            send(res, 409, { error: { code: 'ALARM_SPEECH_UNAVAILABLE', message: 'Local ringing continues.' }, requestId }); return;
+          }
+          if (url.pathname === '/v1/alarms/ring-started' && typeof body.id === 'string') {
+            const alarm = scheduler.list().find(row => row.id === body.id && row.state === 'ringing');
+            if (alarm) diagnosticLog.event({ event: 'alarm_ring_started', alarmId: alarm.id, scheduledMs: alarm.fireAtUtc, actualMs: now(), reason: 'local_ring' });
+            send(res, 200, success({ status: 'ok' })); return;
+          }
           if (url.pathname === '/v1/alarms/shell' && typeof body.assertion === 'boolean' && typeof body.notifications === 'boolean') {
             shell.report({ assertion: body.assertion, notifications: body.notifications });
             send(res, 200, success(shell.health())); return;

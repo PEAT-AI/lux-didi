@@ -476,7 +476,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
   });
   const owner: ToolsOwner & LiveRunConnections = {
     journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port,
-    observeAlarmOwner: (session, journalId, words, at) => alarmGate.observeOwnerFinal(session, journalId, words, at),
+    observeAlarmOwner: (session, journalId, words, at) => {
+      alarmGate.observeOwnerFinal(session, journalId, words, at);
+      if (/[\p{L}\p{N}]/u.test(words)) queueMicrotask(() => options.alarms?.ownerSpeech?.());
+    },
     releaseHistoryConversation(conversationId) { historyReader.releaseConversation(conversationId); },
     releaseEvidence(runId, bindings) {
       pruneEvidence();
@@ -706,7 +709,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             const ask = alarmGate.authorize(runId, name, now);
             if (!ask) return finish({ status: 'refused', reason: 'owner_alarm_intent_required' });
             if (name === 'cancel_alarm') {
-              if (!args.id || !tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND state IN ('pending','ringing')", [input.id!])) return finish({ status: 'refused', reason: 'alarm_not_active' });
+              if (!args.id || !tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id!, now])) return finish({ status: 'refused', reason: 'alarm_not_active' });
               consumed = ask.journalId;
               return finish({ status: 'cancelled', id: args.id, say: 'Alarm cancelled.' });
             }
@@ -714,12 +717,13 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (parsed.status !== 'ready') return finish(parsed);
             let alarmTz = parsed.tz;
             if (name === 'snooze_alarm') {
-              const old = args.id ? tx.get("SELECT tz FROM alarms WHERE id=? AND state IN ('pending','ringing')", [input.id!]) : undefined;
+              const old = args.id ? tx.get("SELECT tz FROM alarms WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id!, now]) : undefined;
               if (!old || !args.id) return finish({ status: 'refused', reason: 'alarm_not_active' });
               alarmTz = String(old.tz);
               tx.run("UPDATE alarms SET state='done' WHERE id=?", [input.id!]);
             }
             tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [context.executionId, parsed.fireAtUtc, alarmTz, '', ask.journalId]);
+            if (name === 'snooze_alarm') tx.run('INSERT INTO alarm_snoozes(alarm_id,next_alarm_id) VALUES(?,?)', [input.id!, context.executionId]);
             consumed = ask.journalId;
             const health = options.alarms?.health() ?? { degraded: true, reasons: ['shell_unreachable'] };
             return finish({ status: 'set', id: context.executionId, fire_at_utc: parsed.fireAtUtc, tz: alarmTz,

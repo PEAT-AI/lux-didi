@@ -48,7 +48,7 @@ export interface ToolFailureEvent {
   tool: string; connector: string; errorClass: 'Error' | 'SyntaxError' | 'UnknownThrow'; messageHead: string;
 }
 export interface ToolsOwnerOptions {
-  alarms?: { now(): number; recheck(): void; health(): { degraded: boolean; reasons: string[] } };
+  alarms?: { now(): number; recheck(): void; ownerSpeech?(): void; health(): { degraded: boolean; reasons: string[] } };
   log?: (event: ToolFailureEvent) => void;
   grantMode?: 'explicit' | 'owner-trusted-reads';
   store: StorePort; ownerId: string; registry: McpRegistry; port: McpPort;

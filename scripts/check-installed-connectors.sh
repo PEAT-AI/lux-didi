@@ -81,8 +81,29 @@ gate_ok=0
 bash "$root/scripts/run-installed-checks.sh" "$work/target" --checks-dir "$work/checks-pass" 2>/dev/null || gate_ok=$?
 [ "$gate_ok" -eq 0 ] || { echo 'check-installed-connectors.sh: the gate fails with no installed checks' >&2; exit 1; }
 
-# 4. The install path must call the gate, from the checkout that installed.
-bash -n "$root/scripts/install-macos-app.sh" || { echo 'check-installed-connectors.sh: install-macos-app.sh does not parse' >&2; exit 1; }
-grep -q 'run-installed-checks.sh' "$root/scripts/install-macos-app.sh" || { echo 'check-installed-connectors.sh: the install script does not run the installed checks' >&2; exit 1; }
+# 4. The install path must run the gate after the app is in place, and a red gate must fail the install:
+#    the block containing the call restores the prior app and exits non-zero.
+installer="$root/scripts/install-macos-app.sh"
+bash -n "$installer" || { echo 'check-installed-connectors.sh: install-macos-app.sh does not parse' >&2; exit 1; }
+gate_line="$(grep -n 'run-installed-checks.sh' "$installer" | head -1 | cut -d: -f1)"
+place_line="$(grep -n '^mv "\$stage" "\$target"' "$installer" | head -1 | cut -d: -f1)"
+if [ -z "$gate_line" ] || [ -z "$place_line" ]; then
+  echo 'check-installed-connectors.sh: the install script does not run the installed checks' >&2
+  exit 1
+fi
+if [ "$gate_line" -le "$place_line" ]; then
+  echo "check-installed-connectors.sh: the gate at line $gate_line runs before the app is in place at line $place_line" >&2
+  exit 1
+fi
+gate_block="$(sed -n "${gate_line},$((gate_line + 5))p" "$installer")"
+case "$gate_block" in
+  *'mv "$rollback" "$target"'*) ;;
+  *) echo 'check-installed-connectors.sh: a red gate does not restore the prior app' >&2; exit 1;;
+esac
+case "$gate_block" in
+  *'exit 1'*) ;;
+  *) echo 'check-installed-connectors.sh: a red gate does not fail the install' >&2; exit 1;;
+esac
+printf 'CHECK-INSTALLED-CONNECTORS PASS install-gate line=%s after=%s\n' "$gate_line" "$place_line"
 
 printf 'CHECK-INSTALLED-CONNECTORS PASS scenario=ci\n'

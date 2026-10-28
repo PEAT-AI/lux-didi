@@ -115,7 +115,12 @@ const SIGNIN_OAUTH_ERRORS = ['invalid_request', 'invalid_client', 'invalid_grant
  */
 const TRELLO_CALL_TOOL = new RegExp(`^(?:${TRELLO_CALL_TOOLS.map(tool => tool.replace('.', '\\.')).join('|')})$`);
 const TRELLO_CALL_REASONS = ['not_configured', 'not_signed_in', 'auth_failed', 'credential_revoked', 'credential_mismatch', 'rate_limited', 'unavailable', 'board_not_found', 'board_ambiguous', 'unsupported', 'result_unrecognized', 'outside_scope',
-  'list_unknown', 'list_ambiguous', 'card_unknown', 'card_ambiguous', 'label_unknown', 'item_unknown', 'invalid_due', 'description_full', 'not_owner_requested', 'no_change', 'write_failed', 'outcome_unknown', 'replayed'];
+  'list_unknown', 'list_ambiguous', 'card_unknown', 'card_ambiguous', 'label_unknown', 'item_unknown', 'invalid_due', 'description_full', 'not_owner_requested', 'no_change', 'write_failed', 'outcome_unknown', 'replayed',
+  'plan_no_tool', 'plan_bad_args', 'plan_no_action', 'dispatch_not_allowed',
+  ...['not_signed_in', 'auth_failed', 'credential_revoked', 'credential_mismatch', 'rate_limited', 'unavailable', 'unknown', 'protocol_error', 'not_allowed'].map(code => `server_${code}`),
+  'server_tool_error:unknown',
+  // HTTP status is a bounded integer, never response text, a path or an account value.
+  ...['tool_error', 'credential_revoked', 'rate_limited', 'unavailable'].flatMap(code => Array.from({ length: 200 }, (_, offset) => `server_${code}:http_${400 + offset}`))];
 /** W11-R3: the Gmail operators a compiled mail query may name, as a closed set, never the words. */
 const MAIL_QUERY_OPERATORS = ['from', 'to', 'cc', 'bcc', 'subject', 'after', 'before', 'newer_than', 'older_than', 'is', 'has', 'label', 'in'];
 /** W11-R3: a window bound is one operator from the closed set and a day count or a calendar date. */

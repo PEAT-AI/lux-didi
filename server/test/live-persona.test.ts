@@ -256,7 +256,8 @@ test('PV2: the target budget yields memory whole and then the tools conduct whol
   // Under the target nothing yields at all.
   const ownerProfile = syntheticOwner('S'.repeat(6_000), 'OWNER LORE BLOCK');
   const overlay: PersonaOverlay = { schemaVersion: 1, text: 'O'.repeat(20_000) };
-  const roomy = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', tools: ['search_knowledge'], memory: 'M'.repeat(20_000) });
+  // C-OPENWEB8: the memory fixture is sized to the instruction, so it still sits under the target.
+  const roomy = composeLiveInstruction({ base: NAYA_LIVE_BASE, ownerProfile, overlay, language: 'en', tools: ['search_knowledge'], memory: 'M'.repeat(19_800) });
   assert.ok(roomy.text.length <= LIVE_INSTRUCTION_TARGET_CHARS, `composed text ${roomy.text.length} must fit the target`);
   assert.equal(roomy.sections.some(section => section.chars === 0), false, 'nothing yields under the target');
   // Past it the memory goes first and whole, and the tools conduct stays complete rather than trimmed. The
@@ -370,9 +371,10 @@ test('the public character, voice surface and tool conduct are the authored verb
   // Train: W1 moved the voice-tools block too, so the merged sources re-pin all three at once.
   assert.equal(sha(NAYA_CHARACTER), 'd927cedccd099bd4375b34453a4d71cae4cdfc10a098f1940d8beea767b11207');
   assert.equal(sha(NAYA_VOICE_SURFACE), '69d48420aac2471b8343d109c5d48833a25d22a510ef9966b94119a620ef21ab');
-  assert.equal(sha(NAYA_VOICE_TOOLS), '1040683267e0695db42e121eccd622c98d257506f2adc643db5ba83667d20506');
+  // C-OPENWEB8: the open paragraph names open_web for a map, a site or a search, so this block is re-pinned.
+  assert.equal(sha(NAYA_VOICE_TOOLS), 'b1290a60026dc4e3ff238bce007a6eb327f5cc9c7043b60cf1fb0593a0809cbb');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), '92c556c1112232a01b24e05964a29e2082c27a8e93b2610f83aa498ba5090669');
-  assert.equal(sha(NAYA_TOOLS), '32b4082e3c56235711c664d617fd63b3b7bf5992373a3b3feeeb982af93469fc');
+  assert.equal(sha(NAYA_TOOLS), 'f3d9e9eaa564781bc45ac585aa23262cbea2f59f809dde9b979d6e035caa336c');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));
@@ -728,7 +730,8 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   // TRAIN4-R1: V1's save wording and main's write-honesty clause now sit in one paragraph, so the
   // merged measure is 7_700; the bound carries it, exactly as TR-R5 re-pins a house budget to the
   // merged measure and no reviewed rule is trimmed for it.
-  const cap = 7_750;
+  // C-OPENWEB8: the open_web clause in the open paragraph is the growth this bound carries (7_871).
+  const cap = 7_880;
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
@@ -1372,7 +1375,8 @@ const W5_REPLACED = [
 // #665/#666: the voice surface grows by the five honesty rules and the turn-taking line they replace.
 // TR-R5: the owner rule for authored text is re-pin, never trim, so the cap carries the merged voice instruction.
 // TR-R15: measured 10_507 once W7's write-honesty clause was restored.
-const W5_VOICE_BEFORE = 10_600;
+// C-OPENWEB8: the open_web clause adds 183 chars to the open paragraph; the frozen measure is re-pinned to it.
+const W5_VOICE_BEFORE = 10_760;
 
 test('W5: each audit rule is stated once in the built GPT-Live voice instruction, and its replacements are gone', () => {
   const voice = composeLiveSessionInstruction({ text: `${NAYA_LIVE_BASE}\n\nSynthetic voice anchor`, tools: ['research'], records: [],
@@ -1445,7 +1449,8 @@ test('OPEN2-7: the open paragraph says she opens only a handle she was shown and
   // C-OPEN: a failed open is never given an invented reason, and a repeated ask retries the same handle.
   assert.match(NAYA_OPEN_SURFACE, /Never invent a failed-open reason/);
   assert.match(NAYA_OPEN_SURFACE, /retry once with the same handle if he asks again/);
-  assert.equal(NAYA_OPEN_SURFACE.length <= 844, true, 'the paragraph stays inside the frozen voice budget');
+  // C-OPENWEB8: the open_web clause is paid for here; the paragraph holds its frozen budget at 1_050 (1_022).
+  assert.equal(NAYA_OPEN_SURFACE.length <= 1_050, true, 'the paragraph stays inside the frozen voice budget');
   assert.equal(/https?:|\/\/|\.com|\.google|\.ai/.test(NAYA_OPEN_SURFACE), false, 'the open paragraph carries no url or host');
 });
 

@@ -941,7 +941,8 @@ class Session implements LiveVoiceSession {
       });
       return;
     }
-    this.emit({ type: 'modelTurnStarted', ...this.providerIds() });
+    // Plain owner-end notices have no provider response id: currentResponse may belong to an old delegation.
+    this.emit({ type: 'modelTurnStarted' });
     this.touch();
   }
 

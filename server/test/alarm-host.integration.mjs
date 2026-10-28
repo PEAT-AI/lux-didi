@@ -22,7 +22,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   await writeFile(join(configDir, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini', modelId: 'models/live-gateway-test', voice: 'LiveVoice', keyReference: 'synthetic', dataClasses: ['ordinary'], preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'dry', verbosity: 'balanced' } }), { mode: 0o600 });
   await writeFile(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [] }), { mode: 0o600 });
   let now = Date.parse('2026-10-28T00:00:00Z');
-  const host = await startHost({ dataDir: join(directory, 'state'), configDir, webRoot: directory, port: 0, now: () => now,
+  const host = await startHost({ dataDir: join(directory, 'state'), configDir, webRoot: process.env.DIDI_ALARM_WEB_ROOT ?? resolve(import.meta.dirname, '../../web/dist'), port: 0, now: () => now,
     liveTesting: { socketFactory: f.socketFactory, credentials: { resolve: async () => CANARY } } });
   cleanups.push(() => host.close());
   const origin = host.service.origin;

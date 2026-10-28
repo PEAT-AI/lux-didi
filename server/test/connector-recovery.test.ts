@@ -338,7 +338,7 @@ test('TRAIN8-R8: an attempt that never answers is cut by its own deadline, so th
   const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-hang-'));
   const store = new Store(join(dir, 'data'), toolsMigrations);
   const events: Array<{ event?: string; outcome?: string }> = [];
-  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST, recoveryAttemptDeadlineMs: 50, lifecycleLog: event => { events.push(event as { event?: string; outcome?: string }); } });
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST, recoveryRepeatMs: false, recoveryAttemptDeadlineMs: 50, lifecycleLog: event => { events.push(event as { event?: string; outcome?: string }); } });
   t.after(() => runtime.close());
   await runtime.start();
   // The cut is read on the retry line it writes, not on the projection: a later attempt sets the

@@ -8,6 +8,7 @@ import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { GMAIL_BODY_CHARS, shapeLuxKnowledge } from '../tools/live-shape.js';
 import { projectLuxResult } from '../tools/lux-knowledge.js';
 import { subResultOf } from '../live/index.js';
+import { attachHostLogSink } from '../tools/host-events.js';
 import { createHash } from 'node:crypto';
 import type { McpPort } from '../adapters/mcp/port.js';
 import type { ConnectionPolicy } from '../tools/types.js';
@@ -319,4 +320,72 @@ test('#1028: a fetched knowledge entry reaches the round as its body, not its ti
   }, new AbortController().signal);
   assert.ok(executed.includes('get_insight'), 'the named entry was fetched');
   assert.match(JSON.stringify(reply['findings']), /harvested on Friday/u, 'the fetched entry body is in the round');
+});
+
+// C-POLISH10: the knowledge leg decides an unprompted open on the ranker's score and on the hit's own title, so an
+// unrelated entry is never fetched and injected over an identity lookup.
+test('C-POLISH10: an unrelated or low-score knowledge hit is not opened, and a relevant one is', async () => {
+  const decide = async (search: string, question: string): Promise<{ fetches: number; line: Record<string, unknown> | undefined }> => {
+    const lines: Record<string, unknown>[] = [];
+    const executed: IntentSubCall[] = [];
+    const detach = attachHostLogSink({ event: raw => { if (raw !== null && typeof raw === 'object') lines.push(raw as Record<string, unknown>) } });
+    const h = harness({
+      execute: async subs => subs.map(call => {
+        executed.push(call);
+        return sub(call.name, call.name === 'search_knowledge' ? search : '### Margit Halden call notes [id 44] the whole entry body', true, call.key);
+      }),
+    });
+    try {
+      await runResearch(h.deps, { action: 'start', question, topic: 'Margit Halden' }, new AbortController().signal);
+    } finally { detach() }
+    return { fetches: executed.filter(call => call.name === 'get_insight').length, line: lines.find(raw => raw['event'] === 'knowledge_autopen') };
+  };
+  const scored = (score: string, title: string): string => [
+    '# Knowledge Search',
+    `_confidence: medium · mode: reranked · top score: ${score} · relevant candidate: yes_`,
+    title,
+    'the vault keeps a note about socket timeouts',
+  ].join('\n');
+  const low = await decide(NO_CANDIDATE, 'who is the person I meet tomorrow and what do we know about Margit Halden');
+  assert.equal(low.fetches, 0, 'a low-scoring hit is not opened');
+  assert.equal(low.line?.['decision'], 'skipped');
+  assert.equal(low.line?.['reason'], 'low_score');
+  const unrelated = await decide(scored('0.62', '**#900** [PATTERN] Unrelated engineering note'), 'what do we know about Margit Halden');
+  assert.equal(unrelated.fetches, 0, 'a hit whose title shares no content word with the ask is not opened');
+  assert.equal(unrelated.line?.['reason'], 'no_overlap');
+  const relevant = await decide(scored('0.62', '**#44** [MEETING] Margit Halden call notes'), 'what do we know about Margit Halden');
+  assert.equal(relevant.fetches, 1, 'a relevant hit is opened');
+  assert.equal(relevant.line?.['decision'], 'opened');
+  assert.equal(relevant.line?.['bucket'], 'high');
+  assert.equal(relevant.line?.['reason'], 'none');
+});
+
+// C-POLISH10: a run that already gave its whole answer needs no continue, so the tool answers with a closed pointer
+// instead of spending a round to re-render the same findings.
+test('C-POLISH10: a continue on a finished run answers already_delivered without the payload', async () => {
+  const executed: IntentSubCall[] = [];
+  const deps: ResearchDeps = {
+    now: () => 0, configured: ['knowledge'] as readonly SourceKind[], ledger: new ResearchLedger(),
+    emit() {}, log() {}, logSource() {}, logSubcall() {}, logJoined() {},
+    execute: async (subs: readonly IntentSubCall[]) => {
+      executed.push(...subs);
+      return subs.map(call => sub(call.name, call.name === 'search_knowledge'
+        ? '### Retrieval deadline (decision | 2026-10-19) [id 123]\nthe deadline is the retrieval window at six seconds'
+        : '### Retrieval deadline (decision | 2026-10-19) [id 123]\nthe deadline is the retrieval window at six seconds', true, call.key));
+    },
+  };
+  const started = await runResearch(deps, {
+    action: 'start', question: 'what did we decide about the retrieval deadline', topic: 'retrieval deadline',
+    lookups: [{ source: 'knowledge', query: 'retrieval deadline' }],
+  }, new AbortController().signal);
+  assert.equal(started['canContinue'], false, 'the fixture run left nothing to fetch');
+  assert.ok(Array.isArray(started['findings']) && (started['findings'] as unknown[]).length > 0, 'the first answer carries the payload');
+  const before = executed.length;
+  const reply = await runResearch(deps, { action: 'continue', researchId: String(started['researchId']), question: 'more detail please' }, new AbortController().signal);
+  assert.equal(reply['alreadyDelivered'], true, 'the continue says the answer was already delivered');
+  assert.equal(reply['delivery'], 'already_delivered');
+  assert.deepEqual(reply['findings'], [], 'the payload is not sent a second time');
+  assert.equal(reply['canContinue'], false);
+  assert.match(String(reply['note']), /already gave its answer/u, 'the note is the pointer');
+  assert.equal(executed.length, before, 'a finished run spends no read on a continue');
 });

@@ -36,7 +36,7 @@ test('alarm mode: only the display name and scheduled time enter setup instructi
   assert.doesNotMatch(setup, /calendar|mail|role.*user/i);
 });
 
-test('alarm guidance names all four awake-Mac tools and trusts their receipts', async () => {
+test('alarm guidance names all four tools and states the sleep and closed-lid limits', async () => {
   const { NAYA_VOICE_TOOLS } = await import('../prompt/live-persona.js');
-  assert.match(NAYA_VOICE_TOOLS, /Awake-Mac: set_alarm, list_alarms, cancel_alarm, snooze_alarm; trust receipts\./);
+  assert.ok(NAYA_VOICE_TOOLS.includes('set_alarm/list_alarms/cancel_alarm/snooze_alarm may fail asleep or lid closed.'));
 });

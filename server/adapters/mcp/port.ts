@@ -40,13 +40,25 @@ export interface EndpointBindingInput {
   env?: Readonly<Record<string, string>>;
 }
 /**
+ * W2-R1(b): the shell-session variables a relaunched child inherits say nothing about which server it
+ * is, and they move on every runtime update. They are neither stored in an approval nor hashed into a
+ * binding identity; the live catalog entry keeps them, and the launch reads that.
+ */
+export const VOLATILE_STDIO_ENV: readonly string[] = ['PATH', 'PWD', 'OLDPWD', 'SHLVL', '_', 'TMPDIR'];
+
+/** The env that defines the server: everything but the shell session that launched it. */
+export function definingStdioEnv(env: Readonly<Record<string, string>> | undefined): Record<string, string> {
+  return Object.fromEntries(Object.entries(env ?? {}).filter(([key]) => !VOLATILE_STDIO_ENV.includes(key)));
+}
+
+/**
  * Canonical full binding identity, shared by the registry, the owner policy and
  * protected configuration. A missing URL is never evidence that two process
  * bindings match, so the stdio arm is compared on command, ordered args and env.
  */
 export function endpointBinding(config: EndpointBindingInput): string {
   if (config.transport === 'stdio') {
-    const env = Object.entries(config.env ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const env = Object.entries(definingStdioEnv(config.env)).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     return JSON.stringify(['stdio', config.id, config.command ?? '', [...(config.args ?? [])], env, config.account, config.resource]);
   }
   return JSON.stringify(['streamable-http', config.id, config.url ?? '', config.account, config.resource, config.credentialRef ?? null]);

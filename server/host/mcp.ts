@@ -10,7 +10,7 @@ import { createMcpAdapter, HTTP_CONNECT_TIMEOUT_MS, STDIO_CONNECT_TIMEOUT_MS, ty
 import { mongooseCredentialAtStart, mongooseFailureStage, mongoosePublishCatalogue, mongoosePublishedTool, mongooseReadOnly } from '../connectors/mongoose.js';
 import { MongooseCredentialError, MONGOOSE_CONSENT_CAP_MS, mongooseAccessToken, mongooseCredentialPresent, mongooseEntryBinding, readMongooseOAuth } from './mongoose-auth.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import { bindingDigestOf, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
+import { bindingDigestOf, definingStdioEnv, isStdioEndpoint, type CallRequest, type McpPort, type ReadGrant, type ResultScope, type ToolDefinition } from '../adapters/mcp/port.js';
 import { canonicalJSON, sha256 } from '../tools/canonical.js';
 import { identityAction, identityFailureRetryable, identityProofMemo, proveIdentity, refusalCode, IDENTITY_TIMEOUT_MS, type IdentityErrorCode, type IdentityProof } from '../connectors/identity.js';
 import { googleAccountPinRefused, googleMcpPathUnsafe } from '../connectors/google.js';
@@ -218,27 +218,20 @@ export type ConnectorLifecycleEvent =
   /** W2-R1: the one closed reason a stored approval refused this connect. */
   | { event: 'connector_approval_refused'; endpointId: string; reason: string };
 
-/**
- * W2-R1: a rebuilt child is relaunched with a fresh shell-session environment, and PATH alone moved the
- * endpoint of every connector on a release that rebuilt its own child directory. These variables say
- * nothing about which server an endpoint is, so they are never part of its stored identity.
- */
-const VOLATILE_STDIO_ENV: readonly string[] = ['PATH', 'PWD', 'OLDPWD', 'SHLVL', '_', 'TMPDIR'];
-
 /** A stored stdio endpoint, told apart by its own transport field: an http endpoint has none. */
 const isStdioEndpointRecord = (endpoint: ConnectionEndpoint): endpoint is StdioConnectionEndpoint => (endpoint as { transport?: unknown }).transport === 'stdio';
 
 /** What defines the server an endpoint names: everything but the shell session that launched it. */
 function endpointIdentity(endpoint: ConnectionEndpoint): string {
   if (!isStdioEndpointRecord(endpoint)) return canonicalJSON(endpoint);
-  const env = Object.entries(endpoint.env ?? {}).filter(([key]) => !VOLATILE_STDIO_ENV.includes(key)).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  const env = Object.entries(definingStdioEnv(endpoint.env)).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
   return canonicalJSON({ ...endpoint, env });
 }
 
 /** The stdio fields that moved between two releases' endpoint records, as closed names only. */
 function changedEndpointFields(stored: ConnectionEndpoint, next: ConnectionEndpoint): string[] {
   if (!isStdioEndpointRecord(stored) || !isStdioEndpointRecord(next)) return [];
-  const defining = (env: Readonly<Record<string, string>> | undefined): string => canonicalJSON(Object.fromEntries(Object.entries(env ?? {}).filter(([key]) => !VOLATILE_STDIO_ENV.includes(key))));
+  const defining = (env: Readonly<Record<string, string>> | undefined): string => canonicalJSON(definingStdioEnv(env));
   const fields: string[] = [];
   if (stored.command !== next.command) fields.push('command');
   if (canonicalJSON(stored.args) !== canonicalJSON(next.args)) fields.push('args');
@@ -708,7 +701,9 @@ export async function composeMcpRuntime(options: {
         schemaVersion: 1, bindingMode: 'connection', ownerId, connectionId: entry.id, generation: row ? Number(row.generation) : 1,
         enabled: true, connector: entry.connector,
         endpoint: entry.transport === 'stdio'
-          ? { id: entry.id, transport: 'stdio', command: entry.command, args: [...entry.args], env: { ...entry.env }, account: entry.account, resource: entry.resource, credentialRef: null }
+          // W2-R1(b): the approval stores what defines the server, never the shell session that launched
+          // it; the launch reads the live catalog entry (registry.register below, adapter.ts:362).
+          ? { id: entry.id, transport: 'stdio', command: entry.command, args: [...entry.args], env: definingStdioEnv(entry.env), account: entry.account, resource: entry.resource, credentialRef: null }
           : { id: entry.id, url: entry.url, account: entry.account, resource: entry.resource, credentialRef: entry.credentialRef },
         toolNames: granted, schemaDigest: discovery.schemaDigest,
         sourcePolicy: { id: entry.id, revision: 1, unknownClass: entry.unknownClass, allowedClasses: [entry.unknownClass] },

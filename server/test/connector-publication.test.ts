@@ -14,6 +14,7 @@ import { once } from 'node:events';
 import { Store } from '../runtime/store.js';
 import { hostMigrations } from '../host/runtime.js';
 import { composeMcpRuntime, type ConnectorLifecycleEvent } from '../host/mcp.js';
+import { endpointBinding } from '../adapters/mcp/port.js';
 import type { ConnectionPolicy, RunAcceptance } from '../tools/types.js';
 import { CONNECTOR_COMPOSED_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, composedDeclarationDigest, composedGrantedNames, connectorDescriptor } from '../connectors/index.js';
 import { validatePolicy } from '../tools/index.js';
@@ -615,7 +616,9 @@ function stdioApprovalHost(t: TestContext, dir: string, configDir: string) {
     return runtime;
   };
   const generation = (): number => Number(store.transaction(tx => tx.get("SELECT generation FROM tool_connections WHERE connection_id='mattermost-people'"))?.['generation']);
-  return { write, start, generation, lifecycle, failures, report: (runtime: Awaited<ReturnType<typeof composeMcpRuntime>>) => runtime.status().endpoints.find(entry => entry.id === 'mattermost-people') };
+  /** The stored approval's own env: the shell session must never be part of it (W2-R1(b), F1). */
+  const storedEnv = (): Record<string, string> => (JSON.parse(String(store.transaction(tx => tx.get("SELECT policy_json FROM tool_connections WHERE connection_id='mattermost-people'"))?.['policy_json'] ?? '{}')) as { endpoint?: { env?: Record<string, string> } }).endpoint?.env ?? {};
+  return { write, start, generation, storedEnv, lifecycle, failures, report: (runtime: Awaited<ReturnType<typeof composeMcpRuntime>>) => runtime.status().endpoints.find(entry => entry.id === 'mattermost-people') };
 }
 
 /** The rebuilt child's new house, three releases of this suite have lived in a dated directory. */
@@ -637,6 +640,9 @@ test('W2-R1: a rebuilt stdio child in a moved directory with a fresh PATH reconn
   h.write('owner-trusted-reads', [PEOPLE_CHILD, 'people'], '/usr/bin');
   const first = await h.start();
   assert.equal(h.report(first)?.state, 'connected', JSON.stringify(h.report(first)));
+  // F1: the approval stores what defines the server, so the launching PATH is never in the row.
+  assert.equal('PATH' in h.storedEnv(), false, 'the stored endpoint env carries no shell session');
+  assert.equal(h.storedEnv()['HOME'], '/home/fixture', 'the defining env is still stored');
   await first.close();
   const settled = h.generation();
   h.lifecycle.length = 0;
@@ -652,14 +658,20 @@ test('W2-R1: a rebuilt stdio child in a moved directory with a fresh PATH reconn
       { event: 'connector_endpoint_changed', endpointId: 'mattermost-people', fields: ['args', 'env'] }, 'which fields moved, never a value');
     assert.equal(h.lifecycle.some(event => event.event === 'connector_approval_refused'), false);
   } finally { await moved.close(); }
-  // A PATH-only change is not an endpoint change at all: nothing moved but the shell that launched it.
+  // A PATH-only change is not an endpoint change at all: nothing moved but the shell that launched it,
+  // so the approval row is not even rewritten.
   h.lifecycle.length = 0;
+  const settledGeneration = h.generation();
   h.write('owner-trusted-reads', [rebuiltChild, 'people'], '/usr/local/bin:/usr/bin', 'mattermost', '/home/fixture-rebuilt');
   const pathOnly = await h.start();
   try {
     assert.equal(h.report(pathOnly)?.state, 'connected');
     assert.equal(h.lifecycle.some(event => event.event === 'connector_endpoint_changed' || event.event === 'connector_approval_refused'), false, 'PATH is never part of the stored endpoint identity');
+    assert.equal(h.generation(), settledGeneration, 'a PATH-only relaunch never rewrites the owner approval row');
   } finally { await pathOnly.close(); }
+  // The shared binding identity ignores the shell session too, so a runtime update does not move it.
+  const binding = (path: string): string => endpointBinding({ id: 'mattermost-people', transport: 'stdio', command: 'node', args: ['child.mjs'], env: { HOME: '/home/fixture', PATH: path }, account: 'mattermost', resource: 'mattermost' });
+  assert.equal(binding('/usr/bin'), binding('/opt/homebrew/bin:/usr/bin'), 'the launch PATH is never part of a binding identity');
 });
 
 test('W2-R1: an account change is a moved endpoint in trusted mode', { skip: process.platform === 'win32' }, async t => {

@@ -388,3 +388,21 @@ for (const order of ['read_then_save', 'save_then_read'] as const) {
     attachment.close();
   });
 }
+
+for (const shape of ['optional_evidence', 'body_limit', 'too_long'] as const) {
+  test(`C-LUXSAVE11 host: candidate boundary ${shape}`, async t => {
+    const h = await harness(t, { tools: true });
+    const { attachment } = await attached(h);
+    await ownerBlock(h, 'save all of this');
+    const args = shape === 'optional_evidence' ? { title: 'Synthetic', body: 'Synthetic body.' }
+      : { title: 'Synthetic', body: 'x'.repeat(shape === 'body_limit' ? 4_000 : 4_001), evidenceRefs: [] };
+    const result = await call(h, 'stage_lux_note', args);
+    if (shape === 'too_long') {
+      assert.equal(result['staged'], false, JSON.stringify(result));
+      assert.equal(result['code'], 'too_long');
+      assert.ok(String(result['guidance']).includes('split'));
+    } else assert.equal(result['staged'], true, JSON.stringify(result));
+    assert.equal(h.saved.length, 0, 'staging is not a write');
+    attachment.close();
+  });
+}

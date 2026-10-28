@@ -5659,6 +5659,7 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
     if (raced === 'settled') { stopTimers(); return undefined; }
     const view = first.snapshot?.();
     nonWebSettled = view !== undefined && first.settledNonWeb === true && first.reading.has('web')
+      && view.run.web.length === 0 && !view.run.unavailableReasons.has('web')
       && [...first.reading].every(source => source === 'web');
     if (raced === 'due' || nonWebSettled) break;
   }

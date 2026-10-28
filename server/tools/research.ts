@@ -2983,6 +2983,9 @@ export function unsearchedReasonOf(code: string): UnsearchedReason {
   const text = code.toLowerCase();
   // W3: the count guard's own code, before any spelling heuristic can read it as a failure.
   if (text === 'count_needs_date_window') return 'count_needs_date_window';
+  // C-CLAIMS9 outcome 3: the host's own code for a connector that cannot serve the read says it is down.
+  // On 10-28 a chat source reported this way came back as provider_failed with ms 0, hiding the reason.
+  if (text === 'connector_unavailable' || text === 'connector-unavailable') return 'not_connected';
   if (/grant|permission|scope|forbidden|unauthori[sz]ed|not_connected|signin|sign_in|sign-in|login|credential|token/u.test(text)) {
     return /not_connected|signin|sign_in|sign-in|login|credential|token|disconnect/u.test(text) ? 'not_connected' : 'grant_missing';
   }
@@ -3108,6 +3111,9 @@ function closedOutcomeOf(run: RunState, source: SourceKind): UnsearchedReason {
   // #637: a channel the ask named and the chat connector does not know is its own closed reason, so the
   // header says the channel is unknown instead of reporting the chat as a provider failure.
   if (code !== undefined && code.startsWith('channel_not_found')) return 'channel_not_found';
+  // C-CLAIMS9 outcome 3: a call the connector refused because nothing is connected, or a source the host
+  // reports as down, is not a provider failure: it is a connection he can restore and a provider cannot.
+  if (code !== undefined && (SIGNED_OUT_CODES.has(code) || code === CONNECTOR_UNAVAILABLE_CODE)) return 'not_connected';
   if (run.sourcesFailed.has(source)) return 'provider_failed';
   if (code !== undefined) return unsearchedReasonOf(code);
   if (run.stopped || run.cancelled) return 'skipped_by_route';
@@ -3135,6 +3141,8 @@ const SIGNED_OUT_CODES = new Set([
   'credential_missing', 'credential-missing', 'credential_refresh_failed', 'credential-refresh-failed',
   'credential_consent_expired', 'credential-consent-expired', 'credential_revoked', 'data_not_connected',
 ]);
+/** C-CLAIMS9 outcome 3: the one code the host gives a source it could not serve at all, so it never ran. */
+const CONNECTOR_UNAVAILABLE_CODE = 'connector_unavailable';
 
 /**
  * #653: the status answer names what each source did, in plain words, and a source is called working
@@ -5318,6 +5326,10 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     // says the source was not read in time instead of a failure with no stated reason.
     const timedOut = own.find(result => !result.ok && result.code !== undefined && TIMED_OUT.has(result.code))?.code;
     if (timedOut !== undefined) run.unavailableReasons.set(plan.read.source, timedOut);
+    // C-CLAIMS9 outcome 3: the connector's own code for a read it refused survives here too, so a source
+    // that is not connected reads as not connected instead of as a provider that failed.
+    const refusedCode = own.find(result => !result.ok)?.code;
+    if (refusedCode !== undefined && !run.unavailableReasons.has(plan.read.source)) run.unavailableReasons.set(plan.read.source, refusedCode);
     // #565: a routed read counts as read, so a continuation of this run never dispatches it again.
     if ((outcome === 'ok' || outcome === 'empty') && plan.read.kind !== 'memory_search') run.readKinds.add(plan.read.kind);
     // #635: a read that answered in part and then ran out of its budget is a partial timeout, so the header
@@ -6504,6 +6516,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             } else if (!run.sourcesDone.has(part.source)) {
               // #635: a read this turn cut at its own budget is a timeout, never a source that failed.
               if (cutKinds.has(kind)) run.cutShort.add(part.source); else run.sourcesFailed.add(part.source);
+              // C-CLAIMS9 outcome 3: the connector's own code for a read it refused survives, so a source that
+              // is not connected reads as not connected instead of as a provider that failed.
+              const refusedCode = part.results.find(result => !result.ok)?.code;
+              if (refusedCode !== undefined && !run.unavailableReasons.has(part.source)) run.unavailableReasons.set(part.source, refusedCode);
               // #637: a channel the chat connector does not know keeps its own code, so the reply names
               // the unknown channel instead of a chat that could not be reached.
               const missCode = part.source === 'chat' ? channelMissCode(part.results) : undefined;

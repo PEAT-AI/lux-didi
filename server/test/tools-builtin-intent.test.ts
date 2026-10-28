@@ -42,7 +42,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   t.mock.method(nativeActions, 'dispatch', async () => 'opened' as const);
   noteOwnerWords(session.liveSessionId, 'open plantix dot net and my gmail and Synthetic');
   const argumentsByName: Record<string, Record<string, unknown>> = {
-    research: { action: 'start', question: 'what is the synthetic scope', topic: 'synthetic scope', lookups: [{ source: 'knowledge', query: 'synthetic scope' }] }, remember: { text: 'Synthetic fact', kind: 'fact' },
+    research: { action: 'start', question: 'what is the synthetic scope', topic: 'synthetic scope', lookups: [{ source: 'knowledge', query: 'synthetic scope' }] }, remember_note: { text: 'Synthetic fact', kind: 'fact' },
     // history-chat-tool.integration.mjs and vault-write.test.ts synthetic arguments.
     conversation_history: { query: 'Mira violet flags' }, save_to_vault: { content: 'the boat survey is on Tuesday' },
     people_lookup: { name: 'Synthetic' }, open_source: { handle: 'L9999' },

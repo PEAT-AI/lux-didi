@@ -244,9 +244,10 @@ for (const confirmation of ['yes', 'split', 'split_no', 'wrong_readback', 'unarm
     if (confirmation === 'early') await ownerBlock(h, 'yes', false);
     if (confirmation !== 'unarmed') {
       await assistantBlock(h, confirmation === 'wrong_readback' ? 'Would you like to discuss a different question?' : readback);
-      playback(attachment, 'started', 1, NOW + 100);
+      playback(attachment, 'received', 1, NOW + 100);
+      playback(attachment, 'started', 2, NOW + 100);
       h.advance(100); clock.advance(100);
-      playback(attachment, 'drained', 2, NOW + 200);
+      playback(attachment, 'drained', 3, NOW + 200);
       if (['yes', 'split', 'unavailable'].includes(confirmation)) {
         const armed = h.store.transaction(tx => tx.get('SELECT state,code,staged_at FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
         const seen = h.store.transaction(tx => tx.all("SELECT kind,text FROM live_journal WHERE live_session_id=? AND kind IN ('outputTranscription','turnComplete') ORDER BY journal_id", [session.liveSessionId]));

@@ -54,7 +54,7 @@ function operationFor(path: string, method: string): { template: string; operati
 test('the pinned Trello spec is the vendor published document, unmodified', () => {
   assert.equal(createHash('sha256').update(specBytes).digest('hex'), source.sha256, 'the committed spec is byte for byte the published document, so a local edit cannot move the source of truth');
   assert.equal(source.file, 'trello-openapi.json');
-  assert.match(source.retrieved_url, /^https:\/\/[a-z.]*atlassian\.com\/.+swagger\.v3\.json$/u, 'the retrieval URL is Atlassian publishing its own document');
+  assert.match(source.retrieved_url, /^https:\/\/[a-z0-9.-]*atlassian\.com\/.+swagger\.v3\.json$/u, 'the retrieval URL is Atlassian publishing its own document');
   assert.match(source.retrieved_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u, 'the sidecar names the day the bytes were retrieved');
   assert.equal(spec.info.title, 'Trello REST API');
   assert.equal(spec.openapi.startsWith('3.'), true);
@@ -65,10 +65,10 @@ test('every Trello action the adapter can build is a route Atlassian publishes, 
   // The registry is the adapter's own table: a new action cannot skip this test, because it appears here.
   const actions = Object.entries(TRELLO_ACTIONS).flatMap(([tool, table]) => Object.keys(table).map(action => ({ tool, action })));
   const advertised = trelloSchemas().flatMap(entry => {
-    const schema = entry.inputSchema as { properties: { action: { oneOf: readonly { properties: { action: { const: string } } }[] } } };
-    return schema.properties.action.oneOf.map(branch => branch.properties.action.const);
+    const schema = entry.inputSchema as { oneOf: readonly { properties: { action: { const: string } } }[] };
+    return schema.oneOf.map(branch => branch.properties.action.const);
   });
-  assert.equal(advertised.length, actions.length, 'the advertised action table and the tested action table are the same set');
+  assert.deepEqual(advertised.slice().sort(), actions.map(entry => entry.action).sort(), 'the advertised action table and the tested action table are the same set');
   assert.ok(actions.length >= 20, `the adapter builds every documented action (${actions.length} found)`);
 
   for (const { tool, action } of actions) {

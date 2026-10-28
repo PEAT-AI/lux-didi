@@ -370,7 +370,7 @@ test('the public character, voice surface and tool conduct are the authored verb
   // W4: the voice and loop rules are paid for inside the same blocks, so both hashes are re-pinned here.
   // Train: W1 moved the voice-tools block too, so the merged sources re-pin all three at once.
   assert.equal(sha(NAYA_CHARACTER), '3770fc141efe3b696bcb9c6ec280d9bb603cb15d677565b1131a6d4b70b6b350');
-  assert.equal(sha(NAYA_VOICE_SURFACE), 'c325a528a6814d1ac27d6b745b9e8031fc99e47ca737bcaae1a4e8b34528e353');
+  assert.equal(sha(NAYA_VOICE_SURFACE), 'd18bd37264f0c4e9a3fb29f71c92314b7ae3194bbd1c4cdfc6de73f4777f51e8');
   // C-OPENWEB8: the open paragraph names open_web for a map, a site or a search, so this block is re-pinned.
   // C-RESEARCH8: the two-ask voice rule and the re-worded evidence procedure land in the same blocks, so the train re-pins all three against the merged sources.
   assert.equal(sha(NAYA_VOICE_TOOLS), '2775aceab4e64cd10cde5994c0c6ad059a1db04b96c307396eb605bf269d87d7');

@@ -51,7 +51,7 @@ export type ComposedAsk = { readonly decision: 'grant' } | { readonly decision: 
  * The verbs that can authorize a create, and the destinations that name lux and nothing else. W1-R2: the
  * ask can sit anywhere in a stretch he said in pieces, so the verb is a word, not a leading anchor.
  */
-const ASK_WORD = /\b(?:save|remember|put|add|write|store|note)\b/u;
+const ASK_WORD = /\b(?:save|remember|put|add|write|store)\b/u;
 const DESTINATION = /\b(?:to|in|into)\s+(?:my\s+|the\s+)?(?:lux(?:\s+knowledge)?|knowledge\s+base|vault)\b/u;
 const APPEND = /^(?:naya\s+)?(?:please\s+)?(?:add|append|update|change|overwrite|edit|delete|remove|archive|link|restore|replace)\b(?=[\s\S]*\b(?:note|insight|entry|record)\b)/u;
 const REPORTED = /^(?:say|says|according to)\b|\b(?:he|she|they|it|someone|rob|you|the [a-z]+)\s+(?:said|says|say|asked|asks|wrote|writes|mentioned|mentions|told|tells|wants|asked me)\b/u;
@@ -88,7 +88,7 @@ const NOTE_SOURCE = /\b(?:note|summary)\b[^\p{L}\p{N}]+(?:about|from|of)\b[^\p{L
  */
 export function composedAsk(text: string): ComposedAsk {
   const value = text.normalize('NFKC').replace(/\s+/g, ' ').trim();
-  const key = noteKey(value);
+  const key = noteKey(value).replace(/\bnote(?=\s+(?:this|that|all|to|in|into)\b)/gu, 'save');
   if (!key) return { decision: 'none' };
   if (APPEND.test(key)) return { decision: 'append' };
   if (/"[^"]*"|'[^']*'|\u201c[^\u201d]*\u201d/u.test(value)) return { decision: 'clarify', reason: 'quoted' };

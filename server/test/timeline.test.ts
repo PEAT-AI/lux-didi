@@ -431,3 +431,38 @@ test('C-LOGS11: a summary with no session since the date is empty, not a zeroed 
     assert.deepEqual(summary.finalToAudio, { count: 0, p50: null, p90: null });
   });
 });
+
+test('C-LOGS11: the CLI answers "what happened in that call" in one command', () => {
+  const cli = fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url));
+  const dir = mkdtempSync(join(tmpdir(), 'didi-audit-cli-'));
+  const session = 'aaaaaaaa-1111-4222-8333-444444444444';
+  const at = T0;
+  try {
+    mkdirSync(join(dir, 'logs'));
+    writeFileSync(join(dir, 'logs', 'host.log'), [
+      line(at, 'clock_sync', { liveSessionId: session, turnId: null, reason: 'call_open' }),
+      line(at + 400, 'owner_final', { liveSessionId: session, turnId: 't1', ownerFinalAt: at + 400 }),
+      line(at + 2_400, 'live_first_audio', { liveSessionId: session, turnId: 't1', msSinceReady: 10, msSinceOpen: 20, finalToProviderFirstAudioMs: 2_000, missingReason: null }),
+      line(at + 1_000, 'tool_call_outcome', { liveSessionId: session, turnId: 't1', callKey: 'call:ok', tool: 'search_knowledge', outcome: 'completed', ms: 40 }),
+    ].join('\n'));
+    const store = new Store(dir, []);
+    try {
+      turn(store, session, 't1', 1, at);
+      call(store, session, 't1', 'call:ok', 'search_knowledge', 'completed', 40, at + 1_000);
+    } finally { store.close(); }
+    const audit = JSON.parse(execFileSync(process.execPath, [cli, 'call', 'latest', '--audit', '--json', '--data-dir', dir], { encoding: 'utf8' })) as CallAudit;
+    assert.equal(audit.liveSessionId, session);
+    assert.deepEqual(audit.calls.map(row => [row.name, row.totalMs, row.outcome]), [['search_knowledge', 40, 'completed']]);
+    assert.deepEqual(audit.turns.map(row => row.finalToProviderMs), [2_000]);
+    const summary = JSON.parse(execFileSync(process.execPath, [cli, 'sessions', '--since', '2026-10-20', '--audit-summary', '--json', '--data-dir', dir], { encoding: 'utf8' })) as { sessions: number; callsPerTool: Record<string, number> };
+    assert.equal(summary.sessions, 1);
+    assert.deepEqual(summary.callsPerTool, { search_knowledge: 1 });
+    // The human table is the same story, and a missing measurement says so in words.
+    const text = execFileSync(process.execPath, [cli, 'call', 'latest', '--audit', '--data-dir', dir], { encoding: 'utf8' });
+    assert.match(text, /^call aaaaaaaa-1111-4222-8333-444444444444 \(audit schema 1\)/);
+    assert.match(text, /search_knowledge 40ms completed/);
+    assert.match(text, /missing no_native_receipt/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

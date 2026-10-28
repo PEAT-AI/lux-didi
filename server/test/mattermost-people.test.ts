@@ -507,6 +507,15 @@ test('R8-W9: "lately" and "recently" are seven days, "last two weeks" fourteen, 
   assert.deepEqual(chatWindow('what did Ada write today', now, 'UTC'), { from: '2026-10-25' });
 });
 
+test('R8-W9 (N1): the summary line keeps one line of the voice cap even when the posts fill every other line', () => {
+  const posts = Array.from({ length: 9 }, (_, index) => `**direct messages | they | ${index + 1} hours ago | note ${index + 1}**\nnote ${index + 1} about the pilot plan`);
+  const text = ['read: everything you and Ada exchanged', 'matched: 40', ...posts, '- direct messages: 17 posts; group with kim.oak: 4 posts'].join('\n');
+  const block = shapeBlock('chat_search', [{ key: 'c0', name: INTERNAL.chatRead, ok: true, text, originalCharacters: text.length, omittedCharacters: 0 }]);
+  assert.equal(block.lines.length, 8, 'the voice cap is unchanged');
+  assert.match(block.lines[7]!, /^showing 7 of 40 posts; direct messages: 17 posts; group with kim\.oak: 4 posts$/u, 'the counts and the honest count of posts survive a full page');
+  assert.equal(block.total, 40, 'the header still says how many the archive matched');
+});
+
 test('R8-W9: every spoken form of the chat product\'s name routes to chat and is never a channel or a term', () => {
   const at = { terms: 'metamost', nowMs: Date.parse('2026-10-25T09:00:00Z'), timeZone: 'UTC' };
   for (const spoken of ['Metamos', 'Metamost', 'MetaMost', 'MetaMouse', 'meta mouse', 'matter most', 'Mattermost']) {

@@ -3384,8 +3384,12 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
       }
       flush();
       if (sections.length > 0) {
-        const shownPosts = total - before;
-        lines.push(clip(`showing ${shownPosts} of ${Math.max(matched, shownPosts)} posts; ${sections.join('; ')}`, cap));
+        // N1: the summary keeps one line of the voice cap even when the posts fill every other line, and it
+        // counts the posts that line survives, so a full page still says how many of how many it showed.
+        const room = (LINE_CAP[kind] ?? Number.POSITIVE_INFINITY) - 1;
+        const shownPosts = Math.min(Math.max(0, total - before), room);
+        const summary = clip(`showing ${shownPosts} of ${Math.max(matched, shownPosts)} posts; ${sections.join('; ')}`, cap);
+        lines.splice(Math.min(lines.length, room), 0, summary);
         total += 1;
       }
       total = Math.max(total, before + matched);

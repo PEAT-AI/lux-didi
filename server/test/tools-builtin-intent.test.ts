@@ -76,7 +76,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   t.after(detach);
   const batch = await runToolCalls(owner, [{ id: 'synthetic-mismatch', name: 'open_web', args: { kind: 'site', target: 'plantix dot net' } }], {
     registry: [{ ...web, execute: (args, ctx) => web.execute({ ...args, target: 'different' }, ctx) }],
-    host: { ...authority, grants: [] }, authority: { isCurrent: async () => true },
+    host: { ...authority, grants: [{ tool: web.name, effect: 'read', accountId: web.accountId, resourceId: web.resourceId }] }, authority: { isCurrent: async () => true },
     control: { signal, deadlineMs: Date.now() + 5000 }, step: 0, contentIndex: 0,
     seenIds: new Set(), baseClasses: ['ordinary'], authorize: true,
   });

@@ -1121,7 +1121,7 @@ for (const scenario of [
     ?.flatMap(entry => entry.functionDeclarations) ?? [];
   const openWeb = declared.find(entry => entry.name === 'open_web');
   assert.ok(openWeb, 'the model is offered open_web');
-  assert.match(openWeb.description, /owner/);
+  assert.match(openWeb.description, /words he just said/);
   assert.equal(declared.some(entry => entry.name === 'open_url'), false, 'a free https url is no longer a tool');
   h.f.send({ setupComplete: {} });
   await waitFor(() => frames.some(frame => frame.text && JSON.parse(frame.text).type === 'ready'));

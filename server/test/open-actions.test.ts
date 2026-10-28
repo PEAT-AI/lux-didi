@@ -566,12 +566,15 @@ test('C-OPENWEB8: no matching site says nothing was found, never that several ma
   } finally { useWebSearchPort(undefined); }
 });
 
-test('C-OPENWEB8: the binding reads the current turn only, never an earlier one', () => {
+test('C-OPENWEB9: consecutive owner turns bind until the assistant answers', () => {
   noteModelOutput(WEB_RUN);
   noteOwnerWords(WEB_RUN, 'open the map of Odemira in my browser');
   assert.equal(ownerTurnWords(WEB_RUN), 'open the map of Odemira in my browser');
+  noteOwnerWords(WEB_RUN, 'show directions too');
+  assert.equal(ownerTurnWords(WEB_RUN), 'open the map of Odemira in my browser show directions too');
+  noteModelOutput(WEB_RUN);
   noteOwnerWords(WEB_RUN, 'what is the weather tomorrow');
-  assert.equal(ownerTurnWords(WEB_RUN), 'what is the weather tomorrow', 'the current turn replaced the earlier one');
+  assert.equal(ownerTurnWords(WEB_RUN), 'what is the weather tomorrow', 'an assistant answer closes the prior ask');
   assert.deepEqual(webWords('Plantix dot net.'), ['plantix.net']);
   assert.deepEqual(webWords('plantix dot net'), ['plantix.net']);
   assert.deepEqual(webWords('open the map of Odemira in my browser'), ['open', 'the', 'map', 'of', 'odemira', 'in', 'my', 'browser']);

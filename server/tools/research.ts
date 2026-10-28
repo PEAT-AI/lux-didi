@@ -7298,7 +7298,7 @@ export function findingCount(finding: JsonObject): number {
 export function admissionBlocked(reason: AdmissionBlockReason, delivered?: JsonObject): JsonObject {
   const findings = Array.isArray(delivered?.['findings']) ? delivered['findings'] as JsonObject[] : [];
   const deliveredCount = findings.reduce((count, finding) => count + findingCount(finding), 0);
-  return { status: 'refused', state: 'refused', reason, code: reason, deliveredCount,
+  return { status: 'blocked', reason, code: reason, deliveredCount,
     ...(delivered === undefined ? {} : { deliveredResults: delivered }),
     directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false };
 }

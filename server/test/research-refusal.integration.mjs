@@ -161,7 +161,7 @@ for(const lookup of [{source:'knowledge',query:'synthetic'},{source:'calendar',q
 // C-RESEARCH-CONTRACT T-04: a call the admission refuses is `blocked` in the trace, never `completed`, and the
 // reply names the rule that applied.
 const blocked=await positive.send({action:'start',question:'synthetic',topic:'synthetic names'});
-assert.equal(blocked.status,'refused');assert.equal(blocked.reason,'turn_spent');
+assert.equal(blocked.status,'blocked');assert.equal(blocked.reason,'turn_spent');
 assert.equal(blocked.directive,'Results were delivered earlier this turn. Answer from the delivered research results already in the conversation; do not describe this admission refusal as a search outcome.');
 const blockedRows=positive.store.transaction(tx=>tx.all("SELECT outcome FROM trace_call WHERE outcome='blocked'"));
 assert.equal(blockedRows.length,1,'one blocked call, recorded as blocked');

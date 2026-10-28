@@ -7306,7 +7306,7 @@ test('research admission names its closed reason and admits a paging continue of
   // Every reason reaches the model verbatim, with the directive that belongs to that reason.
   for (const reason of ADMISSION_BLOCK_REASONS) {
     const reply = admissionBlocked(reason);
-    assert.equal(reply['status'], 'refused');
+    assert.equal(reply['status'], 'blocked');
     assert.equal(reply['reason'], reason);
     assert.equal(reply['directive'], ADMISSION_DIRECTIVES[reason]);
     assert.equal(reply['retry_without_new_owner_turn'], false);
@@ -7338,7 +7338,8 @@ test('R9-W5 refusal retains delivered findings and projection uses closed refusa
   const delivered = { findings: [{ source: 'web', text: 'Web: 3 of 3 shown\nalpha\nbeta\ngamma' }] };
   const reply = admissionBlocked('turn_spent', delivered);
   assert.equal(reply['deliveredCount'], 3);
-  assert.doesNotMatch(JSON.stringify(reply), /nothing|empty|blocked/iu);
+  assert.doesNotMatch(String(reply['directive']), /nothing|empty|blocked/iu);
+  assert.equal(reply['status'], 'blocked', 'W5-R2 preserves accepted admission envelope');
   assert.match(researchProjection(reply, 'completed'), /refused:turn_spent/u);
   assert.match(researchProjection({ findings: [{ source: 'calendar', text: 'Calendar: 1 of 1 shown\nSynthetic meeting' }] }, 'completed'), /1 findings from calendar/u);
 });

@@ -627,8 +627,8 @@ interface ActiveSession {
   inputFinalAt: number | undefined;
   /** First model audio of the current turn; reset at each model turn start. */
   firstAudioAt: number | undefined;
-  audioResponseId?: string;
-  traceOutputTurnId?: string;
+  audioResponseId?: string | undefined;
+  traceOutputTurnId?: string | undefined;
   /** L-04: the end of the last audible frame, owner speech end or model audio end, whichever came later, and whether
    *  the wait that followed began after a tool result. The wait to the next model audio is the silence the owner heard. */
   heardSince?: number | undefined; heardAfterTool: boolean;

@@ -40,16 +40,22 @@ interface FixtureOptions {
   token?: (res: ServerResponse) => void;
   /** #671: which tool call answers 503, the transient unavailability the owner's Mac reported. */
   unavailableCall?: (index: number) => boolean;
+  /** TRAIN8-R8: the attempt that never answers, so the recovery attempt's own deadline is what ends it. */
+  hang?: boolean;
 }
 
 async function fixture(options: FixtureOptions = {}, port = 0) {
   let requests = 0;
   let calls = 0;
+  let hung = 0;
   const listener = createServer(async (req, res) => {
     try {
       const bytes = await body(req);
       if ((req.method ?? 'GET') === 'DELETE') { res.writeHead(200); res.end(); return; }
       if (req.url === '/oauth/token') { options.token?.(res); return; }
+      // The attempt that never answers: the response is left open on purpose, so only the recovery
+      // attempt's own deadline can end it. closed by listener.closeAllConnections().
+      if (options.hang === true) { hung += 1; return; }
       const sdk = new Server({ name: 'synthetic-mongoose', version: '1' }, { capabilities: { tools: { listChanged: false } } });
       sdk.setRequestHandler('tools/list', () => {
         requests += 1;
@@ -81,6 +87,7 @@ async function fixture(options: FixtureOptions = {}, port = 0) {
   return {
     url: `http://127.0.0.1:${address.port}/mcp`,
     requests: () => requests,
+    hung: () => hung,
     async close() {
       listener.closeAllConnections();
       await new Promise<void>(resolve => listener.close(() => resolve()));
@@ -319,6 +326,33 @@ test('a retryable first call failure retries a bounded number of times and then 
   assert.equal(f.requests(), 4, 'the first connect plus exactly three bounded retries');
   await until(() => runtime.status().endpoints[0]!.retrying === false, 15000);
   assert.equal(runtime.status().endpoints[0]!.retrying, false, 'the round is over and no further attempt is pending');
+});
+
+test('TRAIN8-R8: an attempt that never answers is cut by its own deadline, so the round advances and stops', { timeout: 30000 }, async t => {
+  // The ruling's case: a connect whose answer never lands. Without a per-attempt deadline this round never
+  // issues another attempt, which is exactly the stall the release train measured. The fixture answers
+  // nothing, the attempt deadline ends each attempt, and the ladder still walks its bounded count and stops.
+  const f = await fixture({ hang: true }); t.after(() => f.close());
+  const configDir = configDirFor(f.url, 'mongoose-knowledge');
+  oauthRecord(configDir, 'mongoose-knowledge', { refreshToken: 'refresh-material', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now() });
+  const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-hang-'));
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST, callDeadlineMs: 50 });
+  t.after(() => runtime.close());
+  await runtime.start();
+  // The first connect hung and was cut, so at least one more attempt must follow: that is the advance.
+  await until(() => f.hung() >= 2, 15000);
+  const advanced = f.hung();
+  assert.ok(advanced >= 2, `the round advances past the hung attempt (${advanced})`);
+  const failed = runtime.status().endpoints[0]!;
+  assert.equal(failed.state, 'error', 'the endpoint did not connect');
+  assert.equal(failed.reasonCode, 'identity_timeout', 'the cut attempt is the closed transient code');
+  // The round is bounded: it stops, and no further attempt is issued once it has.
+  await until(() => runtime.status().endpoints[0]!.retrying === false, 15000);
+  const settled = f.hung();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(f.hung(), settled, 'the bounded round issues no further attempt after it stops');
+  assert.ok(settled <= 1 + FAST.length, `the round stops at its bounded count (${settled} <= 1 + ${FAST.length})`);
 });
 
 /** Two Google endpoints of one owner account, each proving itself with its own family's tool. */

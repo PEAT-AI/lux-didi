@@ -15,7 +15,7 @@ import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
-import { ADMISSION_DIRECTIVES, RESEARCH, RESEARCH_OPERATION, ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
+import { ADMISSION_DIRECTIVES, RESEARCH_OPERATION, ResearchLedger, runResearch, type ResearchDeps, type ResearchTimer } from '../tools/research.js';
 import type { IntentSubCall, IntentSubResult } from '../tools/intent.js';
 import { Store } from '../runtime/store.js';
 import { attachHostLogSink } from '../tools/host-events.js';
@@ -39,8 +39,9 @@ const HOST_GRACE_MS = RESEARCH_OPERATION.hostGraceMs;
 // C-RESEARCH-CONTRACT T-03: the block reply names the closed reason actually applied, with its one-line
 // directive, so two different refusals read differently to the model. These replays pin the reason and the
 // directive that belong to them rather than one generic sentence.
-const BLOCKED = (reason: 'turn_spent' | 'no_turn_since_result' | 'no_owner_turn' | 'answer_already_given') =>
-  ({ status: 'blocked', reason, directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false });
+const BLOCKED = (reason: 'turn_spent' | 'no_turn_since_result' | 'no_owner_turn' | 'answer_already_given', delivered?: Record<string, unknown>) =>
+  ({ status: 'blocked', reason, directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false,
+    ...(delivered === undefined ? {} : { code: reason, deliveredCount: 12, deliveredResults: delivered }) });
 
 const NOW = 1_700_000_000_000;
 const flush = async (): Promise<void> => { for (let i = 0; i < 8; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
@@ -260,7 +261,8 @@ test('replay 1: the observed cascade, six model continues after one partial answ
     await research(h, `c${n}`, { action, researchId });
     const reply = await replyFor(h, `c${n}`);
     if (action === 'stop') { assert.notEqual(reply['status'], 'blocked', 'stop is always allowed'); continue; }
-    assert.deepEqual(reply, BLOCKED('turn_spent'), `a model continue with no owner turn since the answer is refused (call c${n}): ${JSON.stringify(reply)}`);
+    assert.equal(reply['deliveredCount'], 12, 'refused continue retains all twelve delivered items');
+    assert.deepEqual(reply, BLOCKED('turn_spent', first), `a model continue with no owner turn since the answer is refused (call c${n}): ${JSON.stringify(reply)}`);
     await h.advance(20);
   }
   assert.equal(h.dispatches.length, dispatched, 'no refused continue reached a source');
@@ -293,7 +295,9 @@ test('replay 3: a noncompliant provider that keeps calling cannot loop, and reco
   const dispatched = h.dispatches.length;
   for (let n = 1; n <= 20; n += 1) {
     await research(h, `n${n}`, { action: n % 2 === 0 ? 'start' : 'continue', researchId: first['researchId'], question: 'more', topic: 'plan' });
-    assert.deepEqual(await replyFor(h, `n${n}`), BLOCKED('turn_spent'), `call n${n} is refused`);
+    const refused = await replyFor(h, `n${n}`);
+    if (n % 2 !== 0) assert.equal(refused['deliveredCount'], 12, 'every refused continue retains the delivered count');
+    assert.deepEqual(refused, BLOCKED('turn_spent', n % 2 !== 0 ? first : undefined), `call n${n} is refused`);
     await h.advance(1_000);
   }
   assert.equal(h.dispatches.length, dispatched, 'twenty model calls dispatched nothing');
@@ -517,15 +521,17 @@ test('L8-06: a web read still running at the first answer is still_reading in th
 function commentaries(h: Harness): string[] { return h.provider.generations.flatMap(generation => generation.commentaries); }
 const stillSearching = (h: Harness): Record<string, unknown>[] => h.receipts.filter(record => record['event'] === 'research_still_searching');
 
-test('R2: an owner still waiting at 10 s hears one short still-searching line, and never a second one', async t => {
+test('C-CONVO9: a pending research leg bridges three seconds after acknowledgement, once per ask', async t => {
   const h = await harness(t);
   h.hold();
   await ownerSays(h);
+  h.provider.emit({ type: 'outputTranscription', text: 'Checking the web.', finished: true });
+  await flush();
   await research(h, 'd1', start);
-  await h.advance(9_500);
-  assert.deepEqual(commentaries(h), [], 'nothing is said while the wait is under 10 s');
-  await h.advance(1_000);
-  assert.deepEqual(commentaries(h), [RESEARCH.stillSearchingLine], 'one short line, at 10 s');
+  await h.advance(2_900);
+  assert.deepEqual(commentaries(h), [], 'nothing is said while the wait is under 3 s');
+  await h.advance(200);
+  assert.deepEqual(commentaries(h), ['Still looking, give me a moment.'], 'one short line, after 3 s');
   assert.equal(stillSearching(h).length, 1, 'one receipt for the line');
   assert.equal(stillSearching(h)[0]!['spoken'], true, 'the adapter carried it, so the owner heard it');
   assert.match(String(stillSearching(h)[0]!['researchId']), /^[0-9a-f-]{36}$/u, 'the line names the research it is about');

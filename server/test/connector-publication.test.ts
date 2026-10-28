@@ -2,17 +2,19 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { createServer, type Server } from 'node:http';
 import { chmod } from 'node:fs/promises';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Server as McpServer, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import { toolsMigrations } from '../tools/schema.js';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { Store } from '../runtime/store.js';
 import { hostMigrations } from '../host/runtime.js';
-import { composeMcpRuntime } from '../host/mcp.js';
+import { composeMcpRuntime, type ConnectorLifecycleEvent } from '../host/mcp.js';
+import { endpointBinding } from '../adapters/mcp/port.js';
 import type { ConnectionPolicy, RunAcceptance } from '../tools/types.js';
 import { CONNECTOR_COMPOSED_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, composedDeclarationDigest, composedGrantedNames, connectorDescriptor } from '../connectors/index.js';
 import { validatePolicy } from '../tools/index.js';
@@ -445,12 +447,14 @@ test('C-CHAT: a policy may grant the person reads and the chat read, never a wri
 type Endpoint = { id: string; path: string; enabled: boolean };
 
 /** One synthetic Mattermost child per URL path, each publishing its own tool list (plus a write it never gets). */
-async function mattermostBindingHost(t: TestContext) {
+async function mattermostBindingHost(t: TestContext, grantMode: 'owner-trusted-reads' | 'explicit' = 'owner-trusted-reads') {
   const dir = mkdtempSync(join(tmpdir(), 'didi-mattermost-binding-'));
   const configDir = join(dir, 'provider-config');
   await mkdir(configDir, { recursive: true, mode: 0o700 });
   const servers = new Map<string, { sdk: McpServer; transport: WebStandardStreamableHTTPServerTransport }>();
   const published = new Map<string, readonly string[]>();
+  // W2-R2: one handshake is one tools/list of one path, so a recovery that is skipped is visible here.
+  const handshakes = new Map<string, number>();
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
     const server = servers.get(path);
@@ -459,6 +463,7 @@ async function mattermostBindingHost(t: TestContext) {
   });
   let store = new Store(join(dir, 'data'), toolsMigrations);
   let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
+  const lifecycle: ConnectorLifecycleEvent[] = [];
   t.after(async () => {
     await runtime?.close();
     for (const { sdk, transport } of servers.values()) { await sdk.close(); await transport.close(); }
@@ -472,17 +477,17 @@ async function mattermostBindingHost(t: TestContext) {
       published.set(path, names);
       const sdk = new McpServer({ name: 'synthetic-mattermost', version: '1' }, { capabilities: { tools: {} } });
       const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
-      sdk.setRequestHandler('tools/list', () => ({ tools: [...names, 'mattermost_post_message'].map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: false } })) }) as never);
+      sdk.setRequestHandler('tools/list', () => ({ tools: (handshakes.set(path, (handshakes.get(path) ?? 0) + 1), [...names, 'mattermost_post_message']).map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: false } })) }) as never);
       sdk.setRequestHandler('tools/call', () => ({ content: [{ type: 'text', text: JSON.stringify({ username: 'synthetic-owner', email: 'owner@example.invalid' }) }] }) as never);
       await sdk.connect(transport);
       servers.set(path, { sdk, transport });
     }
     writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
-      schemaVersion: 1, grantMode: 'owner-trusted-reads',
+      schemaVersion: 1, grantMode,
       endpoints: endpoints.map(endpoint => ({ id: endpoint.id, connector: 'mattermost', transport: 'streamable-http', url: `http://127.0.0.1:18766${endpoint.path}`, account: 'mattermost', resource: 'mattermost', credentialRef: null, enabled: endpoint.enabled, allowEgress: true, unknownClass: 'private' })),
     }));
     await chmod(join(configDir, 'mcp.json'), 0o600);
-    runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+    runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, lifecycleLog: event => { lifecycle.push(event); } });
     await runtime.start();
     return runtime;
   };
@@ -490,16 +495,76 @@ async function mattermostBindingHost(t: TestContext) {
     const row = store.transaction(tx => tx.get('SELECT policy_json FROM tool_connections WHERE owner_id=? AND connection_id=?', [store.assistantId, id]));
     return row === undefined ? undefined : JSON.parse(String(row['policy_json'])) as ConnectionPolicy;
   };
-  return { start, policy };
+  return { start, policy, lifecycle, handshakes: (path: string): number => handshakes.get(path) ?? 0 };
 }
 
-test('C-CHAT: the same connection serving a child with the person reads needs the owner again, never widens itself', async t => {
+test('W2-R1: a release that widens inside the reviewed envelope reconnects the owner\'s own connector, one generation on', async t => {
   const h = await mattermostBindingHost(t);
   await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
-  assert.deepEqual(h.policy('mattermost')?.toolNames, [...MATTERMOST_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL].sort(), 'the older child: five reads and both composites');
+  const before = h.policy('mattermost');
+  assert.deepEqual(before?.toolNames, [...MATTERMOST_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL].sort(), 'the older child: five reads and both composites');
   const widened = await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_READ_TOOLS });
-  assert.deepEqual(widened.connectionIds(), [], 'a published read the stored approval lacks is never granted by itself');
-  assert.equal(widened.status().endpoints.find(endpoint => endpoint.id === 'mattermost')?.error, 'owner-approval-required');
+  const after = h.policy('mattermost');
+  assert.ok(widened.connectionIds().includes('mattermost'), 'the reviewed envelope is the approval, so the connector reconnects itself');
+  assert.deepEqual(after?.toolNames, [...MATTERMOST_READ_TOOLS, MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL].sort(), 'the reconciled row carries the person reads too');
+  assert.equal(after?.generation, Number(before?.generation) + 1, 'a reconciled widening is a new generation');
+  assert.equal(widened.status().endpoints.find(endpoint => endpoint.id === 'mattermost')?.state, 'connected');
+  assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_envelope_widened'),
+    { event: 'connector_envelope_widened', endpointId: 'mattermost', addedToolNames: [...MATTERMOST_PERSON_TOOLS].sort() }, 'the receipt names the added reads and nothing else');
+  // The child also publishes a write tool the envelope never carries, and the widening is not a way in.
+  const grant = widened.registry.currentGrant('mattermost');
+  assert.ok(grant && !grant.toolNames.includes('mattermost_post_message'));
+});
+
+test('W2-R1: explicit mode never widens itself, whatever the child publishes', async t => {
+  const h = await mattermostBindingHost(t, 'explicit');
+  await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
+  const widened = await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_READ_TOOLS });
+  const report = widened.status().endpoints.find(endpoint => endpoint.id === 'mattermost');
+  // Explicit mode admits a read only from the owner's own approve command, so no published read and no
+  // stored row can widen it: nothing is granted and no reconcile receipt is written.
+  assert.deepEqual(widened.connectionIds(), [], 'an explicit approval never widens itself');
+  assert.equal(report?.tools, 0, 'no read is granted without the owner');
+  assert.equal(h.lifecycle.some(event => event.event === 'connector_envelope_widened'), false);
+});
+
+test('W2-R1: a changed http url for the same endpoint id is still a move, never a silent re-approval', async t => {
+  const h = await mattermostBindingHost(t);
+  await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
+  const moved = await h.start([{ id: 'mattermost', path: '/moved', enabled: true }], { '/old': MATTERMOST_TOOLS, '/moved': MATTERMOST_TOOLS });
+  assert.deepEqual(moved.connectionIds(), [], 'only a stdio child may move its own path');
+  assert.equal(moved.status().endpoints.find(endpoint => endpoint.id === 'mattermost')?.configurationError, 'owner-approval-required');
+  assert.deepEqual(h.lifecycle.filter(event => event.event === 'connector_approval_refused').at(-1),
+    { event: 'connector_approval_refused', endpointId: 'mattermost', reason: 'endpoint_changed' });
+});
+
+test('W2-R2: a terminal connector refusal is not re-handshaken by recover()', async t => {
+  const h = await mattermostBindingHost(t);
+  await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
+  // The stored approval names the old path: the moved url is a terminal refusal, not a transient failure.
+  const moved = await h.start([{ id: 'mattermost', path: '/moved', enabled: true }], { '/old': MATTERMOST_TOOLS, '/moved': MATTERMOST_TOOLS });
+  assert.equal(h.handshakes('/moved'), 1, 'the refusal itself is one handshake');
+  const events = h.lifecycle.length;
+  // Every owner utterance recovers; three of them must not handshake a terminally refused endpoint again.
+  await moved.recover();
+  await moved.recover();
+  await moved.recover();
+  assert.equal(h.handshakes('/moved'), 1, 'exactly one handshake for a terminal refusal, however often recover() runs');
+  assert.equal(h.lifecycle.length, events, 'a skipped recovery writes no connector receipt');
+  assert.equal(moved.status().endpoints.find(endpoint => endpoint.id === 'mattermost')?.configurationError, 'owner-approval-required');
+  assert.deepEqual(moved.connectionIds(), []);
+});
+
+test('W2-R1: a widening outside the reviewed envelope is never granted, in any mode', async t => {
+  const h = await mattermostBindingHost(t);
+  await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': MATTERMOST_TOOLS });
+  // The child publishes the person reads plus a name the reviewed envelope does not carry: the host filters
+  // publication through connectionEnvelope before it computes any widening, so the name cannot widen.
+  const widened = await h.start([{ id: 'mattermost', path: '/old', enabled: true }], { '/old': [...MATTERMOST_READ_TOOLS, 'mattermost_admin_delete'] });
+  const grant = widened.registry.currentGrant('mattermost');
+  assert.ok(grant && !grant.toolNames.includes('mattermost_admin_delete') && !grant.toolNames.includes('mattermost_post_message'));
+  assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_envelope_widened'),
+    { event: 'connector_envelope_widened', endpointId: 'mattermost', addedToolNames: [...MATTERMOST_PERSON_TOOLS].sort() });
 });
 
 test('C-CHAT: the install route, a new connection id for the newer child beside the disabled old one, settles from the envelope', async t => {
@@ -512,4 +577,147 @@ test('C-CHAT: the install route, a new connection id for the newer child beside 
   let oldGrant: unknown;
   try { oldGrant = moved.registry.currentGrant('mattermost'); } catch { oldGrant = undefined; }
   assert.equal(oldGrant, undefined, 'the old connection grants nothing');
+});
+
+// ---- W2-R1: a rebuilt stdio child keeps its endpoint and reconnects without an approval ----------------
+// The owner's own child moved from a dated directory to a stable one and the host that launches it got a
+// fresh PATH. Neither says anything about which server the endpoint is, so neither is a new approval. The
+// synthetic child is the Mattermost reader the owner actually runs, never a real account or service.
+
+const PEOPLE_CHILD = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'stdio-mattermost-people-child.mjs');
+const ECHO_CHILD = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test', 'fixtures', 'stdio-mcp-child.mjs');
+
+function stdioApprovalHost(t: TestContext, dir: string, configDir: string) {
+  let store = new Store(join(dir, 'data'), toolsMigrations);
+  const lifecycle: { event: string; endpointId?: string; fields?: readonly string[]; reason?: string; addedToolNames?: readonly string[] }[] = [];
+  const failures: string[] = [];
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  // W2-R4: a second endpoint whose child dumps its own environment, so the launch env is observable.
+  const envFile = join(dir, 'launch-env');
+  const launchEnvEndpoint = { id: 'mattermost-env', transport: 'stdio', command: process.execPath, args: [ECHO_CHILD, 'ok', envFile], env: { HOME: '/home/fixture', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, connector: 'mattermost', account: 'mattermost', resource: 'mattermost', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'private' };
+  const endpoint = (args: readonly string[], path: string, account = 'mattermost', home = '/home/fixture') => ({
+    id: 'mattermost-people', transport: 'stdio', command: process.execPath, args: [...args],
+    // The whole launch environment, PATH included, exactly as the installing host shapes it.
+    env: { HOME: home, PATH: path, LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+    connector: 'mattermost', account, resource: 'mattermost', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'private',
+  });
+  const write = (grantMode: string, args: readonly string[], path: string, account?: string, home?: string): void => {
+    // No ownerIdentity: the synthetic child answers no real account, so the catalog states none.
+    writeFileSync(join(configDir, 'mcp.json'),
+      JSON.stringify({ schemaVersion: 1, grantMode, endpoints: [endpoint(args, path, account, home), { ...launchEnvEndpoint, env: { ...launchEnvEndpoint.env, PATH: path } }] }),
+      { mode: 0o600 });
+  };
+  const start = async () => {
+    // One tools owner per Store: a restarted host opens the same data directory fresh, as the real host does.
+    store.close();
+    store = new Store(join(dir, 'data'), toolsMigrations);
+    const runtime = await composeMcpRuntime({
+      store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null,
+      lifecycleLog: event => { lifecycle.push(event as unknown as { event: string }); },
+      connectorLog: (_connector, _stage, detail) => { failures.push(String(detail?.reason)); },
+    });
+    await runtime.start();
+    return runtime;
+  };
+  const generation = (): number => Number(store.transaction(tx => tx.get("SELECT generation FROM tool_connections WHERE connection_id='mattermost-people'"))?.['generation']);
+  /** The stored approval's own env: the shell session must never be part of it (W2-R1(b), F1). */
+  const rowOf = (id: string): { policy_json?: string; policy_sha256?: string } => (store.transaction(tx => tx.get("SELECT policy_json,policy_sha256 FROM tool_connections WHERE connection_id=?", [id])) ?? {}) as { policy_json?: string; policy_sha256?: string };
+  const policySha = (id = 'mattermost-people'): string => String(rowOf(id).policy_sha256 ?? '');
+  /** What the last launched child saw as its own environment (the synthetic child dumps it). */
+  const launchEnv = (): Record<string, string> => JSON.parse(readFileSync(`${envFile}.env`, 'utf8')) as Record<string, string>;
+  return { write, start, generation, policySha, launchEnv, lifecycle, failures, report: (runtime: Awaited<ReturnType<typeof composeMcpRuntime>>) => runtime.status().endpoints.find(entry => entry.id === 'mattermost-people') };
+}
+
+/** The rebuilt child's new house, three releases of this suite have lived in a dated directory. */
+function movedChild(dir: string): string {
+  const rebuiltDir = join(dir, 'mattermost-mcp-local'); mkdirSync(rebuiltDir);
+  const rebuiltChild = join(rebuiltDir, 'stdio-mattermost-people-child.mjs');
+  copyFileSync(PEOPLE_CHILD, rebuiltChild);
+  // The child resolves its MCP SDK from the tree it was installed with, as an installed release ships its
+  // own node_modules; the moved directory keeps that resolution through one symlink.
+  symlinkSync(join(dirname(PEOPLE_CHILD), '..', '..', 'node_modules'), join(dir, 'node_modules'), 'dir');
+  return rebuiltChild;
+}
+
+test('W2-R1: a rebuilt stdio child in a moved directory with a fresh PATH reconnects without an approval', { skip: process.platform === 'win32' }, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-moved-child-'));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const rebuiltChild = movedChild(dir);
+  const h = stdioApprovalHost(t, dir, configDir);
+  h.write('owner-trusted-reads', [PEOPLE_CHILD, 'people'], '/usr/bin');
+  const first = await h.start();
+  assert.equal(h.report(first)?.state, 'connected', JSON.stringify(h.report(first)));
+  await first.close();
+  const settled = h.generation();
+  h.lifecycle.length = 0;
+  // The moved child, its new home and the host's new shell PATH: same id, descriptor, account and resource.
+  h.write('owner-trusted-reads', [rebuiltChild, 'people'], '/opt/homebrew/bin:/usr/bin', 'mattermost', '/home/fixture-rebuilt');
+  const moved = await h.start();
+  try {
+    assert.equal(h.report(moved)?.state, 'connected', JSON.stringify(h.report(moved)));
+    assert.ok((h.report(moved)?.tools ?? 0) > 0, 'the moved child still grants its reads');
+    assert.deepEqual(h.failures, [], 'a moved child is not a refusal');
+    assert.equal(h.generation(), settled + 1, 'the reconciled endpoint is a new generation');
+    assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_endpoint_changed'),
+      { event: 'connector_endpoint_changed', endpointId: 'mattermost-people', fields: ['args', 'env'] }, 'which fields moved, never a value');
+    assert.equal(h.lifecycle.some(event => event.event === 'connector_approval_refused'), false);
+  } finally { await moved.close(); }
+  // W2-R4: a PATH-only change is not an endpoint change at all. The approval keeps its generation and its
+  // sha256, and the child is still launched with the host's new PATH.
+  h.lifecycle.length = 0;
+  const settledGeneration = h.generation();
+  const settledSha = h.policySha();
+  h.write('owner-trusted-reads', [rebuiltChild, 'people'], '/usr/local/bin:/usr/bin', 'mattermost', '/home/fixture-rebuilt');
+  const pathOnly = await h.start();
+  try {
+    assert.equal(h.report(pathOnly)?.state, 'connected');
+    assert.equal(h.lifecycle.some(event => event.event === 'connector_endpoint_changed' || event.event === 'connector_approval_refused'), false, 'PATH is never part of the stored endpoint identity');
+    assert.equal(h.generation(), settledGeneration, 'a PATH-only relaunch never bumps the approval generation');
+    assert.equal(h.policySha(), settledSha, 'a PATH-only relaunch leaves policy_sha256 unchanged');
+    assert.equal(h.launchEnv()['PATH'], '/usr/local/bin:/usr/bin', 'the child is launched with the live catalog entry\'s PATH');
+  } finally { await pathOnly.close(); }
+  // The shared binding identity ignores the shell session too, so a runtime update does not move it.
+  const binding = (path: string): string => endpointBinding({ id: 'mattermost-people', transport: 'stdio', command: 'node', args: ['child.mjs'], env: { HOME: '/home/fixture', PATH: path }, account: 'mattermost', resource: 'mattermost' });
+  assert.equal(binding('/usr/bin'), binding('/opt/homebrew/bin:/usr/bin'), 'the launch PATH is never part of a binding identity');
+});
+
+test('W2-R1: an account change is a moved endpoint in trusted mode', { skip: process.platform === 'win32' }, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-moved-account-'));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const rebuiltChild = movedChild(dir);
+  const h = stdioApprovalHost(t, dir, configDir);
+  h.write('owner-trusted-reads', [PEOPLE_CHILD, 'people'], '/usr/bin');
+  const first = await h.start();
+  assert.equal(h.report(first)?.state, 'connected');
+  await first.close();
+  // The approval was for one account: another account under the same id is a different endpoint.
+  h.lifecycle.length = 0;
+  h.write('owner-trusted-reads', [rebuiltChild, 'people'], '/opt/homebrew/bin:/usr/bin', 'other-account');
+  const account = await h.start();
+  try {
+    assert.equal(h.report(account)?.configurationError, 'owner-approval-required');
+    assert.deepEqual(account.connectionIds(), [], 'an account change is never a reconciliation');
+    assert.deepEqual(h.lifecycle.find(event => event.event === 'connector_approval_refused'),
+      { event: 'connector_approval_refused', endpointId: 'mattermost-people', reason: 'endpoint_changed' });
+    assert.equal(h.lifecycle.some(event => event.event === 'connector_endpoint_changed'), false);
+  } finally { await account.close(); }
+});
+
+test('W2-R1: explicit mode grants no read to a moved stdio child', { skip: process.platform === 'win32' }, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-moved-explicit-'));
+  const configDir = join(dir, 'config'); mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const rebuiltChild = movedChild(dir);
+  const h = stdioApprovalHost(t, dir, configDir);
+  h.write('owner-trusted-reads', [PEOPLE_CHILD, 'people'], '/usr/bin');
+  const first = await h.start();
+  assert.equal(h.report(first)?.state, 'connected');
+  await first.close();
+  h.lifecycle.length = 0;
+  h.write('explicit', [rebuiltChild, 'people'], '/opt/homebrew/bin:/usr/bin');
+  const moved = await h.start();
+  try {
+    assert.deepEqual(moved.connectionIds(), [], 'explicit mode never follows a moved child');
+    assert.equal(h.report(moved)?.tools, 0);
+    assert.equal(h.lifecycle.some(event => event.event === 'connector_endpoint_changed' || event.event === 'connector_envelope_widened'), false);
+  } finally { await moved.close(); }
 });

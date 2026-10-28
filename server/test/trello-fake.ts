@@ -78,7 +78,7 @@ const TOOL_ACTIONS: Record<string, Record<string, { props: string[]; required: s
   trelloWriteChecklist: {
     create: { props: ['cardId', 'name', 'pos'], required: ['cardId', 'name'] },
     add_item: { props: ['checklistId', 'name', 'pos'], required: ['checklistId', 'name'] },
-    update_item: { props: ['checklistId', 'itemId', 'name', 'state'], required: ['checklistId', 'itemId'] },
+    update_item: { props: ['cardId', 'checklistId', 'itemId', 'name', 'state'], required: ['checklistId', 'itemId'] },
   },
   trelloWriteBoard: { create: { props: ['name'], required: ['name'] } },
   trelloWriteList: { create: { props: ['boardId', 'name'], required: ['boardId', 'name'] }, move: { props: ['listId', 'boardId'], required: ['listId'] } },
@@ -102,7 +102,7 @@ async function listen(server: Server): Promise<number> {
 
 export async function startTrelloFake(options: TrelloFakeOptions): Promise<TrelloFake> {
   const now = options.now;
-  const pageSize = options.pageSize ?? 2;
+  const pageSize = options.pageSize ?? Number.POSITIVE_INFINITY;
   const pin = { id: ari('board', objectId(now - 400 * 86_400_000)), name: options.boardName ?? SYNTHETIC_BOARD, closed: false };
   const other = { id: ari('board', objectId(now - 300 * 86_400_000)), name: 'Team board', closed: false };
   const boards = [pin, other];
@@ -208,7 +208,7 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
     const path = `/${parts.join('/')}`;
     const id = (index: number) => decodeURIComponent(parts[index] ?? '');
     const page = (args: Record<string, unknown>): Record<string, unknown> => query.get('cursor') === null ? args : { ...args, cursor: String(query.get('cursor')) };
-    if (method === 'GET' && path === '/boards') return ['trelloReadBoard', page({ action: 'list' })];
+    if (method === 'GET' && path === '/members/me/boards') return ['trelloReadBoard', page({ action: 'list' })];
     if (method === 'GET' && parts[0] === 'boards' && parts[2] === 'labels') return ['trelloReadBoard', page({ action: 'list_labels', boardId: id(1) })];
     if (method === 'GET' && parts[0] === 'boards' && parts[2] === 'lists') return ['trelloReadList', page({ action: 'list_by_board', boardId: id(1) })];
     if (method === 'GET' && parts[0] === 'lists' && parts[2] === 'cards') return ['trelloReadCard', page({ action: 'list_by_list', listId: id(1) })];
@@ -225,7 +225,7 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
     if (method === 'DELETE' && parts[0] === 'cards' && parts[2] === 'idLabels') return ['trelloWriteCard', { action: 'remove_label', cardId: id(1), labelId: id(3) }];
     if (method === 'POST' && path === '/checklists') return ['trelloWriteChecklist', { action: 'create', cardId: payload.idCard, name: payload.name, ...only(payload, ['pos']) }];
     if (method === 'POST' && parts[0] === 'checklists' && parts[2] === 'checkItems') return ['trelloWriteChecklist', { action: 'add_item', checklistId: id(1), name: payload.name, ...only(payload, ['pos']) }];
-    if (method === 'PUT' && parts[0] === 'checklists' && parts[2] === 'checkItems') return ['trelloWriteChecklist', { action: 'update_item', checklistId: id(1), itemId: id(3), ...only(payload, ['name', 'state']) }];
+    if (method === 'PUT' && parts[0] === 'cards' && parts[2] === 'checkItem') return ['trelloWriteChecklist', { action: 'update_item', cardId: id(1), checklistId: checklists.find(list => list.cardId === id(1) && list.items.some(item => item.id === id(3)))?.id, itemId: id(3), ...only(payload, ['name', 'state']) }];
     return undefined;
   }
 

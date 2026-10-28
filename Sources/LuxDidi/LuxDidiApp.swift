@@ -1113,7 +1113,7 @@ struct RootView: View {
             let login = loginAvailability.map { String(describing: $0.status) } ?? "Unavailable"
             var rows = NativeGettingStartedItems.rows(microphone: model.voice.microphone.rawValue,
                 notifications: model.notificationStatus.rawValue, login: login,
-                connections: model.connections.map { ($0.id, $0.state, $0.reasonCode) })
+                connections: model.connections.map { ($0.id, $0.state, $0.reasonCode, $0.addedToolNames ?? []) })
             let keyStep = NativeNextSteps.singleKeyStep(enabled: SingleKeyTrigger.isEnabled, tapped: singleKey.tapCreated)
             rows.append(NativeGettingStartedItem(title: "Right Command", detail: keyStep.text, command: nil,
                                                 guideURL: keyStep.guideURL))
@@ -1546,7 +1546,7 @@ struct RootView: View {
             _ = try await OwnedWindowProof.capture(window, to: narrowURL)
             gettingStartedProofRows = [NativeGettingStartedItem(title: "Synthetic UI proof", detail: "Isolated setup example; no permission or connection changes.", command: nil)] + NativeGettingStartedItems.rows(
                 microphone: model.voice.microphone.rawValue, notifications: model.notificationStatus.rawValue,
-                login: "Unavailable", connections: [("calendar", "missing", "credential_missing")])
+                login: "Unavailable", connections: [("calendar", "missing", "credential_missing", [])])
             showGettingStarted()
             guard let sheet = gettingStartedSheet else { failProof("Getting started sheet missing"); return }
             sheet.contentView?.layoutSubtreeIfNeeded()

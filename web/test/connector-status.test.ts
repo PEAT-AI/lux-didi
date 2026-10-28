@@ -25,6 +25,14 @@ test('a mongoose sign-in need names the Settings button, never a restart', () =>
   assert.doesNotMatch(html, /restart/i);
 });
 
+test('W2-R1: an approval row states the exact command and the added reads, never Settings', () => {
+  const html = connectionsMarkup([{ id: 'mattermost-people', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'configuration_error', addedToolNames: ['mattermost_resolve_person'] }]);
+  assert.match(html, /Approval needed/);
+  assert.match(html, /node server\/dist\/config\/mcp-cli\.js approve --config-dir/);
+  assert.match(html, /added: mattermost_resolve_person/);
+  assert.doesNotMatch(html, /Settings/);
+});
+
 test('the two reason codes the panel used to call unknown now say what to do', () => {
   const approval = connectionsMarkup([{ id: 'gmail', state: 'error', tools: 0, lastHandshakeAt: null, reasonCode: 'configuration_error' }]);
   assert.match(approval, /Approval needed/);

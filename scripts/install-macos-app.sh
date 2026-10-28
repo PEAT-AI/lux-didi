@@ -20,6 +20,7 @@
 #                              refused instead of installed.
 set -euo pipefail
 export CI=1
+script_dir="$(cd "$(dirname "$0")" && pwd)"
 
 built="${1:?install-macos-app.sh needs a built .app path}"
 shift
@@ -110,6 +111,14 @@ if ! codesign --verify --deep --strict "$target" || [ ! -x "$target/Contents/Mac
 fi
 
 # Installation owns only the app bundle. Configuration remains owner-controlled.
+# C-CONNECT9: an install that leaves a shipped connector unconnected is not an install. Every
+# scripts/check-installed-*.sh runs against the app just installed, and one failure restores the prior app.
+if ! bash "$script_dir/run-installed-checks.sh" "$target"; then
+  rm -rf "$target"
+  if [ -n "$rollback" ]; then mv "$rollback" "$target"; fi
+  echo "install-macos-app.sh: an installed check failed; prior app restored" >&2
+  exit 1
+fi
 installed_requirement="$(designated_requirement "$target")"
 printf 'INSTALL-MACOS-APP designated requirement: %s\n' "${installed_requirement:-unknown}"
 if is_adhoc_requirement "$installed_requirement"; then

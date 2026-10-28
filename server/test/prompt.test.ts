@@ -328,7 +328,7 @@ test('PV1: the persona base scopes the spoken cue to an actual lookup and the pr
     assert.equal((NAYA_LIVE_BASE + NAYA_VOICE_TOOLS + instruction).includes(banned), false, `no prompt section carries: ${banned}`);
   }
   // S4b: when the answer is already in the instructions there is no lookup, no preamble and no call.
-  assert.ok(instruction.includes('When the answer is already in these instructions, answer from it without a lookup.'), 'the no-lookup answer rule sits beside the cue');
+  assert.ok(instruction.includes('Answer from these instructions without a lookup when they already answer it.'), 'the no-lookup answer rule sits beside the cue');
   assert.equal(instruction.includes('Before a lookup, say at most five words'), false, 'the unscoped cue is gone');
   // S4b: batching and the second-call rule are the executing model's, never the voice prompt's.
   for (const moved of ['put independent source lookups in one research plan so the host can run them concurrently', 'consuming retained local remainder before another source read']) {
@@ -356,7 +356,7 @@ test('W5: the compiled Gemini voice instruction carries the four audit rules onc
     'Vary how you start replies; never open two replies in a row with the same word.',
     'Never hand ordinary continuation back to the owner as a permission question',
   ]) assert.equal(instruction.includes(gone), false, `replaced sentence is gone: ${gone}`);
-  assert.equal(instruction.split('Never fill the silence while a lookup runs.').length - 1, 1, 'the silence rule is still stated once');
+  assert.equal(instruction.split('Only the host bridges lookups.').length - 1, 1, 'the silence rule is still stated once');
 });
 
 test('#665: the research procedure answers with what it has instead of chasing a page-limit note', () => {

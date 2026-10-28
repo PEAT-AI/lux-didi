@@ -11,7 +11,7 @@ export type NativeAction = (typeof OPEN_ACTIONS)[number];
 export const NATIVE_ACTION_CODES = ['opened', 'not_allowed', 'not_found', 'failed'] as const;
 export type NativeActionCode = (typeof NATIVE_ACTION_CODES)[number];
 /** A receipt code: a native ack, or the guard code a refused call never sent to the native side. */
-export const OPEN_RECEIPT_CODES = [...NATIVE_ACTION_CODES, 'no_open_intent', 'kind_mismatch', 'not_owner_words', 'ambiguous'] as const;
+export const OPEN_RECEIPT_CODES = [...NATIVE_ACTION_CODES, 'no_open_intent', 'kind_mismatch', 'not_owner_words', 'ambiguous', 'native_timeout'] as const;
 export type OpenReceiptCode = (typeof OPEN_RECEIPT_CODES)[number];
 /** What the model sees; `open_url` is only the internal transport for the two item tools. */
 export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_source', 'open_home', 'open_file', 'open_app', 'open_web']);
@@ -111,12 +111,19 @@ const CLAIMED_KINDS: readonly { words: RegExp; kind: OpenKind }[] = [
  */
 const INTENT_TURNS = 3;
 const INTENT_CHARS = 400;
-interface IntentWindow { turns: string[]; modelSpoke: boolean }
+interface IntentWindow { turns: string[]; modelSpoke: boolean; partial?: string }
 const ownerTurn = new Map<string, IntentWindow>();
+const ownerFinalized = new Map<string, Set<() => void>>();
+export function noteOwnerPartial(runId: string, text: string): void {
+  const window = ownerTurn.get(runId) ?? { turns: [], modelSpoke: false };
+  window.partial = `${window.partial ?? ''}${text}`.slice(-INTENT_CHARS);
+  ownerTurn.set(runId, window);
+}
 export function noteOwnerWords(runId: string, text: string): void {
   const window = ownerTurn.get(runId) ?? { turns: [], modelSpoke: false };
   const turns = window.modelSpoke ? [] : window.turns;
   ownerTurn.set(runId, { turns: [...turns, text.slice(-INTENT_CHARS)].slice(-INTENT_TURNS), modelSpoke: false });
+  for (const resolve of ownerFinalized.get(runId) ?? []) resolve();
 }
 /** The model produced output: the next finalized owner turn opens a fresh intent window. */
 export function noteModelOutput(runId: string): void {
@@ -127,9 +134,30 @@ export function ownerWords(runId: string): string {
   return (ownerTurn.get(runId)?.turns ?? []).join(' ').slice(-INTENT_CHARS);
 }
 
-/** C-OPENWEB8: the turn he just finished, never an earlier one, because a web target binds to this turn alone. */
+/** Only owner transcription contributes to the current unanswered ask. */
 export function ownerTurnWords(runId: string): string {
-  return ownerTurn.get(runId)?.turns.at(-1) ?? '';
+  const window = ownerTurn.get(runId);
+  return [...(window?.modelSpoke ? [] : window?.turns ?? []), ...(window?.partial ? [window.partial] : [])].join(' ').slice(-INTENT_CHARS);
+}
+
+/** One bounded event wait, not a polling loop; cleanup on finalization, abort or timeout. */
+export async function webOwnerWords(runId: string, signal: AbortSignal): Promise<string> {
+  if (WEB_INTENT.test(ownerTurnWords(runId)) || signal.aborted) return ownerTurnWords(runId);
+  await new Promise<void>(resolve => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', finish);
+      listeners.delete(finish);
+      if (!listeners.size) ownerFinalized.delete(runId);
+      resolve();
+    };
+    const listeners = ownerFinalized.get(runId) ?? new Set<() => void>();
+    listeners.add(finish);
+    ownerFinalized.set(runId, listeners);
+    const timer = setTimeout(finish, 1500);
+    signal.addEventListener('abort', finish, { once: true });
+  });
+  return ownerTurnWords(runId);
 }
 
 /** What she said this turn, so the claim check reads her own words and never the owner's. */
@@ -142,7 +170,7 @@ export function noteSpoken(runId: string, text: string): void {
 export function clearOpenLedger(runId: string): void {
   spoken.delete(runId);
   opened.delete(runId);
-  ownerTurn.delete(runId);
+  // Barge-in clears response receipts, not the owner ask that caused it.
 }
 
 /**
@@ -230,7 +258,7 @@ function resolveOpenTarget(toolName: string, args: Record<string, string>): { ta
   return { code: 'not_allowed' };
 }
 
-interface Pending { runId: string; resolve(code: NativeActionCode): void; timer: ReturnType<typeof setTimeout> }
+interface Pending { runId: string; resolve(code: NativeActionCode | 'native_timeout'): void; timer: ReturnType<typeof setTimeout> }
 
 /**
  * Host to native dispatch over the existing local Live socket. The host owns the frame id and the
@@ -256,12 +284,12 @@ export class NativeActionBus {
     for (const [id, pending] of this.#pending) if (pending.runId === runId) { clearTimeout(pending.timer); this.#pending.delete(id); pending.resolve('failed'); }
   }
 
-  dispatch(runId: string, action: NativeAction, target: string): Promise<NativeActionCode> {
+  dispatch(runId: string, action: NativeAction, target: string, timeoutCode: NativeActionCode | 'native_timeout' = 'failed'): Promise<NativeActionCode | 'native_timeout'> {
     const send = this.#senders.get(runId);
     if (!send) return Promise.resolve('failed');
     const id = randomUUID();
-    return new Promise<NativeActionCode>(resolve => {
-      const timer = setTimeout(() => { if (this.#pending.delete(id)) resolve('failed'); }, this.#timeoutMs);
+    return new Promise<NativeActionCode | 'native_timeout'>(resolve => {
+      const timer = setTimeout(() => { if (this.#pending.delete(id)) resolve(timeoutCode); }, this.#timeoutMs);
       timer.unref?.();
       this.#pending.set(id, { runId, resolve, timer });
       // OPEN2-R1: a Mattermost frame names the one origin the host learned from a connector permalink, so
@@ -333,7 +361,7 @@ export function validateOpenWeb(args: unknown): args is { kind: WebKind; target:
 }
 
 /** The closed open verbs; a name alone, or a question about a site, is never an open request. */
-const WEB_INTENT = /\b(?:open|opens|opened|opening|show|shows|showing|pull(?:ing)?\s+up|bring(?:ing)?\s+up|go\s+to|going\s+to|take\s+me\s+to|launch|launching|look\s+up\s+on|find\s+on)\b/u;
+const WEB_INTENT = /(?:^|[^\p{L}\p{N}])(?:navigate\s+to|search\s+for|google|look\s+up|directions\s+to|map\s+of|open\s+up|oeffne|öffne|öffnen|zeig|zeige|zeigen|mach\b.{0,80}\bauf|suche?\s+nach|geh\s+auf|open|opens|opened|opening|show|shows|showing|pull(?:ing)?\s+up|bring(?:ing)?\s+up|go\s+to|going\s+to|take\s+me\s+to|launch|launching|look\s+up\s+on|find\s+on)\b/iu;
 
 /** His words, normalised: lowercase, punctuation stripped, a spoken "dot" read as one. */
 export function webWords(text: string): string[] {
@@ -353,6 +381,14 @@ export function webBinding(target: string, ownerWords: string): boolean {
 
 /** The not-for-speech refusal the invalid-arguments path uses: a fix for the model and a line to speak. */
 export interface NotForSpeech { fixNotForSpeech: string; say: string }
+/** A closed, speech-safe receipt even when execution failed before it could open anything. */
+export function openWebFailure(code: string): { code: string; fixNotForSpeech: string; say: string } {
+  const closed = ['open_web_failed', 'executor_intent_mismatch', 'no_open_intent', 'not_owner_words', 'native_timeout', 'not_allowed', 'not_found', 'ambiguous', 'failed', 'invalid_arguments'];
+  const reason = closed.includes(code) ? code : 'failed';
+  const guidance = OPEN_WEB_GUIDANCE[reason as keyof typeof OPEN_WEB_GUIDANCE];
+  return { code: reason, ...(guidance ?? { fixNotForSpeech: 'Nothing opened. Say the browser action failed; do not claim success.', say: 'I could not open that in your browser, so nothing is open.' }) };
+}
+
 export const OPEN_WEB_GUIDANCE: Record<'no_open_intent' | 'not_owner_words' | 'not_found' | 'ambiguous' | 'not_allowed', NotForSpeech> = {
   no_open_intent: {
     fixNotForSpeech: 'I did not hear an open request in his words. Do not call open_web on a name he did not ask to open; if he asks again, call it again with the words he says.',

@@ -235,6 +235,9 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
               ...(signIn ? { signIn } : {}),
               // C-OPEN 6: the one closed wiring notice a row may carry; nothing else of the report passes.
               ...(row.warning === 'google_mcp_path_unsafe' ? { warning: 'google_mcp_path_unsafe' } : {}),
+              // W2-R1: the added read names a remaining refusal names in the approve command text, closed
+              // tokens only, so no provider text or schema ever rides along.
+              ...(Array.isArray(row.addedToolNames) ? { addedToolNames: row.addedToolNames.filter((name): name is string => typeof name === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name)).slice(0, 64) } : {}),
             };
           });
           send(res, 200, success(endpoints)); return;

@@ -28,7 +28,7 @@ export const TRELLO_ACTIONS: Readonly<Record<string, Readonly<Record<string, rea
   },
   trelloWriteChecklist: {
     create: ['cardId', 'name', 'pos'], add_item: ['checklistId', 'name', 'pos'], create_item: ['checklistId', 'name', 'pos'],
-    update_item: ['checklistId', 'itemId', 'name', 'state'],
+    update_item: ['cardId', 'checklistId', 'itemId', 'name', 'state'],
   },
 };
 
@@ -67,11 +67,11 @@ export function trelloRequests(tool: string, args: Args): { requests: Request[];
   const path = (segments: readonly (string | undefined)[]): string => segments.filter(segment => segment !== undefined).map(segment => encodeURIComponent(String(segment))).join('/');
   switch (`${tool}.${action}`) {
     case 'trelloReadMember.get_me': return { requests: [{ method: 'GET', path: 'members/me', query: { fields: FIELDS } }] };
-    case 'trelloReadBoard.list': return { requests: [{ method: 'GET', path: 'boards', ...(typeof args.cursor === 'string' ? { query: { cursor: args.cursor } } : {}) }] };
-    case 'trelloReadBoard.list_labels': return { requests: [{ method: 'GET', path: `boards/${path([String(args.boardId)])}/labels`, ...(typeof args.cursor === 'string' ? { query: { cursor: args.cursor } } : {}) }] };
-    case 'trelloReadList.list_by_board': return { requests: [{ method: 'GET', path: `boards/${path([String(args.boardId)])}/lists`, ...(typeof args.cursor === 'string' ? { query: { cursor: args.cursor } } : {}) }] };
+    case 'trelloReadBoard.list': return { requests: [{ method: 'GET', path: 'members/me/boards' }] };
+    case 'trelloReadBoard.list_labels': return { requests: [{ method: 'GET', path: `boards/${path([String(args.boardId)])}/labels` }] };
+    case 'trelloReadList.list_by_board': return { requests: [{ method: 'GET', path: `boards/${path([String(args.boardId)])}/lists` }] };
     case 'trelloReadCard.get': return { requests: [{ method: 'GET', path: `cards/${path([card])}` }] };
-    case 'trelloReadCard.list_by_list': return { requests: [{ method: 'GET', path: `lists/${path([String(args.listId)])}/cards`, ...(typeof args.cursor === 'string' ? { query: { cursor: args.cursor } } : {}) }] };
+    case 'trelloReadCard.list_by_list': return { requests: [{ method: 'GET', path: `lists/${path([String(args.listId)])}/cards` }] };
     case 'trelloReadCard.list_comments': return { requests: [{ method: 'GET', path: `cards/${path([card])}/actions`, query: { filter: 'commentCard' } }] };
     case 'trelloReadChecklist.list_by_card': return { requests: [{ method: 'GET', path: `cards/${path([card])}/checklists` }] };
     case 'trelloWriteCard.create': return { requests: [{ method: 'POST', path: 'cards', body: defined({ idList: args.listId, name: args.name, desc: args.desc, due: args.due, pos: args.pos }) }] };
@@ -86,7 +86,7 @@ export function trelloRequests(tool: string, args: Args): { requests: Request[];
     case 'trelloWriteChecklist.add_item': case 'trelloWriteChecklist.create_item':
       return { requests: [{ method: 'POST', path: `checklists/${path([String(args.checklistId)])}/checkItems`, body: defined({ name: args.name, pos: args.pos }) }] };
     case 'trelloWriteChecklist.update_item':
-      return { requests: [{ method: 'PUT', path: `checklists/${path([String(args.checklistId)])}/checkItems/${path([String(args.itemId)])}`, body: defined({ name: args.name, state: args.state }) }] };
+      return { requests: [{ method: 'PUT', path: `cards/${path([card])}/checkItem/${path([String(args.itemId)])}`, body: defined({ name: args.name, state: args.state }) }] };
     default: return undefined;
   }
 }
@@ -137,7 +137,7 @@ export function createTrelloRestTransport(options: TrelloRestOptions): TrelloTra
   const base = (options.url ?? TRELLO_API_URL).replace(/\/+$/, '');
   const doFetch = options.fetch ?? fetch;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>(resolve => { setTimeout(resolve, ms); }));
-  let verified: Promise<{ ok: true; value: unknown } | { ok: false; code: TrelloCallCode }> | undefined;
+  let verified: Promise<TrelloCallResult> | undefined;
 
   return {
     async tools(): Promise<{ ok: true; value: readonly TrelloServerTool[] } | { ok: false; code: TrelloCallCode }> {
@@ -151,7 +151,7 @@ export function createTrelloRestTransport(options: TrelloRestOptions): TrelloTra
       const credentials = await options.credentials();
       if (!credentials.ok) return { ok: false, code: credentials.code };
       /** One request, its typed refusal, and the body read under the byte bound. */
-      const perform = async (request: Request, key: string, token: string): Promise<{ ok: true; value: unknown } | { ok: false; code: TrelloCallCode }> => {
+      const perform = async (request: Request, key: string, token: string): Promise<TrelloCallResult> => {
         const url = new URL(`${base}/${request.path}`);
         url.searchParams.set('key', key);
         url.searchParams.set('token', token);
@@ -176,12 +176,12 @@ export function createTrelloRestTransport(options: TrelloRestOptions): TrelloTra
           await sleep(retryAfterMs(response));
           response = await attempt();
           if (!(response instanceof Response)) return response;
-          if (response.status === 429) return { ok: false, code: 'rate_limited' };
+          if (response.status === 429) return { ok: false, code: 'rate_limited', httpStatus: response.status };
         }
-        if (response.status === 401 || response.status === 403) return { ok: false, code: 'credential_revoked' };
-        if (response.status === 404) return { ok: false, code: 'tool_error' };
-        if (response.status >= 500) return { ok: false, code: 'unavailable' };
-        if (!response.ok) return { ok: false, code: 'tool_error' };
+        if (response.status === 401 || response.status === 403) return { ok: false, code: 'credential_revoked', httpStatus: response.status };
+        if (response.status === 404) return { ok: false, code: 'tool_error', httpStatus: response.status };
+        if (response.status >= 500) return { ok: false, code: 'unavailable', httpStatus: response.status };
+        if (!response.ok) return { ok: false, code: 'tool_error', httpStatus: response.status };
         const text = await readBounded(response, REPLY_LIMIT);
         if (text === undefined) return { ok: false, code: 'protocol_error' };
         try { return { ok: true, value: text === '' ? undefined : JSON.parse(text) }; } catch { return { ok: false, code: 'protocol_error' }; }

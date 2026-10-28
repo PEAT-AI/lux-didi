@@ -417,6 +417,8 @@ export async function composeMcpRuntime(options: {
   // a digest of the stored credential at park time, so a dead record is never re-probed and a fresh
   // sign-in always is, whichever shape the endpoint stores (OAuth record or pasted bearer).
   const needsSignIn = new Map<string, string>();
+  // One proof per endpoint/credential for this host; failures still evict inside the memo.
+  let identityForHost = identityProofMemo();
   const storedCredentialDigest = (reference: string): string => {
     let pasted = '';
     try { pasted = readMcpCredential(configDir, reference); } catch { pasted = ''; }
@@ -554,7 +556,7 @@ export async function composeMcpRuntime(options: {
     registry.suspend(entry.id);
     if (replaceSession.delete(entry.id)) await port.retire(entry.id);
     const started = now();
-    const result = await settleWithin(entry, token, 'refresh', identityProofMemo());
+    const result = await settleWithin(entry, token, 'refresh', identityForHost);
     // One closed line per retry outcome: the endpoint, its connector, which attempt this was and the code
     // it ended on. A recovery is its own code, never a helper message or an address.
     options.lifecycleLog?.({ event: 'connector_retry', connector: entry.connector, endpointId: entry.id, attempt: recovery.attempts(entry.id),
@@ -813,8 +815,8 @@ export async function composeMcpRuntime(options: {
           // H19 with D2's strict per-endpoint source: a proof belongs to one endpoint of one account.
           // Sharing it across a mailbox and a calendar of one account made the second endpoint inherit
           // a proof of the other family's tool, so a strict source refused it (or raced the first
-          // endpoint's proof). One proof per endpoint per round lives in settle's caller.
-          const proofKey = `${entry.id}\u0000${policy.endpoint.account ?? ''}`;
+          // endpoint's proof). Proofs share the host lifetime, but a changed credential earns a new proof.
+          const proofKey = `${entry.id}\u0000${policy.endpoint.account ?? ''}\u0000${entry.credentialRef == null ? '' : storedCredentialDigest(entry.credentialRef)}`;
           identity = await identityOnce(proofKey, async () => {
             const proof = await proveIdentity({ source: identitySource, expected: expectedIdentities, timeoutMs: callTimeoutMsByEndpoint.get(entry.id) ?? IDENTITY_TIMEOUT_MS, call: (tool, args) => reader.call(tool, args) });
             // The receipt belongs to the read that happened, so a reused proof writes no second line.
@@ -900,7 +902,7 @@ export async function composeMcpRuntime(options: {
   let startPromise: Promise<void> | undefined;
   const run = async (): Promise<void> => {
     if (closed) return;
-    const identityOnce = identityProofMemo();
+    const identityOnce = identityForHost;
     await Promise.all(active.map(async entry => {
       eligible.delete(entry.id); bursts.delete(entry.id);
       const token = (generations.get(entry.id) ?? 0) + 1;
@@ -933,12 +935,12 @@ export async function composeMcpRuntime(options: {
       retrying: recovery.pending(report.id),
       connector: connectors.get(report.id) ?? report.id })) }),
     start: () => (startPromise ??= run()),
-    refresh: async () => { startPromise = undefined; await run(); },
+    refresh: async () => { identityForHost = identityProofMemo(); startPromise = undefined; await run(); },
     recover: async () => {
       // A sign-in that landed since the last settle reconnects here: the parked endpoint is settled
       // again with a new generation, exactly as a first connect would (R9), and that connect proves the
       // account again. Only a changed credential counts as a landing, so a dead record is never re-probed.
-      const identityOnce = identityProofMemo();
+      const identityOnce = identityForHost;
       await Promise.all([...needsSignIn].map(async ([id, parked]) => {
         const entry = active.find(candidate => candidate.id === id);
         if (closed || entry === undefined || entry.credentialRef == null) return;

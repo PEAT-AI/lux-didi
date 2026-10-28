@@ -32,7 +32,19 @@ import Darwin
         let (data, _) = try await URLSession.shared.data(from: URL(string: origin + path)!)
         return (try JSONSerialization.jsonObject(with: data) as! [String: Any])["data"] as! [String: Any]
     }
+    // LaunchServices does not inherit terminal streams. Retain synthetic fixture output beside
+    // observer.json so lifecycle assertions cannot be mistaken for launch-isolation failures.
+    @MainActor private static func captureVerificationLogs() {
+        guard let root = ProcessInfo.processInfo.environment["LUX_VERIFICATION_GATE_ROOT"] else { return }
+        for (name, target) in [("stdout.log", STDOUT_FILENO), ("stderr.log", STDERR_FILENO)] {
+            let fd = open(root + "/" + name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard fd >= 0 else { continue }
+            _ = dup2(fd, target); close(fd)
+        }
+        setbuf(stdout, nil); setbuf(stderr, nil)
+    }
     @MainActor static func main() {
+        captureVerificationLogs()
         let policy = NativeKeychainPolicy.establish()
         guard policy == errSecSuccess else {
             fputs("COMPANION POLICY: unavailable (\(policy))\n", stderr); exit(2)

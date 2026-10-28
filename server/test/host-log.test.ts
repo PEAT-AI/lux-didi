@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { safeEvent } from '../host/log.js';
+import { HostLog, safeEvent } from '../host/log.js';
 import { severityOf } from '../host/events.js';
 import { createHostResourceSampler } from '../host/runtime.js';
 
@@ -690,4 +691,33 @@ test('C-AUDIO10: latency exposes owner-final time without mislabeling response a
     msSinceOwnerFinal: 400, msSinceToolOutput: null };
   assert.deepEqual(safeEvent(receipt), receipt);
   assert.equal(safeEvent({ ...receipt, msSinceResponseCreated: 116000 }), undefined);
+});
+
+test('C-START10: host_ready_ms is an info receipt with a closed elapsed-time field', () => {
+  const receipt = { event: 'host_ready_ms', ms: 1_375 };
+  assert.deepEqual(safeEvent(receipt), receipt);
+  assert.equal(severityOf('host_ready_ms').level, 'info');
+  assert.equal(safeEvent({ ...receipt, ms: -1 }), undefined);
+  assert.equal(safeEvent({ ...receipt, ms: 1.5 }), undefined);
+  assert.equal(safeEvent({ ...receipt, owner: 'synthetic' }), undefined);
+});
+
+
+test('C-START10: provider ready records host latency once, not on reconnect or the next call', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-host-ready-'));
+  try {
+    let now = 1_475;
+    const log = new HostLog(dir, undefined, { startedAt: 100, now: () => now });
+    const ready = { event: 'live_provider_ready', liveSessionId: LIVE_SESSION_ID, generation: 0, msSinceOpen: 25, closeCode: null };
+    log.event({ ...ready, msSinceOpen: -1 });
+    log.event(ready);
+    now = 9_000;
+    log.event({ ...ready, generation: 1 });
+    log.event({ ...ready, liveSessionId: '22222222-3333-4444-8555-666666666666' });
+    const rows = readFileSync(join(dir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const receipts = rows.filter(row => row.event === 'host_ready_ms');
+    assert.equal(receipts.length, 1);
+    assert.equal(receipts[0].ms, 1_375);
+    assert.equal(receipts[0].level, 'info');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

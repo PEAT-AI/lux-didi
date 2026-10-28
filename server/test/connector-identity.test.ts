@@ -250,6 +250,8 @@ test('one proof per connector endpoint per boot, and no diagnostic capture at st
   try {
     const host = await startHost({ dataDir: join(dir, 'state'), configDir: config, webRoot, port: 0 });
     try {
+      // C-START10: composition already ran the first pass; repeated supervisor starts reuse it.
+      await Promise.all([host.start(), host.start()]);
       const headers = { Authorization: `Bearer ${host.store.adminCredential}`, 'Content-Type': 'application/json', 'X-Didi-Authority-Epoch': host.descriptor.authorityEpoch, 'Idempotency-Key': randomUUID() };
       const status = await fetch(host.descriptor.origin + '/api/v1/tools/status', { headers });
       const reports = (await status.json()).data.endpoints as Array<{ id: string; state: string; identity?: IdentityProof; reasonCode?: string; error?: string }>;

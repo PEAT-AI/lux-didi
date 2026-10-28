@@ -196,6 +196,10 @@ const TOOL_HANDLER_CLASSES = ['Error', 'TypeError', 'RangeError', 'SyntaxError',
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return;
   const value = raw as Record<string, unknown>;
+  if (value.event === 'host_ready_ms') {
+    if (!closedKeys(value, ['event', 'ms']) || !isSafeCount(value.ms)) return;
+    return { event: 'host_ready_ms', ms: value.ms };
+  }
   if (value.event === 'tool_diagnostic_capture') {
     const reasons = ['context_absent','coverage_write_failed','insert_write_failed','seal_write_failed','reuse_context_absent','reuse_write_failed','execution_not_active_or_scope_changed','insert_failed_wire_observed','insert_failed_pre_wire_refused','insert_failed_dispatch_unknown','wire_observed_context_absent','pre_wire_context_absent','dispatch_unknown_context_absent'];
     const identity = (v: unknown): boolean => v === null || (typeof v === 'string' && /^[a-zA-Z0-9:_-]{1,256}$/.test(v));
@@ -1615,7 +1619,9 @@ const NORMAL_END_CODES = new Set(['closed', 'voice_stop', 'user_stop', 'idle_tim
 
 export class HostLog {
   private readonly path: string;
-  constructor(dataDir: string, private readonly limit = 5 * 1024 * 1024) {
+  private readyLogged = false;
+  constructor(dataDir: string, private readonly limit = 5 * 1024 * 1024,
+    private readonly startup?: { startedAt: number; now: () => number }) {
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     const root = lstatSync(dataDir);
     if (!root.isDirectory() || root.isSymbolicLink()) throw new Error('Invalid diagnostics state directory');
@@ -1624,7 +1630,15 @@ export class HostLog {
     if (!lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink()) throw new Error('Invalid diagnostics directory');
     this.path = join(directory, 'host.log');
   }
-  event(raw: unknown): void { const event = safeEvent(raw); if (event) this.append(event); }
+  event(raw: unknown): void {
+    const event = safeEvent(raw);
+    if (!event) return;
+    this.append(event);
+    if (event.event === 'live_provider_ready' && this.startup && !this.readyLogged) {
+      this.readyLogged = true;
+      this.append({ event: 'host_ready_ms', ms: Math.max(0, Math.round(this.startup.now() - this.startup.startedAt)) });
+    }
+  }
   terminal(raw: unknown): void {
     if (!raw || typeof raw !== 'object') return;
     const state = (raw as { state?: unknown }).state;

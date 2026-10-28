@@ -1,3 +1,5 @@
+import { WebSocket } from 'ws';
+import { fixture as liveVoiceFixture } from './live-voice-fixture.js';
 import './memory-eligibility-integration.js';
 import './memory-startup-integration.js';
 // The declared host check also exercises the real installer's isolated seed block (R5).
@@ -1334,7 +1336,7 @@ test('C-RECOVERY (f): a rejected live write is a host_error that names its close
 // C-SUMMARY8: the app closes the host's stdin at every call end, so the next start inherits a call whose
 // summary never finished. Requirement 1 puts that finish before the opener plan can be fixed, and the
 // native launch fails when no ready frame arrives inside 6 s, so the wait has to fit inside that budget.
-test('C-SUMMARY8: an interrupted summary cannot hold the ready frame past its start budget', async t => {
+test('C-START10: startHost opens the provider while an eight-second interrupted summary runs', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-summary-start-'));
   const configDir = join(dir, 'provider-config');
   // Within the retry age cap, so the start pass treats the interrupted call as work it must finish.
@@ -1366,21 +1368,55 @@ test('C-SUMMARY8: an interrupted summary cannot hold the ready frame past its st
         markSummaryPending(tx, 's-interrupted', endedAt, { dataClass: source.dataClass, sourceRevision: source.revision });
       });
     } finally { seed.close(); }
-    let modelCalls = 0;
-    const started = performance.now();
-    const host = await startHost({ dataDir: dir, webRoot, configDir, port: 0,
+    const upstream = await liveVoiceFixture(t);
+    await writeFile(join(configDir, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini',
+      modelId: 'models/live-start10-test', voice: 'ExplicitVoice', keyReference: 'gemini-primary', dataClasses: ['ordinary', 'private'],
+      preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'off', verbosity: 'balanced' },
+    }), { mode: 0o600 });
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let entered!: () => void;
+    const generating = new Promise<void>(resolve => { entered = resolve; });
+    let summaryAnswered = false;
+    let elapsed = 0;
+    const summaryResponse = () => new Response(`data: ${JSON.stringify({ candidates: [{
+      content: { role: 'model', parts: [{ text: '{"skip":false,"summary":"the owner saved a synthetic note."}' }] }, finishReason: 'STOP',
+    }] })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+    const starting = startHost({ dataDir: dir, webRoot, configDir, port: 0,
       modelTesting: {
-        deadlineMs: 400,
         credentials: { resolve: async () => 'synthetic-not-a-real-key' },
-        transport: () => { modelCalls += 1; return new Promise<Response>(() => { /* deliberately no response */ }); },
-      } });
-    const elapsed = Math.round(performance.now() - started);
+        transport: () => {
+          entered();
+          return new Promise<Response>(resolve => setTimeout(() => { summaryAnswered = true; resolve(summaryResponse()); }, 8_000));
+        },
+      },
+      liveTesting: { credentials: { resolve: async () => 'synthetic-live-key' }, socketFactory: upstream.socketFactory },
+    });
+    await generating;
+    elapsed = SUMMARY_START_SETTLE_BUDGET_MS;
+    t.mock.timers.tick(elapsed);
+    const host = await starting;
+    let audio: WebSocket | undefined;
     try {
-      t.diagnostic(`C-SUMMARY8 boot-to-ready with an interrupted summary: ${elapsed} ms (budget ${SUMMARY_START_SETTLE_BUDGET_MS} ms)`);
-      assert.ok(modelCalls >= 1, 'the start pass reached the model for the interrupted call');
-      assert.ok(elapsed < SUMMARY_START_SETTLE_BUDGET_MS + 1_500,
-        `the ready frame took ${elapsed} ms: an unanswered provider cannot hold it past the start budget`);
-      assert.ok(elapsed < 6_000, 'and it stays inside the native six second ready-frame cap');
-    } finally { await host.close(); }
+      const headers = { authorization: `Bearer ${host.store.adminCredential}`, 'x-didi-authority-epoch': host.descriptor.authorityEpoch,
+        'idempotency-key': 'start10-proof', 'content-type': 'application/json' };
+      const response = await fetch(host.descriptor.origin + '/api/v1/live-sessions', {
+        method: 'POST', headers, body: JSON.stringify({ inputClass: 'ordinary' }),
+      });
+      const body = await response.json();
+      assert.equal(response.status, 200, JSON.stringify(body));
+      audio = new WebSocket(`${host.descriptor.origin.replace('http', 'ws')}/api/v1/live-sessions/${body.data.liveSessionId}/audio`, {
+        headers: { ...headers, 'x-didi-live-profile': body.data.profileIdentity },
+      });
+      audio.on('error', () => {});
+      await upstream.frame(1);
+      assert.ok(elapsed < 2_500, `provider opens at ${elapsed} virtual ms`);
+      assert.equal(summaryAnswered, false, 'the provider setup is sent before the eight-second summary completes');
+      elapsed = 8_000; t.mock.timers.tick(6_000);
+    } finally {
+      if (audio) { const closed = new Promise<void>(resolve => audio!.once('close', () => resolve())); audio.terminate(); await closed; }
+      t.mock.timers.tick(8_000);
+      await host.close();
+      t.mock.timers.reset();
+    }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

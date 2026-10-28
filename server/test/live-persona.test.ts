@@ -370,7 +370,9 @@ test('the public character, voice surface and tool conduct are the authored verb
   // W4: the voice and loop rules are paid for inside the same blocks, so both hashes are re-pinned here.
   // Train: W1 moved the voice-tools block too, so the merged sources re-pin all three at once.
   assert.equal(sha(NAYA_CHARACTER), 'd927cedccd099bd4375b34453a4d71cae4cdfc10a098f1940d8beea767b11207');
-  assert.equal(sha(NAYA_VOICE_SURFACE), '69d48420aac2471b8343d109c5d48833a25d22a510ef9966b94119a620ef21ab');
+  // W3-R2: the settings-or-approval-location ban enters the voice surface, paid for by trimming the language
+  // aside, the accent aside and the orb clause inside the same block, so this block is re-pinned.
+  assert.equal(sha(NAYA_VOICE_SURFACE), '9974878a19fec53a2d0ff6342c2ef00ce899cfe1e260c7c3404430452d8f0ea4');
   // C-OPENWEB8: the open paragraph names open_web for a map, a site or a search, so this block is re-pinned.
   // C-RESEARCH8: the two-ask voice rule and the re-worded evidence procedure land in the same blocks, so the train re-pins all three against the merged sources.
   assert.equal(sha(NAYA_VOICE_TOOLS), '2775aceab4e64cd10cde5994c0c6ad059a1db04b96c307396eb605bf269d87d7');
@@ -1498,6 +1500,11 @@ test('L1-14/L11-05: she never says the stop phrase or a stop line on her own', (
   assert.match(NAYA_VOICE_SURFACE, /If he asks to end it in other words, tell him the exact phrase once\./u);
   assert.match(NAYA_VOICE_SURFACE, /You cannot mute or stop yourself; never say you did, that you will stay quiet, or any stop line of your own\./u);
   assert.equal(NAYA_LIVE_BASE.split('any stop line of your own').length - 1, 1, 'the rule reaches the live persona once');
+});
+
+test('C-CLAIMS9 outcome 2, W3-R2: the voice surface forbids naming a location the connector state line does not name', () => {
+  // The rule holds on a session with no connector rows, where no connector line is built at all.
+  assert.match(NAYA_VOICE_SURFACE, /Never name a settings or approval location the connector state line does not name\./u);
 });
 
 test('#589/#590: the voice surface names the stop phrases and promises no silence it cannot keep', () => {

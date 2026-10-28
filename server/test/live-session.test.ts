@@ -51,13 +51,13 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
-import { ADMISSION_BLOCK_REASONS, ADMISSION_DIRECTIVES, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, admissionBlocked, pagesCurrentRun, RESEARCH } from '../tools/research.js';
+import { bindResearchQuery, ADMISSION_BLOCK_REASONS, ADMISSION_DIRECTIVES, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, admissionBlocked, pagesCurrentRun, RESEARCH } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 import { luxNoteMigrations } from '../tools/lux-note.js';
 import { notesExportMigrations } from '../tools/notes-export.js';
@@ -1816,7 +1816,7 @@ test('timer storage failure is a causal uncaught process failure with durable ro
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const source = `
     import { Store } from ${JSON.stringify(new URL('../runtime/store.js', import.meta.url).href)};
-    import { createLiveSessionOwner, validateLiveProfile, liveMigrations } from ${JSON.stringify(new URL('../live/index.js', import.meta.url).href)};
+    import { lateFindingsText, researchProjection, createLiveSessionOwner, validateLiveProfile, liveMigrations } from ${JSON.stringify(new URL('../live/index.js', import.meta.url).href)};
     import { domainMigrations } from ${JSON.stringify(new URL('../domain/schema.js', import.meta.url).href)};
     const store = new Store(${JSON.stringify(dir)}, [...domainMigrations, ...liveMigrations]);
     let clock = ${NOW}, callback;
@@ -6389,7 +6389,7 @@ test('C-TURN8: a claim with no call gets exactly one correction, and only once p
   h.f.send({ serverContent: { inputTranscription: { text: 'what did Priya send me about the synthetic contract', finished: true } } });
   for (let attempt = 0; attempt < 200 && !turnOpen(); attempt++) await tick();
   assert.ok(turnOpen(), 'the owner turn is open before she answers it');
-  h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that now.", finished: true }, turnComplete: true } });
+  h.f.send({ serverContent: { outputTranscription: { text: "Checking.", finished: true }, turnComplete: true } });
   for (let attempt = 0; attempt < 300 && !armed(); attempt++) await tick();
   assert.ok(armed(), 'the announced lookup armed its three-second bound');
   await advance(2_000);
@@ -7306,7 +7306,7 @@ test('research admission names its closed reason and admits a paging continue of
   // Every reason reaches the model verbatim, with the directive that belongs to that reason.
   for (const reason of ADMISSION_BLOCK_REASONS) {
     const reply = admissionBlocked(reason);
-    assert.equal(reply['status'], 'blocked');
+    assert.equal(reply['status'], 'refused');
     assert.equal(reply['reason'], reason);
     assert.equal(reply['directive'], ADMISSION_DIRECTIVES[reason]);
     assert.equal(reply['retry_without_new_owner_turn'], false);
@@ -7331,4 +7331,27 @@ test('research own-results continue allowance renews on each owner turn', () => 
     assert.deepEqual(admission.admit('continue', true), { admitted: true });
     assert.equal(admission.admit('continue', true).admitted, false);
   }
+});
+
+
+test('R9-W5 refusal retains delivered findings and projection uses closed refusal code', () => {
+  const delivered = { findings: [{ source: 'web', text: 'Web: 3 of 3 shown\nalpha\nbeta\ngamma' }] };
+  const reply = admissionBlocked('turn_spent', delivered);
+  assert.equal(reply['deliveredCount'], 3);
+  assert.doesNotMatch(JSON.stringify(reply), /nothing|empty|blocked/iu);
+  assert.match(researchProjection(reply, 'completed'), /refused:turn_spent/u);
+  assert.match(researchProjection({ findings: [{ source: 'calendar', text: 'Calendar: 1 of 1 shown\nSynthetic meeting' }] }, 'completed'), /1 findings from calendar/u);
+});
+
+test('R9-W5 late findings all retain source and lookup provenance', () => {
+  const line = lateFindingsText('web', ['alpha', 'beta', 'gamma']);
+  assert.match(line, /not supplied by the owner/u);
+  for (const item of ['alpha', 'beta', 'gamma']) assert.ok(line.includes(`from the web: ${item}`));
+  assert.equal(lateFindingsText('mail', ['synthetic mail']).includes('from your mail:'), true);
+  assert.ok(lateFindingsText('web', ['a'.repeat(1000), 'b'.repeat(1000), 'c'.repeat(1000)]).length <= 280);
+});
+
+test('R9-W5 web query drops directory-only proper nouns, keeps conversational names', () => {
+  assert.deepEqual(bindResearchQuery('cost for Cedarworks and Unrelatedname', 'what does Cedarworks cost'), { query: 'cost for Cedarworks and', dropped: 1 });
+  assert.deepEqual(bindResearchQuery('news about Soraya', 'tell me about Soraya'), { query: 'news about Soraya', dropped: 0 });
 });

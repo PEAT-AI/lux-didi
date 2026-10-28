@@ -542,6 +542,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'live_recovery_failed', liveSessionId: value.liveSessionId, generation: value.generation, mode: value.mode, cause: value.cause,
       errorClass: value.errorClass, messageKey: value.messageKey, attempt: value.attempt };
   }
+  if (value.event === 'research_query_token_dropped') {
+    if (!closedKeys(value, ['event', 'dropped'])) return;
+    if (!Number.isInteger(value.dropped) || (value.dropped as number) < 1) return undefined;
+    return { event: 'research_query_token_dropped', dropped: value.dropped };
+  }
   if (value.event === 'research_blocked') {
     // C-LIVE behaviour 1: a research call no owner turn admitted, by action and closed reason.
     if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'action', 'reason'])) return;

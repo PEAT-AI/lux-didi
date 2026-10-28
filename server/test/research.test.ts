@@ -2316,3 +2316,35 @@ test('#1028: one owner turn opens two different asks and refuses a repeat or a t
   assert.deepEqual(repeat.admit('start', false, false, 'who owns Acme Seeds'), { admitted: true });
   assert.deepEqual(repeat.admit('start', false, false, 'Who owns Acme Seeds '), { admitted: false, reason: 'turn_spent' }, "the same question again is the turn's one ask");
 });
+
+test('W5-R1: settled calendar and knowledge answer at 1 s while web stays pending', async () => {
+  const clock = fakeClock();
+  const sources = deferred<void>();
+  const web = deferred<{ ok: false; code: 'web_timeout' }>();
+  const h = harness({ now: clock.now, schedule: clock.schedule, configured: ['calendar', 'knowledge', 'web'],
+    execute: async subs => { await sources.promise; return subs.map(call => sub(call.name, 'Synthetic finding.', true, call.key)); },
+  });
+  h.deps.web = { search: async () => web.promise };
+  let background: Promise<void> | undefined;
+  h.deps.background = done => { background = done; };
+  let answered = false;
+  const result = runResearch(h.deps, { action: 'start', question: 'my schedule and project update', lookups: [
+    { source: 'calendar', query: 'today' }, { source: 'knowledge', query: 'project update' }, { source: 'web', query: 'project update' },
+  ] }, signal()).then(reply => { answered = true; return reply; });
+  await settle();
+  clock.advance(1000);
+  sources.resolve();
+  await settle();
+  assert.equal(answered, true, 'all non-web legs settled at 1 s, no 4.5 s wait');
+  const reply = await result;
+  assert.ok(clock.now() < 1500);
+  assert.ok(Array.isArray(reply['findings']));
+  web.resolve({ ok: false, code: 'web_timeout' });
+  await background;
+});
+
+test('R9-W5: cost research does not automatically read the calendar', async () => {
+  const h = harness({ configured: ['calendar', 'knowledge'], executeText: 'Synthetic price: ten units.' });
+  await runResearch(h.deps, { action: 'start', question: 'what does the synthetic service cost', lookups: [{ source: 'knowledge', query: 'synthetic service cost' }] }, signal());
+  assert.equal(h.executed.some(call => call.name === 'calendar_list_events'), false);
+});

@@ -75,12 +75,13 @@ export function openersNote(openers: readonly string[], topics: readonly (string
   return `Earlier opener topic classes, closed for this call: ${[...new Set(classes)].join(', ')}. Never open on tool_failure.`;
 }
 
-/** Host instructions are never owner words, including on adapters with only a user text channel. */
-export const hostNote = (text: string): string => `[host note, not the owner] ${text}`;
 const ALARM_MODE_MARKER = '[alarm mode]';
 export function alarmSessionInstructions(input: import('./types.js').AlarmSessionSetup): string {
   return `${ALARM_MODE_MARKER} Wake ${JSON.stringify(input.ownerDisplayName)} for the alarm at ${JSON.stringify(input.scheduledTime)}. Address them by name and briefly invite a spoken answer. Continue brief wake-up reminders until they answer. You are Naya. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
 }
+
+/** Host instructions are never owner words, including on adapters with only a user text channel. */
+export const hostNote = (text: string): string => `[host note, not the owner] ${text}`;
 
 /** The most of a recorded option's topic the note names, so a long fragment stays one clause. */
 

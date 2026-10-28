@@ -134,15 +134,15 @@ function requirePositiveSafeInteger(value: unknown): number {
 }
 
 /**
- * C-DEPTH11: a completed helper result that carries no JSON envelope at all. A helper that crashed, was
- * killed early or wrote a half message leaves one of these, and it must never read as an honest empty.
+ * C-DEPTH11: a completed helper result that carries no envelope at all. A helper that crashed, was
+ * killed early or wrote a half message leaves an empty or non-JSON text item, and it must never read as
+ * an honest empty. Any JSON object is an envelope here; only the absence of one is the failure.
  */
 function hasEnvelope(result: CompletedResult): boolean {
   const text = contentText(result.decodedResult);
   if (text === undefined || text.trim().length === 0) return false;
   try {
-    const parsed: unknown = JSON.parse(text);
-    return isRecord(parsed) && isRecord(parsed['data']);
+    return isRecord(JSON.parse(text));
   } catch { return false; }
 }
 

@@ -1577,11 +1577,11 @@ test('C-CONVO9: tool_failure cannot become an opener topic', () => {
 
 test('C-OPEN11: generated open guidance names all five tools and the browser and ack boundaries', async () => {
   const { NAYA_OPEN_SURFACE } = await import('../prompt/live-persona.js');
-  const { OPEN_TOOL_NAMES, OPEN_TOOL_GUIDANCE, OPEN_GUIDANCE } = await import('../tools/open.js');
+  const { OPEN_TOOL_NAMES, OPEN_TOOL_GUIDANCE } = await import('../tools/open.js');
   for (const name of OPEN_TOOL_NAMES) assert.equal(OPEN_TOOL_GUIDANCE.split('\n').filter(line => line.startsWith(`${name}:`)).length, 1, name);
   assert.ok(NAYA_OPEN_SURFACE.includes(OPEN_TOOL_GUIDANCE));
   assert.match(NAYA_OPEN_SURFACE, /"Open in my browser" means a web page/);
   assert.match(NAYA_OPEN_SURFACE, /native acknowledgement/);
   assert.match(NAYA_OPEN_SURFACE, /no web link.*one sentence/);
-  assert.match(OPEN_GUIDANCE.not_found, /no web link.*home page or a web search/);
+  assert.match(NAYA_OPEN_SURFACE, /no web link for that item; I can open the app home page or a web search instead/);
 });

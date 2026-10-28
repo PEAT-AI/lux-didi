@@ -17,7 +17,7 @@ export type OpenReceiptCode = (typeof OPEN_RECEIPT_CODES)[number];
 export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_source', 'open_home', 'open_file', 'open_app', 'open_web']);
 /** The one sentence the model says when an item open is refused or unknown. */
 export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch', string> = {
-  not_found: 'There is no web link for that item; offer the app home page or a web search in one sentence. Never substitute a local file for a browser request.',
+  not_found: 'I could not find that item. Look it up again and use the handle the result gives you.',
   not_allowed: 'For a browser, tab, Chrome or link request, use open_source with a shown web handle or open_web for a site, never open_file or open_app. That link is not one I am allowed to open. Tell him plainly which link failed and offer the app home page instead; if he asks again, call open again with the same handle.',
   no_open_intent: 'I did not hear an open request in his words. Say plainly that I did not hear one and that nothing is open; when he asks again, call open again with the same handle, never invent a reason.',
   kind_mismatch: 'That item is not the kind he asked for. Say what it actually is and ask before opening it.',

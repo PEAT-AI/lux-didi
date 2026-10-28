@@ -5028,6 +5028,9 @@ async function mailGroup(deps: ResearchDeps, run: RunState, plans: readonly Rout
     const classified = delivered || read.failed ? undefined : classifiedFailureText([read.plain ?? '']);
     if (classified !== undefined) run.failureLines.set('mail', classified);
     const outcome: LookupOutcome = delivered ? 'ok' : signal.aborted || run.cutShort.has('mail') ? 'timeout' : read.failed || classified !== undefined ? 'failed' : 'empty';
+    // C-DEPTH11/#648: a failed mail read keeps the connector's own closed code as the source reason, so a
+    // helper that answered with no payload is voiced with its line instead of a bare "no answer".
+    if (!delivered && read.code !== undefined) run.unavailableReasons.set('mail', read.code);
     const failedPages = read.failedPages ?? 0;
     const info = mailQueryInfo(read);
     return { lookup: plan.lookup, kind: plan.read.kind, tool: INTERNAL.mailList, source: 'mail', outcome, ms: now() - started, lines, total: read.messages.size, ...(info === undefined ? {} : { mail: info }), ...(delivered && failedPages > 0 ? { partial: { reason: 'pages_failed' as const, failedPages } } : {}) };

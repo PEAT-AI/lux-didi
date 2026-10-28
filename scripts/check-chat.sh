@@ -31,7 +31,8 @@ node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolu
   --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" "${mapfile_compat[@]}"
 test -f "$out/dist/test/chat.test.js"
 # DOMAIN's accepted test imports ../dist explicitly; point it at fresh output.
-mkdir -p "$out/test"
+mkdir -p "$out/test/fixtures"
+cp server/test/fixtures/google-mime-long-produced.json "$out/test/fixtures/"
 cp server/test/domain.test.ts "$out/test/"
 node_test_files --test-reporter=tap --test-timeout=15000 "$out/dist/test/chat.test.js" "$out/dist/test/chat-tools.test.js" "$out/dist/test/prompt.test.js" "$out/dist/test/model.test.js" "$out/test/domain.test.ts" "$out/dist/test/runtime.test.js" | tee "$out/results.tap"
 # Only the affected real HTTP boundary regression; package installation/CLI

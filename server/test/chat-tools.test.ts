@@ -139,7 +139,7 @@ async function fixture(t: TestContext, routeClasses: DataClass[] = ['ordinary', 
 }
 
 test('real chat declares approved reads, journals execution, and discloses only gated evidence', async t => {
-  const f = await fixture(t); const run = await f.turn(f.session());
+  const f = await fixture(t); f.canonicalSource(); const run = await f.turn(f.session());
   t.diagnostic(`real-owner outcome=${run.outcome}; model requests=${f.requests.length}; connector executions=${f.executions()}`);
   assert.ok(f.requests[0]?.declarations?.some(d => d.name === 'search_knowledge'), 'approved read declaration must reach text chat');
   assert.equal(f.executions(), 1);
@@ -182,7 +182,7 @@ const LEAKY = [
 ].join('\n');
 
 test('tool results are redacted before the model, storage and evidence', async t => {
-  const f = await fixture(t);
+  const f = await fixture(t); f.canonicalSource();
   f.leak(LEAKY);
   const run = await f.turn(f.session());
   const rows = f.store.transaction(tx => tx.all('SELECT result_json FROM tool_calls WHERE run_id=?', [run.runId]));
@@ -275,7 +275,7 @@ test('provider/model route change cannot reuse an existing frozen admission', as
 });
 
 test('four bounded tool rounds receive one tools-disabled final synthesis request', async t => {
-  const f = await fixture(t); f.repeatCalls(); const run = await f.turn(f.session());
+  const f = await fixture(t); f.canonicalSource(); f.repeatCalls(); const run = await f.turn(f.session());
   assert.equal(f.requests.length, 5, 'four tool rounds require one final synthesis request');
   assert.equal(f.executions(), 4);
   assert.equal(run.outcome, 'complete');
@@ -294,7 +294,7 @@ test('an early visible answer does not add a synthesis request', async t => {
 });
 
 test('the fenced synthesis still answers, and its function call is never dispatched', async t => {
-  const f = await fixture(t); f.repeatCalls(); f.illegalFinalCall(); const run = await f.turn(f.session());
+  const f = await fixture(t); f.canonicalSource(); f.repeatCalls(); f.illegalFinalCall(); const run = await f.turn(f.session());
   assert.equal(f.requests.length, 6, 'the fence adds exactly one tool-free answer call');
   assert.deepEqual(f.requests[4]!.declarations, []);
   assert.deepEqual(f.requests[5]!.declarations, [], 'the answer call declares no tools');
@@ -315,14 +315,14 @@ test('a fence that reached no answer still commits one from the evidence gathere
   }
 });
 
-test('conversation consent revocation during final synthesis is unavailable and cannot commit its answer', async t => {
+test('conversation consent revocation during final synthesis stays cancelled and cannot commit its answer', async t => {
   const f = await fixture(t); const session = f.session(); f.repeatCalls();
   f.setFinalHook(() => { f.chat.revoke(session, f.context); });
   const run = await f.turn(session);
   assert.equal(f.requests.length, 5);
   assert.deepEqual(f.requests[4]!.declarations, []);
   assert.equal(f.executions(), 4);
-  assert.equal(run.outcome, 'unavailable');
+  assert.equal(run.outcome, 'cancelled');
   assert.equal(run.finalEntryId, null);
 });
 
@@ -350,7 +350,7 @@ test('final synthesis retains the monotonic class of gated tool results', async 
 
 
 test('a result rejected after connector execution cannot disclose its raw sentinel', async t => {
-  const f = await fixture(t); const session = f.session(); const accepted = await f.turn(session);
+  const f = await fixture(t); f.canonicalSource(); const session = f.session(); const accepted = await f.turn(session);
   assert.match(JSON.stringify(accepted.toolEvidence), /ACCEPTED/);
   f.rawRejectedResult(); f.setDispatchHook(() => { f.registry.revoke(f.endpoint.id); });
   const rejected = await f.turn(session);
@@ -505,6 +505,7 @@ test('a slow connector is fenced: the answer lands, the aborted call is not retr
 
 test('the evidence gathered before the fence is answered from even when the answer call fails', async t => {
   const f = await fixture(t, ['ordinary', 'private'], { deadlineMs: 2000 });
+  f.canonicalSource();
   f.repeatCalls(); f.slowCalls(1); f.failAnswerCall();
   const run = await f.turn(f.session());
   assert.equal(run.outcome, 'complete');
@@ -667,4 +668,19 @@ test('Text body integration: canonical preparation is not counted as model recei
   const run = await f.turn(f.session()); assert.equal(run.outcome, 'error'); assert.equal(run.finalText, null); assert.equal(f.executions(), 1); assert.equal(f.requests.length, 5);
   const coverage = f.store.transaction(tx => JSON.parse(String(tx.get('SELECT trace FROM chat_runs WHERE run_id=?', [run.runId])!.trace))).receivedBodyCoverage[0];
   assert.equal(coverage.preparedEnd, 48000); assert.equal(coverage.modelContextEnd, 32000); assert.equal(coverage.remaining, raw.length - 32000); assert.deepEqual(coverage.remainingRange, { offset: 32000, end: raw.length, unit: 'utf16' }); assert.equal(coverage.stage, 'canonical-preparation'); assert.equal(coverage.modelContextStage, 'response-observed');
+});
+
+// Unsupported structured content must not acquire provenance from its text sibling.
+test('unsupported structured envelope withholds diagnostic evidence', async t => {
+  const f = await fixture(t);
+  const run = await f.turn(f.session());
+  assert.equal(run.outcome, 'complete');
+  assert.equal(f.executions(), 1);
+  assert.deepEqual(run.toolEvidence, []);
+  assert.deepEqual(f.chat.get(run.runId, f.context).toolEvidence, []);
+  const rows = f.store.transaction(tx => tx.all('SELECT state,reason FROM tool_dispatches'));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.state, 'unavailable');
+  assert.equal(rows[0]!.reason, 'structured_source_projection_unavailable');
+  assert.doesNotMatch(JSON.stringify(run), /ACCEPTED|unclassified/);
 });

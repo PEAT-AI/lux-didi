@@ -6470,7 +6470,7 @@ test('C-CLAIMS9: "Let me look into that." with no call gets the correction insid
   const { session } = await attached(h, 'claim-look-into');
   const corrections = () => h.f.frames.filter(frame => {
     const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
-    return typeof text === 'string' && text.startsWith('Correction:');
+    return typeof text === 'string' && text.includes('Correction:');
   });
   const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
   h.f.send({ serverContent: { inputTranscription: { text: 'what did the synthetic partner say about the contract', finished: true } } });
@@ -6478,9 +6478,14 @@ test('C-CLAIMS9: "Let me look into that." with no call gets the correction insid
   h.f.send({ serverContent: { outputTranscription: { text: 'Let me look into that.', finished: true }, turnComplete: true } });
   await settlePort();
   assert.equal(corrections().length, 0, 'the announcement is given its beat before anything is said');
-  await advance(3_000);
+  await advance(2_999);
+  assert.equal(corrections().length, 0, 'the deterministic clock has not reached the correction deadline');
+  await advance(1);
   assert.equal(corrections().length, 1, 'the announced lookup with no call behind it is corrected inside the deadline');
   assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /make the call now/i, 'and it offers the call');
+  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /^\[host note, not the owner\] Correction:/u, 'W6 keeps the W3 correction separate from owner speech');
+  await advance(3_000);
+  assert.equal(corrections().length, 1, 'the same announcement is corrected only once');
   h.owner.revoke(session.liveSessionId);
 });
 

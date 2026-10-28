@@ -5712,7 +5712,7 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   const early = capReply(withHistoryPages(buildReply(view.run, 'partial', view.configured, false, view.limit), first.historyPages ?? []), view.limit);
   // #621: the pending note rides after the trim, so the length check runs once more on the reply the voice
   // actually receives.
-  const retainedNote = String(early['note'] ?? '').replace(RESEARCH.completeNote, '').trim();
+  const retainedNote = String(early['note'] ?? '').replace(RESEARCH.completeNote, '').split('; ').filter(clause => !/timed out|still reading/iu.test(clause)).join('; ').trim();
   const wrapped = capReply({
     ...early,
     status: partial || early['canContinue'] === true ? 'partial' : 'complete',

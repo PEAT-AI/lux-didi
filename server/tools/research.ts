@@ -211,6 +211,9 @@ export const RESEARCH = Object.freeze({
   knowledgeReadEntries: 3,
   /** C-DEPTH item 3: the time one stage two read may take, so the operation deadline is never eaten by it. */
   knowledgeReadMs: 1_500,
+  /** C-POLISH10: the ranker's own score below which the leg opens no body on its own. A hit whose title shares
+   *  no content word with the ask is never opened either, whatever it scored. */
+  knowledgeAutopenScore: 0.25,
   /** R5 (RESCAP-R5): the fewest characters of an evidence line worth keeping when it is clipped to fit. */
   clipFloorChars: 60,
   /** ROUTE-1022 (#526): the search reply carries the body, so no id is opened in a second hop. */
@@ -2091,6 +2094,9 @@ export interface RunState {
   callKey?: string;
   /** #1020: the moment the call answered ahead of its readers, so a later cut is logged partial, not failed. */
   answeredAt?: number;
+  /** C-POLISH10: whether the answer it gave left something still to fetch (a cut reply, a reader still reading), so a
+   *  later continue can still add and a finished run that never left anything says it needs none. */
+  answerOpen?: boolean;
   /** #1020: the owner's zone, so a calendar coverage line names the days the owner lives in. */
   timeZone?: string;
   /** MED-1022: the chat date operator this run compiled, dropped or never wrote, for the receipt. */
@@ -2806,7 +2812,7 @@ function sourceListText(sources: readonly SourceKind[]): string {
 
 /** The declaration description names the sources this session actually configured, never a source it lacks. */
 export function researchDescription(sources: readonly SourceKind[]): string {
-  return `One lookup over ${sourceListText(sources)}: at most ${MAX_LOOKUPS} lookups per call, each with a source (${LOOKUP_SOURCE_TEXT}). Use it for evidence beyond the conversation. Call start with the question and a topic of names and nouns, at most ${TOPIC_MAX_WORDS} words: only the topic is searched. Its result carries the researchId; continue and stop copy it. One owner turn grants one research operation.`;
+  return `One lookup over ${sourceListText(sources)}: at most ${MAX_LOOKUPS} lookups per call, each with a source (${LOOKUP_SOURCE_TEXT}). Use it for evidence beyond the conversation. Call start with the question and a topic of names and nouns, at most ${TOPIC_MAX_WORDS} words: only the topic is searched. Its result carries the researchId; continue and stop copy it. A finished run needs no continue: continue only when a result says more is available. One owner turn grants one research operation.`;
 }
 
 export function researchDeclaration(configured: readonly SourceKind[] = RESEARCH_SOURCES): { name: string; description: string; guidance: string; parameters: JsonObject; validate(args: unknown): boolean } {
@@ -5703,7 +5709,11 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   view.run.answeredAt = first.at;
   const researchId = typeof reply['researchId'] === 'string' ? reply['researchId'] : '';
   (deps.logFirstAnswer ?? ((event: ResearchFirstAnswer): void => { hostLogEvent(event); }))({ event: 'research_first_answer', researchId, ms: RESEARCH.firstAnswerMs, settled: [...view.run.sourcesDone], pending, kind: hardStopped ? 'hard_stop' : 'early', elapsedMs: Math.max(0, deps.now() - view.run.startedAt) });
-  return capReply({ ...reply, pending }, view.limit);
+  const answered = capReply({ ...reply, pending }, view.limit);
+  // C-POLISH10: an early answer that still has a reader or a cut to fetch is not finished, so its continue stays
+  // open; one that carried everything says a finished run needs no continue.
+  view.run.answerOpen = answered['canContinue'] === true;
+  return answered;
 }
 
 /** The bounded loop. One call runs it start to finish within the run deadline. */
@@ -5717,6 +5727,9 @@ export async function runResearch(deps: ResearchDeps, call: ResearchCall, signal
     // R7: a call every one of whose sources settled logs its answer too, so each research call has one answer line
     // and it says the answer was full rather than early.
     const run = first.snapshot?.().run;
+    // C-POLISH10: a reply that carried the whole answer and offered no continuation is finished, so a later
+    // continue on this run has nothing to add and says so.
+    if (run !== undefined) run.answerOpen = reply['canContinue'] === true;
     hostLogEvent({ event: 'research_answer', researchId: typeof reply['researchId'] === 'string' ? reply['researchId'] : '', kind: 'full', elapsedMs: Math.max(0, deps.now() - (run?.startedAt ?? deps.now())) });
     return reply;
   }
@@ -5793,6 +5806,22 @@ function continuesRun(run: RunState, call: ResearchCall, question: string): bool
   return question.trim() === '' || sameTopic(question);
 }
 
+/**
+ * C-POLISH10: a run whose answer was delivered and that left nothing to fetch. Its continue is a repeat, so the call
+ * answers with a pointer at the findings already given instead of spending a round to re-render them.
+ */
+function finishedAnswer(run: RunState): boolean {
+  return run.ended && !run.stopped && !run.cancelled && run.answerOpen !== true;
+}
+
+/** The closed reply a continue on a finished run gets: the id, the state and a pointer, never the payload. */
+function alreadyDelivered(researchId: string): JsonObject {
+  return {
+    researchId, status: 'complete', findings: [], alreadyDelivered: true, delivery: 'already_delivered', canContinue: false,
+    note: 'This run already gave its answer and has nothing more to fetch, so continue was not needed. Answer from the findings you already have; start a new research only for a new question.',
+  };
+}
+
 /** The mark the connector and the host leave on a body cut to its window. */
 const KNOWLEDGE_CUT_AT = /cut at \d+ chars/u;
 
@@ -5813,6 +5842,31 @@ export function knowledgeReadIds(text: string, asked: readonly string[], limit: 
   return [...named, ...ids].slice(0, limit);
 }
 
+/** C-POLISH10: a hit's title and tags, the part of its own line before the id, with marker noise removed. */
+function hitTitleWords(line: string): string[] {
+  const head = line.split(/\[id \d+\]/u)[0] ?? line;
+  return contentKeywords(head.replace(/\*\*/gu, ' ').replace(/#\d+\b/gu, ' '), 12);
+}
+
+/**
+ * C-POLISH10: whether the leg may open one hit's body without being asked. An unprompted open costs a round trip,
+ * so it takes a hit the ranker scored at or above the floor AND whose title or tags share a content word with the
+ * ask; the decision is reported as closed fields, a bucket and a reason, never the ask or the title.
+ */
+function autopenVerdict(text: string, ask: string): { open: boolean; bucket: 'high' | 'medium' | 'low' | 'unknown'; reason?: 'low_score' | 'no_overlap' } {
+  const confidence = knowledgeConfidenceOf(text.split('\n'));
+  const scored = Number(confidence?.top ?? '');
+  const bucket = Number.isFinite(scored) && scored > 0
+    ? (scored >= 0.6 ? 'high' : scored >= RESEARCH.knowledgeAutopenScore ? 'medium' : 'low')
+    : (confidence?.confidence === 'high' || confidence?.confidence === 'medium' || confidence?.confidence === 'low' ? confidence.confidence : 'unknown');
+  if (Number.isFinite(scored) && scored > 0 && scored < RESEARCH.knowledgeAutopenScore) return { open: false, bucket, reason: 'low_score' };
+  const heading = text.split('\n').find(line => hitIdOf(line) !== undefined);
+  const asked = new Set(contentKeywords(ask, 12));
+  const titled = heading === undefined ? [] : hitTitleWords(heading);
+  if (!titled.some(word => asked.has(word))) return { open: false, bucket, reason: 'no_overlap' };
+  return { open: true, bucket };
+}
+
 /**
  * C-DEPTH item 3 (W10-R7): the full body replaces the summary of the hit it came from, keyed by that hit's own
  * id, so the knowledge shaping still sees one block of hits and no other source learns a second keyed read.
@@ -5828,6 +5882,11 @@ async function withFullEntries(
   // The fetch is for the hits that matter: the ask named a person or a document, or asked for depth.
   const asked = requestedEntities(question);
   if (asked.length === 0 && budgetFor(question) !== RESEARCH.budgets.depth) return [...results];
+  // C-POLISH10: an open nobody asked for is decided here, on the ranker's score and on the hit's own title, so an
+  // unrelated entry is never opened and injected. The line carries the decision and a bucket, never the words.
+  const verdict = autopenVerdict(searched.text, question);
+  hostLogEvent({ event: 'knowledge_autopen', decision: verdict.open ? 'opened' : 'skipped', bucket: verdict.bucket, reason: verdict.reason ?? 'none' });
+  if (!verdict.open) return [...results];
   const ids = knowledgeReadIds(searched.text, asked);
   if (ids.length === 0) return [...results];
   run.ops += 1;
@@ -5942,6 +6001,9 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
       }
     }
     const priorRun = call.cursor === undefined ? deps.ledger.find(call.researchId ?? '') : undefined;
+    // C-POLISH10: a run that already gave its whole answer has nothing left to fetch, so its continue answers with a
+    // closed pointer instead of the same findings again, the payload it would spend a round to re-render.
+    if (priorRun !== undefined && continuesRun(priorRun, call, question) && finishedAnswer(priorRun)) return alreadyDelivered(priorRun.researchId);
     if (priorRun !== undefined && !continuesRun(priorRun, call, question)) {
       // #654: an id from an older run never carries a new source or a new topic, so that ask starts fresh.
       deps.ledger.cancelActive();

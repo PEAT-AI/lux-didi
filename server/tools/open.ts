@@ -65,6 +65,27 @@ export function nativeActionReceipt(action: NativeAction, code: OpenReceiptCode,
   hostLogEvent({ event: 'native_action', action, code, detail: /^[a-z0-9]{1,16}$/.test(detail) ? detail : 'none' });
 }
 
+/** C-POLISH10: the closed classes an open call resolves to, so a failed open is auditable without its words. */
+export type OpenDestinationClass = 'maps' | 'search' | 'site-root' | 'handle';
+/** C-POLISH10: what the call was asked to open, as a kind, so the audit names the shape and not the words. */
+export type OpenAuditKind = 'maps' | 'search' | 'site' | 'source' | 'home' | 'file' | 'app';
+
+/**
+ * C-POLISH10: the one audit line an open call writes. It counts the target's words and says whether his own words
+ * bound it, which destination class it resolved to, and the closed code it ended in: never the words, the handle or
+ * the URL, because an open target is the owner's speech.
+ */
+export function openAudit(input: { tool: string; kind: OpenAuditKind; target?: string | undefined; ownerWords?: string | undefined; destination: OpenDestinationClass; code: OpenReceiptCode }): void {
+  const target = input.target ?? '';
+  hostLogEvent({
+    event: 'open_audit', tool: input.tool, kind: input.kind,
+    words: target === '' ? 0 : webWords(target).length,
+    bound: target !== '' && input.ownerWords !== undefined && webBinding(target, input.ownerWords) ? 'yes' : 'no',
+    destination: input.destination,
+    refusal: input.code === 'opened' ? 'none' : input.code,
+  });
+}
+
 /** What a home app is called in plain words, so the open result can name it back to the owner. */
 const HOME_TITLES: Record<HomeApp, string> = { gmail: 'Gmail', calendar: 'Google Calendar', mattermost: 'Mattermost' };
 

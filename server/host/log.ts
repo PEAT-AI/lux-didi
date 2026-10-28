@@ -1,6 +1,7 @@
 import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_LIMITS, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { TRELLO_CALL_TOOLS, TRELLO_WRITE_ARGUMENT_FIELDS } from '../tools/trello.js';
+import { OPEN_RECEIPT_CODES, OPEN_TOOL_NAMES } from '../tools/open.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { TURN_FAILED_REASONS } from '../adapters/live-voice/types.js';
@@ -308,6 +309,26 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!LAUNCH_KINDS.includes(value.kind)) return;
     if (typeof value.autoConnects !== 'boolean' || typeof value.windowShown !== 'boolean') return;
     return { event: 'launch_kind', kind: value.kind, autoConnects: value.autoConnects, windowShown: value.windowShown };
+  }
+  if (value.event === 'knowledge_autopen') {
+    // C-POLISH10: whether the knowledge leg opened a hit nobody asked for, as a decision, a score bucket and a
+    // closed reason, never the ask or the entry's title.
+    if (!closedKeys(value, ['bucket', 'decision', 'event', 'reason'])) return;
+    if (value.decision !== 'opened' && value.decision !== 'skipped') return;
+    if (!['high', 'medium', 'low', 'unknown'].includes(String(value.bucket))) return;
+    if (!['low_score', 'no_overlap', 'none'].includes(String(value.reason))) return;
+    return { event: 'knowledge_autopen', decision: value.decision, bucket: value.bucket, reason: value.reason };
+  }
+  if (value.event === 'open_audit') {
+    // C-POLISH10: what one open call was asked to open, as closed classes and counts: no words, no handle, no URL.
+    if (!closedKeys(value, ['bound', 'destination', 'event', 'kind', 'refusal', 'tool', 'words'])) return;
+    if (typeof value.tool !== 'string' || !OPEN_TOOL_NAMES.has(value.tool)) return;
+    if (!['maps', 'search', 'site', 'source', 'home', 'file', 'app'].includes(String(value.kind))) return;
+    if (!isSafeCount(value.words) || Number(value.words) > 64) return;
+    if (value.bound !== 'yes' && value.bound !== 'no') return;
+    if (!['maps', 'search', 'site-root', 'handle'].includes(String(value.destination))) return;
+    if (!isSafeMember(value.refusal, OPEN_RECEIPT_CODES) && value.refusal !== 'none') return;
+    return { event: 'open_audit', tool: value.tool, kind: value.kind, words: value.words, bound: value.bound, destination: value.destination, refusal: value.refusal };
   }
   if (value.event === 'native_action') {
     // Closed receipt: the action, its ack code and a scheme or extension, never the target.

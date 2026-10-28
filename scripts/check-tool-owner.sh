@@ -46,6 +46,7 @@ cp "$root/server/test/lux-note.test.ts" "$out/source/test/"
 # tools-only (lux-note, vault), so the live schema rides along without the live host.
 mkdir -p "$out/source/live"
 cp "$root/server/live/"{schema,config,types}.ts "$out/source/live/"
+cp "$root/server/host/provider-binding.ts" "$out/source/host/"
 # lux-note validates the live profile, whose config door composes the public prompt.
 mkdir -p "$out/source/prompt"
 cp "$root"/server/prompt/*.ts "$out/source/prompt/"

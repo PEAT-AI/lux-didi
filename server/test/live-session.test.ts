@@ -7320,3 +7320,24 @@ test('research admission names its closed reason and admits a paging continue of
   second.delivered('run-2');
   assert.deepEqual(second.admit('continue'), { admitted: false, reason: 'no_turn_since_result' });
 });
+
+test('C-AUDIO10: a long continuation survives a completed preamble and later barge-in in trace', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const session = h.owner.create({ idempotencyKey: 'audio10-long-trace', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'Explain the synthetic plan.', finished: true }));
+  fake.emit(portEvent({ type: 'outputTranscription', text: 'Okay, I am on it.', finished: true }));
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+  const parts = Array.from({ length: 90 }, (_, index) => `Synthetic second ${index}: the plan continues. `);
+  fake.emit(portEvent({ type: 'modelTurnStarted' }));
+  for (const text of parts) fake.emit(portEvent({ type: 'outputTranscription', text, finished: false }));
+  fake.emit(portEvent({ type: 'outputTranscription', text: '', finished: true }));
+  fake.emit(portEvent({ type: 'interrupted' }));
+  await settlePort();
+  const finals = h.store.transaction(tx => tx.all("SELECT text FROM trace_utterance WHERE role='model' AND final=1 ORDER BY rowid"));
+  assert.deepEqual(finals.map(row => row['text']), ['Okay, I am on it.', parts.join('').trim()]);
+  attachment.close();
+});

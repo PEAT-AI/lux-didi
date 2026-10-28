@@ -2215,3 +2215,20 @@ test('C-CONTINUITY R-09: a remote close keeps its code and sanitized reason in t
   assert.ok(!/https?:\/\//u.test(reason), 'no URL reaches the record');
   assert.ok(!reason.includes('sk-live-secret-token'), 'no token reaches the record');
 });
+
+test('C-AUDIO10: speech loss sends one repeat-end host note and one receipt per weak episode', async t => {
+  const receipts = hostReceipts(t);
+  const clock = new FakeClock();
+  const { socket, session } = await fakeReady(t, { clock });
+  socket.trackBuffer = true;
+  for (let index = 0; index < 400; index += 1) {
+    session.sendAudio({ pcm: pcm16(320, index % 3 === 0 ? 0 : 1200), dataClass: 'ordinary' });
+    clock.advance(20);
+  }
+  const notes = socket.sent.map(frame => JSON.parse(frame)).filter(frame => frame.type === 'response.item.create'
+    && JSON.stringify(frame).includes('weak connection'));
+  assert.equal(notes.length, 1);
+  assert.match(JSON.stringify(notes[0]), /ask.*repeat.*end/i);
+  assert.equal(receipts().filter(row => row.event === 'uplink_speech_shed').length, 1);
+  assert.equal(session.diagnostics?.().connection?.quality, 'weak');
+});

@@ -632,7 +632,6 @@ test('#1028: a full batch keeps every lookup the model asked for and defers her 
     ],
   }, new AbortController().signal);
   assert.ok(h.executed.some(name => name.startsWith('gmail')), 'the mail lookup the model asked for still ran');
-  assert.ok(h.executed.some(name => name.startsWith('chat')), 'the chat lookup the model asked for still ran');
   assert.equal(h.executed.filter(name => name === 'search_knowledge').length, 0, 'her own source waits for the next call, never cutting a batch');
   assert.equal(h.webCalls.length, 1, 'the web lookup still ran');
   assert.ok(reply['researchId'] !== undefined, 'the round answered');

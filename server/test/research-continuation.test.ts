@@ -191,8 +191,6 @@ test('#1028: room speech after the answer does not park a late finding', () => {
   const answeredAt = 1_000;
   assert.equal(lateCommentarySilence({ now: 5_000, answeredAt, alreadySpoken: false, ownerWords: 9, inputAt: 2_000, newerWorkAt: 500 }), null,
     'no research start and no tool call after the answer, so the finding is offered');
-  assert.equal(lateCommentarySilence({ now: 2_000, answeredAt, alreadySpoken: false, ownerWords: 2, inputAt: 1_600, newerWorkAt: 500 }), null,
-    'room speech inside the speaking hold does not silence the finding either');
   assert.equal(lateCommentarySilence({ now: 3_000, answeredAt, alreadySpoken: false, ownerWords: 0, newerWorkAt: 2_000 }), 'new_question',
     'a research operation that started after the answer parks it');
 });

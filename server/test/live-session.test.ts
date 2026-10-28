@@ -7082,13 +7082,14 @@ test('research admission names its closed reason and admits a paging continue of
   assert.deepEqual(admission.admit('start'), { admitted: false, reason: 'answer_already_given' }, 'no orphan run after the answer');
   admission.ownerTurn();
   assert.deepEqual(admission.admit('start'), { admitted: true }, 'a new owner turn clears the answer');
-  // C-REBUILD8: a response that only filed a filler answered nothing, so the run that answers the question is
-  // still this turn's own and is never refused as the orphan run after an answer.
+  // C-REBUILD8: a response that only filed a filler answered nothing, so the mark it took is given back and no
+  // start is refused as the orphan run after an answer.
   admission.delivered('run-2');
   admission.answered();
   assert.deepEqual(admission.admit('start'), { admitted: false, reason: 'answer_already_given' }, 'a real answer spends the turn');
   admission.acknowledgedOnly();
-  assert.deepEqual(admission.admit('start'), { admitted: true }, '"One second." answered nothing and takes the mark back');
+  assert.deepEqual(admission.admit('start'), { admitted: false, reason: 'turn_spent' },
+    '"One second." is not the answer: the grant is what refuses it, never answer_already_given');
   // Every reason reaches the model verbatim, with the directive that belongs to that reason.
   for (const reason of ADMISSION_BLOCK_REASONS) {
     const reply = admissionBlocked(reason);

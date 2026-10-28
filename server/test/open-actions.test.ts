@@ -602,6 +602,7 @@ test('C-OPEN11: Gmail accepts message and thread fragments, not arbitrary fragme
 test('C-OPEN11: browser asks cannot be executed as a local file or app', () => {
   assert.deepEqual(openTarget('open_file', { path: '~/deck.pptx' }, 'open the presentation in my browser'), { code: 'not_allowed' });
   assert.deepEqual(openTarget('open_app', { name: 'Chrome' }, 'open economist.com in a new tab'), { code: 'not_allowed' });
+  assert.deepEqual(openTarget('open_file', { path: '~/deck.pptx' }, 'open the presentation with Chrome'), { code: 'not_allowed' });
   assert.deepEqual(openTarget('open_app', { name: 'Economist' }, 'open the Economist'), { code: 'not_allowed' });
   assert.ok('target' in openTarget('open_file', { path: '~/deck.pptx' }, 'open this local file'));
   assert.ok('target' in openTarget('open_app', { name: 'Chrome' }, 'open Chrome'));

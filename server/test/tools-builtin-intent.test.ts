@@ -180,3 +180,22 @@ test('web native timeout has a closed speech-safe receipt, older opens keep fail
     assert.ok(receipt.fixNotForSpeech.length > 0);
   }
 });
+
+test('C-OPEN11: partial owner words wait for finalization and cannot authorize an open', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const runId = randomUUID();
+  noteOwnerPartial(runId, 'open gmail');
+  let settled = false;
+  const pending = webOwnerWords(runId, new AbortController().signal).then(words => { settled = true; return words; });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  t.mock.timers.tick(1500);
+  assert.equal(await pending, '', 'an unfinalized partial never authorizes a native open');
+});
+
+test('C-OPEN11: the shared acquisition merges two finalized owner turns', async () => {
+  const runId = randomUUID();
+  noteOwnerWords(runId, 'please open');
+  noteOwnerWords(runId, 'this email in my browser');
+  assert.equal(await webOwnerWords(runId, new AbortController().signal), 'please open this email in my browser');
+});

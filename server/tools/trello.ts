@@ -1,7 +1,7 @@
 import type { JsonObject } from '../adapters/model/types.js';
 
 /**
- * Naya on the owner's one Trello board, through the official Trello remote MCP server. Didi never hands
+ * Naya on the owner's one Trello board, through the Trello REST gateway. Didi never hands
  * the model a server tool: the model sees two gateway tools with closed schemas, and every argument that
  * names a list, card or label is resolved on the pinned board before anything is dispatched. The owner's
  * write, and no Planner, board, list or member tool, is ever called.
@@ -212,7 +212,7 @@ export function ownerAskedForChange(words: string): boolean { return WRITE_CUE.t
 
 /** The server's own words for one call outcome, closed: never a body, never a token. */
 export type TrelloCallCode = 'not_signed_in' | 'auth_failed' | 'credential_revoked' | 'credential_mismatch' | 'rate_limited' | 'unavailable' | 'unknown' | 'tool_error' | 'protocol_error' | 'not_allowed';
-export type TrelloCallResult = { ok: true; value: unknown } | { ok: false; code: TrelloCallCode };
+export type TrelloCallResult = { ok: true; value: unknown } | { ok: false; code: TrelloCallCode; httpStatus?: number };
 export interface TrelloServerTool { name: string; inputSchema: unknown }
 /** The one door to the server: the advertised tools, and one call. It never retries. */
 export interface TrelloTransport {
@@ -381,7 +381,7 @@ interface Session {
 /** One resolved write: the calls in order, an optional follow-up call built from the first reply, its ledger key and its receipt. */
 interface WritePlan { calls: TrelloPlannedCall[]; followUp?: (previous: unknown) => TrelloPlannedCall | undefined; key: string; card?: TrelloCard; describe: (card: TrelloCard | undefined, snapshot: Snapshot) => JsonObject }
 
-class Refusal extends Error { constructor(readonly code: string, readonly extra: JsonObject = {}) { super(code); } }
+class Refusal extends Error { constructor(readonly code: string, readonly extra: JsonObject = {}, readonly reason: string = code) { super(code); } }
 
 export interface TrelloBoardOptions {
   transport: TrelloTransport;
@@ -460,9 +460,9 @@ export class TrelloBoard {
 
   async #call(planned: TrelloPlannedCall, signal?: AbortSignal): Promise<unknown> {
     const allowed = TRELLO_SERVER_ALLOW[planned.tool];
-    if (!allowed || !allowed.includes(String(planned.args.action))) throw new Refusal('unsupported');
+    if (!allowed || !allowed.includes(String(planned.args.action))) throw new Refusal('unsupported', {}, 'dispatch_not_allowed');
     const result = await this.#transport.call(planned.tool, planned.args, signal);
-    if (!result.ok) throw new Refusal(result.code === 'unknown' || result.code === 'protocol_error' ? 'unavailable' : result.code === 'tool_error' || result.code === 'not_allowed' ? 'unsupported' : result.code);
+    if (!result.ok) throw new Refusal(result.code === 'unknown' || result.code === 'protocol_error' ? 'unavailable' : result.code === 'tool_error' || result.code === 'not_allowed' ? 'unsupported' : result.code, {}, result.code === 'tool_error' ? `server_tool_error:${result.httpStatus !== undefined && Number.isInteger(result.httpStatus) && result.httpStatus >= 400 && result.httpStatus <= 599 ? `http_${result.httpStatus}` : 'unknown'}` : `server_${result.code}`);
     return result.value;
   }
 
@@ -480,7 +480,7 @@ export class TrelloBoard {
     let cursor: string | undefined;
     for (let page = 0; page < TRELLO_MAX_PAGES; page++) {
       const planned = planTrelloCall(index, tool, candidates.map(candidate => cursor === undefined ? candidate : { ...candidate, cursor }));
-      if (!planned) throw new Refusal('unsupported');
+      if (!planned) throw new Refusal('unsupported', {}, index.has(tool) ? 'plan_bad_args' : 'plan_no_tool');
       const parsed = trelloPage(trelloPayload(await this.#call(planned, signal)));
       if (!parsed) throw new Refusal('result_unrecognized');
       items.push(...parsed.items);
@@ -590,7 +590,7 @@ export class TrelloBoard {
       if (/^ari:/.test(ref) && !CARD_ARI.test(ref)) throw new Refusal('outside_scope');
       const index = await this.#index(session, signal);
       const planned = planTrelloCall(index, 'trelloReadCard', [{ action: 'get', cardId: id }]);
-      if (!planned) throw new Refusal('unsupported');
+      if (!planned) throw new Refusal('unsupported', {}, index.has('trelloReadCard') ? 'plan_bad_args' : 'plan_no_tool');
       const card = trelloCardOf(trelloPayload(await this.#call(planned, signal)));
       if (!card) throw new Refusal('result_unrecognized');
       if (!snapshot.lists.some(list => list.id === card.listId)) throw new Refusal('outside_scope');
@@ -611,7 +611,7 @@ export class TrelloBoard {
   #refusal(error: unknown, tool: string, phase: 'admit' | 'settle', normalized?: readonly string[]): JsonObject {
     const code = error instanceof Refusal ? error.code : 'unavailable';
     const extra = error instanceof Refusal ? error.extra : {};
-    this.#emit(tool, phase, 'refused', code, normalized);
+    this.#emit(tool, phase, 'refused', error instanceof Refusal ? error.reason : code, normalized);
     return { ok: false, code, guidance: TRELLO_GUIDANCE[code] ?? TRELLO_GUIDANCE.unavailable!, ...extra };
   }
 
@@ -737,7 +737,7 @@ export class TrelloBoard {
       if (!call || !allowed || !allowed.includes(String(call.args.action))) {
         // Nothing was sent for this step; a step after a sent one leaves the outcome open.
         const code = step === 0 ? 'unsupported' : 'outcome_unknown';
-        this.#emit(tool, 'settle', step === 0 ? 'refused' : 'unknown', code, normalized);
+        this.#emit(tool, 'settle', step === 0 ? 'refused' : 'unknown', 'dispatch_not_allowed', normalized);
         session.snapshot = undefined;
         const receipt: JsonObject = { ok: false, code, guidance: TRELLO_GUIDANCE[code]! };
         if (step > 0) session.ledger.set(plan.key, receipt);
@@ -749,7 +749,7 @@ export class TrelloBoard {
         // A refused first step changed nothing; anything after a sent step is not known.
         const definite = step === 0 && (result.code === 'tool_error' || result.code === 'auth_failed' || result.code === 'credential_revoked' || result.code === 'credential_mismatch' || result.code === 'not_signed_in' || result.code === 'rate_limited' || result.code === 'unavailable' || result.code === 'not_allowed');
         const code = definite ? (result.code === 'auth_failed' || result.code === 'credential_revoked' || result.code === 'credential_mismatch' || result.code === 'not_signed_in' || result.code === 'rate_limited' || result.code === 'unavailable' ? result.code : 'write_failed') : 'outcome_unknown';
-        this.#emit(tool, 'settle', definite ? 'failed' : 'unknown', code, normalized);
+        this.#emit(tool, 'settle', definite ? 'failed' : 'unknown', error instanceof Refusal ? error.reason : code, normalized);
         session.snapshot = undefined;
         const receipt: JsonObject = { ok: false, code, guidance: TRELLO_GUIDANCE[code]! };
         if (!definite) session.ledger.set(plan.key, receipt);
@@ -777,7 +777,7 @@ export class TrelloBoard {
 
   async #plan(session: Session, snapshot: Snapshot, action: TrelloWriteAction, args: Args, signal?: AbortSignal): Promise<WritePlan> {
     const index = await this.#index(session, signal);
-    const need = (planned: TrelloPlannedCall | undefined): TrelloPlannedCall => { if (!planned) throw new Refusal('unsupported'); return planned; };
+    const need = (planned: TrelloPlannedCall | undefined): TrelloPlannedCall => { if (!planned) throw new Refusal('unsupported', {}, 'plan_bad_args'); return planned; };
     const key = (resolved: Args) => JSON.stringify([action, Object.keys(resolved).sort().map(name => [name, resolved[name]])]);
     const listName = (listId: string) => snapshot.lists.find(list => list.id === listId)?.name ?? 'unknown';
     const view = (card: TrelloCard | undefined) => card ? this.#view(session, snapshot, card) : {};
@@ -864,8 +864,8 @@ export class TrelloBoard {
           const item = target?.items.find(entry => foldName(entry.name) === foldName(itemName));
           if (!target || !item) throw new Refusal('item_unknown', { items: (target?.items ?? []).map(entry => entry.name) });
           const planned = need(planTrelloCall(index, 'trelloWriteChecklist', [
-            { action: 'update_item', checklistId: target.id, itemId: item.id, state: args.checked ? 'complete' : 'incomplete' },
-            { action: 'update_item', checklistId: target.id, itemId: item.id, checked: args.checked },
+            { action: 'update_item', cardId: card.id, checklistId: target.id, itemId: item.id, state: args.checked ? 'complete' : 'incomplete' },
+            { action: 'update_item', cardId: card.id, checklistId: target.id, itemId: item.id, checked: args.checked },
             { action: 'update_item', itemId: item.id, state: args.checked ? 'complete' : 'incomplete' },
           ]));
           return { calls: [planned], key: key({ itemId: item.id, checked: args.checked }), describe: after => ({ ...done(after), change: `${args.checked ? 'ticked' : 'unticked'} ${item.name}` }) };
@@ -885,6 +885,6 @@ export class TrelloBoard {
         return { calls: [create], followUp, key: key({ cardId: card.id, item: itemName }), describe: after => ({ ...done(after), change: `added ${itemName} to a new checklist` }) };
       }
     }
-    throw new Refusal('unsupported');
+    throw new Refusal('unsupported', {}, 'plan_no_action');
   }
 }

@@ -49,14 +49,14 @@ const session = (() => { let n = 0; return () => `live-trello-${++n}`; })();
 
 
 
-test('the overview pins the board by name and counts every list through all its pages', async () => {
+test('the overview pins the board by name and counts every list from REST arrays', async () => {
   const result = await board.read(session(), { view: 'overview' });
   assert.equal(result.ok, true, JSON.stringify(result));
   const lists = result.lists as { list: string; cards: number; newest: { name: string }[] }[];
   assert.deepEqual(lists.map(list => [list.list, list.cards]), [['Sprint', 3], ['Short Term Backlog', 3], ['Long Term Backlog', 2], ['Ideas', 2], ['Waiting for X', 1], ['Done', 2]]);
   assert.equal(lists[3]?.newest[0]?.name, 'Quick note from the phone', 'newest first');
   assert.ok(!JSON.stringify(result).includes('Foreign card'), 'the other board never shows');
-  assert.ok(fake.calls.some(call => call.tool === 'trelloReadCard' && call.args.cursor === '2'), 'paging was followed');
+  assert.ok(fake.calls.every(call => call.args.cursor === undefined), 'REST requests never invent a generic cursor parameter');
 });
 
 test('a list page carries the true total and the next offset', async () => {
@@ -690,4 +690,22 @@ test('C-TRELLO9: planner refusals distinguish absent tools from bad argument sha
     assert.equal(events.at(-1)?.reason, reason);
     assert.equal(safeEvent(events.at(-1))?.reason, reason);
   }
+});
+
+test('C-TRELLO9: gateway pagination is retained for transports advertising cursor pages', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const service = new TrelloBoardService({ signedIn: () => true, boardName: SYNTHETIC_BOARD, transport: {
+    tools: async () => ({ ok: true, value: trelloSchemas() }),
+    call: async (tool, args) => {
+      calls.push({ tool, ...args });
+      if (tool === 'trelloReadBoard') return { ok: true, value: [{ id: 'board', name: SYNTHETIC_BOARD, closed: false }] };
+      if (tool === 'trelloReadList') return { ok: true, value: [{ id: 'list', name: 'Ideas', boardId: 'board', closed: false }] };
+      if (args.cursor === undefined) return { ok: true, value: { cards: [{ id: objectId(NOW), name: 'First', listId: 'list', boardId: 'board' }], pageInfo: { hasNextPage: true, endCursor: 'next' } } };
+      return { ok: true, value: { cards: [{ id: objectId(NOW - 1), name: 'Second', listId: 'list', boardId: 'board' }], pageInfo: { hasNextPage: false } } };
+    },
+  } });
+  const result = await service.read('paged', { view: 'list', list: 'Ideas' });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.total, 2);
+  assert.ok(calls.some(call => call.cursor === 'next'));
 });

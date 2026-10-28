@@ -676,3 +676,12 @@ test('C-CONTINUITY R-10: dead-air and heard-silence lines carry no static cause'
   assert.equal(severityOf('live_recovery').cause, undefined);
   assert.deepEqual(safeEvent({ event: 'live_heard_silence', ms: 1_200, silence: 'provider' }), { event: 'live_heard_silence', ms: 1_200, silence: 'provider' });
 });
+
+test('C-START10: host_ready_ms is an info receipt with a closed elapsed-time field', () => {
+  const receipt = { event: 'host_ready_ms', ms: 1_375 };
+  assert.deepEqual(safeEvent(receipt), receipt);
+  assert.equal(severityOf('host_ready_ms').level, 'info');
+  assert.equal(safeEvent({ ...receipt, ms: -1 }), undefined);
+  assert.equal(safeEvent({ ...receipt, ms: 1.5 }), undefined);
+  assert.equal(safeEvent({ ...receipt, owner: 'synthetic' }), undefined);
+});

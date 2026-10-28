@@ -374,7 +374,7 @@ test('the public character, voice surface and tool conduct are the authored verb
   assert.equal(sha(NAYA_VOICE_SURFACE), '10ef8ccc225ac0df8e24c45f315148300fee034c715bfbe1f4ccdaa2b1f6db77');
   // C-OPENWEB8: the open paragraph names open_web for a map, a site or a search, so this block is re-pinned.
   // C-RESEARCH8: the two-ask voice rule and the re-worded evidence procedure land in the same blocks, so the train re-pins all three against the merged sources.
-  assert.equal(sha(NAYA_VOICE_TOOLS), '2775aceab4e64cd10cde5994c0c6ad059a1db04b96c307396eb605bf269d87d7');
+  assert.equal(sha(NAYA_VOICE_TOOLS), '1d866104e8b3a62a3fa8c194dd215ae9b0d750f938c36fa821086c59132d46cc');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'a80497ba29a5d2c8ef5183486956f6707d5fca5663282a6cb86480d1d1eb093b');
   assert.equal(sha(NAYA_TOOLS), 'f04a7e394729613864aeb352ad81499c5f7512e3a59a829a0122715de8779fc3');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);

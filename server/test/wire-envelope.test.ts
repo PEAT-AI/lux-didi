@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { pcm, ready } from './live-voice-fixture.js';
+import { hostNote } from '../live/index.js';
 
 /**
  * The wire envelope: what the host hands the provider adapter, frame by frame. Release 8 sent host notes
@@ -51,6 +52,16 @@ test('a host note reaches the wire marked, and client audio is the only unmarked
   assert.equal(f.frames.length, 3, 'the adapter adds no user-role frame of its own');
 });
 
+test('a failed Lux save is a marked host note on the provider wire', async t => {
+  const { f, session } = await ready(t);
+  const code = 'payload_changed';
+  const text = hostNote(`The note was not saved (${code}). Say plainly that it was not saved.`);
+  session.sendText({ text });
+  await f.frame(2);
+  assert.deepEqual(userItems(f.frames).filter(item => item.kind === 'text').map(item => item.text), [text]);
+  assert.deepEqual(unmarkedUserText(userItems(f.frames)), []);
+});
+
 test('the envelope check has teeth: an unmarked host line is caught', () => {
   const frames = [{ realtimeInput: { audio: { data: 'AAAA' } } }, { realtimeInput: { text: 'the lookup finished' } }, { realtimeInput: { text: `${HOST_NOTE_MARK}done` } }];
   const caught = unmarkedUserText(userItems(frames));
@@ -63,6 +74,10 @@ test('the envelope check has teeth: an unmarked host line is caught', () => {
  * test that covers it. `host` rows are host-originated guidance, `owner` rows are the owner's own words.
  */
 const EMITTERS: readonly { expression: string; count: number; channel: 'host' | 'owner'; covers: readonly { file: string; title: string }[] }[] = [
+  {
+    expression: 'hostNote(`The note was not saved (${code', count: 1, channel: 'host',
+    covers: [{ file: 'wire-envelope.test.ts', title: 'a failed Lux save is a marked host note on the provider wire' }],
+  },
   {
     expression: 'hostNote(correction.text)', count: 1, channel: 'host',
     covers: [{ file: 'live-session.test.ts', title: 'OPEN2-5: an open claim the turn did not make gets one correction, never two' }],

@@ -509,19 +509,23 @@ const CLAIM_WITHOUT_CALL_MS = 3_000;
 const LOOKUP_VERBS = 'look|check|find|search|dig|try|take a look|pull (?:up|(?:that|this|it) up)';
 const LOOKUP_CLAIM = new RegExp([
   `\\blet me (?:${LOOKUP_VERBS}|see)\\b`,
-  `\\bi(?:'ll| will) (?:${LOOKUP_VERBS})\\b`,
-  `\\bi(?:'ll| will) see (?:if|what|whether)\\b`,
-  `\\bi(?:'m| am) going to (?:${LOOKUP_VERBS}|see (?:if|what|whether))\\b`,
-  `\\bi(?:'m| am) (?:looking|checking|finding|searching|digging|trying to (?:look|check|find|search|dig)|pulling (?:up|(?:that|this|it) up))\\b`,
+  `\\bi(?:'?ll| will) (?:${LOOKUP_VERBS})\\b`,
+  `\\bi(?:'?ll| will) see (?:if|what|whether)\\b`,
+  `\\bi(?:'?m| am) going to (?:${LOOKUP_VERBS}|see (?:if|what|whether))\\b`,
+  `\\bi(?:'?m| am) (?:looking|checking|finding|searching|digging|trying to (?:look|check|find|search|dig)|pulling (?:up|(?:that|this|it) up))\\b`,
   `\\bgive me (?:a|one) (?:moment|second|minute) to (?:${LOOKUP_VERBS})\\b`,
   '\\bchecking (?:that|this|it)\\b',
   '\\bworking on (?:that|it)\\b',
   '\\blooking (?:that|this|it) up\\b',
 ].join('|'), 'iu');
 
-/** Whether the response announced a lookup of her own, so the host can hold it to the call it promised. */
+/**
+ * Whether the response announced a lookup of her own, so the host can hold it to the call it promised. The
+ * transcript may omit the apostrophe or carry the typographic one, and the base detector tolerated both, so
+ * the text is folded to the straight apostrophe before it is read.
+ */
 export function announcesLookup(text: string): boolean {
-  return LOOKUP_CLAIM.test(text);
+  return LOOKUP_CLAIM.test(text.replace(/[\u2018\u2019\u02bc]/gu, "'"));
 }
 /**
  * C-TURN8: every tool that reads or writes the owner's own data (Trello, research, mail, calendar, chat,

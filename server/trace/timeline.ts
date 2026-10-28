@@ -764,8 +764,9 @@ function auditCallRow(call: CallView, lines: readonly LogLine[]): AuditCallRow {
     executionMs: call.executionMs ?? null,
     totalMs: call.ms ?? null,
     outcome: call.outcome,
-    // A refusal without a code is reported as missing, never invented: the outcome itself is the store's.
-    refusalCode: call.outcome === 'refused' ? code ?? MISSING : code,
+    // A refusal the outcome line named no code for stays null, and the table prints missing: the code is never
+    // invented, and the outcome itself is still the store's own.
+    refusalCode: code,
   };
 }
 
@@ -871,7 +872,7 @@ export function renderCallAudit(audit: CallAudit): string {
   out.push('');
   out.push('calls turn call key tool execution total outcome refusal');
   for (const call of audit.calls) {
-    out.push(`${call.turnId ?? '-'} ${call.callKey} ${call.name} ${auditMs(call.executionMs)} ${auditMs(call.totalMs)} ${call.outcome} ${call.refusalCode ?? '-'}`);
+    out.push(`${call.turnId ?? '-'} ${call.callKey} ${call.name} ${auditMs(call.executionMs)} ${auditMs(call.totalMs)} ${call.outcome} ${call.refusalCode ?? MISSING}`);
   }
   out.push('');
   out.push('turns turn ownerFinal providerFirstAudio nativeFirstAudible finalToProvider finalToAudible missing');

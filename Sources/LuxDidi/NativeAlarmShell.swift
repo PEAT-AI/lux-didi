@@ -102,9 +102,9 @@ import UserNotifications
         }
         if frame.type == "alarm_due", let alarm = frame.alarm, let deadline = alarm.ringDeadlineUtc,
            deadline > Int(Date().timeIntervalSince1970 * 1000) {
-            ring.startAlarm(deadlineMs: deadline)
+            let started = ring.startAlarm(deadlineMs: deadline)
             if attempted.insert(alarm.id).inserted {
-                post("ring-started", body: ["id": alarm.id])
+                if started { post("ring-started", body: ["id": alarm.id]) }
                 onDue(alarm.id)
             }
         }

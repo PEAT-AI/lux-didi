@@ -4810,6 +4810,13 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         });
       });
       attempt(() => this.#observeState(handle, 'ended', 'settle'));
+      if (this.#tools && handle.request.system.text.startsWith(ALARM_MODE_MARKER)
+        && ['failed', 'deadline', 'not_started', 'outcome_unknown'].includes(outcome.state)) {
+        attempt(() => {
+          const alarm = this.#store.transaction(tx => tx.get("SELECT a.id,a.fire_at_utc FROM alarms a JOIN alarm_session_attempts s ON s.alarm_id=a.id WHERE s.live_session_id=? AND a.state='ringing'", [handle.liveSessionId]));
+          if (alarm) hostLogEvent({ event: 'alarm_degraded', alarmId: String(alarm.id), scheduledMs: Number(alarm.fire_at_utc), actualMs: this.#now(), reason: 'provider_unavailable' });
+        });
+      }
       attempt(() => this.#onSessionTerminal?.(handle.liveSessionId));
       if (journalSequence !== undefined) attempt(() => this.#pushChunk(handle, { kind: 'marker', marker: { kind: 'terminal', sequence: null, journalSequence: journalSequence!, text: null, finished: null, value: null } }));
       attempt(() => handle.consumer.close());

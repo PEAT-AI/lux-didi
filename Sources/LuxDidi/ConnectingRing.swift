@@ -398,14 +398,16 @@ final class ConnectingRing {
         self.after = after
     }
 
-    func startAlarm(deadlineMs: Int) {
+    @discardableResult func startAlarm(deadlineMs: Int) -> Bool {
         let deadline = min(deadlineMs, now() + 600_000)
-        guard deadline > now() else { return }
-        if let current = alarmDeadline { alarmDeadline = max(current, deadline); return }
+        guard deadline > now() else { return false }
+        if let current = alarmDeadline { alarmDeadline = max(current, deadline); return outputRunning }
         alarmDeadline = deadline
         playToken &+= 1
         ringOutput().stopOutput()
+        outputRunning = false
         alarmPulse(token: playToken)
+        return outputRunning
     }
 
     private func alarmPulse(token: UInt64) {

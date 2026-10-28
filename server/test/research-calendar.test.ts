@@ -702,3 +702,13 @@ test('C-CAL8: under cap pressure the calendar drops the events already past, kee
   assert.match(text, /plus \d+ earlier events? left out/, `the reply names what it left out by count: ${text.slice(0, 300)}`);
   assert.match(text, /calendar: \d+ of 10 shown/u, `the calendar count is still spoken: ${text.slice(0, 200)}`);
 });
+
+test('C-CAL8: a schedule ask speaks the calendar first, and the knowledge about it follows', async () => {
+  const now = Date.parse('2026-10-19T13:43:00Z');
+  const h = dayFixture(dayHours.map(hour => syntheticHour(hour)), { now, configured: ['knowledge', 'calendar'] });
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my schedule today' }, signal());
+  const findings = reply['findings'] as Record<string, unknown>[];
+  assert.ok(findings.length > 0, 'the ask answers with findings');
+  assert.equal(findings[0]?.['source'], 'calendar', `the calendar leads a schedule ask: ${JSON.stringify(findings.map(finding => finding['source']))}`);
+  assert.match(String(findings[0]?.['text']), /Synthetic 14\b/, 'and its first finding carries the meetings still ahead');
+});

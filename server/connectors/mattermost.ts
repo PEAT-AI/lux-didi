@@ -117,7 +117,7 @@ export interface ChatReadInput {
   offset?: number; limit?: number;
 }
 /** One post a chat read returns, with its attachment text folded after the message. */
-export interface ChatReadPost { id: string; channel: string; author: string; time: string; text: string; permalink?: string; rootId?: string }
+export interface ChatReadPost { id: string; channel: string; author: string; time: string; text: string; permalink?: string; rootId?: string; role?: 'you' | 'they' }
 /** One section of a person overview: what kind, its name, and its counts in words. */
 export interface ChatOverviewSection { kind: 'dm' | 'group' | 'channel'; name: string; counts: string; last?: string }
 /**
@@ -405,16 +405,34 @@ function channelLabel(channel: MattermostChannel): string {
   return channel.displayName ?? channel.name ?? channel.id ?? '';
 }
 
+/**
+ * R8-W9: the owner's own handle never rides a chat search. The audit saw the owner's name reach the query,
+ * where it matches every post he ever wrote; the whole word and its local part (before any @) are dropped,
+ * and the rest of the words stay as the owner said them.
+ */
+function withoutOwner(text: string, owner: string): string {
+  const handle = owner.trim().toLowerCase().replace(/^@/u, '');
+  if (handle === '') return text;
+  const local = handle.includes('@') ? handle.slice(0, handle.indexOf('@')) : handle;
+  const words = [...new Set([handle, local])].filter(word => word !== '').map(word => word.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'));
+  if (words.length === 0) return text;
+  const strip = new RegExp(String.raw`(?<![\p{L}\p{N}])@?(?:${words.join('|')})(?![\p{L}\p{N}])`, 'giu');
+  return text.replace(strip, ' ').replace(/\s+/gu, ' ').trim();
+}
+
 /** One child post as a chat read carries it, attachment text after the message. */
-function chatPost(raw: Record<string, unknown>): ChatReadPost {
+function chatPost(raw: Record<string, unknown>, owner?: string): ChatReadPost {
   const permalink = firstText(raw, ['url', 'permalink']);
   const rootId = firstText(raw, ['rootId', 'root_id']);
+  const author = firstText(raw, ['username', 'author']);
   return {
     id: firstText(raw, ['id', 'post_id']),
     channel: firstText(raw, ['channel', 'channel_name']),
-    author: firstText(raw, ['username', 'author']),
+    author,
     time: firstText(raw, ['timestamp', 'created_at', 'time']),
     text: postText(raw),
+    // R8-W9: the voice says whose words these are, so "you" and "they" never need a handle to tell apart.
+    ...(owner === undefined || owner === '' ? {} : { role: author === owner ? 'you' as const : 'they' as const }),
     ...(permalink !== '' ? { permalink } : {}),
     ...(rootId !== '' ? { rootId } : {}),
   };
@@ -437,7 +455,8 @@ function overviewOf(data: unknown, owner: string, span: string): Pick<Mattermost
   const take = (posts: unknown, where: string): void => {
     for (const post of Array.isArray(posts) ? posts.filter(isRecord) : []) {
       const permalink = firstText(post, ['permalink', 'url']);
-      anchors.push({ id: firstText(post, ['id']), channel: where, author: firstText(post, ['author', 'username']), time: firstText(post, ['created_at', 'timestamp']), text: postText(post), ...(permalink !== '' ? { permalink } : {}) });
+      const author = firstText(post, ['author', 'username']);
+      anchors.push({ id: firstText(post, ['id']), channel: where, author, time: firstText(post, ['created_at', 'timestamp']), text: postText(post), ...(owner !== '' ? { role: author === owner ? 'you' as const : 'they' as const } : {}), ...(permalink !== '' ? { permalink } : {}) });
     }
   };
   const dm = isRecord(record['dm']) ? record['dm'] : undefined;
@@ -789,7 +808,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
   }
 
   /** C-CHAT: one read of a chat read, with the child's own count, never the page length. */
-  async function postsRead(filters: Record<string, unknown>, limit: number, offset: number, capture: (evidence: MattermostEvidence) => void, signal?: AbortSignal): Promise<{ ok: true; total?: number; posts: ChatReadPost[] } | { ok: false; result: MattermostResult }> {
+  async function postsRead(owner: string, filters: Record<string, unknown>, limit: number, offset: number, capture: (evidence: MattermostEvidence) => void, signal?: AbortSignal): Promise<{ ok: true; total?: number; posts: ChatReadPost[] } | { ok: false; result: MattermostResult }> {
     const declared = declaredSearchArguments();
     const args: Record<string, unknown> = { query: typeof filters['query'] === 'string' ? filters['query'] : '', ...keywordMode(), limit };
     if (declared.includes('sort')) args['sort'] = 'newest';
@@ -807,13 +826,25 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     if (!result.ok) return result;
     capture(result.evidence);
     const data = contentJson(result.evidence.decodedResult);
-    const posts = (postsIn(result.evidence.decodedResult) ?? []).map(chatPost);
+    const posts = (postsIn(result.evidence.decodedResult) ?? []).map(post => chatPost(post, owner));
     const total = isRecord(data) && Number.isSafeInteger(data['total']) ? data['total'] as number : undefined;
     return { ok: true, ...(total === undefined ? {} : { total }), posts };
   }
 
   type PersonOutcome = { kind: 'person'; username: string; display: string; dmChannelId?: string; missing?: string }
     | { kind: 'clarify'; text: string; missing?: string } | { kind: 'not-found'; text: string; missing?: string } | { kind: 'failed'; result: MattermostResult };
+
+  /**
+   * C-CHAT R8-W9: the direct conversation that already exists with one handle, read from the channel
+   * index. Nothing is created, and a child that grants no channel list says so instead of implying none.
+   */
+  async function dmChannelOf(username: string, signal?: AbortSignal): Promise<{ channel?: string; missing?: string }> {
+    const channels = await loadChannels(signal);
+    if (!Array.isArray(channels)) return { missing: 'finding your direct messages needs the channel list this child does not grant' };
+    const wanted = username.trim().replace(/^@/u, '').toLowerCase();
+    const found = channels.find(channel => channel.type === 'D' && (channel.displayName ?? '').toLowerCase() === wanted);
+    return found?.id === undefined ? {} : { channel: found.id };
+  }
 
   /**
    * C-CHAT: a spoken name to one account, strictly. The child's resolve_person matches names; an ambiguous
@@ -825,9 +856,11 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     // such as "Sandy" binds to the colleague itself and the child's prefix match never guesses.
     const known = currentBinding(name);
     if (known.kind === 'resolved') {
-      return known.person.mattermost.length > 0
-        ? { kind: 'person', username: known.person.mattermost, display: known.person.name }
-        : { kind: 'not-found', text: `${known.person.name} has no team chat handle in the owner's people list.` };
+      if (known.person.mattermost.length === 0) return { kind: 'not-found', text: `${known.person.name} has no team chat handle in the owner's people list.` };
+      // R8-W9: the roster says who the person is, never which conversation, so the existing DM channel is
+      // looked up here; without it the read answered "no direct messages" while the conversation held posts.
+      const dm = await dmChannelOf(known.person.mattermost, signal);
+      return { kind: 'person', username: known.person.mattermost, display: known.person.name, ...(dm.channel === undefined ? {} : { dmChannelId: dm.channel }), ...(dm.missing === undefined ? {} : { missing: dm.missing }) };
     }
     if (known.kind === 'ambiguous') return { kind: 'clarify', text: `Which ${name} do you mean: ${ambiguityQuestion(name, known.people)}` };
     if (granted('mattermost_resolve_person')) {
@@ -870,11 +903,14 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     if (query === undefined) return { state: 'refused', reason: 'invalid-query' };
     const who = await ownerIdentity(signal);
     if (!who.ok) return who.result;
+    // R8-W9: the owner's own name and handle are never a search term; "what Ada and robert decided" asks
+    // about Ada, and searching the handle finds every post the owner ever wrote.
+    const asked = withoutOwner(query, who.owner.username);
     const children: SourceDispatchRef[] = who.evidence[SOURCE_DISPATCH] ? [who.evidence[SOURCE_DISPATCH]!] : [];
     const capture = (evidence: MattermostEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
     const window = { from: input.from_date ?? new Date(Date.now() - MATTERMOST_CHAT.days * DAY_MS).toISOString().slice(0, 10), ...(input.to_date === undefined ? {} : { to: input.to_date }) };
     const span = window.to === undefined ? ` since ${window.from}` : window.to === window.from ? ` on ${window.from}` : ` from ${window.from} to ${window.to}`;
-    const about = query === '' ? '' : `, about ${query}`;
+    const about = asked === '' ? '' : `, about ${asked}`;
     const dates = { from_date: window.from, ...(window.to === undefined ? {} : { to_date: window.to }) };
     const base = { intent: input.intent, window, returned: 0, offset, posts: [] as ChatReadPost[] };
     const finish = (out: MattermostChatRead): MattermostResult => {
@@ -921,11 +957,11 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       const label = person.display !== person.username ? `${person.display} (@${person.username})` : `@${person.username}`;
       const theirs = input.intent === 'person' && input.sides !== 'both';
       if (person.dmChannelId === undefined) {
-        const anywhere = await postsRead({ query, author: person.username, ...dates }, limit, offset, capture, signal);
+        const anywhere = await postsRead(who.owner.username, { query: asked, author: person.username, ...dates }, limit, offset, capture, signal);
         if (!anywhere.ok) return anywhere.result;
         return page(`posts by ${label} in every channel, because you have no direct messages with them,`, anywhere, missingOf(person.missing, overviewMissing).missing);
       }
-      const direct = await postsRead({ query, channel: person.dmChannelId, ...(theirs ? { author: person.username } : {}), ...dates }, limit, offset, capture, signal);
+      const direct = await postsRead(who.owner.username, { query: asked, channel: person.dmChannelId, ...(theirs ? { author: person.username } : {}), ...dates }, limit, offset, capture, signal);
       if (!direct.ok) return direct.result;
       return page(theirs ? `direct messages from ${label}` : `your direct messages with ${label}`, direct, missingOf(person.missing, overviewMissing).missing);
     }
@@ -973,7 +1009,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
         const named = (strong.length > 1 ? strong : rows).slice(0, MATTERMOST_CHAT.candidates).map(channelLabel);
         return finish({ ...base, read: `a channel called ${spoken}`, clarify: `Which channel do you mean: ${spokenList(named)}?` });
       }
-      const posts = await postsRead({ query, channel: target.id, ...dates }, limit, offset, capture, signal);
+      const posts = await postsRead(who.owner.username, { query: asked, channel: target.id, ...dates }, limit, offset, capture, signal);
       if (!posts.ok) return posts.result;
       return page(`the channel ${channelLabel(target)}`, posts);
     }
@@ -1014,7 +1050,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (withAll.length === 0) return finish({ ...base, read: `a group chat with ${spokenList(spokenPeople as string[], 'and')}`, notFound: `I found no group chat with ${spokenList(spokenPeople as string[], 'and')}.`, ...missingOf(...notes) });
       return finish({ ...base, read: `a group chat with ${spokenList(spokenPeople as string[], 'and')}`, clarify: `Which group chat do you mean: the one with ${spokenList(withAll.slice(0, MATTERMOST_CHAT.candidates).map(groupLabel))}?`, ...missingOf(...notes) });
     }
-    const posts = await postsRead({ query, channel: target.id, ...dates }, limit, offset, capture, signal);
+    const posts = await postsRead(who.owner.username, { query: asked, channel: target.id, ...dates }, limit, offset, capture, signal);
     if (!posts.ok) return posts.result;
     return page(`the group chat with ${groupLabel(target)}`, posts, missingOf(...notes).missing);
   }

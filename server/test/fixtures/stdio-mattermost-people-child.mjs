@@ -106,6 +106,22 @@ add('chanAiAiAi000000000000000a', 'robert', now - 7 * HOUR, 'nice, ship the note
 add('chanEngSecurity0000000000a', 'ravi.dune', now - 6 * HOUR, 'rotate the keys this week');
 add('chanD02000000000000000000a', 'lena.berg', now - 45 * DAY, 'old hello from lena');
 
+// R8-W9: an opt-in synthetic colleague whose direct conversation holds twelve posts, so the audit's
+// "what did I discuss with Alex lately" ask can be replayed end to end. Off by default: every other test
+// in this suite reads the same fixture without these posts.
+const alexDm = 'chanDAlex0000000000000000a';
+if (process.env.DIDI_FAKE_MATTERMOST_ALEX === 'yes') {
+  const alex = { id: 'user0alex000000000000000a', username: 'alex.ray', first_name: 'Alex', last_name: 'Ray', nickname: '' };
+  USERS.push(alex);
+  userByName.set(alex.username, alex);
+  const direct = dm(alexDm, alex.username, now - 30 * 60 * 1000);
+  CHANNELS.push(direct);
+  channelById.set(direct.id, direct);
+  for (let index = 1; index <= 12; index += 1) {
+    add(direct.id, index % 2 === 0 ? OWNER.username : alex.username, now - index * HOUR, `alex note ${index} about the pilot plan`);
+  }
+}
+
 const channelLabel = (channel) => channel.display_name || channel.name;
 const serialize = (post) => ({
   id: post.id, username: post.author, channel: channelLabel(channelById.get(post.channelId)), timestamp: iso(post.at),

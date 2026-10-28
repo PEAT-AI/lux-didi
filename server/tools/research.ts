@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import type { ToolResultBinding, JsonObject } from '../adapters/model/types.js';
 import type { CalendarEvent as RetainedCalendarEvent, CalendarScope, MailMessage } from './live-shape.js';
 import { INTERNAL, calendarIds, type IntentSubCall, type IntentSubResult } from './intent.js';
-import { chatAsk, chatIntent, chatSubs } from './chat-intent.js';
+import { CHAT_PRODUCT_SOURCE, chatAsk, chatIntent, chatSubs } from './chat-intent.js';
 import { bindPerson, peopleSnapshot } from '../people/index.js';
 import { MAIL_QUERY_OPERATORS } from '../contracts/mail-operators.js';
 import { hostLogEvent, liveToolStep, stepSubject, type LiveToolStepBody } from './host-events.js';
@@ -974,7 +974,7 @@ const ROUTE_WORDS: Partial<Record<SourceKind, RegExp>> = {
   // The lookbehind keeps a Gmail operator's own value ("in:inbox") out of the strip.
   knowledge: /(?<!:)\blux\b(?!\s+didi\b)|\bknowledge base\b|\bknowledge\b|\b(?:the )?vault\b|\b(?:google drive|the drive|drive files?)\b/giu,
   mail: /(?<!:)\b(?:the )?(?:e-?mails?|gmail|inbox(?:es)?|mails?)\b/giu,
-  chat: /(?<!:)\bteam chats?\b|\bmattermost\b/giu,
+  chat: new RegExp(String.raw`(?<!:)\bteam chats?\b|\bmattermost\b|${CHAT_PRODUCT_SOURCE}`, 'giu'),
   calendar: /(?<!:)\b(?:the )?calendar\b/giu,
   web: /(?<!:)\bthe web\b/giu,
   mongoose: /(?<!:)\bmongoose\b/giu,
@@ -3355,8 +3355,16 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
       let heading: string | undefined;
       let body: string[] = [];
       // C-CHAT (AUD-002): the archive's own match count, so the header says "8 of 71", never "8 of 8".
-      const matched = result.name.startsWith('mattermost') ? Number(/^matched: (\d+)$/mu.exec(result.text)?.[1] ?? 0) : 0;
+      const chat = result.name.startsWith('mattermost');
+      // R8-W9: only the composed chat read carries overview sections; a search post and an attention item
+      // are items of their own and keep one line each.
+      const foldSections = result.name === INTERNAL.chatRead;
+      const matched = chat ? Number(/^matched: (\d+)$/mu.exec(result.text)?.[1] ?? 0) : 0;
       const before = total;
+      // R8-W9: a chat read's overview sections are counts of nine conversations, and nine header lines
+      // spent the whole voice cap on counts while the posts they counted never reached it. They become
+      // one summary line after the posts.
+      const sections: string[] = [];
       const flush = (): void => {
         if (heading === undefined) { body = []; return; }
         lines.push(clip(`${heading.replace(/\s*\[post [^\]]+\]/g, '').trim()}${body.length ? ` | ${body.join(' ')}` : ''}`, cap));
@@ -3365,10 +3373,21 @@ export function shapeBlock(kind: CandidateKind, results: readonly IntentSubResul
       for (const line of raw) {
         const bold = /^\*\*(.+?)\*\*$/.exec(line);
         if (bold) { flush(); heading = bold[1]!; continue; }
-        if (line.startsWith('- ')) { flush(); lines.push(clip(line.slice(2).replace(/\s*\[post [^\]]+\]/g, '').trim(), cap)); total += 1; continue; }
+        if (line.startsWith('- ')) {
+          flush();
+          const item = clip(line.slice(2).replace(/\s*\[post [^\]]+\]/g, '').trim(), cap);
+          if (!foldSections) { lines.push(item); total += 1; }
+          else if (item !== '') sections.push(item);
+          continue;
+        }
         if (heading !== undefined) body.push(line);
       }
       flush();
+      if (sections.length > 0) {
+        const shownPosts = total - before;
+        lines.push(clip(`showing ${shownPosts} of ${Math.max(matched, shownPosts)} posts; ${sections.join('; ')}`, cap));
+        total += 1;
+      }
       total = Math.max(total, before + matched);
     }
   }

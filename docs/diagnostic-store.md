@@ -16,6 +16,10 @@ node scripts/didi-timeline "LIVE_SESSION_OR_CHAT_RUN_ID" --data-dir /absolute/ho
 
 For explicit local owner inspection only, add `--content`. Content reads are gated by current source/class/revision and diagnostic-context authority. Unavailable content must stay unavailable rather than falling back to an older preview. The gate is implemented by `diagnosticContentAccess` in `server/trace/content.ts`; `DiagnosticContext` in `server/trace/diagnostic-context.ts` records the accepted disclosure context. An unfinished or unsealed run is not permission to guess its provenance.
 
+`didi-timeline call <session|latest> --audit` answers "what happened in that call" in one command: session coverage and clock health, one row per tool call with its `callKey`, `executionMs`, `totalMs`, outcome and refusal code, one row per owner turn with the owner-final to first-audio and to first-audible waits, then the aggregates (slowest calls, refusals by code, turns over four seconds, announced claims with no call, dead air). `didi-timeline sessions --since <date> --audit-summary` prints the same aggregates across sessions. Both read metadata only; `--json` carries a schema `version`.
+
+The join is the envelope, not a timestamp guess: `trace_call.call_key` is the same key the call's admit, dispatch and outcome lines carry, and every host log line inside a turn carries that turn's `turnId`. A measurement the store or the log does not have prints as `missing` with a closed reason; it is never printed as zero, and it is never inferred from a neighbouring line.
+
 `--turn N` filters traced Live turns. It does not invent an association between an unrelated source execution and that turn. For a metadata-only export, use `--export-metadata` and optionally `--session`; inspect the output before sharing it.
 
 ## Follow identifiers, not prose guesses

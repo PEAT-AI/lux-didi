@@ -126,3 +126,58 @@ test('C-LOG-ENVELOPE: a clock_sync line ties one process clock to wall time', as
   assert.deepEqual(records.map(record => record.reason), ['host_start', 'call_open']);
   for (const record of records) assert.ok(Number.isInteger(record.monoMs) && !Number.isNaN(Date.parse(String(record.timestamp))));
 });
+
+// C-LOGS11: the turn and the tool call are envelope-shaped ids, so a line joins a turn and a call without a
+// timestamp bracket, and a field that would carry a word of anyone's is dropped where it is written.
+
+test('C-LOGS11: every line inside a turn names the turn, and a tool-call line names its call key', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-envelope-turn-'));
+  const log = new HostLog(root);
+  const detach = attachHostLogSink(log);
+  t.after(() => { detach(); clearLogContext(); return rm(root, { recursive: true, force: true }); });
+  setLogContext({ liveSessionId: SESSION, generation: 0, turnId: `${SESSION}:t1` });
+  hostLogEvent({ event: 'live_state', state: 'listening' });
+  hostLogEvent({ event: 'tool_call_admitted', callKey: 'call:0123456789abcdef', tool: 'gmail_search_messages' });
+  hostLogEvent({ event: 'tool_call_dispatched', callKey: 'call:0123456789abcdef', tool: 'gmail_search_messages' });
+  hostLogEvent({ event: 'tool_call_outcome', callKey: 'call:0123456789abcdef', tool: 'gmail_search_messages', outcome: 'refused', ms: 12, refusalCode: 'grant_not_permitted' });
+  // The turn closes: the next line inside the same call carries no turn.
+  setLogContext({ turnId: null });
+  hostLogEvent({ event: 'live_state', state: 'listening' });
+  const records = await lines(root);
+  assert.equal(records.length, 5);
+  for (const record of records.slice(0, 4)) assert.equal(record.turnId, `${SESSION}:t1`, `${record.event} names the turn`);
+  assert.equal('turnId' in records[4]!, false, 'a line after the turn belongs to no turn');
+  // One key across admit, dispatch and outcome: the three lines name one call.
+  assert.deepEqual(records.slice(1, 4).map(record => record.callKey), ['call:0123456789abcdef', 'call:0123456789abcdef', 'call:0123456789abcdef']);
+  assert.deepEqual([records[3]!.outcome, records[3]!.refusalCode, records[3]!.tool], ['refused', 'grant_not_permitted', 'gmail_search_messages']);
+});
+
+test('C-LOGS11: a redaction case over every new field: content and open codes are refused', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'didi-envelope-redact-'));
+  const log = new HostLog(root);
+  const detach = attachHostLogSink(log);
+  t.after(() => { detach(); clearLogContext(); return rm(root, { recursive: true, force: true }); });
+  const secret = 'lunch with Ada at the bridge cafe';
+  // A context is never a way in: a free-text turn or call id is dropped, and the line carries neither.
+  setLogContext({ liveSessionId: SESSION, turnId: secret });
+  hostLogEvent({ event: 'owner_final', ownerFinalAt: 1_792_486_800_500 });
+  hostLogEvent({ event: 'owner_final', ownerFinalAt: 1_792_486_800_500, text: secret });
+  hostLogEvent({ event: 'live_first_audio', liveSessionId: SESSION, generation: 0, msSinceReady: 10, msSinceOpen: 20, finalToProviderFirstAudioMs: 1_700, missingReason: null });
+  hostLogEvent({ event: 'live_first_audio', liveSessionId: SESSION, generation: 0, msSinceReady: 10, msSinceOpen: 20, finalToProviderFirstAudioMs: 1_700, missingReason: 'because she said so' });
+  hostLogEvent({ event: 'live_first_audible', finalToAudibleMs: 2_320, missingReason: null });
+  hostLogEvent({ event: 'live_first_audible', finalToAudibleMs: secret, missingReason: null });
+  hostLogEvent({ event: 'tool_call_admitted', callKey: 'call:ok', tool: secret });
+  hostLogEvent({ event: 'tool_call_admitted', callKey: secret, tool: 'gmail_search_messages' });
+  hostLogEvent({ event: 'tool_call_outcome', callKey: 'call:ok', tool: 'gmail_search_messages', outcome: 'refused', refusalCode: secret });
+  // A code beside an outcome that did not refuse is a contradiction, so it is dropped too.
+  hostLogEvent({ event: 'tool_call_outcome', callKey: 'call:ok', tool: 'gmail_search_messages', outcome: 'completed', refusalCode: 'grant_not_permitted' });
+  hostLogEvent({ event: 'tool_call_outcome', callKey: 'call:ok', tool: 'gmail_search_messages', outcome: 'refused', refusalCode: 'grant_not_permitted' });
+  const records = await lines(root);
+  const text = records.map(record => JSON.stringify(record)).join('\n');
+  assert.equal(text.includes(secret), false, 'no new field carries a word of anyone');
+  assert.deepEqual(records.map(record => record.event), ['owner_final', 'live_first_audio', 'live_first_audible', 'tool_call_outcome']);
+  assert.equal(records[0]!.turnId, undefined, 'a free-text turn id is not a turn');
+  assert.equal(records[1]!.finalToProviderFirstAudioMs, 1_700);
+  assert.deepEqual([records[2]!.finalToAudibleMs, records[2]!.missingReason], [2_320, null]);
+  assert.deepEqual([records[3]!.outcome, records[3]!.refusalCode], ['refused', 'grant_not_permitted']);
+});

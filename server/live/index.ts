@@ -32,6 +32,7 @@ import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
 
 import { clockSync, hostLogEvent, LIVE_REBUILD_TRIGGERS, LIVE_STATE_CAUSES, NATIVE_END_REASONS, setLogContext } from '../host/log.js';
+import type { ToolCallOutcome, ToolRefusalCode } from '../host/events.js';
 import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
 import { validateAcceptedPrompt } from './config.js';
 import { VoiceProfileMeter } from './voice-profile.js';
@@ -588,6 +589,21 @@ function stepSourceOf(name: string): string {
 
 /** S4a-R2 (e): the one execution state a call of this turn has, and the only vocabulary an execution receipt names. */
 type ExecStatus = 'queued' | 'running' | 'done' | 'failed' | 'timeout' | 'cancelled';
+
+/** C-LOGS11: what one tool response settled as, in the log's closed outcome and refusal vocabulary. A
+ *  refusal code is only ever a member of TOOL_REFUSAL_CODES, so a reader counts refusals by code. */
+function toolOutcomeOf(response: JsonObject): { outcome: ToolCallOutcome; refusalCode?: ToolRefusalCode } {
+  const status = typeof response.status === 'string' ? response.status : undefined;
+  const error = typeof response.error === 'string' ? response.error : undefined;
+  const stated = typeof response.reason === 'string' ? response.reason : typeof response.code === 'string' ? response.code : undefined;
+  const code = (reason: string): ToolRefusalCode => refusalCode(reason) as ToolRefusalCode;
+  if (status === 'refused' || stated === 'no_owner_input' || error === 'opener_not_fetched') return { outcome: 'refused', refusalCode: code(stated ?? error ?? 'refused') };
+  // A call the registry did not grant never reached a source: that is a refusal of admission, by code.
+  if (error === 'Tool not granted') return { outcome: 'refused', refusalCode: 'grant_not_permitted' };
+  if (status === 'blocked' || error === 'tool_result_denied') return { outcome: 'blocked' };
+  if (error !== undefined || (status !== undefined && status !== 'completed')) return { outcome: 'failed' };
+  return { outcome: 'completed' };
+}
 /** #1020: how much of what was sent a settled research projection may record, so the journal line stays short. */
 const RESEARCH_PROJECTION_CHARS = 240;
 
@@ -640,6 +656,9 @@ interface ActiveSession {
   inputFinalAt: number | undefined;
   /** First model audio of the current turn; reset at each model turn start. */
   firstAudioAt: number | undefined;
+  /** C-LOGS11: the turn whose first audible native receipt is already logged, so one turn logs one
+   *  final-to-audible measurement rather than one per segment. */
+  audibleLoggedTurn?: string | undefined;
   /** L-04: the end of the last audible frame, owner speech end or model audio end, whichever came later, and whether
    *  the wait that followed began after a tool result. The wait to the next model audio is the silence the owner heard. */
   heardSince?: number | undefined; heardAfterTool: boolean;
@@ -1292,6 +1311,9 @@ export function subResultOf(key: string, name: string, response: Record<string, 
 }
 
 export class LiveSessionOwner {
+  /** C-LOGS11: when each turn's owner final landed, so a later native receipt can close that turn's
+   *  final-to-audible latency. Session-scoped and pruned with the turn it belongs to. */
+  readonly #turnOwnerFinal = new Map<string, number>();
   readonly #jobs: LiveToolJobs;
   readonly #tools: LiveToolsComposition | undefined;
   readonly #onSessionTerminal: ((liveSessionId: string) => void) | undefined;
@@ -2095,8 +2117,19 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
   #playbackReceipt(handle: ActiveSession, frame: string): void {
     try {
       const receipt = parsePlaybackReceipt(frame);
-      recordPlaybackReceipt(this.#store, handle.liveSessionId, receipt, this.#playbackAttribution(handle, receipt));
+      const attribution = this.#playbackAttribution(handle, receipt);
+      recordPlaybackReceipt(this.#store, handle.liveSessionId, receipt, attribution);
       this.#notePlayback(handle, receipt);
+      // C-LOGS11: the native audibility receipt is the only proof the owner could hear her, so the first one
+      // of a turn closes that turn's owner-facing latency. A turn with no recorded final says so, never zero.
+      const turnId = attribution.turnId;
+      if (receipt.receipt === 'audible' && turnId !== undefined && handle.audibleLoggedTurn !== turnId) {
+        handle.audibleLoggedTurn = turnId;
+        const final = this.#turnOwnerFinal.get(turnId);
+        hostLogEvent({ event: 'live_first_audible',
+          finalToAudibleMs: final === undefined ? null : Math.max(0, receipt.wallMs - final),
+          missingReason: final === undefined ? 'no_owner_final' : null });
+      }
     } catch (error) {
       const code = error instanceof IngestReject || error instanceof TraceRecordError ? error.code : 'record_failed';
       hostLogEvent({ event: 'live_trace_rejected', kind: 'playback.received', code });
@@ -2841,8 +2874,13 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     handle.liveSteps = [];
     handle.liveStepItems.clear();
     connection.turnIndex += 1;
+    // C-LOGS11: the owner-final map is session-scoped because a receipt can land after its turn closes; it
+    // is bounded so a long call cannot grow it without limit.
+    while (this.#turnOwnerFinal.size > 64) { const oldest = this.#turnOwnerFinal.keys().next(); if (oldest.done === true) break; this.#turnOwnerFinal.delete(oldest.value); }
     const turnId = `${handle.liveSessionId}:t${connection.turnIndex}`;
     connection.turnId = turnId;
+    // C-LOGS11: the turn names every line emitted inside it, so a reader never has to bracket a turn by hand.
+    setLogContext({ turnId });
     this.#receipt(handle, 'turn.opened', { turnId }, {
       origin: 'owner', turnIndex: connection.turnIndex, openedAt: this.#now(), monoMs: hostMonotonicMs(),
       ...(supersedes === undefined ? {} : { supersedesTurnId: supersedes }),
@@ -2898,6 +2936,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     const turnId = handle.connection.turnId;
     if (turnId === undefined) return;
     handle.connection.turnId = undefined;
+    // C-LOGS11: the turn's last line is its own, so the context ends with it.
+    setLogContext({ turnId: null });
     this.#receipt(handle, 'turn.closed', { turnId }, {
       closedAt: this.#now(), closeReason, ...(outcome === undefined ? {} : { outcome }),
     });
@@ -3838,7 +3878,11 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
             const sinceReady = handle.readyAt === undefined ? 0 : Math.max(0, handle.firstAudioAt - handle.readyAt);
             const answer = handle.researchAnsweredAt !== undefined;
             handle.spokenThisTurn = true;
-            hostLogEvent({ event: answer ? 'live_answer_audio' : 'live_first_audio', liveSessionId: handle.liveSessionId, generation, msSinceReady: sinceReady, msSinceOpen: sinceOpen });
+            hostLogEvent({ event: answer ? 'live_answer_audio' : 'live_first_audio', liveSessionId: handle.liveSessionId, generation, msSinceReady: sinceReady, msSinceOpen: sinceOpen,
+              // C-LOGS11: the owner-facing wait, from his final words to her first audible frame. The old
+              // msSinceReady/msSinceOpen pair measures the provider's open, not the wait the owner sat through.
+              finalToProviderFirstAudioMs: handle.inputFinalAt === undefined ? null : Math.max(0, handle.firstAudioAt - handle.inputFinalAt - handle.mutedMs),
+              missingReason: handle.inputFinalAt === undefined ? 'no_owner_final' : null });
             if (handle.inputFinalAt !== undefined) {
               hostLogEvent({ event: 'live_dead_air', deadAirMs: Math.max(0, handle.firstAudioAt - handle.inputFinalAt - handle.mutedMs) });
               // C-DEADAIR: the provider's share of the wait, kept apart from the host's. Owner final words to the
@@ -3891,6 +3935,11 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
             // receipt is owed one measurement per utterance, so it is armed once and written once per span.
             // #720: the span runs from the owner's LAST fragment, not the first, so the anchor moves with every one.
             handle.inputFinalAt = handle.inputAt;
+            // C-LOGS11: the anchor every final-to-audio latency in this turn is measured from, recorded on the
+            // line and joined to the turn by the envelope's turnId, never by a timestamp bracket.
+            hostLogEvent({ event: 'owner_final', ownerFinalAt: handle.inputFinalAt });
+            const finalTurn = handle.connection.turnId;
+            if (finalTurn !== undefined) this.#turnOwnerFinal.set(finalTurn, handle.inputFinalAt);
             // L-04: her speech is audible, so the wait the owner hears starts at its last fragment.
             handle.heardSince = handle.inputAt; handle.mutedMs = 0;
             if (ownerTurnOpen) {
@@ -4417,6 +4466,10 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     handle.thinking = true;
     // #1022 F5/F3: the per-turn latency loops delete this clock, so the arrival time is read once, here.
     const arrivedAt = new Map(event.calls.flatMap(call => { const at = handle.callStartedAt.get(call.id); return at === undefined ? [] : [[call.id, at] as const]; }));
+    // C-LOGS11: the call key every later line of this call repeats, derived the same way the trace store
+    // derives it, so host.log and state.sqlite name one call by one key.
+    const callKeyOf = (callId: string | undefined): string => callId === undefined ? '' : scopedTraceKey(handle.liveSessionId, handle.connection.epoch, 'call', callId);
+    for (const call of event.calls) if (call.id !== undefined) hostLogEvent({ event: 'tool_call_admitted', callKey: callKeyOf(call.id), tool: call.name });
     const publish = (kind: 'toolCall' | 'toolResult', tool: LiveToolProjection) => {
       if ((this.#settled(handle) || generation !== handle.generation)) return;
       const sequence = this.#persist(handle, { type: kind, sequence: event.sequence, tool }, kind);
@@ -4453,6 +4506,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
 if (event.calls.some(call => call.name === 'remember_note' || call.name === 'save_to_vault' || call.name === 'trello_write' || call.name === 'stage_lux_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
       if (this.#settled(handle) || generation !== handle.generation) return;
       if (event.calls.every(call => call.name === RESEARCH_TOOL_NAME)) {
+        for (const call of event.calls) if (call.id !== undefined) hostLogEvent({ event: 'tool_call_dispatched', callKey: callKeyOf(call.id), tool: call.name });
         const outcome = await this.#researchBatch(handle, event, generation, host, dispatchGate.state === 'allowed');
         if (this.#settled(handle) || generation !== handle.generation) return;
         responses = outcome.responses;
@@ -4497,6 +4551,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         handle.callAborts.set(unit.call.id, new AbortController());
         handle.callStartedAt.set(unit.call.id, this.#now());
         if (handle.progressCallIds.has(unit.call.id)) handle.exec.set(unit.call.id, { source: stepSourceOf(unit.call.name), status: 'running' });
+        if (unit.call.id !== undefined) hostLogEvent({ event: 'tool_call_dispatched', callKey: callKeyOf(unit.call.id), tool: unit.call.name });
         registerSignals(unit, unit.subs);
       }
       const subCalls = pending.flatMap(unit => unit.subs.map(sub => ({ id: sub.key, name: sub.name, args: sub.args })));
@@ -4687,6 +4742,15 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
     if (!(this.#settled(handle) || generation !== handle.generation)) {
       try {
         if (responses.length) {
+          // C-LOGS11: one outcome line per call, carrying the key its admit and dispatch lines carried, so the
+          // call's whole story is one grep and its refusal is a code rather than a sentence.
+          for (const entry of responses) {
+            const started = arrivedAt.get(entry.id);
+            const settled = toolOutcomeOf(entry.response);
+            hostLogEvent({ event: 'tool_call_outcome', callKey: callKeyOf(entry.id), tool: entry.name, outcome: settled.outcome,
+              ...(started === undefined ? {} : { ms: Math.max(0, this.#now() - started) }),
+              ...(settled.refusalCode === undefined ? {} : { refusalCode: settled.refusalCode }) });
+          }
           // OPEN2-R4: the one exposure point, on the text these results deliver after every trim.
           exposeToolResults(responses);
           // C-CONTINUITY item 5: the total-context figure counts every tool payload this call hands the provider,

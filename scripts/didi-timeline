@@ -7,13 +7,15 @@ const { homedir } = require('node:os');
 const { join } = require('node:path');
 const { fileURLToPath } = require('node:url');
 
-const usage = `didi-timeline call <liveSessionId|latest> [--content] [--json]
+const usage = `didi-timeline call <liveSessionId|latest> [--content] [--json] [--audit]
+didi-timeline sessions --since <date> --audit-summary [--json]
 didi-timeline doctor [--json]
 didi-timeline list [--json]
 didi-timeline <session|latest> [options]
 
   call <session|latest> one call's ordered story: the store's turns and tool calls merged with
                         host.log (and its rotated files), native-live.log and audio.log
+  sessions              the same audit aggregates across every session with a turn since a date
   doctor                log health: files, bytes, lines, torn lines, top events, oldest and newest
                         day, and the lines no session or call can be attributed to
   list                  one row per session the logs name: start, duration, tools, max silence, terminal
@@ -21,14 +23,18 @@ didi-timeline <session|latest> [options]
   --turn N              only turn index N
   --content             opt into gated transcripts, requested/effective arguments and supported full source results
   --json                print the report as JSON (no owner text unless --content)
+  --audit               with call: session coverage and clock health, one row per tool call and per owner turn,
+                        then slowest calls, refusals by code, slow turns, claims with no call and dead air
+  --audit-summary       with sessions: counts per tool, p50/p90 latency per tool, refusals per code, final-to-audio
+  --since <date>        with --audit-summary: a day (YYYY-MM-DD) or an ISO instant; sessions opened since it
   --export-metadata     named columns of the five metadata tables only, never a dump
   --session <id>        with --export-metadata, restrict the export to one live session
   --data-dir <path>     the host data directory holding state.sqlite and logs/
 `;
 
-const COMMANDS = new Set(['call', 'doctor', 'list']);
+const COMMANDS = new Set(['call', 'doctor', 'list', 'sessions']);
 const argv = process.argv.slice(2);
-const options = { command: undefined, session: undefined, turn: undefined, content: false, json: false, exportMetadata: false, dataDir: undefined };
+const options = { command: undefined, session: undefined, turn: undefined, content: false, json: false, exportMetadata: false, dataDir: undefined, audit: false, auditSummary: false, since: undefined };
 for (let index = 0; index < argv.length; index += 1) {
   const arg = argv[index];
   if (arg === '--turn') options.turn = Number(argv[++index]);
@@ -37,6 +43,9 @@ for (let index = 0; index < argv.length; index += 1) {
   else if (arg === '--export-metadata') options.exportMetadata = true;
   else if (arg === '--session') options.session = argv[++index];
   else if (arg === '--data-dir') options.dataDir = argv[++index];
+  else if (arg === '--audit') options.audit = true;
+  else if (arg === '--audit-summary') options.auditSummary = true;
+  else if (arg === '--since') options.since = argv[++index];
   else if (arg === '-h' || arg === '--help') { process.stdout.write(usage); process.exit(0); }
   else if (arg.startsWith('-')) fail(`unknown option ${arg}`);
   else if (options.command === undefined && COMMANDS.has(arg)) options.command = arg;
@@ -95,7 +104,7 @@ function storeReader(database) {
 }
 
 async function callView() {
-  const { buildCallStory, buildTimeline, listCalls, renderCallStory, resolveSession, scanLogs } = await traceModule();
+  const { buildCallAudit, buildCallStory, buildTimeline, listCalls, renderCallAudit, renderCallStory, resolveSession, scanLogs } = await traceModule();
   const scan = scanLogs(logInputs());
   const spec = options.session ?? 'latest';
   const database = join(dataDirectory(), 'state.sqlite');
@@ -118,6 +127,16 @@ async function callView() {
       ...(store === undefined ? {} : { read: store.read }),
       content: options.content,
     });
+    if (options.audit) {
+      // C-LOGS11: the audit reads the store's calls and turns beside the log's turn and call keys; with no
+      // store there is nothing to audit against, so it says so instead of printing an empty table.
+      const sessionId = liveSessionId ?? story.liveSessionId ?? undefined;
+      if (store === undefined) fail('the audit needs state.sqlite under the data directory');
+      if (sessionId === undefined || report === undefined) fail(`no traced session for ${spec}`);
+      const audit = buildCallAudit(report, scan);
+      process.stdout.write(options.json ? `${JSON.stringify(audit, null, 2)}\n` : renderCallAudit(audit));
+      return;
+    }
     if (story.entries.length === 0) fail(`no call ${spec} in the logs or the store under ${dataDirectory()}`);
     process.stdout.write(options.json ? `${JSON.stringify(story, null, 2)}\n` : renderCallStory(story));
   } finally {
@@ -137,6 +156,22 @@ async function listView() {
   process.stdout.write(options.json ? `${JSON.stringify(rows, null, 2)}\n` : renderCallList(rows));
 }
 
+/** C-LOGS11: the across-sessions aggregate. `--since` takes a day or an ISO instant, and is required. */
+async function sessionsView() {
+  const { buildAuditSummary, renderAuditSummary, scanLogs } = await traceModule();
+  if (options.auditSummary !== true) fail('sessions needs --audit-summary');
+  if (options.since === undefined) fail('sessions --audit-summary needs --since <date>');
+  const since = Date.parse(options.since);
+  if (!Number.isFinite(since)) fail(`--since is not a date: ${options.since}`);
+  const database = join(dataDirectory(), 'state.sqlite');
+  if (!existsSync(database)) fail(`no state.sqlite under ${dataDirectory()}`);
+  const store = storeReader(database);
+  try {
+    const summary = buildAuditSummary(store.read, scanLogs(logInputs()), since);
+    process.stdout.write(options.json ? `${JSON.stringify(summary, null, 2)}\n` : renderAuditSummary(summary));
+  } finally { store.close(); }
+}
+
 // The content gate is the store's own: the assistant id it was installed for.
 function timelineOptions(read) {
   return {
@@ -150,6 +185,7 @@ async function main() {
   if (options.command === 'doctor') return doctorView();
   if (options.command === 'list') return listView();
   if (options.command === 'call') return callView();
+  if (options.command === 'sessions') return sessionsView();
   const { buildTimeline, exportMetadata, renderTimeline, resolveSession } = await traceModule();
   const database = join(dataDirectory(), 'state.sqlite');
   if (!existsSync(database)) fail(`no state.sqlite under ${dataDirectory()}`);

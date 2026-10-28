@@ -8,7 +8,7 @@ import { TURN_FAILED_REASONS } from '../adapters/live-voice/types.js';
 import { DEBT_PHASES, DEBT_REASONS } from '../trace/kinds.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { ConfigError } from '../config/files.js';
-import { LOG_CAUSES, clearLogContext, envelopeContext, monoMilliseconds, nextSeq, severityOf } from './events.js';
+import { LOG_CAUSES, TOOL_CALL_OUTCOMES, TOOL_REFUSAL_CODES, clearLogContext, envelopeContext, monoMilliseconds, nextSeq, severityOf } from './events.js';
 import { LIVE_INSTRUCTION_SECTION_IDS } from '../prompt/live-persona.js';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -182,6 +182,8 @@ const isSafeCloseReason = (value: unknown): value is string =>
 /** A provider frame name: lowercase dots and underscores, as the Live reference writes them, never free text. */
 const UNKNOWN_FRAME_TYPE = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/;
 const isSafeMember = (value: unknown, allowed: readonly string[]): value is string => typeof value === 'string' && allowed.includes(value);
+/** C-LOGS11: why one latency field is absent. A closed set, so "missing" is never printed as a duration. */
+const AUDIBLE_MISSING_REASONS = ['no_owner_final', 'no_native_receipt'];
 const isSafeMembers = (value: unknown, allowed: readonly string[]): value is string[] => Array.isArray(value) && value.length <= 16 && value.every(item => isSafeMember(item, allowed));
 
 /** A closed shape: exactly these keys, so no field a later caller adds can slip through the whitelist. */
@@ -336,6 +338,47 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.keys(value).sort().join(',') !== ['event', 'reason', 'sequence', 'tool'].join(',')) return;
     if (!isSafeCount(value.sequence) || !SAFE_TOKEN.test(String(value.tool)) || value.reason !== 'no_owner_input') return;
     return { event: 'live_tool_refused', sequence: value.sequence, tool: value.tool, reason: value.reason };
+  }
+  if (value.event === 'owner_final') {
+    // C-LOGS11: when the owner's final transcription of a turn landed, on the wall clock, as epoch ms. The
+    // turn it belongs to is the envelope's turnId; no word of what he said is on the line.
+    if (!closedKeys(value, ['event', 'ownerFinalAt'])) return;
+    if (!isSafeCount(value.ownerFinalAt)) return;
+    return { event: 'owner_final', ownerFinalAt: value.ownerFinalAt };
+  }
+  if (value.event === 'tool_call_admitted' || value.event === 'tool_call_dispatched') {
+    // C-LOGS11: one tool call entering the host and leaving toward its source, by call key and tool name,
+    // never an argument. The key is stable across admit, dispatch and outcome.
+    if (!closedKeys(value, ['callKey', 'event', 'tool'])) return;
+    if (typeof value.callKey !== 'string' || !SAFE_CALL_ID.test(value.callKey)) return;
+    if (typeof value.tool !== 'string' || !SAFE_TOKEN.test(value.tool)) return;
+    return { event: value.event, callKey: value.callKey, tool: value.tool };
+  }
+  if (value.event === 'tool_call_outcome') {
+    // C-LOGS11: what one call settled as, as a closed outcome and a closed refusal code; a call that did not
+    // refuse carries no code, so a missing code is never mistaken for a `refused`. `ms` is the host's own
+    // measured duration when it has one, and the field is absent when it does not, never a zero.
+    const withCode = value.refusalCode !== undefined;
+    const withMs = value.ms !== undefined;
+    if (!closedKeys(value, ['callKey', 'event', 'outcome', 'tool', ...(withMs ? ['ms'] : []), ...(withCode ? ['refusalCode'] : [])])) return;
+    if (typeof value.callKey !== 'string' || !SAFE_CALL_ID.test(value.callKey)) return;
+    if (typeof value.tool !== 'string' || !SAFE_TOKEN.test(value.tool)) return;
+    if (!isSafeMember(value.outcome, TOOL_CALL_OUTCOMES)) return;
+    if (withMs && !isSafeCount(value.ms)) return;
+    if (withCode && !isSafeMember(value.refusalCode, TOOL_REFUSAL_CODES)) return;
+    // A code belongs to a refusal: a call that completed or failed did not refuse, so a code beside it is a
+    // mislabelled line, and the line is dropped rather than published with a contradictory pair.
+    if (withCode && value.outcome !== 'refused' && value.outcome !== 'blocked') return;
+    return { event: 'tool_call_outcome', callKey: value.callKey, tool: value.tool, outcome: value.outcome,
+      ...(withMs ? { ms: value.ms } : {}), ...(withCode ? { refusalCode: value.refusalCode } : {}) };
+  }
+  if (value.event === 'live_first_audible') {
+    // C-LOGS11: the native audibility receipt for a turn's first audible segment, as a duration from the
+    // owner's final words. A turn whose final was never recorded says why, never zero.
+    if (!closedKeys(value, ['event', 'finalToAudibleMs', 'missingReason'])) return;
+    if (!(value.finalToAudibleMs === null || isSafeCount(value.finalToAudibleMs))) return;
+    if (!(value.missingReason === null || isSafeMember(value.missingReason, AUDIBLE_MISSING_REASONS))) return;
+    return { event: 'live_first_audible', finalToAudibleMs: value.finalToAudibleMs, missingReason: value.missingReason };
   }
   if (value.event === 'open_claim_corrected') {
     // Open2: the correction is counted, never quoted: one closed reason, no words of hers.
@@ -791,11 +834,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'live_first_audio' || value.event === 'live_answer_audio') {
     // Closed shape: when the provider's first audible frame of a turn arrived, measured from the open and
-    // from the ready event, never any audio itself.
-    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'msSinceReady', 'msSinceOpen'])) return;
+    // from the ready event, never any audio itself. C-LOGS11 adds the owner-facing latency: the wait from
+    // his final words to this frame, or the closed reason it cannot be measured.
+    const plain = closedKeys(value, ['event', 'liveSessionId', 'generation', 'msSinceReady', 'msSinceOpen']);
+    const audit = closedKeys(value, ['event', 'liveSessionId', 'generation', 'msSinceReady', 'msSinceOpen', 'finalToProviderFirstAudioMs', 'missingReason']);
+    if (!plain && !audit) return;
     if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
     if (!isSafeCount(value.generation) || !isSafeCount(value.msSinceReady) || !isSafeCount(value.msSinceOpen)) return;
-    return { event: value.event, liveSessionId: value.liveSessionId, generation: value.generation, msSinceReady: value.msSinceReady, msSinceOpen: value.msSinceOpen };
+    const base = { event: value.event, liveSessionId: value.liveSessionId, generation: value.generation, msSinceReady: value.msSinceReady, msSinceOpen: value.msSinceOpen };
+    if (plain) return base;
+    if (!(value.finalToProviderFirstAudioMs === null || isSafeCount(value.finalToProviderFirstAudioMs))) return;
+    if (!(value.missingReason === null || isSafeMember(value.missingReason, AUDIBLE_MISSING_REASONS))) return;
+    return { ...base, finalToProviderFirstAudioMs: value.finalToProviderFirstAudioMs, missingReason: value.missingReason };
   }
   if (value.event === 'research_call_arrived' || value.event === 'tool_output_sent') {
     // Closed shape: the frame arrival and the answer write, with the milliseconds between them.

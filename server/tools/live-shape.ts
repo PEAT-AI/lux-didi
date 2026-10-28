@@ -19,7 +19,24 @@ export function attendeeName(attendee: Record<string, unknown>): string {
   const display = typeof attendee['displayName'] === 'string' ? attendee['displayName'] : '';
   const snapshot = peopleSnapshot();
   const person = snapshot === null || email.length === 0 ? undefined : personByEmail(snapshot, email);
-  return person?.name ?? (display || email);
+  // C-DEPTH11: a nameless attendee is spoken as the local part of its address, never as a full address.
+  return person?.name ?? (display || email.split('@')[0] || email);
+}
+
+/** C-DEPTH11: the response statuses Google's events resource carries (events.attendees[].responseStatus). */
+const ATTENDEE_STATUS: Record<string, string> = { accepted: 'accepted', declined: 'declined', tentative: 'tentative', needsAction: 'not answered' };
+
+/**
+ * C-DEPTH11: one attendee as the owner hears it, its response status and its organizer flag included.
+ * Provenance: https://developers.google.com/workspace/calendar/api/v3/reference/events#resource
+ */
+export function attendeeLabel(attendee: Record<string, unknown>, organizerEmail?: string): string {
+  const name = attendeeName(attendee);
+  const email = typeof attendee['email'] === 'string' ? attendee['email'] : '';
+  const status = ATTENDEE_STATUS[typeof attendee['responseStatus'] === 'string' ? attendee['responseStatus'] : ''];
+  const organizer = organizerEmail !== undefined && organizerEmail.length > 0 && email.toLowerCase() === organizerEmail.toLowerCase();
+  const marks = [organizer ? 'organizer' : undefined, status].filter((mark): mark is string => mark !== undefined);
+  return marks.length === 0 ? name : `${name} (${marks.join(', ')})`;
 }
 
 /** Per-tool budgets for the text a tool result puts in front of the Live model. Each bound is
@@ -477,9 +494,14 @@ export function shapeGcalList(data: Record<string, unknown>): ShapedResult {
     const openLine = link ? mintOpenLine({ title: named ? `Calendar: ${named}` : 'Open in Google Calendar', url: link, sourceType: 'calendar' }) : undefined;
     if (openLine) lines.push(openLine);
     const attendees = Array.isArray(entry['attendees']) ? entry['attendees'] : [];
-    const names = attendees.filter(isRecord).map(a => attendeeName(a)).filter(Boolean);
+    const organizerEmail = isRecord(entry['organizer']) ? str(entry['organizer']['email']) : '';
+    const names = attendees.filter(isRecord).map(attendee => attendeeLabel(attendee, organizerEmail)).filter(Boolean);
     // L8-01: the people lines are whole, never the part a cut removes, and carry no character count.
     if (names.length) lines.push(attendeeNamesLine(names, entry['attendeesOmitted'] === true));
+    // C-DEPTH11: no attendee data is said out loud, and the two reasons stay distinct, so a source that
+    // never sent the field is never reported as an invite that hides its guests.
+    else if (entry['attendeesUnavailable'] === true) lines.push('  attendees: not available from this source');
+    else lines.push('  attendees: none listed for this event');
     const organizer = isRecord(entry['organizer']) ? field(entry['organizer'], 'displayName', 'email') : '';
     if (organizer) lines.push(`  organizer: ${organizer}`);
     const conference = field(entry, 'hangoutLink') || (isRecord(entry['conferenceData']) ? 'yes' : '');

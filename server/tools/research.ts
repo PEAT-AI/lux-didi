@@ -3750,6 +3750,9 @@ const REASON_WORDS: Record<string, string> = {
   endpoint_not_allowed: 'this account is not in the Mongoose CRM teams',
   cursor_stale: 'that page of results expired, search again',
   cursor_invalid: 'that page of results was not readable, search again',
+  // C-DEPTH11/#648: a helper that answered with nothing at all is a failed read, never an inbox with no mail.
+  // C-DEPTH11/#648 and W16-R1 F3: the code is raised for every Google family, so the words stay neutral.
+  invalid_result: 'the helper returned no result, ask again',
   // #637: the ask named a channel the chat connector does not know, so no read was made at all.
   channel_not_found: 'no channel by that name',
 };
@@ -5032,6 +5035,9 @@ async function mailGroup(deps: ResearchDeps, run: RunState, plans: readonly Rout
     const classified = delivered || read.failed ? undefined : classifiedFailureText([read.plain ?? '']);
     if (classified !== undefined) run.failureLines.set('mail', classified);
     const outcome: LookupOutcome = delivered ? 'ok' : signal.aborted || run.cutShort.has('mail') ? 'timeout' : read.failed || classified !== undefined ? 'failed' : 'empty';
+    // C-DEPTH11/#648: a failed mail read keeps the connector's own closed code as the source reason, so a
+    // helper that answered with no payload is voiced with its line instead of a bare "no answer".
+    if (!delivered && read.code !== undefined) run.unavailableReasons.set('mail', read.code);
     const failedPages = read.failedPages ?? 0;
     const info = mailQueryInfo(read);
     return { lookup: plan.lookup, kind: plan.read.kind, tool: INTERNAL.mailList, source: 'mail', outcome, ms: now() - started, lines, total: read.messages.size, ...(info === undefined ? {} : { mail: info }), ...(delivered && failedPages > 0 ? { partial: { reason: 'pages_failed' as const, failedPages } } : {}) };
@@ -5362,6 +5368,10 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     // here too, so a source that is not connected reads as not connected instead of as a provider that failed.
     const refusedCode = refusedConnectionCode(own);
     if (refusedCode !== undefined && !run.unavailableReasons.has(plan.read.source)) run.unavailableReasons.set(plan.read.source, refusedCode);
+    // C-DEPTH11/#648: any other closed code the helper answered with is the reason the owner hears, so a
+    // failed read never degrades to the bare "no answer". A mail helper with no payload speaks its own line.
+    const failedCode = own.find(result => !result.ok && result.code !== undefined)?.code;
+    if (failedCode !== undefined && !run.unavailableReasons.has(plan.read.source)) run.unavailableReasons.set(plan.read.source, failedCode);
     // #565: a routed read counts as read, so a continuation of this run never dispatches it again.
     if ((outcome === 'ok' || outcome === 'empty') && plan.read.kind !== 'memory_search') run.readKinds.add(plan.read.kind);
     // #635: a read that answered in part and then ran out of its budget is a partial timeout, so the header

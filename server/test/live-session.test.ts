@@ -1,3 +1,4 @@
+import { fakeReady as readyOpenAi, FakeClock as OpenAiClock } from './openai-live-voice-fixture.js';
 import { createHash, randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
@@ -7377,5 +7378,42 @@ test('C-AUDIO10: the opening model utterance has its own assistant trace turn', 
   await settlePort();
   const rows = h.store.transaction(tx => tx.all("SELECT u.text, t.origin FROM trace_utterance u JOIN trace_turn t USING(turn_id) WHERE t.live_session_id=? AND u.role='model' AND u.final=1", [session.liveSessionId]));
   assert.deepEqual(rows.map(row => [row['text'], row['origin']]), [['Synthetic welcome.', 'assistant']]);
+  attachment.close();
+});
+
+
+test('C-AUDIO10 F1: a plain turn after delegation gets fresh first-audio and dead-air receipts', async t => {
+  const clock = new OpenAiClock();
+  const adapter = await readyOpenAi(t, { clock });
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const events: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(detach);
+  const session = h.owner.create({ idempotencyKey: 'audio10-delegated-plain', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  adapter.socket.deliver({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'response_delegated' } } });
+  await settlePort();
+  const delegated = adapter.captured.events.find(event => event.type === 'modelTurnStarted');
+  assert.ok(delegated);
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'Synthetic lookup.', finished: true }));
+  fake.emit(portEvent(delegated));
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+  adapter.socket.deliver({ type: 'session.input_transcript.delta', delta: 'Synthetic plain question.' });
+  clock.advance(701);
+  await settlePort();
+  const starts = adapter.captured.events.filter(event => event.type === 'modelTurnStarted');
+  assert.equal(starts.length, 2);
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'Synthetic plain question.', finished: true }));
+  fake.emit(portEvent(starts[1]!));
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  assert.equal(events.filter(row => row.event === 'live_first_audio').length, 2);
+  assert.equal(events.filter(row => row.event === 'live_dead_air' && 'deadAirMs' in row).length, 2);
+  assert.equal(events.filter(row => row.event === 'live_response_latency').length, 2);
   attachment.close();
 });

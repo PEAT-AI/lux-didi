@@ -288,12 +288,13 @@ test('a web lookup with no web configured says so, and reads nothing else', asyn
 
 // --- The loop: one web action, evidence in the findings, typed failure in the reply ---------
 
-type Harness = { deps: ResearchDeps; runs: object[]; sources: object[]; executed: string[]; webCalls: string[] };
+type Harness = { deps: ResearchDeps; runs: object[]; sources: object[]; executed: string[]; subcalls: IntentSubCall[]; webCalls: string[] };
 
 function harness(outcome: WebOutcome | (() => Promise<WebOutcome>)): Harness {
   const runs: object[] = [];
   const sources: object[] = [];
   const executed: string[] = [];
+  const subcalls: IntentSubCall[] = [];
   const webCalls: string[] = [];
   const web: WebSearchPort = {
     search: async ({ query }) => {
@@ -305,13 +306,13 @@ function harness(outcome: WebOutcome | (() => Promise<WebOutcome>)): Harness {
     now: () => 0,
     configured: ['web'] as readonly SourceKind[],
     web,
-    execute: async (subs: readonly IntentSubCall[]) => { executed.push(...subs.map(call => call.name)); return [] as IntentSubResult[]; },
+    execute: async (subs: readonly IntentSubCall[]) => { executed.push(...subs.map(call => call.name)); subcalls.push(...subs); return [] as IntentSubResult[]; },
     emit: () => {},
     log: entry => runs.push(entry),
     logSource: entry => sources.push(entry),
     ledger: new ResearchLedger(),
   };
-  return { deps, runs, sources, executed, webCalls };
+  return { deps, runs, sources, executed, subcalls, webCalls };
 }
 
 const grounded: WebOutcome = {
@@ -604,6 +605,10 @@ test('#1028: a misheard organisation resolves to the name her own calendar diges
   assert.doesNotMatch(h.webCalls[0]!, /Akme/u, 'the web never searched the mishearing as it was heard');
   assert.ok(h.executed.includes('search_knowledge'), 'knowledge ran for a named organisation');
   assert.ok(h.executed.includes('calendar_list_events'), 'calendar ran for a named organisation');
+  const targeted = h.subcalls.find(call => call.name === 'calendar_list_events');
+  assert.equal(targeted?.args['q'], 'Acme Seeds', 'calendar is targeted at the resolved entity');
+  assert.equal(targeted?.args['timeMin'], undefined, 'not the rest-of-today window');
+  assert.equal(targeted?.args['timeMax'], undefined, 'no automatic today window');
   assert.ok(reply['researchId'] !== undefined, 'the round answered');
 });
 
@@ -616,6 +621,10 @@ test('#1028: a named organisation runs her knowledge and calendar even when the 
   await runResearch(deps, { action: 'start', question: 'what did Akme Seats decide', lookups: [] }, new AbortController().signal);
   assert.ok(h.executed.includes('search_knowledge'), 'knowledge ran with no lookup named for it');
   assert.ok(h.executed.includes('calendar_list_events'), 'calendar ran with no lookup named for it');
+  const targeted = h.subcalls.find(call => call.name === 'calendar_list_events');
+  assert.equal(targeted?.args['q'], 'Acme Seeds', 'calendar is targeted at the resolved entity');
+  assert.equal(targeted?.args['timeMin'], undefined, 'not the rest-of-today window');
+  assert.equal(targeted?.args['timeMax'], undefined, 'no automatic today window');
 });
 
 test('#1028: a full batch keeps the model its own lookups and never cuts one to make room', async () => {

@@ -15,7 +15,7 @@ import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write
 import { runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
 import { INTENT_TOOL_NAMES, isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
-import { admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook } from '../tools/research.js';
+import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -551,6 +551,13 @@ const LATE_WINDOW_MS = 20_000;
 const FILLER_WORDS = 3;
 /** R6: how much of that block a spoken line carries, so the owner hears one sentence and not a report. */
 const LATE_SPOKEN_CHARS = 280;
+export function lateFindingsText(source: string, items: readonly string[]): string {
+  const label = source === 'mail' ? 'your mail' : source === 'web' ? 'the web' : `your ${source}`;
+  const prefix = 'Late findings from your lookup, not supplied by the owner:\n';
+  const perItem = Math.max(0, Math.floor((LATE_SPOKEN_CHARS - prefix.length) / Math.max(1, items.length)) - `from ${label}: `.length - 1);
+  return prefix + items.map(item => `from ${label}: ${item.slice(0, perItem)}`).join('\n');
+}
+
 
 /** R5: what the late-commentary rule reads, so the owner's patience is pinned by a test and not by a transport. */
 export interface LateCommentaryState {
@@ -610,9 +617,10 @@ const RESEARCH_PROJECTION_CHARS = 240;
  * the sources that answered, then the note the model was told to voice. A failure names its reason code
  * and a refusal names its reason, so a journal line is never a bare `research: error`.
  */
-function researchProjection(response: JsonObject, status: 'completed' | 'error'): string {
+export function researchProjection(response: JsonObject, status: 'completed' | 'error'): string {
   const text = (value: unknown): string | undefined => (typeof value === 'string' && value.length > 0 ? value : undefined);
   const detail = (): string => {
+    if (response['status'] === 'blocked') return `refused:${text(response['code']) ?? text(response['reason']) ?? 'unknown'}`;
     if (status === 'error') {
       const reason = text(response['reason']) ?? text(response['error']) ?? 'failed';
       return text(response['state']) === 'refused' ? `refused (${reason})` : `error (${reason})`;
@@ -620,7 +628,8 @@ function researchProjection(response: JsonObject, status: 'completed' | 'error')
     const findings = Array.isArray(response['findings']) ? response['findings'] as JsonObject[] : [];
     const sources = [...new Set(findings.map(finding => text(finding['source'])).filter((source): source is string => source !== undefined))];
     const note = text(response['note']);
-    const head = sources.length > 0 ? `findings from ${sources.join(', ')}` : 'no findings';
+    const count = findings.reduce((n, finding) => n + findingCount(finding), 0);
+    const head = count > 0 ? `findings from ${sources.join(', ')}; ${count} delivered items` : 'no findings';
     return `completed, ${note === undefined ? head : `${head}; ${note}`}`;
   };
   const line = `research: ${detail()}`;
@@ -781,6 +790,7 @@ interface ActiveSession {
   researchLedger: ResearchLedger;
   /** C-LIVE behaviour 1: one research operation per finalized owner turn, for the whole session across generations. */
   researchAdmission: ResearchAdmission;
+  researchQueryContext?: string;
   /** C-LIVE: owner words seen since the last finalized owner turn, for admission (independent of the idle clock). */
   admissionSpeechPending?: boolean;
   /** C-LIVE N-2: the idle cause last written to host.log, so live_idle_arm is a state change only. */
@@ -2533,7 +2543,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    * owner's own speech. The ledger of what she said is consumed here, so a response is judged once.
    */
   #armClaimCheck(handle: ActiveSession, sequence: number): void {
-    const claim = announcesLookup(handle.claimText);
+    const claim = announcesLookup(handle.claimText) || /^\s*(?:checking|on it|one sec)[.!…]*\s*$/iu.test(handle.claimText);
     handle.claimText = '';
     handle.claimTimer?.cancel(); handle.claimTimer = undefined;
     if (!claim || handle.claimCorrected || handle.claimToolSeen || handle.muted) return;
@@ -3874,6 +3884,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         if (event.type === 'outputTranscription') {
           const said = stripNonLexicalTags(event.text);
           countTurnScript(handle, said);
+          handle.researchQueryContext = `${handle.researchQueryContext ?? ''} ${said}`.slice(-12000);
           handle.claimText = `${handle.claimText} ${said}`.slice(-300);
           // C-TURN8: the response's transcript is complete, so an announced lookup has its beat from here.
           if (event.finished === true) this.#armClaimCheck(handle, event.sequence);
@@ -3889,6 +3900,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;
+          if (handle.inputFinal && typeof event.text === 'string') handle.researchQueryContext = `${handle.researchQueryContext ?? ''} ${event.text}`.slice(-12000);
           if (handle.inputFinal) handle.ownerLastWords = typeof event.text === 'string' && event.text.trim() !== '' ? event.text.trim().split(/\s+/u).length : 0;
           if (handle.inputFinal) {
             // L-05: the provider sends the finished fragments of one utterance one after another, and the dead-air
@@ -4117,6 +4129,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       // #1028 behaviour 1: the digest this host already read is where the names of the owner's own
       // organisations live, so a misheard one is resolved before any source reads.
       calendarDigest: () => this.#calendar,
+      queryContext: () => handle.researchQueryContext ?? '',
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
       unavailableNow: () => this.#unreachableSources(handle), execute,
@@ -4193,7 +4206,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         response = researchRepair(parsed.reason);
       } else if (verdict !== undefined && !verdict.admitted) {
         hostLogEvent({ event: 'research_blocked', liveSessionId: handle.liveSessionId, generation, action: parsed.call.action, reason: verdict.reason });
-        response = admissionBlocked(verdict.reason);
+        response = admissionBlocked(verdict.reason, parsed.call.action === 'continue' ? handle.researchAdmission.deliveredReply() : undefined);
       } else {
         const firstStep = handle.toolStep;
         // R2: the one "still searching" line this call may earn, armed for its own 10 s and cancelled by its answer.
@@ -4207,6 +4220,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         // (only when this call ran alone, so a batch step is never credited to the wrong call).
         this.#linkResearchCall(handle, host, call.id, parsed.call.question, response, event.calls.length === 1 && handle.toolStep > firstStep ? firstStep : undefined);
         if (response['error'] === undefined && parsed.call.action !== 'stop' && generation === handle.generation) {
+          handle.researchAdmission.deliveredReply(response);
           handle.researchAdmission.delivered(typeof response['researchId'] === 'string' ? response['researchId'] : parsed.call.researchId);
         }
       }
@@ -4343,7 +4357,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       }, SPEAKING_HOLD_MS);
     }
     if (reason !== null) return hostLogEvent({ ...receipt, destination: 'ledger', reason });
-    const line = `One more thing from ${event.source}: ${event.items[0]!.slice(0, LATE_SPOKEN_CHARS)}`;
+    const line = lateFindingsText(event.source, event.items);
     try { handle.session.sendText({ text: line }); } catch { return hostLogEvent({ ...receipt, destination: 'ledger', reason: 'send_failed' }); }
     if (event.source === 'calendar') handle.researchLedger.delivered(event.researchId, event.runId ?? -1, (event.calendarKeys ?? []).filter((_, index) => line.includes(event.items[index] ?? '\u0000')));
     if (event.mailKeys) {
@@ -4692,6 +4706,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
           handle.contextToolChars += responses.reduce((sum, entry) => sum + JSON.stringify(entry.response ?? {}).length, 0);
           // #538: what the write did is the host's to read, not a receipt to log and then forget.
           const outcome = handle.session.sendToolResponse({ responses });
+          handle.researchQueryContext = `${handle.researchQueryContext ?? ''} ${responses.map(entry => JSON.stringify(entry.response)).join(' ')}`.slice(-12000);
           // #451: the function_call_output write itself, measured from the frame that asked for it.
           const askedAt = event.calls.map(call => arrivedAt.get(call.id)).find(started => started !== undefined);
           hostLogEvent({ event: 'tool_output_sent', liveSessionId: handle.liveSessionId, generation, tools: responses.length, outcome,

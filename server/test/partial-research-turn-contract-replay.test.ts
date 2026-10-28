@@ -39,8 +39,9 @@ const HOST_GRACE_MS = RESEARCH_OPERATION.hostGraceMs;
 // C-RESEARCH-CONTRACT T-03: the block reply names the closed reason actually applied, with its one-line
 // directive, so two different refusals read differently to the model. These replays pin the reason and the
 // directive that belong to them rather than one generic sentence.
-const BLOCKED = (reason: 'turn_spent' | 'no_turn_since_result' | 'no_owner_turn' | 'answer_already_given') =>
-  ({ status: 'blocked', reason, directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false });
+const BLOCKED = (reason: 'turn_spent' | 'no_turn_since_result' | 'no_owner_turn' | 'answer_already_given', delivered?: Record<string, unknown>) =>
+  ({ status: 'blocked', reason, directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false,
+    ...(delivered === undefined ? {} : { code: reason, deliveredCount: 12, deliveredResults: delivered }) });
 
 const NOW = 1_700_000_000_000;
 const flush = async (): Promise<void> => { for (let i = 0; i < 8; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
@@ -260,7 +261,8 @@ test('replay 1: the observed cascade, six model continues after one partial answ
     await research(h, `c${n}`, { action, researchId });
     const reply = await replyFor(h, `c${n}`);
     if (action === 'stop') { assert.notEqual(reply['status'], 'blocked', 'stop is always allowed'); continue; }
-    assert.deepEqual(reply, BLOCKED('turn_spent'), `a model continue with no owner turn since the answer is refused (call c${n}): ${JSON.stringify(reply)}`);
+    assert.equal(reply['deliveredCount'], 12, 'refused continue retains all twelve delivered items');
+    assert.deepEqual(reply, BLOCKED('turn_spent', first), `a model continue with no owner turn since the answer is refused (call c${n}): ${JSON.stringify(reply)}`);
     await h.advance(20);
   }
   assert.equal(h.dispatches.length, dispatched, 'no refused continue reached a source');
@@ -293,7 +295,9 @@ test('replay 3: a noncompliant provider that keeps calling cannot loop, and reco
   const dispatched = h.dispatches.length;
   for (let n = 1; n <= 20; n += 1) {
     await research(h, `n${n}`, { action: n % 2 === 0 ? 'start' : 'continue', researchId: first['researchId'], question: 'more', topic: 'plan' });
-    assert.deepEqual(await replyFor(h, `n${n}`), BLOCKED('turn_spent'), `call n${n} is refused`);
+    const refused = await replyFor(h, `n${n}`);
+    if (n % 2 !== 0) assert.equal(refused['deliveredCount'], 12, 'every refused continue retains the delivered count');
+    assert.deepEqual(refused, BLOCKED('turn_spent', n % 2 !== 0 ? first : undefined), `call n${n} is refused`);
     await h.advance(1_000);
   }
   assert.equal(h.dispatches.length, dispatched, 'twenty model calls dispatched nothing');

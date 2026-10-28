@@ -51,13 +51,13 @@ import { Store } from '../runtime/store.js';
 import { traceMigrations } from '../trace/schema.js';
 import { record, scopedTraceKey } from '../trace/record.js';
 import type { Transaction } from '../contracts/storage.js';
-import { announcesLookup, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
+import { announcesLookup, lateFindingsText, researchProjection, createLiveSessionOwner, feedJobs, LiveConfigError, LiveError, liveMigrations, DELEGATION_DEADLINE_MS, openerFromJournal, openersNote, OPENER_CONTEXT_CHARS, RESPONSE_WATCHDOG_NUDGE_MS, RESPONSE_WATCHDOG_RECOVERY_MS, AUDIBLE_DEBT_RUNG_MS, RESPONSE_WATCHDOG_WINDOW_MS, TOOL_CEILING_MS, callCeilingMs, TURN_FAILED_LINE, journalToolStatus, stripNonLexicalTags, LIVE_DROPPED_LINE_MARK, openerCancelled, validateLiveProfile, type LiveContext, type LiveSessionOwner, type LiveSessionSnapshot } from '../live/index.js';
 import { CANARY, control, deferred, fixture, options, pcm } from './live-voice-fixture.js';
 import { fakeReady as openAiReady, fixture as openAiFixture } from './openai-live-voice-fixture.js';
 import { FRESH_OPENING, OPENAI_BACKEND_BREVITY, OPENAI_BACKEND_TEMPLATE } from '../adapters/live-voice/openai.js';
 import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js';
-import { ADMISSION_BLOCK_REASONS, ADMISSION_DIRECTIVES, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, admissionBlocked, pagesCurrentRun, RESEARCH } from '../tools/research.js';
+import { bindResearchQuery, ADMISSION_BLOCK_REASONS, ADMISSION_DIRECTIVES, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, admissionBlocked, pagesCurrentRun, RESEARCH } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 import { luxNoteMigrations } from '../tools/lux-note.js';
 import { notesExportMigrations } from '../tools/notes-export.js';
@@ -1816,7 +1816,7 @@ test('timer storage failure is a causal uncaught process failure with durable ro
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const source = `
     import { Store } from ${JSON.stringify(new URL('../runtime/store.js', import.meta.url).href)};
-    import { createLiveSessionOwner, validateLiveProfile, liveMigrations } from ${JSON.stringify(new URL('../live/index.js', import.meta.url).href)};
+    import { lateFindingsText, researchProjection, createLiveSessionOwner, validateLiveProfile, liveMigrations } from ${JSON.stringify(new URL('../live/index.js', import.meta.url).href)};
     import { domainMigrations } from ${JSON.stringify(new URL('../domain/schema.js', import.meta.url).href)};
     const store = new Store(${JSON.stringify(dir)}, [...domainMigrations, ...liveMigrations]);
     let clock = ${NOW}, callback;
@@ -4691,7 +4691,7 @@ test('R6: a source that settles after the first answer is appended once, and sai
   assert.deepEqual(reply['pending'], ['chat'], `the reply names the source it is still reading: ${JSON.stringify(reply).slice(0, 500)}`);
   assert.ok((reply['findings'] as unknown[]).length > 0, 'and carries what is already in hand');
   assert.equal(receipts.filter(entry => entry['event'] === 'research_first_answer').length, 1, 'one receipt for the answer point');
-  assert.deepEqual(fake.texts.filter(text => text.startsWith('One more thing from')), [], 'nothing is spoken before the reader lands');
+  assert.deepEqual(fake.texts.filter(text => text.startsWith('Late findings from your lookup')), [], 'nothing is spoken before the reader lands');
   release();
   await settlePort();
   const late = receipts.filter(entry => entry['event'] === 'research_late_findings');
@@ -4699,7 +4699,7 @@ test('R6: a source that settles after the first answer is appended once, and sai
   assert.equal(late[0]!['source'], 'chat');
   assert.equal(late[0]!['destination'], 'response', 'a quiet turn hears it through the response channel, the one the provider accepts');
   assert.deepEqual(fake.thinking, [], 'no provider append carries a late finding (#438)');
-  assert.deepEqual(fake.texts.map(text => text.split(':')[0]), ['One more thing from chat'], 'one spoken line, naming the source');
+  assert.deepEqual(fake.texts.map(text => text.split(':')[0]), ['Late findings from your lookup, not supplied by the owner'], 'one spoken line, naming the source');
   assert.deepEqual(fake.commentary, [], 'the refused commentary append is no longer the door a finding takes');
   h.owner.revoke(session.liveSessionId);
 });
@@ -4740,7 +4740,7 @@ test('#472: a late result for a run the model stopped is named a cut, never a so
   const journal = safeEvent(late.at(-1));
   assert.ok(journal, 'the cut receipt passes the host log whitelist, so it lands in the journal');
   assert.equal(journal['reason'], 'run_cut', 'and the journal keeps the reason the drop point named');
-  assert.deepEqual(fake.texts.filter(text => text.startsWith('One more thing from')), [], 'and nothing is claimed to the model for a read the stop voided');
+  assert.deepEqual(fake.texts.filter(text => text.startsWith('Late findings from your lookup')), [], 'and nothing is claimed to the model for a read the stop voided');
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -4770,7 +4770,7 @@ test('#472: a late source result reaches the model while the session is live', a
   assert.equal(late.length, 1, 'one receipt for the source that landed later');
   assert.equal(late[0]!['source'], 'chat');
   assert.notEqual(late[0]!['destination'], 'dropped', `the late result is not dropped: ${JSON.stringify(late[0])}`);
-  assert.ok(fake.texts.some(text => text.startsWith('One more thing from chat')), 'the model carries the late finding on the response channel');
+  assert.ok(fake.texts.some(text => text.includes('from your chat:')), 'the model carries the late finding on the response channel');
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -6413,7 +6413,7 @@ test('C-CLAIMS9: a first-person lookup announcement is recognised by its class',
 
 // C-TURN8: three times on 10-28 she said she was checking and no call followed. The host gives the call
 // one beat (CLAIM_WITHOUT_CALL_MS) and then says so once, inside the owner's turn.
-test('C-TURN8: a claim with no call gets exactly one correction, and only once per owner turn', async t => {
+for (const progress of ['Checking.', 'On it.', 'One sec.']) test(`C-TURN8: ${progress} with no call gets exactly one correction, and only once per owner turn`, async t => {
   const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-claim-'));
   const stop = captureHostDiagnostics(new HostLog(captureDir));
   t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
@@ -6432,7 +6432,7 @@ test('C-TURN8: a claim with no call gets exactly one correction, and only once p
   h.f.send({ serverContent: { inputTranscription: { text: 'what did Priya send me about the synthetic contract', finished: true } } });
   for (let attempt = 0; attempt < 200 && !turnOpen(); attempt++) await tick();
   assert.ok(turnOpen(), 'the owner turn is open before she answers it');
-  h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that now.", finished: true }, turnComplete: true } });
+  h.f.send({ serverContent: { outputTranscription: { text: progress, finished: true }, turnComplete: true } });
   for (let attempt = 0; attempt < 300 && !armed(); attempt++) await tick();
   assert.ok(armed(), 'the announced lookup armed its three-second bound');
   await advance(2_000);
@@ -7384,4 +7384,41 @@ test('research admission names its closed reason and admits a paging continue of
   assert.deepEqual(second.admit('continue', true), { admitted: true }, 'the own-results continue spends no owner turn');
   second.delivered('run-2');
   assert.deepEqual(second.admit('continue'), { admitted: false, reason: 'no_turn_since_result' });
+});
+
+// R9-W5: the own-results allowance belongs to an owner turn, never to the session.
+test('research own-results continue allowance renews on each owner turn', () => {
+  const admission = new ResearchAdmission();
+  for (let turn = 0; turn < 2; turn += 1) {
+    admission.ownerTurn();
+    assert.deepEqual(admission.admit('start', false, false, 'synthetic web question'), { admitted: true });
+    admission.delivered(`synthetic-${turn}`);
+    assert.deepEqual(admission.admit('continue', true), { admitted: true });
+    assert.equal(admission.admit('continue', true).admitted, false);
+  }
+});
+
+
+test('R9-W5 refusal retains delivered findings and projection uses closed refusal code', () => {
+  const delivered = { findings: [{ source: 'web', text: 'Web: 3 of 3 shown\nalpha\nbeta\ngamma' }] };
+  const reply = admissionBlocked('turn_spent', delivered);
+  assert.equal(reply['deliveredCount'], 3);
+  assert.doesNotMatch(String(reply['directive']), /nothing|empty|blocked/iu);
+  assert.equal(reply['status'], 'blocked', 'W5-R2 preserves accepted admission envelope');
+  assert.match(researchProjection(reply, 'completed'), /refused:turn_spent/u);
+  assert.match(researchProjection({ findings: [{ source: 'calendar', text: 'Calendar: 1 of 1 shown\nSynthetic meeting' }] }, 'completed'), /findings from calendar; 1 delivered items/u);
+});
+
+test('R9-W5 late findings all retain source and lookup provenance', () => {
+  const line = lateFindingsText('web', ['alpha', 'beta', 'gamma']);
+  assert.match(line, /not supplied by the owner/u);
+  for (const item of ['alpha', 'beta', 'gamma']) assert.ok(line.includes(`from the web: ${item}`));
+  assert.equal(lateFindingsText('mail', ['synthetic mail']).includes('from your mail:'), true);
+  assert.ok(lateFindingsText('web', ['a'.repeat(1000), 'b'.repeat(1000), 'c'.repeat(1000)]).length <= 280);
+});
+
+test('R9-W5 web query drops directory-only proper nouns, keeps conversational names', () => {
+  assert.deepEqual(bindResearchQuery('cost for Cedarworks and Unrelatedname', 'what does Cedarworks cost'), { query: 'cost for Cedarworks and', dropped: 1 });
+  assert.deepEqual(bindResearchQuery('news about Soraya', 'tell me about Soraya'), { query: 'news about Soraya', dropped: 0 });
+  assert.deepEqual(bindResearchQuery('news about Toolsource', 'Recent tool finding: Toolsource'), { query: 'news about Toolsource', dropped: 0 });
 });

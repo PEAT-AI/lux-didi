@@ -477,3 +477,40 @@ test('a handler that throws outside its own catch writes one closed tool_handler
   assert.equal(logged.length, 1);
   assert.deepEqual(logged[0], { event: 'tool_handler_error', tool: 'stage_lux_note', class: 'TypeError', reason: 'handler_outcome' });
 });
+
+// C-LUXSAVE11, synthetic owner conversation only. These assertions precede the fix.
+test('C-LUXSAVE11: delayed deictic save requests authorize the conversation, qualified requests do not', () => {
+  for (const text of ['save all of this', 'store all of this in great detail', 'remember that', 'note this']) {
+    assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
+  }
+  for (const text of ['do not save all of this', 'maybe store all of this', 'if I say save all of this']) {
+    assert.notDeepEqual(composedAsk(text), { decision: 'grant' }, text);
+  }
+});
+
+test('C-LUXSAVE11 W12-R2: a 4,000-character body fits independently of the title; longer bodies refuse', () => {
+  assert.equal(freezeNote({ title: 'Synthetic synthesis', body: 'x'.repeat(4_000) }).state, 'frozen');
+  assert.equal(freezeNote({ title: 'Synthetic synthesis', body: 'x'.repeat(4_001) }).state, 'refused');
+});
+
+test('C-LUXSAVE11: paragraph boundaries survive staging so no paragraph can be hidden from readback', () => {
+  const body = 'The synthetic plan is ready. Details follow.\n\nThe second paragraph changes the budget.\n\n- The first bullet has a constraint.\n- The second bullet adds a deadline.';
+  const outcome = beginStage({ stageId: 'paragraphs', sessionId: 'synthetic', ownerText: 'save this to lux',
+    title: 'Synthetic plan', body, evidence: EVIDENCE, heldEvidence: HELD, enabled: true, now: 1 });
+  assert.equal(outcome.state, 'staged');
+  if (outcome.state === 'staged') {
+    assert.equal(outcome.note.body, body);
+    assert.equal(JSON.parse(outcome.note.payload).content, body);
+  }
+  assert.equal(beginStage({ stageId: 'empty', sessionId: 'synthetic', ownerText: 'save this to lux',
+    title: 'Synthetic plan', body: '', evidence: EVIDENCE, heldEvidence: HELD, enabled: true, now: 1 }).state, 'refused');
+});
+
+test('C-LUXSAVE11: confirmation is a closed phrase, not an arbitrary affirmative word bag', () => {
+  for (const text of ['yes', 'yes save it', 'save it', 'go ahead', 'do it', 'save this note']) {
+    assert.equal(confirmAsk(text), 'affirm', text);
+  }
+  for (const text of ['right', 'perfect', 'go', 'do', 'yes but not yet', 'yes save it no', 'yes save it after lunch']) {
+    assert.equal(confirmAsk(text), 'cancel', text);
+  }
+});

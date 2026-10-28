@@ -1478,10 +1478,10 @@ test('LAT-1023: the first ack before a lookup names the sources it is reading', 
   // The ack rule already lives in the backchannel policy, so the source name rides the same sentence and
   // no new speech path, timer or host cue is added.
   assert.match(NAYA_VOICE_SURFACE, /after announcing a check, say what it found before the turn ends/u);
-  assert.match(NAYA_VOICE_SURFACE, /When that first line announces a lookup, name the sources you are reading in a few words/u);
+  assert.match(NAYA_VOICE_SURFACE, /When announcing a lookup, name the sources you are reading briefly/u);
   assert.match(NAYA_VOICE_SURFACE, /checking your mail/u);
   assert.match(NAYA_VOICE_SURFACE, /looking in your vault and calendar/u);
-  assert.equal(NAYA_LIVE_BASE.split('name the sources you are reading in a few words').length - 1, 1, 'the rule reaches the live persona once');
+  assert.equal(NAYA_LIVE_BASE.split('name the sources you are reading briefly').length - 1, 1, 'the rule reaches the live persona once');
   assert.doesNotMatch(NAYA_VOICE_SURFACE, /[\u2013\u2014]/u, 'no dash stands in the rule text');
 });
 

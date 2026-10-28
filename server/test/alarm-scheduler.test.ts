@@ -57,7 +57,9 @@ test('alarm scheduler: nineteen minutes late rings; twenty-one is missed', t => 
   f.advance(1261000);
   f.scheduler.recheck('wake');
   assert.equal(f.due.length, 1);
-  assert.deepEqual(f.scheduler.list().map(row => row.state).sort(), ['missed', 'ringing']);
+  assert.equal(f.scheduler.list().find(row => row.createdJournalId === 'j1')?.state, 'missed');
+  assert.equal(f.scheduler.list().find(row => row.createdJournalId === 'j2')?.state, 'ringing');
+  assert.equal(f.due[0]?.createdJournalId, 'j2');
 });
 
 test('alarm scheduler: bounded waits and simultaneous alarms', t => {

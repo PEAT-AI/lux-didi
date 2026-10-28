@@ -315,14 +315,14 @@ test('a fence that reached no answer still commits one from the evidence gathere
   }
 });
 
-test('conversation consent revocation during final synthesis is unavailable and cannot commit its answer', async t => {
+test('conversation consent revocation during final synthesis stays cancelled and cannot commit its answer', async t => {
   const f = await fixture(t); const session = f.session(); f.repeatCalls();
   f.setFinalHook(() => { f.chat.revoke(session, f.context); });
   const run = await f.turn(session);
   assert.equal(f.requests.length, 5);
   assert.deepEqual(f.requests[4]!.declarations, []);
   assert.equal(f.executions(), 4);
-  assert.equal(run.outcome, 'unavailable');
+  assert.equal(run.outcome, 'cancelled');
   assert.equal(run.finalEntryId, null);
 });
 

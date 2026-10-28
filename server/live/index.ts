@@ -56,15 +56,6 @@ const pickupInstruction = 'The user has just picked up. Deliver the pending job 
 /** Q5-R4: the most the earlier calls' opening lines may add to a start instruction. */
 export const OPENER_CONTEXT_CHARS = 450;
 
-/** Q5-R4: one or two sentences, so the note carries a subject and not only a short fragment. */
-function openingSentencesOf(text: string): string {
-  const flat = text.replace(/\s+/gu, ' ').trim();
-  const sentences = flat.split(/(?<=[.?!])\s+/u).filter(Boolean);
-  const first = sentences[0] ?? flat;
-  const pair = sentences.slice(0, 2).join(' ');
-  return first.length < 80 && pair.length <= 200 ? pair : first;
-}
-
 /**
  * Q5-R4: the previous calls' openers as "do not repeat" context, under 450 chars and absent when no
  * earlier call exists. Three calls are named so the note carries a subject as well as words. The journal
@@ -87,7 +78,7 @@ export function openersNote(openers: readonly string[], topics: readonly (string
 export const hostNote = (text: string): string => `[host note, not the owner] ${text}`;
 
 /** The most of a recorded option's topic the note names, so a long fragment stays one clause. */
-const OPENER_TOPIC_CHARS = 60;
+
 
 /**
  * Q5-R4: one earlier call's opening utterance: its ordered transcription fragments up to the first

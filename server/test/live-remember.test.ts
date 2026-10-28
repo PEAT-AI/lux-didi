@@ -209,16 +209,8 @@ test('Live remember writes owner words once, freezes the current prompt and reca
 });
 
 test('Live remember provenance refusals do not write memory', async t => {
-  // C-TURN8: with no owner turn at all the pre-owner gate answers first, so the note never reaches its own
-  // provenance check. The case is kept, with the gate's own closed reason.
-  await t.test('no_owner_input', async st => {
-    const h = await harness(st, { tools: true });
-    await attached(h);
-    const { guidance, ...refused } = await remember(h, undefined, { text: 'model invention', kind: 'fact' }, 2) as Record<string, unknown>;
-    assert.equal(typeof guidance, 'string', 'a refusal carries guidance she must say');
-    assert.deepEqual(refused, { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input' });
-    assert.equal(rows(h).length, 0, 'nothing is written before he speaks');
-  });
+  // C-TURN8: the case with no owner speech at all is answered earlier now, by the pre-owner gate, and is
+  // asserted in `a note with no owner speech at all is still refused`.
   for (const [utterance, text, code] of [
     ['What is on my calendar?', 'model invention', 'owner_text_mismatch'],
     ['remember that mint is Friday', 'mint is Monday', 'owner_text_mismatch'],
@@ -441,16 +433,13 @@ test('a note grounded in the latest partial turn is stored when the transcript n
   assert.equal(rows(h).length, 1);
 });
 
-test('a note whose owner transcript never finalizes is still refused', async t => {
-  // C-TURN8: the owner has started speaking, so the pre-owner gate is open; what is missing is the end of
-  // his words, and that is what the note's own provenance gate still refuses.
-  const scheduler = new RememberClock();
-  const h = await harness(t, { tools: true, scheduler });
+test('a note with no owner speech at all is still refused', async t => {
+  // C-TURN8: before his first word the pre-owner gate answers, with its own closed reason, so the note never
+  // reaches its provenance check. The scenario and its guarantee (nothing written) are unchanged.
+  const h = await harness(t, { tools: true });
   await attached(h);
-  const resultPromise = remember(h, 'note that the synthetic mint is due Friday', { text: 'model invention', kind: 'fact' }, 2, false);
-  await until(() => [...scheduler.pending].some(item => item.at === NOW + 1500));
-  scheduler.advance(1500);
-  assert.deepEqual(refusal(await resultPromise), { remembered: false, code: 'owner_transcript_not_final' });
+  assert.deepEqual(refusal(await remember(h, undefined, { text: 'model invention', kind: 'fact' }, 2)),
+    { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input' });
   assert.equal(rows(h).length, 0);
 });
 

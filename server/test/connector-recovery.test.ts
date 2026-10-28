@@ -993,3 +993,32 @@ test('L2: the background owner reports its start read and its timer read, and a 
   await Promise.all([firstRead, secondRead]);
   assert.deepEqual(joined.map(event => event.reason), ['start'], 'a read a caller joined is reported by the edge that started it');
 });
+
+test('C-START10: identity proof survives startup recovery passes but not a changed credential or a new host', async t => {
+  let probes = 0;
+  const gmail = await fixture({ tools: GMAIL_TOOLS, call: () => { probes += 1; return { payload: { emailAddress: ACCOUNT } }; } });
+  const dir = mkdtempSync(join(tmpdir(), 'didi-start-identity-'));
+  const configDir = join(dir, 'provider-config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const credential = (token: string) => writeFileSync(join(configDir, 'synthetic-seat.json'), JSON.stringify({ schemaVersion: 1, token }), { mode: 0o600 });
+  credential('synthetic-token-one');
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', ownerIdentity: ACCOUNT,
+    endpoints: [{ ...googleConfig(gmail.url, 'gmail', 'mail'), credentialRef: 'synthetic-seat' }],
+  }), { mode: 0o600 });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  let runtime: Awaited<ReturnType<typeof composeMcpRuntime>> | undefined;
+  t.after(async () => { await runtime?.close(); store.close(); await gmail.close(); rmSync(dir, { recursive: true, force: true }); });
+  const compose = () => composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryRepeatMs: false });
+  runtime = await compose();
+  assert.equal(runtime.status().endpoints[0]!.state, 'connected');
+  await runtime.recover();
+  await runtime.refresh();
+  await runtime.recover();
+  assert.equal(probes, 1, 'one host reuses its proven identity across real reconnect and recover passes');
+  credential('synthetic-token-two');
+  await runtime.refresh();
+  assert.equal(probes, 2, 'a changed credential must prove its own identity');
+  await runtime.close();
+  runtime = await compose();
+  assert.equal(probes, 3, 'proofs do not leak across host starts');
+});

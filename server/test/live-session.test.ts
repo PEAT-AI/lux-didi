@@ -6253,19 +6253,23 @@ test('C-TURN8: a claim with no call gets exactly one correction, and only once p
     const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
     return typeof text === 'string' && text.startsWith('Correction:');
   });
+  const counted = () => readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n')
+    .map(line => JSON.parse(line) as { event: string; ms?: number }).filter(line => line.event === 'live_claim_without_call');
+  const armed = (): boolean => [...scheduler.pending].some(entry => entry.due === scheduler.now + 3_000);
   h.f.send({ serverContent: { inputTranscription: { text: 'what did Priya send me about the synthetic contract', finished: true } } });
   await settlePort();
   h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that now.", finished: true }, turnComplete: true } });
-  await settlePort();
-  assert.equal(corrections().length, 0, 'nothing is said before the bound has passed');
+  for (let attempt = 0; attempt < 200 && !armed(); attempt++) await tick();
+  assert.ok(armed(), 'the announced lookup armed its three-second bound');
   await advance(2_000);
-  assert.equal(corrections().length, 0, 'a call still has its beat');
+  assert.equal(corrections().length, 0, 'nothing is said before the bound has passed');
+  assert.deepEqual(counted(), [], 'and nothing is logged yet');
   await advance(1_000);
-  const counted = () => readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; ms?: number }).filter(line => line.event === 'live_claim_without_call');
   assert.deepEqual(counted().map(line => line.ms), [3_000], 'the claim is counted with its bound');
   assert.equal(corrections().length, 1, 'exactly one correction for the announcement');
   assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /say plainly that you are not checking anything/);
   h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that again now.", finished: true }, turnComplete: true } });
+  await settlePort();
   await advance(3_000);
   assert.equal(corrections().length, 1, 'the turn spends its one correction and never a second');
   assert.equal(counted().length, 1, 'and it is logged once');

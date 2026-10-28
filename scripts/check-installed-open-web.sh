@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # No app launch, audio, accounts or external network. Override DIDI_OPEN_WEB_RESOURCES
 # with ~/Applications/Lux Didi.app/Contents/Resources to check an installed app.
+# An explicit app target checks that bundle, never a staged checkout.
 # By default exercise a fresh, offline-packed staging of this lane's service.
 set -euo pipefail
 export CI=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
@@ -8,9 +9,16 @@ cd "$(dirname "$0")/.."
 repo="$PWD"
 work=$(mktemp -d "${TMPDIR:-/tmp}/didi-installed-open-web.XXXXXX")
 trap 'rm -rf "$work"' EXIT
-(cd server && npm run build)
-resources="${DIDI_OPEN_WEB_RESOURCES:-$work/Resources}"
-if [ -z "${DIDI_OPEN_WEB_RESOURCES:-}" ]; then
+if [ "$#" -gt 1 ]; then
+  echo 'A5 FAIL: expected at most one installed app target' >&2; exit 2
+fi
+if [ "$#" -eq 1 ]; then
+  resources="$1/Contents/Resources"
+else
+  resources="${DIDI_OPEN_WEB_RESOURCES:-$work/Resources}"
+fi
+if [ "$#" -eq 0 ] && [ -z "${DIDI_OPEN_WEB_RESOURCES:-}" ]; then
+  (cd server && npm run build)
   mkdir -p "$resources/server/node_modules/@lux-didi/service" "$resources/web"
   (cd server && npm pack --offline --loglevel=error --ignore-scripts --pack-destination "$work" >/dev/null)
   tar -xzf "$work"/*.tgz --strip-components=1 -C "$resources/server/node_modules/@lux-didi/service"

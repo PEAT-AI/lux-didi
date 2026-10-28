@@ -123,6 +123,29 @@ test('C-DEPTH11/#648: a mail helper that answers with no payload is a failure wi
   assert.equal(result.state === 'unknown' ? result.reason : '', 'empty-payload', 'the closed code names the no-payload case');
 });
 
+test('C-DEPTH11: a calendar list with only subscribed calendars reads no events instead of a public holiday', async () => {
+  const seen: string[] = [];
+  const port = calendarPort([
+    { id: 'en.usa#holiday@group.v.calendar.google.com', summary: 'Holidays in the United States', accessRole: 'reader' },
+    { id: '#weeknum@group.v.calendar.google.com', summary: 'Week Numbers', accessRole: 'reader' },
+  ], seen);
+  const result = await readerFor(port, CALENDAR_TOOLS, 'calendar').gcalList({});
+  assert.deepEqual(seen, [], 'no subscribed calendar is read for a plain schedule question');
+  assert.deepEqual(readOf(result)['events'], [], 'and no holiday is served as the owner schedule');
+});
+
+test('C-DEPTH11: the pre-rename calendar names are a closed refusal, never an empty schedule', async () => {
+  const id = 'depth-fake';
+  const registry = new McpRegistry();
+  registry.register({ id, transport: 'stdio', command: process.execPath, args: ['fixture'], env: { HOME: join(tmpdir(), 'didi-depth-home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: ACCOUNT, resource: RESOURCE } as unknown as EndpointConfig);
+  registry.enable(id);
+  registry.allowEgress(id);
+  // The accepted grant names the current tools and the installed helper advertises only the old ones, the
+  // shape owner sessions logged as gcal_list and gcal_calendars failing.
+  const digest = registry.observed(id, [{ name: 'gcal_calendars', inputSchema: { type: 'object' } }, { name: 'gcal_list', inputSchema: { type: 'object' } }], registry.revision(id));
+  assert.throws(() => registry.approve({ endpointId: id, schemaDigest: digest, toolNames: ['calendar_list_calendars', 'calendar_list_events'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 }), /invalid-local-read-grant|invalid|unknown-tool/g, 'an old name in the grant is refused at approval instead of becoming a silent empty read');
+});
+
 test('C-DEPTH11/#648: an honest empty is the paired opposite, and it carries the query it ran', () => {
   const shaped = shapeGmailList({ messages: [] });
   const words = noEmptyResult(shaped.text, 'mail', 'newer_than:2d is:unread');

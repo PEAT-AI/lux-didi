@@ -156,7 +156,7 @@ test('a stage needs the switch, the owner grammar and evidence the host holds', 
 test('unknown tool arguments are rejected, never coerced', () => {
   assert.equal(validateStageNote({ title: 'T', body: 'B', evidenceRefs: ['journal:1'] }), true);
   assert.equal(validateStageNote({ title: 'T', body: 'B', evidenceRefs: ['journal:1'], commit: true }), false);
-  assert.equal(validateStageNote({ title: 'T', body: 'B' }), false);
+  assert.equal(validateStageNote({ title: 'T', body: 'B' }), true, 'model citations are optional for conversation synthesis');
   assert.equal(validateStageNote({ title: 'T', body: 7, evidenceRefs: [] }), false);
   assert.equal(validateStageNote(null), false);
 });
@@ -583,4 +583,17 @@ test('C-LUXSAVE11 W12-R5: absent composedNotes defaults on, explicit owner false
   assert.equal(liveFeatures({ notesExport: false }).composedNotes, true);
   assert.equal(liveFeatures({ composedNotes: false }).composedNotes, false);
   assert.equal(liveFeatures({ composedNotes: true }).composedNotes, true);
+});
+
+
+test('C-LUXSAVE11 W12-R2: host provenance does not consume the model body allowance', () => {
+  const result = beginStage({ stageId: 'tainted-limit', sessionId: 'synthetic', ownerText: 'save all of this',
+    title: 'Synthetic', body: 'x'.repeat(4_000), evidence: [], heldEvidence: HELD, enabled: true, now: 1, externalContextPresent: true });
+  assert.equal(result.state, 'staged');
+  if (result.state === 'staged') {
+    assert.equal(result.note.body, `${'x'.repeat(4_000)}\n\n${NOTE_PROVENANCE}`);
+    assert.equal(freezeNote({ title: result.note.title, body: result.note.body, externalContextPresent: true }).state, 'frozen');
+  }
+  assert.equal(beginStage({ stageId: 'tainted-over', sessionId: 'synthetic', ownerText: 'save this',
+    title: 'Synthetic', body: 'x'.repeat(4_001), evidence: [], heldEvidence: HELD, enabled: true, now: 1, externalContextPresent: true }).state, 'refused');
 });

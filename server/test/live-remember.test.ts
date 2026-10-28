@@ -351,18 +351,19 @@ test('C-LUXSAVE11 host: existing local memories remain readable after retiring t
   nextAttachment.close();
 });
 
-for (const order of ['read_then_save', 'save_then_read'] as const) {
+for (const order of ['read_then_save', 'read_then_save_tool', 'save_then_read'] as const) {
   test(`C-LUXSAVE11 host: ${order} controls authority while external results always taint`, async t => {
     const clock = new RememberClock();
     const h = await harness(t, { tools: true, scheduler: clock });
     const { session, attachment } = await attached(h);
     await ownerBlock(h, order === 'save_then_read' ? 'save all of this' : 'find the synthetic record');
+    const heldToolRef = `tool:synthetic-call-${h.f.frames.length}-research`;
     const external = await call(h, 'research', { action: 'start', question: 'What does Lux knowledge say about the synthetic plan?', topic: 'synthetic plan', sources: 'knowledge', lookups: [{ source: 'knowledge', query: 'synthetic plan' }] });
     assert.ok(external);
     assert.ok(h.calls.some(call => call.name === 'search_knowledge'), `the external read actually executes: ${JSON.stringify(external)}`);
-    if (order === 'read_then_save') { await assistantBlock(h, 'The synthetic record has twelve budget units.'); await ownerBlock(h, 'save all of this'); }
+    if (order !== 'save_then_read') { await assistantBlock(h, 'The synthetic record has twelve budget units.'); await ownerBlock(h, 'save all of this'); }
     const journal = h.store.transaction(tx => tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE live_session_id=? AND kind='inputTranscription'", [session.liveSessionId]));
-    const result = await call(h, 'stage_lux_note', { ...candidate, evidenceRefs: [`journal:${journal!['id']}`] });
+    const result = await call(h, 'stage_lux_note', { ...candidate, evidenceRefs: order === 'read_then_save_tool' ? [heldToolRef] : [`journal:${journal!['id']}`] });
     if (order === 'save_then_read') assert.equal(result['code'], 'authorization_missing');
     else {
       assert.equal(result['staged'], true, JSON.stringify(result));
@@ -384,7 +385,7 @@ for (const order of ['read_then_save', 'save_then_read'] as const) {
       assert.equal(receipt?.['candidate_digest'], digest?.['payload_sha256']);
 
     }
-    assert.equal(h.saved.length, order === 'read_then_save' ? 1 : 0);
+    assert.equal(h.saved.length, order !== 'save_then_read' ? 1 : 0);
     attachment.close();
   });
 }

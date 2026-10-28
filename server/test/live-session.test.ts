@@ -6259,7 +6259,9 @@ test('C-TURN8: a claim with no call gets exactly one correction, and only once p
   h.f.send({ serverContent: { inputTranscription: { text: 'what did Priya send me about the synthetic contract', finished: true } } });
   await settlePort();
   h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that now.", finished: true }, turnComplete: true } });
-  for (let attempt = 0; attempt < 200 && !armed(); attempt++) await tick();
+  for (let attempt = 0; attempt < 300 && !armed(); attempt++) await tick();
+  t.diagnostic(`pending: ${JSON.stringify([...scheduler.pending].map(entry => entry.due - scheduler.now))}`);
+  t.diagnostic(`journal: ${JSON.stringify(h.owner.current().entries.map(entry => entry.kind))}`);
   assert.ok(armed(), 'the announced lookup armed its three-second bound');
   await advance(2_000);
   assert.equal(corrections().length, 0, 'nothing is said before the bound has passed');

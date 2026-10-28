@@ -476,3 +476,25 @@ test('C-START10: an eight-second startup summary does not delay provider open pa
     assert.equal(storedRow(h.store, 's-eight-second-start')!.status, 'complete', 'late completion is durable for the next call, not injected into this one');
   } finally { await owner.shutdown(); h.cleanup(); }
 });
+
+test('C-START10: quit grace expires with a durable retry marker that a new host recovers', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-quit-interrupted');
+    let entered!: () => void;
+    const generating = new Promise<void>(resolve => { entered = resolve; });
+    const stuck: ModelPort = { generate: () => { entered(); return new Promise(() => {}); } };
+    const summarizer = worker(h.store, stuck, []);
+    summarizer.schedule('s-quit-interrupted');
+    await generating;
+    const closing = summarizer.settleOnExit();
+    t.mock.timers.tick(30_000);
+    assert.equal(await closing, 'timeout', 'the grace does not wait forever for an unresponsive provider');
+    assert.equal(storedRow(h.store, 's-quit-interrupted')!.status, 'failed', 'the production pending marker is durable before dispatch');
+    const recovered = new ScriptedModel([modelResult('complete', '{"skip":false,"summary":"the owner recovered a synthetic note."}')]);
+    assert.equal(await worker(h.store, recovered, []).recoverAtStart(), 'done');
+    assert.equal(recovered.calls, 1);
+    assert.equal(storedRow(h.store, 's-quit-interrupted')!.status, 'complete');
+  } finally { h.cleanup(); }
+});

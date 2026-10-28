@@ -32,11 +32,11 @@ One clear result can be opened. Ambiguous Drive matches require clarification an
 
 ## Local memory and Lux notes
 
-Local `remember_note` capture creates a Didi memory, not a remote source edit. Recall selects authorized stored records rather than every transcript ever seen; [selected-memory.md](selected-memory.md) owns that selection.
+Existing local memories remain available for recall; [selected-memory.md](selected-memory.md) owns that selection. The live model no longer receives `remember_note` or `save_to_vault`; direct calls are refused with `tool_retired`, never redirected to a local fallback.
 
-`VAULT_WRITE_IDENTITY` in `server/tools/vault-write.ts` identifies `save_to_vault`, the owner-requested dictated-note flow. It is not permission to rewrite, delete or update arbitrary knowledge records.
+`STAGE_NOTE_IDENTITY` in `server/tools/lux-note.ts` identifies the single live save path, `stage_lux_note`. `liveFeatures` defaults `composedNotes` on, preserving an explicit owner false. Its generated declaration owns save guidance; the persona and runtime context do not duplicate it. The model supplies title, body (up to 4,000 characters, paragraphs preserved) and optional evidence refs. It cannot authorize itself by quoting an owner request.
 
-`STAGE_NOTE_IDENTITY` in `server/tools/lux-note.ts` identifies `stage_lux_note`, the composed-note flow. It is advertised only when `liveFeatures` enables `composedNotes`, which defaults off. The host stages the note, reads it back and waits for fresh owner confirmation; staging itself is not saving. Interruption, expiry and unknown outcomes must remain visible. [Privacy and authority](privacy-and-authority.md) owns these gates.
+The host consumes a single-use owner-request token, freezes the candidate and returns the readback in the function/tool output, never a user-role item. Confirmation arms only after matching spoken output and native playback end. A new owner confirmation must start after that boundary and settle without a trailing negation. A confirmed candidate uses `VaultWriter` and the Lux `save_insight` transport under project `didi-voice`; only a returned insight ID permits a saved claim. Over-cap notes receive `too_long` and an offer to split. Interruption, expiry, unavailable transport and uncertain outcomes are not saves and never fall back locally. [Privacy and authority](privacy-and-authority.md) owns these gates.
 
 ## The Trello board (W7)
 

@@ -105,11 +105,11 @@ export function validateAcceptedPrompt(input: unknown, ownerId?: string): Accept
 
 /** W6: two switches, both defaulted here: composed notes are off until the owner turns them on. */
 export function liveFeatures(value: unknown): { readonly composedNotes: boolean; readonly notesExport: boolean } {
-  if (value === undefined) return Object.freeze({ composedNotes: false, notesExport: true });
+  if (value === undefined) return Object.freeze({ composedNotes: true, notesExport: true });
   if (!object(value)) fail('invalid_features');
   const keys = Object.keys(value);
   if (keys.some(key => key !== 'composedNotes' && key !== 'notesExport')) fail('invalid_features');
-  const composedNotes = value['composedNotes'] ?? false;
+  const composedNotes = value['composedNotes'] ?? true;
   const notesExport = value['notesExport'] ?? true;
   if (typeof composedNotes !== 'boolean' || typeof notesExport !== 'boolean') fail('invalid_features');
   return Object.freeze({ composedNotes, notesExport });

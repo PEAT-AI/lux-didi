@@ -1,3 +1,4 @@
+import { liveFeatures } from '../live/config.js';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -573,4 +574,13 @@ test('C-LUXSAVE11: split confirmation merges, trailing negation and early onset 
   const negated = noteOwnerUtterance(second, { text: 'no', now: 3_400, onsetAt: 3_300 });
   assert.equal(noteSettle(negated, 5_000).state, 'cancelled');
   assert.equal(noteOwnerUtterance(armed(), { text: 'yes', now: 3_000, onsetAt: 1_000 }).state, 'cancelled');
+});
+
+
+test('C-LUXSAVE11 W12-R5: absent composedNotes defaults on, explicit owner false stays off', () => {
+  assert.equal(liveFeatures(undefined).composedNotes, true);
+  assert.equal(liveFeatures({}).composedNotes, true);
+  assert.equal(liveFeatures({ notesExport: false }).composedNotes, true);
+  assert.equal(liveFeatures({ composedNotes: false }).composedNotes, false);
+  assert.equal(liveFeatures({ composedNotes: true }).composedNotes, true);
 });

@@ -138,12 +138,12 @@ test('a dispatched row at host start becomes uncertain and is never re-sent', as
   assert.equal(fake.calls.length, 0, 'an uncertain row is never re-sent');
 });
 
-test('a drop after the vault committed is outcome_unknown with one request and no retry', async t => {
+test('a dropped call has no confirmed receipt, is write_failed, and never retries', async t => {
   const fake = await fakeLux(t, 'drop');
   const h = harness(t, fake.url);
   speak(h, '14', `save to my vault: ${NOTE}`);
   const receipt = await save(h, NOTE);
-  assert.deepEqual(receipt, { saved: false, code: 'outcome_unknown', guidance: 'I am not sure it landed, check the vault' });
+  assert.deepEqual(receipt, { saved: false, code: 'write_failed', guidance: 'I could not confirm that the vault saved the note; do not retry it automatically' });
   assert.equal(fake.calls.length, 1, 'exactly one request, no retry');
 });
 
@@ -152,7 +152,7 @@ test('a 503 is write_failed after exactly one request', async t => {
   const h = harness(t, fake.url);
   speak(h, '15', `save to my vault: ${NOTE}`);
   const receipt = await save(h, NOTE);
-  assert.deepEqual(receipt, { saved: false, code: 'write_failed', guidance: 'the vault did not take the note, say it again' });
+  assert.deepEqual(receipt, { saved: false, code: 'write_failed', guidance: 'I could not confirm that the vault saved the note; do not retry it automatically' });
   assert.equal(fake.calls.length, 1);
 });
 
@@ -161,7 +161,7 @@ test('a duplicate refusal is never reported as saved', async t => {
   const h = harness(t, fake.url);
   speak(h, '16', `save to my vault: ${NOTE}`);
   const receipt = await save(h, NOTE);
-  assert.deepEqual(receipt, { saved: false, code: 'write_failed', guidance: 'the vault did not take the note, say it again' });
+  assert.deepEqual(receipt, { saved: false, code: 'write_failed', guidance: 'I could not confirm that the vault saved the note; do not retry it automatically' });
   assert.equal(fake.calls.length, 1);
 });
 

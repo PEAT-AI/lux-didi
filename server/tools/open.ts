@@ -116,7 +116,7 @@ const ownerTurn = new Map<string, IntentWindow>();
 const ownerFinalized = new Map<string, Set<() => void>>();
 export function noteOwnerPartial(runId: string, text: string): void {
   const window = ownerTurn.get(runId) ?? { turns: [], modelSpoke: false };
-  window.partial = text.slice(-INTENT_CHARS);
+  window.partial = `${window.partial ?? ''}${text}`.slice(-INTENT_CHARS);
   ownerTurn.set(runId, window);
 }
 export function noteOwnerWords(runId: string, text: string): void {
@@ -361,7 +361,7 @@ export function validateOpenWeb(args: unknown): args is { kind: WebKind; target:
 }
 
 /** The closed open verbs; a name alone, or a question about a site, is never an open request. */
-const WEB_INTENT = /(?:^|[^\p{L}\p{N}])(?:navigate\s+to|search\s+for|google|look\s+up|directions\s+to|map\s+of|open\s+up|oeffne|öffne|öffnen|zeig|zeige|zeigen|mach\b.{0,80}\bauf|suche?\s+nach|geh\s+auf|open|opens|opened|opening|show|shows|showing|pull(?:ing)?\s+up|bring(?:ing)?\s+up|go\s+to|going\s+to|take\s+me\s+to|launch|launching|look\s+up\s+on|find\s+on)\b/u;
+const WEB_INTENT = /(?:^|[^\p{L}\p{N}])(?:navigate\s+to|search\s+for|google|look\s+up|directions\s+to|map\s+of|open\s+up|oeffne|öffne|öffnen|zeig|zeige|zeigen|mach\b.{0,80}\bauf|suche?\s+nach|geh\s+auf|open|opens|opened|opening|show|shows|showing|pull(?:ing)?\s+up|bring(?:ing)?\s+up|go\s+to|going\s+to|take\s+me\s+to|launch|launching|look\s+up\s+on|find\s+on)\b/iu;
 
 /** His words, normalised: lowercase, punctuation stripped, a spoken "dot" read as one. */
 export function webWords(text: string): string[] {

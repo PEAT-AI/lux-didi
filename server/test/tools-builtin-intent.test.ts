@@ -64,7 +64,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       continue;
     }
     // journal.intent invokes callDTO, the same canonicalization used by the gateway.
-    assert.equal(owner.journal.intent(intent), 'fresh', definition.name);
+    assert.doesNotThrow(() => assert.equal(owner.journal.intent(intent), 'fresh'), `${definition.name} stores its intent`);
     await assert.doesNotReject(() => definition.execute(args, { ...intent, signal }), `${definition.name} must accept its stored intent`);
   }
 });

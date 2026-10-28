@@ -40,13 +40,17 @@ interface FixtureOptions {
   token?: (res: ServerResponse) => void;
   /** #671: which tool call answers 503, the transient unavailability the owner's Mac reported. */
   unavailableCall?: (index: number) => boolean;
-  /** TRAIN8-R8: the attempt that never answers, so the recovery attempt's own deadline is what ends it. */
-  hang?: boolean;
+  /**
+   * TRAIN8-R8: from this 1-based request on, the answer never lands, so the recovery attempt's own
+   * deadline is what ends it. Request 1 is the first connect, which stays fast on purpose.
+   */
+  hangFrom?: number;
 }
 
 async function fixture(options: FixtureOptions = {}, port = 0) {
   let requests = 0;
   let calls = 0;
+  let served = 0;
   let hung = 0;
   const listener = createServer(async (req, res) => {
     try {
@@ -54,8 +58,9 @@ async function fixture(options: FixtureOptions = {}, port = 0) {
       if ((req.method ?? 'GET') === 'DELETE') { res.writeHead(200); res.end(); return; }
       if (req.url === '/oauth/token') { options.token?.(res); return; }
       // The attempt that never answers: the response is left open on purpose, so only the recovery
-      // attempt's own deadline can end it. closed by listener.closeAllConnections().
-      if (options.hang === true) { hung += 1; return; }
+      // attempt's own deadline can end it. Closed by listener.closeAllConnections().
+      served += 1;
+      if (options.hangFrom !== undefined && served >= options.hangFrom) { hung += 1; return; }
       const sdk = new Server({ name: 'synthetic-mongoose', version: '1' }, { capabilities: { tools: { listChanged: false } } });
       sdk.setRequestHandler('tools/list', () => {
         requests += 1;
@@ -346,7 +351,7 @@ test('TRAIN8-R8: an attempt that never answers is cut by its own deadline, so th
   // The ruling's case: a connect whose answer never lands. Without a per-attempt deadline this round never
   // issues another attempt, which is exactly the stall the release train measured. The fixture answers
   // nothing, the attempt deadline ends each attempt, and the ladder still walks its bounded count and stops.
-  const f = await fixture({ hang: true }); t.after(() => f.close());
+  const f = await fixture({ hangFrom: 2, tools: [{ name: 'search_mongoose', inputSchema: { type: 'object', properties: [], required: 'not-an-array' } }] }); t.after(() => f.close());
   const configDir = configDirFor(f.url, 'mongoose-knowledge');
   oauthRecord(configDir, 'mongoose-knowledge', { refreshToken: 'refresh-material', expiresAt: Date.now() + 3_600_000, consentStartedAt: Date.now() });
   const dir = mkdtempSync(join(tmpdir(), 'didi-recovery-hang-'));

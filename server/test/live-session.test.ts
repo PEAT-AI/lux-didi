@@ -6267,6 +6267,7 @@ test('C-TURN8: a claim with no call gets exactly one correction, and only once p
   assert.equal(corrections().length, 0, 'nothing is said before the bound has passed');
   assert.deepEqual(counted(), [], 'and nothing is logged yet');
   await advance(1_000);
+  t.diagnostic(`fired: ${JSON.stringify(counted().map(line => line.ms))} pending: ${JSON.stringify([...scheduler.pending].map(entry => entry.due - scheduler.now))}`);
   assert.deepEqual(counted().map(line => line.ms), [3_000], 'the claim is counted with its bound');
   assert.equal(corrections().length, 1, 'exactly one correction for the announcement');
   assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /say plainly that you are not checking anything/);

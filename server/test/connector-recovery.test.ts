@@ -349,12 +349,16 @@ test('TRAIN8-R8: an attempt that never answers is cut by its own deadline, so th
   // And the round advanced past it: the cut is what lets the ladder schedule the next attempt.
   await until(() => f.hung() >= 2, 15000);
   assert.ok(f.hung() >= 2, `the round advances past the hung attempt (${f.hung()})`);
-  // The round is bounded: it stops, and no further attempt is issued once it has.
-  await until(() => runtime.status().endpoints[0]!.retrying === false, 15000);
-  const settled = f.hung();
-  await new Promise(resolve => setTimeout(resolve, 100));
-  assert.equal(f.hung(), settled, 'the bounded round issues no further attempt after it stops');
-  assert.ok(settled <= 1 + FAST.length, `the round stops at its bounded count (${settled} <= 1 + ${FAST.length})`);
+  // The round is bounded: once it has stopped, no further attempt is issued. Poll for a count that
+  // stops moving rather than for `retrying`, which is briefly false between two scheduled attempts.
+  let stable = 0;
+  for (let poll = 0; poll < 300 && stable < 5; poll += 1) {
+    const before = f.hung();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    stable = f.hung() === before ? stable + 1 : 0;
+  }
+  assert.equal(runtime.status().endpoints[0]!.retrying, false, 'the round is over and no attempt is pending');
+  assert.ok(f.hung() <= 1 + FAST.length, `the round stops at its bounded count (${f.hung()} <= 1 + ${FAST.length})`);
 });
 
 /** Two Google endpoints of one owner account, each proving itself with its own family's tool. */

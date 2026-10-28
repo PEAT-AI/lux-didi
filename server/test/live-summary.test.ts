@@ -9,6 +9,8 @@ import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
 import { liveMigrations } from '../live/schema.js';
+import { createLiveSessionOwner, validateLiveProfile } from '../live/index.js';
+import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { toolsMigrations } from '../tools/schema.js';
 import { historySessionEvidence, recordHistorySession } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
@@ -437,4 +439,40 @@ test('C-START10: quit grace completes an eight-second summary and the next start
     assert.equal(await worker(h.store, model, []).recoverAtStart(), 'done');
     assert.equal(calls, 1, 'a durable completion is not regenerated on the next launch');
   } finally { h.cleanup(); }
+});
+
+
+test('C-START10: an eight-second startup summary does not delay provider open past 2.5 seconds', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = summarizerFixture();
+  const fake = fakeLiveVoicePort();
+  const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'synthetic-live', voice: 'ExplicitVoice',
+    keyReference: 'synthetic', route: { enabled: true, provider: 'gemini', modelId: 'synthetic-live', dataClasses: ['ordinary', 'private'] },
+    prompt: { text: 'Synthetic system', dataClass: 'ordinary' } });
+  let elapsed = 0;
+  const owner = createLiveSessionOwner({ store: h.store, voice: fake.port, profile, now: () => SUMMARY_NOW + elapsed, timeZone: 'UTC' });
+  try {
+    seedConversation(h.store, 's-eight-second-start');
+    let entered!: () => void;
+    const generating = new Promise<void>(resolve => { entered = resolve; });
+    const model: ModelPort = { generate: () => {
+      entered();
+      return new Promise(resolve => setTimeout(() => resolve(modelResult('complete', '{"skip":false,"summary":"the owner saved a synthetic startup note."}')), 8_000));
+    } };
+    const summarizer = worker(h.store, model, []);
+    const settling = summarizer.recoverAtStart();
+    await generating;
+    elapsed = 2_000; t.mock.timers.tick(elapsed);
+    assert.equal(await settling, 'timeout');
+    const ctx = { clientId: 'synthetic', auditId: 'start-proof', authorityEpoch: h.store.authorityEpoch };
+    const session = owner.create({ idempotencyKey: 'eight-second-proof', inputClass: 'ordinary' }, ctx);
+    const attachment = owner.attach({ liveSessionId: session.liveSessionId }, ctx);
+    await attachment.ready;
+    assert.equal(fake.sessionsOpened, 1, 'the actual voice port opens while the summary is still pending');
+    assert.ok(elapsed < 2_500);
+    assert.notEqual(storedRow(h.store, 's-eight-second-start')!.status, 'complete');
+    elapsed = 8_000; t.mock.timers.tick(6_000);
+    assert.equal(await summarizer.settleOnExit(), 'done');
+    assert.equal(storedRow(h.store, 's-eight-second-start')!.status, 'complete', 'late completion is durable for the next call, not injected into this one');
+  } finally { await owner.shutdown(); h.cleanup(); }
 });

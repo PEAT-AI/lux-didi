@@ -547,6 +547,7 @@ function retireDebugJournal(dataDir: string, log: HostLog): void {
 }
 
 export async function startHost(config: HostConfig) {
+  const startedAt = performance.now();
   const dataDir = resolve(config.dataDir), webRoot = resolve(config.webRoot);
   const port = config.port ?? 8765;
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid local port');
@@ -559,7 +560,7 @@ export async function startHost(config: HostConfig) {
   // A crashed predecessor can leave a descriptor naming a dead host. Clear it before this
   // start so a start that also fails leaves no stale descriptor behind.
   clearStaleDescriptor(descriptorPath);
-  const log = new HostLog(dataDir);
+  const log = new HostLog(dataDir, undefined, { startedAt, now: () => performance.now() });
   let exitLogged = false, exitSignal: NodeJS.Signals | undefined;
   let startupStage = 'log';
   const logExit = (stage: string, reason: 'close' | 'exit'): void => {

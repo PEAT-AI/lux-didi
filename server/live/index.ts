@@ -3183,6 +3183,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // L8-Q03: the turn the dead socket was answering is closed under its own epoch, never left open forever.
     if (handle.connection.turnId !== undefined) this.#closeTurn(handle, 'recovered');
     handle.connection = { seq: handle.connection.seq + 1, epoch: `e${handle.connection.seq + 1}`, turnId: undefined, turnIndex: handle.connection.turnIndex };
+    // Continuation attribution is local to the socket epoch, never inherited by a rebuilt greeting.
+    handle.traceOutputTurnId = undefined;
+    handle.audioResponseId = undefined;
     handle.deadlineAt = this.#now() + remaining; handle.deadlineMs = Date.now() + remaining;
     // #660: a result that returned unspoken is why this window exists, so the new session opens model-first and
     // speaks as soon as the delivery below lands, instead of waiting for the owner to ask again.

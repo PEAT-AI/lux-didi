@@ -7320,3 +7320,15 @@ test('research admission names its closed reason and admits a paging continue of
   second.delivered('run-2');
   assert.deepEqual(second.admit('continue'), { admitted: false, reason: 'no_turn_since_result' });
 });
+
+// R9-W5: the own-results allowance belongs to an owner turn, never to the session.
+test('research own-results continue allowance renews on each owner turn', () => {
+  const admission = new ResearchAdmission();
+  for (let turn = 0; turn < 2; turn += 1) {
+    admission.ownerTurn();
+    assert.deepEqual(admission.admit('start', false, false, 'synthetic web question'), { admitted: true });
+    admission.delivered(`synthetic-${turn}`);
+    assert.deepEqual(admission.admit('continue', true), { admitted: true });
+    assert.equal(admission.admit('continue', true).admitted, false);
+  }
+});

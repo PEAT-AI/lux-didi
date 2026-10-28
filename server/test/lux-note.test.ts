@@ -119,10 +119,10 @@ test('an append or edit ask is answered as unsupported, never turned into a crea
 });
 
 test('the confirm word is an exact affirmative allowlist under normalisation, at most six tokens, with disqualifiers', () => {
-  for (const text of ['yes', 'Yes.', 'yeah do it', 'correct', 'that is right', 'ok save it', 'yes, save it']) {
+  for (const text of ['yes', 'Yes.', 'yes save it', 'go ahead', 'do it', 'save this note', 'yes, save it']) {
     assert.equal(confirmAsk(text), 'affirm', text);
   }
-  for (const text of ['no', 'not yet', 'yes but change the date', 'yes wait make it fifty', 'cancel', 'no do not', 'yes cancel that', 'yes and please also add a hotel line', 'hold on']) {
+  for (const text of ['yeah do it', 'correct', 'that is right', 'ok save it', 'no', 'not yet', 'yes but change the date', 'yes wait make it fifty', 'cancel', 'no do not', 'yes cancel that', 'yes and please also add a hotel line', 'hold on']) {
     assert.equal(confirmAsk(text), 'cancel', text);
   }
   assert.equal(CONFIRM_MAX_TOKENS, 6);
@@ -130,7 +130,7 @@ test('the confirm word is an exact affirmative allowlist under normalisation, at
 
 test('the frozen payload never truncates, and an oversized title plus body is refused whole', () => {
   const over = freezeNote({ title: 'Trip', body: 'x'.repeat(NOTE_MAX_CHARS + 1) });
-  assert.deepEqual(over, { state: 'refused', code: 'payload_too_long' });
+  assert.deepEqual(over, { state: 'refused', code: 'too_long' });
   const empty = freezeNote({ title: 'Trip', body: '' });
   assert.deepEqual(empty, { state: 'refused', code: 'payload_empty' });
   const frozen = freezeNote({ title: 'Trip', body: 'Fly on the third.' });
@@ -148,8 +148,8 @@ test('a stage needs the switch, the owner grammar and evidence the host holds', 
     { state: 'refused', code: 'authorization_missing' });
   assert.deepEqual(beginStage({ stageId: 's', sessionId: 'x', now: 1, ownerText: 'save that to lux', title: 'T', body: 'B', evidence: ['journal:99'], heldEvidence: HELD, enabled: true }),
     { state: 'refused', code: 'evidence_unknown' });
-  assert.deepEqual(beginStage({ stageId: 's', sessionId: 'x', now: 1, ownerText: 'save that to lux', title: 'T', body: 'B', evidence: [], heldEvidence: HELD, enabled: true }),
-    { state: 'refused', code: 'evidence_missing' });
+  assert.equal(beginStage({ stageId: 's', sessionId: 'x', now: 1, ownerText: 'save that to lux', title: 'T', body: 'B', evidence: [], heldEvidence: HELD, enabled: true }).state,
+    'staged', 'conversation synthesis does not require the model to invent a citation');
 });
 
 test('unknown tool arguments are rejected, never coerced', () => {
@@ -162,7 +162,7 @@ test('unknown tool arguments are rejected, never coerced', () => {
 
 test('the lifecycle is stage, drained, affirmative, settle, commit, and nothing commits before the read-back drained', () => {
   const note = staged();
-  assert.equal(noteOwnerUtterance(note, { text: 'yes', now: 1_500 }).state, 'staged');
+  assert.equal(noteOwnerUtterance(note, { text: 'yes', now: 1_500 }).state, 'cancelled');
   const armedNote = armed();
   const settling = noteOwnerUtterance(armedNote, { text: 'yes', now: 3_000 });
   assert.equal(settling.state, 'settling');
@@ -174,8 +174,9 @@ test('the lifecycle is stage, drained, affirmative, settle, commit, and nothing 
 test('a VAD split affirmative that keeps talking never commits', () => {
   const settling = noteOwnerUtterance(armed(), { text: 'yes', now: 3_000 });
   assert.equal(settling.state, 'settling');
-  const cancelled = noteOwnerFragment(settling, 3_400);
-  assert.deepEqual({ state: cancelled.state, code: cancelled.code }, { state: 'cancelled', code: 'late_fragment' });
+  const pending = noteOwnerFragment(settling, 3_400);
+  assert.equal(noteSettle(pending, 5_000).state, 'settling', 'partial speech cannot commit');
+  const cancelled = noteOwnerUtterance(pending, { text: 'wait make it fifty', now: 3_500 });
   assert.equal(noteSettle(cancelled, 5_000).state, 'cancelled');
 });
 
@@ -189,9 +190,9 @@ test('an interrupted read-back invalidates the stage, and nothing else can reviv
 test('a confirmation after the thirty second window cancels, and a mismatch cancels with its reason', () => {
   const late = noteOwnerUtterance(armed(), { text: 'yes', now: 2_000 + CONFIRM_WINDOW_MS + 1 });
   assert.deepEqual({ state: late.state, code: late.code }, { state: 'cancelled', code: 'confirm_expired' });
-  const mismatch = noteOwnerUtterance(armed(), { text: 'no', now: 3_000 });
+  const mismatch = noteSettle(noteOwnerUtterance(armed(), { text: 'no', now: 3_000 }), 5_000);
   assert.deepEqual({ state: mismatch.state, code: mismatch.code }, { state: 'cancelled', code: 'not_affirmative' });
-  assert.equal(noteOwnerUtterance(armed(), { text: 'what time is it', now: 3_000 }).state, 'cancelled');
+  assert.equal(noteSettle(noteOwnerUtterance(armed(), { text: 'what time is it', now: 3_000 }), 5_000).state, 'cancelled');
 });
 
 test('a stage that never hears a read-back will not take a confirmation forever', () => {

@@ -201,7 +201,7 @@ test('the grammar is anchored, takes his natural asks, and the content key ignor
 const flush = async (): Promise<void> => { for (let i = 0; i < 6; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
 
 /** The shipped adapter journals deltas (finished 0) and one empty finished transcription; a boundary test must too. */
-test('the adapter-shaped transcript mints the authorization from the assembled owner turn', async t => {
+test('the adapter-shaped transcript never mints a legacy dictation write authorization', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'vault-boundary-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const store = new Store(dir, [...domainMigrations, ...chatMigrations, ...liveMigrations]);
@@ -227,23 +227,17 @@ test('the adapter-shaped transcript mints the authorization from the assembled o
   await emit({ type: 'inputTranscription', text: 'survey is on Tuesday', finished: false });
   assert.equal(rows().length, 0, 'a delta alone is not an owner turn');
   await emit({ type: 'inputTranscription', text: '', finished: true });
-  const minted = rows();
-  assert.equal(minted.length, 1, 'the finished boundary mints exactly one authorization');
-  assert.equal(minted[0]?.['content'], 'the boat survey is on Tuesday');
-  assert.equal(minted[0]?.['state'], 'authorized');
-
+  assert.equal(rows().length, 0, 'a finalized save request is not a legacy vault-write authorization');
   await emit({ type: 'inputTranscription', text: '', finished: true });
-  assert.equal(rows().length, 1, 'a blank finished turn mints nothing and never re-mints the turn before it');
-
+  assert.equal(rows().length, 0, 'a blank final cannot mint a legacy authorization');
   await emit({ type: 'inputTranscription', text: 'what is the weather', finished: false });
   await emit({ type: 'inputTranscription', text: '', finished: true });
-  assert.equal(rows().length, 1, 'an ordinary turn mints nothing');
-
+  assert.equal(rows().length, 0, 'an ordinary owner turn cannot mint a legacy authorization');
   owner.text('save to my vault: the typed note');
   await flush();
-  assert.equal(rows().length, 1, 'operator-typed text is not a dictation');
+  assert.equal(rows().length, 0, 'typed text cannot mint a legacy authorization');
   await emit({ type: 'inputTranscription', text: '', finished: true });
-  assert.equal(rows().length, 1, 'and the blank turn after it never carries the typed words forward');
+  assert.equal(rows().length, 0, 'a blank turn never carries typed words forward');
 
   attachment.close();
   await drained;

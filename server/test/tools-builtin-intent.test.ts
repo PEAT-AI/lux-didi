@@ -212,3 +212,33 @@ test('C-OPEN11: the shared acquisition merges two finalized owner turns', async 
   noteOwnerWords(runId, 'this email in my browser');
   assert.equal(await webOwnerWords(runId, new AbortController().signal), 'please open this email in my browser');
 });
+
+// C-ALARMFIX: compare the real host catalog with the provider's first wire frame.
+for (const provider of ['gemini', 'openai'] as const) test(`live owner catalog reaches ${provider} wire declarations`, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-catalog-'));
+  const store = new Store(join(dir, 'synthetic'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
+  const f = await fixture(t);
+  const registry = new McpRegistry();
+  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic' });
+  t.after(() => port.close());
+  let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
+  const owner = createToolsOwner({ grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port, lookupAuthority: async (id, signal) => lookup?.(id, signal) ?? null });
+  const profile = validateLiveProfile({ provider, liveModelId: provider === 'gemini' ? 'models/synthetic' : 'gpt-live-1', voice: provider === 'gemini' ? 'Synthetic' : 'marin', keyReference: 'synthetic', route: { enabled: true, provider, modelId: provider === 'gemini' ? 'models/synthetic' : 'gpt-live-1', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic', dataClass: 'ordinary' } });
+  const { service } = composeLive(store, dir, { profile, socketFactory: f.socketFactory, credentials: { resolve: async () => 'synthetic' } }, undefined, undefined,
+    { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } });
+  t.after(async () => { await service.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const context = { clientId: store.clientId, authorityEpoch: 0 };
+  const session = service.create({ idempotencyKey: `catalog-${provider}`, inputClass: 'ordinary' }, context);
+  const attachment = service.attach(session.liveSessionId, context);
+  await f.frame(1);
+  const frame = f.frames[0] as { setup?: { tools?: { functionDeclarations: { name: string }[] }[] }; session?: { delegation: { responses: { tools?: { name: string }[] } } } };
+  const declarations = provider === 'gemini' ? frame.setup!.tools!.flatMap(group => group.functionDeclarations) : frame.session!.delegation.responses.tools!;
+  const names = declarations.map(tool => tool.name);
+  for (const tool of owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }))) {
+    if (tool.name !== 'conversation_history') assert.ok(names.includes(tool.name), `${provider} omitted registered owner tool ${tool.name}`);
+  }
+  for (const name of ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm']) assert.ok(names.includes(name), `${provider}: ${name}`);
+  assert.ok(!names.includes('remember_note') && !names.includes('save_to_vault'));
+  f.send(provider === 'gemini' ? { setupComplete: {} } : { type: 'session.started' });
+  await attachment.ready;
+});

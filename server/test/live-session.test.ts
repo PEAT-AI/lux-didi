@@ -6394,6 +6394,10 @@ test('C-CLAIMS9: a first-person lookup announcement is recognised by its class',
     'ill check that.',
     'I\u2019ll look into it.',
     'I\u2019m going to search the thread.',
+    // W3-R2/W3-R1: the ruling names the "let's" form in every spelling.
+    "Let's check that.",
+    'Let\u2019s look into it.',
+    'lets check the thread.',
   ]) assert.equal(announcesLookup(said), true, `an announced lookup: ${said}`);
   for (const said of [
     'I checked the calendar at nine.',

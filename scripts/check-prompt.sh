@@ -161,7 +161,7 @@ for (const reasonCode of ['credential_missing', 'credential-unavailable', 'crede
     connectors: [{ connector: 'mongoose', state: 'error', reasonCode }] });
   assert.match(one, /^Connectors: company knowledge not signed in\./mu, `host sign-in code classified as a sign-in: ${reasonCode}`);
 }
-for (const rule of ['say you cannot hear your output', 'never say you are unchanged', 'End no answer with "okay?" as a reflex']) {
+for (const rule of ['say you cannot hear it', 'never say you are unchanged', 'End no answer with "okay?" as a reflex']) {
   assert.ok(persona.NAYA_VOICE_SURFACE.includes(rule), `the voice surface states the truth rule: ${rule}`);
 }
 // C-TURN8: the one corrective line the host sends for a claim without its call is voice content, one

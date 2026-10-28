@@ -699,14 +699,14 @@ const WRAPPER_3O_CHARS = 6603;
 // the one thing she cannot do. #621 raises it for the coverage header the voice reads once, and the bound
 // carries the measured wrapper at this sha.
 // #665/#666: the honesty rules and the turn-taking line they replace raise it to the measured wrapper.
-// TR-R5: the owner rule for authored text is re-pin, never trim a reviewed rule, so the bound carries the merged measure.
+// TR-R5 is the historical re-pin precedent; TRAIN9-R2 authorizes equivalent wording, not raised bounds.
 // TR-R15: restoring W7's "rather than claiming it happened" clause, which W6's rewrite had dropped, measured 14_224.
 // TRAIN4-R1: the merged wrapper measures 14_303 once main's write-honesty clause is back beside V1's save
 // wording; the bound carries the merged measure and no reviewed rule is trimmed for it (TR-R5).
 // C-OPENWEB8: the open_web clause measures 14_474; the bound carries it, never a trimmed reviewed rule.
 // C-RESEARCH8: the two-ask rule and the re-worded evidence sentence add 2 chars on top, so the merged measure is
 // 14_476; the bound carries the merged measure and both wagons' reviewed rules stay (TR-R5).
-// W3-R2: the settings-or-approval-location rule measures 14_559; the bound carries it, never a trimmed rule.
+// W3-R2 set this 14_559 ceiling; TRAIN9-R2 preserves every rule within it through equivalent wording.
 const WRAPPER_W5_CHARS = 14_559;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [

@@ -1368,6 +1368,10 @@ test('C-SUMMARY8: an interrupted summary cannot hold the ready frame past its st
     } finally { seed.close(); }
     let modelCalls = 0;
     let releaseModel = () => {};
+    let modelReleased = false;
+    const summaryResponse = () => new Response(`data: ${JSON.stringify({ candidates: [{
+      content: { role: 'model', parts: [{ text: '{"skip":false,"summary":"the owner saved a synthetic note."}' }] }, finishReason: 'STOP',
+    }] })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
     const started = performance.now();
     const host = await startHost({ dataDir: dir, webRoot, configDir, port: 0,
       modelTesting: {
@@ -1375,9 +1379,10 @@ test('C-SUMMARY8: an interrupted summary cannot hold the ready frame past its st
         credentials: { resolve: async () => 'synthetic-not-a-real-key' },
         transport: () => {
           modelCalls += 1;
+          if (modelReleased) return Promise.resolve(summaryResponse());
           return new Promise<Response>(resolve => {
-            // Remain unanswered through the startup proof, then refuse permanently for bounded cleanup.
-            releaseModel = () => resolve(new Response('{}', { status: 400 }));
+            // Remain unanswered through startup; cleanup completes the summary without real retry backoff.
+            releaseModel = () => { modelReleased = true; resolve(summaryResponse()); };
           });
         },
       } });

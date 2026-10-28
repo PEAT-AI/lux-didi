@@ -225,7 +225,7 @@ export const calendarDigestRefreshMs = 15 * 60 * 1000;
 /** 556: the longest one background digest read may hold the owner before it is cut and said to have timed out. */
 export const calendarDigestReadMs = 10 * 1000;
 /** L2: the closed reasons a background digest read is reported under, and the receipt one read leaves in host.log. */
-export type CalendarDigestRefreshReason = 'start' | 'timer';
+export type CalendarDigestRefreshReason = 'start' | 'timer' | 'retry';
 export type CalendarDigestRefreshReceipt = { readonly event: 'calendar_digest_refreshed'; readonly reason: CalendarDigestRefreshReason; readonly ms: number };
 /** 556: the read that outlived its deadline, reported as one closed line rather than silence. */
 export type CalendarDigestTimeoutReceipt = { readonly event: 'calendar_digest_timeout'; readonly reason: CalendarDigestRefreshReason; readonly ms: number };
@@ -241,6 +241,7 @@ export class CalendarDigestCache {
   #inflight: Promise<CalendarDigestReadResult> | undefined;
   #timer: ReturnType<typeof setInterval> | undefined;
   #readAbort: AbortController | undefined;
+  #retried = false;
   #closed = false;
 
   constructor(read: (signal: AbortSignal) => Promise<CalendarDigestReadResult>, options: { readonly now: () => number; readonly timeZone: string; readonly intervalMs?: number; readonly log?: (receipt: CalendarDigestLogReceipt) => void }) {
@@ -296,8 +297,18 @@ export class CalendarDigestCache {
         // and every line names the edge that owed the read.
         if (reason === undefined) return result;
         // 556: a read the deadline cut says so, instead of passing for a read that answered `failed`.
-        if (expired) this.#log?.({ event: 'calendar_digest_timeout', reason, ms: Math.max(0, this.#now() - startedAt) });
-        else this.#log?.({ event: 'calendar_digest_refreshed', reason, ms: Math.max(0, this.#now() - startedAt) });
+        if (expired) {
+          this.#log?.({ event: 'calendar_digest_timeout', reason, ms: Math.max(0, this.#now() - startedAt) });
+          // C-CAL8: the call started with no day, so one background read is asked for at once and the digest
+          // it lands with answers the next assembly rather than waiting out the refresh timer.
+          if (!this.#retried) {
+            this.#retried = true;
+            void this.refresh('retry').catch(() => undefined);
+          }
+        } else {
+          this.#retried = false;
+          this.#log?.({ event: 'calendar_digest_refreshed', reason, ms: Math.max(0, this.#now() - startedAt) });
+        }
         return result;
       });
     this.#inflight = pending;

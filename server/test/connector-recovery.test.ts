@@ -315,7 +315,7 @@ test('a retryable first call failure retries a bounded number of times and then 
   // guard against a hung round, so it is generous enough that a loaded host cannot miss it. The test
   // carries its own timeout above that bound, because check-host.sh runs the suite with
   // --test-timeout=15000 and a wait bound equal to the runner timeout could only ever be cut off.
-  await until(() => f.requests() === 4, 15000);
+  await until(() => f.requests() >= 4, 15000);
   assert.equal(f.requests(), 4, 'the first connect plus exactly three bounded retries');
   await until(() => runtime.status().endpoints[0]!.retrying === false, 15000);
   assert.equal(runtime.status().endpoints[0]!.retrying, false, 'the round is over and no further attempt is pending');

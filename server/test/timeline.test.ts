@@ -460,7 +460,7 @@ test('C-LOGS11: the CLI answers "what happened in that call" in one command', ()
     // The human table is the same story, and a missing measurement says so in words.
     const text = execFileSync(process.execPath, [cli, 'call', 'latest', '--audit', '--data-dir', dir], { encoding: 'utf8' });
     assert.match(text, /^call aaaaaaaa-1111-4222-8333-444444444444 \(audit schema 1\)/);
-    assert.match(text, /search_knowledge 40ms completed/);
+    assert.match(text, /search_knowledge \d+ms 40ms completed/);
     assert.match(text, /missing no_native_receipt/);
   } finally {
     rmSync(dir, { recursive: true, force: true });

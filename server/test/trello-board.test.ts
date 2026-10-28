@@ -8,7 +8,7 @@ import { createTrelloBoard, TRELLO_KEY_FILE, trelloConfigured, trelloIdentity } 
 import { createTrelloRestTransport, trelloSchemas } from '../adapters/trello/client.js';
 import { foldName, indexTrelloSchemas, normalizeTrelloWrite, ownerAskedForChange, planTrelloCall, trelloDueInstant, validateTrelloRead, validateTrelloWrite, TRELLO_SERVER_ALLOW, TRELLO_SERVER_DENY, TRELLO_WRITE_DESCRIPTION, type TrelloBoard } from '../tools/trello.js';
 import { safeEvent } from '../host/log.js';
-import { startTrelloFake, SYNTHETIC_BOARD, type TrelloFake } from './trello-fake.js';
+import { FAKE_WORKSPACE, objectId, startTrelloFake, SYNTHETIC_BOARD, type TrelloFake } from './trello-fake.js';
 import { runToolCalls } from '../tools/declarations.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_PARAMETERS } from '../tools/trello.js';
@@ -250,7 +250,8 @@ test('dates are the owner local date, 09:00 when no time is given, and a non-dat
 
 test('the tool schemas refuse shapes outside each view and action', () => {
   assert.ok(validateTrelloRead({ view: 'list', list: 'Sprint', limit: 25 }));
-  assert.ok(!validateTrelloRead({ view: 'list', list: 'Sprint', limit: 26 }));
+  assert.ok(validateTrelloRead({ view: 'list', list: 'Sprint', limit: 26 }), 'a limit above the page bound is clamped, never refused');
+  assert.ok(!validateTrelloRead({ view: 'list', list: 'Sprint', limit: 0 }), 'a limit below one still refuses');
   assert.ok(!validateTrelloRead({ view: 'overview', board: 'Other' }), 'no board argument exists');
   assert.ok(validateTrelloWrite({ action: 'move', card: 'C1', list: 'Done' }));
   assert.ok(!validateTrelloWrite({ action: 'move', card: 'C1' }));
@@ -290,8 +291,20 @@ test('FILLER: the unused booleans the voice model sends are absent, and the writ
 
   assert.equal(validateTrelloWrite({ action: 'label', card: 'C1', label: 'green', remove: false }), true, 'a boolean the action uses is validated as today');
   assert.equal(validateTrelloWrite({ action: 'checklist', card: 'C1', item: 'Buy a drive', checked: false }), true, 'the checklist keeps its own checked');
-  assert.equal(validateTrelloWrite({ action: 'create', list: 'Today', name: 'Call the vet', checked: true }), false, 'a value the shape does not take still refuses');
+  assert.equal(validateTrelloWrite({ action: 'create', list: 'Today', name: 'Call the vet', checked: true }), true, 'a declared property create does not use is dropped whatever its value');
   assert.equal(validateTrelloWrite({ action: 'create', list: 'Today', name: 'Call the vet', board: 'Other' }), false, 'so does a non-filler unknown property');
+});
+
+// C-FILLER (R8-W1): the live model sends every declared property of every action with a value of its own: a
+// whitespace string, an enum word, `due:"none"`, `false`. Only the action's own properties are the write.
+test('FILLER: the proven padded move and checklist payloads keep only the values their action uses', () => {
+  const move = { action: 'move', card: 'C3', list: 'Done', name: ' ', description: ' ', text: ' ', item: ' ', checklist: ' ', checked: false, due: 'none', complete: false, label: ' ', remove: false };
+  assert.deepEqual(normalizeTrelloWrite(move).args, { action: 'move', card: 'C3', list: 'Done' }, 'a move keeps its card and its list');
+  assert.deepEqual(normalizeTrelloWrite(move).normalized, ['name', 'description', 'text', 'item', 'checklist', 'checked', 'due', 'complete', 'label', 'remove'], 'the log still names every key the provider sent');
+  assert.equal(validateTrelloWrite(move), true, 'the padded move is the move it chose');
+  assert.deepEqual(normalizeTrelloWrite({ action: 'checklist', card: 'C3', item: 'buy rope', checked: false }).args, { action: 'checklist', card: 'C3', item: 'buy rope', checked: false }, 'checked false on the action that uses it is a real value');
+  assert.equal(validateTrelloWrite({ action: 'checklist', card: 'C3', item: 'buy rope', checked: false }), true);
+  assert.equal(validateTrelloWrite({ action: 'create', list: 'Today', name: 'Call the vet', due: 'none' }), true, 'due on create is a value create uses');
 });
 
 test('the host log lines are content-free: tool, phase, outcome and a closed reason', () => {
@@ -513,6 +526,44 @@ test('C-ARGS: a call that fills in every declared property is read as the view i
   assert.equal(validateTrelloRead({ view: 'nonsense' }), false);
   assert.equal(validateTrelloWrite({ action: 'note', card: 'Book the venue', text: 'Rang them', name: '', description: '', list: '' }), true, 'the same rule holds for a write');
   assert.equal(validateTrelloWrite({ action: 'note', text: 'Rang them', card: '', name: '', description: '', list: '' }), false, 'a required property is never dropped');
+});
+
+// C-ARGS (R8-W1): 19 of 19 live reads were refused because the voice model fills all seven declared keys with
+// fillers of its own (a single space, `today`, 1 or 25); release 7 dropped only `''`, 0 and 10. The four
+// payloads below are proven by sha256 of JSON.stringify(args) against the refused calls' argumentsHash.
+test('C-ARGS: the four proven live read payloads are accepted, whatever filler the unused keys carry', async () => {
+  const payloads = [
+    { view: 'overview', list: ' ', query: ' ', window: 'today', card: ' ', offset: 0, limit: 1 },
+    { view: 'overview', list: ' ', query: ' ', window: 'today', card: ' ', offset: 0, limit: 25 },
+    { view: 'list', list: 'Ideas', query: ' ', window: 'today', card: ' ', offset: 0, limit: 25 },
+    { view: 'search', list: 'Sprint', query: 'plumber', window: 'week', card: 'Plan review', offset: 0, limit: 25 },
+  ];
+  for (const payload of payloads) assert.equal(validateTrelloRead(payload), true, JSON.stringify(payload));
+  assert.deepEqual(Object.keys(payloads[0]!), ['view', 'list', 'query', 'window', 'card', 'offset', 'limit'], 'the call keeps the keys the provider sent');
+  assert.equal((await board.read(session(), payloads[0]!)).view, 'overview');
+  const listed = await board.read(session(), payloads[2]!);
+  assert.deepEqual([listed.view, listed.list], ['list', 'Ideas'], 'the list view reaches the board with its own list');
+  const found = await board.read(session(), payloads[3]!);
+  assert.deepEqual((found.cards as { name: string }[]).map(card => card.name), ['Call the plumber']);
+  assert.equal(validateTrelloRead({ view: 'list', list: ' ' }), false, 'a property the view uses is still validated');
+});
+
+test('C-ARGS: a limit above the page bound is clamped to TRELLO_PAGE_MAX where the page is taken', async () => {
+  const local = await startTrelloFake({ now: NOW });
+  const dir = mkdtempSync(join(tmpdir(), 'trello-clamp-'));
+  try {
+    writeKey(dir, local.key, local.token);
+    writeFileSync(join(dir, 'trello-board.json'), JSON.stringify({ board: SYNTHETIC_BOARD, ownerIdentity: 'rob@plantix.net' }), { mode: 0o600 });
+    const ideas = local.lists.find(list => list.name === 'Ideas')!;
+    for (let index = 0; index < 30; index += 1) local.cards.push({ id: `ari:cloud:trello::card/workspace/${FAKE_WORKSPACE}/${objectId(NOW - 90_000 - index)}`, name: `Synthetic clamp ${index}`, desc: '', due: null, dueComplete: false, listId: ideas.id, boardId: ideas.boardId, closed: false, labelIds: [] });
+    const clamping = createTrelloBoard({ configDir: dir, url: local.url, timeZone: 'UTC', now });
+    const page = await clamping.read(session(), { view: 'list', list: 'Ideas', limit: 100 });
+    assert.deepEqual([page.total, page.shown, page.nextOffset], [32, 25, 25], 'a 100 card page is twenty five cards and a next offset');
+    assert.ok(validateTrelloRead({ view: 'list', list: 'Ideas', limit: 100 }), 'the oversized limit is accepted, never refused');
+  } finally {
+    await local.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('C-ARGS: a refused trello_read names its own keys in tool_arguments_rejected, never unknown', async () => {

@@ -95,9 +95,10 @@ export function parseSaveCommand(text: string): SaveCommand | undefined {
  * row is keyed by the stage, so a second settlement of the same stage inserts nothing and dispatches
  * nothing. Everything after this point is the one dictation path: claim, dispatch, settle.
  */
-export function authorizeComposedWrite(tx: Transaction, options: { liveSessionId: string; stageId: string; content: string; title: string; now: number }): VaultClaim {
+export function authorizeComposedWrite(tx: Transaction, options: { liveSessionId: string; stageId: string; content: string; title: string; now: number; externalContextPresent?: boolean; payloadSha?: string }): VaultClaim {
   tx.run('INSERT OR IGNORE INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
     [randomUUID(), options.liveSessionId, options.stageId, VAULT_REMOTE_TOOL, options.content, vaultContentKey(options.content), options.title, 'authorized', options.now]);
+  tx.run('UPDATE vault_writes SET external_context_present=?,candidate_digest=? WHERE live_session_id=? AND utterance_id=? AND state=\'authorized\'', [options.externalContextPresent ? 1 : 0, options.payloadSha ?? null, options.liveSessionId, options.stageId]);
   const row = tx.get('SELECT * FROM vault_writes WHERE live_session_id=? AND utterance_id=?', [options.liveSessionId, options.stageId]);
   if (!row) return { state: 'settled', receipt: refusal('outcome_unknown') };
   return claimRow(tx, row);

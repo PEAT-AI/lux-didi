@@ -341,14 +341,14 @@ test('TRAIN8-R8: an attempt that never answers is cut by its own deadline, so th
   const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null, recoveryDelaysMs: FAST, recoveryAttemptDeadlineMs: 50, lifecycleLog: event => { events.push(event as { event?: string; outcome?: string }); } });
   t.after(() => runtime.close());
   await runtime.start();
-  // The first connect hung and was cut, so at least one more attempt must follow: that is the advance.
+  // The cut is read on the retry line it writes, not on the projection: a later attempt sets the
+  // projection back to connecting before its own answer arrives.
+  const cut = () => events.some(event => event.event === 'connector_retry' && event.outcome === 'identity_timeout');
+  await until(cut, 15000);
+  assert.ok(true, 'the attempt that never answered was cut and logged as the closed transient identity_timeout');
+  // And the round advanced past it: the cut is what lets the ladder schedule the next attempt.
   await until(() => f.hung() >= 2, 15000);
-  const advanced = f.hung();
-  assert.ok(advanced >= 2, `the round advances past the hung attempt (${advanced})`);
-  // Read the cut on the retry line it writes, not on the projection: a later attempt sets the projection
-  // back to connecting before its own answer arrives.
-  assert.ok(events.some(event => event.event === 'connector_retry' && event.outcome === 'identity_timeout'),
-    'the cut attempt is the closed transient code on its connector_retry line');
+  assert.ok(f.hung() >= 2, `the round advances past the hung attempt (${f.hung()})`);
   // The round is bounded: it stops, and no further attempt is issued once it has.
   await until(() => runtime.status().endpoints[0]!.retrying === false, 15000);
   const settled = f.hung();

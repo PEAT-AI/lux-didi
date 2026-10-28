@@ -5711,11 +5711,12 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   const early = capReply(withHistoryPages(buildReply(view.run, 'partial', view.configured, false, view.limit), first.historyPages ?? []), view.limit);
   // #621: the pending note rides after the trim, so the length check runs once more on the reply the voice
   // actually receives.
+  const retainedNote = String(early['note'] ?? '').replace(RESEARCH.completeNote, '').trim();
   const wrapped = capReply({
     ...early,
     status: partial || early['canContinue'] === true ? 'partial' : 'complete',
     canContinue: partial || early['canContinue'] === true,
-    note: partial ? `${hardStopped ? RESEARCH.hardStopNote : RESEARCH.stillReadingNote}${pending.join(', ')}.${String(early['note'] ?? '').includes(RESEARCH.moreAvailableNote) ? ` ${RESEARCH.moreAvailableNote}` : ''}` : (typeof early['note'] === 'string' ? early['note'] : RESEARCH.completeNote),
+    note: partial ? `${hardStopped ? RESEARCH.hardStopNote : RESEARCH.stillReadingNote}${pending.join(', ')}.${retainedNote ? ` ${retainedNote}` : ''}` : (typeof early['note'] === 'string' ? early['note'] : RESEARCH.completeNote),
   }, view.limit);
   const reply: JsonObject = wrapped;
   first.mailShown = new Set((reply as MailReply)[mailDelivery]?.keys ?? []);

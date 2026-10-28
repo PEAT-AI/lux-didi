@@ -181,7 +181,11 @@ function preflight(registry: McpRegistry, settings: Settings, tool: GoogleTool):
   if (grant.generation !== settings.generation) return 'grant-stale';
   if (grant.effect !== 'read') return 'grant-not-read';
   const visible = registry.visibleTools(settings.endpointId).map(definition => definition.name);
-  if (visible.some(name => !ELIGIBLE.has(name))) return 'ineligible-tool-granted';
+  // C-DEPTH11: the closed envelope is enforced on what the owner GRANTED, never on everything the installed
+  // helper happens to advertise. A helper that still lists the pre-rename names (gcal_calendars, gcal_list)
+  // once poisoned every Google read with one refusal; those names stay uncallable because this connector
+  // only ever dispatches GOOGLE_TOOLS, so the grant is the authority that matters.
+  if (grant.toolNames.some(name => !ELIGIBLE.has(name))) return 'ineligible-tool-granted';
   if (!grant.toolNames.includes(tool)) return 'tool-not-granted';
   if (!visible.includes(tool)) return 'required-definition-absent';
   return undefined;

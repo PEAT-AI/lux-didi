@@ -152,16 +152,39 @@ test('C-DEPTH11: a calendar list with only subscribed calendars reads no events 
   assert.deepEqual(readOf(result)['events'], [], 'and no holiday is served as the owner schedule');
 });
 
-test('C-DEPTH11: the pre-rename calendar names are a closed refusal, never an empty schedule', async () => {
+test('C-DEPTH11: a helper that still advertises the pre-rename names keeps the calendar read working', async () => {
   const id = 'depth-fake';
   const registry = new McpRegistry();
   registry.register({ id, transport: 'stdio', command: process.execPath, args: ['fixture'], env: { HOME: join(tmpdir(), 'didi-depth-home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: ACCOUNT, resource: RESOURCE } as unknown as EndpointConfig);
   registry.enable(id);
   registry.allowEgress(id);
-  // The accepted grant names the current tools and the installed helper advertises only the old ones, the
-  // shape owner sessions logged as gcal_list and gcal_calendars failing.
-  const digest = registry.observed(id, [{ name: 'gcal_calendars', inputSchema: { type: 'object' } }, { name: 'gcal_list', inputSchema: { type: 'object' } }], registry.revision(id));
-  assert.throws(() => registry.approve({ endpointId: id, schemaDigest: digest, toolNames: ['calendar_list_calendars', 'calendar_list_events'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 }), /invalid-local-read-grant|invalid|unknown-tool/g, 'an old name in the grant is refused at approval instead of becoming a silent empty read');
+  // The installed helper advertises the current calendar tools and the pre-rename names it kept for old rows,
+  // the shape owner sessions logged as gcal_calendars and gcal_list failing. The granted names are the owner's
+  // authority, so an extra advertised name must never refuse the read the owner asked for.
+  const catalog = ['calendar_list_calendars', 'calendar_list_events', 'gcal_calendars', 'gcal_list'].map(name => ({ name, inputSchema: { type: 'object' } }));
+  const digest = registry.observed(id, catalog, registry.revision(id));
+  registry.approve({ endpointId: id, schemaDigest: digest, toolNames: ['calendar_list_calendars', 'calendar_list_events'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+  const seen: string[] = [];
+  const reader = createGoogleReader({ port: calendarPort([{ id: 'owner@example.invalid', summary: 'Owner', primary: true, accessRole: 'owner' }], seen), registry, config: { endpointId: id, account: ACCOUNT, resource: RESOURCE, schemaDigest: digest, generation: 1, family: 'calendar' } });
+  const result = await reader.gcalList({});
+  assert.equal(result.state, 'completed', 'the pre-rename names in the catalogue never refuse the current read');
+  assert.deepEqual(seen, ['owner@example.invalid'], 'and the owner calendar is read');
+});
+
+test('C-DEPTH11: the closed envelope still holds where it belongs, on the grant', async () => {
+  const id = 'depth-fake';
+  const registry = new McpRegistry();
+  registry.register({ id, transport: 'stdio', command: process.execPath, args: ['fixture'], env: { HOME: join(tmpdir(), 'didi-depth-home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' }, account: ACCOUNT, resource: RESOURCE } as unknown as EndpointConfig);
+  registry.enable(id);
+  registry.allowEgress(id);
+  const catalog = ['calendar_list_events', 'calendar_create_event'].map(name => ({ name, inputSchema: { type: 'object' } }));
+  const digest = registry.observed(id, catalog, registry.revision(id));
+  registry.approve({ endpointId: id, schemaDigest: digest, toolNames: ['calendar_list_events', 'calendar_create_event'], effect: 'read', account: ACCOUNT, resource: RESOURCE, generation: 1 });
+  const seen: string[] = [];
+  const reader = createGoogleReader({ port: calendarPort([{ id: 'owner@example.invalid', summary: 'Owner', primary: true }], seen), registry, config: { endpointId: id, account: ACCOUNT, resource: RESOURCE, schemaDigest: digest, generation: 1, family: 'calendar' } });
+  const result = await reader.gcalList({});
+  assert.equal(result.state, 'refused');
+  assert.equal(result.state === 'refused' ? result.reason : '', 'ineligible-tool-granted', 'a grant naming a writer refuses, as before');
 });
 
 test('C-DEPTH11/#648: an honest empty is the paired opposite, and it carries the query it ran', () => {

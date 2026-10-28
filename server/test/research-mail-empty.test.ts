@@ -24,7 +24,7 @@ test('C-DEPTH11/#648: a mail helper that answered with no payload is voiced as a
     action: 'start', question: 'any unread mail',
     lookups: [{ source: 'mail', query: 'newer_than:2d is:unread' }],
   }, signal());
-  assert.match(String(reply['note']), /mail: unavailable \(the mail helper returned no result, ask again\)/u, 'the owner hears the no-payload failure in its own words');
+  assert.match(String(reply['note']), /mail: unavailable \(the helper returned no result, ask again\)/u, 'the owner hears the no-payload failure in its own words');
   assert.doesNotMatch(String(reply['note']), /nothing matched|no messages|no mail/iu, 'and never as a search that matched nothing');
 });
 

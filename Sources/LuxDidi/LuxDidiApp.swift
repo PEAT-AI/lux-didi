@@ -852,7 +852,8 @@ struct RootView: View {
             self?.show(); self?.model.pickUpLiveCall(jobID)
         }
         alarmObservation = model.$alarmCaption.sink { [weak self] caption in
-            self?.statusItem.button?.title = caption ?? ""
+            guard let self else { return }
+            self.statusItem.button?.title = AlarmShellPolicy.menuTitle(alarmCaption: caption, pendingCall: !self.model.pendingLiveCalls.isEmpty)
         }
         liveCallBadge = model.$pendingLiveCalls.sink { [weak self] jobs in
             self?.updateLiveStatus(pendingCall: !jobs.isEmpty)
@@ -1019,7 +1020,7 @@ struct RootView: View {
         let presentation = LiveStatusPresentation(presentation: liveState.presentation, pendingCall: pendingCall ?? !model.pendingLiveCalls.isEmpty,
             dictationCapturing: dictationCapturing ?? (model.voice.state.phase == .recording))
         statusItem.button?.image = NSImage(systemSymbolName: presentation.symbol, accessibilityDescription: presentation.text)
-        statusItem.button?.title = presentation.pendingCall ? "•" : ""
+        statusItem.button?.title = AlarmShellPolicy.menuTitle(alarmCaption: model.alarmCaption, pendingCall: presentation.pendingCall)
         statusItem.button?.toolTip = presentation.text
         statusItem.button?.setAccessibilityLabel(presentation.text)
         liveMenuItem?.title = presentation.text

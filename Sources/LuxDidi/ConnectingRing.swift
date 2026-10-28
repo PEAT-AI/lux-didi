@@ -550,6 +550,9 @@ struct ShellAlarm: Codable, Equatable, Sendable {
 
 /// Pure ownership policy; native effects are injected so local tests never touch power or notifications.
 @MainActor final class AlarmShellPolicy {
+    static func menuTitle(alarmCaption: String?, pendingCall: Bool) -> String {
+        alarmCaption ?? (pendingCall ? "•" : "")
+    }
     private let acquire: () -> Bool
     private let release: () -> Void
     private let register: (ShellAlarm) -> Void

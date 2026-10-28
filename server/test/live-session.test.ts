@@ -6256,12 +6256,12 @@ test('C-TURN8: a claim with no call gets exactly one correction, and only once p
   const counted = () => readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').split('\n').filter(line => line.startsWith('{'))
     .map(line => JSON.parse(line) as { event: string; ms?: number }).filter(line => line.event === 'live_claim_without_call');
   const armed = (): boolean => [...scheduler.pending].some(entry => entry.due === scheduler.now + 3_000);
+  const turnOpen = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'inputTranscription');
   h.f.send({ serverContent: { inputTranscription: { text: 'what did Priya send me about the synthetic contract', finished: true } } });
-  await settlePort();
+  for (let attempt = 0; attempt < 200 && !turnOpen(); attempt++) await tick();
+  assert.ok(turnOpen(), 'the owner turn is open before she answers it');
   h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that now.", finished: true }, turnComplete: true } });
   for (let attempt = 0; attempt < 300 && !armed(); attempt++) await tick();
-  t.diagnostic(`pending: ${JSON.stringify([...scheduler.pending].map(entry => entry.due - scheduler.now))}`);
-  t.diagnostic(`journal: ${JSON.stringify(h.owner.current().entries.map(entry => entry.kind))}`);
   assert.ok(armed(), 'the announced lookup armed its three-second bound');
   await advance(2_000);
   assert.equal(corrections().length, 0, 'nothing is said before the bound has passed');
@@ -6271,7 +6271,9 @@ test('C-TURN8: a claim with no call gets exactly one correction, and only once p
   assert.equal(corrections().length, 1, 'exactly one correction for the announcement');
   assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /say plainly that you are not checking anything/);
   h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that again now.", finished: true }, turnComplete: true } });
-  await settlePort();
+  const againSaid = (): boolean => h.owner.current().entries.some(entry => entry.kind === 'outputTranscription'
+    && String((entry as { text?: string }).text ?? '').includes('again'));
+  for (let attempt = 0; attempt < 200 && !againSaid(); attempt++) await tick();
   await advance(3_000);
   assert.equal(corrections().length, 1, 'the turn spends its one correction and never a second');
   assert.equal(counted().length, 1, 'and it is logged once');

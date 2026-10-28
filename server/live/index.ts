@@ -5,7 +5,7 @@ import { recordHistorySession, historySessionEvidence, recordHistoryDependency }
 import * as summaries from '../domain/summaries.js';
 import * as labels from '../domain/labels.js';
 import { definitionsInTransaction } from '../tools/index.js';
-import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteModelOutput, noteOwnerWords, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
+import { OPEN_TOOL_NAMES, clearOpenLedger, exposeToolResults, noteModelOutput, noteOwnerWords, noteOwnerPartial, noteSpoken, openClaimCorrection, useWebSearchPort } from '../tools/open.js';
 import { LiveToolJobs, type JobTimer, type ToolJob } from '../tools/jobs.js';
 import { type VaultReceipt, VaultWriter, authorizeComposedWrite } from '../tools/vault-write.js';
 import { TRELLO_TOOL_NAMES } from '../tools/trello.js';
@@ -15,7 +15,7 @@ import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write
 import { runToolCalls, authorizeToolBatch, invalidArgumentsResponse } from '../tools/declarations.js';
 import { INTENT_TOOL_NAMES, isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
-import { admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook } from '../tools/research.js';
+import { findingCount, admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
 import { LiveToolCache, LIVE_CACHE_TTL_MS } from './tool-cache.js';
 import { ConnectorNotes, WarmContextCache, signInNote, type CalendarDigestSnapshot, type CalendarDigestState, type WarmContextSections } from './warm-context.js';
@@ -56,15 +56,6 @@ const pickupInstruction = 'The user has just picked up. Deliver the pending job 
 /** Q5-R4: the most the earlier calls' opening lines may add to a start instruction. */
 export const OPENER_CONTEXT_CHARS = 450;
 
-/** Q5-R4: one or two sentences, so the note carries a subject and not only a short fragment. */
-function openingSentencesOf(text: string): string {
-  const flat = text.replace(/\s+/gu, ' ').trim();
-  const sentences = flat.split(/(?<=[.?!])\s+/u).filter(Boolean);
-  const first = sentences[0] ?? flat;
-  const pair = sentences.slice(0, 2).join(' ');
-  return first.length < 80 && pair.length <= 200 ? pair : first;
-}
-
 /**
  * Q5-R4: the previous calls' openers as "do not repeat" context, under 450 chars and absent when no
  * earlier call exists. Three calls are named so the note carries a subject as well as words. The journal
@@ -72,35 +63,23 @@ function openingSentencesOf(text: string): string {
  * host.log.
  */
 export function openersNote(openers: readonly string[], topics: readonly (string | undefined)[] = []): string | undefined {
-  // Release 3u: alongside the sentence, the subject its own start plan offered, so the note names a
-  // topic and not only words. A call whose plan does not name the opener's subject carries none.
-  const line = (opener: string, topic: string | undefined): string => {
-    const sentence = `"${opener}"`;
-    return topic === undefined ? sentence : `${sentence} (about ${clipTopic(topic)})`;
-  };
-  const note = (lines: readonly string[]): string => `Open on a different subject and different words than these earlier openers: ${lines.join(' ')}`;
-  const taken: string[] = [];
-  const seen = new Set<string>();
-  const spoken = openers.map(openingSentencesOf).filter(Boolean).slice(0, 3);
-  for (const [index, opener] of spoken.entries()) {
-    // L8-09: two calls that opened alike are one sentence to avoid, never a quote repeated in the prompt.
-    const key = opener.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const next = line(opener, topics[index]);
-    if (note([...taken, next]).length <= OPENER_CONTEXT_CHARS) taken.push(next);
-  }
-  return taken.length ? note(taken) : undefined;
+  if (!openers.length) return undefined;
+  const classes = openers.slice(0, 3).map((opener, index) => {
+    const topic = topics[index] ?? opener;
+    if (/tool[_ -]failure|(?:tool|mail|calendar|web|search|chat|knowledge|connector).*(?:fail|broken|unavailable|offline|timeout|approval)|(?:fail|broken).*tool/i.test(topic ?? '')) return 'tool_failure';
+    if (/calendar|meeting|schedule/i.test(topic ?? '')) return 'calendar';
+    if (/open.loop|commitment|unfinished/i.test(topic ?? '')) return 'open_loop';
+    return 'recent_thread';
+  });
+  if (!classes.length) classes.push('recent_thread');
+  return `Earlier opener topic classes, closed for this call: ${[...new Set(classes)].join(', ')}. Never open on tool_failure.`;
 }
 
+/** Host instructions are never owner words, including on adapters with only a user text channel. */
+export const hostNote = (text: string): string => `[host note, not the owner] ${text}`;
+
 /** The most of a recorded option's topic the note names, so a long fragment stays one clause. */
-const OPENER_TOPIC_CHARS = 60;
-function clipTopic(topic: string): string {
-  if (topic.length <= OPENER_TOPIC_CHARS) return topic;
-  const cut = topic.slice(0, OPENER_TOPIC_CHARS);
-  const space = cut.lastIndexOf(' ');
-  return (space > 0 ? cut.slice(0, space) : cut).trim();
-}
+
 
 /**
  * Q5-R4: one earlier call's opening utterance: its ordered transcription fragments up to the first
@@ -501,10 +480,33 @@ const ANSWER_AUDIO_HOLD_MS = 3_000;
  */
 const CLAIM_WITHOUT_CALL_MS = 3_000;
 /**
- * C-TURN8: the closed set of English announcements that promise a lookup. A response carrying one and
- * starting no call is a claim without an action. Nothing else is read.
+ * C-TURN8, C-CLAIMS9 outcome 1: the class of first-person lookup announcements, not a list of exact sentences.
+ * "let me", "let's", "I'll", "I'm going to" or "I'm" plus a lookup verb is a promise to act, and so is the
+ * "give me a moment" form. Past tense ("I checked"), another person ("you can check") and "let me know" are
+ * not her own lookup, and "I'll see you" is a farewell, so bare "see" waits for a question word.
  */
-const LOOKUP_CLAIM = /\b(?:i'?m checking|i am checking|checking (?:that|this|it)|working on (?:that|it)|i'?ll check|let me check|looking (?:that|it|this) up)\b/iu;
+const LOOKUP_VERBS = 'look|check|find|search|dig|try|take a look|pull (?:up|(?:that|this|it) up)';
+const LOOKUP_CLAIM = new RegExp([
+  `\\blet me (?:${LOOKUP_VERBS}|see)\\b`,
+  `\\blet'?s (?:${LOOKUP_VERBS}|see)\\b`,
+  `\\bi(?:'?ll| will) (?:${LOOKUP_VERBS})\\b`,
+  `\\bi(?:'?ll| will) see (?:if|what|whether)\\b`,
+  `\\bi(?:'?m| am) going to (?:${LOOKUP_VERBS}|see (?:if|what|whether))\\b`,
+  `\\bi(?:'?m| am) (?:looking|checking|finding|searching|digging|trying to (?:look|check|find|search|dig)|pulling (?:up|(?:that|this|it) up))\\b`,
+  `\\bgive me (?:a|one) (?:moment|second|minute) to (?:${LOOKUP_VERBS})\\b`,
+  '\\bchecking (?:that|this|it)\\b',
+  '\\bworking on (?:that|it)\\b',
+  '\\blooking (?:that|this|it) up\\b',
+].join('|'), 'iu');
+
+/**
+ * Whether the response announced a lookup of her own, so the host can hold it to the call it promised. The
+ * transcript may omit the apostrophe or carry the typographic one, and the base detector tolerated both, so
+ * the text is folded to the straight apostrophe before it is read.
+ */
+export function announcesLookup(text: string): boolean {
+  return LOOKUP_CLAIM.test(text.replace(/[\u2018\u2019\u02bc]/gu, "'"));
+}
 /**
  * C-TURN8: every tool that reads or writes the owner's own data (Trello, research, mail, calendar, chat,
  * knowledge, conversation history, saves). None of them runs before his first word: research keeps its own
@@ -528,6 +530,13 @@ const LATE_WINDOW_MS = 20_000;
 const FILLER_WORDS = 3;
 /** R6: how much of that block a spoken line carries, so the owner hears one sentence and not a report. */
 const LATE_SPOKEN_CHARS = 280;
+export function lateFindingsText(source: string, items: readonly string[]): string {
+  const label = source === 'mail' ? 'your mail' : source === 'web' ? 'the web' : `your ${source}`;
+  const prefix = 'Late findings from your lookup, not supplied by the owner:\n';
+  const perItem = Math.max(0, Math.floor((LATE_SPOKEN_CHARS - prefix.length) / Math.max(1, items.length)) - `from ${label}: `.length - 1);
+  return prefix + items.map(item => `from ${label}: ${item.slice(0, perItem)}`).join('\n');
+}
+
 
 /** R5: what the late-commentary rule reads, so the owner's patience is pinned by a test and not by a transport. */
 export interface LateCommentaryState {
@@ -587,9 +596,10 @@ const RESEARCH_PROJECTION_CHARS = 240;
  * the sources that answered, then the note the model was told to voice. A failure names its reason code
  * and a refusal names its reason, so a journal line is never a bare `research: error`.
  */
-function researchProjection(response: JsonObject, status: 'completed' | 'error'): string {
+export function researchProjection(response: JsonObject, status: 'completed' | 'error'): string {
   const text = (value: unknown): string | undefined => (typeof value === 'string' && value.length > 0 ? value : undefined);
   const detail = (): string => {
+    if (response['status'] === 'blocked') return `refused:${text(response['code']) ?? text(response['reason']) ?? 'unknown'}`;
     if (status === 'error') {
       const reason = text(response['reason']) ?? text(response['error']) ?? 'failed';
       return text(response['state']) === 'refused' ? `refused (${reason})` : `error (${reason})`;
@@ -597,7 +607,8 @@ function researchProjection(response: JsonObject, status: 'completed' | 'error')
     const findings = Array.isArray(response['findings']) ? response['findings'] as JsonObject[] : [];
     const sources = [...new Set(findings.map(finding => text(finding['source'])).filter((source): source is string => source !== undefined))];
     const note = text(response['note']);
-    const head = sources.length > 0 ? `findings from ${sources.join(', ')}` : 'no findings';
+    const count = findings.reduce((n, finding) => n + findingCount(finding), 0);
+    const head = count > 0 ? `findings from ${sources.join(', ')}; ${count} delivered items` : 'no findings';
     return `completed, ${note === undefined ? head : `${head}; ${note}`}`;
   };
   const line = `research: ${detail()}`;
@@ -623,6 +634,8 @@ interface ActiveSession {
   stopAfterJournalId?: number;
   stopGeneration?: number;
   inputAt?: number;
+  lookupBridgeForInput?: string;
+  lookupAckAt?: number | undefined;
   /** #720: the anchor is the owner's last finished fragment of the turn, not the first. */
   inputFinalAt: number | undefined;
   /** First model audio of the current turn; reset at each model turn start. */
@@ -758,6 +771,7 @@ interface ActiveSession {
   researchLedger: ResearchLedger;
   /** C-LIVE behaviour 1: one research operation per finalized owner turn, for the whole session across generations. */
   researchAdmission: ResearchAdmission;
+  researchQueryContext?: string;
   /** C-LIVE: owner words seen since the last finalized owner turn, for admission (independent of the idle clock). */
   admissionSpeechPending?: boolean;
   /** C-LIVE N-2: the idle cause last written to host.log, so live_idle_arm is a state change only. */
@@ -933,7 +947,7 @@ function correctOpenClaim(handle: ActiveSession): void {
   const correction = openClaimCorrection(handle.liveSessionId);
   if (correction === undefined) return;
   hostLogEvent({ event: 'open_claim_corrected', reason: correction.reason });
-  try { handle.session.sendText({ text: correction.text }); } catch { /* a closed transport settles on its own */ }
+  try { handle.session.sendText({ text: hostNote(correction.text) }); } catch { /* a closed transport settles on its own */ }
 }
 // Wire-38: barge-in sends serverContent.interrupted, never toolCallCancellation, and a late
 // toolResponse is accepted silently. A batch dispatched before that interruption is answered
@@ -2048,7 +2062,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     const line = receipt.saved
       ? 'The note is saved in the vault. Say that in one short sentence.'
       : `The note was not saved (${receipt.code ?? 'unknown'}). Say plainly that it was not saved.`;
-    try { handle.session.sendText({ text: line }); } catch { /* a closed transport settles on its own */ }
+    try { handle.session.sendText({ text: hostNote(line) }); } catch { /* a closed transport settles on its own */ }
   }
 
   /**
@@ -2318,7 +2332,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       await session.ready.catch(() => {});
       if (this.#settled(handle) || handle.session !== session) return false;
       try {
-        session.sendText({ text });
+        session.sendText({ text: hostNote(text) });
         handle.unspokenDelivered = true;
         // #667: the recreate names how many unspoken results reached the session that replaced the old one.
         hostLogEvent({ event: 'live_unspoken_delivered', liveSessionId: handle.liveSessionId,
@@ -2510,7 +2524,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    * owner's own speech. The ledger of what she said is consumed here, so a response is judged once.
    */
   #armClaimCheck(handle: ActiveSession, sequence: number): void {
-    const claim = LOOKUP_CLAIM.test(handle.claimText);
+    const claim = announcesLookup(handle.claimText) || /^\s*(?:checking|on it|one sec)[.!…]*\s*$/iu.test(handle.claimText);
     handle.claimText = '';
     handle.claimTimer?.cancel(); handle.claimTimer = undefined;
     if (!claim || handle.claimCorrected || handle.claimToolSeen || handle.muted) return;
@@ -2519,7 +2533,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       if (this.#settled(handle) || handle.claimToolSeen || handle.inputFinal === false || handle.muted) return;
       handle.claimCorrected = true;
       hostLogEvent({ event: 'live_claim_without_call', sequence, ms: CLAIM_WITHOUT_CALL_MS });
-      try { handle.session.sendText({ text: CLAIM_WITHOUT_CALL_LINE }); } catch { /* a closed transport settles on its own */ }
+      try { handle.session.sendText({ text: hostNote(CLAIM_WITHOUT_CALL_LINE) }); } catch { /* a closed transport settles on its own */ }
     }, CLAIM_WITHOUT_CALL_MS);
   }
 
@@ -2807,6 +2821,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
   #openTurn(handle: ActiveSession): void {
     // A fresh owner turn restarts the invalid-argument count, so an earlier turn's repeats never shorten this one.
     handle.invalidAttempts = new Map();
+    handle.lookupAckAt = undefined;
     // R7/R8: the owner spoke before the dropped-line opener became audible, so it is cancelled; the
     // provider's barge-in (interrupted) or its turn end frees the answer, never a late opener frame.
     if (handle.dropOpener) { if (openerCancelled(true, handle.spokenThisTurn)) handle.dropResponse = true; handle.dropOpener = false; }
@@ -3641,7 +3656,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         }
         // A held answer stays for the offer. A cancelled opener stops applying on a barge-in as well as a
         // turn end (LIVE2-R8), so the answer to the owner's words is never silenced by it.
-        if (event.type === 'turnComplete' || event.type === 'interrupted') { handle.mutedResponse = false; handle.dropResponse = false; noteModelOutput(handle.liveSessionId); }
+        if (event.type === 'turnComplete' || event.type === 'interrupted') { handle.mutedResponse = false; handle.dropResponse = false; }
+        if (event.type === 'audio' || (event.type === 'outputTranscription' && event.text.trim())) noteModelOutput(handle.liveSessionId);
         if (event.type === 'turnComplete') handle.answerAt = undefined;
         if (event.type === 'modelTurnStarted') {
           // A trailing modelTurnStarted of the same batch never reopens a cancelled response (LIVE2-R6 F1).
@@ -3717,6 +3733,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           handle.claimText = '';
           handle.thinking = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
+          for (const call of event.calls) if (/^(?:research$|search_|list_|read_)/u.test(call.name)) this.#armStillSearching(handle, call.id);
           this.#openSteps(handle, event.calls);
                 // D5: the call itself enters THINKING, so the orb never says Listening while the lookup runs.
           this.#noteState(handle, 'tool');
@@ -3849,7 +3866,9 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
         if (event.type === 'outputTranscription') {
           const said = stripNonLexicalTags(event.text);
+          if (said.trim() && handle.pendingCallIds.size === 0) handle.lookupAckAt = this.#now();
           countTurnScript(handle, said);
+          handle.researchQueryContext = `${handle.researchQueryContext ?? ''} ${said}`.slice(-12000);
           handle.claimText = `${handle.claimText} ${said}`.slice(-300);
           // C-TURN8: the response's transcript is complete, so an announced lookup has its beat from here.
           if (event.finished === true) this.#armClaimCheck(handle, event.sequence);
@@ -3865,6 +3884,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           handle.inputFinalTimer?.cancel();
           handle.inputAt = this.#now();
           handle.inputFinal = event.finished === true;
+          if (handle.inputFinal && typeof event.text === 'string') handle.researchQueryContext = `${handle.researchQueryContext ?? ''} ${event.text}`.slice(-12000);
           if (handle.inputFinal) handle.ownerLastWords = typeof event.text === 'string' && event.text.trim() !== '' ? event.text.trim().split(/\s+/u).length : 0;
           if (handle.inputFinal) {
             // L-05: the provider sends the finished fragments of one utterance one after another, and the dead-air
@@ -4093,6 +4113,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       // #1028 behaviour 1: the digest this host already read is where the names of the owner's own
       // organisations live, so a misheard one is resolved before any source reads.
       calendarDigest: () => this.#calendar,
+      queryContext: () => handle.researchQueryContext ?? '',
       // #351: a configured connector that is down settles `unavailable` at once instead of spending the
       // source deadline on reads that cannot reach it.
       unavailableNow: () => this.#unreachableSources(handle), execute,
@@ -4169,20 +4190,19 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         response = researchRepair(parsed.reason);
       } else if (verdict !== undefined && !verdict.admitted) {
         hostLogEvent({ event: 'research_blocked', liveSessionId: handle.liveSessionId, generation, action: parsed.call.action, reason: verdict.reason });
-        response = admissionBlocked(verdict.reason);
+        response = admissionBlocked(verdict.reason, parsed.call.action === 'continue' ? handle.researchAdmission.deliveredReply() : undefined);
       } else {
         const firstStep = handle.toolStep;
-        // R2: the one "still searching" line this call may earn, armed for its own 10 s and cancelled by its answer.
-        const stillSearching = this.#armStillSearching(handle, call.id);
+        // C-CONVO9: the event-level lookup bridge does not alter research admission or its result.
         try {
           const priorRunId = handle.researchLedger.last()?.researchId;
           response = await this.#boundedResearch(handle, scheduler.call({ ...parsed.call, callId: call.id }, handle.abort.signal), parsed.call, configured, generation, priorRunId);
         } catch (error) { response = { error: error instanceof Error ? error.message : 'research_failed' }; }
-        stillSearching.cancel();
         // L8-Q01/Q05: the run this call started or continued, its question, and its first canonical execution
         // (only when this call ran alone, so a batch step is never credited to the wrong call).
         this.#linkResearchCall(handle, host, call.id, parsed.call.question, response, event.calls.length === 1 && handle.toolStep > firstStep ? firstStep : undefined);
         if (response['error'] === undefined && parsed.call.action !== 'stop' && generation === handle.generation) {
+          handle.researchAdmission.deliveredReply(response);
           handle.researchAdmission.delivered(typeof response['researchId'] === 'string' ? response['researchId'] : parsed.call.researchId);
         }
       }
@@ -4230,26 +4250,32 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
   }
 
   /**
-   * R2: the one short line an owner waiting on a research call hears at 10 s. It rides the speakable-progress
+   * C-CONVO9: one short bridge per owner ask, three quiet seconds after its acknowledgement. It rides the speakable-progress
    * channel (#538), the host's only input to the model while a tool call is pending, so the call is neither ended
    * nor re-issued. An adapter without that channel leaves the wait silent and the receipt says `spoken: false`,
    * which is the honest record instead of a claim the owner heard it.
    */
   #armStillSearching(handle: ActiveSession, callId: string): { cancel: () => void } {
-    const armedAt = this.#now();
+    const ackAt = handle.lookupAckAt;
+    if (ackAt === undefined) return { cancel: () => {} };
     const ownerAt = handle.inputAt;
+    const ask = handle.connection.turnId ?? 'opener';
     const timer = this.#schedule(() => {
       if (this.#settled(handle) || !handle.pendingCallIds.has(callId)) return;
-      // R2: a call the owner has moved past is not narrated: a new question ends the wait this line was for.
-      if (handle.inputAt !== undefined && (ownerAt === undefined || handle.inputAt > armedAt)) return;
+      if (handle.lookupBridgeForInput === ask || handle.inputAt !== ownerAt || (handle.connection.turnId ?? 'opener') !== ask) return;
+      // Audio can finish after its transcript; the bridge owes three quiet seconds after the acknowledgement.
+      const quietAt = Math.max(ackAt, handle.lastModelAudioAt ?? ackAt) + 3_000;
+      if (this.#now() < quietAt) { this.#armStillSearching(handle, callId); return; }
+      if (handle.speaking) return;
+      handle.lookupBridgeForInput = ask;
       const researchId = handle.researchLedger.last()?.researchId ?? '';
       let spoken = false;
       try {
         const speak = handle.session.sendCommentary;
-        spoken = typeof speak === 'function' && speak.call(handle.session, { text: RESEARCH.stillSearchingLine }) !== false;
+        spoken = typeof speak === 'function' && speak.call(handle.session, { text: 'Still looking, give me a moment.' }) !== false;
       } catch { spoken = false; }
-      hostLogEvent({ event: 'research_still_searching', researchId, elapsedMs: RESEARCH_OPERATION.stillSearchingMs, spoken });
-    }, RESEARCH_OPERATION.stillSearchingMs);
+      hostLogEvent({ event: 'research_still_searching', researchId, elapsedMs: this.#now() - ackAt, spoken });
+    }, Math.max(0, Math.max(ackAt, handle.lastModelAudioAt ?? ackAt) + 3_000 - this.#now()));
     timer.unref?.();
     return timer;
   }
@@ -4319,8 +4345,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       }, SPEAKING_HOLD_MS);
     }
     if (reason !== null) return hostLogEvent({ ...receipt, destination: 'ledger', reason });
-    const line = `One more thing from ${event.source}: ${event.items[0]!.slice(0, LATE_SPOKEN_CHARS)}`;
-    try { handle.session.sendText({ text: line }); } catch { return hostLogEvent({ ...receipt, destination: 'ledger', reason: 'send_failed' }); }
+    const line = lateFindingsText(event.source, event.items);
+    try { handle.session.sendText({ text: hostNote(line) }); } catch { return hostLogEvent({ ...receipt, destination: 'ledger', reason: 'send_failed' }); }
     if (event.source === 'calendar') handle.researchLedger.delivered(event.researchId, event.runId ?? -1, (event.calendarKeys ?? []).filter((_, index) => line.includes(event.items[index] ?? '\u0000')));
     if (event.mailKeys) {
       const keys = event.items.flatMap((item, index) => (event.mailKeys![index] && line.includes(item) ? [event.mailKeys![index]!] : []));
@@ -4668,6 +4694,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
           handle.contextToolChars += responses.reduce((sum, entry) => sum + JSON.stringify(entry.response ?? {}).length, 0);
           // #538: what the write did is the host's to read, not a receipt to log and then forget.
           const outcome = handle.session.sendToolResponse({ responses });
+          handle.researchQueryContext = `${handle.researchQueryContext ?? ''} ${responses.map(entry => JSON.stringify(entry.response)).join(' ')}`.slice(-12000);
           // #451: the function_call_output write itself, measured from the frame that asked for it.
           const askedAt = event.calls.map(call => arrivedAt.get(call.id)).find(started => started !== undefined);
           hostLogEvent({ event: 'tool_output_sent', liveSessionId: handle.liveSessionId, generation, tools: responses.length, outcome,
@@ -4699,6 +4726,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
     let pendingOwnerFragment = false;
     const persist = (tx: Transaction) => {
       const transcription = event.type === 'inputTranscription' || event.type === 'outputTranscription' ? event : undefined;
+      if (event.type === 'inputTranscription' && !event.finished && text) noteOwnerPartial(handle.liveSessionId, text);
       const mono = hostMonotonicMs();
       tx.run('INSERT INTO live_journal(live_session_id,provider_sequence,kind,text,finished,value,tool_json,terminal_outcome,rejected_kind,rejected_sequence,payload_bytes,arrived_at,connection_epoch,provider_event_id,provider_start_ms,provider_end_ms,received_mono_ms,clock_domain,final_origin,finalized_at,finalized_mono_ms) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,?,?,?,?,?,?,?)',
         [handle.liveSessionId,event.sequence,kind,text,finished,value,toolJSON,bytes,now,handle.connection.epoch,

@@ -1,3 +1,4 @@
+import { hostConversationScenarios, assertHostConversationReply, assertFreshProgressPhrases } from './voice-replay/conversation.js';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { describe, test } from 'node:test';
@@ -277,7 +278,11 @@ describe('openai gpt-live adapter', () => {
     await until(() => captured.events.some(event => event.type === 'toolCall'));
     const creates = (): number => f.frames.filter(frame => frame['type'] === 'response.create').length;
     const before = creates();
-    session.sendText({ text: 'Synthetic late line.' });
+    session.sendText({ text: '[host note, not the owner] Synthetic late line.' });
+    await until(() => f.frames.some(frame => frame['type'] === 'response.item.create'));
+    const framed = f.frames.find(frame => frame['type'] === 'response.item.create')!;
+    assert.match(JSON.stringify(framed), /\[host note, not the owner\] Synthetic late line\./);
+
     for (let wait = 0; wait < 20; wait += 1) await tick();
     assert.equal(creates(), before, `no continuation is written while call_677 owes its output (${JSON.stringify(f.frames.map(frame => frame['event_id'] ?? frame['type']))})`);
     session.sendToolResponse({ responses: [{ id: 'call_677', name: 'research', response: { ok: true } }] });
@@ -2214,4 +2219,27 @@ test('C-CONTINUITY R-09: a remote close keeps its code and sanitized reason in t
   assert.match(reason, /provider overload/u, 'the reason is carried');
   assert.ok(!/https?:\/\//u.test(reason), 'no URL reaches the record');
   assert.ok(!reason.includes('sk-live-secret-token'), 'no token reaches the record');
+});
+
+for (const scenario of hostConversationScenarios) {
+  test(`C-CONVO9 replay: ${scenario.name}`, async t => {
+    const { f, session, captured } = await ready(t);
+    session.sendText({ text: `[host note, not the owner] ${scenario.note}` });
+    await until(() => f.frames.some(frame => frame['type'] === 'response.item.create'));
+    const frame = f.frames.find(frame => frame['type'] === 'response.item.create')!;
+    f.send({ type: 'session.output_transcript.delta', delta: scenario.reply, start_ms: 100, end_ms: 500 });
+    await until(() => captured.events.some(event => event.type === 'outputTranscription'));
+    const reply = captured.events.filter(event => event.type === 'outputTranscription').map(event => 'text' in event ? event.text : '').join('');
+    const item = frame['item'] as Record<string, unknown>;
+    assertHostConversationReply(item, reply, scenario.forbidden);
+    assert.throws(() => assertHostConversationReply(item, scenario.rejected, scenario.forbidden));
+    assert.equal((item['content'] as { text: string }[])[0]!.text, `[host note, not the owner] ${scenario.note}`);
+    session.close();
+  });
+}
+
+test('C-CONVO9 replay: progress phrases vary within one synthetic call', () => {
+  assertFreshProgressPhrases(['Checking the mail.', 'Looking in the vault.', 'Reading the calendar.']);
+  assert.throws(() => assertFreshProgressPhrases(['Checking.', 'Checking.']));
+  assert.throws(() => assertFreshProgressPhrases(["I am on it.", "I am on it."]));
 });

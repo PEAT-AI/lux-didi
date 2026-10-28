@@ -25,6 +25,8 @@ export function signInLabel(name: SignInName): string { return mongooseEndpointL
 export interface NextStep { text: string; guideUrl?: string; command?: string; signIn?: boolean }
 const setupGuideUrl = "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup";
 const mcpGuideUrl = "https://github.com/PEAT-AI/lux-didi/blob/main/docs/mcp-configuration.md";
+/** The one command that approves a refused connector, verbatim from server/config/mcp-cli.ts. */
+export const approveCommand = 'node server/dist/config/mcp-cli.js approve --config-dir <config dir> --data-dir <data dir> --owner-id <owner> --policy-input <policy file>';
 /** One sign-in row: the Settings button does the work, so this carries no command. */
 const signInStep = (label: string): NextStep => ({ text: `Sign in to ${label} in Settings: the Sign in button is on the ${label} row, and the connector reconnects by itself when you finish.`, guideUrl: setupGuideUrl, signIn: true });
 /** A transport timeout: Naya retries on its own, so the owner is told that, not asked to fix anything. */
@@ -59,7 +61,8 @@ const credentialSteps: Record<string, NextStep> = {
 };
 /** One fixed sentence per reason code, so no row with a known reason falls back to the failure text. */
 const reasonSteps: Record<ReasonCode, NextStep> = {
-  configuration_error: { text: "This connector's tool list changed and needs your approval. Approve the new tool list with the approve command the MCP configuration guide describes, then restart Lux Didi.", guideUrl: mcpGuideUrl },
+  // W2-R1 / F4: nextStep() replaces this with the same sentence plus the added reads when the row names them.
+  configuration_error: approvalStep([]),
   credential_missing: credentialSteps["lux-knowledge"]!,
   needs_sign_in: { text: "This connector needs a fresh sign-in with its own credentials. Sign in with its own command, then restart Lux Didi.", guideUrl: setupGuideUrl },
   not_configured: { text: "This connector has no configuration yet. Add its settings, then restart Lux Didi.", guideUrl: setupGuideUrl },
@@ -71,7 +74,19 @@ const reasonSteps: Record<ReasonCode, NextStep> = {
   unknown: failureStep,
 };
 
-export function nextStep(id: string, state: string, reason?: string, retrying = false): NextStep {
+/**
+ * W2-R1 / F4: the words for a changed tool list name the exact command and, when the host said which reads
+ * an approval would add, those reads too. Closed tool names only: the row may carry nothing else.
+ */
+function approvalStep(added: readonly string[]): NextStep {
+  const named = added.filter(name => /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name)).slice(0, 64);
+  return {
+    text: `This connector's tool list changed and needs your approval. Run ${approveCommand} to approve${named.length ? ` ${named.join(', ')}` : ''}, then restart Lux Didi.`,
+    guideUrl: mcpGuideUrl,
+  };
+}
+
+export function nextStep(id: string, state: string, reason?: string, retrying = false, added: readonly string[] = []): NextStep {
   if (state === 'connected') return { text: 'no action needed' };
   if (state === 'configured') return { text: 'a Live session connects on demand' };
   // D2: the board is connected by an imported key, so no Trello reason ever points at a Sign in button.
@@ -86,5 +101,6 @@ export function nextStep(id: string, state: string, reason?: string, retrying = 
     if (own) return own(label);
   }
   if (state === 'missing' || reason === 'credential_missing') return Object.hasOwn(credentialSteps, id) ? credentialSteps[id]! : credentialSteps['lux-knowledge']!;
+  if (reason === 'configuration_error') return approvalStep(added);
   return Object.hasOwn(reasonSteps, reason ?? '') ? reasonSteps[reason as ReasonCode]! : failureStep;
 }

@@ -149,7 +149,7 @@ export async function runToolCalls(owner: { journal: ToolCallJournal; resultGate
         }
       } catch (error) {
         record.status = dispatched ? (tool?.effect === 'write' ? 'unknown' : 'failed') : 'refused';
-        const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : 'handler_outcome';
+        const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : call.name === 'open_web' && error instanceof Error && isToolFailureCode(error.message) ? error.message : call.name === 'open_web' ? 'open_web_failed' : 'handler_outcome';
         // A sub-call that never dispatched names the real reason: an interrupted round says which one,
         // and every other path keeps the reason already recorded on the record (unknown_tool,
         // grant_not_permitted, the validation guidance), never a bare wildcard.

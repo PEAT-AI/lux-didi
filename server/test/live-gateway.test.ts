@@ -1093,6 +1093,83 @@ test('OC1: an open action is a native_action control frame and its ack is the to
   assert.equal(ws.readyState, WebSocket.OPEN, 'a duplicate ack is ignored, not fatal');
 });
 
+for (const scenario of [
+  { name: 'no transcript', none: true, turns: [], kind: 'site', target: 'plantix dot net', url: '', say: 'nothing is open' },
+  { name: 'late transcript', late: true, turns: ['open plantix dot net'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
+  { name: 'barge in', barge: true, turns: ['open plantix dot net'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
+  { name: 'split site ask', turns: ['but can you open', 'plantix dot net in my browser'], kind: 'site', target: 'plantix dot net', url: 'https://plantix.net/', say: 'opening plantix.net' },
+  { name: 'maps', turns: ['open the map of Odemira'], kind: 'maps', target: 'Odemira', url: 'https://www.google.com/maps/search/?api=1&query=Odemira', say: 'opening' },
+  { name: 'search', turns: ['search for drip irrigation'], kind: 'search', target: 'drip irrigation', url: 'https://www.google.com/search?q=drip+irrigation', say: 'opening' },
+  { name: 'German maps', turns: ['öffne die Karte von Odemira'], kind: 'maps', target: 'Odemira', url: 'https://www.google.com/maps/search/?api=1&query=Odemira', say: 'opening' },
+]) test(`A1: open_web ${scenario.name} round trip`, async t => {
+  let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
+  const h = await harness(t, { config: configJson(true), toolsFactory: store => {
+    const registry = new McpRegistry();
+    const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token' });
+    t.after(() => port.close());
+    const owner = createToolsOwner({ grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port, lookupAuthority: async (runId, signal) => lookup ? lookup(runId, signal) : null });
+    return { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } };
+  } });
+  const created = await createBody(h, 'open-action');
+  const id = created.body.data.liveSessionId;
+  const ws = new WebSocket(`${h.origin.replace('http', 'ws')}/api/v1/live-sessions/${id}/audio`, { headers: bearer(h) });
+  t.after(() => ws.terminate());
+  const { frames } = collect(ws);
+  await once(ws, 'open');
+  await h.f.frame(1);
+  const declared = (h.f.frames[0] as { setup: { tools?: { functionDeclarations: { name: string; description: string }[] }[] } }).setup.tools
+    ?.flatMap(entry => entry.functionDeclarations) ?? [];
+  const openWeb = declared.find(entry => entry.name === 'open_web');
+  assert.ok(openWeb, 'the model is offered open_web');
+  assert.match(openWeb.description, /words he just said/);
+  assert.equal(declared.some(entry => entry.name === 'open_url'), false, 'a free https url is no longer a tool');
+  h.f.send({ setupComplete: {} });
+  await waitFor(() => frames.some(frame => frame.text && JSON.parse(frame.text).type === 'ready'));
+
+  // #573: an open call answers the owner's own open intent, so his finalized words reach the host first.
+  const ask = () => {
+    for (const text of scenario.turns) h.f.send({ serverContent: { inputTranscription: { text, finished: true } } });
+    if ('barge' in scenario) h.f.send({ serverContent: { interrupted: true } });
+  };
+  if (!('late' in scenario) && !('none' in scenario)) {
+    ask();
+    await waitFor(async () => (await json(h.origin, `/api/v1/live-sessions/${id}/journal`, { headers: bearer(h) })).body.data.fragments
+      .some((fragment: { kind: string }) => fragment.kind === 'inputTranscription'), 1_500);
+  }
+  h.f.send({ toolCall: { functionCalls: [{ id: 'open-call-1', name: 'open_web', args: { kind: scenario.kind, target: scenario.target } }] } });
+  // Real provider ordering regression: one late event, never a retry or a polling producer.
+  if ('late' in scenario) {
+    const timer = setTimeout(ask, 300);
+    t.after(() => clearTimeout(timer));
+  }
+  if ('none' in scenario) {
+    await waitFor(() => h.f.frames.some(frame => 'toolResponse' in (frame as Record<string, unknown>)), 1800);
+    const response = JSON.stringify(h.f.frames.filter(frame => 'toolResponse' in (frame as Record<string, unknown>)).at(-1));
+    assert.match(response, /no_open_intent/);
+    assert.match(response, /"say"/);
+    assert.ok(response.includes(scenario.say));
+    assert.equal(frames.some(frame => frame.text && JSON.parse(frame.text).type === 'native_action'), false);
+    return;
+  }
+  await waitFor(() => frames.some(frame => frame.text && (JSON.parse(frame.text) as { type?: string }).type === 'native_action'));
+  const parsed = frames.map(frame => (frame.text ? JSON.parse(frame.text) as Record<string, unknown> : null));
+  const action = parsed.find(frame => frame?.type === 'native_action')!;
+  assert.deepEqual(Object.keys(action).sort(), ['action', 'id', 'target', 'type'], 'the control frame is exactly typed');
+  assert.equal(action.action, 'open_url', 'the web tool rides the internal URL transport');
+  assert.equal(action.target, scenario.url, 'the host constructs the destination');
+
+  ws.send(JSON.stringify({ type: 'native_action_result', id: action.id, ok: true, code: 'opened' }));
+  const toolResponses = () => (h.f.frames as Record<string, unknown>[]).filter(frame => 'toolResponse' in frame);
+  await waitFor(() => toolResponses().length > 0);
+  const response = JSON.stringify(toolResponses().at(-1));
+  assert.ok(response.includes(scenario.say), 'the receipt includes the spoken line');
+  assert.match(response, /"opened"/, 'the ack code reaches the model as the tool result');
+
+  // A duplicate ack settles nothing and never closes the conversation socket.
+  ws.send(JSON.stringify({ type: 'native_action_result', id: action.id, ok: true, code: 'opened' }));
+  assert.equal(ws.readyState, WebSocket.OPEN, 'a duplicate ack is ignored, not fatal');
+});
+
 
 test('#606 a terminal takes priority over queued binary output without draining speech', async () => {
   const frames: unknown[] = [];

@@ -1,0 +1,350 @@
+{
+  "source": "https://dac-static.atlassian.com/cloud/trello/swagger.v3.json?_v=1.1274.0",
+  "actions": {
+    "trelloReadMember": {
+      "get_me": []
+    },
+    "trelloReadBoard": {
+      "list": [
+        "cursor"
+      ],
+      "list_labels": [
+        "boardId",
+        "cursor"
+      ]
+    },
+    "trelloReadList": {
+      "list_by_board": [
+        "boardId",
+        "cursor"
+      ]
+    },
+    "trelloReadCard": {
+      "get": [
+        "cardId"
+      ],
+      "list_by_list": [
+        "listId",
+        "cursor"
+      ],
+      "list_comments": [
+        "cardId",
+        "cursor"
+      ]
+    },
+    "trelloReadChecklist": {
+      "list_by_card": [
+        "cardId",
+        "cursor"
+      ]
+    },
+    "trelloWriteCard": {
+      "create": [
+        "listId",
+        "name",
+        "desc",
+        "due",
+        "pos"
+      ],
+      "update": [
+        "cardId",
+        "name",
+        "desc",
+        "due",
+        "dueComplete"
+      ],
+      "move": [
+        "cardId",
+        "listId",
+        "pos"
+      ],
+      "archive": [
+        "cardId"
+      ],
+      "add_label": [
+        "cardId",
+        "labelId"
+      ],
+      "attach_label": [
+        "cardId",
+        "labelId"
+      ],
+      "remove_label": [
+        "cardId",
+        "labelId"
+      ],
+      "detach_label": [
+        "cardId",
+        "labelId"
+      ]
+    },
+    "trelloWriteChecklist": {
+      "create": [
+        "cardId",
+        "name",
+        "pos"
+      ],
+      "add_item": [
+        "checklistId",
+        "name",
+        "pos"
+      ],
+      "create_item": [
+        "checklistId",
+        "name",
+        "pos"
+      ],
+      "update_item": [
+        "cardId",
+        "checklistId",
+        "itemId",
+        "name",
+        "state"
+      ]
+    }
+  },
+  "endpoints": {
+    "/members/{id}": {
+      "get": {
+        "query": [
+          "actions",
+          "boards",
+          "boardBackgrounds",
+          "boardsInvited",
+          "boardsInvited_fields",
+          "boardStars",
+          "cards",
+          "customBoardBackgrounds",
+          "customEmoji",
+          "customStickers",
+          "fields",
+          "notifications",
+          "organizations",
+          "organization_fields",
+          "organization_paid_account",
+          "organizationsInvited",
+          "organizationsInvited_fields",
+          "paid_account",
+          "savedSearches",
+          "tokens"
+        ]
+      },
+      "put": {
+        "query": [
+          "fullName",
+          "initials",
+          "username",
+          "bio",
+          "avatarSource",
+          "prefs/colorBlind",
+          "prefs/locale",
+          "prefs/minutesBetweenSummaries"
+        ]
+      }
+    },
+    "/members/{id}/boards": {
+      "get": {
+        "query": [
+          "filter",
+          "fields",
+          "lists",
+          "organization",
+          "organization_fields"
+        ]
+      }
+    },
+    "/boards/{id}/labels": {
+      "get": {
+        "query": [
+          "fields",
+          "limit"
+        ]
+      },
+      "post": {
+        "query": [
+          "name",
+          "color"
+        ]
+      }
+    },
+    "/boards/{id}/lists": {
+      "get": {
+        "query": [
+          "cards",
+          "card_fields",
+          "filter",
+          "fields"
+        ]
+      },
+      "post": {
+        "query": [
+          "name",
+          "pos"
+        ]
+      }
+    },
+    "/cards/{id}": {
+      "get": {
+        "query": [
+          "fields",
+          "actions",
+          "attachments",
+          "attachment_fields",
+          "members",
+          "member_fields",
+          "membersVoted",
+          "memberVoted_fields",
+          "checkItemStates",
+          "checklists",
+          "checklist_fields",
+          "board",
+          "board_fields",
+          "list",
+          "pluginData",
+          "stickers",
+          "sticker_fields",
+          "customFieldItems"
+        ]
+      },
+      "put": {
+        "query": [
+          "name",
+          "desc",
+          "closed",
+          "idMembers",
+          "idAttachmentCover",
+          "idList",
+          "idLabels",
+          "idBoard",
+          "pos",
+          "due",
+          "start",
+          "dueComplete",
+          "subscribed",
+          "address",
+          "locationName",
+          "coordinates",
+          "cover"
+        ]
+      },
+      "delete": {
+        "query": []
+      }
+    },
+    "/lists/{id}/cards": {
+      "get": {
+        "query": []
+      }
+    },
+    "/cards/{id}/actions": {
+      "get": {
+        "query": [
+          "filter",
+          "page"
+        ]
+      }
+    },
+    "/cards/{id}/checklists": {
+      "get": {
+        "query": [
+          "checkItems",
+          "checkItem_fields",
+          "filter",
+          "fields"
+        ]
+      },
+      "post": {
+        "query": [
+          "name",
+          "idChecklistSource",
+          "pos"
+        ]
+      }
+    },
+    "/cards": {
+      "post": {
+        "query": [
+          "name",
+          "desc",
+          "pos",
+          "due",
+          "start",
+          "dueComplete",
+          "idList",
+          "idMembers",
+          "idLabels",
+          "urlSource",
+          "fileSource",
+          "mimeType",
+          "idCardSource",
+          "keepFromSource",
+          "address",
+          "locationName",
+          "coordinates",
+          "cardRole"
+        ]
+      }
+    },
+    "/cards/{id}/idLabels": {
+      "post": {
+        "query": [
+          "value"
+        ]
+      }
+    },
+    "/cards/{id}/idLabels/{idLabel}": {
+      "delete": {
+        "query": []
+      }
+    },
+    "/checklists": {
+      "post": {
+        "query": [
+          "idCard",
+          "name",
+          "pos",
+          "idChecklistSource"
+        ]
+      }
+    },
+    "/checklists/{id}/checkItems": {
+      "get": {
+        "query": [
+          "filter",
+          "fields"
+        ]
+      },
+      "post": {
+        "query": [
+          "name",
+          "pos",
+          "checked",
+          "due",
+          "dueReminder",
+          "idMember"
+        ]
+      }
+    },
+    "/cards/{id}/checkItem/{idCheckItem}": {
+      "get": {
+        "query": [
+          "fields"
+        ]
+      },
+      "put": {
+        "query": [
+          "name",
+          "state",
+          "idChecklist",
+          "pos",
+          "due",
+          "dueReminder",
+          "idMember"
+        ]
+      },
+      "delete": {
+        "query": []
+      }
+    }
+  }
+}

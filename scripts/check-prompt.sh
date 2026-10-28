@@ -109,7 +109,15 @@ for (const rule of [
   'If research answers blocked, do not call it again in this turn',
 ]) assert.ok(procedure.includes(rule), `backend rule missing: ${rule}`);
 // The no-filler rule and the eight-line reply bound stay as they were.
-assert.ok(persona.NAYA_LIVE_BASE.includes('Never fill the silence while a lookup runs'), 'the no-filler rule is kept');
+assert.ok(persona.NAYA_LIVE_BASE.includes('Only the host bridges lookups'), 'the no-filler rule is kept');
+// C-CONVO9 and W6-R1: new conversation rules pay for themselves within the existing sections.
+assert.ok(persona.NAYA_CHARACTER.length <= 2868);
+assert.ok(persona.NAYA_VOICE_SURFACE.length <= 2206);
+for (const rule of ['at most once per call', 'under thirty seconds with at most two spoken numbers',
+  'put it in a document', 'stage_lux_note', 'host note, not the owner', 'never agree with the host',
+  'A progress phrase is not reused', 'No backchannel words while he is speaking']) {
+  assert.ok(persona.NAYA_LIVE_BASE.includes(rule), `conversation rule missing: ${rule}`);
+}
 // C-OPEN: a failed open is never given an invented reason, and the guidance names the real refusal.
 assert.ok(persona.NAYA_OPEN_SURFACE.includes('Never invent a failed-open reason'), 'the open surface bans an invented reason');
 assert.ok(persona.NAYA_OPEN_SURFACE.includes('retry once with the same handle'), 'the open surface retries on a repeated ask');
@@ -142,7 +150,7 @@ const runtime = await import(pathToFileURL(`${dist}/prompt/runtime-context.js`).
 const state = runtime.buildRuntimeContext({ now: new Date('2026-10-27T12:00:00Z'), timeZone: 'UTC',
   connected: ['company knowledge'],
   connectors: [{ connector: 'mongoose', state: 'connected' }, { connector: 'google', state: 'error', reasonCode: 'not_signed_in' }] });
-assert.match(state, /^Connectors: company knowledge connected; calendar not signed in; mail not signed in\. Never deny or claim a sign-in or a capability without this line or a live tool check\.$/mu,
+assert.match(state, /^Connectors: company knowledge connected; calendar not signed in; mail not signed in\. Never deny or claim a sign-in or a capability without this line or a live tool check, and never name a place to change it that this line does not name\.$/mu,
   'the runtime line carries the live state and the no-denial rule');
 assert.doesNotMatch(runtime.buildRuntimeContext({ now: new Date('2026-10-27T12:00:00Z'), timeZone: 'UTC', connected: [] }), /^Connectors:/mu,
   'no connector line without host rows');
@@ -153,7 +161,7 @@ for (const reasonCode of ['credential_missing', 'credential-unavailable', 'crede
     connectors: [{ connector: 'mongoose', state: 'error', reasonCode }] });
   assert.match(one, /^Connectors: company knowledge not signed in\./mu, `host sign-in code classified as a sign-in: ${reasonCode}`);
 }
-for (const rule of ['say you cannot hear your output', 'never say you are unchanged', 'End no answer with "okay?" as a reflex']) {
+for (const rule of ['say you cannot hear it', 'never say you are unchanged', 'End no answer with "okay?" as a reflex']) {
   assert.ok(persona.NAYA_VOICE_SURFACE.includes(rule), `the voice surface states the truth rule: ${rule}`);
 }
 // C-TURN8: the one corrective line the host sends for a claim without its call is voice content, one
@@ -164,5 +172,22 @@ assert.doesNotMatch(persona.CLAIM_WITHOUT_CALL_LINE, /[\u2013\u2014]/, 'no dash 
 assert.match(persona.CLAIM_WITHOUT_CALL_LINE, /^Correction: /, 'she hears it as the host correcting her');
 assert.match(persona.CLAIM_WITHOUT_CALL_LINE, /make the call now/i, 'it offers the call');
 assert.match(persona.CLAIM_WITHOUT_CALL_LINE, /say plainly that you are not checking anything/, 'it offers the plain refusal');
-console.log(JSON.stringify({ case: 'own_state_truth', connectorLine: true, noDenialRule: true, voiceRules: 3, claimWithoutCall: true }));
+// C-CLAIMS9 outcome 2: an approval is a closed reason said in plain words, with no invented place to fix it.
+const approval = runtime.buildRuntimeContext({ now: new Date('2026-10-28T10:21:00Z'), timeZone: 'UTC', connected: [],
+  connectors: [{ connector: 'mattermost', state: 'error', configurationError: 'owner-approval-required' }] });
+assert.match(approval, /^Connectors: team chat needs approval, and there is no approval control in the app: she cannot fix it from this call\./mu,
+  'an approval-type reason states that no approval control exists in the app');
+assert.doesNotMatch(approval, /settings|preferences|dashboard|control panel|control centre|control center/iu,
+  'no settings location is named in the connector line');
+assert.match(approval, /never name a place to change it that this line does not name/u,
+  'and the guidance forbids naming a place the line does not name');
+const notConnected = runtime.buildRuntimeContext({ now: new Date('2026-10-28T10:21:00Z'), timeZone: 'UTC', connected: [],
+  connectors: [{ connector: 'mattermost', state: 'error', reasonCode: 'not_connected' }] });
+assert.match(notConnected, /^Connectors: team chat not connected\./mu, 'a connector the host reports as not connected says so in plain words');
+console.log(JSON.stringify({ case: 'connector_truth', approvalNoControl: true, noSettingsLocation: true, notConnected: true }));
+// C-CLAIMS9 outcome 2, W3-R2: the rule holds on a session with no connector rows too, where no connector line
+// is built at all, so it lives in the voice surface the model always receives.
+assert.ok(persona.NAYA_VOICE_SURFACE.includes('Never name a settings or approval location the connector state line does not name.'),
+  'the voice surface forbids naming a location the connector state line does not name, with or without connector rows');
+console.log(JSON.stringify({ case: 'connector_truth_without_rows', voiceRule: true }));
 NODE

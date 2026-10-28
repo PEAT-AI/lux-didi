@@ -32,11 +32,28 @@ export const CONNECTOR_SIGN_IN_REASONS: ReadonlySet<string> = new Set(['needs_si
   'credential_missing', 'credential-missing', 'credential-refresh-failed', 'credential-consent-expired', 'credential-unavailable',
   'credential-identity-mismatch', 'credential-identity-unverified', 'identity_mismatch']);
 export const CONNECTOR_APPROVAL_REASONS: ReadonlySet<string> = new Set(['owner-approval-required', 'ambiguous-legacy-policy']);
+/** C-CLAIMS9 outcome 2: a connector the host itself reports as unconnected, in the spellings it emits. */
+export const CONNECTOR_NOT_CONNECTED_REASONS: ReadonlySet<string> = new Set(['not_connected', 'not-connected', 'data_not_connected', 'data-not-connected', 'disconnected']);
+
+/**
+ * C-CLAIMS9 outcome 2: an approval is a closed reason with no place in the app to give it, and a call cannot
+ * fix it. The 10-28 call had the line say only "needs approval", and she invented a settings screen for it.
+ */
+const APPROVAL_PHRASE = 'needs approval, and there is no approval control in the app: she cannot fix it from this call';
+const CONNECTOR_PHRASES: Record<string, string> = {
+  'not connected': 'not connected',
+  'needs approval': APPROVAL_PHRASE,
+  'not signed in': 'not signed in',
+  connected: 'connected',
+  unavailable: 'unavailable',
+};
 
 /**
  * W4: one compact line of live connector state, per family, from the host's endpoint rows. A family with any
- * connected endpoint reads connected; otherwise the closed reason decides between signed out, approval and
- * unavailable. Claiming or denying a sign-in without this line cost a whole call (2026-10-27 afternoon).
+ * connected endpoint reads connected; otherwise the closed reason decides between signed out, not connected,
+ * approval and unavailable. Claiming or denying a sign-in without this line cost a whole call (2026-10-27
+ * afternoon). The closing rule bans naming any place the line itself does not name, because an approval is
+ * given outside the app and a settings screen she invents is a place he will not find.
  */
 export function connectorStateLine(connectors: readonly ConnectorStateInput[]): string | undefined {
   const families = new Map<string, string[]>();
@@ -44,15 +61,17 @@ export function connectorStateLine(connectors: readonly ConnectorStateInput[]): 
     const reason = String(row.reasonCode ?? row.error ?? row.configurationError ?? row.state);
     const phrase = row.state === 'connected' ? 'connected'
       : CONNECTOR_SIGN_IN_REASONS.has(reason) ? 'not signed in'
-        : CONNECTOR_APPROVAL_REASONS.has(reason) ? 'needs approval' : 'unavailable';
+        : CONNECTOR_APPROVAL_REASONS.has(reason) ? 'needs approval'
+          : CONNECTOR_NOT_CONNECTED_REASONS.has(reason) ? 'not connected' : 'unavailable';
     for (const group of connectorGroupNames(row.connector)) families.set(group, [...(families.get(group) ?? []), phrase]);
   }
   if (families.size === 0) return undefined;
   const rank = (phrases: readonly string[]): string => phrases.includes('connected') ? 'connected'
     : phrases.includes('not signed in') ? 'not signed in'
-      : phrases.includes('needs approval') ? 'needs approval' : 'unavailable';
-  const said = [...families].map(([group, phrases]) => `${group} ${rank(phrases)}`);
-  return `Connectors: ${said.join('; ')}. Never deny or claim a sign-in or a capability without this line or a live tool check.`;
+      : phrases.includes('needs approval') ? 'needs approval'
+        : phrases.includes('not connected') ? 'not connected' : 'unavailable';
+  const said = [...families].map(([group, phrases]) => `${group} ${CONNECTOR_PHRASES[rank(phrases)]}`);
+  return `Connectors: ${said.join('; ')}. Never deny or claim a sign-in or a capability without this line or a live tool check, and never name a place to change it that this line does not name.`;
 }
 
 /** The exact vault-write capability fact, so no answer blames a connector for a write that is off. */
@@ -144,7 +163,10 @@ export function buildRuntimeContext(input: RuntimeContextInput): string {
   const sunday = new Date(monday.getTime() + 6 * day);
   const weekYmd = (date: Date): string => ymd({ y: date.getUTCFullYear(), m: date.getUTCMonth() + 1, d: date.getUTCDate() });
   const weekOffset = (date: Date): string => offset(new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 12)), input.timeZone);
-  const connected = input.connected.length ? input.connected.join(', ') : 'none';
+  const refused = new Set((input.connectors ?? []).filter(row => row.state !== 'connected')
+    .flatMap(row => connectorGroupNames(row.connector)));
+  const available = input.connected.filter(group => !refused.has(group));
+  const connected = available.length ? available.join(', ') : 'none';
   return [
     '# Runtime context',
     '',

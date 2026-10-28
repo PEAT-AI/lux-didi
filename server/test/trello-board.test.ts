@@ -5,13 +5,13 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTrelloBoard, TRELLO_KEY_FILE, trelloConfigured, trelloIdentity } from '../host/trello.js';
-import { createTrelloRestTransport, trelloSchemas } from '../adapters/trello/client.js';
+import { createTrelloRestTransport, trelloSchemas, trelloRequests, TRELLO_ACTIONS } from '../adapters/trello/client.js';
 import { foldName, indexTrelloSchemas, normalizeTrelloWrite, ownerAskedForChange, planTrelloCall, trelloDueInstant, validateTrelloRead, validateTrelloWrite, TRELLO_SERVER_ALLOW, TRELLO_SERVER_DENY, TRELLO_WRITE_DESCRIPTION, type TrelloBoard } from '../tools/trello.js';
 import { safeEvent } from '../host/log.js';
 import { FAKE_WORKSPACE, objectId, startTrelloFake, SYNTHETIC_BOARD, type TrelloFake } from './trello-fake.js';
 import { runToolCalls } from '../tools/declarations.js';
 import { attachHostLogSink } from '../tools/host-events.js';
-import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_PARAMETERS } from '../tools/trello.js';
+import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_PARAMETERS, TRELLO_READ_VIEWS, TrelloBoard as TrelloBoardService } from '../tools/trello.js';
 import { diagnosticInputFields } from '../tools/diagnostic-input.js';
 import { STAGE_NOTE_PARAMETERS } from '../tools/lux-note.js';
 import { researchDeclaration } from '../tools/research.js';
@@ -49,14 +49,14 @@ const session = (() => { let n = 0; return () => `live-trello-${++n}`; })();
 
 
 
-test('the overview pins the board by name and counts every list through all its pages', async () => {
+test('the overview pins the board by name and counts every list from REST arrays', async () => {
   const result = await board.read(session(), { view: 'overview' });
   assert.equal(result.ok, true, JSON.stringify(result));
   const lists = result.lists as { list: string; cards: number; newest: { name: string }[] }[];
   assert.deepEqual(lists.map(list => [list.list, list.cards]), [['Sprint', 3], ['Short Term Backlog', 3], ['Long Term Backlog', 2], ['Ideas', 2], ['Waiting for X', 1], ['Done', 2]]);
   assert.equal(lists[3]?.newest[0]?.name, 'Quick note from the phone', 'newest first');
   assert.ok(!JSON.stringify(result).includes('Foreign card'), 'the other board never shows');
-  assert.ok(fake.calls.some(call => call.tool === 'trelloReadCard' && call.args.cursor === '2'), 'paging was followed');
+  assert.ok(fake.calls.every(call => call.args.cursor === undefined), 'REST requests never invent a generic cursor parameter');
 });
 
 test('a list page carries the true total and the next offset', async () => {
@@ -463,7 +463,7 @@ test('a rate-limited call waits the retry-after once and then reports rate_limit
     assert.deepEqual(waits, [2000], 'the Retry-After header is respected once, not guessed');
     local.rateLimitNextCall(2, 1);
     const limited = await transport.call('trelloReadBoard', { action: 'list' });
-    assert.deepEqual(limited, { ok: false, code: 'rate_limited' }, 'a second 429 in a row is reported, never retried forever');
+    assert.deepEqual(limited, { ok: false, code: 'rate_limited', httpStatus: 429 }, 'a second 429 in a row is reported, never retried forever');
   } finally { await local.close(); }
 });
 
@@ -596,4 +596,129 @@ test('C-ARGS: every diagnostic field list matches the properties its tool declar
     ['trello_read', TRELLO_READ_PARAMETERS.properties], ['trello_write', TRELLO_WRITE_PARAMETERS.properties],
     ['research', (researchDeclaration().parameters as { properties: object }).properties], ['stage_lux_note', STAGE_NOTE_PARAMETERS.properties],
   ] as const) assert.deepEqual([...diagnosticInputFields(name)].sort(), declared({ properties }), name);
+});
+
+// Schema only, captured from the gateway action table and checked against Atlassian's public OpenAPI.
+const restContract = JSON.parse(readFileSync(join(process.cwd(), 'server/test/fixtures/trello-rest-contract.json'), 'utf8')) as {
+  actions: Record<string, Record<string, string[]>>;
+  endpoints: Record<string, Record<string, { query: string[] }>>;
+};
+
+test('C-TRELLO9: every action maps to a documented REST method and path', () => {
+  assert.deepEqual(TRELLO_ACTIONS, restContract.actions);
+  const args = { boardId: 'board', listId: 'list', cardId: 'card', checklistId: 'checklist', itemId: 'item', labelId: 'label', name: 'Synthetic', state: 'complete' };
+  for (const [tool, actions] of Object.entries(restContract.actions)) {
+    for (const action of Object.keys(actions)) {
+      const plan = trelloRequests(tool, { ...args, action });
+      assert.ok(plan, `${tool}.${action}`);
+      for (const request of plan.requests) {
+        const match = Object.entries(restContract.endpoints).find(([template, methods]) =>
+          new RegExp(`^${template.replace(/\{[^}]+\}/g, '[^/]+')}$`).test(`/${request.path}`) && methods[request.method.toLowerCase()]);
+        assert.ok(match, `${tool}.${action}: ${request.method} /${request.path} must exist in public OpenAPI`);
+        for (const key of Object.keys(request.query ?? {})) assert.ok(match[1][request.method.toLowerCase()]!.query.includes(key), `${action}: documented query ${key}`);
+      }
+    }
+  }
+});
+
+function documentedRestBoard(status?: number) {
+  const boardId = objectId(NOW - 5000);
+  const listId = objectId(NOW - 4000);
+  const calls: string[] = [];
+  const events: Record<string, unknown>[] = [];
+  const card = { id: objectId(NOW - 1000), name: 'Synthetic task', desc: 'Synthetic description', idBoard: boardId, idList: listId, idLabels: [], closed: false, due: new Date(NOW + 3600000).toISOString(), dueComplete: false };
+  const payloads: Record<string, unknown> = {
+    '/1/members/me': { id: 'member', username: 'synthetic' },
+    '/1/members/me/boards': [{ id: boardId, name: SYNTHETIC_BOARD, closed: false }],
+    [`/1/boards/${boardId}/lists`]: [{ id: listId, name: 'Ideas', idBoard: boardId, closed: false }],
+    [`/1/boards/${boardId}/labels`]: [], [`/1/lists/${listId}/cards`]: [card],
+    [`/1/cards/${card.id}`]: card,
+    [`/1/cards/${card.id}/checklists`]: [{ id: 'checklist', name: 'Steps', checkItems: [{ id: 'item', name: 'Synthetic step', state: 'incomplete' }] }],
+    [`/1/cards/${card.id}/actions`]: [{ id: 'comment', data: { text: 'Synthetic comment' } }],
+  };
+  const transport = createTrelloRestTransport({ credentials: async () => ({ ok: true, key: 'synthetic-key', token: 'synthetic-token' }), fetch: async input => {
+    const url = new URL(String(input)); calls.push(url.pathname);
+    const code = status ?? (Object.hasOwn(payloads, url.pathname) ? 200 : 404);
+    return new Response(JSON.stringify(payloads[url.pathname] ?? { error: 'not found' }), { status: code });
+  } });
+  const board = new TrelloBoardService({ transport, signedIn: () => true, boardName: SYNTHETIC_BOARD, timeZone: 'UTC', now, log: event => { events.push(event); } });
+  return { board, calls, events, card };
+}
+
+test('C-TRELLO9: every trello_read view returns synthetic board data through the tool registry', async () => {
+  const views = [
+    { view: 'overview' }, { view: 'list', list: 'Ideas' }, { view: 'search', query: 'Synthetic' },
+    { view: 'due', window: 'week' }, { view: 'recent' }, { view: 'card', card: 'Synthetic task' },
+  ];
+  assert.deepEqual(views.map(args => args.view).sort(), [...TRELLO_READ_VIEWS].sort());
+  for (const args of views) {
+    const fixture = documentedRestBoard();
+    let result: Record<string, unknown> | undefined;
+    const ref = { id: 'synthetic-ref', sha256: 'a'.repeat(64) };
+    const owner = { journal: { intent: () => 'fresh' as const, refuse: () => ref, fail: () => ref } as unknown as ToolCallJournal, resultGate: {} as ToolResultGate };
+    const tool: ToolDefinition = { ...TRELLO_READ_IDENTITY, description: TRELLO_READ_DESCRIPTION, effect: 'read', parameters: TRELLO_READ_PARAMETERS, validate: validateTrelloRead,
+      execute: async (input, context) => { result = await fixture.board.read(context.runId, input); return { status: 'completed', result: ref }; } };
+    const batch = await runToolCalls(owner, [{ id: 'synthetic-call', name: 'trello_read', args }], {
+      registry: [tool], host: { runId: 'synthetic-run', actorId: 'synthetic-actor', authorityEpoch: 'epoch', revision: 1, grants: [{ tool: 'trello_read', effect: 'read', accountId: TRELLO_READ_IDENTITY.accountId, resourceId: TRELLO_READ_IDENTITY.resourceId }] },
+      authority: { isCurrent: async () => true }, control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 },
+      step: 0, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'],
+    } as never);
+    assert.ok(batch);
+    assert.equal(result?.ok, true, `${args.view}: ${JSON.stringify(result)}`);
+    assert.ok(JSON.stringify(result).includes('Synthetic task'), `${args.view} includes a real synthetic card, not an empty success`);
+    assert.ok(fixture.calls.includes('/1/members/me/boards'));
+  }
+});
+
+test('C-TRELLO9: HTTP refusals log a closed inner status, never response text or credentials', async () => {
+  const fixture = documentedRestBoard(404);
+  const result = await fixture.board.read('http-refusal', { view: 'overview' });
+  assert.equal(result.code, 'unsupported');
+  const settled = fixture.events.find(event => event.phase === 'settle');
+  assert.equal(settled?.reason, 'server_tool_error:http_404');
+  assert.equal(safeEvent(settled)?.reason, 'server_tool_error:http_404', 'the reason survives the actual host.log privacy filter');
+  assert.ok(!JSON.stringify(result).includes('http_404'), 'spoken guidance remains short');
+});
+
+test('C-TRELLO9: planner refusals distinguish absent tools from bad argument shapes', async () => {
+  for (const [tools, reason] of [
+    [[], 'plan_no_tool'],
+    [[{ name: 'trelloReadBoard', inputSchema: { type: 'object', properties: { action: { enum: ['list'] }, unexpectedRequired: {} }, required: ['action', 'unexpectedRequired'] } }], 'plan_bad_args'],
+  ] as const) {
+    const events: Record<string, unknown>[] = [];
+    const service = new TrelloBoardService({ transport: { tools: async () => ({ ok: true, value: tools }), call: async () => { throw Error('must not dispatch'); } }, signedIn: () => true, boardName: SYNTHETIC_BOARD, log: event => { events.push(event); } });
+    const result = await service.read('planner-refusal', { view: 'overview' });
+    assert.equal(result.code, 'unsupported');
+    assert.equal(events.at(-1)?.reason, reason);
+    assert.equal(safeEvent(events.at(-1))?.reason, reason);
+  }
+});
+
+test('C-TRELLO9: gateway pagination is retained for transports advertising cursor pages', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const service = new TrelloBoardService({ signedIn: () => true, boardName: SYNTHETIC_BOARD, transport: {
+    tools: async () => ({ ok: true, value: trelloSchemas() }),
+    call: async (tool, args) => {
+      calls.push({ tool, ...args });
+      if (tool === 'trelloReadBoard') return { ok: true, value: [{ id: objectId(NOW - 5000), name: SYNTHETIC_BOARD, closed: false }] };
+      if (tool === 'trelloReadList') return { ok: true, value: [{ id: objectId(NOW - 4000), name: 'Ideas', boardId: objectId(NOW - 5000), closed: false }] };
+      if (args.cursor === undefined) return { ok: true, value: { cards: [{ id: objectId(NOW), name: 'First', listId: objectId(NOW - 4000), boardId: objectId(NOW - 5000) }], pageInfo: { hasNextPage: true, endCursor: 'next' } } };
+      return { ok: true, value: { cards: [{ id: objectId(NOW - 1), name: 'Second', listId: objectId(NOW - 4000), boardId: objectId(NOW - 5000) }], pageInfo: { hasNextPage: false } } };
+    },
+  } });
+  const result = await service.read('paged', { view: 'list', list: 'Ideas' });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.total, 2);
+  assert.ok(calls.some(call => call.cursor === 'next'));
+});
+
+
+test('C-TRELLO9: inner log reasons are closed codes, not arbitrary server messages', () => {
+  const event = { event: 'connector_call', connector: 'trello', tool: 'read.overview', phase: 'settle', outcome: 'refused' };
+  for (const reason of ['plan_no_tool', 'plan_bad_args', 'plan_no_action', 'dispatch_not_allowed', 'server_not_allowed', 'server_tool_error:unknown', 'server_tool_error:http_400', 'server_tool_error:http_404', 'server_credential_revoked:http_403', 'server_rate_limited:http_429', 'server_unavailable:http_503']) {
+    assert.equal(safeEvent({ ...event, reason })?.reason, reason);
+  }
+  for (const reason of ['server_tool_error:private board name', 'server_tool_error:http_404/private', 'server_tool_error:http_399', 'server_tool_error:http_600', 'server_tool_error:http_4xx', 'server_tool_error:http_404 token=synthetic-secret']) {
+    assert.equal(safeEvent({ ...event, reason }), undefined);
+  }
 });

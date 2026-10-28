@@ -308,7 +308,7 @@ const LOOKUP_LIMIT_TEXT = `at most ${MAX_LOOKUPS} lookups, each with source (${L
 export const LOOKUP_COUNT_RULE = `${LOOKUP_LIMIT_TEXT}; a status or test-all ask may name one lookup per source, up to ${STATUS_ASK_LOOKUP_LIMIT}`;
 
 export type MailLookup = { id: string; format?: 'full' | 'metadata' } | { q: string; maxResults?: number };
-export interface ResearchLookup { source: LookupSource; query: string; history?: HistoryArguments; mail?: MailLookup }
+export interface ResearchLookup { source: LookupSource; query: string; history?: HistoryArguments; mail?: MailLookup; /** Host-resolved entity, never a generic calendar window. */ calendarEntity?: string }
 /**
  * Per-source outcome of a routed call: read something, read nothing, unreachable, the read failed, or
  * the read was cut short by a deadline. `timeout` is its own value because a cut read is not an empty
@@ -2375,7 +2375,20 @@ function cutAfter(ms: number, schedule: ResearchTimer = scheduleTimer): { signal
 /** #565: the shape one source call searched with: counts and closed operator tokens, never a word. */
 export interface ResearchQueryShape { source: Exclude<SourceKind | LookupSource, 'drive'>; terms: number; operators: readonly string[]; topicWords: number }
 
+/** Proper-noun-like query tokens need conversational or current tool evidence, not injected context. */
+export function bindResearchQuery(query: string, allowed: string): { query: string; dropped: number } {
+  const words = new Set((allowed.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu) ?? []).map(word => word.toLocaleLowerCase()));
+  let dropped = 0;
+  const bound = query.replace(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu, token => {
+    if (/\p{Lu}/u.test(token) && !words.has(token.toLocaleLowerCase())) { dropped += 1; return ''; }
+    return token;
+  }).replace(/\s+/gu, ' ').trim();
+  return { query: bound, dropped };
+}
+
 export interface ResearchDeps {
+  /** Recent conversational words only, never injected directories or profile context. */
+  queryContext?: (() => string) | undefined;
   timeZone?: string;
   /** C-DEPTH item 3: the stage two bound for this run, so a test drives it without a real wait. */
   knowledgeReadMs?: number | undefined;
@@ -2983,6 +2996,9 @@ export function unsearchedReasonOf(code: string): UnsearchedReason {
   const text = code.toLowerCase();
   // W3: the count guard's own code, before any spelling heuristic can read it as a failure.
   if (text === 'count_needs_date_window') return 'count_needs_date_window';
+  // C-CLAIMS9 outcome 3: the host's own code for a connector that cannot serve the read says it is down.
+  // On 10-28 a chat source reported this way came back as provider_failed with ms 0, hiding the reason.
+  if (text === 'connector_unavailable' || text === 'connector-unavailable') return 'not_connected';
   if (/grant|permission|scope|forbidden|unauthori[sz]ed|not_connected|signin|sign_in|sign-in|login|credential|token/u.test(text)) {
     return /not_connected|signin|sign_in|sign-in|login|credential|token|disconnect/u.test(text) ? 'not_connected' : 'grant_missing';
   }
@@ -3105,6 +3121,9 @@ function closedOutcomeOf(run: RunState, source: SourceKind): UnsearchedReason {
   const code = run.unavailableReasons.get(source);
   // #635: a source whose own reason was a timeout is a timeout, never a provider failure.
   if (code !== undefined && TIMED_OUT.has(code)) return 'timed_out';
+  // C-CLAIMS9 outcome 3: a source the host or the connector reports as unconnected was never served, so it
+  // is not a provider failure: it is a connection he can restore and no call of hers can.
+  if (code !== undefined && unsearchedReasonOf(code) === 'not_connected') return 'not_connected';
   // #637: a channel the ask named and the chat connector does not know is its own closed reason, so the
   // header says the channel is unknown instead of reporting the chat as a provider failure.
   if (code !== undefined && code.startsWith('channel_not_found')) return 'channel_not_found';
@@ -3135,6 +3154,16 @@ const SIGNED_OUT_CODES = new Set([
   'credential_missing', 'credential-missing', 'credential_refresh_failed', 'credential-refresh-failed',
   'credential_consent_expired', 'credential-consent-expired', 'credential_revoked', 'data_not_connected',
 ]);
+
+/**
+ * C-CLAIMS9 outcome 3: the connector's own code, kept only when it names a missing connection, so a source the
+ * connector refused reads as not connected instead of as a provider that failed, and a classified failure
+ * keeps its own separate line.
+ */
+function refusedConnectionCode(results: readonly IntentSubResult[]): string | undefined {
+  const code = results.find(result => !result.ok)?.code;
+  return code !== undefined && unsearchedReasonOf(code) === 'not_connected' ? code : undefined;
+}
 
 /**
  * #653: the status answer names what each source did, in plain words, and a source is called working
@@ -4640,6 +4669,9 @@ function routedRead(lookup: ResearchLookup, context: { question: string; topic?:
   // it always came back empty and the owner heard nothing; the full merge stays on the calendar intent.
   // The calendar list rides along only so the result can say what it did not read.
   if (lookup.source === 'calendar') {
+    if (lookup.calendarEntity !== undefined) return { source: 'calendar', kind: 'calendar_window', subs: [
+      { key: 'cal0', name: INTERNAL.calendarList, args: { calendarId: 'primary', q: lookup.calendarEntity, maxResults: RESEARCH.pageResults.calendar } as JsonObject },
+    ] };
     let range: { timeMin: string; timeMax: string };
     // An unnamed window is unresolved, never widened: only the declared grammar resolves here.
     // C-CAL8: a schedule lookup reads today from now, exactly as the plan surface does, so the model's own
@@ -5164,7 +5196,9 @@ async function webGroup(deps: ResearchDeps, run: RunState, plans: readonly Route
   run.ops += plans.length;
   const results = await Promise.all(plans.map(async (plan): Promise<{ plan: RoutedPlan; line?: string }> => {
     const call = plan.read.subs[0];
-    const query = String(call?.args['query'] ?? plan.lookup.query);
+    const bound = bindResearchQuery(String(call?.args['query'] ?? plan.lookup.query), `${deps.queryContext?.() ?? run.question ?? ''} ${[...run.evidence.values()].join(' ')}`);
+    if (bound.dropped > 0) hostLogEvent({ event: 'research_query_token_dropped', dropped: bound.dropped });
+    const query = bound.query;
     const readStarted = now();
     const outcome = await deps.web!.search({ query, signal, deadlineMs: webDeadlineMs(query) });
     recordWebRead(deps, run, query, outcome, readStarted, now);
@@ -5318,6 +5352,10 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
     // says the source was not read in time instead of a failure with no stated reason.
     const timedOut = own.find(result => !result.ok && result.code !== undefined && TIMED_OUT.has(result.code))?.code;
     if (timedOut !== undefined) run.unavailableReasons.set(plan.read.source, timedOut);
+    // C-CLAIMS9 outcome 3: the connector's own code for a read it refused because nothing is connected survives
+    // here too, so a source that is not connected reads as not connected instead of as a provider that failed.
+    const refusedCode = refusedConnectionCode(own);
+    if (refusedCode !== undefined && !run.unavailableReasons.has(plan.read.source)) run.unavailableReasons.set(plan.read.source, refusedCode);
     // #565: a routed read counts as read, so a continuation of this run never dispatches it again.
     if ((outcome === 'ok' || outcome === 'empty') && plan.read.kind !== 'memory_search') run.readKinds.add(plan.read.kind);
     // #635: a read that answered in part and then ran out of its budget is a partial timeout, so the header
@@ -5399,7 +5437,8 @@ function withOwnedSources(run: RunState, question: string, lookups: readonly Res
   for (const source of missing) {
     // #1028: a batch the model already filled is never cut down to make room; the owner's own source is
     // deferred to the next call, where its coverage is said, instead of a lookup the model asked for vanishing.
-    if (batch.length < MAX_LOOKUPS) batch.push({ source, query: source === 'knowledge' ? asked : window });
+    if (batch.length < MAX_LOOKUPS) batch.push({ source, query: source === 'knowledge' ? asked : window,
+      ...(source === 'calendar' && !ownerScheduleQuestion(question) ? { calendarEntity: run.resolvedName } : {}) });
     else run.deferredSources = [...new Set([...(run.deferredSources ?? []), source])];
   }
   return batch;
@@ -5514,6 +5553,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
         first.historyPages = outcomes.flatMap(outcome => outcome.historyPage ? [outcome.historyPage] : []);
         const source = batch[0]?.source;
         if (source) {
+          if (source !== 'web') first.settledNonWeb = true;
           first.reading.delete(source);
           first.wake?.();
           lateFindingsOf(deps, first, run.researchId, source, Math.max(...batch.map(outcome => outcome.ms)), [...new Set(batch.flatMap(outcome => outcome.lines))], batch.some(outcome => outcome.outcome === 'ok' || outcome.outcome === 'empty'), run.runId, signal.aborted || run.cancelled || run.stopped);
@@ -5569,6 +5609,7 @@ function withHistoryPages(reply: JsonObject, pages: JsonObject[]): JsonObject {
 }
 
 interface FirstAnswerState {
+  settledNonWeb?: boolean;
   historyPages?: JsonObject[];
   mailShown: Set<string>;
   /** When the call answered ahead of its readers; unset until then. */
@@ -5633,16 +5674,27 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   const stopTimers = (): void => { for (const timer of timers.splice(0)) timer.cancel(); };
   const wait = (ms: number): Promise<'due'> => new Promise<'due'>(resolve => { timers.push(schedule(() => resolve('due'), Math.max(0, ms))); });
   const settled = loop.then(() => 'settled' as const, () => 'settled' as const);
-  const raced = await Promise.race([settled, wait(RESEARCH.firstAnswerMs)]);
+  const due = wait(RESEARCH.firstAnswerMs);
+  let nonWebSettled = false;
+  for (;;) {
+    const woken = new Promise<'woken'>(resolve => { first.wake = () => resolve('woken'); });
+    const raced = await Promise.race([settled, due, woken]);
+    delete first.wake;
+    if (raced === 'settled') { stopTimers(); return undefined; }
+    const view = first.snapshot?.();
+    nonWebSettled = view !== undefined && first.settledNonWeb === true && first.reading.has('web')
+      && view.run.web.length === 0 && !view.run.unavailableReasons.has('web')
+      && [...first.reading].every(source => source === 'web');
+    if (raced === 'due' || nonWebSettled) break;
+  }
   stopTimers();
-  if (raced === 'settled') return undefined;
   // R3/R4: whether this answer is the hard stop, decided by what ended the wait rather than by arithmetic on the
   // clock: a timer that came due or a budget already spent means the sources were not waited for any longer.
   let budgetSpent = false;
   // ROUTE-1022 (#526): a question about one source answers with that source, so the first answer does
   // not go out on whatever read happened to land first. The wait is inside the run's own budget, and a
   // source that is not being read is never waited for.
-  while (first.required !== undefined && first.releaseAt !== undefined) {
+  while (!nonWebSettled && first.required !== undefined && first.releaseAt !== undefined) {
     const live = first.snapshot?.();
     if (live === undefined) return undefined;
     const waiting = [...first.required].some(source => first.reading.has(source) && !live.run.sourcesDone.has(source));
@@ -5684,11 +5736,12 @@ async function firstAnswerOf(deps: ResearchDeps, first: FirstAnswerState, loop: 
   const early = capReply(withHistoryPages(buildReply(view.run, 'partial', view.configured, false, view.limit), first.historyPages ?? []), view.limit);
   // #621: the pending note rides after the trim, so the length check runs once more on the reply the voice
   // actually receives.
+  const retainedNote = String(early['note'] ?? '').replace(RESEARCH.completeNote, '').split('; ').filter(clause => !/timed out|still reading/iu.test(clause)).join('; ').trim();
   const wrapped = capReply({
     ...early,
     status: partial || early['canContinue'] === true ? 'partial' : 'complete',
     canContinue: partial || early['canContinue'] === true,
-    note: partial ? `${hardStopped ? RESEARCH.hardStopNote : RESEARCH.stillReadingNote}${pending.join(', ')}.${String(early['note'] ?? '').includes(RESEARCH.moreAvailableNote) ? ` ${RESEARCH.moreAvailableNote}` : ''}` : (typeof early['note'] === 'string' ? early['note'] : RESEARCH.completeNote),
+    note: partial ? `${hardStopped ? RESEARCH.hardStopNote : RESEARCH.stillReadingNote}${pending.join(', ')}.${retainedNote ? ` ${retainedNote}` : ''}` : (typeof early['note'] === 'string' ? early['note'] : RESEARCH.completeNote),
   }, view.limit);
   const reply: JsonObject = wrapped;
   first.mailShown = new Set((reply as MailReply)[mailDelivery]?.keys ?? []);
@@ -6404,8 +6457,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             return Promise.all(webCalls.map(async (call): Promise<IntentSubResult> => {
               const empty = { key: call.key, name: call.name, ok: false, text: '', originalCharacters: 0, omittedCharacters: 0 };
               const readStarted = now();
-              const outcome = await deps.web!.search({ query: String(call.args['query'] ?? ''), signal: readSignal, deadlineMs: webDeadlineMs(String(call.args['query'] ?? '')) });
-              recordWebRead(deps, run, String(call.args['query'] ?? ''), outcome, readStarted, now);
+              const bound = bindResearchQuery(String(call.args['query'] ?? ''), `${deps.queryContext?.() ?? ownerWords} ${[...run.evidence.values()].join(' ')}`);
+              if (bound.dropped > 0) hostLogEvent({ event: 'research_query_token_dropped', dropped: bound.dropped });
+              const outcome = await deps.web!.search({ query: bound.query, signal: readSignal, deadlineMs: webDeadlineMs(bound.query) });
+              recordWebRead(deps, run, bound.query, outcome, readStarted, now);
               if (!outcome.ok) { run.unavailableReasons.set('web', webReasonOf(outcome.code, outcome.code === 'web_insufficient' ? outcome.reason : undefined)); return empty; }
               run.web.push(...webSourceCards(outcome.evidence).map(card => ({ ...card, retrievedAt: outcome.evidence.retrievedAt })));
               run.webAttribution.push(...webAttribution(outcome.evidence.searchEntryPoint));
@@ -6504,6 +6559,10 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             } else if (!run.sourcesDone.has(part.source)) {
               // #635: a read this turn cut at its own budget is a timeout, never a source that failed.
               if (cutKinds.has(kind)) run.cutShort.add(part.source); else run.sourcesFailed.add(part.source);
+              // C-CLAIMS9 outcome 3: the connector's own code for a read it refused because nothing is connected
+              // survives, so a source that is not connected reads as not connected, not as a provider that failed.
+              const refusedCode = refusedConnectionCode(part.results);
+              if (refusedCode !== undefined && !run.unavailableReasons.has(part.source)) run.unavailableReasons.set(part.source, refusedCode);
               // #637: a channel the chat connector does not know keeps its own code, so the reply names
               // the unknown channel instead of a chat that could not be reached.
               const missCode = part.source === 'chat' ? channelMissCode(part.results) : undefined;
@@ -6539,6 +6598,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             });
             // R6: this source settled after the call had already answered, so what it found is handed over
             // once, and only if the first reply did not already say it.
+            if (part.source !== 'web') first.settledNonWeb = true;
             first.reading.delete(part.source);
             first.wake?.();
             lateFindingsOf(deps, first, run.researchId, part.source, Math.max(0, now() - at), block.lines, part.results.some(result => result.ok), run.runId, signal.aborted || run.cancelled || run.stopped);
@@ -7257,13 +7317,22 @@ export const RESEARCH_OPERATION = Object.freeze({
  */
 export const ADMISSION_DIRECTIVES: Readonly<Record<AdmissionBlockReason, string>> = Object.freeze({
   no_owner_turn: 'No owner turn has started, so answer from the conversation until the owner speaks.',
-  turn_spent: 'This owner turn already granted its research operations: answer with what their results hold, or continue that same researchId.',
+  turn_spent: 'Results were delivered earlier this turn. Answer from the delivered research results already in the conversation; do not describe this admission refusal as a search outcome.',
   no_turn_since_result: 'That result was already delivered: answer from it, and research again only after the owner speaks.',
   answer_already_given: 'You already answered this owner turn: a new research needs a new turn from the owner.',
 });
 /** C-RESEARCH-CONTRACT T-03: the reply to a research call no owner turn admitted, naming the reason applied. */
-export function admissionBlocked(reason: AdmissionBlockReason): JsonObject {
-  return { status: 'blocked', reason, directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false };
+export function findingCount(finding: JsonObject): number {
+  if (Array.isArray(finding['items'])) return finding['items'].length;
+  const shown = typeof finding['text'] === 'string' ? /: (\d+) of \d+ shown/u.exec(finding['text']) : null;
+  return shown ? Number(shown[1]) : 0;
+}
+
+export function admissionBlocked(reason: AdmissionBlockReason, delivered?: JsonObject): JsonObject {
+  const base: JsonObject = { status: 'blocked', reason, directive: ADMISSION_DIRECTIVES[reason], retry_without_new_owner_turn: false };
+  if (delivered === undefined) return base;
+  const findings = Array.isArray(delivered['findings']) ? delivered['findings'] as JsonObject[] : [];
+  return { ...base, code: reason, deliveredCount: findings.reduce((count, finding) => count + findingCount(finding), 0), deliveredResults: delivered };
 }
 export const ADMISSION_BLOCK_REASONS = ['no_owner_turn', 'turn_spent', 'no_turn_since_result', 'answer_already_given'] as const;
 export type AdmissionBlockReason = typeof ADMISSION_BLOCK_REASONS[number];
@@ -7279,15 +7348,16 @@ export class ResearchAdmission {
   #turns = 0;
   #grant: number | undefined;
   #deliveredAt: number | undefined;
-  /** R6: the one own-results continue this session may spend without a new owner turn. */
+  /** R6: the one own-results continue this owner turn may spend without a new owner turn. */
   #ownResults = false;
+  #deliveredReply: JsonObject | undefined;
   /** C-RESEARCH-CONTRACT Q-08: the run this session last handed the model, so a continue can page it. */
   #currentRun: string | undefined;
   /** C-RESEARCH-CONTRACT Q-08: the model spoke after this turn's result, so the turn's answer is given. */
   #answered = false;
   /** #1028 behaviour 3: the questions this owner turn already started, so two different asks both run. */
   #starts: string[] = [];
-  ownerTurn(): void { this.#turns += 1; this.#grant = this.#turns; this.#answered = false; this.#starts = []; refusedEntityRequest = undefined; entityRetryStopped = false; }
+  ownerTurn(): void { this.#ownResults = false; this.#turns += 1; this.#grant = this.#turns; this.#answered = false; this.#starts = []; refusedEntityRequest = undefined; entityRetryStopped = false; }
   /**
    * R6: `ownResults` is the model asking for the pending results of the research this same turn started, while that
    * research still has sources reading. That one continue spends no owner turn, and a second one is refused.
@@ -7331,6 +7401,15 @@ export class ResearchAdmission {
   }
   /** C-RESEARCH-CONTRACT Q-08: the run a paging or narrowing continue may name without a new owner turn. */
   currentRun(): string | undefined { return this.#currentRun; }
+  deliveredReply(reply?: JsonObject): JsonObject | undefined {
+    if (reply !== undefined) {
+      const findings = Array.isArray(reply['findings']) ? reply['findings'] as JsonObject[] : [];
+      // A stop or a duplicate page does not erase the evidence this run already handed the model.
+      if (this.#deliveredReply === undefined || reply['researchId'] !== this.#deliveredReply['researchId']
+        || findings.some(finding => findingCount(finding) > 0)) this.#deliveredReply = reply;
+    }
+    return this.#deliveredReply;
+  }
   /**
    * C-RESEARCH-CONTRACT Q-08: the model spoke after this owner turn's result was delivered, so the owner has
    * heard the answer for this turn and a new research run would be an orphan.

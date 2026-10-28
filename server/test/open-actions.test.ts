@@ -467,7 +467,7 @@ test('C-OPEN: a stretch with no open verb refuses with its own real code', () =>
   assert.deepEqual(safeEvent({ event: 'native_action', action: 'open_url', code: 'kind_mismatch', detail: 'none' }),
     { event: 'native_action', action: 'open_url', code: 'kind_mismatch', detail: 'none' }, 'and so does a kind mismatch');
   assert.equal(safeEvent({ event: 'native_action', action: 'open_url', code: 'refused', detail: 'none' }), undefined, 'the code set stays closed');
-  assert.deepEqual([...OPEN_RECEIPT_CODES].sort(), ['ambiguous', 'failed', 'kind_mismatch', 'no_open_intent', 'not_allowed', 'not_found', 'not_owner_words', 'opened'], 'the receipt code set is the acks plus the guard codes');
+  assert.deepEqual([...OPEN_RECEIPT_CODES].sort(), ['ambiguous', 'failed', 'kind_mismatch', 'native_timeout', 'no_open_intent', 'not_allowed', 'not_found', 'not_owner_words', 'opened'], 'the receipt code set is the acks plus the guard codes');
   // C-OPEN: the ask he repeats is his own open intent, so the same handle opens.
   noteModelOutput(run);
   noteOwnerWords(run, 'why can not you open it in my browser');
@@ -566,12 +566,15 @@ test('C-OPENWEB8: no matching site says nothing was found, never that several ma
   } finally { useWebSearchPort(undefined); }
 });
 
-test('C-OPENWEB8: the binding reads the current turn only, never an earlier one', () => {
+test('C-OPENWEB9: consecutive owner turns bind until the assistant answers', () => {
   noteModelOutput(WEB_RUN);
   noteOwnerWords(WEB_RUN, 'open the map of Odemira in my browser');
   assert.equal(ownerTurnWords(WEB_RUN), 'open the map of Odemira in my browser');
+  noteOwnerWords(WEB_RUN, 'show directions too');
+  assert.equal(ownerTurnWords(WEB_RUN), 'open the map of Odemira in my browser show directions too');
+  noteModelOutput(WEB_RUN);
   noteOwnerWords(WEB_RUN, 'what is the weather tomorrow');
-  assert.equal(ownerTurnWords(WEB_RUN), 'what is the weather tomorrow', 'the current turn replaced the earlier one');
+  assert.equal(ownerTurnWords(WEB_RUN), 'what is the weather tomorrow', 'an assistant answer closes the prior ask');
   assert.deepEqual(webWords('Plantix dot net.'), ['plantix.net']);
   assert.deepEqual(webWords('plantix dot net'), ['plantix.net']);
   assert.deepEqual(webWords('open the map of Odemira in my browser'), ['open', 'the', 'map', 'of', 'odemira', 'in', 'my', 'browser']);

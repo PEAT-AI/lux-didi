@@ -1005,6 +1005,11 @@ for id in NativeNextSteps.connectorIDs {
         expect(!NativeNextSteps.lookup(id: id, state: "error", reason: reason).text.isEmpty, "every next step is mapped")
     }
 }
+// W2-R1 / F4: a refused row names the added reads and the exact approve command, and never Settings.
+let approvalStep = NativeNextSteps.lookup(id: "mattermost-people", state: "error", reason: "configuration_error", added: ["mattermost_resolve_person"])
+expect(approvalStep.text.contains("to approve mattermost_resolve_person, then restart"), "the native next step names the added reads")
+expect(approvalStep.command == "node server/dist/config/mcp-cli.js approve --config-dir <config dir> --data-dir <data dir> --owner-id <owner> --policy-input <policy file>", "the native next step names the exact approve command")
+expect(!approvalStep.text.contains("Settings"), "no Settings control approves a connector")
 let calendarStep = NativeNextSteps.lookup(id: "calendar", state: "missing", reason: "credential_missing")
 expect(calendarStep.command == nil && calendarStep.guideURL?.absoluteString == "https://github.com/PEAT-AI/lux-didi/blob/main/docs/user-guide.md#connector-setup", "portable calendar instructions link the public guide without a copy command")
 // R6, obligation 1: the next-steps surface carries the same key line as the menu bar, with the
@@ -1022,7 +1027,7 @@ expect(keyOnStep.text != keyOffStep.text && keyOnStep.text.contains("mutes and u
 let mongooseStep = NativeNextSteps.lookup(id: "mongoose-knowledge", state: "missing", reason: nil)
 expect(mongooseStep.command == nil && mongooseStep.text.contains("Use the Sign in button on its row in Settings"), "the Mongoose next step points at the Settings sign-in and offers no command, since mongoose-login does not exist")
 expect(mongooseStep.command != "cp" && !(mongooseStep.command ?? "").hasPrefix("cp ") && !(mongooseStep.command ?? "").contains("/"), "credential path is not a copy command")
-let onboardingRows = NativeGettingStartedItems.rows(microphone: "denied", notifications: "denied", login: "off", connections: [("calendar", "missing", "credential_missing"), ("mongoose-data", "error", "needs_sign_in")])
+let onboardingRows = NativeGettingStartedItems.rows(microphone: "denied", notifications: "denied", login: "off", connections: [("calendar", "missing", "credential_missing", []), ("mongoose-data", "error", "needs_sign_in", [])])
 expect(onboardingRows.count == 7, "fixture includes permissions, login, shortcuts and every connection")
 expect(onboardingRows.contains { $0.title == "calendar" && $0.detail == "missing: \(calendarStep.text)" && $0.command == nil }, "fixture projects exact connector next step")
 // #649: the native closed sets match the web lists, and a signed-out endpoint names its own sign-in.

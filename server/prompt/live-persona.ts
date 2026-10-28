@@ -696,22 +696,26 @@ function openLoopTopics(openLoops: readonly StoredOpenLoop[] | undefined, later:
   return loops;
 }
 
-/** The newest call's own thread: the first stored sentence about his work that ends in a stop, or, while that
- *  call's summary is still pending, the last topic he named himself. */
+/** The newest call's own thread: while that call's summary is still pending, the last topic he named
+ *  himself; once it is stored, the first sentence about his work in its summary. */
 function recentThreadTopic(candidates: readonly EarlierConversationCandidate[], freshThread: string | undefined):
 { topic: string; sourceId?: string } | undefined {
-  const newest = candidates[0];
-  if (newest !== undefined) {
-    for (const sentence of sentencesOf(newest.summary)) {
-      if (!isOpenerSentence(sentence)) continue;
-      const topic = topicOfSentence(sentence);
-      if (topic !== undefined) return { topic, sourceId: newest.id };
-    }
+  // C-SUMMARY8: a fresh thread means the call that just ended has no summary yet, so the newest stored
+  // candidate is an older call. Naming it here is what offered an older thread as the recent one.
+  if (freshThread !== undefined) {
+    const spoken = sentencesOf(freshThread).filter(isOpenerSentence);
+    const last = spoken[spoken.length - 1];
+    const spokenTopic = last === undefined ? undefined : topicOfSentence(last);
+    return spokenTopic === undefined ? undefined : { topic: spokenTopic };
   }
-  const spoken = sentencesOf(freshThread ?? '').filter(isOpenerSentence);
-  const last = spoken[spoken.length - 1];
-  const topic = last === undefined ? undefined : topicOfSentence(last);
-  return topic === undefined ? undefined : { topic };
+  const newest = candidates[0];
+  if (newest === undefined) return undefined;
+  for (const sentence of sentencesOf(newest.summary)) {
+    if (!isOpenerSentence(sentence)) continue;
+    const topic = topicOfSentence(sentence);
+    if (topic !== undefined) return { topic, sourceId: newest.id };
+  }
+  return undefined;
 }
 
 /**

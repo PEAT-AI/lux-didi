@@ -74,6 +74,8 @@ const KNOWLEDGE_DAY_FILTERS = ['none', 'past_window', 'dropped_on_empty'];
 // W13 distillation outcomes and the closed reason/error tokens they may name, never any summary text.
 const SUMMARY_EVENTS = new Set(['conversation_summary_started', 'conversation_summary_completed', 'conversation_summary_failed', 'conversation_summary_skipped']);
 const SUMMARY_REASONS = ['non_ordinary', 'too_few_turns', 'model_skip', 'no_text_model', 'history_provenance_unavailable', 'summary_route_class_denied'];
+/** C-SUMMARY8: the only phase a summary line may name; the per-call schedule names none. */
+const SUMMARY_PHASES = ['at_start'];
 /** S4a: why a progress line was sent, as a closed set (never free text). */
 const PROGRESS_REASONS = ['dead_air', 'stalled', 'lookup'];
 /** W4: why a progress decision stayed silent, as a closed set (never free text, never the line itself). */
@@ -1416,10 +1418,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (typeof value.event === 'string' && SUMMARY_EVENTS.has(value.event)) {
     // W13: the distiller's outcome, session id, character counts, milliseconds and reason codes only.
+    // C-SUMMARY8: phase names the start-up pass; the per-call schedule carries no phase.
     const counts = ['inputChars', 'outputChars', 'durationMs', 'retryCount'] as const;
-    const allowed = ['event', 'liveSessionId', ...counts, 'truncated', 'errorCode', 'reason'];
+    const allowed = ['event', 'liveSessionId', ...counts, 'truncated', 'errorCode', 'reason', 'phase'];
     if (Object.keys(value).some(key => !allowed.includes(key))) return;
     if (!isSafeId(value.liveSessionId)) return;
+    if ('phase' in value && !isSafeMember(value.phase, SUMMARY_PHASES)) return;
     for (const name of counts) if (name in value && !isSafeCount(value[name])) return;
     if ('truncated' in value && typeof value.truncated !== 'boolean') return;
     if ('errorCode' in value && !isSafeToken(value.errorCode)) return;

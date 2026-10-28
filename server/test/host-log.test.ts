@@ -122,6 +122,9 @@ test('conversation_summary events keep the session id, counts, ms and reason cod
   assert.equal(safeEvent({ ...started, summary: 'the owner said something private' }), undefined, 'summary text is refused');
   assert.equal(safeEvent({ ...started, liveSessionId: 'not a safe id' }), undefined, 'a malformed id is refused');
   assert.equal(safeEvent({ ...started, inputChars: -1 }), undefined, 'a negative count is refused');
+  // C-SUMMARY8: the start-up pass names one closed phase; any other value is refused with the line.
+  assert.deepEqual(safeEvent({ ...started, phase: 'at_start' }), { ...started, phase: 'at_start' });
+  assert.equal(safeEvent({ ...started, phase: 'at_call_end' }), undefined, 'an unknown phase is refused');
 
   const completed = { event: 'conversation_summary_completed', liveSessionId: 's-1', inputChars: 120, outputChars: 40, durationMs: 12, truncated: false, retryCount: 0 };
   assert.deepEqual(safeEvent(completed), completed);

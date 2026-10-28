@@ -311,9 +311,11 @@ test('a retryable first call failure retries a bounded number of times and then 
   assert.equal(failed.retrying, true, 'a retry is scheduled');
   assert.equal(f.requests(), 1);
   // Wait on the wire, not on the flag: `retrying` is briefly false between two scheduled attempts.
-  await until(() => f.requests() === 4, 2000);
+  // TR8-R7: the retry COUNT and that the round stops are the assertions; the wait bound is only a
+  // guard against a hung round, so it is generous enough that a loaded host cannot miss it.
+  await until(() => f.requests() === 4, 15000);
   assert.equal(f.requests(), 4, 'the first connect plus exactly three bounded retries');
-  await until(() => runtime.status().endpoints[0]!.retrying === false, 2000);
+  await until(() => runtime.status().endpoints[0]!.retrying === false, 15000);
   assert.equal(runtime.status().endpoints[0]!.retrying, false, 'the round is over and no further attempt is pending');
 });
 

@@ -78,7 +78,7 @@ const TOOL_ACTIONS: Record<string, Record<string, { props: string[]; required: s
   trelloWriteChecklist: {
     create: { props: ['cardId', 'name', 'pos'], required: ['cardId', 'name'] },
     add_item: { props: ['checklistId', 'name', 'pos'], required: ['checklistId', 'name'] },
-    update_item: { props: ['checklistId', 'itemId', 'name', 'state'], required: ['checklistId', 'itemId'] },
+    update_item: { props: ['cardId', 'checklistId', 'itemId', 'name', 'state'], required: ['checklistId', 'itemId'] },
   },
   trelloWriteBoard: { create: { props: ['name'], required: ['name'] } },
   trelloWriteList: { create: { props: ['boardId', 'name'], required: ['boardId', 'name'] }, move: { props: ['listId', 'boardId'], required: ['listId'] } },
@@ -225,7 +225,7 @@ export async function startTrelloFake(options: TrelloFakeOptions): Promise<Trell
     if (method === 'DELETE' && parts[0] === 'cards' && parts[2] === 'idLabels') return ['trelloWriteCard', { action: 'remove_label', cardId: id(1), labelId: id(3) }];
     if (method === 'POST' && path === '/checklists') return ['trelloWriteChecklist', { action: 'create', cardId: payload.idCard, name: payload.name, ...only(payload, ['pos']) }];
     if (method === 'POST' && parts[0] === 'checklists' && parts[2] === 'checkItems') return ['trelloWriteChecklist', { action: 'add_item', checklistId: id(1), name: payload.name, ...only(payload, ['pos']) }];
-    if (method === 'PUT' && parts[0] === 'checklists' && parts[2] === 'checkItems') return ['trelloWriteChecklist', { action: 'update_item', checklistId: id(1), itemId: id(3), ...only(payload, ['name', 'state']) }];
+    if (method === 'PUT' && parts[0] === 'cards' && parts[2] === 'checkItem') return ['trelloWriteChecklist', { action: 'update_item', cardId: id(1), checklistId: checklists.find(list => list.cardId === id(1) && list.items.some(item => item.id === id(3)))?.id, itemId: id(3), ...only(payload, ['name', 'state']) }];
     return undefined;
   }
 

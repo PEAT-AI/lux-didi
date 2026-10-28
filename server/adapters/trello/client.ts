@@ -28,7 +28,7 @@ export const TRELLO_ACTIONS: Readonly<Record<string, Readonly<Record<string, rea
   },
   trelloWriteChecklist: {
     create: ['cardId', 'name', 'pos'], add_item: ['checklistId', 'name', 'pos'], create_item: ['checklistId', 'name', 'pos'],
-    update_item: ['checklistId', 'itemId', 'name', 'state'],
+    update_item: ['cardId', 'checklistId', 'itemId', 'name', 'state'],
   },
 };
 
@@ -86,7 +86,7 @@ export function trelloRequests(tool: string, args: Args): { requests: Request[];
     case 'trelloWriteChecklist.add_item': case 'trelloWriteChecklist.create_item':
       return { requests: [{ method: 'POST', path: `checklists/${path([String(args.checklistId)])}/checkItems`, body: defined({ name: args.name, pos: args.pos }) }] };
     case 'trelloWriteChecklist.update_item':
-      return { requests: [{ method: 'PUT', path: `checklists/${path([String(args.checklistId)])}/checkItems/${path([String(args.itemId)])}`, body: defined({ name: args.name, state: args.state }) }] };
+      return { requests: [{ method: 'PUT', path: `cards/${path([card])}/checkItem/${path([String(args.itemId)])}`, body: defined({ name: args.name, state: args.state }) }], ...(card ? { cardId: card } : {}) };
     default: return undefined;
   }
 }

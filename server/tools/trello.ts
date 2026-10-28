@@ -864,9 +864,8 @@ export class TrelloBoard {
           const item = target?.items.find(entry => foldName(entry.name) === foldName(itemName));
           if (!target || !item) throw new Refusal('item_unknown', { items: (target?.items ?? []).map(entry => entry.name) });
           const planned = need(planTrelloCall(index, 'trelloWriteChecklist', [
-            { action: 'update_item', checklistId: target.id, itemId: item.id, state: args.checked ? 'complete' : 'incomplete' },
-            { action: 'update_item', checklistId: target.id, itemId: item.id, checked: args.checked },
-            { action: 'update_item', itemId: item.id, state: args.checked ? 'complete' : 'incomplete' },
+            { action: 'update_item', cardId: card.id, checklistId: target.id, itemId: item.id, state: args.checked ? 'complete' : 'incomplete' },
+            { action: 'update_item', cardId: card.id, checklistId: target.id, itemId: item.id, checked: args.checked },
           ]));
           return { calls: [planned], key: key({ itemId: item.id, checked: args.checked }), describe: after => ({ ...done(after), change: `${args.checked ? 'ticked' : 'unticked'} ${item.name}` }) };
         }

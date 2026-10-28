@@ -1,3 +1,4 @@
+import { attachHostLogSink } from '../tools/host-events.js';
 import { randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
@@ -44,6 +45,7 @@ interface Harness {
   ctx: LiveContext;
   dir: string;
   calls: { name: string; args: unknown }[];
+  trace: unknown[];
   saved: import('../tools/vault-write.js').VaultSaveArgs[];
   remoteRememberGranted(): boolean;
   advance(ms: number): void;
@@ -67,6 +69,9 @@ async function harness(t: TestContext, overrides: {
   memoryFailure?: boolean;
   vaultUnavailable?: boolean;
 } = {}): Promise<Harness> {
+  const trace: unknown[] = [];
+  const detach = attachHostLogSink({ event: raw => { if (raw && typeof raw === 'object' && ['live_trace_rejected', 'lux_note_readback', 'lux_note_stage'].includes(String((raw as { event?: unknown }).event))) trace.push(raw); } });
+  t.after(detach);
   const f = await fixture(t);
   const dir = mkdtempSync(join(tmpdir(), 'didi-live-session-'));
   const domain = createDomainPort({ outbox: Outbox });
@@ -143,7 +148,7 @@ async function harness(t: TestContext, overrides: {
   };
   owner = createLiveSessionOwner({ store, voice, profile, vaultTransport, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { requests, calls, saved, remoteRememberGranted, f, store, owner, ctx: context(store), dir, advance: ms => { clock += ms; } };
+  return { requests, calls, saved, trace, remoteRememberGranted, f, store, owner, ctx: context(store), dir, advance: ms => { clock += ms; } };
 }
 
 async function attached(h: Harness, key = 'k1') {
@@ -243,9 +248,9 @@ for (const confirmation of ['yes', 'split', 'split_no', 'wrong_readback', 'unarm
       h.advance(100); clock.advance(100);
       playback(attachment, 'drained', 2, NOW + 200);
       if (['yes', 'split', 'unavailable'].includes(confirmation)) {
-        const armed = h.store.transaction(tx => tx.get('SELECT state,code FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
+        const armed = h.store.transaction(tx => tx.get('SELECT state,code,staged_at FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
         const seen = h.store.transaction(tx => tx.all("SELECT kind,text FROM live_journal WHERE live_session_id=? AND kind IN ('outputTranscription','turnComplete') ORDER BY journal_id", [session.liveSessionId]));
-        assert.equal(armed?.['state'], 'armed', JSON.stringify({ armed, seen }));
+        assert.equal(armed?.['state'], 'armed', JSON.stringify({ armed, seen, trace: h.trace }));
       }
     }
     await ownerBlock(h, confirmation === 'early' ? '' : 'yes');

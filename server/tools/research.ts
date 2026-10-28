@@ -7220,9 +7220,9 @@ export class ResearchAdmission {
     // C-RESEARCH-CONTRACT Q-08: a start after the answer was spoken is the orphan run, and it names its cause.
     if (action === 'start' && this.#answered) return { admitted: false, reason: 'answer_already_given' };
     if (action === 'start') {
-      // #1028 behaviour 3: one owner turn opens at most two research operations, and only for two different
-      // questions. A start that asks for the run already reading ("more") is no question at all, so the
-      // loop guard still refuses it, and a repeat or a third real question waits for the next owner turn.
+      // #1028 behaviour 3: two different questions asked in one breath both run, so a turn opens at most
+      // two research operations. A third, a repeat of the same question, a start after this turn's answer
+      // was delivered, and a start that only asks for the run already reading ("more") all stay turn_spent.
       const asked = question.trim().toLowerCase();
       const distinct = asked !== '' && !metaOnlyQuestion(asked);
       if (this.#grant === this.#turns) {
@@ -7230,7 +7230,9 @@ export class ResearchAdmission {
         this.#grant = undefined;
         return { admitted: true };
       }
-      if (!distinct || this.#starts.includes(asked) || this.#starts.length >= 2) return { admitted: false, reason: 'turn_spent' };
+      if (this.#deliveredAt === this.#turns || !distinct || this.#starts.includes(asked) || this.#starts.length >= 2) {
+        return { admitted: false, reason: 'turn_spent' };
+      }
       this.#starts.push(asked);
       return { admitted: true };
     }

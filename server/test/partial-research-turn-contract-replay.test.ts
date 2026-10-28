@@ -272,18 +272,17 @@ test('replay 1: the observed cascade, six model continues after one partial answ
   assert.equal(h.provider.generations.length, 1, 'one provider session the whole turn');
 });
 
-test('replay 2: a second, different question in the same owner turn runs, and a third is refused reading nothing', async t => {
+test('replay 2: a second start in the same owner turn is refused the same way and reads nothing', async t => {
   const h = await harness(t);
   await ownerSays(h);
   await research(h, 's1', start);
   await replyFor(h, 's1');
-  // #1028 behaviour 3: one owner turn opens two different asks, so the budget question is its own operation.
-  await research(h, 's2', { action: 'start', question: 'and what about the budget', topic: 'budget' });
-  assert.notDeepEqual(await replyFor(h, 's2'), BLOCKED('turn_spent'), 'a second, different question is not refused');
   const dispatched = h.dispatches.length;
+  await research(h, 's2', { action: 'start', question: 'and what about the budget', topic: 'budget' });
+  assert.deepEqual(await replyFor(h, 's2'), BLOCKED('turn_spent'), 'one operation per owner turn');
   await research(h, 's3', { action: 'start', question: 'and the hiring plan', topic: 'hiring plan' });
-  assert.deepEqual(await replyFor(h, 's3'), BLOCKED('turn_spent'), 'the third ask waits for the next owner turn');
-  assert.equal(h.dispatches.length, dispatched, 'the refused third start reached no source');
+  assert.deepEqual(await replyFor(h, 's3'), BLOCKED('turn_spent'), 'and every further call in that turn is refused too');
+  assert.equal(h.dispatches.length, dispatched, 'no refused start reached a source');
 });
 
 test('replay 3: a noncompliant provider that keeps calling cannot loop, and recovery is never disabled', async t => {

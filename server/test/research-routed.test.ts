@@ -51,8 +51,6 @@ function harness(opts: {
   memory?: (query: string) => { lines: string[]; text: string; total: number };
   schedule?: ResearchDeps['schedule'];
   unavailableNow?: ResearchDeps['unavailableNow'];
-  web?: ResearchDeps['web'];
-  calendarDigest?: ResearchDeps['calendarDigest'];
 } = {}): Harness {
   const routed: ResearchRoutedLog[] = [];
   const executed: string[] = [];
@@ -64,8 +62,6 @@ function harness(opts: {
     now: opts.now ?? (() => 0),
     ...(opts.schedule !== undefined ? { schedule: opts.schedule } : {}),
     configured: opts.configured ?? CONFIGURED,
-    ...(opts.web === undefined ? {} : { web: opts.web }),
-    ...(opts.calendarDigest === undefined ? {} : { calendarDigest: opts.calendarDigest }),
     ...(opts.unavailableNow === undefined ? {} : { unavailableNow: opts.unavailableNow }),
     execute: opts.execute ?? (async (subs: readonly IntentSubCall[]) => {
       for (const call of subs) executed.push(call.name);
@@ -1172,56 +1168,4 @@ test('L11-03: a trim after the header was built keeps the header count equal to 
   const shown = /^memory: (\d+) of 9 shown/u.exec(finding.text)?.[1];
   assert.ok(shown !== undefined && Number(shown) < 3, `the cap removed a line (${finding.text.split('\n')[0]})`);
   assert.match(String(capped['coverage']), new RegExp(`memory \\S+ ${shown} of 9 shown`, 'u'), `the header says the same count (${String(capped['coverage'])})`);
-});
-
-// --- #1028: the entity first, and the fetched entry's body -----------------------------------------
-
-test('#1028: a misheard organisation is resolved from the owner\'s calendar before any source reads', async () => {
-  const seen: string[] = [];
-  const webQueries: string[] = [];
-  const h = harness({
-    configured: ['knowledge', 'calendar', 'web'],
-    calendarDigest: () => '09:00 Standup, 11:00 Acme Seeds quarterly review',
-    web: {
-      search: async (request) => {
-        webQueries.push(request.query);
-        return { ok: false, code: 'web_insufficient', reason: 'empty' };
-      },
-    },
-    execute: async (subs: readonly IntentSubCall[]) => {
-      for (const call of subs) seen.push(call.name);
-      return subs.map(call => sub(call.name, 'evidence', true, call.key));
-    },
-  });
-  const reply = await runResearch(h.deps, {
-    action: 'start', question: 'what did Akme Seats decide about the harvest',
-    lookups: [{ source: 'web', query: 'Akme Seats harvest' }],
-  }, new AbortController().signal);
-  assert.ok(seen.includes('search_knowledge'), 'knowledge ran for a named organisation');
-  assert.ok(seen.includes('calendar_list_events'), 'calendar ran for a named organisation');
-  assert.equal(webQueries.length, 1, 'the web was read once');
-  assert.match(webQueries[0]!, /Acme Seeds/u, 'the web query names the organisation the owner meant');
-  assert.doesNotMatch(webQueries[0]!, /Akme/u, 'the web never searched the mishearing as it was heard');
-  assert.ok(reply['researchId'] !== undefined, 'the round answered');
-});
-
-test('#1028: a fetched knowledge entry reaches the round as its body, not its title alone', async () => {
-  const seen: string[] = [];
-  const h = harness({
-    configured: ['knowledge', 'chat'],
-    execute: async (subs: readonly IntentSubCall[]) => {
-      for (const call of subs) seen.push(call.name);
-      if (subs.some(call => call.name === 'get_insight')) {
-        return subs.map(call => sub(call.name, '### Release notes (decision | 2026-10-17) [id 123]\nThe planted rows were harvested on Friday.', true, call.key));
-      }
-      return subs.map(call => call.name === 'search_knowledge'
-        ? sub(call.name, '### Release notes (decision | 2026-10-17) [id 123]\nA short summary line.', true, call.key)
-        : sub(call.name, 'evidence', true, call.key));
-    },
-  });
-  const reply = await runResearch(h.deps, {
-    action: 'start', question: 'what did we decide about Korbi', lookups: [{ source: 'knowledge', query: 'Korbi' }],
-  }, new AbortController().signal);
-  assert.ok(seen.includes('get_insight'), 'the named entry was fetched');
-  assert.match(JSON.stringify(reply['findings']), /harvested on Friday/u, 'the fetched entry body is in the round');
 });

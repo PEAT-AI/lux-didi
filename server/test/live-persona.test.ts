@@ -376,7 +376,7 @@ test('the public character, voice surface and tool conduct are the authored verb
   // C-RESEARCH8: the two-ask voice rule and the re-worded evidence procedure land in the same blocks, so the train re-pins all three against the merged sources.
   assert.equal(sha(NAYA_VOICE_TOOLS), '1d866104e8b3a62a3fa8c194dd215ae9b0d750f938c36fa821086c59132d46cc');
   assert.equal(sha(NAYA_BACKEND_PROCEDURE), 'a80497ba29a5d2c8ef5183486956f6707d5fca5663282a6cb86480d1d1eb093b');
-  assert.equal(sha(NAYA_TOOLS), 'f04a7e394729613864aeb352ad81499c5f7512e3a59a829a0122715de8779fc3');
+  assert.equal(sha(NAYA_TOOLS), '1db786d84153abeeb720a632b2dfa6155669a1868b5432ea27834689606c5021');
   assert.equal(NAYA_LIVE_BASE, `${NAYA_CHARACTER}\n\n${NAYA_VOICE_SURFACE}`);
   assert.ok(NAYA_TOOLS.startsWith('# Tools and spoken delivery\n\n'));
   assert.ok(NAYA_VOICE_TOOLS.endsWith('Nothing is sent to another person by Naya.'));

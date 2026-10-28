@@ -13,7 +13,7 @@ import { freezeNote, markCommitted, noteOwnerFragment, noteOwnerUtterance, noteS
 import { NotesExporter } from '../tools/notes-export.js';
 import { createLuxWriteTransport, luxWriteEndpoint } from '../adapters/lux-write/client.js';
 import { runToolCalls, authorizeToolBatch } from '../tools/declarations.js';
-import { isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
+import { INTENT_TOOL_NAMES, isIntentTool, planIntent, intentResponse, type IntentToolName, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { WEB_SEARCH_ACTION, type WebSearchPort } from '../tools/web-search.js';
 import { admissionBlocked, pagesCurrentRun, RESEARCH, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, ResearchLedger, ResearchScheduler, knownReply, configuredSourcesForEndpoints, markCalendarReply, refusedResearchRunLog, researchArgumentShape, refusalCode, parseResearch, researchRepair, type ResearchLateFindings, type SourceKind as ResearchSourceKind, type ConfiguredEndpointStatus, type UnavailableSource, researchSourcesFromToolNames, researchLedgerOf, researchRebuildDue, researchRebuildStep, retainedAfterSend, type ResearchBoundary, type ResearchRetention, capVoiceReply, ResearchLedgerLog, VoiceReplyBook } from '../tools/research.js';
 import { HISTORY_IDENTITY } from '../tools/history.js';
@@ -472,6 +472,29 @@ export function callCeilingMs(toolName: string | undefined): number {
 }
 /** R6: how recent the model's own audio must be to hold a late line back. */
 const ANSWER_AUDIO_HOLD_MS = 3_000;
+/**
+ * C-TURN8: how long an announced lookup has to start its call before the host corrects it. Three seconds,
+ * the same one beat this file already treats as a turn's pause (ANSWER_AUDIO_HOLD_MS), so a claim followed
+ * by a call in the same breath is never corrected.
+ */
+const CLAIM_WITHOUT_CALL_MS = 3_000;
+/**
+ * C-TURN8: the closed set of English announcements that promise a lookup. A response carrying one and
+ * starting no call is a claim without an action. Nothing else is read.
+ */
+const LOOKUP_CLAIM = /\b(?:i'?m checking|i am checking|checking (?:that|this|it)|working on (?:that|it)|i'?ll check|let me check|looking (?:that|it|this) up)\b/iu;
+/**
+ * C-TURN8: every tool that reads or writes the owner's own data (Trello, research, mail, calendar, chat,
+ * knowledge, saves). None of them runs before his first word: research keeps its own gate in
+ * `#researchBatch`, every other name here is refused by `#toolBatch` with the same shape. The `open_*` tools
+ * stay open: they read nothing of his and the opener never calls them.
+ */
+const OWNER_DATA_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
+  ...INTENT_TOOL_NAMES, RESEARCH_TOOL_NAME, ...TRELLO_TOOL_NAMES,
+  'save_to_vault', 'stage_lux_note', 'remember_note', 'conversation_history',
+]);
+/** C-TURN8: the one corrective instruction, voice content and short (prompt ceiling #693). */
+const CLAIM_WITHOUT_CALL_LINE = 'Correction: do not announce a lookup you are not making. Make the call now, or say plainly that you are not checking anything.';
 /** S4a: a delegation still open this long after its last call was answered, with no terminal nested event, is
  *  stalled: the receipt names it, and the S2 recovery resumes instead of rebuilding. */
 export const DELEGATION_DEADLINE_MS = 25_000;
@@ -580,6 +603,9 @@ interface ActiveSession {
   turnLatin: number; turnDevanagari: number; turnChars: number;
   /** Whether this turn followed tool work and whether the owner cut it off. */
   turnAfterTool: boolean; turnInterrupted: boolean;
+  /** C-TURN8: what she said this response, the timer watching it, and the owner turn's own correction budget. */
+  claimText: string; claimTimer?: { cancel: () => void } | undefined;
+  claimToolSeen: boolean; claimCorrected: boolean;
   inputJournalId?: number;
   inputFinalTimer?: ReturnType<JobTimer>;
   /** W6: the composed-note settle window runs on its own timer, so a late fragment can still cancel. */
@@ -1824,6 +1850,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
       researchLedger: new ResearchLedger(bindings => this.#tools?.owner.releaseEvidence(liveSessionId, bindings)),
       researchAdmission: new ResearchAdmission(), researchRetention: { retainedChars: 0, rebuilds: 0 },
       researchLedgerLog: new ResearchLedgerLog(), voicePages: new VoiceReplyBook(), contextToolChars: 0,
+      claimText: '', claimToolSeen: false, claimCorrected: false,
       registry, host, toolStep: 0, liveSteps: [], liveStepItems: new Map(), exec: new Map(), progressCallIds: new Set(), toolCalls: 0, seenIds: new Set(), thinking: false, speaking: false, inaudibleMs: 0, pendingCallIds: new Set(), bargeInCallIds: new Set(), turnCompleteSeen: false, callAborts: new Map(), playbackTurns: new Map(), callStartedAt: new Map(), inputFinalAt: undefined, firstAudioAt: undefined, heardSince: undefined, heardAfterTool: false, ownerLastWords: 0, turnAudioAt: undefined, turnLatin: 0, turnDevanagari: 0, turnChars: 0, turnAfterTool: false, turnInterrupted: false,
       liveSessionId, session, abort, revision, inputClass, ready: false, invalidated: false, terminal: false,
       consumer: new OutputChannel(this.#profile.limits.consumerQueueEvents, this.#profile.limits.consumerQueueBytes),
@@ -2405,6 +2432,32 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
 
   #cancelTimers(handle: ActiveSession): void {
     handle.delegationTimer?.cancel(); handle.delegationTimer = undefined;
+    handle.claimTimer?.cancel(); handle.claimTimer = undefined;
+  }
+
+  /** C-TURN8: a turn boundary carries no claim over, spends no correction and leaves no timer armed. */
+  #resetClaimCheck(handle: ActiveSession): void {
+    handle.claimTimer?.cancel(); handle.claimTimer = undefined;
+    handle.claimText = ''; handle.claimToolSeen = false; handle.claimCorrected = false;
+  }
+
+  /**
+   * C-TURN8: a response that announced a lookup completes, so its call has CLAIM_WITHOUT_CALL_MS to start. A
+   * call anywhere in this owner turn silences it, as does a correction already sent, the mute, and the
+   * owner's own speech. The ledger of what she said is consumed here, so a response is judged once.
+   */
+  #armClaimCheck(handle: ActiveSession, sequence: number): void {
+    const claim = LOOKUP_CLAIM.test(handle.claimText);
+    handle.claimText = '';
+    handle.claimTimer?.cancel(); handle.claimTimer = undefined;
+    if (!claim || handle.claimCorrected || handle.claimToolSeen || handle.muted) return;
+    handle.claimTimer = this.#schedule(() => {
+      handle.claimTimer = undefined;
+      if (this.#settled(handle) || handle.claimToolSeen || handle.inputFinal === false || handle.muted) return;
+      handle.claimCorrected = true;
+      hostLogEvent({ event: 'live_claim_without_call', sequence, ms: CLAIM_WITHOUT_CALL_MS });
+      try { handle.session.sendText({ text: CLAIM_WITHOUT_CALL_LINE }); } catch { /* a closed transport settles on its own */ }
+    }, CLAIM_WITHOUT_CALL_MS);
   }
 
   #armDelegationDeadline(handle: ActiveSession): void {
@@ -2693,6 +2746,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     // L-04: her own words restart the silence, so no earlier model frame of this turn anchors the debt clock.
     handle.turnAudioAt = undefined;
     this.#cancelTimers(handle);
+    // C-TURN8: a new owner turn is a fresh correction budget.
+    this.#resetClaimCheck(handle);
     handle.progressCallIds.clear();
     handle.exec.clear();
     handle.liveSteps = [];
@@ -3545,6 +3600,10 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           hostLogEvent({ event: 'research_call_arrived', liveSessionId: handle.liveSessionId, generation, calls: event.calls.length,
             ...researchCallFacts(event.calls) });
           handle.turnAfterTool = true;
+          // C-TURN8: the call arrived, so the announcement before it answered for itself.
+          handle.claimToolSeen = true;
+          handle.claimTimer?.cancel(); handle.claimTimer = undefined;
+          handle.claimText = '';
           handle.thinking = true;
           for (const call of event.calls) { handle.pendingCallIds.add(call.id); handle.pendingCalls.set(call.id, call.name); if (!handle.callStartedAt.has(call.id)) handle.callStartedAt.set(call.id, this.#now()); }
           this.#openSteps(handle, event.calls);
@@ -3590,6 +3649,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           handle.turnInterrupted = true;
           logTurnScript(handle);
           clearOpenLedger(handle.liveSessionId);
+          // C-TURN8: the owner cut her off, so no claim of hers outlives the turn he interrupted.
+          this.#resetClaimCheck(handle);
           // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.
           hostLogEvent({ event: 'live_interrupted', liveSessionId: handle.liveSessionId,
             turnCompleteSeen: handle.turnCompleteSeen,
@@ -3610,6 +3671,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           // must not show the previous turn's sources as if they were running (review finding F2).
           if (handle.pendingCallIds.size === 0) handle.liveSteps = [];
           correctOpenClaim(handle);
+          // C-TURN8: a claim that named a lookup gives the call the same beat the host gives a turn's pause.
+          this.#armClaimCheck(handle, event.sequence);
           logTurnScript(handle);
           this.#noteState(handle, 'turn_complete');
           // O1b-A: the answer is over. A turn that produced no audible output is closed as silent, which is the
@@ -3672,7 +3735,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
           this.#pushChunk(handle, { kind: 'audio', pcm: event.pcm }); continue;
         }
         if (event.type === 'outcome') { outcome = event.outcome; continue; }
-        if (event.type === 'outputTranscription') countTurnScript(handle, stripNonLexicalTags(event.text));
+        if (event.type === 'outputTranscription') { countTurnScript(handle, stripNonLexicalTags(event.text)); handle.claimText = `${handle.claimText} ${stripNonLexicalTags(event.text)}`.slice(-300); }
         if (event.type === 'inputTranscription') {
           if (!ownerTurnOpen) {
             ownerTurnOpen = true;
@@ -4200,7 +4263,19 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
     const cachedDeliveryBindings = new Map<number, ToolResultBinding>();
     let responses = event.calls.map(call => ({ id: call.id, name: call.name, response: { error: 'Tool not granted' } as JsonObject }));
     let projections: LiveToolProjection[] = event.calls.map(call => ({ name: call.name, status: 'error', markdown: 'Tool not granted', sources: [] }));
-    if (this.#tools && handle.host) {
+    // C-TURN8: no owner-data tool runs before the owner's first word. Research keeps its own gate inside
+    // `#researchBatch` (answered at once, no source reached); every other owner-data name is refused here,
+    // before any argument check, with the same shape and the same closed reason.
+    const beforeOwner = handle.inputAt === undefined
+      && event.calls.some(call => call.name !== RESEARCH_TOOL_NAME && OWNER_DATA_TOOL_NAMES.has(call.name));
+    if (beforeOwner) {
+      const refusal: JsonObject = { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input',
+        guidance: 'Nothing read yet. Do not retry before the owner speaks; make this call again after their first turn.' };
+      for (const call of event.calls) hostLogEvent({ event: 'live_tool_refused', sequence: event.sequence, tool: call.name, reason: 'no_owner_input' });
+      responses = event.calls.map(call => ({ id: call.id, name: call.name, response: refusal }));
+      projections = event.calls.map(call => ({ name: call.name, status: 'error' as const, markdown: `${call.name}: refused (no_owner_input)`, sources: [] }));
+    }
+    if (!beforeOwner && this.#tools && handle.host) {
       await handle.connectorRecovery;
       if (this.#settled(handle) || generation !== handle.generation) return;
       const authority = this.lookupAuthority(handle.host.runId);

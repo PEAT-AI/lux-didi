@@ -479,6 +479,19 @@ test('W7: a signed-in board declares trello_read and trello_write, and a write r
   assert.equal(seen[1]?.kind, 'read');
 });
 
+test('C-TURN8: a trello read before the owner speaks is refused no_owner_input and never reaches the board', async t => {
+  const { board, seen } = stubBoard(true);
+  const h = await harness(t, { tools: true, trello: board });
+  const { session } = await attached(h);
+  h.f.send({ toolCall: { functionCalls: [{ id: 'trello-early', name: 'trello_read', args: { view: 'list', list: 'Sprint' } }] } });
+  await h.f.frame(1);
+  const response = (h.f.frames[0] as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!.response;
+  assert.deepEqual({ error: response.error, state: response.state, reason: response.reason },
+    { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input' }, 'the board read is refused before his first word');
+  assert.deepEqual(seen, [], 'the board was never read');
+  h.owner.revoke(session.liveSessionId);
+});
+
 test('W7: without a Trello sign-in, or under explicit grants, no Trello tool is declared', async t => {
   const signedOut = await harness(t, { tools: true, trello: stubBoard(false).board });
   await attached(signedOut);

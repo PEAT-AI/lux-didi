@@ -148,5 +148,8 @@ for (const reasonCode of ['credential_missing', 'credential-unavailable', 'crede
 for (const rule of ['say you cannot hear your output', 'never say you are unchanged', 'End no answer with "okay?" as a reflex']) {
   assert.ok(persona.NAYA_VOICE_SURFACE.includes(rule), `the voice surface states the truth rule: ${rule}`);
 }
-console.log(JSON.stringify({ case: 'own_state_truth', connectorLine: true, noDenialRule: true, voiceRules: 3 }));
+// C-TURN8: a claim without the call it announces is banned in her own voice rules, and the line is short.
+assert.ok(persona.NAYA_VOICE_SURFACE.includes('Never say you are checking something unless the call goes out in the same breath'), 'the voice surface bans a claim without a call');
+assert.ok(persona.NAYA_VOICE_SURFACE.includes('say plainly that you are not checking anything'), 'the voice surface offers the plain refusal');
+console.log(JSON.stringify({ case: 'own_state_truth', connectorLine: true, noDenialRule: true, voiceRules: 3, claimWithoutCall: true }));
 NODE

@@ -260,6 +260,17 @@ test('conversation_summary_injection keeps counts and a size, never ids or text'
   assert.equal(safeEvent({ ...injection, omitted: -1 }), undefined, 'a negative count is refused');
 });
 
+test('C-TURN8: live_claim_without_call and live_tool_refused carry a count and a closed reason only', () => {
+  const claim = { event: 'live_claim_without_call', sequence: 7, ms: 3_000 };
+  assert.deepEqual(safeEvent(claim), claim, 'the turn sequence and the bound are the whole line');
+  assert.equal(safeEvent({ ...claim, text: 'SYNTHETIC-SPOKEN-TEXT' }), undefined, 'no spoken words reach the line');
+  assert.equal(safeEvent({ ...claim, ms: -1 }), undefined, 'a negative bound is refused');
+  const refused = { event: 'live_tool_refused', sequence: 3, tool: 'trello_read', reason: 'no_owner_input' };
+  assert.deepEqual(safeEvent(refused), refused, 'the tool name and the closed reason are kept');
+  assert.equal(safeEvent({ ...refused, reason: 'other' }), undefined, 'only no_owner_input exists');
+  assert.equal(safeEvent({ ...refused, args: { card: 'Synthetic' } }), undefined, 'no argument ever reaches the line');
+});
+
 test('warm_prewarm keeps two ages and one flag, and nothing the calendar carried', () => {
   const receipt = { event: 'warm_prewarm', ageBeforeMs: 1_000, ageAfterMs: 0, assembled: true };
   assert.deepEqual(safeEvent(receipt), receipt);

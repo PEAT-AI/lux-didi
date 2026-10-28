@@ -6214,6 +6214,76 @@ test('MUTE: the owner who speaks right after the unmute gets no held answer offe
   await attachment.done;
 });
 
+// C-TURN8: on 10-28 a trello read and a research start ran 0.7 s into a call, before the owner said
+// anything. Research was refused; every other owner-data tool went as far as its argument check.
+test('C-TURN8: an owner-data tool other than research is refused no_owner_input before the owner speaks', async t => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-preowner-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const h = await harness(t, { tools: true });
+  const { session } = await attached(h, 'preowner-gate');
+  await settleLiveTool(h, 'vault-1', 'save_to_vault', { text: 'synthetic note' }, { spoke: false });
+  const response = (h.f.frames[1] as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!.response;
+  assert.deepEqual({ error: response.error, state: response.state, reason: response.reason },
+    { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input' }, 'the same shape and reason research already sends');
+  const gated = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
+  assert.equal(String(gated?.tool?.markdown ?? ''), 'save_to_vault: refused (no_owner_input)', 'the model is told nothing ran');
+  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; tool?: string; reason?: string });
+  const refused = lines.filter(line => line.event === 'live_tool_refused');
+  assert.deepEqual(refused.map(line => [line.tool, line.reason]), [['save_to_vault', 'no_owner_input']], 'one closed refusal line per call');
+  h.owner.revoke(session.liveSessionId);
+});
+
+// C-TURN8: three times on 10-28 she said she was checking and no call followed. The host gives the call
+// one beat (CLAIM_WITHOUT_CALL_MS) and then says so once, inside the owner's turn.
+test('C-TURN8: a claim with no call gets exactly one correction, and only once per owner turn', async t => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-claim-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, tools: true });
+  const { session } = await attached(h, 'claim-without-call');
+  const advance = async (ms: number): Promise<void> => { h.advance(ms); scheduler.runDue(); await settlePort(); };
+  const corrections = () => h.f.frames.filter(frame => {
+    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
+    return typeof text === 'string' && text.startsWith('Correction:');
+  });
+  h.f.send({ serverContent: { inputTranscription: { text: 'what did Priya send me about the synthetic contract', finished: true } } });
+  await settlePort();
+  h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that now.", finished: true }, turnComplete: true } });
+  await settlePort();
+  assert.equal(corrections().length, 0, 'nothing is said before the bound has passed');
+  await advance(2_000);
+  assert.equal(corrections().length, 0, 'a call still has its beat');
+  await advance(1_000);
+  assert.equal(corrections().length, 1, 'exactly one correction for the announcement');
+  assert.match((corrections()[0] as { realtimeInput: { text: string } }).realtimeInput.text, /say plainly that you are not checking anything/);
+  h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that again now.", finished: true }, turnComplete: true } });
+  await advance(3_000);
+  assert.equal(corrections().length, 1, 'the turn spends its one correction and never a second');
+  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; ms?: number });
+  assert.deepEqual(lines.filter(line => line.event === 'live_claim_without_call').map(line => line.ms), [3_000], 'the refusal is counted with its bound');
+  h.owner.revoke(session.liveSessionId);
+});
+
+test('C-TURN8: a claim followed by its call inside the bound is never corrected', async t => {
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { scheduler, tools: true });
+  const { session } = await attached(h, 'claim-with-call');
+  const corrections = () => h.f.frames.filter(frame => {
+    const text = (frame as { realtimeInput?: { text?: string } }).realtimeInput?.text;
+    return typeof text === 'string' && text.startsWith('Correction:');
+  });
+  h.f.send({ serverContent: { inputTranscription: { text: 'save the synthetic line to my vault', finished: true } } });
+  await settlePort();
+  h.f.send({ serverContent: { outputTranscription: { text: "I'm checking that.", finished: true }, turnComplete: true } });
+  await settlePort();
+  await settleLiveTool(h, 'vault-2', 'save_to_vault', { text: 'synthetic line' }, { spoke: false });
+  h.advance(3_000); scheduler.runDue(); await settlePort();
+  assert.equal(corrections().length, 0, 'the call answered the announcement');
+  h.owner.revoke(session.liveSessionId);
+});
+
 // #451 / RECON-RESEARCH Q6: six opener lookups (35 s) ran before the owner ever spoke, one cancelling the
 // next. A start before the first owner input is answered at once and reaches no source at all.
 test('#451: an opener research start before the owner speaks is answered at once and runs no source', async t => {

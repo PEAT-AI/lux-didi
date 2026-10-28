@@ -15,7 +15,7 @@ npm run build
 # C-RESEARCH-CONTRACT F4: the refusal integration suite is the only proof that a refused argument shape and an
 # admission block reach the trace as `refused` and `blocked`, so it runs here against the build it just made.
 # Contract regressions run first so a red boundary fails before the broader live replay.
-node_test_files --test-reporter=tap --test-timeout=30000 dist/test/vault-write.test.js dist/test/lux-note.test.js dist/test/live-remember.test.js
+node_test_files --test-reporter=tap --test-timeout=30000 dist/test/vault-write.test.js dist/test/lux-note.test.js dist/test/live-remember.test.js dist/test/tools-builtin-intent.test.js
 node test/research-refusal.integration.mjs
 # The new owner suite, the live summary suite (#363), the trace store suite, the warm-context pre-assembly
 # suite, the debug journal suites and the accepted Live adapter regression suite run together, with the

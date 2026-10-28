@@ -1,3 +1,4 @@
+import { ready as openAiReady } from './openai-live-voice-fixture.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
@@ -241,6 +242,28 @@ for (const confirmation of ['yes', 'split', 'split_no', 'wrong_readback', 'unarm
     const frames = h.f.frames as Record<string, unknown>[];
     assert.ok(frames.some(frame => (frame['toolResponse'] as { functionResponses?: { response: Record<string, unknown> }[] } | undefined)?.functionResponses?.some(entry => entry.response['readBack'] === readback)), 'host readback reaches the model inside the tool output');
     assert.equal(frames.some(frame => JSON.stringify(frame['clientContent'] ?? {}).includes('The budget is twelve units.')), false, 'readback never rides a user frame');
+    if (confirmation === 'yes') {
+      // Feed this actual host-produced result through the other provider's real wire adapter.
+      const declaration = h.requests[0]!.tools!.find(tool => tool.name === 'stage_lux_note')!;
+      const other = await openAiReady(t, {}, { tools: [declaration] });
+      other.f.send({ type: 'session.delegation.created', delegation: { id: 'synthetic-delegation', response_id: 'synthetic-response', offset_ms: 0 } });
+      other.f.send({ type: 'response.event', delegation_id: 'synthetic-item', event: { type: 'response.created', response: { id: 'synthetic-call-response' } } });
+      other.f.send({ type: 'response.event', delegation_id: 'synthetic-item', event: { type: 'response.output_item.done', item: { type: 'function_call', call_id: 'synthetic-stage', name: 'stage_lux_note', arguments: JSON.stringify(candidate) } } });
+      other.f.send({ type: 'response.event', delegation_id: 'synthetic-item', event: { type: 'response.done', response: { id: 'synthetic-call-response' } } });
+      await until(() => other.captured.events.some(event => event.type === 'toolCall'));
+      other.session.sendToolResponse({ responses: [{ id: 'synthetic-stage', name: 'stage_lux_note', response: result as import('../adapters/model/types.js').JsonObject }] });
+      await until(() => other.f.frames.some(frame => (frame['item'] as { type?: string } | undefined)?.type === 'function_call_output'));
+      const output = other.f.frames.find(frame => (frame['item'] as { type?: string } | undefined)?.type === 'function_call_output')!;
+      const item = output['item'] as { output: string; call_id: string };
+      assert.equal(item.call_id, 'synthetic-stage');
+      assert.equal(JSON.parse(item.output).readBack, readback);
+      assert.ok(JSON.parse(item.output).instruction.includes('verbatim'));
+      assert.equal(other.f.frames.some(frame => {
+        const message = frame['item'] as { role?: string; content?: { text?: string }[] } | undefined;
+        return message?.role === 'user' && message.content?.some(part => part.text?.includes('The budget is twelve units.'));
+      }), false, 'OpenAI readback is never a user item');
+    }
+
     h.advance(100); clock.advance(100);
     if (confirmation === 'early') await ownerBlock(h, 'yes', false);
     if (confirmation !== 'unarmed') {
@@ -275,6 +298,8 @@ for (const confirmation of ['yes', 'split', 'split_no', 'wrong_readback', 'unarm
     if (expected) assert.equal(h.saved[0]!.content, candidate.body);
     const rows = h.store.transaction(tx => tx.all('SELECT * FROM lux_note_stages WHERE live_session_id=?', [session.liveSessionId]));
     assert.equal(rows.length, 1);
+    if (confirmation === 'wrong_readback') assert.equal(rows[0]!['code'], 'readback_mismatch');
+    if (confirmation === 'early') assert.equal(rows[0]!['code'], 'speech_before_readback_end');
     assert.equal(h.store.transaction(tx => tx.all('SELECT * FROM entries')).length, 0, 'no local memory fallback');
     if (expected) await until(() => JSON.stringify(h.f.frames).includes(confirmation === 'unavailable' ? 'vault_unavailable' : confirmation === 'crash' ? 'outcome_unknown' : 'synthetic-81'));
     const spokenInstructions = JSON.stringify(h.f.frames);

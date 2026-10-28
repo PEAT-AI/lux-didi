@@ -579,6 +579,7 @@ function stdioApprovalHost(t: TestContext, dir: string, configDir: string) {
   });
   const write = (grantMode: string, args: readonly string[], path: string, account?: string, resource?: string): void => {
     writeFileSync(join(configDir, 'mcp.json'),
+      // The google child pins its own account, so the catalog states the owner it must prove.
       JSON.stringify({ schemaVersion: 1, grantMode, ownerIdentity: 'owner@example.invalid', endpoints: [endpoint(args, path, account, resource)] }),
       { mode: 0o600 });
   };

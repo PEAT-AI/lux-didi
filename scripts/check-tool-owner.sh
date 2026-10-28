@@ -45,7 +45,12 @@ cp "$root/server/test/lux-note.test.ts" "$out/source/test/"
 # W5: the composed stage suite opens the real state schema, and the live migrations it needs are
 # tools-only (lux-note, vault), so the live schema rides along without the live host.
 mkdir -p "$out/source/live"
-cp "$root/server/live/"{schema,config}.ts "$out/source/live/"
+cp "$root/server/live/"{schema,config,types}.ts "$out/source/live/"
+# lux-note validates the live profile, whose config door composes the public prompt.
+mkdir -p "$out/source/prompt"
+cp "$root"/server/prompt/*.ts "$out/source/prompt/"
+cp "$root"/server/config/*.ts "$out/source/config/"
+cp "$root"/server/adapters/live-voice/*.ts "$out/source/adapters/live-voice/"
 printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$deps" "$out/node_modules"
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \

@@ -22,7 +22,7 @@ import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, vali
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
-import { ALARM_NAMES, ALARM_IDENTITY, AlarmOwnerGate, parseAlarmTime, validateAlarmArguments } from './alarm.js';
+import { ALARM_NAMES, ALARM_IDENTITY, AlarmOwnerGate, parseAlarmTime, validateAlarmArguments, type AlarmArguments } from './alarm.js';
 import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, webOwnerWords, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode } from './open.js';
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
@@ -255,7 +255,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
     }
     if (call.accountId === ALARM_IDENTITY.accountId && call.resourceId === ALARM_IDENTITY.resourceId && ALARM_NAMES.some(name => name === call.toolName)) {
       if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
-      return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 4096, maxSliceBytes: 1024 } } };
+      return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 4096 } } };
     }
     if (call.accountId === OPEN_IDENTITY.accountId && call.resourceId === OPEN_IDENTITY.resourceId && OPEN_TOOL_NAMES.has(call.toolName)) {
       // Host-native open tools; the native side re-checks the allowlist before anything opens.
@@ -685,6 +685,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         validate: validateAlarmArguments,
         async execute(args, context) {
           if (context.runId !== runId || !validateAlarmArguments(args) || context.signal.aborted) return { status: 'failed' as const };
+          const input = args as AlarmArguments;
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
           let consumed: string | undefined;
@@ -705,18 +706,18 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             const ask = alarmGate.authorize(runId, name, now);
             if (!ask) return finish({ status: 'refused', reason: 'owner_alarm_intent_required' });
             if (name === 'cancel_alarm') {
-              if (!args.id || !tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND state IN ('pending','ringing')", [args.id])) return finish({ status: 'refused', reason: 'alarm_not_active' });
+              if (!args.id || !tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND state IN ('pending','ringing')", [input.id!])) return finish({ status: 'refused', reason: 'alarm_not_active' });
               consumed = ask.journalId;
               return finish({ status: 'cancelled', id: args.id, say: 'Alarm cancelled.' });
             }
-            const parsed = parseAlarmTime(name === 'snooze_alarm' ? ask.words.replace(/\bfor\b/i, 'in') : ask.words, now, Intl.DateTimeFormat().resolvedOptions().timeZone, args.fire_at_utc);
+            const parsed = parseAlarmTime(name === 'snooze_alarm' ? ask.words.replace(/\bfor\b/i, 'in') : ask.words, now, Intl.DateTimeFormat().resolvedOptions().timeZone, input.fire_at_utc);
             if (parsed.status !== 'ready') return finish(parsed);
             let alarmTz = parsed.tz;
             if (name === 'snooze_alarm') {
-              const old = args.id ? tx.get("SELECT tz FROM alarms WHERE id=? AND state IN ('pending','ringing')", [args.id]) : undefined;
+              const old = args.id ? tx.get("SELECT tz FROM alarms WHERE id=? AND state IN ('pending','ringing')", [input.id!]) : undefined;
               if (!old || !args.id) return finish({ status: 'refused', reason: 'alarm_not_active' });
               alarmTz = String(old.tz);
-              tx.run("UPDATE alarms SET state='done' WHERE id=?", [args.id]);
+              tx.run("UPDATE alarms SET state='done' WHERE id=?", [input.id!]);
             }
             tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [context.executionId, parsed.fireAtUtc, alarmTz, '', ask.journalId]);
             consumed = ask.journalId;

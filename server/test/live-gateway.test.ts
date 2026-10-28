@@ -1,3 +1,4 @@
+import { mintOpenLine, exposeHandles } from '../tools/open-handles.js';
 import { pumpOutput } from '../http/live-upgrade.js';
 import type { LiveAttachment } from '../live/index.js';
 import { FRESH_OPENING } from '../adapters/live-voice/openai.js';
@@ -1045,7 +1046,13 @@ test('AC2: a locale with no two-letter language still sends an explicit en setup
   assert.equal(logged?.languageCode, 'en', 'the setup log carries the effective default languageCode');
 });
 
-test('OC1: an open action is a native_action control frame and its ack is the tool result', async t => {
+for (const openCase of [
+  { name: 'open_home', args: { app: 'gmail' }, words: 'open my gmail', action: 'open_url', target: 'https://mail.google.com/mail/u/0/' },
+  { name: 'open_source', args: {}, words: 'open this email in my browser', action: 'open_url', target: 'https://mail.google.com/mail/u/0/#all/abc123' },
+  { name: 'open_file', args: { path: '~/synthetic.txt' }, words: 'open this local file', action: 'open_file', target: '~/synthetic.txt' },
+  { name: 'open_app', args: { name: 'Synthetic' }, words: 'open Synthetic app', action: 'open_app', target: 'Synthetic' },
+  { name: 'open_web', args: { kind: 'site', target: 'economist.com' }, words: 'open economist.com in a new tab', action: 'open_url', target: 'https://economist.com/' },
+]) test(`OC1: ${openCase.name} native frame and acknowledgement round trip`, async t => {
   let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
   const h = await harness(t, { config: configJson(true), toolsFactory: store => {
     const registry = new McpRegistry();
@@ -1063,24 +1070,30 @@ test('OC1: an open action is a native_action control frame and its ack is the to
   await h.f.frame(1);
   const declared = (h.f.frames[0] as { setup: { tools?: { functionDeclarations: { name: string; description: string }[] }[] } }).setup.tools
     ?.flatMap(entry => entry.functionDeclarations) ?? [];
-  const openHome = declared.find(entry => entry.name === 'open_home');
-  assert.ok(openHome, 'the model is offered open_home');
+  const openHome = declared.find(entry => entry.name === openCase.name);
+  assert.ok(openHome, `the model is offered ${openCase.name}`);
   assert.match(openHome.description, /only open things/);
   assert.equal(declared.some(entry => entry.name === 'open_url'), false, 'a free https url is no longer a tool');
   h.f.send({ setupComplete: {} });
   await waitFor(() => frames.some(frame => frame.text && JSON.parse(frame.text).type === 'ready'));
 
   // #573: an open call answers the owner's own open intent, so his finalized words reach the host first.
-  h.f.send({ serverContent: { inputTranscription: { text: 'open my gmail', finished: true } } });
+  h.f.send({ serverContent: { inputTranscription: { text: openCase.words, finished: true } } });
   await waitFor(async () => (await json(h.origin, `/api/v1/live-sessions/${id}/journal`, { headers: bearer(h) })).body.data.fragments
     .some((fragment: { kind: string }) => fragment.kind === 'inputTranscription'), 1_500);
-  h.f.send({ toolCall: { functionCalls: [{ id: 'open-call-1', name: 'open_home', args: { app: 'gmail' } }] } });
+  let args: Record<string, unknown> = openCase.args;
+  if (openCase.name === 'open_source') {
+    const line = mintOpenLine({ title: 'Synthetic email', url: openCase.target, sourceType: 'gmail' })!;
+    exposeHandles(line);
+    args = { handle: line.match(/L[0-9]+/)![0] };
+  }
+  h.f.send({ toolCall: { functionCalls: [{ id: 'open-call-1', name: openCase.name, args }] } });
   await waitFor(() => frames.some(frame => frame.text && (JSON.parse(frame.text) as { type?: string }).type === 'native_action'));
   const parsed = frames.map(frame => (frame.text ? JSON.parse(frame.text) as Record<string, unknown> : null));
   const action = parsed.find(frame => frame?.type === 'native_action')!;
   assert.deepEqual(Object.keys(action).sort(), ['action', 'id', 'target', 'type'], 'the control frame is exactly typed');
-  assert.equal(action.action, 'open_url', 'the home tool rides the internal url transport');
-  assert.equal(action.target, 'https://mail.google.com/mail/u/0/', 'the host fixes the gmail home destination');
+  assert.equal(action.action, openCase.action);
+  assert.equal(action.target, openCase.target);
 
   ws.send(JSON.stringify({ type: 'native_action_result', id: action.id, ok: true, code: 'opened' }));
   const toolResponses = () => (h.f.frames as Record<string, unknown>[]).filter(frame => 'toolResponse' in frame);

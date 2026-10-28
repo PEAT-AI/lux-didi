@@ -10,6 +10,22 @@ import Foundation
         func check(_ condition: Bool, _ label: String) {
             if condition { print("PASS \(label)") } else { print("FAIL \(label)"); failures += 1 }
         }
+        // C-OPEN11 / W14-R1: exact web destinations, each with a refused near-miss.
+        let webShapes = [
+            ("https://mail.google.com/mail/u/0/#inbox/abc123", "https://mail.google.com/mail/u/0/#settings"),
+            ("https://mail.google.com/mail/u/0/#all/FMfcgzABC123", "https://mail.google.com/mail/u/0/#all/abc/extra"),
+            ("https://calendar.google.com/calendar/event?eid=abc123", "https://calendar.google.com/calendar/events?eid=abc123"),
+            ("https://www.google.com/calendar/event?eid=abc123", "https://www.google.com/calendar/events?eid=abc123"),
+            ("https://docs.google.com/presentation/d/abc123/edit", "https://docs.google.com/presentation/d/abc123/export"),
+            ("https://docs.google.com/document/d/abc123/edit", "https://docs.google.com/document/d/abc123/publish"),
+            ("https://drive.google.com/file/d/abc123/view", "https://drive.google.com/file/d/abc123/download")
+        ]
+        for (allowed, refused) in webShapes {
+            check(OpenDestination.of(allowed, mattermostHost: nil) != nil, "web shape \(allowed)")
+            check(OpenDestination.of(refused, mattermostHost: nil) == nil, "refused near-miss \(refused)")
+            check(OpenDestination.of(allowed.replacingOccurrences(of: "https:", with: "http:"), mattermostHost: nil) == nil, "HTTPS required \(allowed)")
+        }
+
         let home = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("didi-native-actions-\(UUID().uuidString)")
         let outside = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("didi-native-actions-outside-\(UUID().uuidString)")
         for folder in [home, home.appendingPathComponent("Documents"), outside] {

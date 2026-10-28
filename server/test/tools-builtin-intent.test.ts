@@ -12,11 +12,12 @@ import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import { noteOwnerWords, noteOwnerPartial, ownerTurnWords, webOwnerWords, resolveWebOpen, NativeActionBus, openWebFailure, nativeActions } from '../tools/open.js';
+import { noteModelOutput, noteOwnerWords, noteOwnerPartial, ownerTurnWords, webOwnerWords, resolveWebOpen, NativeActionBus, openWebFailure, nativeActions } from '../tools/open.js';
 import type { LiveAuthority } from '../tools/types.js';
 import type { ToolCallIntent } from '../adapters/model/types.js';
 import { runToolCalls } from '../tools/declarations.js';
 import { attachHostLogSink } from '../tools/host-events.js';
+import { beginHandleSession, endHandleSession, mintOpenLine, exposeHandles } from '../tools/open-handles.js';
 import { fixture } from './live-voice-fixture.js';
 
 test('A2: each live builtin executes against its exact stored intent', async t => {
@@ -72,6 +73,37 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       const outcome = await definition.execute(args, { ...intent, signal });
       assert.equal(outcome.status, 'completed', `${definition.name} reaches its receipt transaction`);
     }, `${definition.name} must accept its stored intent`);
+  }
+  // Every open name exercises the real registry executor, not an alias of open_web.
+  beginHandleSession(session.liveSessionId);
+  t.after(() => endHandleSession(session.liveSessionId));
+  const line = mintOpenLine({ title: 'Synthetic email', url: 'https://mail.google.com/mail/u/0/#all/abc123', sourceType: 'gmail' })!;
+  exposeHandles(line);
+  const handle = line.match(/L[0-9]+/)![0];
+  const openCases = [
+    { name: 'open_source', args: { handle }, ask: 'open this email in my browser' },
+    { name: 'open_home', args: { app: 'gmail' }, ask: 'open my gmail' },
+    { name: 'open_file', args: { path: '~/synthetic' }, ask: 'open this local file' },
+    { name: 'open_app', args: { name: 'Synthetic' }, ask: 'open Synthetic app' },
+    { name: 'open_web', args: { kind: 'site', target: 'economist.com' }, ask: 'open economist.com in a new tab' },
+  ];
+  for (const entry of openCases) for (const mode of ['no ask', 'ask', 'split ask'] as const) {
+    await t.test(`${entry.name}: ${mode}`, async () => {
+      noteModelOutput(session.liveSessionId);
+      noteOwnerWords(session.liveSessionId, mode === 'ask' ? entry.ask : 'this is the synthetic item');
+      const definition = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true).find(d => d.name === entry.name)!;
+      const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision,
+        executionId: randomUUID(), callId: randomUUID(), toolName: entry.name,
+        argumentsHash: createHash('sha256').update(JSON.stringify(entry.args)).digest('hex'), accountId: definition.accountId, resourceId: definition.resourceId };
+      assert.equal(owner.journal.intent(intent), 'fresh');
+      const pending = definition.execute(entry.args, { ...intent, signal });
+      // A second finalization releases the one bounded wait without a real clock delay.
+      if (mode !== 'ask') await new Promise<void>(resolve => setImmediate(resolve));
+      if (mode !== 'ask') noteOwnerWords(session.liveSessionId, mode === 'split ask' ? entry.ask : 'nothing else');
+      const outcome = await pending;
+      assert.equal(outcome.status, 'completed');
+      assert.match(JSON.stringify(outcome), mode === 'no ask' ? /no_open_intent/ : /opened/, `${entry.name} ${mode}`);
+    });
   }
   const definitions = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
   const web = definitions.find(definition => definition.name === 'open_web')!;

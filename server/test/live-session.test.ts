@@ -6239,6 +6239,29 @@ test('C-TURN8: an owner-data read other than research is refused no_owner_input 
   h.owner.revoke(session.liveSessionId);
 });
 
+// C-TURN8: a save is owner data too, so the same gate answers it before he has spoken, rather than letting
+// it reach the note or vault gates that name a different cause.
+test('C-TURN8: a save before the owner speaks is refused no_owner_input and writes nothing', async t => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-preowner-save-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const h = await harness(t, { tools: true });
+  const { session } = await attached(h, 'preowner-save');
+  const written = (): number => h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n']));
+  const before = written();
+  await settleLiveTool(h, 'vault-1', 'save_to_vault', { text: 'synthetic line' }, { spoke: false });
+  const response = (h.f.frames[1] as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!.response;
+  assert.deepEqual({ error: response.error, state: response.state, reason: response.reason },
+    { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input' }, 'the save is refused with the read gate reason');
+  const gated = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
+  assert.equal(String(gated?.tool?.markdown ?? ''), 'save_to_vault: refused (no_owner_input)', 'the model is told nothing was saved');
+  assert.equal(written(), before, 'nothing was written before he spoke');
+  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').split('\n').filter(line => line.startsWith('{'))
+    .map(line => JSON.parse(line) as { event: string; tool?: string; reason?: string });
+  assert.deepEqual(lines.filter(line => line.event === 'live_tool_refused').map(line => [line.tool, line.reason]), [['save_to_vault', 'no_owner_input']]);
+  h.owner.revoke(session.liveSessionId);
+});
+
 // C-TURN8: three times on 10-28 she said she was checking and no call followed. The host gives the call
 // one beat (CLAIM_WITHOUT_CALL_MS) and then says so once, inside the owner's turn.
 test('C-TURN8: a claim with no call gets exactly one correction, and only once per owner turn', async t => {

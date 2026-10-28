@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
 import { FRESH_OPENING } from '../adapters/live-voice/openai.js';

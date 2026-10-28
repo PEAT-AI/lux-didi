@@ -14,7 +14,11 @@ const alarmGuidance='\n\nAwake-Mac: set_alarm, list_alarms, cancel_alarm, snooze
 assert.equal(readFileSync(new URL('../prompt/live-persona.ts',import.meta.url),'utf8').replace(alarmGuidance,''),baseline);
 const oldAdapter=execFileSync('git',['show',baselineCommit+':server/adapters/live-voice/openai.ts'],{encoding:'utf8'});
 const extract=name=>baseline.match(new RegExp('export const '+name+' = `([\\s\\S]*?)`;'))[1];
-const extractSection=name=>runInNewContext(oldAdapter.match(new RegExp("(?:export )?const "+name+" = ('[^']*');"))[1]);
+const extractSection=name=>{
+ const match=oldAdapter.match(new RegExp(String.raw`(?:export )?const ${name} = ('(?:\\.|[^'\\])*');`));
+ assert.ok(match,`baseline has a quoted ${name}`);
+ return runInNewContext(match[1]);
+};
 assert.equal(NAYA_CHARACTER,extract('NAYA_CHARACTER'));
 assert.equal(NAYA_VOICE_SURFACE,extract('NAYA_VOICE_SURFACE'));
 for(const [name,value] of Object.entries({OPENAI_TOOLS_SECTION,OPENAI_DELIVERY_SECTION}))assert.equal(value,extractSection(name));

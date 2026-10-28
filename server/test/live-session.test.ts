@@ -5466,7 +5466,7 @@ test('calendar integration: actual Google projector and Live ledger deliver ever
     assert.doesNotMatch(JSON.stringify(reply), /next-events|more-calendars/, 'opaque page tokens stay inside the host ledger');
     if (revoked) h.toolRegistry!.revoke('calendar');
     await settleLiveTool(h, 'calendar-continue', 'research', { action: 'continue', researchId: reply['researchId'] });
-    if (revoked) { assert.deepEqual(last()['findings'], []); assert.equal(last()['canContinue'], false); }
+    if (revoked) { assert.deepEqual(last()['findings'], [], JSON.stringify(last())); assert.equal(last()['canContinue'], false); }
     else { assert.match(JSON.stringify(reply['findings']), /Synthetic event 14/, 'the whole window was already spoken'); assert.equal(last()['canContinue'], false); }
     assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 2, 'neither retained delivery nor denial rereads completed pages');
   }

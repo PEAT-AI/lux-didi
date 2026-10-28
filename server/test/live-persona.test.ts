@@ -701,7 +701,8 @@ const WRAPPER_3O_CHARS = 6603;
 // TR-R15: restoring W7's "rather than claiming it happened" clause, which W6's rewrite had dropped, measured 14_224.
 // TRAIN4-R1: the merged wrapper measures 14_303 once main's write-honesty clause is back beside V1's save
 // wording; the bound carries the merged measure and no reviewed rule is trimmed for it (TR-R5).
-const WRAPPER_W5_CHARS = 14_350;
+// C-OPENWEB8: the open_web clause measures 14_474; the bound carries it, never a trimmed reviewed rule.
+const WRAPPER_W5_CHARS = 14_474;
 test('3p: six wrapper rules are stated once each, the six-word cue is retired, and the wrapper growth stays bounded', () => {
   const rules = [
     'Do not announce routine lookups or fill the wait with status updates. If you expect a lookup to take longer than about ten seconds, for example several sources at once, you may say once, in your own words, that you need a moment and roughly how long. Vary your phrasing naturally; never use a stock waiting line. Do not reassure the owner about what was not found, sent or booked while you wait. Answer direct questions about outcomes accurately.',

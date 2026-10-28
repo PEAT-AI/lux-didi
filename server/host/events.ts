@@ -12,6 +12,13 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
  *  nothing about its domain carries no cause at all. */
 export type LogCause = 'tool' | 'provider' | 'owner' | 'network' | 'audio' | 'host' | 'connector' | 'config';
 export const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
+
+/**
+ * W2-R1 / F3: the closed reasons a stored approval can refuse a connect, one per condition. The type is
+ * the closure: a mistyped reason fails type-check at the refusal rather than silently dropping its line.
+ */
+export type ApprovalRefusalReason = 'endpoint_changed' | 'tools_widened' | 'class_tightened' | 'schema_changed' | 'row_invalid';
+export const APPROVAL_REFUSAL_REASONS: readonly ApprovalRefusalReason[] = ['endpoint_changed', 'tools_widened', 'class_tightened', 'schema_changed', 'row_invalid'];
 export const LOG_CAUSES: readonly LogCause[] = ['tool', 'provider', 'owner', 'network', 'audio', 'host', 'connector', 'config'];
 
 export interface Severity { level: LogLevel; cause?: LogCause }

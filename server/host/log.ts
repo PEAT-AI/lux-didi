@@ -1,4 +1,5 @@
 import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_LIMITS, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
+import { APPROVAL_REFUSAL_REASONS } from './events.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { TRELLO_CALL_TOOLS, TRELLO_WRITE_ARGUMENT_FIELDS } from '../tools/trello.js';
 import { clientDiagnostic } from '../http/routes.js';
@@ -177,8 +178,7 @@ const isSafeCloseReason = (value: unknown): value is string =>
 const UNKNOWN_FRAME_TYPE = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/;
 const isSafeMember = (value: unknown, allowed: readonly string[]): value is string => typeof value === 'string' && allowed.includes(value);
 const isSafeMembers = (value: unknown, allowed: readonly string[]): value is string[] => Array.isArray(value) && value.length <= 16 && value.every(item => isSafeMember(item, allowed));
-/** W2-R1: the closed reasons a stored approval can refuse a connect, mirroring server/host/mcp.ts. */
-const APPROVAL_REFUSAL_REASONS = ['endpoint_changed', 'tools_widened', 'class_tightened', 'schema_changed', 'row_invalid'];
+
 /** A closed shape: exactly these keys, so no field a later caller adds can slip through the whitelist. */
 const closedKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
   Object.keys(value).sort().join(',') === [...keys].sort().join(',');

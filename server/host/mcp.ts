@@ -4,6 +4,7 @@ import { McpRegistry, canonicalToolDigest } from '../adapters/mcp/registry.js';
 import { assertToolsOwnerBinding, createToolsOwner, validatePolicy } from '../tools/index.js';
 import type { ConnectionEndpoint, ConnectionPolicy, ConnectionRestoreResult, LiveAuthority, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from '../tools/types.js';
 import { loadMcpConfiguration, loadMcpEndpoints, type McpEndpointEntry } from '../config/mcp.js';
+import type { ApprovalRefusalReason } from './events.js';
 import { fields, parseJson, readPrivate } from '../config/files.js';
 import { join } from 'node:path';
 import { createMcpAdapter, HTTP_CONNECT_TIMEOUT_MS, STDIO_CONNECT_TIMEOUT_MS, type McpTransportState } from '../adapters/mcp/adapter.js';
@@ -216,7 +217,7 @@ export type ConnectorLifecycleEvent =
   /** W2-R1: a rebuilt child kept its id; which fields moved, never a value. */
   | { event: 'connector_endpoint_changed'; endpointId: string; fields: readonly string[] }
   /** W2-R1: the one closed reason a stored approval refused this connect. */
-  | { event: 'connector_approval_refused'; endpointId: string; reason: string };
+  | { event: 'connector_approval_refused'; endpointId: string; reason: ApprovalRefusalReason };
 
 /** A stored stdio endpoint, told apart by its own transport field: an http endpoint has none. */
 const isStdioEndpointRecord = (endpoint: ConnectionEndpoint): endpoint is StdioConnectionEndpoint => (endpoint as { transport?: unknown }).transport === 'stdio';
@@ -611,7 +612,7 @@ export async function composeMcpRuntime(options: {
     // W2-R1: one refusal per closed reason, so an owner (and the install gate) learns which condition held
     // instead of one vague code. The status row keeps `owner-approval-required`: it is the one code the
     // Settings row and the approve command speak, and the added names ride along for the exact text.
-    const refuseApproval = (reason: string, addedToolNames: readonly string[] = []): { retryable: false } => {
+    const refuseApproval = (reason: ApprovalRefusalReason, addedToolNames: readonly string[] = []): { retryable: false } => {
       reportFailure(entry, 'handshake', attempt, 'owner-approval-required');
       options.lifecycleLog?.({ event: 'connector_approval_refused', endpointId: entry.id, reason });
       reports.set(entry.id, { id: entry.id, state: 'error', tools: 0, lastHandshakeAt: previous?.lastHandshakeAt ?? null, error: 'owner-approval-required', configurationError: 'owner-approval-required', ...(addedToolNames.length ? { addedToolNames: [...addedToolNames].sort() } : {}) });

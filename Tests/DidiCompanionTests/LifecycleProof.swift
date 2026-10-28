@@ -301,6 +301,8 @@ import Darwin
             await owned.stop()
             try canonical.write(to: valid.1.appendingPathComponent("admin-credential"))
             let stubborn = supervisor(try setup("stubborn"))
+            // Real-process signal ownership only; the 30-second quit policy is proven with virtual sleep above.
+            stubborn.shutdownGraceForProof = 500_000_000
             _ = try await stubborn.start()
             let stoppedAt = Date()
             await stubborn.stop()

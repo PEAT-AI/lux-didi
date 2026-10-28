@@ -130,11 +130,11 @@ enum NativeProbeFailure: String, Error {
         defer { deadline.cancel() }
         return try await withCheckedThrowingContinuation { frameWaiter = $0 }
     }
-    func stop(graceful: Bool = false) async {
+    func stop(graceNanoseconds: UInt64 = 500_000_000) async {
         stopping = true; closeInput()
         let escalation = Task { [weak self] in
             try? await NativeServiceStop.escalate(
-                graceNanoseconds: graceful ? 30_000_000_000 : 500_000_000,
+                graceNanoseconds: graceNanoseconds,
                 sleep: { try await Task.sleep(nanoseconds: $0) },
                 isRunning: { self?.isRunning == true },
                 terminate: { self?.process.terminate() },
@@ -249,6 +249,7 @@ struct OwnedServiceConnection {
     init(runtime: InstalledRuntime, proofState: URL, proofCredentialService: String) {
         self.runtime = runtime; operatorSettings = nil; stateURL = proofState; credentialService = proofCredentialService; credentialAccount = runtime.installId
     }
+    var shutdownGraceForProof: UInt64?
     func closeLivenessForProof() { child?.closeInput() }
     #endif
     func isCurrent(_ candidate: OwnedServiceConnection) -> Bool {
@@ -474,6 +475,10 @@ struct OwnedServiceConnection {
         wakeObserver = nil
         operation = nil; state = .stopped; connection = nil
         onEnd?(reason, [:])
-        if let child { await child.stop(graceful: reason == .shutdown); observeStop(child); self.child = nil }
+        var grace: UInt64 = (reason == .shutdown || reason == .appQuit) ? 30_000_000_000 : 500_000_000
+        #if COMPANION_TEST
+        if let proofGrace = shutdownGraceForProof { grace = proofGrace }
+        #endif
+        if let child { await child.stop(graceNanoseconds: grace); observeStop(child); self.child = nil }
     }
 }

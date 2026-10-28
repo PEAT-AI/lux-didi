@@ -739,7 +739,7 @@ test('3p: six wrapper rules are stated once each, the six-word cue is retired, a
   assert.ok(growth > 0 && growth < cap, `the wrapper growth stays under ${cap} chars (${growth})`);
   assert.ok(wrapper.length <= WRAPPER_W5_CHARS, `the wrapper gains no chars over ${WRAPPER_W5_CHARS} (${wrapper.length})`);
   // The accent block keeps its own wording: no rule restates it and no preset text carries a rule.
-  assert.ok(wrapper.includes('in the voice and accent defined above'), 'the wrapper still points at the accent block');
+  assert.ok(wrapper.includes('Use the defined voice and accent'), 'the wrapper still points at the accent block');
   for (const preset of Object.values(LIVE_ACCENT_PRESETS)) {
     assert.ok(preset.head.includes('Stay in this accent for the whole session, in every single sentence'), 'the accent hold is byte-identical');
     for (const rule of rules) assert.ok(!preset.head.includes(rule) && !preset.tail.includes(rule), 'the accent block carries no delivery rule');
@@ -1526,7 +1526,7 @@ const HONESTY_RULES = [
   'Do not promise an unsolicited callback, future monitoring or work after this session.',
   'What a tool did in an earlier call is history: say last time, and never state a tool\'s present health without checking it now.',
   'After a lookup failed or timed out, whatever you add from yourself is general knowledge, and you say so.',
-  'A pause inside his turn is not your turn: no "Hmm", "Yeah" or "Okay" while he is still speaking',
+  'No backchannel words while he is speaking, including pauses: no "Hmm", "Yeah" or "Okay"',
 ];
 /** Text that would contradict a rule above, so the assertion is about the rendered persona and not one string. */
 const HONESTY_CONTRADICTIONS = [

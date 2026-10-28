@@ -601,7 +601,7 @@ interface ActiveSession {
   stopAfterJournalId?: number;
   stopGeneration?: number;
   inputAt?: number;
-  lookupBridgeForInput?: number;
+  lookupBridgeForInput?: string;
   lookupAckAt?: number | undefined;
   /** #720: the anchor is the owner's last finished fragment of the turn, not the first. */
   inputFinalAt: number | undefined;
@@ -4155,7 +4155,7 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         response = admissionBlocked(verdict.reason);
       } else {
         const firstStep = handle.toolStep;
-        // R2: the one "still searching" line this call may earn, armed for its own 10 s and cancelled by its answer.
+        // C-CONVO9: the event-level lookup bridge does not alter research admission or its result.
         try {
           const priorRunId = handle.researchLedger.last()?.researchId;
           response = await this.#boundedResearch(handle, scheduler.call({ ...parsed.call, callId: call.id }, handle.abort.signal), parsed.call, configured, generation, priorRunId);
@@ -4217,16 +4217,17 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
    * which is the honest record instead of a claim the owner heard it.
    */
   #armStillSearching(handle: ActiveSession, callId: string): { cancel: () => void } {
-    const armedAt = this.#now();
     const ackAt = handle.lookupAckAt;
     if (ackAt === undefined) return { cancel: () => {} };
     const ownerAt = handle.inputAt;
-    const ask = ownerAt ?? 0;
+    const ask = handle.connection.turnId ?? 'opener';
     const timer = this.#schedule(() => {
       if (this.#settled(handle) || !handle.pendingCallIds.has(callId)) return;
-      if (handle.lookupBridgeForInput === ask || handle.speaking) return;
-      // R2: a call the owner has moved past is not narrated: a new question ends the wait this line was for.
-      if (handle.inputAt !== undefined && (ownerAt === undefined || handle.inputAt > armedAt)) return;
+      if (handle.lookupBridgeForInput === ask || handle.inputAt !== ownerAt || (handle.connection.turnId ?? 'opener') !== ask) return;
+      // Audio can finish after its transcript; the bridge owes three quiet seconds after the acknowledgement.
+      const quietAt = Math.max(ackAt, handle.lastModelAudioAt ?? ackAt) + 3_000;
+      if (this.#now() < quietAt) { this.#armStillSearching(handle, callId); return; }
+      if (handle.speaking) return;
       handle.lookupBridgeForInput = ask;
       const researchId = handle.researchLedger.last()?.researchId ?? '';
       let spoken = false;
@@ -4234,8 +4235,8 @@ const modelFacing = registry.filter(tool => tool.name === RESEARCH_TOOL_NAME || 
         const speak = handle.session.sendCommentary;
         spoken = typeof speak === 'function' && speak.call(handle.session, { text: 'Still looking, give me a moment.' }) !== false;
       } catch { spoken = false; }
-      hostLogEvent({ event: 'research_still_searching', researchId, elapsedMs: 3_000, spoken });
-    }, Math.max(0, ackAt + 3_000 - this.#now()));
+      hostLogEvent({ event: 'research_still_searching', researchId, elapsedMs: this.#now() - ackAt, spoken });
+    }, Math.max(0, Math.max(ackAt, handle.lastModelAudioAt ?? ackAt) + 3_000 - this.#now()));
     timer.unref?.();
     return timer;
   }

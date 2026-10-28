@@ -1,14 +1,17 @@
+import { VAULT_TRANSPORT_PHASES } from '../tools/vault-write.js';
 import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LOOKUP_SOURCES, RESEARCH_ARGUMENT_FIELDS, RESEARCH_ARGUMENT_TYPES, RESEARCH_BRANCHES, RESEARCH_LIMITS, RESEARCH_REFUSAL_REASONS, type ResearchBranch } from '../tools/research.js';
 import { APPROVAL_REFUSAL_REASONS } from './events.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { TRELLO_CALL_TOOLS, TRELLO_WRITE_ARGUMENT_FIELDS } from '../tools/trello.js';
+import { OPEN_RECEIPT_CODES, OPEN_TOOL_NAMES } from '../tools/open.js';
 import { clientDiagnostic } from '../http/routes.js';
+import { ALARM_LOG_REASONS } from './events.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';
 import { TURN_FAILED_REASONS } from '../adapters/live-voice/types.js';
 import { DEBT_PHASES, DEBT_REASONS } from '../trace/kinds.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { ConfigError } from '../config/files.js';
-import { LOG_CAUSES, clearLogContext, envelopeContext, monoMilliseconds, nextSeq, severityOf } from './events.js';
+import { LOG_CAUSES, TOOL_CALL_OUTCOMES, TOOL_REFUSAL_CODES, clearLogContext, envelopeContext, monoMilliseconds, nextSeq, severityOf } from './events.js';
 import { LIVE_INSTRUCTION_SECTION_IDS } from '../prompt/live-persona.js';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -182,6 +185,8 @@ const isSafeCloseReason = (value: unknown): value is string =>
 /** A provider frame name: lowercase dots and underscores, as the Live reference writes them, never free text. */
 const UNKNOWN_FRAME_TYPE = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/;
 const isSafeMember = (value: unknown, allowed: readonly string[]): value is string => typeof value === 'string' && allowed.includes(value);
+/** C-LOGS11: why one latency field is absent. A closed set, so "missing" is never printed as a duration. */
+const AUDIBLE_MISSING_REASONS = ['no_owner_final', 'no_native_receipt'];
 const isSafeMembers = (value: unknown, allowed: readonly string[]): value is string[] => Array.isArray(value) && value.length <= 16 && value.every(item => isSafeMember(item, allowed));
 
 /** A closed shape: exactly these keys, so no field a later caller adds can slip through the whitelist. */
@@ -196,6 +201,19 @@ const TOOL_HANDLER_CLASSES = ['Error', 'TypeError', 'RangeError', 'SyntaxError',
 export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object') return;
   const value = raw as Record<string, unknown>;
+  if (value.event === 'host_ready_ms') {
+    if (!closedKeys(value, ['event', 'ms']) || !isSafeCount(value.ms)) return;
+    return { event: 'host_ready_ms', ms: value.ms };
+  }
+  if (value.event === 'alarm_set' || value.event === 'alarm_due' || value.event === 'alarm_ring_started'
+    || value.event === 'alarm_acknowledged' || value.event === 'alarm_missed' || value.event === 'alarm_degraded') {
+    if (typeof value.alarmId !== 'string' || !/^[A-Za-z0-9:_-]{1,256}$/.test(value.alarmId)
+      || typeof value.scheduledMs !== 'number' || !Number.isFinite(value.scheduledMs)
+      || typeof value.actualMs !== 'number' || !Number.isFinite(value.actualMs)
+      || !ALARM_LOG_REASONS.some(reason => reason === value.reason)) return;
+    return { event: value.event, alarmId: value.alarmId, scheduledMs: value.scheduledMs, actualMs: value.actualMs, reason: value.reason };
+
+  }
   if (value.event === 'tool_diagnostic_capture') {
     const reasons = ['context_absent','coverage_write_failed','insert_write_failed','seal_write_failed','reuse_context_absent','reuse_write_failed','execution_not_active_or_scope_changed','insert_failed_wire_observed','insert_failed_pre_wire_refused','insert_failed_dispatch_unknown','wire_observed_context_absent','pre_wire_context_absent','dispatch_unknown_context_absent'];
     const identity = (v: unknown): boolean => v === null || (typeof v === 'string' && /^[a-zA-Z0-9:_-]{1,256}$/.test(v));
@@ -316,6 +334,26 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (typeof value.autoConnects !== 'boolean' || typeof value.windowShown !== 'boolean') return;
     return { event: 'launch_kind', kind: value.kind, autoConnects: value.autoConnects, windowShown: value.windowShown };
   }
+  if (value.event === 'knowledge_autopen') {
+    // C-POLISH10: whether the knowledge leg opened a hit nobody asked for, as a decision, a score bucket and a
+    // closed reason, never the ask or the entry's title.
+    if (!closedKeys(value, ['bucket', 'decision', 'event', 'reason'])) return;
+    if (value.decision !== 'opened' && value.decision !== 'skipped') return;
+    if (!['high', 'medium', 'low', 'unknown'].includes(String(value.bucket))) return;
+    if (!['low_score', 'no_overlap', 'none'].includes(String(value.reason))) return;
+    return { event: 'knowledge_autopen', decision: value.decision, bucket: value.bucket, reason: value.reason };
+  }
+  if (value.event === 'open_audit') {
+    // C-POLISH10: what one open call was asked to open, as closed classes and counts: no words, no handle, no URL.
+    if (!closedKeys(value, ['bound', 'destination', 'event', 'kind', 'refusal', 'tool', 'words'])) return;
+    if (typeof value.tool !== 'string' || !OPEN_TOOL_NAMES.has(value.tool)) return;
+    if (!['maps', 'search', 'site', 'source', 'home', 'file', 'app'].includes(String(value.kind))) return;
+    if (!isSafeCount(value.words) || Number(value.words) > 64) return;
+    if (value.bound !== 'yes' && value.bound !== 'no') return;
+    if (!['maps', 'search', 'site-root', 'handle', 'file', 'app'].includes(String(value.destination))) return;
+    if (!isSafeMember(value.refusal, OPEN_RECEIPT_CODES) && value.refusal !== 'none') return;
+    return { event: 'open_audit', tool: value.tool, kind: value.kind, words: value.words, bound: value.bound, destination: value.destination, refusal: value.refusal };
+  }
   if (value.event === 'native_action') {
     // Closed receipt: the action, its ack code and a scheme or extension, never the target.
     const allowed = ['action', 'code', 'detail', 'event'];
@@ -336,6 +374,47 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (Object.keys(value).sort().join(',') !== ['event', 'reason', 'sequence', 'tool'].join(',')) return;
     if (!isSafeCount(value.sequence) || !SAFE_TOKEN.test(String(value.tool)) || value.reason !== 'no_owner_input') return;
     return { event: 'live_tool_refused', sequence: value.sequence, tool: value.tool, reason: value.reason };
+  }
+  if (value.event === 'owner_final') {
+    // C-LOGS11: when the owner's final transcription of a turn landed, on the wall clock, as epoch ms. The
+    // turn it belongs to is the envelope's turnId; no word of what he said is on the line.
+    if (!closedKeys(value, ['event', 'ownerFinalAt'])) return;
+    if (!isSafeCount(value.ownerFinalAt)) return;
+    return { event: 'owner_final', ownerFinalAt: value.ownerFinalAt };
+  }
+  if (value.event === 'tool_call_admitted' || value.event === 'tool_call_dispatched') {
+    // C-LOGS11: one tool call entering the host and leaving toward its source, by call key and tool name,
+    // never an argument. The key is stable across admit, dispatch and outcome.
+    if (!closedKeys(value, ['callKey', 'event', 'tool'])) return;
+    if (typeof value.callKey !== 'string' || !SAFE_CALL_ID.test(value.callKey)) return;
+    if (typeof value.tool !== 'string' || !SAFE_TOKEN.test(value.tool)) return;
+    return { event: value.event, callKey: value.callKey, tool: value.tool };
+  }
+  if (value.event === 'tool_call_outcome') {
+    // C-LOGS11: what one call settled as, as a closed outcome and a closed refusal code; a call that did not
+    // refuse carries no code, so a missing code is never mistaken for a `refused`. `ms` is the host's own
+    // measured duration when it has one, and the field is absent when it does not, never a zero.
+    const withCode = value.refusalCode !== undefined;
+    const withMs = value.ms !== undefined;
+    if (!closedKeys(value, ['callKey', 'event', 'outcome', 'tool', ...(withMs ? ['ms'] : []), ...(withCode ? ['refusalCode'] : [])])) return;
+    if (typeof value.callKey !== 'string' || !SAFE_CALL_ID.test(value.callKey)) return;
+    if (typeof value.tool !== 'string' || !SAFE_TOKEN.test(value.tool)) return;
+    if (!isSafeMember(value.outcome, TOOL_CALL_OUTCOMES)) return;
+    if (withMs && !isSafeCount(value.ms)) return;
+    if (withCode && !isSafeMember(value.refusalCode, TOOL_REFUSAL_CODES)) return;
+    // A code belongs to a refusal: a call that completed or failed did not refuse, so a code beside it is a
+    // mislabelled line, and the line is dropped rather than published with a contradictory pair.
+    if (withCode && value.outcome !== 'refused' && value.outcome !== 'blocked') return;
+    return { event: 'tool_call_outcome', callKey: value.callKey, tool: value.tool, outcome: value.outcome,
+      ...(withMs ? { ms: value.ms } : {}), ...(withCode ? { refusalCode: value.refusalCode } : {}) };
+  }
+  if (value.event === 'live_first_audible') {
+    // C-LOGS11: the native audibility receipt for a turn's first audible segment, as a duration from the
+    // owner's final words. A turn whose final was never recorded says why, never zero.
+    if (!closedKeys(value, ['event', 'finalToAudibleMs', 'missingReason'])) return;
+    if (!(value.finalToAudibleMs === null || isSafeCount(value.finalToAudibleMs))) return;
+    if (!(value.missingReason === null || isSafeMember(value.missingReason, AUDIBLE_MISSING_REASONS))) return;
+    return { event: 'live_first_audible', finalToAudibleMs: value.finalToAudibleMs, missingReason: value.missingReason };
   }
   if (value.event === 'open_claim_corrected') {
     // Open2: the correction is counted, never quoted: one closed reason, no words of hers.
@@ -645,6 +724,10 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: 'connector_call', connector: 'trello', tool: value.tool, phase: value.phase, outcome: value.outcome, ...(hasReason ? { reason: value.reason } : {}),
       ...(normalized === undefined ? {} : { normalized: normalized.slice(0, TRELLO_WRITE_ARGUMENT_FIELDS.length) }) };
   }
+  if (value.event === 'vault_transport') {
+    if (!closedKeys(value, ['event', 'phase']) || !isSafeMember(value.phase, VAULT_TRANSPORT_PHASES)) return;
+    return { event: 'vault_transport', phase: value.phase };
+  }
   if (value.event === 'vault_write') {
     // Closed shape: the attempt outcome, the closed failure code, the vault's own insight id on a confirmed save, and the wire latency. Never text.
     const hasInsight = value.insightId !== undefined;
@@ -791,11 +874,18 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'live_first_audio' || value.event === 'live_answer_audio') {
     // Closed shape: when the provider's first audible frame of a turn arrived, measured from the open and
-    // from the ready event, never any audio itself.
-    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'msSinceReady', 'msSinceOpen'])) return;
+    // from the ready event, never any audio itself. C-LOGS11 adds the owner-facing latency: the wait from
+    // his final words to this frame, or the closed reason it cannot be measured.
+    const plain = closedKeys(value, ['event', 'liveSessionId', 'generation', 'msSinceReady', 'msSinceOpen']);
+    const audit = closedKeys(value, ['event', 'liveSessionId', 'generation', 'msSinceReady', 'msSinceOpen', 'finalToProviderFirstAudioMs', 'missingReason']);
+    if (!plain && !audit) return;
     if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
     if (!isSafeCount(value.generation) || !isSafeCount(value.msSinceReady) || !isSafeCount(value.msSinceOpen)) return;
-    return { event: value.event, liveSessionId: value.liveSessionId, generation: value.generation, msSinceReady: value.msSinceReady, msSinceOpen: value.msSinceOpen };
+    const base = { event: value.event, liveSessionId: value.liveSessionId, generation: value.generation, msSinceReady: value.msSinceReady, msSinceOpen: value.msSinceOpen };
+    if (plain) return base;
+    if (!(value.finalToProviderFirstAudioMs === null || isSafeCount(value.finalToProviderFirstAudioMs))) return;
+    if (!(value.missingReason === null || isSafeMember(value.missingReason, AUDIBLE_MISSING_REASONS))) return;
+    return { ...base, finalToProviderFirstAudioMs: value.finalToProviderFirstAudioMs, missingReason: value.missingReason };
   }
   if (value.event === 'research_call_arrived' || value.event === 'tool_output_sent') {
     // Closed shape: the frame arrival and the answer write, with the milliseconds between them.
@@ -971,16 +1061,19 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeCount(value.ms) || !SILENCE_OWNERS.includes(String(value.silence))) return;
     return { event: 'live_heard_silence', ms: value.ms, silence: value.silence as string };
   }
+  if (value.event === 'uplink_speech_shed') {
+    if (!closedKeys(value, ['event', 'ms', 'silenceFramesBeforeSpeechShed']) || !isSafeCount(value.ms) || !isSafeCount(value.silenceFramesBeforeSpeechShed)) return;
+    return { event: 'uplink_speech_shed', ms: value.ms, silenceFramesBeforeSpeechShed: value.silenceFramesBeforeSpeechShed };
+  }
   if (value.event === 'live_response_latency') {
     // C-DEADAIR: the provider's share of a wait, kept apart from the host's dead-air clock. Three durations and
     // the session they belong to, never any turn content.
-    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'msSinceOwnerFinal', 'msSinceResponseCreated', 'msSinceToolOutput'])) return;
+    if (!closedKeys(value, ['event', 'liveSessionId', 'generation', 'msSinceOwnerFinal', 'msSinceToolOutput'])) return;
     if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
     if (!isSafeCount(value.generation) || !isSafeCount(value.msSinceOwnerFinal)) return;
-    if (!(value.msSinceResponseCreated === null || isSafeCount(value.msSinceResponseCreated))) return;
     if (!(value.msSinceToolOutput === null || isSafeCount(value.msSinceToolOutput))) return;
     return { event: 'live_response_latency', liveSessionId: value.liveSessionId, generation: value.generation,
-      msSinceOwnerFinal: value.msSinceOwnerFinal, msSinceResponseCreated: value.msSinceResponseCreated, msSinceToolOutput: value.msSinceToolOutput };
+      msSinceOwnerFinal: value.msSinceOwnerFinal, msSinceToolOutput: value.msSinceToolOutput };
   }
   if (value.event === 'live_turn_open') {
     // #303: the provider streamed model audio and then went quiet without a turnComplete.
@@ -1612,7 +1705,9 @@ const NORMAL_END_CODES = new Set(['closed', 'voice_stop', 'user_stop', 'idle_tim
 
 export class HostLog {
   private readonly path: string;
-  constructor(dataDir: string, private readonly limit = 5 * 1024 * 1024) {
+  private readyLogged = false;
+  constructor(dataDir: string, private readonly limit = 5 * 1024 * 1024,
+    private readonly startup?: { startedAt: number; now: () => number }) {
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     const root = lstatSync(dataDir);
     if (!root.isDirectory() || root.isSymbolicLink()) throw new Error('Invalid diagnostics state directory');
@@ -1621,7 +1716,15 @@ export class HostLog {
     if (!lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink()) throw new Error('Invalid diagnostics directory');
     this.path = join(directory, 'host.log');
   }
-  event(raw: unknown): void { const event = safeEvent(raw); if (event) this.append(event); }
+  event(raw: unknown): void {
+    const event = safeEvent(raw);
+    if (!event) return;
+    this.append(event);
+    if (event.event === 'live_provider_ready' && this.startup && !this.readyLogged) {
+      this.readyLogged = true;
+      this.append({ event: 'host_ready_ms', ms: Math.max(0, Math.round(this.startup.now() - this.startup.startedAt)) });
+    }
+  }
   terminal(raw: unknown): void {
     if (!raw || typeof raw !== 'object') return;
     const state = (raw as { state?: unknown }).state;
@@ -1646,7 +1749,7 @@ export class HostLog {
     // C-LOG-ENVELOPE: one envelope, written here and nowhere else. A field the event already carries keeps
     // its own value, so no existing event shape changes meaning; the call context fills only what is absent.
     const name = typeof event.event === 'string' ? event.event : '';
-    const severity = severityOf(name);
+    const severity = severityOf(name, event);
     // A line whose name says nothing about its domain carries no cause; an event that already names its
     // own cause keeps it, so no existing shape changes meaning.
     const record = { timestamp: new Date().toISOString(), monoMs: monoMilliseconds(), pid: process.pid, seq: nextSeq(),

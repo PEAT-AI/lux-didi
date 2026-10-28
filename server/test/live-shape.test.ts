@@ -127,7 +127,7 @@ test('calendar list keeps time, title, location, attendees and conference presen
     attendees: [{ displayName: 'Dana' }, { email: 'kim@example.invalid' }], description: 'Daily sync', hangoutLink: 'https://meet.example/abc',
   }] });
   assert.match(shaped.text, /2024-01-01T09:00:00Z, Standup, Room 1/);
-  assert.match(shaped.text, /attendees: 2 people: Dana, kim@example\.invalid/);
+  assert.match(shaped.text, /attendees: 2 people: Dana, kim/);
   assert.match(shaped.text, /conference: yes/);
   assert.match(shaped.text, /Daily sync/);
   assert.equal(/https?:\/\//.test(shaped.text), false, 'calendar model text has no raw link url');
@@ -410,7 +410,7 @@ test('R6: organizer renders, and a capped attendee list says and others', () => 
     attendees: [{ displayName: 'Dana', responseStatus: 'accepted' }, { email: 'kim@example.invalid', responseStatus: 'tentative' }],
     attendeesOmitted: true, organizer: { email: 'rob@example.invalid', displayName: 'Rob' },
   }] });
-  assert.match(shaped.text, /attendees: at least 2 people: Dana, kim@example\.invalid and others/u);
+  assert.match(shaped.text, /attendees: at least 2 people: Dana \(accepted\), kim \(tentative\) and others/u);
   assert.match(shaped.text, /organizer: Rob/u);
 });
 
@@ -526,7 +526,31 @@ test('#574: a twelve person event prints eight names and the four it leaves out,
   assert.doesNotMatch(shaped.text, /Dana Whitfield 8/, 'the ninth name is never spoken');
   assert.equal(/\[\+\d+ chars\]/.test(shaped.text), false, 'the attendee line is never the part the per-event bound cuts');
   const empty = shapeGcalList({ events: [{ summary: 'Focus block', start: { dateTime: '2026-10-19T11:00:00Z' }, attendees: [] }] });
-  assert.equal(/attendees/.test(empty.text), false, 'an event with nobody on it carries no attendees line');
+  assert.match(empty.text, /attendees: none listed for this event/u, 'an event with nobody on it says so, never silence');
+});
+
+test('C-DEPTH11: every attendee carries its response status and the organizer flag', () => {
+  const shaped = shapeGcalList({ events: [{
+    summary: 'Design review', start: { dateTime: '2026-10-19T15:00:00Z' },
+    organizer: { email: 'robin.vale@example.invalid' },
+    attendees: [
+      { email: 'robin.vale@example.invalid', responseStatus: 'accepted' },
+      { displayName: 'Ari Andor', email: 'ari.andor@example.invalid', responseStatus: 'declined' },
+      { displayName: 'Kim Lee', email: 'kim.lee@example.invalid', responseStatus: 'tentative' },
+      { displayName: 'Dana Doe', email: 'dana.doe@example.invalid', responseStatus: 'needsAction' },
+    ],
+  }] });
+  assert.match(shaped.text, /attendees: 4 people: robin\.vale \(organizer, accepted\), Ari Andor \(declined\), Kim Lee \(tentative\), Dana Doe \(not answered\)/u);
+  assert.match(shaped.text, /organizer: robin\.vale@example\.invalid/u);
+});
+
+test('C-DEPTH11: an event whose source sent no attendee data says so, and never claims the invite hides them', () => {
+  const shaped = shapeGcalList({ events: [{ summary: 'Focus block', start: { dateTime: '2026-10-19T11:00:00Z' }, attendeesUnavailable: true }] });
+  assert.match(shaped.text, /attendees: not available from this source/u);
+  assert.doesNotMatch(shaped.text, /hides|hidden|private/iu);
+  const none = shapeGcalList({ events: [{ summary: 'Focus block', start: { dateTime: '2026-10-19T11:00:00Z' } }] });
+  assert.match(none.text, /attendees: none listed for this event/u);
+  assert.doesNotMatch(none.text, /hides|hidden|private/iu);
 });
 
 test('#6: the confidence line never reaches the model text but is carried for research', () => {
@@ -561,7 +585,7 @@ test('L8-01: attendee and organizer lines are never cut, the count is true and n
   const line = shaped.text.split('\n').find(entry => entry.trimStart().startsWith('attendees: '));
   assert.ok(line !== undefined, `the attendee line survives: ${shaped.text}`);
   assert.match(line.trim(), /^attendees: 5 people: /u, `the line carries the true head count: ${line}`);
-  const spoken = ['Robin Vale', 'Ari Andor', 'dana.d@example.invalid', 'kim.l@example.invalid', 'Wes Rowan'].filter(name => line.includes(name)).length;
+  const spoken = ['Robin Vale', 'Ari Andor', 'dana.d', 'kim.l', 'Wes Rowan'].filter(name => line.includes(name)).length;
   const more = Number(/ and (\d+) more$/u.exec(line.trim())?.[1] ?? 0);
   assert.equal(spoken + more, 5, `every attendee is named or counted: ${line}`);
   assert.match(shaped.text, /^ {2}organizer: Wes Rowan$/mu, 'the organizer line is whole');

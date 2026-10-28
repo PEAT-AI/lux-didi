@@ -1,3 +1,10 @@
+import './alarm.test.js';
+import './alarm-scheduler.test.js';
+import './alarm-authority.test.js';
+import './alarm-shell.test.js';
+import './alarm-mode.test.js';
+import './alarm-logs.test.js';
+import './alarm-atomic.test.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -12,11 +19,12 @@ import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import { noteOwnerWords, noteOwnerPartial, ownerTurnWords, webOwnerWords, resolveWebOpen, NativeActionBus, openWebFailure, nativeActions } from '../tools/open.js';
+import { noteModelOutput, noteOwnerWords, noteOwnerPartial, ownerTurnWords, webOwnerWords, resolveWebOpen, NativeActionBus, openWebFailure, nativeActions } from '../tools/open.js';
 import type { LiveAuthority } from '../tools/types.js';
 import type { ToolCallIntent } from '../adapters/model/types.js';
 import { runToolCalls } from '../tools/declarations.js';
 import { attachHostLogSink } from '../tools/host-events.js';
+import { beginHandleSession, endHandleSession, mintOpenLine, exposeHandles } from '../tools/open-handles.js';
 import { fixture } from './live-voice-fixture.js';
 
 test('A2: each live builtin executes against its exact stored intent', async t => {
@@ -41,7 +49,8 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   const authority = await lookup!(session.liveSessionId, signal);
   assert.ok(authority);
   // No OS opener or native timeout: the receipt port is the unit-test boundary.
-  t.mock.method(nativeActions, 'dispatch', async () => 'opened' as const);
+  let dispatched = 0;
+  t.mock.method(nativeActions, 'dispatch', async () => { dispatched++; return 'opened' as const; });
   noteOwnerWords(session.liveSessionId, 'open plantix dot net and my gmail and Synthetic');
   const argumentsByName: Record<string, Record<string, unknown>> = {
     research: { action: 'start', question: 'what is the synthetic scope', topic: 'synthetic scope', lookups: [{ source: 'knowledge', query: 'synthetic scope' }] }, remember_note: { text: 'Synthetic fact', kind: 'fact' },
@@ -51,8 +60,14 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     people_lookup: { name: 'Synthetic' }, open_source: { handle: 'L9999' },
     open_home: { app: 'gmail' }, open_file: { path: '~/synthetic' },
     open_app: { name: 'Synthetic' }, open_web: { kind: 'site', target: 'plantix dot net' },
+    set_alarm: {}, list_alarms: {}, cancel_alarm: { id: 'synthetic-alarm' }, snooze_alarm: { id: 'synthetic-alarm' },
   };
-  for (const definition of owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true)) {
+  const live = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
+  assert.ok(live.some(tool => tool.name === 'stage_lux_note'), 'stage owns its own registry intent name');
+  assert.equal(live.some(tool => tool.name === 'remember_note' || tool.name === 'save_to_vault'), false, 'retired write tools are not catalog capabilities');
+  for (const name of ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm']) assert.ok(live.some(tool => tool.name === name), `registered ${name}`);
+  for (const definition of live) {
+
     const args = argumentsByName[definition.name];
     assert.ok(args, `valid fixture required for ${definition.name}`);
     assert.equal(definition.validate(args), true, `${definition.name} fixture validates`);
@@ -72,6 +87,38 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       const outcome = await definition.execute(args, { ...intent, signal });
       assert.equal(outcome.status, 'completed', `${definition.name} reaches its receipt transaction`);
     }, `${definition.name} must accept its stored intent`);
+  }
+  // Every open name exercises the real registry executor, not an alias of open_web.
+  beginHandleSession(session.liveSessionId);
+  t.after(() => endHandleSession(session.liveSessionId));
+  const line = mintOpenLine({ title: 'Synthetic email', url: 'https://mail.google.com/mail/u/0/#all/abc123', sourceType: 'gmail' })!;
+  exposeHandles(line);
+  const handle = line.match(/L[0-9]+/)![0];
+  const openCases = [
+    { name: 'open_source', args: { handle }, ask: 'open this email in my browser' },
+    { name: 'open_home', args: { app: 'gmail' }, ask: 'open my gmail' },
+    { name: 'open_file', args: { path: '~/synthetic' }, ask: 'open this local file' },
+    { name: 'open_app', args: { name: 'Synthetic' }, ask: 'open Synthetic app' },
+    { name: 'open_web', args: { kind: 'site', target: 'economist.com' }, ask: 'open economist.com in a new tab' },
+  ];
+  for (const entry of openCases) for (const mode of ['no ask', 'ask', 'split ask'] as const) {
+    await t.test(`${entry.name}: ${mode}`, async () => {
+      noteModelOutput(session.liveSessionId);
+      noteOwnerWords(session.liveSessionId, mode === 'ask' ? entry.ask : 'this is the synthetic item');
+      const definition = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true).find(d => d.name === entry.name)!;
+      const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision,
+        executionId: randomUUID(), callId: randomUUID(), toolName: entry.name,
+        argumentsHash: createHash('sha256').update(JSON.stringify(entry.args)).digest('hex'), accountId: definition.accountId, resourceId: definition.resourceId };
+      assert.equal(owner.journal.intent(intent), 'fresh');
+      const before = dispatched;
+      const pending = definition.execute(entry.args, { ...intent, signal });
+      // A second finalization releases the one bounded wait without a real clock delay.
+      if (mode !== 'ask') await new Promise<void>(resolve => setImmediate(resolve));
+      if (mode !== 'ask') noteOwnerWords(session.liveSessionId, mode === 'split ask' ? entry.ask : 'nothing else');
+      const outcome = await pending;
+      assert.equal(outcome.status, 'completed');
+      assert.equal(dispatched - before, mode === 'no ask' ? 0 : 1, `${entry.name} ${mode} reaches native only with owner intent`);
+    });
   }
   const definitions = owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }), undefined, () => ({ code: 'staged' }), true);
   const web = definitions.find(definition => definition.name === 'open_web')!;
@@ -145,4 +192,23 @@ test('web native timeout has a closed speech-safe receipt, older opens keep fail
     assert.ok(receipt.say.length > 0);
     assert.ok(receipt.fixNotForSpeech.length > 0);
   }
+});
+
+test('C-OPEN11: partial owner words wait for finalization and cannot authorize an open', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const runId = randomUUID();
+  noteOwnerPartial(runId, 'open gmail');
+  let settled = false;
+  const pending = webOwnerWords(runId, new AbortController().signal).then(words => { settled = true; return words; });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  t.mock.timers.tick(1500);
+  assert.equal(await pending, '', 'an unfinalized partial never authorizes a native open');
+});
+
+test('C-OPEN11: the shared acquisition merges two finalized owner turns', async () => {
+  const runId = randomUUID();
+  noteOwnerWords(runId, 'please open');
+  noteOwnerWords(runId, 'this email in my browser');
+  assert.equal(await webOwnerWords(runId, new AbortController().signal), 'please open this email in my browser');
 });

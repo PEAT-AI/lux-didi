@@ -1,0 +1,11 @@
+{
+  "file": "trello-openapi.json",
+  "title": "Trello REST API, OpenAPI 3 document published by Atlassian",
+  "publisher": "Atlassian (developer.atlassian.com Trello REST reference)",
+  "retrieved_url": "https://dac-static.atlassian.com/cloud/trello/swagger.v3.json",
+  "retrieved_at": "2026-10-28T14:12:10Z",
+  "sha256": "b07c97d06e93f7caff661a307e86f2b58c1f97591614ac8179f8e31bda27334b",
+  "bytes": 275361,
+  "unmodified": true,
+  "note": "Committed byte for byte as the vendor published it. Nothing is trimmed, hand written or generated here, and server/test/trello-contract.test.ts checks the sha256 on every run, so local edits fail the test instead of silently moving the source of truth."
+}

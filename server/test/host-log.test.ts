@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { safeEvent } from '../host/log.js';
+import { HostLog, safeEvent } from '../host/log.js';
+import { openAudit, openDestinationClass } from '../tools/open.js';
+import { attachHostLogSink } from '../tools/host-events.js';
 import { severityOf } from '../host/events.js';
 import { createHostResourceSampler } from '../host/runtime.js';
 
@@ -675,4 +678,82 @@ test('C-CONTINUITY R-10: dead-air and heard-silence lines carry no static cause'
   assert.equal(severityOf('live_rebuild').cause, undefined, 'a rebuild cause is the outcome\'s, not the map\'s');
   assert.equal(severityOf('live_recovery').cause, undefined);
   assert.deepEqual(safeEvent({ event: 'live_heard_silence', ms: 1_200, silence: 'provider' }), { event: 'live_heard_silence', ms: 1_200, silence: 'provider' });
+});
+
+test('C-AUDIO10: healthy dead air is informational while stalls stay warnings', () => {
+  assert.equal(severityOf('live_dead_air', { deadAirMs: 400 }).level, 'info');
+  assert.equal(severityOf('live_dead_air', { deadAirMs: 2999 }).level, 'info');
+  assert.equal(severityOf('live_dead_air', { deadAirMs: 3000 }).level, 'warn');
+  assert.equal(severityOf('live_dead_air', { deadAirMs: 3500 }).level, 'warn');
+  assert.equal(severityOf('live_dead_air', { msSinceTool: 400, msSinceAudible: 400 }).level, 'warn');
+});
+
+test('C-AUDIO10: latency exposes owner-final time without mislabeling response age', () => {
+  const receipt = { event: 'live_response_latency', liveSessionId: LIVE_SESSION_ID, generation: 1,
+    msSinceOwnerFinal: 400, msSinceToolOutput: null };
+  assert.deepEqual(safeEvent(receipt), receipt);
+  assert.equal(safeEvent({ ...receipt, msSinceResponseCreated: 116000 }), undefined);
+});
+
+test('C-START10: host_ready_ms is an info receipt with a closed elapsed-time field', () => {
+  const receipt = { event: 'host_ready_ms', ms: 1_375 };
+  assert.deepEqual(safeEvent(receipt), receipt);
+  assert.equal(severityOf('host_ready_ms').level, 'info');
+  assert.equal(safeEvent({ ...receipt, ms: -1 }), undefined);
+  assert.equal(safeEvent({ ...receipt, ms: 1.5 }), undefined);
+  assert.equal(safeEvent({ ...receipt, owner: 'synthetic' }), undefined);
+});
+
+
+test('C-START10: provider ready records host latency once, not on reconnect or the next call', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-host-ready-'));
+  try {
+    let now = 1_475;
+    const log = new HostLog(dir, undefined, { startedAt: 100, now: () => now });
+    const ready = { event: 'live_provider_ready', liveSessionId: LIVE_SESSION_ID, generation: 0, msSinceOpen: 25, closeCode: null };
+    log.event({ ...ready, msSinceOpen: -1 });
+    log.event(ready);
+    now = 9_000;
+    log.event({ ...ready, generation: 1 });
+    log.event({ ...ready, liveSessionId: '22222222-3333-4444-8555-666666666666' });
+    const rows = readFileSync(join(dir, 'logs', 'host.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const receipts = rows.filter(row => row.event === 'host_ready_ms');
+    assert.equal(receipts.length, 1);
+    assert.equal(receipts[0].ms, 1_375);
+    assert.equal(receipts[0].level, 'info');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// C-POLISH10: an open call is auditable after the fact without ever logging what the owner asked to open.
+test('C-POLISH10: an open call logs closed audit fields and never the words or the URL', () => {
+  const lines: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => { if (raw !== null && typeof raw === 'object') lines.push(raw as Record<string, unknown>) } });
+  try {
+    openAudit({ tool: 'open_web', kind: 'search', target: 'Margit Halden quarterly deck', ownerWords: 'open the Margit Halden quarterly deck', destination: 'search', code: 'opened' });
+    openAudit({ tool: 'open_web', kind: 'site', target: 'bank.example', ownerWords: 'open something else entirely', destination: 'site-root', code: 'not_owner_words' });
+    openAudit({ tool: 'open_source', kind: 'source', target: 'L3', ownerWords: 'open it', destination: 'handle', code: 'not_found' });
+  } finally { detach() }
+  const audited = lines.filter(line => line['event'] === 'open_audit');
+  assert.equal(audited.length, 3, 'one audit line per open call');
+  for (const line of audited) assert.ok(safeEvent(line), 'the closed line passes the log validator');
+  assert.deepEqual(audited[0], { event: 'open_audit', tool: 'open_web', kind: 'search', words: 4, bound: 'yes', destination: 'search', refusal: 'none' });
+  assert.deepEqual(audited[1], { event: 'open_audit', tool: 'open_web', kind: 'site', words: 1, bound: 'no', destination: 'site-root', refusal: 'not_owner_words' });
+  assert.deepEqual(audited[2], { event: 'open_audit', tool: 'open_source', kind: 'source', words: 1, bound: 'no', destination: 'handle', refusal: 'not_found' });
+  const text = JSON.stringify(lines);
+  assert.equal(/Margit|Halden|quarterly|deck|bank|L3|open something|https?:/u.test(text), false, 'no target text, handle or URL crosses the log');
+  // The closed shape is the whole guard: a caller that adds the words is refused, not redacted.
+  assert.equal(safeEvent({ event: 'open_audit', tool: 'open_web', kind: 'search', words: 4, bound: 'yes', destination: 'search', refusal: 'none', target: 'Margit' }), undefined);
+  assert.equal(safeEvent({ event: 'open_audit', tool: 'open_web', kind: 'search', words: 4, bound: 'yes', destination: 'inbox', refusal: 'none' }), undefined);
+  assert.equal(safeEvent({ event: 'open_audit', tool: 'open_web', kind: 'search', words: 4, bound: 'maybe', destination: 'search', refusal: 'none' }), undefined);
+  // C-POLISH10: each open tool resolves to its own class, so the audit never calls a file or an app a handle.
+  const family = ['open_source', 'open_home', 'open_file', 'open_app'] as const;
+  assert.deepEqual(family.map(openDestinationClass), ['handle', 'site-root', 'file', 'app'],
+    'only an item handle is audited as a handle; a home page, a file and an app are three other classes');
+  // The knowledge autopen decision is one bucket and one closed reason; an ask or a title is never a field.
+  assert.deepEqual(safeEvent({ event: 'knowledge_autopen', decision: 'skipped', bucket: 'low', reason: 'low_score' }),
+    { event: 'knowledge_autopen', decision: 'skipped', bucket: 'low', reason: 'low_score' });
+  assert.deepEqual(safeEvent({ event: 'knowledge_autopen', decision: 'opened', bucket: 'high', reason: 'none' }),
+    { event: 'knowledge_autopen', decision: 'opened', bucket: 'high', reason: 'none' });
+  assert.equal(safeEvent({ event: 'knowledge_autopen', decision: 'opened', bucket: 'high', reason: 'none', ask: 'Margit' }), undefined);
+  assert.equal(safeEvent({ event: 'knowledge_autopen', decision: 'maybe', bucket: 'high', reason: 'none' }), undefined);
 });

@@ -1,4 +1,5 @@
-import { validInsightId, VAULT_REMOTE_TOOL, type VaultSaveArgs, type VaultTransport, type VaultTransportResult } from '../../tools/vault-write.js';
+import { hostLogEvent } from '../../tools/host-events.js';
+import { validInsightId, VAULT_REMOTE_TOOL, type VaultTransportPhase, type VaultSaveArgs, type VaultTransport, type VaultTransportResult } from '../../tools/vault-write.js';
 
 /** The local lux-knowledge MCP endpoint a vault write may reach, and nothing else. */
 export interface LuxWriteEndpoint { readonly url: string; readonly token?: string }
@@ -66,6 +67,7 @@ function wordOverlap(a: string, b: string): number {
 /** One minimal MCP-over-HTTP client: initialize, initialized, then exactly one save_insight. No retry at any layer. */
 export function createLuxWriteTransport(endpoint: LuxWriteEndpoint, fetchImpl: typeof fetch = fetch): LuxWriteTransport {
   const allowed = localEndpoint(endpoint.url);
+  const phase = (value: VaultTransportPhase): void => hostLogEvent({ event: 'vault_transport', phase: value });
   const base: Record<string, string> = { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...(endpoint.token ? { authorization: `Bearer ${endpoint.token}` } : {}) };
   let session: string | undefined;
 
@@ -86,9 +88,9 @@ export function createLuxWriteTransport(endpoint: LuxWriteEndpoint, fetchImpl: t
   const initialize = async (): Promise<boolean> => {
     let init: { ok: boolean; json: unknown };
     try { init = await post({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'didi-vault-write', version: '1' } } }); }
-    catch { return false; }
-    if (!init.ok) return false;
-    try { await post({ jsonrpc: '2.0', method: 'notifications/initialized' }); } catch { return false; }
+    catch { phase('initialize_transport'); return false; }
+    if (!init.ok) { phase('initialize_http'); return false; }
+    try { const notice = await post({ jsonrpc: '2.0', method: 'notifications/initialized' }); if (!notice.ok) { phase('initialized_notify'); return false; } } catch { phase('initialized_notify'); return false; }
     return true;
   };
 
@@ -115,18 +117,22 @@ export function createLuxWriteTransport(endpoint: LuxWriteEndpoint, fetchImpl: t
       return closest;
     },
     async save(args: VaultSaveArgs): Promise<VaultTransportResult> {
-      if (!allowed || VAULT_REMOTE_TOOL !== 'save_insight') return { outcome: 'unavailable' };
+      if (!allowed || VAULT_REMOTE_TOOL !== 'save_insight') { phase('endpoint_rejected'); return { outcome: 'unavailable' }; }
       if (!(await initialize())) return { outcome: 'unavailable' };
       let call: { ok: boolean; json: unknown };
       try {
         call = await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: VAULT_REMOTE_TOOL, arguments: { content: args.content, insight_title: args.title, insight_type: args.insightType, project: args.project } } });
-      } catch { return { outcome: 'unknown' }; }
-      if (!call.ok) return { outcome: 'failed' };
-      if (!call.json || typeof call.json !== 'object' || 'error' in (call.json as Record<string, unknown>)) return { outcome: 'failed' };
+      } catch { phase('call_transport'); return { outcome: 'failed' }; }
+      if (!call.ok) { phase('call_http'); return { outcome: 'failed' }; }
+      if (!call.json || typeof call.json !== 'object' || 'error' in (call.json as Record<string, unknown>)) { phase('schema_rejected'); return { outcome: 'failed' }; }
       const payload = vaultPayload((call.json as { result?: unknown }).result);
-      if (!payload) return { outcome: 'failed' };
-      if (payload.action === 'inserted' && validInsightId(payload.insight_id)) return { outcome: 'inserted', insightId: payload.insight_id };
+      if (!payload) { phase('schema_rejected'); return { outcome: 'failed' }; }
+      // lux-knowledge returns an integer id; retain string ids from older transports.
+      const insightId = typeof payload.insight_id === 'number' && Number.isSafeInteger(payload.insight_id) && payload.insight_id > 0
+        ? String(payload.insight_id) : payload.insight_id;
+      if (payload.action === 'inserted' && validInsightId(insightId)) return { outcome: 'inserted', insightId };
       if (payload.action === 'duplicate') return { outcome: 'duplicate' };
+      phase('schema_rejected');
       return { outcome: 'failed' };
     },
   };

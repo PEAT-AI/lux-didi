@@ -9,6 +9,8 @@ import { join } from 'node:path';
 import { Store } from '../runtime/store.js';
 import { domainMigrations } from '../domain/schema.js';
 import { liveMigrations } from '../live/schema.js';
+import { createLiveSessionOwner, validateLiveProfile } from '../live/index.js';
+import { fakeLiveVoicePort } from './fixtures/fake-live-voice.js';
 import { toolsMigrations } from '../tools/schema.js';
 import { historySessionEvidence, recordHistorySession } from '../domain/history-lifecycle.js';
 import * as summaries from '../domain/summaries.js';
@@ -142,7 +144,7 @@ function seedConversation(store: Store, id: string, endedAt = SUMMARY_NOW): void
         JSON.stringify({ state: 'closed', code: 'normal' }), endedAt, endedAt, endedAt, null]);
     tx.run(`INSERT INTO live_grants (grant_id, live_session_id, provider, model, voice, key_reference, permitted_classes,
         chosen_input_class, revision, granted_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-      [`grant-${id}`, id, 'gemini', 'synthetic-live', 'voice', 'gemini-primary', JSON.stringify(['ordinary', 'private']), 'ordinary', 1, endedAt]);
+      [`grant-${id}`, id, 'gemini', 'models/live-start10-test', 'voice', 'gemini-primary', JSON.stringify(['ordinary', 'private']), 'ordinary', 1, endedAt]);
     recordHistorySession(tx, id, 'owner', ['ordinary', 'private'], [], endedAt);
     for (const text of ['one', 'two']) {
       tx.run('INSERT INTO live_journal (live_session_id, kind, text, finished, payload_bytes, arrived_at) VALUES (?,?,?,1,?,?)',
@@ -411,5 +413,88 @@ test('a refused tool reaches the distillation input by its recorded code, not by
     assert.ok(text.includes('calendar_read succeeded'), 'a completed call reads as succeeded');
     assert.ok(requests[0]!.system.includes('Tool outcomes come only from the Tool outcomes block below'));
     assert.equal(storedRow(h.store, 's-refused-tool')!.status, 'complete', 'the summary is stored');
+  } finally { h.cleanup(); }
+});
+
+// C-START10: virtual time covers the native quit interval without delaying the test host.
+test('C-START10: quit grace completes an eight-second summary and the next start does not repeat it', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-quit-grace');
+    let entered!: () => void;
+    const generating = new Promise<void>(resolve => { entered = resolve; });
+    let calls = 0;
+    const model: ModelPort = { generate: () => {
+      calls += 1; entered();
+      return new Promise(resolve => setTimeout(() => resolve(modelResult('complete', '{"skip":false,"summary":"the owner saved a synthetic note."}')), 8_000));
+    } };
+    const summarizer = worker(h.store, model, []);
+    summarizer.schedule('s-quit-grace');
+    await generating;
+    const closing = summarizer.settleOnExit();
+    t.mock.timers.tick(8_000);
+    assert.equal(await closing, 'done', 'quit grants the existing summary budget, not the old 800 ms window');
+    assert.equal(storedRow(h.store, 's-quit-grace')!.status, 'complete');
+    assert.equal(await worker(h.store, model, []).recoverAtStart(), 'done');
+    assert.equal(calls, 1, 'a durable completion is not regenerated on the next launch');
+  } finally { h.cleanup(); }
+});
+
+
+test('C-START10: an eight-second startup summary does not delay provider open past 2.5 seconds', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = summarizerFixture();
+  const fake = fakeLiveVoicePort();
+  const profile = validateLiveProfile({ provider: 'gemini', liveModelId: 'models/live-start10-test', voice: 'ExplicitVoice',
+    keyReference: 'synthetic', route: { enabled: true, provider: 'gemini', modelId: 'models/live-start10-test', dataClasses: ['ordinary', 'private'] },
+    prompt: { text: 'Synthetic system', dataClass: 'ordinary' } });
+  let elapsed = 0;
+  const owner = createLiveSessionOwner({ store: h.store, voice: fake.port, profile, now: () => SUMMARY_NOW + elapsed, timeZone: 'UTC' });
+  try {
+    seedConversation(h.store, 's-eight-second-start');
+    let entered!: () => void;
+    const generating = new Promise<void>(resolve => { entered = resolve; });
+    const model: ModelPort = { generate: () => {
+      entered();
+      return new Promise(resolve => setTimeout(() => resolve(modelResult('complete', '{"skip":false,"summary":"the owner saved a synthetic startup note."}')), 8_000));
+    } };
+    const summarizer = worker(h.store, model, []);
+    const settling = summarizer.recoverAtStart();
+    await generating;
+    elapsed = 2_000; t.mock.timers.tick(elapsed);
+    assert.equal(await settling, 'timeout');
+    const ctx = { clientId: 'synthetic', auditId: 'start-proof', authorityEpoch: h.store.authorityEpoch };
+    const session = owner.create({ idempotencyKey: 'eight-second-proof', inputClass: 'ordinary' }, ctx);
+    const attachment = owner.attach({ liveSessionId: session.liveSessionId }, ctx);
+    await attachment.ready;
+    assert.equal(fake.sessionsOpened, 1, 'the actual voice port opens while the summary is still pending');
+    assert.ok(elapsed < 2_500);
+    assert.notEqual(storedRow(h.store, 's-eight-second-start')!.status, 'complete');
+    elapsed = 8_000; t.mock.timers.tick(6_000);
+    assert.equal(await summarizer.settleOnExit(), 'done');
+    assert.equal(storedRow(h.store, 's-eight-second-start')!.status, 'complete', 'late completion is durable for the next call, not injected into this one');
+  } finally { await owner.shutdown(); h.cleanup(); }
+});
+
+test('C-START10: quit grace expires with a durable retry marker that a new host recovers', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = summarizerFixture();
+  try {
+    seedConversation(h.store, 's-quit-interrupted');
+    let entered!: () => void;
+    const generating = new Promise<void>(resolve => { entered = resolve; });
+    const stuck: ModelPort = { generate: () => { entered(); return new Promise(() => {}); } };
+    const summarizer = worker(h.store, stuck, []);
+    summarizer.schedule('s-quit-interrupted');
+    await generating;
+    const closing = summarizer.settleOnExit();
+    t.mock.timers.tick(30_000);
+    assert.equal(await closing, 'timeout', 'the grace does not wait forever for an unresponsive provider');
+    assert.equal(storedRow(h.store, 's-quit-interrupted')!.status, 'failed', 'the production pending marker is durable before dispatch');
+    const recovered = new ScriptedModel([modelResult('complete', '{"skip":false,"summary":"the owner recovered a synthetic note."}')]);
+    assert.equal(await worker(h.store, recovered, []).recoverAtStart(), 'done');
+    assert.equal(recovered.calls, 1);
+    assert.equal(storedRow(h.store, 's-quit-interrupted')!.status, 'complete');
   } finally { h.cleanup(); }
 });

@@ -399,6 +399,8 @@ export interface LogLine {
   file: string; stream: LogStream; line: number;
   at: number | null; monoMs: number | null; seq: number | null; pid: number | null;
   event: string; callId: string | null; liveSessionId: string | null;
+  /** C-LOGS11: the envelope's turn and call, so a line joins a turn and a call without a timestamp guess. */
+  turnId: string | null; callKey: string | null;
   record: Record<string, unknown>;
 }
 export interface LogFileHealth { file: string; stream: LogStream; bytes: number; lines: number; torn: number; oldestDay: string | null; newestDay: string | null }
@@ -415,7 +417,9 @@ function logLine(record: Record<string, unknown>, file: string, stream: LogStrea
   return {
     file, stream, line, at, monoMs: count(record.monoMs) ?? count(record.mono_ms),
     seq: count(record.seq) ?? count(record.source_seq), pid: count(record.pid),
-    event: String(record.event), callId: name(record.callId), liveSessionId: name(record.liveSessionId), record,
+    event: String(record.event), callId: name(record.callId), liveSessionId: name(record.liveSessionId),
+    turnId: name(record.turnId) ?? name(record.turn_id), callKey: name(record.callKey) ?? name(record.call_key),
+    record,
   };
 }
 
@@ -680,4 +684,223 @@ export function renderCallList(rows: readonly CallRow[]): string {
     lines.push(`${row.liveSessionId} ${wall(row.start)} ${seconds(row.durationMs)} ${row.tools} ${row.maxSilenceMs === null ? '-' : `${row.maxSilenceMs}ms`} ${row.terminal ?? '-'}`);
   }
   return `${lines.join('\n')}\n`;
+}
+
+// C-LOGS11: one command answers "what happened in that call". The audit joins the store's calls and turns to
+// the host log's turn and call keys, and prints a missing measurement as missing, never as zero.
+
+/** The audit's own schema number. A field added or a meaning changed bumps it, so a reader pins a shape. */
+export const CALL_AUDIT_SCHEMA_VERSION = 1;
+
+/** Why one measurement is absent. Closed, so "missing" is a reason and never a duration of zero. */
+export const AUDIT_MISSING_REASONS = ['no_owner_final', 'no_provider_audio', 'no_native_receipt'] as const;
+export type AuditMissingReason = (typeof AUDIT_MISSING_REASONS)[number];
+
+export interface AuditCallRow {
+  turnId: string | null; callKey: string; name: string;
+  executionMs: number | null; totalMs: number | null; outcome: CallOutcome; refusalCode: string | null;
+}
+export interface AuditTurnRow {
+  turnId: string; ownerFinalAt: number | null; providerFirstAudioAt: number | null; nativeFirstAudibleAt: number | null;
+  finalToProviderMs: number | null; finalToAudibleMs: number | null; missingReason: AuditMissingReason | null;
+}
+export interface AuditAggregates {
+  slowestCalls: { callKey: string; turnId: string | null; name: string; totalMs: number }[];
+  refusalsByCode: Record<string, number>;
+  turnsOver4s: number;
+  claimsWithoutCall: number;
+  deadAirEvents: number;
+}
+export interface CallAudit {
+  version: number; liveSessionId: string;
+  coverage: {
+    metadata: string | null; content: string | null; native: string | null;
+    failureCountLowerBound: number | null; lastReason: string | null;
+    unassociatedTranscriptRows: number | null; gaps: number; nativeGaps: number; tornLines: number;
+  };
+  clock: { syncs: number; firstAt: number | null; lastAt: number | null; offsetSpreadMs: number | null };
+  calls: AuditCallRow[]; turns: AuditTurnRow[]; aggregates: AuditAggregates;
+}
+export interface AuditToolLatency { count: number; p50: number | null; p90: number | null }
+export interface AuditSummary {
+  version: number; since: string; sessions: number;
+  callsPerTool: Record<string, number>;
+  latencyPerTool: Record<string, AuditToolLatency>;
+  refusalsByCode: Record<string, number>;
+  finalToAudio: AuditToolLatency;
+}
+
+const AUDIT_SLOW_LIMIT = 5;
+const AUDIT_TURN_ALERT_MS = 4_000;
+const MISSING = 'missing';
+
+/** Nearest-rank percentile over a copy, so an empty sample is null instead of a number nobody measured. */
+function percentile(values: readonly number[], p: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const rank = Math.min(sorted.length, Math.max(1, Math.ceil((p / 100) * sorted.length)));
+  return sorted[rank - 1]!;
+}
+
+function latencyOf(values: readonly number[]): AuditToolLatency {
+  return { count: values.length, p50: percentile(values, 50), p90: percentile(values, 90) };
+}
+
+/** The lines of one session, oldest first, in line order: the log is already read oldest file first. */
+function sessionLines(scan: LogScan, liveSessionId: string): LogLine[] {
+  return scan.lines.filter(line => line.liveSessionId === liveSessionId);
+}
+
+function sortedNumbers(values: readonly (number | null)[]): number[] {
+  return values.filter((value): value is number => value !== null);
+}
+
+/** One call's row: the store's own timings and outcome, and the refusal code the outcome line named. */
+function auditCallRow(call: CallView, lines: readonly LogLine[]): AuditCallRow {
+  const settled = lines.find(line => line.event === 'tool_call_outcome' && line.callKey === call.callKey);
+  const code = settled === undefined ? null : name(settled.record.refusalCode);
+  return {
+    turnId: call.turnId, callKey: call.callKey, name: call.name,
+    executionMs: call.executionMs ?? null,
+    totalMs: call.ms ?? null,
+    outcome: call.outcome,
+    // A refusal the outcome line named no code for stays null, and the table prints missing: the code is never
+    // invented, and the outcome itself is still the store's own.
+    refusalCode: code,
+  };
+}
+
+/** One owner turn's row: the log's owner final and first audio, the store's native audibility receipt. */
+function auditTurnRow(turn: TurnView, lines: readonly LogLine[]): AuditTurnRow {
+  const finals = lines.filter(line => line.event === 'owner_final' && line.turnId === turn.turnId);
+  // A split utterance writes one final per fragment; the turn's latency runs from his last word, so the last
+  // final of the turn is the anchor, and one turn still yields one row.
+  const last = finals.at(-1);
+  const ownerFinalAt = last === undefined ? null : count(last.record.ownerFinalAt) ?? last.at;
+  const firstAudio = lines.find(line => (line.event === 'live_first_audio' || line.event === 'live_answer_audio') && line.turnId === turn.turnId);
+  const providerFirstAudioAt = firstAudio?.at ?? null;
+  const nativeFirstAudibleAt = turn.firstAudibleAt;
+  const finalToProviderMs = ownerFinalAt === null || providerFirstAudioAt === null ? null : Math.max(0, providerFirstAudioAt - ownerFinalAt);
+  const finalToAudibleMs = ownerFinalAt === null || nativeFirstAudibleAt === null ? null : Math.max(0, nativeFirstAudibleAt - ownerFinalAt);
+  const missingReason: AuditMissingReason | null = ownerFinalAt === null ? 'no_owner_final'
+    : providerFirstAudioAt === null && nativeFirstAudibleAt === null ? 'no_provider_audio'
+    : nativeFirstAudibleAt === null ? 'no_native_receipt'
+    : null;
+  return { turnId: turn.turnId, ownerFinalAt, providerFirstAudioAt, nativeFirstAudibleAt, finalToProviderMs, finalToAudibleMs, missingReason };
+}
+
+/** The clock's own health: how many lines tie monoMs to wall time, and how far the offset spread. */
+function auditClock(lines: readonly LogLine[]): CallAudit['clock'] {
+  const offsets = lines.filter(line => line.event === 'clock_sync' && line.at !== null && line.monoMs !== null)
+    .map(line => line.at! - line.monoMs!);
+  const stamps = lines.filter(line => line.event === 'clock_sync' && line.at !== null).map(line => line.at!);
+  return {
+    syncs: offsets.length,
+    firstAt: stamps.length === 0 ? null : Math.min(...stamps),
+    lastAt: stamps.length === 0 ? null : Math.max(...stamps),
+    offsetSpreadMs: offsets.length === 0 ? null : Math.max(...offsets) - Math.min(...offsets),
+  };
+}
+
+/** C-LOGS11: the whole audit of one call, from the store's timeline and the day's logs. Pure. */
+export function buildCallAudit(report: TimelineReport, scan: LogScan): CallAudit {
+  const lines = sessionLines(scan, report.liveSessionId);
+  const calls = report.turns.flatMap(track => track.calls.map(call => auditCallRow(call, lines)));
+  const turns = report.turns.filter(track => track.turn.origin === 'owner').map(track => auditTurnRow(track.turn, lines));
+  const timed = calls.filter((call): call is AuditCallRow & { totalMs: number } => call.totalMs !== null);
+  const refusalsByCode: Record<string, number> = {};
+  for (const call of calls) if (call.outcome === 'refused') { const code = call.refusalCode ?? MISSING; refusalsByCode[code] = (refusalsByCode[code] ?? 0) + 1; }
+  const slowest = [...timed].sort((left, right) => right.totalMs - left.totalMs).slice(0, AUDIT_SLOW_LIMIT)
+    .map(call => ({ callKey: call.callKey, turnId: call.turnId, name: call.name, totalMs: call.totalMs }));
+  const coverage = report.coverage;
+  return {
+    version: CALL_AUDIT_SCHEMA_VERSION,
+    liveSessionId: report.liveSessionId,
+    coverage: {
+      metadata: coverage?.metadata ?? null, content: coverage?.content ?? null, native: coverage?.native ?? null,
+      failureCountLowerBound: coverage?.failureCountLowerBound ?? null, lastReason: coverage?.lastReason ?? null,
+      unassociatedTranscriptRows: coverage?.unassociatedTranscriptRows ?? null,
+      gaps: report.gaps.length, nativeGaps: report.nativeGaps.length, tornLines: scan.torn,
+    },
+    clock: auditClock(lines),
+    calls, turns,
+    aggregates: {
+      slowestCalls: slowest,
+      refusalsByCode,
+      turnsOver4s: turns.filter(turn => turn.finalToProviderMs !== null && turn.finalToProviderMs > AUDIT_TURN_ALERT_MS).length,
+      claimsWithoutCall: lines.filter(line => line.event === 'live_claim_without_call').length,
+      deadAirEvents: lines.filter(line => line.event === 'live_dead_air').length,
+    },
+  };
+}
+
+/** C-LOGS11: the same aggregates across every session with a turn since `since` (epoch ms). */
+export function buildAuditSummary(read: TraceRead, scan: LogScan, since: number): AuditSummary {
+  const sessions = read.all('SELECT DISTINCT live_session_id FROM trace_turn WHERE opened_at>=? ORDER BY live_session_id', [since])
+    .map(row => String(row['live_session_id']));
+  const callsPerTool: Record<string, number> = {};
+  const refusalsByCode: Record<string, number> = {};
+  const latencyByTool = new Map<string, number[]>();
+  const finalToAudio: number[] = [];
+  for (const liveSessionId of sessions) {
+    const audit = buildCallAudit(buildTimeline(read, liveSessionId), scan);
+    for (const call of audit.calls) {
+      callsPerTool[call.name] = (callsPerTool[call.name] ?? 0) + 1;
+      if (call.totalMs !== null) latencyByTool.set(call.name, [...(latencyByTool.get(call.name) ?? []), call.totalMs]);
+    }
+    for (const [code, seen] of Object.entries(audit.aggregates.refusalsByCode)) refusalsByCode[code] = (refusalsByCode[code] ?? 0) + seen;
+    finalToAudio.push(...sortedNumbers(audit.turns.map(turn => turn.finalToProviderMs)));
+  }
+  const latencyPerTool: Record<string, AuditToolLatency> = {};
+  for (const [tool, values] of [...latencyByTool.entries()].sort(([left], [right]) => left.localeCompare(right))) latencyPerTool[tool] = latencyOf(values);
+  return {
+    version: CALL_AUDIT_SCHEMA_VERSION, since: new Date(since).toISOString(), sessions: sessions.length,
+    callsPerTool, latencyPerTool, refusalsByCode, finalToAudio: latencyOf(finalToAudio),
+  };
+}
+
+const auditNumber = (value: number | null): string => value === null ? MISSING : String(value);
+const auditMs = (value: number | null): string => value === null ? MISSING : `${value}ms`;
+
+/** C-LOGS11: the compact table the audit prints by hand. Every absent measurement says missing. */
+export function renderCallAudit(audit: CallAudit): string {
+  const out: string[] = [];
+  out.push(`call ${audit.liveSessionId} (audit schema ${audit.version})`);
+  const c = audit.coverage;
+  out.push(`coverage metadata=${c.metadata ?? MISSING} content=${c.content ?? MISSING} native=${c.native ?? MISSING} failures>=${auditNumber(c.failureCountLowerBound)} lastReason=${c.lastReason ?? MISSING} gaps=${c.gaps} nativeGaps=${c.nativeGaps} torn=${c.tornLines}`);
+  out.push(`clock syncs=${audit.clock.syncs} first=${audit.clock.firstAt === null ? MISSING : wall(audit.clock.firstAt)} last=${audit.clock.lastAt === null ? MISSING : wall(audit.clock.lastAt)} offsetSpread=${auditMs(audit.clock.offsetSpreadMs)}`);
+  out.push('');
+  out.push('calls turn call key tool execution total outcome refusal');
+  for (const call of audit.calls) {
+    out.push(`${call.turnId ?? '-'} ${call.callKey} ${call.name} ${auditMs(call.executionMs)} ${auditMs(call.totalMs)} ${call.outcome} ${call.refusalCode ?? MISSING}`);
+  }
+  out.push('');
+  out.push('turns turn ownerFinal providerFirstAudio nativeFirstAudible finalToProvider finalToAudible missing');
+  for (const turn of audit.turns) {
+    out.push(`${turn.turnId} ${auditNumber(turn.ownerFinalAt)} ${auditNumber(turn.providerFirstAudioAt)} ${auditNumber(turn.nativeFirstAudibleAt)} ${auditMs(turn.finalToProviderMs)} ${auditMs(turn.finalToAudibleMs)} ${turn.missingReason ?? '-'}`);
+  }
+  out.push('');
+  out.push('slowest calls');
+  for (const call of audit.aggregates.slowestCalls) out.push(`${auditMs(call.totalMs)} ${call.name} ${call.callKey} turn=${call.turnId ?? '-'}`);
+  if (audit.aggregates.slowestCalls.length === 0) out.push(`none ${MISSING}`);
+  const codes = Object.entries(audit.aggregates.refusalsByCode).sort(([left], [right]) => left.localeCompare(right));
+  out.push(`refusals by code ${codes.length === 0 ? 'none' : codes.map(([code, seen]) => `${code}=${seen}`).join(' ')}`);
+  out.push(`turns over 4s final to audio ${audit.aggregates.turnsOver4s}`);
+  out.push(`announced claims with no call ${audit.aggregates.claimsWithoutCall}`);
+  out.push(`dead-air events ${audit.aggregates.deadAirEvents}`);
+  return `${out.join('\n')}\n`;
+}
+
+/** C-LOGS11: the across-sessions summary table, same missing rule. */
+export function renderAuditSummary(summary: AuditSummary): string {
+  const out: string[] = [`audit summary since ${summary.since} sessions ${summary.sessions} (schema ${summary.version})`];
+  out.push('tool calls p50 p90');
+  for (const tool of Object.keys(summary.callsPerTool).sort()) {
+    const latency = summary.latencyPerTool[tool] ?? { count: 0, p50: null, p90: null };
+    out.push(`${tool} ${summary.callsPerTool[tool]} ${auditMs(latency.p50)} ${auditMs(latency.p90)}`);
+  }
+  const codes = Object.entries(summary.refusalsByCode).sort(([left], [right]) => left.localeCompare(right));
+  out.push(`refusals by code ${codes.length === 0 ? 'none' : codes.map(([code, seen]) => `${code}=${seen}`).join(' ')}`);
+  out.push(`final to audio n=${summary.finalToAudio.count} p50=${auditMs(summary.finalToAudio.p50)} p90=${auditMs(summary.finalToAudio.p90)}`);
+  return `${out.join('\n')}\n`;
 }

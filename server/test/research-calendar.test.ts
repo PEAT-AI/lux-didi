@@ -562,7 +562,7 @@ test('L8-01: a day read carries the organizer and the true head count, never a c
     { id: 'b2', start: '2026-10-19T17:00:00Z', summary: 'Second meeting', attendees: [{ displayName: 'Robin Vale' }] }]);
   const reply = await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
   const text = JSON.stringify(reply['findings']);
-  assert.match(text, /attendees: 4 people: Robin Vale, Ari Andor, dana\.d@example\.invalid, kim\.l@example\.invalid/u, `every attendee reaches the answer: ${text}`);
+  assert.match(text, /attendees: 4 people: Robin Vale, Ari Andor, dana\.d, kim\.l/u, `every attendee reaches the answer: ${text}`);
   assert.match(text, /organizer: Wes Rowan/u, `the organizer reaches the answer: ${text}`);
   assert.equal(/\+\d+ chars/u.test(text), false, `no character count marker: ${text}`);
 });

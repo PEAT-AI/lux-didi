@@ -18,11 +18,13 @@ import { HISTORY_IDENTITY, HISTORY_PARAMETERS, validateHistory } from './history
 import { HOST_EVIDENCE, type HostEvidenceRef } from './types.js';
 import type { BoundConnection, ConnectionApplyResult, ConnectionPolicy, HttpConnectionEndpoint, ModelSnapshot, RunAcceptance, RunSnapshot, StdioConnectionEndpoint, ToolsOwner, ToolsOwnerOptions } from './types.js';
 import { REMEMBER_IDENTITY, REMEMBER_PARAMETERS, validateRemember } from './remember.js';
-import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, validateStageNote } from './lux-note.js';
+import { STAGE_FAILED_GUIDANCE, STAGE_NOTE_GUIDANCE, STAGE_NOTE_IDENTITY, STAGE_NOTE_PARAMETERS, validateStageNote } from './lux-note.js';
 import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validateVaultSave, vaultAttemptEvent, vaultReceiptJson, type VaultReceipt } from './vault-write.js';
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
-import { OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, webOwnerWords, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode } from './open.js';
+import { ALARM_NAMES, ALARM_IDENTITY, AlarmOwnerGate, parseAlarmTime, validateAlarmArguments, type AlarmArguments } from './alarm.js';
+import { OPEN_BROWSER_GUIDANCE, OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, webOwnerWords, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit, openDestinationClass, ownerTurnWords, type OpenAuditKind, type OpenFamilyTool } from './open.js';
+
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
 export type * from './types.js';
@@ -49,8 +51,20 @@ function positive(value: unknown): void { if (!Number.isSafeInteger(value) || (v
 function classSet(value: unknown): asserts value is DataClass[] {
   if (!Array.isArray(value) || new Set(value).size !== value.length || value.some(c => !classes.includes(c))) throw Error('invalid_classes');
 }
+/** C-DEPTH11: the pre-rename Google read names a durable policy may still hold, old name to current name. */
+const LEGACY_GOOGLE_READ_NAMES: Readonly<Record<string, string>> = {
+  gcal_calendars: 'calendar_list_calendars',
+  gcal_list: 'calendar_list_events',
+  gmail_list: 'gmail_search_messages',
+  gmail_read: 'gmail_read_message',
+};
+
 export function validatePolicy(input: ConnectionPolicy): ConnectionPolicy {
   const p = detached(input);
+  // C-DEPTH11 (W16-R1 F1): a stored policy may still carry the pre-rename Google read names (the app keeps
+  // gcal_ for old rows, web/src/markdown.ts:272). They are resolved to the current names here, so an upgraded
+  // owner keeps reading instead of the whole connection being refused as invalid_read_tools.
+  if (Array.isArray(p.toolNames)) p.toolNames = [...new Set(p.toolNames.map(name => typeof name === 'string' ? LEGACY_GOOGLE_READ_NAMES[name] ?? name : name))];
   exact(p, ['schemaVersion', 'ownerId', 'connectionId', 'generation', 'enabled', 'connector', 'endpoint', 'toolNames', 'schemaDigest', 'sourcePolicy', 'route', 'bounds'], ['bindingMode']);
   if (p.bindingMode !== undefined && p.bindingMode !== 'connection') throw Error('invalid_policy_binding_mode');
   if (p.schemaVersion !== 1 || typeof p.enabled !== 'boolean') throw Error('invalid_policy_version');
@@ -146,6 +160,7 @@ export function classifiedFailureEvent(input: { endpointId: string; connector: s
 
 export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveRunConnections {
   const { store, registry, port, lookupAuthority, ownerId, reportToolStatus } = options; text(ownerId);
+  const alarmGate = new AlarmOwnerGate();
   if (ownedStores.has(store)) throw Error('duplicate_store_tools_owner');
   ownedStores.add(store);
   // Failure latch is not authority: it only prevents fallback journal writes after failed persistence.
@@ -250,6 +265,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       // W7: the owner's own Trello board, a gateway tool pinned to one board on Didi's side.
       if (options.grantMode !== 'owner-trusted-reads' || !options.trello) throw Error('builtin_grant_denied');
       return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 65536 } } };
+    }
+    if (call.accountId === ALARM_IDENTITY.accountId && call.resourceId === ALARM_IDENTITY.resourceId && ALARM_NAMES.some(name => name === call.toolName)) {
+      if (options.grantMode !== 'owner-trusted-reads') throw Error('builtin_grant_denied');
+      return { connectionId: 'gateway:live-voice', policy: { sourcePolicy: { allowedClasses: ['ordinary'] }, route: { allowedClasses: ['ordinary'] }, bounds: { maxResultBytes: 4096 } } };
     }
     if (call.accountId === OPEN_IDENTITY.accountId && call.resourceId === OPEN_IDENTITY.resourceId && OPEN_TOOL_NAMES.has(call.toolName)) {
       // Host-native open tools; the native side re-checks the allowlist before anything opens.
@@ -470,6 +489,10 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
   });
   const owner: ToolsOwner & LiveRunConnections = {
     journal, resultGate, authorizeDelivery, complete, sourcePort: dispatch.port,
+    observeAlarmOwner: (session, journalId, words, at) => {
+      alarmGate.observeOwnerFinal(session, journalId, words, at);
+      if (/[\p{L}\p{N}]/u.test(words)) queueMicrotask(() => options.alarms?.ownerSpeech?.());
+    },
     releaseHistoryConversation(conversationId) { historyReader.releaseConversation(conversationId); },
     releaseEvidence(runId, bindings) {
       pruneEvidence();
@@ -614,7 +637,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       });
       // Item 1/10: the composed stage is declared to the live model only while the capability switch is
       // on, and it can never write: the host commits after its own read-back boundary and confirmation.
-      if (composedNotes) definitions.push({ ...STAGE_NOTE_IDENTITY, description: 'Stage a note composed from this conversation for the Lux vault. The host reads it back and saves it only after the owner confirms. It never saves by itself.', effect: 'write', parameters: STAGE_NOTE_PARAMETERS, validate: validateStageNote,
+      if (composedNotes !== false) definitions.push({ ...STAGE_NOTE_IDENTITY, description: STAGE_NOTE_GUIDANCE, effect: 'write', parameters: STAGE_NOTE_PARAMETERS, validate: validateStageNote,
         async execute(args, context) {
           if (context.runId !== runId || !validateStageNote(args) || context.signal.aborted) return { status: 'failed' };
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
@@ -636,7 +659,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               const snapshot = validateCallRun(tx, call);
             assertLiveIdentity(tx, call); target(snapshot, call, tx);
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
-              return complete(call, stageNote === undefined ? { staged: false, code: 'not_enabled' } : stageNote(tx, runId, args), ['ordinary'], tx);
+              return complete(call, stageNote === undefined ? { staged: false, code: 'not_enabled' } : stageNote(tx, runId, { ...args, evidenceRefs: args.evidenceRefs ?? [] }), ['ordinary'], tx);
             });
             return { status: 'completed', result };
           } catch {
@@ -671,6 +694,69 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           return { status: 'completed', result };
         },
       });
+      for (const name of ALARM_NAMES) definitions.push({
+        name, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId, effect: 'read',
+        description: `${name}: host-owned awake-Mac alarm. Mutations require the owner's fresh finalized spoken request; time is parsed from those words. Never claim a closed lid or sleeping Mac will ring.`,
+        parameters: { type: 'object', properties: { id: { type: 'string' }, fire_at_utc: { type: 'number', description: 'Optional consistency check only, UTC milliseconds.' } }, additionalProperties: false },
+        validate: validateAlarmArguments,
+        async execute(args, context) {
+          if (context.runId !== runId || !validateAlarmArguments(args) || context.signal.aborted) return { status: 'failed' as const };
+          const input = args as AlarmArguments;
+          const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
+          if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
+          let consumed: string | undefined;
+          const result = store.transaction(tx => {
+            const row = tx.get('SELECT * FROM tool_calls WHERE owner_id=? AND run_id=? AND execution_id=?', [ownerId, context.runId, context.executionId]);
+            if (!row || row.state !== 'intent') throw Error('intent_missing_or_terminal');
+            const call = storedCall(tx, row);
+            const expected = { runId: context.runId, actorId: context.actorId, authorityEpoch: context.authorityEpoch, revision: context.revision,
+              executionId: context.executionId, toolName: name, argumentsHash: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
+              ...ALARM_IDENTITY, ...(call.callId !== undefined ? { callId: call.callId } : {}) };
+            if (canonicalJSON(call) !== canonicalJSON(expected)) throw Error('executor_intent_mismatch');
+            const snapshot = validateCallRun(tx, call);
+            assertLiveIdentity(tx, call); target(snapshot, call, tx);
+            if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
+            const finish = (response: JsonObject) => complete(call as ToolCallIntent, response, ['ordinary'], tx);
+            if (name === 'list_alarms') return finish({ alarms: tx.all("SELECT id,fire_at_utc,tz,label,state FROM alarms WHERE state IN ('pending','ringing') ORDER BY fire_at_utc,id").map(alarm => ({ id: String(alarm.id), fire_at_utc: Number(alarm.fire_at_utc), tz: String(alarm.tz), label: String(alarm.label), state: String(alarm.state) })) });
+            const now = options.alarms?.now() ?? Date.now();
+            const ask = alarmGate.authorize(runId, name, now);
+            if (!ask) return finish({ status: 'refused', reason: 'owner_alarm_intent_required' });
+            if (name === 'cancel_alarm') {
+              if (!args.id || !tx.run("UPDATE alarms SET state='cancelled' WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id!, now])) return finish({ status: 'refused', reason: 'alarm_not_active' });
+              consumed = ask.journalId;
+              return finish({ status: 'cancelled', id: args.id, say: 'Alarm cancelled.' });
+            }
+            const parsed = parseAlarmTime(name === 'snooze_alarm' ? ask.words.replace(/\bfor\b/i, 'in') : ask.words, now, Intl.DateTimeFormat().resolvedOptions().timeZone, input.fire_at_utc);
+            if (parsed.status !== 'ready') return finish(parsed);
+            let alarmTz = parsed.tz;
+            if (name === 'snooze_alarm') {
+              const old = args.id ? tx.get("SELECT tz FROM alarms WHERE id=? AND (state IN ('pending','ringing') OR (state='done' AND ring_deadline_utc>?)) AND NOT EXISTS(SELECT 1 FROM alarm_snoozes WHERE alarm_id=alarms.id)", [input.id!, now]) : undefined;
+              if (!old || !args.id) return finish({ status: 'refused', reason: 'alarm_not_active' });
+              alarmTz = String(old.tz);
+              tx.run("UPDATE alarms SET state='done' WHERE id=?", [input.id!]);
+            }
+            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [context.executionId, parsed.fireAtUtc, alarmTz, '', ask.journalId]);
+            if (name === 'snooze_alarm') tx.run('INSERT INTO alarm_snoozes(alarm_id,next_alarm_id) VALUES(?,?)', [input.id!, context.executionId]);
+            consumed = ask.journalId;
+            const health = options.alarms?.health() ?? { degraded: true, reasons: ['shell_unreachable'] };
+            return finish({ status: 'set', id: context.executionId, fire_at_utc: parsed.fireAtUtc, tz: alarmTz,
+              say: parsed.confirmation + (health.degraded ? ` The alarm is set but may not ring: ${health.reasons.join(', ')}. A sleeping Mac or closed lid may prevent ringing.` : ' A sleeping Mac or closed lid may prevent ringing.'), degraded: health.degraded });
+          });
+          if (consumed) {
+            alarmGate.consume(runId, consumed);
+            if (name !== 'cancel_alarm') {
+              const alarm = store.transaction(tx => tx.get('SELECT fire_at_utc FROM alarms WHERE id=?', [context.executionId]));
+              const actualMs = options.alarms?.now() ?? Date.now();
+              if (alarm) {
+                hostLogEvent({ event: 'alarm_set', alarmId: context.executionId, scheduledMs: Number(alarm.fire_at_utc), actualMs, reason: 'owner_request' });
+                for (const reason of options.alarms?.health().reasons ?? ['shell_unreachable']) hostLogEvent({ event: 'alarm_degraded', alarmId: context.executionId, scheduledMs: Number(alarm.fire_at_utc), actualMs, reason });
+              }
+            }
+            options.alarms?.recheck();
+          }
+          return { status: 'completed' as const, result };
+        },
+      });
       // Host-native open actions: the frame goes down the local Live socket and the ack is the result.
       for (const openTool of OPEN_TOOLS) definitions.push({
         name: openTool.name, description: openTool.description, effect: 'read', accountId: OPEN_IDENTITY.accountId, resourceId: OPEN_IDENTITY.resourceId,
@@ -679,7 +765,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           if (context.runId !== runId || !validateOpen(args, openTool) || context.signal.aborted) return { status: 'failed' as const };
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
-          const resolved = openTarget(openTool.name, args, ownerWords(context.runId));
+          const resolved = openTarget(openTool.name, args, await webOwnerWords(context.runId, context.signal));
           const refused = 'target' in resolved ? undefined : resolved.code;
           const dispatched = 'target' in resolved ? resolved.target : undefined;
           // A guard refusal never reached the native side, so its receipt is the closed policy code, while the
@@ -687,6 +773,12 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const code: OpenReceiptCode = dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
           if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
           else nativeActionReceipt('open_url', code, openTool.name === 'open_home' ? 'home' : 'none');
+          // C-POLISH10: the audit line names the tool, the kind, the counted words and the class it resolved to, so a
+          // refused handle is traceable without ever logging the handle or his words.
+          openAudit({
+            tool: openTool.name, kind: openTool.name.slice('open_'.length) as OpenAuditKind,
+            target: String(args[openTool.parameter] ?? ''), ownerWords: ownerWords(context.runId), destination: openDestinationClass(openTool.name as OpenFamilyTool), code,
+          });
           // Open2: the opened ack names what opened, and only an ack of `opened` becomes a turn receipt.
           if (code === 'opened' && dispatched) noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });
           if (context.signal.aborted) return { status: 'failed' as const };
@@ -700,7 +792,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             assertLiveIdentity(tx, call); target(snapshot, call, tx);
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
             const opened = code === 'opened' && dispatched ? { code: 'opened' as const, kind: dispatched.kind, title: dispatched.title } : undefined;
-            return complete(call as ToolCallIntent, refused !== undefined ? { code: refused, guidance: OPEN_GUIDANCE[refused] } : opened ?? { code }, ['ordinary'], tx);
+            return complete(call as ToolCallIntent, refused !== undefined ? { code: refused, guidance: refused === 'not_allowed' && (openTool.name === 'open_file' || openTool.name === 'open_app') ? OPEN_BROWSER_GUIDANCE : OPEN_GUIDANCE[refused] } : opened ?? { code }, ['ordinary'], tx);
           });
           return { status: 'completed' as const, result };
         },
@@ -720,6 +812,12 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           const code: OpenReceiptCode = dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target, 'native_timeout');
           if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
           else nativeActionReceipt('open_url', code, 'web');
+          // C-POLISH10: the audit line for a web open: the kind, how many words the target was, whether his own words
+          // bound it and the class it resolved to, never the words or the address.
+          openAudit({
+            tool: OPEN_WEB_NAME, kind: args.kind, target: args.target, ownerWords: ownerTurnWords(context.runId),
+            destination: args.kind === 'maps' ? 'maps' : args.kind === 'search' ? 'search' : 'site-root', code,
+          });
           if (code === 'opened' && dispatched) noteOpened(context.runId, { kind: dispatched.kind, title: dispatched.title });
           // The refusal is the closed code plus the not-for-speech fix and the line she says; a found-only
           // case carries the domains so she asks which one he means.
@@ -770,7 +868,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           },
         });
       }
-      return definitions;
+      return definitions.filter(tool => !['remember_note', 'save_to_vault'].includes(tool.name));
     },
     definitions(runId, tx?: Transaction) {
       let lease = bodyLeases.get(runId);

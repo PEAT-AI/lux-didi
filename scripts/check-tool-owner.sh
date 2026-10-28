@@ -42,15 +42,23 @@ cp "$root/Sources/LuxDidi/NativeActions.swift" "$out/dist/test/fixtures/parity-N
 # W6: the composed-note machine and the notes exporter are pure modules beside the vault writer,
 # so their suites compile and run with the owner registry that they extend.
 cp "$root/server/test/lux-note.test.ts" "$out/source/test/"
-cp "$root/server/test/notes-export.test.ts" "$out/source/test/"
 # W5: the composed stage suite opens the real state schema, and the live migrations it needs are
-# tools-only (lux-note, vault, notes-export), so the live schema rides along without the live host.
+# tools-only (lux-note, vault), so the live schema rides along without the live host.
 mkdir -p "$out/source/live"
-cp "$root/server/live/schema.ts" "$out/source/live/"
+cp "$root/server/live/"{schema,config,types}.ts "$out/source/live/"
+cp "$root/server/host/provider-binding.ts" "$out/source/host/"
+# lux-note validates the live profile, whose config door composes the public prompt.
+mkdir -p "$out/source/prompt"
+cp "$root"/server/prompt/*.ts "$out/source/prompt/"
+cp "$root"/server/config/*.ts "$out/source/config/"
+cp "$root"/server/adapters/live-voice/*.ts "$out/source/adapters/live-voice/"
 printf '{"type":"module"}\n' > "$out/package.json"
 ln -s "$deps" "$out/node_modules"
 node "$deps/typescript/bin/tsc" --target ES2023 --module NodeNext --moduleResolution NodeNext \
   --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters \
   --skipLibCheck --types node --typeRoots "$deps/@types" --rootDir "$out/source" --outDir "$out/dist" \
-  "$out/source/test/tool-owner.test.ts" "$out/source/test/live-shape.test.ts" "$out/source/test/redact.test.ts" "$out/source/test/open-destinations.test.ts" "$out/source/test/lux-note.test.ts" "$out/source/test/notes-export.test.ts"
-node_test_files --test-timeout=15000 "$out/dist/test/tool-owner.test.js" "$out/dist/test/live-shape.test.js" "$out/dist/test/redact.test.js" "$out/dist/test/open-destinations.test.js" "$out/dist/test/lux-note.test.js" "$out/dist/test/notes-export.test.js"
+  "$out/source/test/tool-owner.test.ts" "$out/source/test/live-shape.test.ts" "$out/source/test/redact.test.ts" "$out/source/test/open-destinations.test.ts" "$out/source/test/lux-note.test.ts"
+node_test_files --test-timeout=15000 "$out/dist/test/tool-owner.test.js" "$out/dist/test/live-shape.test.js" "$out/dist/test/redact.test.js" "$out/dist/test/open-destinations.test.js" "$out/dist/test/lux-note.test.js"
+# The registry-wide gate composes the real live host, not only the staged tools unit.
+# Keep it on this existing CI path so every release exercises all registered tools.
+(cd "$root/server"; npm run build; node_test_files --test-timeout=30000 dist/test/tools-builtin-intent.test.js)

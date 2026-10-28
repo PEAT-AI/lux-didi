@@ -18,7 +18,7 @@ export const VAULT_PROJECT = 'didi-voice';
 /** Spoken guidance, never a save claim. */
 export const VAULT_SAY_SAVE_PHRASE = 'say: save this to lux, then the note';
 export const VAULT_SAY_UNKNOWN = 'I am not sure it landed, check the vault';
-export const VAULT_SAY_FAILED = 'the vault did not take the note, say it again';
+export const VAULT_SAY_FAILED = 'I could not confirm that the vault saved the note; do not retry it automatically';
 export const VAULT_SAY_UNAVAILABLE = 'the vault is not reachable right now';
 
 export type VaultCode = 'not_owner_requested' | 'write_failed' | 'outcome_unknown' | 'vault_unavailable';
@@ -30,6 +30,9 @@ export interface VaultReceipt {
   readonly insightId?: string;
   readonly guidance?: string;
 }
+
+export const VAULT_TRANSPORT_PHASES = ['initialize_http', 'initialize_transport', 'initialized_notify', 'endpoint_rejected', 'call_http', 'call_transport', 'schema_rejected'] as const;
+export type VaultTransportPhase = (typeof VAULT_TRANSPORT_PHASES)[number];
 
 export type VaultTransportResult =
   | { readonly outcome: 'inserted'; readonly insightId: string }
@@ -95,9 +98,10 @@ export function parseSaveCommand(text: string): SaveCommand | undefined {
  * row is keyed by the stage, so a second settlement of the same stage inserts nothing and dispatches
  * nothing. Everything after this point is the one dictation path: claim, dispatch, settle.
  */
-export function authorizeComposedWrite(tx: Transaction, options: { liveSessionId: string; stageId: string; content: string; title: string; now: number }): VaultClaim {
+export function authorizeComposedWrite(tx: Transaction, options: { liveSessionId: string; stageId: string; content: string; title: string; now: number; externalContextPresent?: boolean; payloadSha?: string }): VaultClaim {
   tx.run('INSERT OR IGNORE INTO vault_writes(op_id,live_session_id,utterance_id,operation,content,content_key,title,state,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
     [randomUUID(), options.liveSessionId, options.stageId, VAULT_REMOTE_TOOL, options.content, vaultContentKey(options.content), options.title, 'authorized', options.now]);
+  tx.run('UPDATE vault_writes SET external_context_present=?,candidate_digest=? WHERE live_session_id=? AND utterance_id=? AND state=\'authorized\'', [options.externalContextPresent ? 1 : 0, options.payloadSha ?? null, options.liveSessionId, options.stageId]);
   const row = tx.get('SELECT * FROM vault_writes WHERE live_session_id=? AND utterance_id=?', [options.liveSessionId, options.stageId]);
   if (!row) return { state: 'settled', receipt: refusal('outcome_unknown') };
   return claimRow(tx, row);

@@ -23,4 +23,7 @@ export const vaultMigrations: readonly SchemaMigration[] = [{
      )`,
     `CREATE INDEX vault_writes_current ON vault_writes(live_session_id, created_at)`,
   ],
-}];
+}, { owner: 'live', version: 13, statements: [
+  'ALTER TABLE vault_writes ADD COLUMN external_context_present INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE vault_writes ADD COLUMN candidate_digest TEXT',
+] }];

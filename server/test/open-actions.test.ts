@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { safeEvent } from '../host/log.js';
 import { NativeActionBus, OPEN_GUIDANCE, OPEN_RECEIPT_CODES, OPEN_WEB_GUIDANCE, OPEN_TOOLS, OPEN_TOOL_NAMES, ownerTurnWords, resolveWebOpen, useWebSearchPort, validateOpenWeb, webWords, exposeToolResults, noteModelOutput, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openParameters, openTarget, ownerWords, receiptDetail, validateOpen } from '../tools/open.js';
 import { beginHandleSession, endHandleSession, exposeHandles, noteMattermostOrigin, openDestination, resolveHandle } from '../tools/open-handles.js';
-import { shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge } from '../tools/live-shape.js';
+import { shapeDriveFile, shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge } from '../tools/live-shape.js';
 
 const RUN = 'live-open-1';
 
@@ -555,6 +555,17 @@ test('C-OPENWEB8: two matching sites open nothing and he is asked which one', as
   } finally { useWebSearchPort(undefined); }
 });
 
+test('C-OPENWEB8: exactly one matching site opens that site, so the ambiguous guard is not a search that never matches', async () => {
+  useWebSearchPort(() => port([{ title: 'Acme Seeds UK', url: 'https://acme-seeds.co.uk/about' }]));
+  try {
+    const found = await resolveWebOpen({ kind: 'site', target: 'Acme Seeds' }, 'open the homepage of Acme Seeds', signal);
+    assert.ok('target' in found, 'one match opens, where the ambiguous case opens nothing');
+    assert.equal(found.target.target, 'https://acme-seeds.co.uk/');
+    assert.equal(found.target.kind, 'web');
+    assert.equal(found.target.detail, 'web', 'the receipt names a web surface and never the address');
+  } finally { useWebSearchPort(undefined); }
+});
+
 test('C-OPENWEB8: no matching site says nothing was found, never that several matched', async () => {
   useWebSearchPort(() => port([{ title: 'Somewhere else', url: 'https://example.invalid/' }]));
   try {
@@ -587,4 +598,35 @@ test('C-OPENWEB8: the argument shape is two keys, a web kind and his words', () 
   assert.equal(validateOpenWeb({ kind: 'maps', target: '' }), false);
   assert.equal(validateOpenWeb({ kind: 'maps', target: 'Odemira', url: 'https://evil.example' }), false, 'no third key is accepted');
   assert.equal(validateOpenWeb({ target: 'Odemira' }), false);
+});
+
+// W14-R1: host URL admission and the native boundary use the same closed Gmail fragments.
+test('C-OPEN11: Gmail accepts message and thread fragments, not arbitrary fragments', () => {
+  for (const fragment of ['#all/abc123', '#inbox/abc123', '#sent/abc123', '#inbox/FMfcgzABC123']) {
+    assert.ok(openDestination(`https://mail.google.com/mail/u/0/${fragment}`), fragment);
+  }
+  for (const fragment of ['#settings', '#all/', '#all/abc/extra', '#inbox/a?redirect=evil', '#search/secret']) {
+    assert.equal(openDestination(`https://mail.google.com/mail/u/0/${fragment}`), undefined, fragment);
+  }
+});
+
+test('C-OPEN11: browser asks cannot be executed as a local file or app', () => {
+  assert.deepEqual(openTarget('open_file', { path: '~/deck.pptx' }, 'open the presentation in my browser'), { code: 'not_allowed' });
+  assert.deepEqual(openTarget('open_app', { name: 'Chrome' }, 'open economist.com in a new tab'), { code: 'not_allowed' });
+  assert.deepEqual(openTarget('open_file', { path: '~/deck.pptx' }, 'open the presentation with Chrome'), { code: 'not_allowed' });
+  assert.deepEqual(openTarget('open_app', { name: 'Economist' }, 'open the Economist'), { code: 'not_allowed' });
+  assert.ok('target' in openTarget('open_file', { path: '~/deck.pptx' }, 'open this local file'));
+  assert.ok('target' in openTarget('open_app', { name: 'Chrome' }, 'open Chrome'));
+});
+
+test('C-OPEN11: a deck link opens the browser, and a missing link mints no handle', () => {
+  const linked = shapeDriveFile({ name: 'Synthetic deck', webViewLink: 'https://drive.google.com/file/d/abc123/view' });
+  exposeHandles(linked.text);
+  const handle = linked.text.match(/open: (L[0-9]+)/)![1]!;
+  const result = openTarget('open_source', { handle }, 'open the presentation in my browser');
+  assert.ok('target' in result);
+  assert.equal(result.target.action, 'open_url');
+  assert.equal(result.target.target, 'https://drive.google.com/file/d/abc123/view');
+  const unlinked = shapeDriveFile({ name: 'Synthetic deck' });
+  assert.doesNotMatch(unlinked.text, /open: L/);
 });

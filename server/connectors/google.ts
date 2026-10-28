@@ -133,6 +133,31 @@ function requirePositiveSafeInteger(value: unknown): number {
   return value as number;
 }
 
+/**
+ * C-DEPTH11: a completed helper result that carries no envelope at all. A helper that crashed, was
+ * killed early or wrote a half message leaves an empty or non-JSON text item, and it must never read as
+ * an honest empty. Any JSON object is an envelope here; only the absence of one is the failure.
+ */
+function hasEnvelope(result: CompletedResult): boolean {
+  const text = contentText(result.decodedResult);
+  if (text === undefined || text.trim().length === 0) return false;
+  try {
+    return isRecord(JSON.parse(text));
+  } catch { return false; }
+}
+
+/**
+ * C-DEPTH11: a calendar the owner subscribed to (holidays, week numbers, contacts' birthdays) rather than
+ * owns. Google serves these as group calendars; a calendar whose entry carries no accessRole is never
+ * excluded, so a helper that omits the field cannot hide the owner's own calendar.
+ * Provenance: https://developers.google.com/workspace/calendar/api/v3/reference/calendarList#resource
+ */
+const SUBSCRIBED_CALENDAR = /@group\.v\.calendar\.google\.com$/u;
+function isOwnerCalendar(calendar: { id: string; primary: boolean; role: string }): boolean {
+  if (SUBSCRIBED_CALENDAR.test(calendar.id)) return false;
+  return calendar.role === '' || calendar.primary || calendar.role === 'owner';
+}
+
 interface Settings {
   endpointId: string; account: string; resource: string; schemaDigest: string; generation: number;
   family: GoogleFamily; maxListResults: number; readBodyChars: number; calendarReadMs: number;
@@ -196,6 +221,9 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
         : { state: 'unknown', reason: result.reason };
     }
     if (signal?.aborted) return { state: 'unknown', reason: 'cancelled-after-dispatch' };
+    // C-DEPTH11/#648: no payload at all is a failed read with the adapter's own closed code for a result it
+    // cannot use, never a completed read that reaches the model as an honest empty.
+    if (result.state === 'completed' && !hasEnvelope(result)) return { state: 'unknown', reason: 'invalid_result' };
     const evidence: GoogleEvidence = {
       state: result.state,
       tool,
@@ -249,10 +277,10 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     return isRecord(envelope) && isRecord(envelope['data']) ? envelope['data'] : {};
   }
 
-  function calendarsOf(evidence: GoogleEvidence): { id: string; name: string; primary: boolean }[] {
+  function calendarsOf(evidence: GoogleEvidence): { id: string; name: string; primary: boolean; role: string }[] {
     const list = envelopeData(evidence)['calendars'];
     if (!Array.isArray(list)) return [];
-    return list.filter(isRecord).map(entry => ({ id: typeof entry['id'] === 'string' ? entry['id'] : '', name: String(entry['summary'] ?? entry['name'] ?? 'calendar'), primary: entry['primary'] === true })).filter(entry => entry.id.length > 0);
+    return list.filter(isRecord).map(entry => ({ id: typeof entry['id'] === 'string' ? entry['id'] : '', name: String(entry['summary'] ?? entry['name'] ?? 'calendar'), primary: entry['primary'] === true, role: typeof entry['accessRole'] === 'string' ? entry['accessRole'] : '' })).filter(entry => entry.id.length > 0);
   }
 
   function eventsOf(evidence: GoogleEvidence): Record<string, unknown>[] {
@@ -297,7 +325,10 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     // is reported as unread (never silently dropped).
     const calendars = calendarsOf(listed).sort((a, b) => Number(b.primary) - Number(a.primary));
     const names = new Map(calendars.map(entry => [entry.id, entry.name]));
-    const selected = explicit ?? calendars.map(entry => entry.id);
+    // C-DEPTH11: the default read is the owner's own calendars. A subscribed holiday, week-number or
+    // contacts calendar is read only when the caller names it, because reading every subscription used up
+    // the read budget and answered a schedule question with public holidays.
+    const selected = explicit ?? calendars.filter(isOwnerCalendar).map(entry => entry.id);
     const out: (GoogleEvidence | undefined)[] = new Array(selected.length);
     let failure: GoogleResult | undefined;
     let refusal: GoogleResult | undefined;
@@ -328,6 +359,9 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
     const unread = selected.filter((_, index) => out[index] === undefined).map(id => names.get(id) ?? id);
     const merged: Record<string, unknown>[] = [];
     const seen = new Set<string>();
+    // C-DEPTH11: an older helper cannot be asked for attendees, so a served event with no attendee list is
+    // marked unrequested rather than reported as an event with nobody on it.
+    const attendeeDataRequested = Object.keys(includeArgs()).length > 0;
     for (const [index, evidence] of out.entries()) {
       const id = selected[index];
       if (evidence === undefined || id === undefined) continue;
@@ -336,7 +370,7 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
         const eventId = typeof event['id'] === 'string' ? event['id'] : '';
         if (eventId && seen.has(eventId)) continue;
         if (eventId) seen.add(eventId);
-        merged.push({ ...structuredClone(event), calendar: name });
+        merged.push({ ...structuredClone(event), calendar: name, ...(attendeeDataRequested ? {} : { attendeesUnavailable: true }) });
       }
     }
     merged.sort((a, b) => startOf(a).localeCompare(startOf(b)));

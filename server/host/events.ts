@@ -17,6 +17,13 @@ export const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'
  * W2-R1 / F3: the closed reasons a stored approval can refuse a connect, one per condition. The type is
  * the closure: a mistyped reason fails type-check at the refusal rather than silently dropping its line.
  */
+/** C-LOGS11: the closed set a tool-call outcome line may name as its refusal. A reason outside this set
+ *  is logged as `refused`, never as free text, so a reader counts refusals by code and never parses prose. */
+export type ToolRefusalCode = 'unknown_tool' | 'duplicate_call_id' | 'grant_not_permitted' | 'stale_or_revoked_authority' | 'round_deadline' | 'round_cancelled' | 'invalid_arguments' | 'no_owner_input' | 'refused';
+export const TOOL_REFUSAL_CODES: readonly ToolRefusalCode[] = ['unknown_tool', 'duplicate_call_id', 'grant_not_permitted', 'stale_or_revoked_authority', 'round_deadline', 'round_cancelled', 'invalid_arguments', 'no_owner_input', 'refused'];
+/** C-LOGS11: what one tool call settled as, on the log line as in the trace store. */
+export type ToolCallOutcome = 'completed' | 'failed' | 'refused' | 'blocked' | 'cancelled' | 'unknown';
+export const TOOL_CALL_OUTCOMES: readonly ToolCallOutcome[] = ['completed', 'failed', 'refused', 'blocked', 'cancelled', 'unknown'];
 export type ApprovalRefusalReason = 'endpoint_changed' | 'tools_widened' | 'class_tightened' | 'schema_changed' | 'row_invalid';
 export const APPROVAL_REFUSAL_REASONS: readonly ApprovalRefusalReason[] = ['endpoint_changed', 'tools_widened', 'class_tightened', 'schema_changed', 'row_invalid'];
 export const LOG_CAUSES: readonly LogCause[] = ['tool', 'provider', 'owner', 'network', 'audio', 'host', 'connector', 'config'];
@@ -64,7 +71,9 @@ const NAMED: Readonly<Record<string, Severity>> = {
 /** A degradation is a warn, an unclassified host_error is an error, and the rest is routine. */
 const FAILURE_SUFFIX = /(?:^|_)(?:failed|failure|error|rejected|refused|unavailable|dropped|lost|timeout|stalled)$/;
 
-export function severityOf(name: string): Severity {
+export function severityOf(name: string, fields?: { deadAirMs?: unknown; msSinceTool?: unknown; msSinceAudible?: unknown }): Severity {
+  if (name === 'live_dead_air' && typeof fields?.deadAirMs === 'number' && fields.deadAirMs >= 0 && fields.deadAirMs < 3000
+      && fields.msSinceTool === undefined && fields.msSinceAudible === undefined) return { level: 'info' };
   const named = NAMED[name];
   if (named) return named;
   if (FAILURE_SUFFIX.test(name)) return { level: 'warn' };
@@ -80,9 +89,11 @@ export interface LogContext {
   researchId: string | null;
   endpointId: string | null;
   attempt: number | null;
+  /** C-LOGS11: the turn the host has open, so every line inside it joins to one turn without a guess. */
+  turnId: string | null;
 }
 
-const EMPTY: LogContext = { liveSessionId: null, generation: null, runId: null, researchId: null, endpointId: null, attempt: null };
+const EMPTY: LogContext = { liveSessionId: null, generation: null, runId: null, researchId: null, endpointId: null, attempt: null, turnId: null };
 let context: LogContext = { ...EMPTY };
 
 /** Name the call the host is serving. Fields not patched keep their value, so a call patches its own ids. */
@@ -110,7 +121,7 @@ const SESSION = /^[0-9a-f-]{36}$/i;
  *  widen the allowlist, so no content and no free text crosses here. */
 export function envelopeContext(): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  const token = (key: 'liveSessionId' | 'runId' | 'researchId' | 'endpointId', pattern: RegExp): void => {
+  const token = (key: 'liveSessionId' | 'runId' | 'researchId' | 'endpointId' | 'turnId', pattern: RegExp): void => {
     const value = context[key];
     if (value !== null && pattern.test(value)) out[key] = value;
   };
@@ -118,6 +129,8 @@ export function envelopeContext(): Record<string, unknown> {
   token('runId', TOKEN);
   token('researchId', TOKEN);
   token('endpointId', TOKEN);
+  // C-LOGS11: a turn id is `<session>:t<n>`, an identifier token and never free text.
+  token('turnId', TOKEN);
   if (context.generation !== null && Number.isSafeInteger(context.generation) && context.generation >= 0) out.generation = context.generation;
   if (context.attempt !== null && Number.isSafeInteger(context.attempt) && context.attempt >= 1) out.attempt = context.attempt;
   return out;
@@ -126,4 +139,11 @@ export function envelopeContext(): Record<string, unknown> {
 /** The line that dates this process on both clocks: append adds the wall time and the monoMs. */
 export function clockSync(reason: 'host_start' | 'call_open'): { event: 'clock_sync'; reason: 'host_start' | 'call_open' } {
   return { event: 'clock_sync', reason };
+}
+
+export const ALARM_LOG_EVENTS = ['alarm_set', 'alarm_due', 'alarm_ring_started', 'alarm_acknowledged', 'alarm_missed', 'alarm_degraded'] as const;
+export const ALARM_LOG_REASONS = ['owner_request', 'due', 'recovered', 'owner_speech', 'deadline_elapsed', 'too_late', 'shell_unreachable', 'assertion_failed', 'notifications_denied', 'live_session_no_channel', 'provider_unavailable', 'local_ring'] as const;
+export type AlarmLogReason = typeof ALARM_LOG_REASONS[number];
+export interface AlarmLogEvent {
+  event: typeof ALARM_LOG_EVENTS[number]; alarmId: string; scheduledMs: number; actualMs: number; reason: AlarmLogReason;
 }

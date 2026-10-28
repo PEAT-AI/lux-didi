@@ -1,3 +1,4 @@
+import { fakeReady as readyOpenAi, FakeClock as OpenAiClock } from './openai-live-voice-fixture.js';
 import { createHash, randomUUID } from 'node:crypto';
 import * as memory from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
@@ -60,7 +61,7 @@ import { CONNECTOR_DESCRIPTORS, MATTERMOST_TOOLS } from '../connectors/index.js'
 import { bindResearchQuery, ADMISSION_BLOCK_REASONS, ADMISSION_DIRECTIVES, RESEARCH_OPERATION, RESEARCH_TOOL_NAME, ResearchAdmission, admissionBlocked, pagesCurrentRun, RESEARCH } from '../tools/research.js';
 import { buildRuntimeContext } from '../prompt/index.js';
 import { luxNoteMigrations } from '../tools/lux-note.js';
-import { notesExportMigrations } from '../tools/notes-export.js';
+import { notesExportMigrations } from '../live/schema.js';
 
 const MODEL = 'models/live-session-test';
 const NOW = 1_700_000_000_000;
@@ -2104,7 +2105,7 @@ test('Live accepts a frozen real tool snapshot and projects only result-gated Ma
   const setup = (h.f.frames[0] as { setup: { tools: { functionDeclarations: { name: string; parameters: any }[] }[] } }).setup;
   // OC1 (#228): the host-native open tools are declared beside research, remember_note and the vault write.
   // C-OPENWEB8: open_web joins them for a map, a site or a search he names.
-  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['open_app', 'open_file', 'open_home', 'open_source', 'open_web', 'remember_note', 'research', 'save_to_vault']);
+  assert.deepEqual(setup.tools[0]!.functionDeclarations.map(tool => tool.name).sort(), ['open_app', 'open_file', 'open_home', 'open_source', 'open_web', 'research', 'stage_lux_note']);
   const derived = setup.tools[0]!.functionDeclarations.find(d => d.name === 'research')!;
   assert.equal(derived.parameters.properties.question.type, 'STRING');
   const outputs = attachment.output[Symbol.asyncIterator]();
@@ -4918,10 +4919,10 @@ test('S4a-R2 (a): a write past the ceiling settles as uncertain, and a late call
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits, beforeTool: () => held });
   const { session } = await openPort(h, 'ceiling-write');
   // The note waits for the owner's transcript, so the batch is dispatched once that lands.
-  fake.emit({ type: 'inputTranscription', text: 'remember this', finished: true });
+  fake.emit({ type: 'inputTranscription', text: 'save all of this', finished: true });
   await settlePort();
   fake.emit({ type: 'toolCall', calls: [
-    { id: 'w1', name: 'remember_note', args: { text: 'synthetic note', kind: 'note' } },
+    { id: 'w1', name: 'stage_lux_note', args: { text: 'synthetic note', kind: 'note' } },
     { id: 'r1', name: 'search_knowledge', args: { query: 'x', limit: 1 } },
   ] });
   await settlePort();
@@ -4929,13 +4930,13 @@ test('S4a-R2 (a): a write past the ceiling settles as uncertain, and a late call
   assert.equal(fake.toolResponses.length, 1, 'one settlement reaches the backend');
   // A read that ran past the ceiling timed out; a write the host cannot prove is uncertain, never a plain timeout.
   assert.deepEqual(fake.toolResponses[0], [
-    { id: 'w1', name: 'remember_note', response: { error: 'outcome_uncertain' } },
+    { id: 'w1', name: 'stage_lux_note', response: { error: 'outcome_uncertain' } },
     { id: 'r1', name: 'search_knowledge', response: { error: 'timeout' } },
   ]);
   // The settlements are distinct statuses, and none of them claims the remote side stopped.
   const hits = receipts.filter(entry => entry['event'] === 'tool_ceiling_hit');
   assert.deepEqual(hits, [
-    { event: 'tool_ceiling_hit', tool: 'remember_note', ms: 12_000, outcome: 'uncertain' },
+    { event: 'tool_ceiling_hit', tool: 'stage_lux_note', ms: 12_000, outcome: 'uncertain' },
     { event: 'tool_ceiling_hit', tool: 'search_knowledge', ms: 12_000, outcome: 'timeout' },
   ]);
   // The callback lands after the settlement: it may not rewrite it or write a second output.
@@ -4944,7 +4945,7 @@ test('S4a-R2 (a): a write past the ceiling settles as uncertain, and a late call
   assert.deepEqual(receipts.filter(entry => entry['event'] === 'tool_ceiling_late').map(entry => entry['outcome']), ['completed', 'completed'],
     'a late callback is a receipt, never a second answer');
   assert.equal(fake.toolResponses.length, 1, 'a late callback never produces a second output');
-  assert.deepEqual(fake.toolResponses[0]?.[0], { id: 'w1', name: 'remember_note', response: { error: 'outcome_uncertain' } });
+  assert.deepEqual(fake.toolResponses[0]?.[0], { id: 'w1', name: 'stage_lux_note', response: { error: 'outcome_uncertain' } });
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -5245,6 +5246,35 @@ test('O1b-N: a forwarded playback receipt records native rows and a refused fram
   attachment.close();
   await attachment.done;
 });
+// C-LOGS11: the native audibility receipt is the only proof the owner could hear her, so the turn's first one
+// closes the wait from his final words. One turn logs one measurement, and a turn with no final says so.
+test('C-LOGS11: the first audible receipt logs the owner-final-to-audible wait once per turn', async t => {
+  const h = await harness(t);
+  const logged: Record<string, unknown>[] = [];
+  const detachSink = attachHostLogSink({ event: raw => { const record = raw as Record<string, unknown>; if (record['event'] === 'live_first_audible') logged.push(record); } });
+  t.after(() => detachSink());
+  const { session, attachment } = await attached(h, 'audible-latency');
+  const frame = (receipt: string, seq: number): string =>
+    JSON.stringify({ type: 'playback_receipt', receipt, segment_seq: 1, source_instance_id: 'inst-lat', source_seq: seq,
+      mono_ms: 900 + seq, wall_ms: 1_700_000_000_000 + seq });
+  // The owner's final opens the turn, so the turn's first audibility receipt has an anchor to measure from.
+  h.f.send({ serverContent: { inputTranscription: { text: 'Synthetic owner words on this call.', finished: true } } });
+  await settlePort();
+  attachment.playbackReceipt(frame('received', 1));
+  attachment.playbackReceipt(frame('audible', 2));
+  await settlePort();
+  assert.equal(logged.length, 1, 'the turn logs one measurement');
+  assert.equal(typeof logged[0]!['finalToAudibleMs'], 'number');
+  assert.equal(logged[0]!['missingReason'], null);
+  // A second segment of the same turn is not a second measurement.
+  attachment.playbackReceipt(frame('audible', 3));
+  await settlePort();
+  assert.equal(logged.length, 1);
+  assert.equal(h.owner.get(session.liveSessionId).terminal, null, 'a receipt never ends the call');
+  attachment.close();
+  await attachment.done;
+});
+
 test('S5: the orb never reads listening while a call obligation is open, whatever the adapter reports', async t => {
   const scheduler = new DeadlineClock();
   const fake = progressPort();
@@ -5458,7 +5488,9 @@ test('calendar integration: actual Google projector and Live ledger deliver ever
     assert.doesNotMatch(JSON.stringify(reply), /next-events|more-calendars/, 'opaque page tokens stay inside the host ledger');
     if (revoked) h.toolRegistry!.revoke('calendar');
     await settleLiveTool(h, 'calendar-continue', 'research', { action: 'continue', researchId: reply['researchId'] });
-    if (revoked) { assert.deepEqual(last()['findings'], []); assert.equal(last()['canContinue'], false); }
+    // C-POLISH10: a continue on a finished run is a pointer, and a source whose grant was revoked is denied at
+    // delivery before that pointer: the closed denial is the whole reply and nothing the calendar retained crosses.
+    if (revoked) assert.deepEqual(last(), { error: 'tool_result_denied' });
     else { assert.match(JSON.stringify(reply['findings']), /Synthetic event 14/, 'the whole window was already spoken'); assert.equal(last()['canContinue'], false); }
     assert.equal(h.calls.filter(call => call.name === 'calendar_list_events').length, 2, 'neither retained delivery nor denial rereads completed pages');
   }
@@ -6339,24 +6371,15 @@ test('C-TURN8: an owner-data read other than research is refused no_owner_input 
 
 // C-TURN8: a save is owner data too, so the same gate answers it before he has spoken, rather than letting
 // it reach the note or vault gates that name a different cause.
-test('C-TURN8: a save before the owner speaks is refused no_owner_input and writes nothing', async t => {
-  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-preowner-save-'));
-  const stop = captureHostDiagnostics(new HostLog(captureDir));
-  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+test('C-TURN8: legacy save before owner speech is retired and writes nothing', async t => {
   const h = await harness(t, { tools: true });
   const { session } = await attached(h, 'preowner-save');
-  const written = (): number => h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n']));
-  const before = written();
+  const before = h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n']));
   await settleLiveTool(h, 'vault-1', 'save_to_vault', { text: 'synthetic line' }, { spoke: false });
   const response = (h.f.frames[1] as { toolResponse: { functionResponses: { response: Record<string, unknown> }[] } }).toolResponse.functionResponses[0]!.response;
-  assert.deepEqual({ error: response.error, state: response.state, reason: response.reason },
-    { error: 'opener_not_fetched', state: 'refused', reason: 'no_owner_input' }, 'the save is refused with the read gate reason');
-  const gated = h.owner.current().entries.filter(entry => entry.kind === 'toolResult').at(-1);
-  assert.equal(String(gated?.tool?.markdown ?? ''), 'save_to_vault: refused (no_owner_input)', 'the model is told nothing was saved');
-  assert.equal(written(), before, 'nothing was written before he spoke');
-  const lines = readFileSync(join(captureDir, 'logs', 'host.log'), 'utf8').split('\n').filter(line => line.startsWith('{'))
-    .map(line => JSON.parse(line) as { event: string; tool?: string; reason?: string });
-  assert.deepEqual(lines.filter(line => line.event === 'live_tool_refused').map(line => [line.tool, line.reason]), [['save_to_vault', 'no_owner_input']]);
+  assert.equal(response['saved'], false);
+  assert.equal(response['code'], 'tool_retired');
+  assert.equal(h.store.transaction(tx => Number(tx.get('SELECT COUNT(*) AS n FROM entries')!['n'])), before);
   h.owner.revoke(session.liveSessionId);
 });
 
@@ -7418,4 +7441,141 @@ test('R9-W5 web query drops directory-only proper nouns, keeps conversational na
   assert.deepEqual(bindResearchQuery('cost for Cedarworks and Unrelatedname', 'what does Cedarworks cost'), { query: 'cost for Cedarworks and', dropped: 1 });
   assert.deepEqual(bindResearchQuery('news about Soraya', 'tell me about Soraya'), { query: 'news about Soraya', dropped: 0 });
   assert.deepEqual(bindResearchQuery('news about Toolsource', 'Recent tool finding: Toolsource'), { query: 'news about Toolsource', dropped: 0 });
+});
+
+test('C-AUDIO10: a long continuation survives a completed preamble and later barge-in in trace', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const session = h.owner.create({ idempotencyKey: 'audio10-long-trace', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'Explain the synthetic plan.', finished: true }));
+  fake.emit(portEvent({ type: 'outputTranscription', text: 'Okay, I am on it.', finished: true }));
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+  const parts = Array.from({ length: 90 }, (_, index) => `Synthetic second ${index}: the plan continues. `);
+  fake.emit(portEvent({ type: 'modelTurnStarted' }));
+  for (const text of parts) fake.emit(portEvent({ type: 'outputTranscription', text, finished: false }));
+  fake.emit(portEvent({ type: 'outputTranscription', text: '', finished: true }));
+  fake.emit(portEvent({ type: 'interrupted' }));
+  await settlePort();
+  const finals = h.store.transaction(tx => tx.all("SELECT text FROM trace_utterance WHERE role='model' AND final=1 ORDER BY rowid"));
+  assert.deepEqual(finals.map(row => row['text']), ['Okay, I am on it.', parts.join('').trim()]);
+  attachment.close();
+});
+
+test('C-AUDIO10: repeated start notifications do not duplicate first audio for a response', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const events: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(detach);
+  const session = h.owner.create({ idempotencyKey: 'audio10-first-audio', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  const start = (responseId: string) => portEvent({ type: 'modelTurnStarted', ...{ responseId } });
+  fake.emit(start('synthetic-response-1'));
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  fake.emit(start('synthetic-response-1'));
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  assert.equal(events.filter(row => row.event === 'live_first_audio').length, 1);
+  fake.emit(start('synthetic-response-2'));
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  assert.equal(events.filter(row => row.event === 'live_first_audio').length, 2);
+  attachment.close();
+});
+
+test('C-AUDIO10: the opening model utterance has its own assistant trace turn', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const session = h.owner.create({ idempotencyKey: 'audio10-opener-trace', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'outputTranscription', text: 'Synthetic welcome.', finished: true }));
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+  const rows = h.store.transaction(tx => tx.all("SELECT u.text, t.origin FROM trace_utterance u JOIN trace_turn t USING(turn_id) WHERE t.live_session_id=? AND u.role='model' AND u.final=1", [session.liveSessionId]));
+  assert.deepEqual(rows.map(row => [row['text'], row['origin']]), [['Synthetic welcome.', 'assistant']]);
+  attachment.close();
+});
+
+
+test('C-AUDIO10 F1: a plain turn after delegation gets fresh first-audio and dead-air receipts', async t => {
+  const clock = new OpenAiClock();
+  const adapter = await readyOpenAi(t, { clock });
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const events: Record<string, unknown>[] = [];
+  const detach = attachHostLogSink({ event: raw => events.push(raw as Record<string, unknown>) });
+  t.after(detach);
+  const session = h.owner.create({ idempotencyKey: 'audio10-delegated-plain', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  adapter.socket.deliver({ type: 'response.event', delegation_id: 'item_1', event: { type: 'response.created', response: { id: 'response_delegated' } } });
+  await settlePort();
+  const delegated = adapter.captured.events.find(event => event.type === 'modelTurnStarted');
+  assert.ok(delegated);
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'Synthetic lookup.', finished: true }));
+  fake.emit(portEvent(delegated));
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+  adapter.socket.deliver({ type: 'session.input_transcript.delta', delta: 'Synthetic plain question.' });
+  clock.advance(701);
+  await settlePort();
+  const starts = adapter.captured.events.filter(event => event.type === 'modelTurnStarted');
+  assert.equal(starts.length, 2);
+  fake.emit(portEvent({ type: 'inputTranscription', text: 'Synthetic plain question.', finished: true }));
+  fake.emit(portEvent(starts[1]!));
+  fake.emit(portEvent(audibleFrame));
+  await settlePort();
+  assert.equal(events.filter(row => row.event === 'live_first_audio').length, 2);
+  assert.equal(events.filter(row => row.event === 'live_dead_air' && 'deadAirMs' in row).length, 2);
+  assert.equal(events.filter(row => row.event === 'live_response_latency').length, 2);
+  attachment.close();
+});
+
+test('C-AUDIO10 F2: a rebuilt greeting opens a new assistant trace turn', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port });
+  const session = h.owner.create({ idempotencyKey: 'audio10-rebuilt-trace', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'outputTranscription', text: 'Synthetic first greeting.', finished: true }));
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+  fake.emit({ type: 'goAway', timeLeftMs: 1 });
+  for (let index = 0; index < 100 && fake.sessionsOpened < 2; index += 1) await tick();
+  assert.equal(fake.sessionsOpened, 2);
+  await settlePort();
+  fake.emit(portEvent({ type: 'outputTranscription', text: 'Synthetic rebuilt greeting.', finished: true }));
+  fake.emit(portEvent({ type: 'turnComplete' }));
+  await settlePort();
+  const rows = h.store.transaction(tx => tx.all("SELECT u.turn_id,u.text,t.origin FROM trace_utterance u JOIN trace_turn t USING(turn_id) WHERE t.live_session_id=? AND u.role='model' AND u.final=1 ORDER BY u.rowid", [session.liveSessionId]));
+  assert.deepEqual(rows.map(row => row['text']), ['Synthetic first greeting.', 'Synthetic rebuilt greeting.']);
+  assert.notEqual(rows[0]!['turn_id'], rows[1]!['turn_id'], 'rebuild must not attribute its greeting to the old closed turn');
+  assert.deepEqual(rows.map(row => row['origin']), ['assistant', 'assistant']);
+  attachment.close();
+});
+
+// C-POLISH10: the open audit is asserted through the real tool definition and registry, so a wrong or missing
+// call-site value cannot pass on the helper's own arguments. No native peer is bound, so the open fails and the audit
+// line is the only record of what was asked to open.
+test('C-POLISH10: an open_web call through the tool registry logs its closed audit line', async t => {
+  const receipts: Record<string, unknown>[] = [];
+  const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
+  t.after(() => sink());
+  const h = await harness(t, { tools: true, history: true });
+  await attached(h);
+  await ownerSpoke(h, 'open the Margit Halden deck');
+  await settleLiveTool(h, 'open-web-audit', 'open_web', { kind: 'search', target: 'Margit Halden deck' });
+  const frame = h.f.frames.filter(entry => typeof entry === 'object' && entry !== null && 'toolResponse' in entry).at(-1) as { toolResponse: { functionResponses: { response: unknown }[] } };
+  const audit = receipts.filter(record => record.event === 'open_audit');
+  assert.deepEqual(audit, [{ event: 'open_audit', tool: 'open_web', kind: 'search', words: 3, bound: 'yes', destination: 'search', refusal: 'failed' }],
+    `the registry audited the call: tool, kind, counted words, binding, destination class and the closed code; reply ${JSON.stringify(frame.toolResponse.functionResponses[0]!.response)}`);
+  assert.equal(/Margit|Halden|deck|https?:/u.test(JSON.stringify(audit)), false, 'the audit names no target word and no address');
 });

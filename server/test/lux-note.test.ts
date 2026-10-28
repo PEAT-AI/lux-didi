@@ -1,3 +1,4 @@
+import { liveFeatures } from '../live/config.js';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -15,7 +16,7 @@ import { runToolCalls } from '../tools/declarations.js';
 import { createToolsOwner, toolsMigrations } from '../tools/index.js';
 import type { RunAcceptance, StageNotePort } from '../tools/types.js';
 import {
-  AUTHORIZATION_MISSING_GUIDANCE,
+  AUTHORIZATION_MISSING_GUIDANCE, NoteRequestGate, NOTE_PROVENANCE, noteReadbackText, readbackMatches,
   beginStage, composedAsk, confirmAsk, CONFIRM_MAX_TOKENS, CONFIRM_WINDOW_MS, currentOwnerTurn, freezeNote, NOTE_MAX_CHARS, OWNER_WINDOW_CHARS,
   noteOwnerFragment, noteOwnerUtterance, noteReadback, noteSegmentSignal, noteSettle, stageComposedNote, STAGE_NOTE_IDENTITY,
   validateStageNote, type PlaybackSignal, type ReadbackBinding,
@@ -119,10 +120,10 @@ test('an append or edit ask is answered as unsupported, never turned into a crea
 });
 
 test('the confirm word is an exact affirmative allowlist under normalisation, at most six tokens, with disqualifiers', () => {
-  for (const text of ['yes', 'Yes.', 'yeah do it', 'correct', 'that is right', 'ok save it', 'yes, save it']) {
+  for (const text of ['yes', 'Yes.', 'yes save it', 'go ahead', 'do it', 'save this note', 'yes, save it']) {
     assert.equal(confirmAsk(text), 'affirm', text);
   }
-  for (const text of ['no', 'not yet', 'yes but change the date', 'yes wait make it fifty', 'cancel', 'no do not', 'yes cancel that', 'yes and please also add a hotel line', 'hold on']) {
+  for (const text of ['yeah do it', 'correct', 'that is right', 'ok save it', 'no', 'not yet', 'yes but change the date', 'yes wait make it fifty', 'cancel', 'no do not', 'yes cancel that', 'yes and please also add a hotel line', 'hold on']) {
     assert.equal(confirmAsk(text), 'cancel', text);
   }
   assert.equal(CONFIRM_MAX_TOKENS, 6);
@@ -130,7 +131,7 @@ test('the confirm word is an exact affirmative allowlist under normalisation, at
 
 test('the frozen payload never truncates, and an oversized title plus body is refused whole', () => {
   const over = freezeNote({ title: 'Trip', body: 'x'.repeat(NOTE_MAX_CHARS + 1) });
-  assert.deepEqual(over, { state: 'refused', code: 'payload_too_long' });
+  assert.deepEqual(over, { state: 'refused', code: 'too_long' });
   const empty = freezeNote({ title: 'Trip', body: '' });
   assert.deepEqual(empty, { state: 'refused', code: 'payload_empty' });
   const frozen = freezeNote({ title: 'Trip', body: 'Fly on the third.' });
@@ -148,21 +149,21 @@ test('a stage needs the switch, the owner grammar and evidence the host holds', 
     { state: 'refused', code: 'authorization_missing' });
   assert.deepEqual(beginStage({ stageId: 's', sessionId: 'x', now: 1, ownerText: 'save that to lux', title: 'T', body: 'B', evidence: ['journal:99'], heldEvidence: HELD, enabled: true }),
     { state: 'refused', code: 'evidence_unknown' });
-  assert.deepEqual(beginStage({ stageId: 's', sessionId: 'x', now: 1, ownerText: 'save that to lux', title: 'T', body: 'B', evidence: [], heldEvidence: HELD, enabled: true }),
-    { state: 'refused', code: 'evidence_missing' });
+  assert.equal(beginStage({ stageId: 's', sessionId: 'x', now: 1, ownerText: 'save that to lux', title: 'T', body: 'B', evidence: [], heldEvidence: HELD, enabled: true }).state,
+    'staged', 'conversation synthesis does not require the model to invent a citation');
 });
 
 test('unknown tool arguments are rejected, never coerced', () => {
   assert.equal(validateStageNote({ title: 'T', body: 'B', evidenceRefs: ['journal:1'] }), true);
   assert.equal(validateStageNote({ title: 'T', body: 'B', evidenceRefs: ['journal:1'], commit: true }), false);
-  assert.equal(validateStageNote({ title: 'T', body: 'B' }), false);
+  assert.equal(validateStageNote({ title: 'T', body: 'B' }), true, 'model citations are optional for conversation synthesis');
   assert.equal(validateStageNote({ title: 'T', body: 7, evidenceRefs: [] }), false);
   assert.equal(validateStageNote(null), false);
 });
 
 test('the lifecycle is stage, drained, affirmative, settle, commit, and nothing commits before the read-back drained', () => {
   const note = staged();
-  assert.equal(noteOwnerUtterance(note, { text: 'yes', now: 1_500 }).state, 'staged');
+  assert.equal(noteOwnerUtterance(note, { text: 'yes', now: 1_500 }).state, 'cancelled');
   const armedNote = armed();
   const settling = noteOwnerUtterance(armedNote, { text: 'yes', now: 3_000 });
   assert.equal(settling.state, 'settling');
@@ -174,8 +175,9 @@ test('the lifecycle is stage, drained, affirmative, settle, commit, and nothing 
 test('a VAD split affirmative that keeps talking never commits', () => {
   const settling = noteOwnerUtterance(armed(), { text: 'yes', now: 3_000 });
   assert.equal(settling.state, 'settling');
-  const cancelled = noteOwnerFragment(settling, 3_400);
-  assert.deepEqual({ state: cancelled.state, code: cancelled.code }, { state: 'cancelled', code: 'late_fragment' });
+  const pending = noteOwnerFragment(settling, 3_400);
+  assert.equal(noteSettle(pending, 5_000).state, 'settling', 'partial speech cannot commit');
+  const cancelled = noteOwnerUtterance(pending, { text: 'wait make it fifty', now: 3_500 });
   assert.equal(noteSettle(cancelled, 5_000).state, 'cancelled');
 });
 
@@ -189,9 +191,9 @@ test('an interrupted read-back invalidates the stage, and nothing else can reviv
 test('a confirmation after the thirty second window cancels, and a mismatch cancels with its reason', () => {
   const late = noteOwnerUtterance(armed(), { text: 'yes', now: 2_000 + CONFIRM_WINDOW_MS + 1 });
   assert.deepEqual({ state: late.state, code: late.code }, { state: 'cancelled', code: 'confirm_expired' });
-  const mismatch = noteOwnerUtterance(armed(), { text: 'no', now: 3_000 });
+  const mismatch = noteSettle(noteOwnerUtterance(armed(), { text: 'no', now: 3_000 }), 5_000);
   assert.deepEqual({ state: mismatch.state, code: mismatch.code }, { state: 'cancelled', code: 'not_affirmative' });
-  assert.equal(noteOwnerUtterance(armed(), { text: 'what time is it', now: 3_000 }).state, 'cancelled');
+  assert.equal(noteSettle(noteOwnerUtterance(armed(), { text: 'what time is it', now: 3_000 }), 5_000).state, 'cancelled');
 });
 
 test('a stage that never hears a read-back will not take a confirmation forever', () => {
@@ -452,7 +454,7 @@ test('a throwing composed stage is a bounded stage_failed result the model can s
   const outcome = await h.stageWith(() => { throw new Error('synthetic stage failure'); }, STAGE_ARGS);
   assert.equal(outcome?.status, 'completed');
   const response = h.store.transaction(tx => JSON.parse(String(tx.get('SELECT result_json FROM tool_calls')!['result_json'])) as Record<string, unknown>)['response'];
-  assert.deepEqual(response, { staged: false, code: 'stage_failed', guidance: 'The note was not staged. Tell the owner it was not saved and ask them to say it again in one sentence.' });
+  assert.deepEqual(response, { staged: false, code: 'stage_failed', guidance: 'The note was not staged or saved; explain the refusal and ask for a fresh save request.' });
   assert.equal(h.store.transaction(tx => tx.all('SELECT stage_id FROM lux_note_stages')).length, 0);
 });
 
@@ -476,4 +478,122 @@ test('a handler that throws outside its own catch writes one closed tool_handler
   const logged = lines.filter(line => line['event'] === 'tool_handler_error');
   assert.equal(logged.length, 1);
   assert.deepEqual(logged[0], { event: 'tool_handler_error', tool: 'stage_lux_note', class: 'TypeError', reason: 'handler_outcome' });
+});
+
+// C-LUXSAVE11, synthetic owner conversation only. These assertions precede the fix.
+test('C-LUXSAVE11: delayed deictic save requests authorize the conversation, qualified requests do not', () => {
+  for (const text of ['save all of this', 'store all of this in great detail', 'remember that', 'note this']) {
+    assert.deepEqual(composedAsk(text), { decision: 'grant' }, text);
+  }
+  for (const text of ['do not save all of this', 'maybe store all of this', 'if I say save all of this']) {
+    assert.notDeepEqual(composedAsk(text), { decision: 'grant' }, text);
+  }
+});
+
+test('C-LUXSAVE11 W12-R2: a 4,000-character body fits independently of the title; longer bodies refuse', () => {
+  assert.equal(freezeNote({ title: 'Synthetic synthesis', body: 'x'.repeat(4_000) }).state, 'frozen');
+  assert.equal(freezeNote({ title: 'Synthetic synthesis', body: 'x'.repeat(4_001) }).state, 'refused');
+});
+
+test('C-LUXSAVE11: paragraph boundaries survive staging so no paragraph can be hidden from readback', () => {
+  const body = 'The synthetic plan is ready. Details follow.\n\nThe second paragraph changes the budget.\n\n- The first bullet has a constraint.\n- The second bullet adds a deadline.';
+  const outcome = beginStage({ stageId: 'paragraphs', sessionId: 'synthetic', ownerText: 'save this to lux',
+    title: 'Synthetic plan', body, evidence: EVIDENCE, heldEvidence: HELD, enabled: true, now: 1 });
+  assert.equal(outcome.state, 'staged');
+  if (outcome.state === 'staged') {
+    assert.equal(outcome.note.body, body);
+    assert.equal(JSON.parse(outcome.note.payload).content, body);
+  }
+  assert.equal(beginStage({ stageId: 'empty', sessionId: 'synthetic', ownerText: 'save this to lux',
+    title: 'Synthetic plan', body: '', evidence: EVIDENCE, heldEvidence: HELD, enabled: true, now: 1 }).state, 'refused');
+});
+
+test('C-LUXSAVE11: confirmation is a closed phrase, not an arbitrary affirmative word bag', () => {
+  for (const text of ['yes', 'yes save it', 'save it', 'go ahead', 'do it', 'save this note']) {
+    assert.equal(confirmAsk(text), 'affirm', text);
+  }
+  for (const text of ['right', 'perfect', 'go', 'do', 'yes but not yet', 'yes save it no', 'yes save it after lunch']) {
+    assert.equal(confirmAsk(text), 'cancel', text);
+  }
+});
+
+
+test('C-LUXSAVE11: host request tokens merge provider splits and are single use', () => {
+  const gate = new NoteRequestGate();
+  gate.observeOwner(10, 11, 'save all');
+  gate.observeOwner(10, 12, 'of this in great detail');
+  assert.deepEqual(gate.claim(), { ownerText: 'save all of this in great detail', ownerJournalIds: [11, 12], watermark: 12 });
+  assert.equal(gate.claim(), undefined);
+  gate.observeOwner(10, 13, 'save that too');
+  assert.equal(gate.claim(), undefined, 'a consumed block cannot mint another token');
+  gate.observeOwner(20, 21, 'save this');
+  assert.equal(gate.claim()?.watermark, 21, 'a new save block can mint a token');
+});
+
+test('C-LUXSAVE11: intervening external reads, non-save blocks and disconnect revoke authority', () => {
+  for (const revoke of [(gate: NoteRequestGate) => gate.externalRead(),
+    (gate: NoteRequestGate) => gate.observeOwner(20, 21, 'what time is it'),
+    (gate: NoteRequestGate) => gate.disconnect()]) {
+    const gate = new NoteRequestGate();
+    gate.observeOwner(1, 2, 'save this');
+    revoke(gate);
+    assert.equal(gate.claim(), undefined);
+    gate.observeOwner(30, 31, 'store all of this');
+    assert.equal(gate.claim()?.watermark, 31);
+  }
+});
+
+test('C-LUXSAVE11 W12-R2: external results taint owner-only citations and every paragraph is read', () => {
+  const gate = new NoteRequestGate();
+  gate.externalResult();
+  gate.observeOwner(1, 2, 'save all of this');
+  const result = beginStage({ stageId: 'tainted', sessionId: 'synthetic', ownerText: gate.claim()!.ownerText,
+    title: 'Synthetic plan', body: 'First paragraph. More details.\n\nHidden budget change. Another sentence.\n\n- First bullet. Detail.\n- Second bullet. Detail.',
+    evidence: ['journal:11'], heldEvidence: HELD, enabled: true, now: 1, externalContextPresent: gate.externalContextPresent });
+  assert.equal(result.state, 'staged');
+  if (result.state !== 'staged') return;
+  assert.equal(result.note.externalContextPresent, true);
+  assert.ok(result.note.body.endsWith(NOTE_PROVENANCE));
+  const readback = noteReadbackText(result.note);
+  for (const line of ['Synthetic plan', NOTE_PROVENANCE, 'First paragraph.', 'Hidden budget change.', 'First bullet.', 'Second bullet.']) assert.ok(readback.includes(line), line);
+  assert.ok(!readback.includes('More details.'));
+  assert.equal(readbackMatches(readback, readback), true);
+  assert.equal(readbackMatches(readback, 'Would you like me to save something else?'), false);
+  assert.ok(noteReadbackText({ ...result.note, fullReadback: true }).includes('More details.'));
+  const clean = beginStage({ stageId: 'clean', sessionId: 'synthetic', ownerText: 'save this', title: 'Plan', body: 'Synthetic only.', evidence: [], heldEvidence: HELD, enabled: true, now: 1 });
+  assert.equal(clean.state, 'staged');
+  if (clean.state === 'staged') assert.equal(clean.note.body.includes(NOTE_PROVENANCE), false);
+});
+
+test('C-LUXSAVE11: split confirmation merges, trailing negation and early onset never commit', () => {
+  const first = noteOwnerUtterance(armed(), { text: 'yes', now: 3_000, onsetAt: 2_500 });
+  const pending = noteOwnerFragment(first, 3_100);
+  assert.equal(noteSettle(pending, 9_000).state, 'settling', 'partial speech suspends commit');
+  const second = noteOwnerUtterance(pending, { text: 'save it', now: 3_200, onsetAt: 3_100 });
+  assert.equal(noteSettle(second, 5_000).state, 'committed');
+  const negated = noteOwnerUtterance(second, { text: 'no', now: 3_400, onsetAt: 3_300 });
+  assert.equal(noteSettle(negated, 5_000).state, 'cancelled');
+  assert.equal(noteOwnerUtterance(armed(), { text: 'yes', now: 3_000, onsetAt: 1_000 }).state, 'cancelled');
+});
+
+
+test('C-LUXSAVE11 W12-R5: absent composedNotes defaults on, explicit owner false stays off', () => {
+  assert.equal(liveFeatures(undefined).composedNotes, true);
+  assert.equal(liveFeatures({}).composedNotes, true);
+  assert.equal(liveFeatures({ notesExport: false }).composedNotes, true);
+  assert.equal(liveFeatures({ composedNotes: false }).composedNotes, false);
+  assert.equal(liveFeatures({ composedNotes: true }).composedNotes, true);
+});
+
+
+test('C-LUXSAVE11 W12-R2: host provenance does not consume the model body allowance', () => {
+  const result = beginStage({ stageId: 'tainted-limit', sessionId: 'synthetic', ownerText: 'save all of this',
+    title: 'Synthetic', body: 'x'.repeat(4_000), evidence: [], heldEvidence: HELD, enabled: true, now: 1, externalContextPresent: true });
+  assert.equal(result.state, 'staged');
+  if (result.state === 'staged') {
+    assert.equal(result.note.body, `${'x'.repeat(4_000)}\n\n${NOTE_PROVENANCE}`);
+    assert.equal(freezeNote({ title: result.note.title, body: result.note.body, externalContextPresent: true }).state, 'frozen');
+  }
+  assert.equal(beginStage({ stageId: 'tainted-over', sessionId: 'synthetic', ownerText: 'save this',
+    title: 'Synthetic', body: 'x'.repeat(4_001), evidence: [], heldEvidence: HELD, enabled: true, now: 1, externalContextPresent: true }).state, 'refused');
 });

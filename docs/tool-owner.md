@@ -32,11 +32,11 @@ One clear result can be opened. Ambiguous Drive matches require clarification an
 
 ## Local memory and Lux notes
 
-Local `remember_note` capture creates a Didi memory, not a remote source edit. Recall selects authorized stored records rather than every transcript ever seen; [selected-memory.md](selected-memory.md) owns that selection.
+Existing local memories remain available for recall; [selected-memory.md](selected-memory.md) owns that selection. The live model no longer receives `remember_note` or `save_to_vault`; direct calls are refused with `tool_retired`, never redirected to a local fallback.
 
-`VAULT_WRITE_IDENTITY` in `server/tools/vault-write.ts` identifies `save_to_vault`, the owner-requested dictated-note flow. It is not permission to rewrite, delete or update arbitrary knowledge records.
+`STAGE_NOTE_IDENTITY` in `server/tools/lux-note.ts` identifies the single live save path, `stage_lux_note`. `liveFeatures` defaults `composedNotes` on, preserving an explicit owner false. Its generated declaration owns save guidance; the persona and runtime context do not duplicate it. The model supplies title, body (up to 4,000 characters, paragraphs preserved) and optional evidence refs. It cannot authorize itself by quoting an owner request.
 
-`STAGE_NOTE_IDENTITY` in `server/tools/lux-note.ts` identifies `stage_lux_note`, the composed-note flow. It is advertised only when `liveFeatures` enables `composedNotes`, which defaults off. The host stages the note, reads it back and waits for fresh owner confirmation; staging itself is not saving. Interruption, expiry and unknown outcomes must remain visible. [Privacy and authority](privacy-and-authority.md) owns these gates.
+The host consumes a single-use owner-request token, freezes the candidate and returns the readback in the function/tool output, never a user-role item. Confirmation arms only after matching spoken output and native playback end. A new owner confirmation must start after that boundary and settle without a trailing negation. A confirmed candidate uses `VaultWriter` and the Lux `save_insight` transport under project `didi-voice`; only a returned insight ID permits a saved claim. Over-cap notes receive `too_long` and an offer to split. Interruption, expiry, unavailable transport and uncertain outcomes are not saves and never fall back locally. [Privacy and authority](privacy-and-authority.md) owns these gates.
 
 ## The Trello board (W7)
 
@@ -50,6 +50,19 @@ Only the configured board is in scope. A list or card reference does not authori
 
 A due date can support the owner's Trello notification workflow; it is not a promise that Naya can call back. Setup and browser consent belong in [mcp-configuration.md](mcp-configuration.md).
 
+## Calendar reads and who is in the meeting (C-DEPTH11)
+
+The Google calendar read is one merged window over the calendars the accepted grant covers (`createGoogleReader` in `server/connectors/google.ts`).
+
+- The default read selects the owner's own calendars: the primary one and the ones whose `accessRole` is `owner`. A calendar entry with no `accessRole` at all is still selected, so a helper that omits the field never hides the owner's own calendar.
+- A subscribed group calendar (holidays, week numbers, contacts' birthdays, ids ending in `@group.v.calendar.google.com`) is read only when the ask names it in `calendarIds` or `calendarId`. Reading every subscription spent the 40 s read window and answered a schedule question with public holidays.
+- The attendee projection requests `include: ['attendees', 'organizer']` only when the accepted helper advertises that property; an older helper is never sent an argument it does not declare.
+- Each attendee reaches the model as its display name, else the local part of its address, with its `responseStatus` (`accepted`, `declined`, `tentative`, `not answered`) and an `organizer` mark. One event line names at most eight people and counts the rest.
+- An event with no attendee list says `attendees: none listed for this event`. An event whose helper could not be asked for attendees says `attendees: not available from this source`. Neither ever reads as an invite that hides its guests, and the prompt says who is in the meeting comes only from that line.
+- A completed helper result with no JSON envelope at all is the adapter's closed failure code `invalid_result`, spoken as the helper returning no result, kept apart from a search that matched nothing. An honest empty names the query it ran.
+
+Field provenance: `calendarList.accessRole` and `primary` in the Calendar API v3 calendarList resource, and `attendees[].responseStatus` plus `organizer` in the events resource.
+
 ## Text and Live share the owner
 
 Text consumes the host's tools through `ChatToolsComposition`; Live consumes its accepted definitions through the Live composition boundary. Do not create a second connection registry or approve tools in a renderer to work around a missing host grant. [Text chat](text-chat.md) and [live-call.md](live-call.md) own their lifecycle differences.
@@ -57,3 +70,24 @@ Text consumes the host's tools through `ChatToolsComposition`; Live consumes its
 ## Verification
 
 Use [checks.md](checks.md) for tool, connector, prompt and native check routing. Test remote effects with fakes and receipt assertions, never real accounts. [Diagnostic store](diagnostic-store.md) explains canonical tool and source records without mistaking a bounded model projection for complete source content.
+## Open destinations
+
+All five open tools acquire the owner's current intent through the same bounded finalization wait. Only merged finalized owner words authorize a native action; a partial transcript alone is not permission. The public prompt generates one usage line per open tool from its owning definition.
+
+A browser, tab, Chrome or link request means a web page. Use a shown `open_source` handle for an email, calendar event or Drive/Docs/Slides item with a web link. Use `open_web` for a domain or site name, including a request for a new tab. Do not substitute `open_file` or `open_app` for a web page. Those tools are for local files and installed applications, respectively.
+
+A held lookup result without a web link has no open handle. Say in one sentence that there is no web link and offer the app home page or a web search. Never invent a handle, URL or successful open. An open is done only when the native acknowledgement returns `opened`.
+
+Gmail web destinations admit the account home or an `all`, `inbox` or `sent` fragment followed by one message/thread identifier. The shared host policy and Swift native policy reject other Gmail fragments. Calendar event, Docs/Slides and Drive viewer links retain their existing narrow HTTPS shapes.
+
+Legacy local facts and preferences remain available for recall, but closing a live session never exports them to Lux. The legacy notesExport setting cannot authorize a write; saving any such content requires the same fresh stage_lux_note candidate, readback and confirmation as every other live save.
+
+## Awake-Mac alarm tools
+
+`set_alarm`, `list_alarms`, `cancel_alarm` and `snooze_alarm` are host-owned Live builtins under `gateway:live-voice` / `owner-alarms`. They participate in the exact stored-intent checks, rather than bypassing the registry. Mutation authority is separately derived from fresh finalized microphone transcription, never model arguments, typed text, host notes or alarm prompts. Split asks may span two finalized owner turns; the latest must still continue the alarm request.
+
+The host parses time in its system IANA zone and commits a fixed UTC instant. Set and snooze return confirmation only with the durable tool receipt; snooze and old-occurrence completion share that transaction. Model timestamps are consistency checks, not write authority. Local scheduling and ringing do not depend on provider availability.
+
+Per W11-R5, a new alarm session carries only alarm instructions, owner display name and scheduled time in non-user setup instructions. An already-live session receives no injected text or rebuild: local chime and menu state continue, with `live_session_no_channel` degradation until owner speech acknowledges it. The generic host-note prefix is not a non-user provider channel and is not used for alarm speech.
+
+These are awake-Mac alarms: closed lids, manual sleep, shutdown and unavailable local services may prevent ringing. A denied notification, failed idle-sleep assertion or unreachable shell is disclosed in the committed receipt. See [voice alarms](alarm.md) for storage, recovery, diagnostics and synthetic verification.

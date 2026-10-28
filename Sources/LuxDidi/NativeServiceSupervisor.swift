@@ -18,6 +18,20 @@ enum NativeProbeFailure: String, Error {
     }
 }
 
+// The owned child uses this escalation policy; virtual sleep keeps lifecycle proofs deterministic.
+@MainActor enum NativeServiceStop {
+    static func escalate(graceNanoseconds: UInt64 = 30_000_000_000, sleep: (UInt64) async throws -> Void,
+                         isRunning: () -> Bool, terminate: () -> Void, forceKill: () -> Void) async throws {
+        // Match the host summary deadline: stdin closure starts graceful completion, not termination.
+        // A child that exits sooner cancels this task; only an unresponsive child reaches escalation.
+        try await sleep(graceNanoseconds)
+        guard isRunning() else { return }
+        terminate()
+        try await sleep(500_000_000)
+        if isRunning() { forceKill() }
+    }
+}
+
 // One process handle and private pipes. All signals target this live owned handle only.
 @MainActor private final class OwnedServiceChild {
     let process = Process()
@@ -116,16 +130,18 @@ enum NativeProbeFailure: String, Error {
         defer { deadline.cancel() }
         return try await withCheckedThrowingContinuation { frameWaiter = $0 }
     }
-    func stop() async {
+    func stop(graceNanoseconds: UInt64 = 500_000_000) async {
         stopping = true; closeInput()
         let escalation = Task { [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: 500_000_000)
-                guard let self else { return }
-                if self.isRunning { self.process.terminate() }
-                try await Task.sleep(nanoseconds: 500_000_000)
-                if self.isRunning && self.pid > 0 { _ = kill(self.pid, SIGKILL) }
-            } catch {}
+            try? await NativeServiceStop.escalate(
+                graceNanoseconds: graceNanoseconds,
+                sleep: { try await Task.sleep(nanoseconds: $0) },
+                isRunning: { self?.isRunning == true },
+                terminate: { self?.process.terminate() },
+                forceKill: {
+                    guard let self, self.isRunning && self.pid > 0 else { return }
+                    _ = kill(self.pid, SIGKILL)
+                })
         }
         await withCheckedContinuation { continuation in
             if !isRunning { continuation.resume() } else { exitWaiters.append(continuation) }
@@ -233,6 +249,7 @@ struct OwnedServiceConnection {
     init(runtime: InstalledRuntime, proofState: URL, proofCredentialService: String) {
         self.runtime = runtime; operatorSettings = nil; stateURL = proofState; credentialService = proofCredentialService; credentialAccount = runtime.installId
     }
+    var shutdownGraceForProof: UInt64?
     func closeLivenessForProof() { child?.closeInput() }
     #endif
     func isCurrent(_ candidate: OwnedServiceConnection) -> Bool {
@@ -458,6 +475,10 @@ struct OwnedServiceConnection {
         wakeObserver = nil
         operation = nil; state = .stopped; connection = nil
         onEnd?(reason, [:])
-        if let child { await child.stop(); observeStop(child); self.child = nil }
+        var grace: UInt64 = (reason == .shutdown || reason == .appQuit) ? 30_000_000_000 : 500_000_000
+        #if COMPANION_TEST
+        if let proofGrace = shutdownGraceForProof { grace = proofGrace }
+        #endif
+        if let child { await child.stop(graceNanoseconds: grace); observeStop(child); self.child = nil }
     }
 }

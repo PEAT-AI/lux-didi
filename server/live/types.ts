@@ -129,7 +129,8 @@ export interface LiveOwnerConfig {
 }
 
 export interface LiveContext { readonly clientId: string; readonly auditId: string; readonly authorityEpoch: string }
-export interface CreateLiveSession { readonly idempotencyKey: string; readonly inputClass: DataClass; readonly pickupJobId?: string }
+export interface AlarmSessionSetup { readonly ownerDisplayName: string; readonly scheduledTime: string }
+export interface CreateLiveSession { readonly idempotencyKey: string; readonly inputClass: DataClass; readonly pickupJobId?: string; readonly alarm?: AlarmSessionSetup }
 
 export interface LiveGrantSnapshot {
   grantId: string; provider: LiveProvider; model: string; voice: string; keyReference: string;

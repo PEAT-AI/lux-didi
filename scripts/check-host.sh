@@ -15,13 +15,23 @@ if [ -n "$console_log" ]; then
 fi
 # Exercise the documented build producer, using the current compiler layout.
 bash scripts/run-local.sh --build-only
+# Compile the complete shell, including its idle alarm subscription, without launching it.
+if [ "$(uname -s)" = Darwin ]; then
+  (
+    native_work=$(mktemp -d "${TMPDIR:-/tmp}/didi-alarm-build.XXXXXX")
+    trap 'rm -rf "$native_work"' EXIT
+    bash scripts/build-macos-app.sh "$native_work/LuxDidi.app" --cache "$native_work/cache"
+  )
+fi
+# Exercise the discovered installed alarm check against its offline staged package.
+bash scripts/check-installed-alarm.sh
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
-for file in server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-stdout.test.js server/dist/test/connector-publication.test.js server/dist/test/host-log.test.js server/dist/test/log-envelope.test.js server/dist/test/trello-board.test.js server/dist/test/connector-recovery.test.js server/dist/test/trello-guidance.test.js; do
+for file in server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-stdout.test.js server/dist/test/connector-publication.test.js server/dist/test/host-log.test.js server/dist/test/log-envelope.test.js server/dist/test/trello-board.test.js server/dist/test/connector-recovery.test.js server/dist/test/trello-guidance.test.js server/dist/test/wire-envelope.test.js server/dist/test/open-actions.test.js server/dist/test/tools-builtin-intent.test.js; do
   test -s "$file" || { echo "Missing selected test: $file" >&2; exit 1; }
 done
 http_status=0
-node_test_files --test-reporter=tap --test-timeout=15000 server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-stdout.test.js server/dist/test/connector-publication.test.js server/dist/test/host-log.test.js server/dist/test/log-envelope.test.js server/dist/test/trello-board.test.js server/dist/test/connector-recovery.test.js server/dist/test/trello-guidance.test.js | tee "$log" || http_status=$?
+node_test_files --test-reporter=tap --test-timeout=15000 server/dist/test/host.test.js server/dist/test/http.test.js server/dist/test/host-stdout.test.js server/dist/test/connector-publication.test.js server/dist/test/host-log.test.js server/dist/test/log-envelope.test.js server/dist/test/trello-board.test.js server/dist/test/connector-recovery.test.js server/dist/test/trello-guidance.test.js server/dist/test/wire-envelope.test.js server/dist/test/open-actions.test.js server/dist/test/tools-builtin-intent.test.js | tee "$log" || http_status=$?
 grep -Eq '^# tests [1-9][0-9]*$' "$log" || { echo 'Zero selected tests' >&2; exit 1; }
 # The CLI sign-in (--mongoose-login) on the built host, against the live discovery shape.
 node server/test/mongoose-login.integration.mjs || http_status=$?

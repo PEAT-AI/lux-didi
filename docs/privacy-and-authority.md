@@ -26,13 +26,19 @@ Tool arguments and results are untrusted. A document, email or model answer cann
 | --- | --- |
 | Local memory | A local record, not a write to its original external source; inspect it in Memory |
 | Dictated Lux note | The owner asks in his own words, "save this to lux", "put that in my knowledge", "remember this in lux" or "save to my vault"; a bare ask saves the turn he spoke just before it; `server/tools/vault-write.ts` owns this flow |
-| Composed Lux note | Explicitly enabled, staged, read back and confirmed before creation; `server/tools/lux-note.ts` owns the state machine |
+| Composed Lux note | Default enabled, host-authorized, staged, read back and freshly confirmed before creation; `server/tools/lux-note.ts` owns the state machine |
 | Trello card change | An owner-requested action on the privately pinned board; `server/tools/trello.ts` owns the exposed actions |
 | Native open | An allowed native action, not arbitrary application automation; `server/tools/open.ts` and `Sources/LuxDidi/NativeActions.swift` own it |
 
-Composed notes default **off**: `liveFeatures` in `server/live/config.ts` returns `composedNotes: false` unless enabled. `STAGE_NOTE_IDENTITY` identifies `stage_lux_note`; staging alone does not save. `noteOwnerUtterance` and `noteOwnerFragment` handle confirmation and interruption, rather than treating any earlier "yes" in a conversation as authorization.
+Composed notes default **on** in `liveFeatures` in `server/live/config.ts`; an explicit `composedNotes: false` disables them. `STAGE_NOTE_IDENTITY` identifies the only live save declaration, `stage_lux_note`. Staging alone never saves. A host-owned request token binds the owner journal IDs and watermark, merges provider-split requests and is single use. Intervening non-save owner speech, an external read or disconnect invalidates it; model-authored quotes cannot mint it.
 
-A dictated save is one remote tool, `save_insight` under project `didi-voice`, reached only through the vault write transport; the connector read envelope never names a write. Each save attempt writes exactly one `vault_write` host log line carrying its outcome (`confirmed`, `failed`, `uncertain`, `unavailable`) and closed code, and never the note text.
+The readback is carried by the stage function/tool result on Gemini and OpenAI, never a user-role item. Its title and first sentence from each paragraph are frozen by the host. `read it all` requires a complete readback and a new playback boundary. Transcript overlap must reach 0.9 and native playback must end before confirmation arms. `noteOwnerUtterance` preserves the first fragment's onset; an earlier “yes” cannot become consent when its final fragment arrives later. `noteOwnerFragment` suspends settlement, so split “yes ... no” never commits. Only the closed affirmative phrases settle positively; revisions require a new note.
+
+Any external result entering the session taints the candidate independently of model citations. `external_context_present` is host-local on candidate and receipt rows, not an outbound API parameter. When set, the host reads the provenance sentence before confirmation and appends this final line to the stored body: `Provenance: this note includes content from mail, web or chat read in that session.` The 4,000-character model body allowance is separate from this fixed host line.
+
+A receipt binds the candidate digest and ID. Uncertain dispatch is not retried automatically, preventing duplicate inserts after a crash. A successful reply needs a real insight ID and names the saved title. Transport failures speak `vault_unavailable` or `write_failed`; metadata-only host logs classify `initialize_http`, `initialize_transport`, `initialized_notify`, `endpoint_rejected`, `call_http`, `call_transport` and `schema_rejected`. They never log note bodies or arbitrary payload fields.
+
+A confirmed live save uses one remote tool, `save_insight` under project `didi-voice`, reached only through the vault write transport; the connector read envelope never names a write. Each save attempt writes exactly one `vault_write` host log line carrying its outcome (`confirmed`, `failed`, `uncertain`, `unavailable`) and closed code, and never the note text.
 
 Trello's `TRELLO_WRITE_ACTIONS` is a closed surface. The board pin is configured privately through `TRELLO_BOARD_FILE` in `server/host/trello.ts`. Do not publish its real name or infer board administration, member changes or permanent deletion from the fact that card writes are available. Already granted card actions do not use the composed-note confirmation flow. Unknown write outcomes must remain unknown, not be retried as if nothing happened.
 
@@ -59,3 +65,5 @@ Never publish real credentials, private profiles, board names, account content, 
 ## Honest limits
 
 Same-user process separation is not an operating-system sandbox. Data-class enforcement is routing policy, not perfect sensitivity detection. Prompt-injection immunity, forensic erasure, guaranteed notification delivery and universal provider availability are not claimed. Future policy belongs in [roadmap.md](roadmap.md), not in descriptions of the installed release.
+
+Legacy local facts and preferences remain available for recall, but closing a live session never exports them to Lux. The legacy notesExport setting cannot authorize a write; saving any such content requires the same fresh stage_lux_note candidate, readback and confirmation as every other live save.

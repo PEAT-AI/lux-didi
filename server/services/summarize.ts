@@ -37,10 +37,10 @@ export const SUMMARY_DEADLINE_BUDGET_MS = 30_000;
  *  bound is the 2 s left over rather than the 30 s a model attempt may take. On expiry the opener
  *  plans without that call and the distillation finishes in the background. */
 export const SUMMARY_START_SETTLE_BUDGET_MS = 2_000;
-/** C-SUMMARY8: how long a non-forced exit waits for the summary the call just queued. The supervisor
- *  sends SIGTERM 500 ms and SIGKILL 1000 ms after it starts a native-initiated stop, so anything
- *  longer is a wait the process would not survive; the next start finishes what this leaves. */
-export const SUMMARY_EXIT_SETTLE_BUDGET_MS = 800;
+/** C-START10: a graceful host exit grants the pending summary its existing model budget.
+ *  A forced supervisor kill can still interrupt it; the durable pending row is recovered at start
+ *  without extending the start settle budget. */
+export const SUMMARY_EXIT_SETTLE_BUDGET_MS = SUMMARY_DEADLINE_BUDGET_MS;
 /** The newest retryable sessions a single host start re-queues; older ones wait for a later start. */
 export const SUMMARY_RECOVERY_LIMIT = 30;
 export const SUMMARY_MIN_OWNER_TURNS = 2;

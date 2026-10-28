@@ -75,11 +75,9 @@ export function connectorStateLine(connectors: readonly ConnectorStateInput[]): 
 }
 
 /** The exact vault-write capability fact, so no answer blames a connector for a write that is off. */
-export function vaultCapabilityLine(vault: { readonly dictation: boolean; readonly composed: boolean }): string | undefined {
-  if (!vault.dictation) return undefined;
-  return vault.composed
-    ? 'Vault: Naya saves exactly the note the owner dictates, and a note composed from the conversation only when he asks and confirms the read-back.'
-    : 'Vault: Naya saves exactly the note the owner dictates; composed notes are switched off.';
+export function vaultCapabilityLine(_vault: { readonly dictation: boolean; readonly composed: boolean }): string | undefined {
+  // Save guidance belongs solely to the live tool registry, not a second prompt capability claim.
+  return undefined;
 }
 
 const shortWeekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;

@@ -35,6 +35,7 @@ export interface LiveSelectionResult {
 }
 /** The one operator-facing Live surface. Implemented by the host composition, never by a browser. */
 export interface LiveService {
+  createAlarm?(input: import('../live/types.js').AlarmSessionSetup, idempotencyKey: string, context: LiveContext): LiveSessionSnapshot;
   /** Persist a provider and voice choice into live.json. Absent when the service cannot write configuration. */
   saveSelection?(input: { provider: unknown; voice?: unknown; accent?: unknown }): LiveSelectionResult;
   current(cursor?: number): import('../live/types.js').LivePageProjection;

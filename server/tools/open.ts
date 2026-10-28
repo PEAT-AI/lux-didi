@@ -26,13 +26,15 @@ export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent
 export interface NativeActionFrame { type: 'native_action'; id: string; action: NativeAction; target: string; origin?: string }
 export interface NativeActionResult { type: 'native_action_result'; id: string; ok: boolean; code: NativeActionCode }
 
+export const OPEN_BROWSER_GUIDANCE = 'For a browser, tab, Chrome or link request, use open_source with a shown web handle or open_web for a site, never open_file or open_app. If a held result has no web link, say so and offer the home page or a web search in one sentence.';
+
 const OPEN_ONLY = 'These tools only open things: they never type, click, send or change anything.';
 
-export const OPEN_TOOLS: readonly { name: string; description: string; parameter: string; pattern: RegExp }[] = [
-  { name: 'open_source', description: `Open one item the owner named, using the handle its lookup result carried in a line starting "open:". ${OPEN_ONLY}`, parameter: 'handle', pattern: /^L[0-9]{1,4}$/ },
-  { name: 'open_home', description: `Open the home page of Gmail, Google Calendar or Mattermost. ${OPEN_ONLY}`, parameter: 'app', pattern: /^(gmail|calendar|mattermost)$/ },
-  { name: 'open_file', description: `Open an existing file or folder inside the owner's home folder with its default app. ${OPEN_ONLY}`, parameter: 'path', pattern: /^\/|^~/ },
-  { name: 'open_app', description: `Open an installed application by name. ${OPEN_ONLY}`, parameter: 'name', pattern: /^\S(?:.*\S)?$/ },
+export const OPEN_TOOLS: readonly { name: string; description: string; guidance: string; parameter: string; pattern: RegExp }[] = [
+  { name: 'open_source', guidance: 'shown handle', description: `Open one item the owner named, using the handle its lookup result carried in a line starting "open:". ${OPEN_ONLY}`, parameter: 'handle', pattern: /^L[0-9]{1,4}$/ },
+  { name: 'open_home', guidance: 'app home', description: `Open the home page of Gmail, Google Calendar or Mattermost. ${OPEN_ONLY}`, parameter: 'app', pattern: /^(gmail|calendar|mattermost)$/ },
+  { name: 'open_file', guidance: 'local path', description: `Only for an explicitly local file request, never a browser, tab or link request: open an existing file or folder inside the owner's home folder with its default app. ${OPEN_ONLY}`, parameter: 'path', pattern: /^\/|^~/ },
+  { name: 'open_app', guidance: 'app name', description: `Only launch an installed application by name; never use this for a domain or site name, or to open a page in a browser. ${OPEN_ONLY}`, parameter: 'name', pattern: /^\S(?:.*\S)?$/ },
 ];
 
 export function openParameters(tool: (typeof OPEN_TOOLS)[number]): Record<string, unknown> {
@@ -63,6 +65,42 @@ export function receiptDetail(action: NativeAction, target: string): string {
 /** The one receipt the host writes per action: action, code and a scheme or extension, never the target. */
 export function nativeActionReceipt(action: NativeAction, code: OpenReceiptCode, detail: string): void {
   hostLogEvent({ event: 'native_action', action, code, detail: /^[a-z0-9]{1,16}$/.test(detail) ? detail : 'none' });
+}
+
+/** C-POLISH10: the closed classes an open call resolves to, so a failed open is auditable without its words. */
+export type OpenDestinationClass = 'maps' | 'search' | 'site-root' | 'handle' | 'file' | 'app';
+/** C-POLISH10: what the call was asked to open, as a kind, so the audit names the shape and not the words. */
+export type OpenAuditKind = 'maps' | 'search' | 'site' | 'source' | 'home' | 'file' | 'app';
+
+/** C-POLISH10: the four model-facing open tools whose destination is fixed by the tool, not by a kind. */
+export type OpenFamilyTool = 'open_source' | 'open_home' | 'open_file' | 'open_app';
+
+/**
+ * C-POLISH10: the class one open tool resolves to, read from the tool the model called rather than assumed: an item
+ * handle, a home page, a file inside the home folder and an application are four different destinations. `open_web`
+ * supplies its own class from the kind it was asked for.
+ */
+export function openDestinationClass(tool: OpenFamilyTool): OpenDestinationClass {
+  if (tool === 'open_file') return 'file';
+  if (tool === 'open_app') return 'app';
+  if (tool === 'open_home') return 'site-root';
+  return 'handle';
+}
+
+/**
+ * C-POLISH10: the one audit line an open call writes. It counts the target's words and says whether his own words
+ * bound it, which destination class it resolved to, and the closed code it ended in: never the words, the handle or
+ * the URL, because an open target is the owner's speech.
+ */
+export function openAudit(input: { tool: string; kind: OpenAuditKind; target?: string | undefined; ownerWords?: string | undefined; destination: OpenDestinationClass; code: OpenReceiptCode }): void {
+  const target = input.target ?? '';
+  hostLogEvent({
+    event: 'open_audit', tool: input.tool, kind: input.kind,
+    words: target === '' ? 0 : webWords(target).length,
+    bound: target !== '' && input.ownerWords !== undefined && webBinding(target, input.ownerWords) ? 'yes' : 'no',
+    destination: input.destination,
+    refusal: input.code === 'opened' ? 'none' : input.code,
+  });
 }
 
 /** What a home app is called in plain words, so the open result can name it back to the owner. */
@@ -142,7 +180,10 @@ export function ownerTurnWords(runId: string): string {
 
 /** One bounded event wait, not a polling loop; cleanup on finalization, abort or timeout. */
 export async function webOwnerWords(runId: string, signal: AbortSignal): Promise<string> {
-  if (WEB_INTENT.test(ownerTurnWords(runId)) || signal.aborted) return ownerTurnWords(runId);
+  // All five open tools share this acquisition. Partial words tell us finalization is pending,
+  // but only finalized owner words authorize a native action.
+  const finalized = () => ownerTurn.get(runId)?.modelSpoke ? '' : ownerWords(runId);
+  if ((!ownerTurn.get(runId)?.partial && (OPEN_INTENT.test(finalized()) || WEB_INTENT.test(finalized()))) || signal.aborted) return finalized();
   await new Promise<void>(resolve => {
     const finish = () => {
       clearTimeout(timer);
@@ -157,7 +198,7 @@ export async function webOwnerWords(runId: string, signal: AbortSignal): Promise
     const timer = setTimeout(finish, 1500);
     signal.addEventListener('abort', finish, { once: true });
   });
-  return ownerTurnWords(runId);
+  return finalized();
 }
 
 /** What she said this turn, so the claim check reads her own words and never the owner's. */
@@ -224,8 +265,13 @@ const ASK_KINDS: readonly { words: RegExp; kinds: readonly OpenKind[] }[] = [
 ];
 
 /** A handle resolves to a kind the ask named: a mail thread is never opened as the deck he asked for. */
-function openRefusal(toolName: string, words: string, kind: OpenKind): 'no_open_intent' | 'kind_mismatch' | undefined {
+function openRefusal(toolName: string, words: string, kind: OpenKind): 'no_open_intent' | 'kind_mismatch' | 'not_allowed' | undefined {
   if (!OPEN_INTENT.test(words)) return 'no_open_intent';
+  // A web request must never degrade into a local default-app action. A site name
+  // introduced as 'the ...' is ambiguous, not evidence of an installed application.
+  const browser = /\b(?:browser|tabs?|links?|website|site)\b|\b(?:in|using|with)\s+(?:my\s+)?(?:chrome|safari)\b|\b[\w-]+\.(?:com|net|org|io|ai|co|de|uk)\b/iu.test(spokenDots(words));
+  if ((toolName === 'open_file' || toolName === 'open_app') && browser) return 'not_allowed';
+  if (toolName === 'open_app' && /\bopen\s+the\s+/iu.test(words) && !/\b(?:app|application)\b/iu.test(words)) return 'not_allowed';
   if (toolName !== 'open_source') return undefined;
   const named = ASK_KINDS.filter(entry => entry.words.test(words));
   return named.length > 0 && !named.some(entry => entry.kinds.includes(kind)) ? 'kind_mismatch' : undefined;
@@ -443,3 +489,9 @@ export async function resolveWebOpen(args: { kind: WebKind; target: string }, wo
   const root = webDestination('site', pick.domain);
   return root === undefined ? { code: 'not_allowed' } : { target: { action: 'open_url', target: root.url, detail: 'web', kind: 'web', title: root.domain } };
 }
+
+/** One generated usage line per registered open tool, shared by the public prompt. */
+export const OPEN_TOOL_GUIDANCE = [
+  ...OPEN_TOOLS.map(tool => `${tool.name}: ${tool.guidance}.`),
+  `${OPEN_WEB_NAME}: site/map/search.`,
+].join('\n');

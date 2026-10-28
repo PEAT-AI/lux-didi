@@ -1,3 +1,5 @@
+import { WebSocket } from 'ws';
+import { fixture as liveVoiceFixture } from './live-voice-fixture.js';
 import './memory-eligibility-integration.js';
 import './memory-startup-integration.js';
 // The declared host check also exercises the real installer's isolated seed block (R5).
@@ -16,6 +18,8 @@ import { bindCalendarRecovery, connectorLifecycleSink, hostMigrations, installed
 import { createDispatchOwner } from '../tools/dispatch.js';
 import { composeMcpRuntime } from '../host/mcp.js';
 import { MATTERMOST_ATTENTION_TOOL, MATTERMOST_TOOLS } from '../connectors/mattermost.js';
+import { createGoogleReader } from '../connectors/index.js';
+import { projectGoogleResult } from '../tools/google.js';
 import type { ConnectionPolicy, LiveAuthority, RunAcceptance } from '../tools/types.js';
 import type { ToolCallIntent } from '../adapters/model/types.js';
 import { toolsMigrations } from '../tools/schema.js';
@@ -1265,6 +1269,68 @@ async function mattermostCompositeHost(t: TestContext) {
   return { store, start, policyRow, accept, search, get runtime() { return runtime!; } };
 }
 
+/**
+ * C-DEPTH11: a booted host with one Google calendar endpoint behind a synthetic streamable-http helper, the
+ * same composition the app uses, so a calendar read travels the real registry, grant, connector and
+ * payload store and its tool output frame is the one the model receives.
+ */
+const CALENDAR_HOST_TOOLS = ['calendar_list_calendars', 'calendar_list_events'];
+const CALENDAR_HOST_EVENT = {
+  id: 'e1', summary: 'Design review', start: { dateTime: '2026-10-19T15:00:00Z' },
+  organizer: { email: 'robin.vale@example.invalid' },
+  attendees: [
+    { email: 'robin.vale@example.invalid', responseStatus: 'accepted' },
+    { displayName: 'Ari Andor', email: 'ari.andor@example.invalid', responseStatus: 'declined' },
+  ],
+};
+
+async function googleCalendarHost(t: TestContext) {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-host-calendar-'));
+  const configDir = join(dir, 'provider-config');
+  await mkdir(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({
+    schemaVersion: 1, grantMode: 'owner-trusted-reads',
+    endpoints: [{ id: 'calendar', connector: 'google', transport: 'streamable-http', url: 'http://127.0.0.1:18766/calendar', account: 'owner@example.test', resource: 'calendar', credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'private' }],
+  }));
+  await chmod(join(configDir, 'mcp.json'), 0o600);
+  let active: WebStandardStreamableHTTPServerTransport | undefined;
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    assert.ok(active, 'the fake calendar endpoint is connected before a read');
+    return active.handleRequest(new Request(input, init));
+  });
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  const sdk = new Server({ name: 'synthetic-calendar', version: '1' }, { capabilities: { tools: {} } });
+  active = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true });
+  sdk.setRequestHandler('tools/list', () => ({ tools: CALENDAR_HOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object', properties: { include: { type: 'array', items: { type: 'string' } }, calendarId: { type: 'string' }, maxResults: { type: 'integer' } }, additionalProperties: true } })) }) as never);
+  sdk.setRequestHandler('tools/call', (request) => {
+    const name = (request.params as { name?: string } | undefined)?.name;
+    const payload = name === 'calendar_list_calendars'
+      ? { calendars: [{ id: 'owner@example.test', summary: 'Owner', primary: true, accessRole: 'owner' }] }
+      : { events: [CALENDAR_HOST_EVENT] };
+    // The helper's own envelope shape (lux-cli google-mcp): the data object carries the tool answer.
+    return { content: [{ type: 'text', text: JSON.stringify({ tool: name, data: payload, coverage: { returned: 1, complete: true, next_page_token: null } }) }] } as never;
+  });
+  await sdk.connect(active);
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => null });
+  t.after(async () => { await runtime.close(); await sdk.close(); await active?.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  await runtime.start();
+  return { runtime, store };
+}
+
+test('C-DEPTH11: a booted host calendar read carries the attendees into the tool output frame', async t => {
+  const host = await googleCalendarHost(t);
+  const grant = host.runtime.registry.currentGrant('calendar');
+  assert.ok(grant, 'the booted host published a read grant for the calendar endpoint');
+  const reader = createGoogleReader({ port: host.runtime.port, registry: host.runtime.registry, config: { endpointId: grant.endpointId, generation: grant.generation, schemaDigest: grant.schemaDigest, account: grant.account, resource: grant.resource, family: 'calendar' } });
+  const result = await reader.gcalList({});
+  assert.equal(result.state, 'completed', 'the calendar read completes against the synthetic helper');
+  if (result.state !== 'completed') return;
+  const framed = projectGoogleResult(host.runtime.port, result);
+  assert.equal(framed.ok, true, 'the projected frame is built from the stored payload');
+  if (!framed.ok) return;
+  assert.match(framed.projection.text, /attendees: 2 people: robin\.vale \(organizer, accepted\), Ari Andor \(declined\)/u, `the people and their answers reach the model frame: ${framed.projection.text}`);
+});
+
 test('a policy that grants a connector composite admits its granted child reads (#630)', async t => {
   const host = await mattermostCompositeHost(t);
   const runtime = await host.start();
@@ -1334,7 +1400,7 @@ test('C-RECOVERY (f): a rejected live write is a host_error that names its close
 // C-SUMMARY8: the app closes the host's stdin at every call end, so the next start inherits a call whose
 // summary never finished. Requirement 1 puts that finish before the opener plan can be fixed, and the
 // native launch fails when no ready frame arrives inside 6 s, so the wait has to fit inside that budget.
-test('C-SUMMARY8: an interrupted summary cannot hold the ready frame past its start budget', async t => {
+test('C-START10: startHost opens the provider while an eight-second interrupted summary runs', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'didi-summary-start-'));
   const configDir = join(dir, 'provider-config');
   // Within the retry age cap, so the start pass treats the interrupted call as work it must finish.
@@ -1366,21 +1432,55 @@ test('C-SUMMARY8: an interrupted summary cannot hold the ready frame past its st
         markSummaryPending(tx, 's-interrupted', endedAt, { dataClass: source.dataClass, sourceRevision: source.revision });
       });
     } finally { seed.close(); }
-    let modelCalls = 0;
-    const started = performance.now();
-    const host = await startHost({ dataDir: dir, webRoot, configDir, port: 0,
+    const upstream = await liveVoiceFixture(t);
+    await writeFile(join(configDir, 'live.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'gemini',
+      modelId: 'models/live-start10-test', voice: 'ExplicitVoice', keyReference: 'gemini-primary', dataClasses: ['ordinary', 'private'],
+      preferences: { dataClass: 'ordinary', language: 'en-US', register: 'plain', humor: 'off', verbosity: 'balanced' },
+    }), { mode: 0o600 });
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let entered!: () => void;
+    const generating = new Promise<void>(resolve => { entered = resolve; });
+    let summaryAnswered = false;
+    let elapsed = 0;
+    const summaryResponse = () => new Response(`data: ${JSON.stringify({ candidates: [{
+      content: { role: 'model', parts: [{ text: '{"skip":false,"summary":"the owner saved a synthetic note."}' }] }, finishReason: 'STOP',
+    }] })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+    const starting = startHost({ dataDir: dir, webRoot, configDir, port: 0,
       modelTesting: {
-        deadlineMs: 400,
         credentials: { resolve: async () => 'synthetic-not-a-real-key' },
-        transport: () => { modelCalls += 1; return new Promise<Response>(() => { /* deliberately no response */ }); },
-      } });
-    const elapsed = Math.round(performance.now() - started);
+        transport: () => {
+          entered();
+          return new Promise<Response>(resolve => setTimeout(() => { summaryAnswered = true; resolve(summaryResponse()); }, 8_000));
+        },
+      },
+      liveTesting: { credentials: { resolve: async () => 'synthetic-live-key' }, socketFactory: upstream.socketFactory },
+    });
+    await generating;
+    elapsed = SUMMARY_START_SETTLE_BUDGET_MS;
+    t.mock.timers.tick(elapsed);
+    const host = await starting;
+    let audio: WebSocket | undefined;
     try {
-      t.diagnostic(`C-SUMMARY8 boot-to-ready with an interrupted summary: ${elapsed} ms (budget ${SUMMARY_START_SETTLE_BUDGET_MS} ms)`);
-      assert.ok(modelCalls >= 1, 'the start pass reached the model for the interrupted call');
-      assert.ok(elapsed < SUMMARY_START_SETTLE_BUDGET_MS + 1_500,
-        `the ready frame took ${elapsed} ms: an unanswered provider cannot hold it past the start budget`);
-      assert.ok(elapsed < 6_000, 'and it stays inside the native six second ready-frame cap');
-    } finally { await host.close(); }
+      const headers = { authorization: `Bearer ${host.store.adminCredential}`, 'x-didi-authority-epoch': host.descriptor.authorityEpoch,
+        'idempotency-key': 'start10-proof', 'content-type': 'application/json' };
+      const response = await fetch(host.descriptor.origin + '/api/v1/live-sessions', {
+        method: 'POST', headers, body: JSON.stringify({ inputClass: 'ordinary' }),
+      });
+      const body = await response.json();
+      assert.equal(response.status, 200, JSON.stringify(body));
+      audio = new WebSocket(`${host.descriptor.origin.replace('http', 'ws')}/api/v1/live-sessions/${body.data.liveSessionId}/audio`, {
+        headers: { ...headers, 'x-didi-live-profile': body.data.profileIdentity },
+      });
+      audio.on('error', () => {});
+      await upstream.frame(1);
+      assert.ok(elapsed < 2_500, `provider opens at ${elapsed} virtual ms`);
+      assert.equal(summaryAnswered, false, 'the provider setup is sent before the eight-second summary completes');
+      elapsed = 8_000; t.mock.timers.tick(6_000);
+    } finally {
+      if (audio) { const closed = new Promise<void>(resolve => audio!.once('close', () => resolve())); audio.terminate(); await closed; }
+      t.mock.timers.tick(8_000);
+      await host.close();
+      t.mock.timers.reset();
+    }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

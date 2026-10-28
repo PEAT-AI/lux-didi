@@ -5863,18 +5863,22 @@ function hitTitleWords(line: string): string[] {
  * so it takes a hit the ranker scored at or above the floor AND whose title or tags share a content word with the
  * ask; the decision is reported as closed fields, a bucket and a reason, never the ask or the title.
  */
-function autopenVerdict(text: string, ask: string): { open: boolean; bucket: 'high' | 'medium' | 'low' | 'unknown'; reason?: 'low_score' | 'no_overlap' } {
+function autopenVerdict(text: string, ask: string, candidates: readonly string[]): { ids: string[]; bucket: 'high' | 'medium' | 'low' | 'unknown'; reason?: 'low_score' | 'no_overlap' } {
   const confidence = knowledgeConfidenceOf(text.split('\n'));
   const scored = Number(confidence?.top ?? '');
   const bucket = Number.isFinite(scored) && scored > 0
     ? (scored >= 0.6 ? 'high' : scored >= RESEARCH.knowledgeAutopenScore ? 'medium' : 'low')
     : (confidence?.confidence === 'high' || confidence?.confidence === 'medium' || confidence?.confidence === 'low' ? confidence.confidence : 'unknown');
-  if (Number.isFinite(scored) && scored > 0 && scored < RESEARCH.knowledgeAutopenScore) return { open: false, bucket, reason: 'low_score' };
-  const heading = text.split('\n').find(line => hitIdOf(line) !== undefined);
+  if (Number.isFinite(scored) && scored > 0 && scored < RESEARCH.knowledgeAutopenScore) return { ids: [], bucket, reason: 'low_score' };
+  // The gate is per hit: each id is opened on its own title, never on the ranking of the hit beside it.
   const asked = new Set(contentKeywords(ask, 12));
-  const titled = heading === undefined ? [] : hitTitleWords(heading);
-  if (!titled.some(word => asked.has(word))) return { open: false, bucket, reason: 'no_overlap' };
-  return { open: true, bucket };
+  const lines = text.split('\n');
+  const ids = candidates.filter(id => {
+    const heading = lines.find(line => hitIdOf(line) === id);
+    return heading !== undefined && hitTitleWords(heading).some(word => asked.has(word));
+  });
+  if (ids.length === 0) return { ids: [], bucket, reason: 'no_overlap' };
+  return { ids, bucket };
 }
 
 /**
@@ -5894,10 +5898,10 @@ async function withFullEntries(
   if (asked.length === 0 && budgetFor(question) !== RESEARCH.budgets.depth) return [...results];
   // C-POLISH10: an open nobody asked for is decided here, on the ranker's score and on the hit's own title, so an
   // unrelated entry is never opened and injected. The line carries the decision and a bucket, never the words.
-  const verdict = autopenVerdict(searched.text, question);
-  hostLogEvent({ event: 'knowledge_autopen', decision: verdict.open ? 'opened' : 'skipped', bucket: verdict.bucket, reason: verdict.reason ?? 'none' });
-  if (!verdict.open) return [...results];
-  const ids = knowledgeReadIds(searched.text, asked);
+  const verdict = autopenVerdict(searched.text, question, knowledgeReadIds(searched.text, asked));
+  hostLogEvent({ event: 'knowledge_autopen', decision: verdict.ids.length > 0 ? 'opened' : 'skipped', bucket: verdict.bucket, reason: verdict.reason ?? 'none' });
+  if (verdict.ids.length === 0) return [...results];
+  const ids = verdict.ids;
   if (ids.length === 0) return [...results];
   run.ops += 1;
   try {

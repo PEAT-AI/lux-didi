@@ -360,6 +360,40 @@ test('C-POLISH10: an unrelated or low-score knowledge hit is not opened, and a r
   assert.equal(relevant.line?.['reason'], 'none');
 });
 
+// C-POLISH10: the gate is per hit, so an unrelated entry is never opened on the strength of the hit beside it.
+test('C-POLISH10: only the hits whose own title shares a word with the ask are opened', async () => {
+  const opened = async (search: string): Promise<{ ids: unknown; line: Record<string, unknown> | undefined }> => {
+    const lines: Record<string, unknown>[] = [];
+    const fetched: string[] = [];
+    const detach = attachHostLogSink({ event: raw => { if (raw !== null && typeof raw === 'object') lines.push(raw as Record<string, unknown>) } });
+    const h = harness({
+      execute: async subs => subs.map(call => {
+        if (call.name === 'get_insight') fetched.push(...(call.args['ids'] as string[]));
+        return sub(call.name, call.name === 'search_knowledge' ? search : '### Margit Halden call notes [id 44] the whole body', true, call.key);
+      }),
+    });
+    try {
+      await runResearch(h.deps, { action: 'start', question: 'what do we know about Margit Halden', topic: 'Margit Halden' }, new AbortController().signal);
+    } finally { detach() }
+    return { ids: fetched, line: lines.find(raw => raw['event'] === 'knowledge_autopen') };
+  };
+  const two = (first: string, second: string): string => [
+    '# Knowledge Search',
+    '_confidence: medium · mode: reranked · top score: 0.62 · relevant candidate: yes_',
+    first, 'socket timeouts and an unrelated note',
+    second, 'the meeting notes',
+  ].join('\n');
+  const relevanceFirst = await opened(two('**#44** [MEETING] Margit Halden call notes', '**#900** [PATTERN] Unrelated engineering note'));
+  assert.deepEqual(relevanceFirst.ids, ['44'], 'the unrelated hit beside a relevant one is not fetched');
+  assert.equal(relevanceFirst.line?.['decision'], 'opened');
+  const unrelatedFirst = await opened(two('**#900** [PATTERN] Unrelated engineering note', '**#44** [MEETING] Margit Halden call notes'));
+  assert.deepEqual(unrelatedFirst.ids, ['44'], 'a relevant hit is still opened when an unrelated one ranks first');
+  const none = await opened(two('**#900** [PATTERN] Unrelated engineering note', '**#901** [PATTERN] Another unrelated note'));
+  assert.deepEqual(none.ids, [], 'no hit shares a word with the ask, so nothing is opened');
+  assert.equal(none.line?.['decision'], 'skipped');
+  assert.equal(none.line?.['reason'], 'no_overlap');
+});
+
 // C-POLISH10: a run that already gave its whole answer needs no continue, so the tool answers with a closed pointer
 // instead of spending a round to re-render the same findings.
 test('C-POLISH10: a continue on a finished run answers already_delivered without the payload', async () => {

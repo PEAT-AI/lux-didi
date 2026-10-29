@@ -2147,7 +2147,7 @@ describe('openai gpt-live receipts', () => {
 });
 
 
-test('research 469: unavailable output preserves completed transport receipt without local retry', async t => {
+test('research 469: unavailable output records failed business result and successful delivery without local retry', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-research-469-trace-')), store = new Store(dir);
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const trace = liveTracePort({ port: store, liveSessionId: 'synthetic-469', connectionEpoch: 'e0', turnId: () => 'synthetic-469:t1' });
@@ -2167,8 +2167,10 @@ test('research 469: unavailable output preserves completed transport receipt wit
   const response = { researchId: 'known-stopped', error: 'continuation_unavailable', status: 'unavailable', findings: [], canContinue: false, note: 'This research run is no longer available. Start a new lookup.' };
   session.sendToolResponse({ responses: [{ id: 'research-469', name: 'research', response }] });
   await tick();
-  const rows = store.transaction(tx => tx.all("SELECT outcome FROM trace_call WHERE name='research'"));
-  assert.deepEqual(rows.map(row => row['outcome']), ['completed'], 'successful error output retains existing transport convention');
+  const rows = store.transaction(tx => tx.all("SELECT outcome, delivered, outcome_code FROM trace_call WHERE name='research'"));
+  assert.deepEqual(rows.map(row => row['outcome']), ['failed']);
+  assert.equal(rows[0]!['delivered'], 1);
+  assert.equal(rows[0]!['outcome_code'], 'continuation_unavailable');
   const outputs = socket.sent.map(frame => JSON.parse(frame) as { type: string; item?: { output?: string } }).filter(frame => frame.type === 'response.item.create');
   assert.equal(outputs.length, 1); assert.deepEqual(JSON.parse(outputs[0]!.item!.output!), response);
   assert.equal(captured.events.filter(event => event.type === 'toolCall').length, 1, 'no locally generated retry');

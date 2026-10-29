@@ -1069,3 +1069,31 @@ test('a tampered or foreign durable row is refused, never re-published from conf
     } finally { await runtime.close(); }
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('finished connector reads cannot starve a shared store within one TTL', async () => {
+  const { createResultScope } = await import('../adapters/mcp/lifecycle.js');
+  const fixture = await server();
+  const { adapter, registry } = setup(fixture.url, { maxEntries: 64, maxBytes: 4 * 1024 * 1024, ttlMs: 60_000, now: () => 1000 });
+  try {
+    await approve(adapter, registry);
+    const kinds = [3, 1, 20, 1, 1, 1]; // person, overview, attention, calendar, search, knowledge
+    const read = async (count: number) => {
+      const scope = createResultScope();
+      try {
+        await scope.run(async () => {
+          for (let child = 0; child < count; child++) {
+            const result = await adapter.call(request);
+            assert.equal(result.state, 'completed');
+            if (result.state !== 'completed') throw Error('read failed');
+            assert.equal(result.payload.state, 'available');
+            if (result.payload.state !== 'available') throw Error('payload missing');
+            const slice = adapter.readSlice({ ...request, handle: result.payload.handle, offset: 0, length: 97 });
+            assert.equal(slice.state, 'available');
+          }
+        });
+      } finally { scope.release(); }
+    };
+    for (let index = 0; index < 40; index++) await read(kinds[index % kinds.length]!);
+    for (const count of kinds) await read(count);
+  } finally { await adapter.close(); await fixture.close(); }
+});

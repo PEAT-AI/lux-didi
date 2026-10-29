@@ -1,4 +1,3 @@
-import type { OwnerRequests } from './owner-request.js';
 import type { TrelloBoard } from './trello.js';
 import type { RemoteResultLineage } from './received-body.js';
 import type { RememberNotePort } from './remember.js';
@@ -70,8 +69,26 @@ export type ConnectionRestoreResult = { state: 'restored' } | { state: 'refused'
 /** W6: the host decides a composed-note stage; the tool only asks, and the frozen payload is the host's own. */
 export type StageNotePort = (tx: Transaction, runId: string, args: { title: string; body: string; evidenceRefs: string[] }) => JsonValue | (() => Promise<JsonValue>);
 
+export type ActionKind = 'open' | 'set_alarm' | 'list_alarms' | 'cancel_alarm' | 'snooze_alarm' | 'lux_note';
+export type RequestCode = 'allowed' | 'idempotent' | 'no_owner_request' | 'request_expired' | 'grant_spent';
+export type RequestAuthorization =
+  | { code: 'no_owner_request'; id?: string; words?: string; journalId?: string }
+  | { code: Exclude<RequestCode, 'no_owner_request'>; id: string; words: string; journalId: string; receipt?: unknown };
+
+export interface OwnerRequestPort {
+  observe(session: string, journalId: string, words: string): void;
+  authorize(session: string, kind: ActionKind, target: string): RequestAuthorization;
+  commit(session: string, kind: ActionKind, target: string, receipt: unknown): void;
+  clarify(session: string, kind: ActionKind, field: string): void;
+  currentId(session: string): string | undefined;
+  source(session: string, kind: string, requestId?: string): void;
+  sources(session: string): Record<string, number>;
+  audit(session: string, kind: ActionKind): { ownerFinals: number; requestAgeMs: number; grantKind: ActionKind; grantState: string };
+  release(session: string): void;
+}
+
 export interface ToolsOwner {
-  readonly ownerRequests: OwnerRequests;
+  readonly ownerRequests: OwnerRequestPort;
   observeAlarmOwner(session: string, journalId: string, words: string, at: number): void;
   readonly sourcePort: McpPort;
   journal: ToolCallJournal; resultGate: ToolResultGate;

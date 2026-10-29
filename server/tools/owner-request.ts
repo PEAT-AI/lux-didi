@@ -1,17 +1,12 @@
-export type ActionKind = 'open' | 'set_alarm' | 'list_alarms' | 'cancel_alarm' | 'snooze_alarm' | 'lux_note';
-export type RequestCode = 'allowed' | 'idempotent' | 'no_owner_request' | 'request_expired' | 'grant_spent';
+import type { ActionKind, RequestAuthorization, OwnerRequestPort } from './types.js';
 interface Grant { target?: string; receipt?: unknown }
 interface Request {
   id: string; words: string; start: number; finals: number; journalId: string;
   grants: Map<ActionKind, Grant>; pending?: { kind: ActionKind; field: string };
   sources: Record<string, number>;
 }
-export type RequestAuthorization =
-  | { code: 'no_owner_request'; id?: string; words?: string; journalId?: string }
-  | { code: Exclude<RequestCode, 'no_owner_request'>; id: string; words: string; journalId: string; receipt?: unknown };
-
 /** Per tools-owner state. Only finalized owner transcription may call observe. */
-export class OwnerRequests {
+export class OwnerRequests implements OwnerRequestPort {
   private requests = new Map<string, Request>();
   private sequence = 0;
   constructor(private readonly clock: () => number = () => performance.now()) {}

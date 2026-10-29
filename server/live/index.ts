@@ -1349,14 +1349,14 @@ export class LiveSessionOwner {
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
-  readonly #alarmSessions = new Map<string, Map<string, { setup: import('./types.js').AlarmSessionSetup; repeats: number; rebuilds: number; afterJournalId: number; timer?: { cancel(): void } }>>();
+  readonly #alarmSessions = new Map<string, Map<string, { setup: import('./types.js').AlarmSessionSetup; repeats: number; rebuilds: number; afterJournalId: number; lastAudibleAt: number; lastPromptAt: number; timer?: { cancel(): void } }>>();
 
   /** A due alarm belongs to the call that actually announces it, never to unrelated owner speech. */
   announceAlarm(setup: import('./types.js').AlarmSessionSetup): LiveSessionSnapshot | undefined {
     const handle = [...this.#active.values()].find(value => !value.terminal && value.ready);
     if (!handle || !setup.alarmId) return undefined;
     const alarms = this.#alarmSessions.get(handle.liveSessionId) ?? new Map();
-    alarms.set(setup.alarmId, { setup, repeats: 0, rebuilds: 0, afterJournalId: handle.inputJournalId ?? 0 });
+    alarms.set(setup.alarmId, { setup, repeats: 0, rebuilds: 0, afterJournalId: handle.inputJournalId ?? 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now() });
     this.#alarmSessions.set(handle.liveSessionId, alarms);
     handle.session.sendText({ text: hostNote(alarmSessionInstructions(setup) + ' Announce this now in the current call.') });
     this.#armAlarm(handle);
@@ -1375,15 +1375,21 @@ export class LiveSessionOwner {
   }
 
   #armAlarm(handle: ActiveSession): void {
+    const now = this.#now();
     for (const alarm of this.#ringingAlarms(handle)) {
-      alarm.timer?.cancel();
+      if (alarm.timer) continue;
       alarm.timer = this.#schedule(() => {
+        delete alarm.timer;
         if (handle.terminal || !this.#ringingAlarms(handle).includes(alarm)) return;
-        if (handle.ready) {
-          try { handle.session.sendText({ text: hostNote(`Alarm wake reminder ${++alarm.repeats}: say a shorter friendly wake line for ${JSON.stringify(alarm.setup.label || 'the alarm')}, and ask whether they are awake. No answer has acknowledged it.`) }); } catch { /* Provider recovery owns transport failure. */ }
+        // Audio only advances lastAudibleAt. The existing timer checks the remaining silence once.
+        if (this.#now() - Math.max(alarm.lastAudibleAt, alarm.lastPromptAt) >= 30_000) {
+          alarm.lastPromptAt = this.#now();
+          if (handle.ready) {
+            try { handle.session.sendText({ text: hostNote(`Alarm wake reminder ${++alarm.repeats}: say a shorter friendly wake line for ${JSON.stringify(alarm.setup.label || 'the alarm')}, and ask whether they are awake. No answer has acknowledged it.`) }); } catch { /* Provider recovery owns transport failure. */ }
+          }
         }
         this.#armAlarm(handle);
-      }, Math.min(30_000, Math.max(1, (alarm.setup.ringDeadlineUtc ?? this.#now() + 30_000) - this.#now())));
+      }, Math.max(1, Math.min((alarm.setup.ringDeadlineUtc ?? now + 30_000) - now, Math.max(alarm.lastAudibleAt, alarm.lastPromptAt) + 30_000 - now)));
     }
   }
 
@@ -1679,7 +1685,7 @@ export class LiveSessionOwner {
           JSON.stringify(this.#profile.route.dataClasses), input.inputClass, this.#revision, now]);
       return this.#snapshot(tx, tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [liveSessionId])!);
     });
-    if (input.alarm?.alarmId && !this.#alarmSessions.has(snapshot.liveSessionId)) this.#alarmSessions.set(snapshot.liveSessionId, new Map([[input.alarm.alarmId, { setup: input.alarm, repeats: 0, rebuilds: 0, afterJournalId: 0 }]]));
+    if (input.alarm?.alarmId && !this.#alarmSessions.has(snapshot.liveSessionId)) this.#alarmSessions.set(snapshot.liveSessionId, new Map([[input.alarm.alarmId, { setup: input.alarm, repeats: 0, rebuilds: 0, afterJournalId: 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now() }]]));
     this.#armExpiry();
     return snapshot;
   }
@@ -2247,7 +2253,7 @@ export class LiveSessionOwner {
 
   #armIdle(handle: ActiveSession, remainingMs: number, resetBy: IdleResetCause): void {
     if (this.#settled(handle)) return;
-    for (const alarm of this.#ringingAlarms(handle)) remainingMs = Math.max(remainingMs, (alarm.setup.ringDeadlineUtc ?? this.#now()) - this.#now());
+    for (const alarm of this.#alarmSessions.get(handle.liveSessionId)?.values() ?? []) remainingMs = Math.max(remainingMs, (alarm.setup.ringDeadlineUtc ?? this.#now()) - this.#now());
     handle.idleTimer?.cancel();
     handle.idleAt = this.#now() + remainingMs;
     // #592 / C-LIVE N-2: one record per change of cause, so the log testifies what restarted the clock without one
@@ -3690,7 +3696,7 @@ export class LiveSessionOwner {
         // D3: only audio the adapter measured as audible is output. A fill frame is forwarded to playback and
         // nothing else; it neither re-arms the deadline nor answers the obligation.
         const audible = event.type === 'audio' && event.audible !== false;
-        if (audible) this.#armAlarm(handle);
+        if (audible) for (const alarm of this.#alarmSessions.get(handle.liveSessionId)?.values() ?? []) alarm.lastAudibleAt = this.#now();
         // The answer's own audible audio is the one thing that clears the owed reply; tool text does not.
         if (audible || event.type === 'turnComplete') handle.awaitingAnswer = false;
         if (audible || event.type === 'turnComplete') {

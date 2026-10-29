@@ -3,6 +3,24 @@ import Foundation
 /// Fake sinks only: no application, notification center, status item or window is created.
 @main struct StatusQuietTests {
     @MainActor static func main() async {
+        var menu = StatusMenuTracking()
+        var receipts: [(String, Int, Int)] = []
+        for _ in 0..<20 { menu.requested { receipts.append(($0, $1, $2)) } }
+        precondition(receipts.last?.0 == "menu_open_requested" && receipts.last?.1 == 20 && receipts.last?.2 == 0)
+        menu.opened { receipts.append(($0, $1, $2)) }
+        precondition(receipts.last?.0 == "menu_opened" && receipts.last?.1 == 20 && receipts.last?.2 == 1)
+        let screen = CGRect(x: -1200, y: 0, width: 1200, height: 900)
+        let safe = MiniOrbMenuSafety.availableFrame(screen: screen, visible: screen, menuBarHeight: 24)
+        precondition(safe.maxY == 876 && safe.minX == -1200)
+        let ordinary = CGRect(x: -1200, y: 50, width: 1200, height: 826)
+        precondition(MiniOrbMenuSafety.availableFrame(screen: screen, visible: ordinary, menuBarHeight: 24) == ordinary)
+        let placement = MiniOrbFrameRestore.resolve(CGRect(x: -300, y: 800, width: 220, height: 220), screens: [safe])
+        precondition(placement.maxY <= safe.maxY, "orb cannot overlap menu strip even in fullscreen")
+        var responses = 0
+        let response = NonModalAlertResponse { _ in responses += 1 }
+        response.answer(true)
+        response.answer(false)
+        precondition(responses == 1, "nonmodal alert completion must be one-shot")
         let source = FakeCapabilitySource()
         let capability = NativeNotificationCapabilityState(source: { await source.read() })
         _ = await capability.refresh(for: .launch)

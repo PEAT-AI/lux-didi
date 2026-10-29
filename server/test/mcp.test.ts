@@ -810,7 +810,7 @@ function googleEndpoint(id: string, unknownClass: string): Record<string, unknow
   return {
     id, transport: 'stdio', command: process.execPath,
     args: [googleChild, 'ok'],
-    env: { HOME: '/home/fixture', PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+    env: { LUX_GOOGLE_MCP_ACCOUNT: OWNER, HOME: '/home/fixture', PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
     connector: 'google', account: ACCOUNT, resource: `google-${id}`, credentialRef: null, enabled: true,
     allowEgress: true, unknownClass,
   };
@@ -930,7 +930,7 @@ function installedShape(): { schemaVersion: 1; grantMode: 'owner-trusted-reads';
 function localEndpoint(endpoint: Record<string, unknown>, child: string, args: readonly string[]): Record<string, unknown> {
   const { url: _url, command: _command, ...rest } = endpoint;
   if (endpoint['transport'] === 'stdio') {
-    return { ...rest, command: process.execPath, args: [...args], env: { HOME: '/home/fixture', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' } };
+    return { ...rest, command: process.execPath, args: [...args], env: { ...(endpoint['connector'] === 'google' ? { LUX_GOOGLE_MCP_ACCOUNT: OWNER } : {}), HOME: '/home/fixture', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' } };
   }
   return { ...rest, url: child };
 }

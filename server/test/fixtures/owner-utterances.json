@@ -1,0 +1,1863 @@
+[
+  {
+    "id": "case-0",
+    "finals": [
+      "put an alarm at 11:40 PM"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793403600000
+  },
+  {
+    "id": "case-1",
+    "finals": [
+      "make an alarm at 11:40 PM"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793403600000
+  },
+  {
+    "id": "case-2",
+    "finals": [
+      "create an alarm at 11:40 PM"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793403600000
+  },
+  {
+    "id": "case-3",
+    "finals": [
+      "add an alarm at 11:40 PM"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793403600000
+  },
+  {
+    "id": "case-4",
+    "finals": [
+      "set an alarm at 11:40 PM"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793403600000
+  },
+  {
+    "id": "case-5",
+    "finals": [
+      "put an alarm on 11 PM 40 today"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793403600000
+  },
+  {
+    "id": "case-6",
+    "finals": [
+      "at um seven a.m."
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-7",
+    "finals": [
+      "ten forty p.m. for today"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793400000000
+  },
+  {
+    "id": "case-8",
+    "finals": [
+      "10:40 PM PM"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793400000000
+  },
+  {
+    "id": "case-9",
+    "finals": [
+      "at um - ten forty p.m. today PM"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793400000000
+  },
+  {
+    "id": "case-10",
+    "finals": [
+      "seven forty-five am"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "case-11",
+    "finals": [
+      "half past seven am"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793345400000
+  },
+  {
+    "id": "case-12",
+    "finals": [
+      "quarter to eight am"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "case-13",
+    "finals": [
+      "wake me at seven am"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-14",
+    "finals": [
+      "remind me at seven am"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-15",
+    "finals": [
+      "so like uh at seven am"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-16",
+    "finals": [
+      "at seven am today"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-17",
+    "finals": [
+      "on seven am"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-18",
+    "finals": [
+      "for seven am"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-19",
+    "finals": [
+      "seven am"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-20",
+    "finals": [
+      "in nine minutes"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793340540000
+  },
+  {
+    "id": "case-21",
+    "finals": [
+      "in an hour"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-22",
+    "finals": [
+      "put an alarm in nine minutes"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793340540000
+  },
+  {
+    "id": "case-23",
+    "finals": [
+      "at seven am for tomorrow"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793430000000
+  },
+  {
+    "id": "case-24",
+    "finals": [
+      "set an alarm at 7",
+      ":45 am"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "case-25",
+    "finals": [
+      "put",
+      "an alarm",
+      "at seven am"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-26",
+    "finals": [
+      "11",
+      "PM",
+      "40"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793403600000
+  },
+  {
+    "id": "case-27",
+    "finals": [
+      "in",
+      "nine",
+      "minutes"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793340540000
+  },
+  {
+    "id": "case-28",
+    "finals": [],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-29",
+    "finals": [
+      "don't set an alarm at seven am"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-30",
+    "finals": [
+      "do not make an alarm at seven am"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-31",
+    "finals": [
+      "set an alarm"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "missing_time",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-32",
+    "finals": [
+      "at seven am or eight am"
+    ],
+    "call": {
+      "fire_at_utc": null,
+      "tool": "set_alarm"
+    },
+    "code": "unsupported_time_expression",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-33",
+    "finals": [
+      "at seven am"
+    ],
+    "call": {
+      "fire_at_utc": 1793347200000,
+      "tool": "set_alarm"
+    },
+    "code": "time_mismatch",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-34",
+    "finals": [
+      "could you",
+      "example.com"
+    ],
+    "call": {
+      "kind": "site",
+      "target": "https://example.com",
+      "tool": "open_web"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-35",
+    "finals": [
+      "do not open it"
+    ],
+    "call": {
+      "kind": "site",
+      "target": "https://example.com",
+      "tool": "open_web"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-36",
+    "finals": [
+      "directions",
+      "Synthetic Park"
+    ],
+    "call": {
+      "kind": "maps",
+      "target": "Synthetic Park",
+      "tool": "open_web"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-37",
+    "finals": [
+      "do not open it"
+    ],
+    "call": {
+      "kind": "maps",
+      "target": "Synthetic Park",
+      "tool": "open_web"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-38",
+    "finals": [
+      "find",
+      "synthetic clocks"
+    ],
+    "call": {
+      "kind": "search",
+      "target": "synthetic clocks",
+      "tool": "open_web"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-39",
+    "finals": [
+      "do not open it"
+    ],
+    "call": {
+      "kind": "search",
+      "target": "synthetic clocks",
+      "tool": "open_web"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-40",
+    "finals": [
+      "Calculator",
+      "please"
+    ],
+    "call": {
+      "tool": "open_app",
+      "name": "Calculator"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-41",
+    "finals": [
+      "do not open it"
+    ],
+    "call": {
+      "tool": "open_app",
+      "name": "Calculator"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-42",
+    "finals": [
+      "that file",
+      "please"
+    ],
+    "call": {
+      "path": "~/synthetic.txt",
+      "tool": "open_file"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-43",
+    "finals": [
+      "do not open it"
+    ],
+    "call": {
+      "path": "~/synthetic.txt",
+      "tool": "open_file"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-44",
+    "finals": [
+      "my inbox",
+      "please"
+    ],
+    "call": {
+      "app": "gmail",
+      "tool": "open_home"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-45",
+    "finals": [
+      "do not open it"
+    ],
+    "call": {
+      "app": "gmail",
+      "tool": "open_home"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "save-46",
+    "finals": [
+      "keep this detail"
+    ],
+    "call": {
+      "tool": "remember_note"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "save-47",
+    "finals": [
+      "this belongs",
+      "in my notes"
+    ],
+    "call": {
+      "tool": "remember_note"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "save-48",
+    "finals": [
+      "please retain this"
+    ],
+    "call": {
+      "tool": "remember_note"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "save-49",
+    "finals": [
+      "do not save this"
+    ],
+    "call": {
+      "tool": "remember_note"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "save-50",
+    "finals": [
+      "keep this detail"
+    ],
+    "call": {
+      "tool": "save_to_vault"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "save-51",
+    "finals": [
+      "this belongs",
+      "in my notes"
+    ],
+    "call": {
+      "tool": "save_to_vault"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "save-52",
+    "finals": [
+      "please retain this"
+    ],
+    "call": {
+      "tool": "save_to_vault"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "save-53",
+    "finals": [
+      "do not save this"
+    ],
+    "call": {
+      "tool": "save_to_vault"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "save-54",
+    "finals": [
+      "keep this detail"
+    ],
+    "call": {
+      "tool": "stage_lux_note"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "save-55",
+    "finals": [
+      "this belongs",
+      "in my notes"
+    ],
+    "call": {
+      "tool": "stage_lux_note"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "save-56",
+    "finals": [
+      "please retain this"
+    ],
+    "call": {
+      "tool": "stage_lux_note"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "save-57",
+    "finals": [
+      "do not save this"
+    ],
+    "call": {
+      "tool": "stage_lux_note"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "AL-1",
+    "finals": [
+      "That's poor Assistant. Assistant, can you now put an alarm or is it still not working? Can you put an alarm on",
+      " 11 PM 40",
+      " today where you wake up",
+      "? So like in nine minutes from now",
+      " Can you put an alarm"
+    ],
+    "now": 1793403060000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793403600000
+  },
+  {
+    "id": "AL-2",
+    "finals": [
+      " Okay, like, uh, put a alarm",
+      " at um",
+      "- ten forty p.m. today",
+      " PM",
+      ". You have put it 10",
+      ":40 PM you wake me again"
+    ],
+    "now": 1793399760000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793400000000
+  },
+  {
+    "id": "AL-3",
+    "finals": [
+      " Assistant",
+      " for eleven ten a.m. today",
+      " Yeah",
+      ", ten minutes past eleven",
+      " a.m. Singapore time",
+      " Set an alarm for eleven ten a.m. Singapore time for today"
+    ],
+    "now": 1793329500000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793329800000,
+    "clarifyAfter": [
+      0
+    ]
+  },
+  {
+    "id": "AL-4",
+    "finals": [
+      " Okay, okay, nice",
+      ", nice, and let's try this, okay? Like set an alarm for fi ten past five p.m. today",
+      " Ten",
+      " Ten past",
+      " five, today. So basically in one minute"
+    ],
+    "now": 1793380140000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793380200000,
+    "clarifyAfter": [
+      1
+    ]
+  },
+  {
+    "id": "AL-5",
+    "finals": [
+      " me? I'm 7",
+      ":45",
+      " No, you can, you can wake me at 7:45. You have this new feature"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-0-0",
+    "finals": [
+      "can you put an alarm at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-0-1",
+    "finals": [
+      "can",
+      "you put an alarm at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-0-2",
+    "finals": [
+      "can you",
+      "put an alarm at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-0-3",
+    "finals": [
+      "can you put",
+      "an alarm at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-0-4",
+    "finals": [
+      "can you put an",
+      "alarm at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-0-5",
+    "finals": [
+      "can you put an alarm",
+      "at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-0-6",
+    "finals": [
+      "can you put an alarm at",
+      "07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-1-0",
+    "finals": [
+      "make an alarm for 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-1-1",
+    "finals": [
+      "make",
+      "an alarm for 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-1-2",
+    "finals": [
+      "make an",
+      "alarm for 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-1-3",
+    "finals": [
+      "make an alarm",
+      "for 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-1-4",
+    "finals": [
+      "make an alarm for",
+      "07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-2-0",
+    "finals": [
+      "create an alarm for 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-2-1",
+    "finals": [
+      "create",
+      "an alarm for 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-2-2",
+    "finals": [
+      "create an",
+      "alarm for 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-2-3",
+    "finals": [
+      "create an alarm",
+      "for 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-2-4",
+    "finals": [
+      "create an alarm for",
+      "07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-3-0",
+    "finals": [
+      "put a alarm for 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-3-1",
+    "finals": [
+      "put",
+      "a alarm for 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-3-2",
+    "finals": [
+      "put a",
+      "alarm for 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-3-3",
+    "finals": [
+      "put a alarm",
+      "for 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-3-4",
+    "finals": [
+      "put a alarm for",
+      "07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-4-0",
+    "finals": [
+      "wake me up at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-4-1",
+    "finals": [
+      "wake",
+      "me up at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-4-2",
+    "finals": [
+      "wake me",
+      "up at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-4-3",
+    "finals": [
+      "wake me up",
+      "at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-4-4",
+    "finals": [
+      "wake me up at",
+      "07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-5-0",
+    "finals": [
+      "wake up me at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-5-1",
+    "finals": [
+      "wake",
+      "up me at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-5-2",
+    "finals": [
+      "wake up",
+      "me at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-5-3",
+    "finals": [
+      "wake up me",
+      "at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-5-4",
+    "finals": [
+      "wake up me at",
+      "07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-6-0",
+    "finals": [
+      "where you wake up at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-6-1",
+    "finals": [
+      "where",
+      "you wake up at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-6-2",
+    "finals": [
+      "where you",
+      "wake up at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-6-3",
+    "finals": [
+      "where you wake",
+      "up at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-6-4",
+    "finals": [
+      "where you wake up",
+      "at 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-6-5",
+    "finals": [
+      "where you wake up at",
+      "07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-7-0",
+    "finals": [
+      "set an alarm for 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-7-1",
+    "finals": [
+      "set",
+      "an alarm for 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-7-2",
+    "finals": [
+      "set an",
+      "alarm for 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-7-3",
+    "finals": [
+      "set an alarm",
+      "for 07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-7-4",
+    "finals": [
+      "set an alarm for",
+      "07:45"
+    ],
+    "now": 1793345280000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "AL-6-no-time",
+    "finals": [
+      "the alarm in the movie was loud"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "missing_time",
+    "fire_at_utc": null
+  },
+  {
+    "id": "OP-1",
+    "finals": [
+      " Open it in my",
+      " browser"
+    ],
+    "call": {
+      "tool": "open_source",
+      "handle": "L1"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "OP-1-1",
+    "finals": [
+      "... Could you open it in my",
+      " browser"
+    ],
+    "call": {
+      "tool": "open_source",
+      "handle": "L1"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R2-109",
+    "finals": [
+      "remember that"
+    ],
+    "call": {
+      "tool": "remember_note"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R2-110",
+    "finals": [
+      "remember",
+      "that"
+    ],
+    "call": {
+      "tool": "remember_note"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R2-111",
+    "finals": [
+      "do not remember that"
+    ],
+    "call": {
+      "tool": "remember_note"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R2-112",
+    "finals": [],
+    "call": {
+      "tool": "remember_note"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R2-113",
+    "finals": [
+      "put this in my vault"
+    ],
+    "call": {
+      "tool": "save_to_vault"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R2-114",
+    "finals": [
+      "put",
+      "this",
+      "in",
+      "my",
+      "vault"
+    ],
+    "call": {
+      "tool": "save_to_vault"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R2-115",
+    "finals": [
+      "do not put this in my vault"
+    ],
+    "call": {
+      "tool": "save_to_vault"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R2-116",
+    "finals": [],
+    "call": {
+      "tool": "save_to_vault"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R2-117",
+    "finals": [
+      "save that to lux"
+    ],
+    "call": {
+      "tool": "stage_lux_note"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R2-118",
+    "finals": [
+      "save",
+      "that",
+      "to",
+      "lux"
+    ],
+    "call": {
+      "tool": "stage_lux_note"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R2-119",
+    "finals": [
+      "do not save that to lux"
+    ],
+    "call": {
+      "tool": "stage_lux_note"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R2-120",
+    "finals": [],
+    "call": {
+      "tool": "stage_lux_note"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "AL-3-part-0",
+    "finals": [
+      "for eleven ten a.m. Singapore time for today"
+    ],
+    "now": 1793329500000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793329800000,
+    "clarifyAfter": []
+  },
+  {
+    "id": "AL-3-part-1",
+    "finals": [
+      "ten minutes past eleven a.m. Singapore time"
+    ],
+    "now": 1793329500000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793329800000,
+    "clarifyAfter": []
+  },
+  {
+    "id": "AL-3-part-2",
+    "finals": [
+      "for eleven ten a.m. today Yeah, ten minutes past eleven a.m. Singapore time"
+    ],
+    "now": 1793329500000,
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793329800000,
+    "clarifyAfter": []
+  },
+  {
+    "id": "GA-R4-124",
+    "finals": [
+      "Remind me in 20 minutes"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793341200000
+  },
+  {
+    "id": "GA-R4-125",
+    "finals": [
+      "in an hour"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "GA-R4-126",
+    "finals": [
+      "search the web for synthetic clocks"
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "search",
+      "target": "synthetic clocks"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R4-127",
+    "finals": [
+      "Remind me in 20 minutes."
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793341200000
+  },
+  {
+    "id": "GA-R4-128",
+    "finals": [
+      "in an hour."
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "GA-R4-129",
+    "finals": [
+      "search the web for synthetic clocks."
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "search",
+      "target": "synthetic clocks"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R4-130",
+    "finals": [
+      "Remind me in 20 minutes!"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793341200000
+  },
+  {
+    "id": "GA-R4-131",
+    "finals": [
+      "in an hour!"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "GA-R4-132",
+    "finals": [
+      "search the web for synthetic clocks!"
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "search",
+      "target": "synthetic clocks"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R4-133",
+    "finals": [
+      "Remind me in 20 minutes?"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793341200000
+  },
+  {
+    "id": "GA-R4-134",
+    "finals": [
+      "in an hour?"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "GA-R4-135",
+    "finals": [
+      "search the web for synthetic clocks?"
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "search",
+      "target": "synthetic clocks"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R4-136",
+    "finals": [
+      "Remind me in 20 minutes..."
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793341200000
+  },
+  {
+    "id": "GA-R4-137",
+    "finals": [
+      "in an hour..."
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "GA-R4-138",
+    "finals": [
+      "search the web for synthetic clocks..."
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "search",
+      "target": "synthetic clocks"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "turn-time-not-dispatch-time",
+    "finals": [
+      "put an alarm",
+      "in nine minutes"
+    ],
+    "call": {
+      "tool": "set_alarm",
+      "fire_at_utc": 1793340540000
+    },
+    "code": "ready",
+    "fire_at_utc": 1793340540000,
+    "toolDelayMs": 120000
+  },
+  {
+    "id": "native-failed",
+    "finals": [
+      "example.com please"
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "site",
+      "target": "https://example.com"
+    },
+    "code": "failed",
+    "fire_at_utc": null,
+    "nativeCode": "failed"
+  },
+  {
+    "id": "native-timeout",
+    "finals": [
+      "example.com please"
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "site",
+      "target": "https://example.com"
+    },
+    "code": "native_timeout",
+    "fire_at_utc": null,
+    "nativeCode": "native_timeout"
+  },
+  {
+    "id": "bad-scheme",
+    "finals": [
+      "that website please"
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "site",
+      "target": "javascript:alert(1)"
+    },
+    "code": "target_not_authorized",
+    "fire_at_utc": null,
+    "resolve_code": "not_allowed"
+  },
+  {
+    "id": "good-scheme",
+    "finals": [
+      "that website please"
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "site",
+      "target": "https://example.com"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "GA-R4-comma-144",
+    "finals": [
+      "Remind me in 20 minutes,"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793341200000
+  },
+  {
+    "id": "GA-R4-comma-145",
+    "finals": [
+      "in an hour,"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "GA-R4-comma-146",
+    "finals": [
+      "search the web for synthetic clocks,"
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "search",
+      "target": "synthetic clocks"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "relative-time-on-later-final",
+    "finals": [
+      "put an alarm",
+      "in nine minutes"
+    ],
+    "call": {
+      "tool": "set_alarm",
+      "fire_at_utc": 1793340660000
+    },
+    "code": "ready",
+    "fire_at_utc": 1793340660000,
+    "toolDelayMs": 120000,
+    "finalOffsetsMs": [
+      0,
+      120000
+    ]
+  },
+  {
+    "id": "HON-2",
+    "finals": [
+      "set an alarm at seven am"
+    ],
+    "call": {
+      "tool": "set_alarm",
+      "fire_at_utc": 1793347200000
+    },
+    "code": "time_mismatch",
+    "fire_at_utc": null,
+    "expectedSay": "The alarm was not set because the requested time differs from yours."
+  }
+]

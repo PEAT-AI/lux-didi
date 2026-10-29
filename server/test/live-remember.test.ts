@@ -199,10 +199,10 @@ async function ownerBlock(h: Harness, text: string, finished = true): Promise<vo
   h.f.send({ serverContent: { inputTranscription: { text, finished } } });
   await until(() => Number(h.store.transaction(tx => tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE kind='inputTranscription'"))?.['id'] ?? 0) > before);
 }
-async function assistantBlock(h: Harness, text: string): Promise<void> {
-  const before = Number(h.store.transaction(tx => tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE kind='turnComplete'"))?.['id'] ?? 0);
-  h.f.send({ serverContent: { outputTranscription: { text, finished: true }, turnComplete: true } });
-  await until(() => Number(h.store.transaction(tx => tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE kind='turnComplete'"))?.['id'] ?? 0) > before);
+async function assistantBlock(h: Harness, text: string, complete = true): Promise<void> {
+  const before = Number(h.store.transaction(tx => tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE kind='outputTranscription'"))?.['id'] ?? 0);
+  h.f.send({ serverContent: { outputTranscription: { text, finished: true }, turnComplete: complete } });
+  await until(() => Number(h.store.transaction(tx => tx.get("SELECT MAX(journal_id) AS id FROM live_journal WHERE kind='outputTranscription'"))?.['id'] ?? 0) > before);
 }
 async function call(h: Harness, name: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
   const id = `synthetic-call-${h.f.frames.length}-${name}`;
@@ -265,7 +265,7 @@ for (const outcome of ['saved', 'unavailable', 'unknown'] as const) {
     const h = await harness(t, { tools: true, vaultUnavailable: outcome === 'unavailable', crashAfterInsert: outcome === 'unknown' });
     const { attachment } = await attached(h);
     await ownerBlock(h, 'save a summary of this into Lux');
-    await assistantBlock(h, 'On it.');
+    await assistantBlock(h, 'On it.', false);
     const result = await call(h, 'stage_lux_note', candidate);
     assert.equal(h.saved.length, 1, 'the real transport was called before any yes or readback');
     assert.equal(result['saved'], outcome === 'saved', JSON.stringify(result));
@@ -292,13 +292,8 @@ for (const words of ['he said save this into Lux', 'if I say save this into Lux'
     const { attachment } = await attached(h);
     await ownerBlock(h, words);
     const result = await call(h, 'stage_lux_note', candidate);
-    if (words.startsWith('he said') || words.startsWith('if I say')) {
-      assert.equal(result['saved'], true);
-      assert.equal(h.saved.length, 1);
-    } else {
-      assert.equal(result['code'], 'no_owner_request');
-      assert.equal(h.saved.length, 0);
-    }
+    assert.equal(result['saved'], true, 'a finalized owner ask supplies intent without a save cue');
+    assert.equal(h.saved.length, 1);
     attachment.close();
   });
 }
@@ -341,11 +336,11 @@ test('direct102 real host and fake provider: preamble-before-open yields one nat
     return true;
   });
   t.after(unbind);
-  await ownerBlock(h, 'Good morning');
   assert.equal((await call(h, 'open_source', { handle: 'L999' }))['code'], 'no_owner_request', 'an opener cannot act on injected summaries');
+  await ownerBlock(h, 'Good morning');
   await assistantBlock(h, 'The synthetic opening is spoken.');
   await ownerBlock(h, 'open the pitch deck in my browser');
-  await assistantBlock(h, 'On it.');
+  await assistantBlock(h, 'On it.', false);
   const lookup = shapeDriveFile({ name: 'Synthetic pitch deck', webViewLink: 'https://drive.google.com/file/d/synthetic-pitch/view' });
   const handle = lookup.text.match(/open: (L[0-9]+)/)![1]!;
   assert.equal((await call(h, 'open_source', { handle }))['code'], 'target_not_authorized', 'minted but unshown handles are not targets');
@@ -360,9 +355,10 @@ test('direct102 real host and fake provider: preamble-before-open yields one nat
   exposeToolResults([{ name: 'drive_search_files', response: { text: second.text } }]);
   assert.equal((await call(h, 'open_source', { handle: second.text.match(/open: (L[0-9]+)/)![1]! }))['code'], 'opened');
   assert.deepEqual(native.map(frame => frame.target), ['https://drive.google.com/file/d/synthetic-pitch/view', 'https://drive.google.com/file/d/synthetic-other/view']);
+  await assistantBlock(h, 'Those decks are open.');
   await ownerBlock(h, 'what is the weather?');
-  assert.equal((await call(h, 'open_source', { handle }))['code'], 'no_owner_request', 'a stale open verb is not authority');
-  assert.equal(native.length, 2);
+  assert.equal((await call(h, 'open_source', { handle }))['code'], 'opened', 'a new finalized owner ask supplies fresh authority without a cue');
+  assert.equal(native.length, 3);
   attachment.close();
 });
 
@@ -399,6 +395,7 @@ for (const source of ['Lux note', 'forwarded mail']) {
     await ownerBlock(h, 'find the synthetic plan in Lux knowledge');
     const researched = await call(h, 'research', { action: 'start', question: 'What does Lux knowledge say about the synthetic plan?', topic: 'synthetic plan', sources: 'knowledge', lookups: [{ source: 'knowledge', query: 'synthetic plan' }] });
     assert.ok(h.calls.some(call => call.name === 'search_knowledge'), JSON.stringify(researched));
+    await assistantBlock(h, 'The synthetic plan is summarized.');
     assert.equal((await call(h, 'open_web', { kind: 'site', target: 'example.invalid' }))['code'], 'no_owner_request');
     assert.equal((await call(h, 'set_alarm', {}))['code'], 'no_owner_request');
     assert.equal(native.length, 0);

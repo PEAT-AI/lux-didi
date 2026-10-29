@@ -45,7 +45,8 @@ test('hear104 alarm authority: finals join until the completed answer', () => {
   gate.observe('s', 'j2', 'a.m. Singapore time');
   assert.equal(gate.authorize('s', 'set_alarm', 'alarm').words, 'set an alarm at eleven ten a.m. Singapore time');
   gate.answered('s');
+  assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'no_owner_request');
   gate.observe('s', 'j3', 'what is the weather?');
   gate.observe('s', 'j4', 'a.m. Singapore time');
-  assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'no_owner_request');
+  assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'allowed');
 });

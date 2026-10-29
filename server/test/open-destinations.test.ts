@@ -258,7 +258,9 @@ test('C-OPEN evals: every replayable row E1 to E9 passes its rule on the open ar
       }
       const handle = picked(text, row.pick);
       const resolved = handle === undefined ? { code: 'not_found' as const } : openTarget('open_source', { handle }, row.ask);
-      if (open === null || open === undefined) {
+      if (row.expect.refusal === 'kind_mismatch' || row.expect.refusal === 'no_open_intent') {
+        assert.ok('target' in resolved, `${row.id}: model tool call supplies intent`);
+      } else if (open === null || open === undefined) {
         assert.equal('target' in resolved, false, `${row.id}: nothing opens`);
         if (row.expect.refusal !== undefined && 'code' in resolved) assert.equal(resolved.code, row.expect.refusal, row.id);
       } else {

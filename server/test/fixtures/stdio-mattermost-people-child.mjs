@@ -226,6 +226,16 @@ function listChannels(args) {
 }
 
 function overview(args) {
+  if (process.env.DIDI_FAKE_DM_RESIDUE === '1') {
+    const post = (id, days, message) => ({ id, author: 'ada.moss', created_at: iso(now - days * 86400000), permalink: `https://chat.example.invalid/team/pl/${id}`, message });
+    return {
+      person: { username: 'ada.moss', display_name: 'Ada Moss' },
+      dm: { post_count: 94, posts: [post('dm-old', 6, 'Synthetic direct discussion')] },
+      groups: [{ members: ['ada.moss', 'kim.oak'], post_count: 3, posts: [1, 2, 3].map(n => post(`group-${n}`, n / 24, `Group update ${n}`)) }],
+      channels: [{ display_name: 'Synthetic channel', posts_by_owner: 2, posts_by_person: 1, posts: [4, 5, 6].map(n => post(`channel-${n}`, n / 24, `Channel update ${n}`)) }],
+      totals: { dm_posts: 94, group_posts: 3, channel_posts_by_owner: 2, channel_posts_by_person: 1 },
+    };
+  }
   const resolved = resolvePerson(args.person);
   if (resolved.candidates.length === 0) return { refusal: { error: 'not_found', message: `No user matches ${args.person}` } };
   if (resolved.ambiguous) return { refusal: { error: 'ambiguous', message: `${args.person} matches several people`, candidates: resolved.candidates } };

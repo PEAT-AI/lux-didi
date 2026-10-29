@@ -241,6 +241,9 @@ export function chatIntent(question: string, options: { terms: string; nowMs: nu
     return found === undefined ? undefined : cleanName(found);
   };
   const discussed = person(PERSON_DISCUSS) ?? person(PERSON_AND_I) ?? person(PERSON_DISCUSSIONS);
+  if (discussed !== undefined && /\b(?:dms?|direct messages?)\b/iu.test(question)) {
+    return { kind: 'person-said', person: discussed, sides: 'both', terms: aboutTerms(question, [discussed]), window };
+  }
   if (discussed !== undefined) return { kind: 'person-overview', person: discussed, terms: aboutTerms(question, [discussed]), window };
   const withThem = person(PERSON_WITH);
   if (withThem !== undefined) return { kind: 'person-said', person: withThem, sides: 'both', terms: aboutTerms(question, [withThem]), window };

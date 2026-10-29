@@ -2221,11 +2221,12 @@ test('E3: a last meeting ask with no date word reads the last sixty days', () =>
 
 // E6 (#609): the fallback recipe used to hand Gmail an already-written operator string, so the sender
 // filter and the term cap never ran. It now hands the compiler its window and its own words.
-test('E6: a fallback inbox search is compiled, so its terms are capped and ORed', () => {
+test('E6: a fallback topic search spans all mail, with terms capped and ORed', () => {
   const selection = fallbackSelection('any mail about the offsite venue inspection budget review card', ['mail'], Date.parse('2026-10-21T05:30:00Z'));
   const mailQuery = selection.actions.find(action => action.kind === 'mail_search')?.query;
   assert.equal(typeof mailQuery, 'string', 'the fallback offers a mail search');
-  assert.match(mailQuery!, /^in:inbox newer_than:14d offsite venue inspection budget OR review OR card$/u, `the fallback window is compiled in: ${mailQuery}`);
+  assert.doesNotMatch(mailQuery!, /in:inbox/u, 'topic fallback is not restricted to inbox');
+  assert.match(mailQuery!, /^newer_than:14d offsite venue inspection budget OR review OR card$/u, `the fallback window is compiled in: ${mailQuery}`);
   assert.match(mailQuery!, /offsite venue inspection budget OR review OR card/u, `three AND terms and the rest ORed: ${mailQuery}`);
 });
 

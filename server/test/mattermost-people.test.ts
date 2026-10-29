@@ -937,3 +937,23 @@ test('MM-4: twenty-post DM recency reads use newest history and actual today/yes
     assert.ok(read.posts.every(post => post.time.slice(0, 10) === window.from));
   }
 });
+
+// C-RESIDUE: newer shared traffic must not evict the person's direct discussion.
+test('C-RESIDUE overview keeps DM anchors ahead of newer shared traffic', async t => {
+  const f = await setup(t, 'people', undefined, { DIDI_FAKE_DM_RESIDUE: '1' });
+  const read = chatRead(await f.reader.chat({ intent: 'overview', person: 'Ada', from_date: fixtureDaysAgo(7) }));
+  assert.equal(read.posts.length, 5);
+  assert.match(JSON.stringify(read.posts[0]), /Synthetic direct discussion/u);
+  assert.match(JSON.stringify(read.sections), /94 posts/u);
+  assert.match(JSON.stringify(read.posts[1]), /Group update 1/u);
+  assert.match(JSON.stringify(read.posts[4]), /Channel update 4/u);
+});
+
+test('C-RESIDUE explicit DM scope precedes person overview', () => {
+  for (const scope of ['DMs', 'direct messages']) {
+    const intent = chatIntent(`what did Ada and I discuss in our ${scope}`, { terms: '', nowMs: FIXTURE_NOW, timeZone: 'UTC' });
+    assert.equal(intent.kind, 'person-said');
+    assert.equal('person' in intent && intent.person, 'Ada');
+    assert.equal('sides' in intent && intent.sides, 'both');
+  }
+});

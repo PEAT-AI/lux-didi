@@ -738,3 +738,11 @@ test('direct102: open audit reports request counts and codes, never owner or tar
   assert.equal(safeEvent({ ...lines[0], words: 'secret' }), undefined);
   assert.doesNotMatch(JSON.stringify(lines), /pitch|browser|synthetic/);
 });
+
+test('canary close terminal is validated as a closed session-paired receipt', () => {
+  const receipt = { event: 'live_terminal', liveSessionId: '33333333-3333-4333-8333-333333333333', code: 'revoked' };
+  assert.deepEqual(safeEvent(receipt), receipt);
+  assert.equal(safeEvent({ ...receipt, text: 'synthetic private text' }), undefined);
+  assert.equal(safeEvent({ ...receipt, liveSessionId: 'invalid' }), undefined);
+  assert.equal(safeEvent({ ...receipt, code: 'untrusted' }), undefined);
+});

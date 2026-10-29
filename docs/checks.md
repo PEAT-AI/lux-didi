@@ -147,8 +147,9 @@ Release 8 shipped four live failures with every test green: an untested tool ent
 
 ## Installed real-provider canary (opt-in, paid)
 
-`scripts/check-installed-canary.sh <installed-target>` is discovered automatically by
-`scripts/run-installed-checks.sh`. This is an explicit exception to the fake-only local/CI
+`scripts/run-installed-canary.sh <installed-target>` runs separately AFTER relaunch,
+against the running installed app. It is not part of `scripts/run-installed-checks.sh`,
+which the install helper runs while the app is down. This is an explicit exception to the fake-only local/CI
 rule above: **only the installer/operator runs the paid path after installation**. Author
 and reviewer checks use recorded fake sessions. Do not launch or relaunch the app for this
 check. The already-running shell must be the exact bundle named by `<installed-target>`.

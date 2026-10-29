@@ -1121,9 +1121,8 @@ export function compileMailQuery(question: string, query: string | undefined, no
   const leading = [...flags, ...mailPersonClause(person)];
   // E6 (#609): the window the caller's own recipe asked for, so a fallback search is compiled here once.
   const window = asked ?? fallbackWindow;
-  // E6 (#609): the fallback recipe keeps its own order, the inbox and its window first, because that is the
-  // shape the live step and the receipt already speak.
-  if (fallbackWindow !== undefined) return ['in:inbox', ...(window === undefined ? [] : [window]), ...leading, ...terms].join(' ').slice(0, RESEARCH.queryLimitChars);
+  // A fallback sender/topic search spans all mail, just like the main recipe.
+  if (fallbackWindow !== undefined && (leading.length > 0 || terms.length > 0)) return [...(window === undefined ? [] : [window]), ...leading, ...terms].join(' ').slice(0, RESEARCH.queryLimitChars);
   if (leading.length === 0 && terms.length === 0) return `in:inbox ${window ?? 'newer_than:14d'}`.slice(0, RESEARCH.queryLimitChars);
   return [...leading, ...terms, ...(window === undefined ? [] : [window])].join(' ').slice(0, RESEARCH.queryLimitChars);
 }
@@ -2017,6 +2016,7 @@ interface MailRead {
   plain?: string;
   /** The connector's own failure code, kept so the sub-call log names the real reason. */
   code?: string;
+  classified?: string;
   /** E5: the one broader read a search that matched nothing ran, so the receipt can name both shapes. */
   retry?: MailRead;
   /** C-LIVE: the last page's own duration, the totals pages reported, and a page the operation bound did not start. */
@@ -2056,6 +2056,7 @@ interface CalendarRead {
   bodyTruncated: boolean; unread: number; upstreamIncomplete?: boolean; inflight?: boolean;
   /** The connector's own failure code, kept so the sub-call log names the real reason. */
   code?: string;
+  classified?: string;
   /** C-LIVE: the last page's own duration, and a page the operation bound did not start. */
   lastPageMs?: number; boundStop?: boolean;
   /** LOGS.md L-01: the words a page carried when it brought no event, so a refusal is never an empty window. */
@@ -5000,7 +5001,7 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
     // Q1-R3(e): one retry for a transient failed page, inside this source's own deadline.
     // A native page that failed is terminal for its source, so only a first page is retried.
     // F2: a rate-limited page never takes that immediate retry; it waits once, then the read is closed.
-    const failed = calls.map((_, index) => index).filter(index => !results[index]?.ok);
+    const failed = calls.map((_, index) => index).filter(index => !results[index]?.ok || classifiedProjectionText([results[index]!]) !== undefined);
     const limited = failed.filter(index => rateLimited(results[index]));
     const retried = failed.filter(index => !calls[index]!.args['pageToken'] && !limited.includes(index));
     if (retried.length > 0) {
@@ -5022,6 +5023,14 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
       read.lastPageMs = Math.max(0, now() - pageStartedAt);
       const result = results[n];
       if (!result?.ok || deps.authorizeEvidence && !result.binding) { failMailPage(read); if (result?.code !== undefined) read.code = result.code; return; }
+      if (classifiedProjectionText([result]) !== undefined) {
+        read.classified = (result as IntentSubResult & { classified: string }).classified;
+        read.plain = result.text;
+        run.failureLines.set('mail', result.text);
+        read.failed = true;
+        read.exhausted = true;
+        return;
+      }
       read.pages += 1;
       // A search that answered with text but no page envelope is still that search's answer: each tagged
       // line is one message, so the follow-up read and the reply carry it like any other page.
@@ -5154,6 +5163,16 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     recordShapes(deps, run, calls, now);
     try { results = await deps.execute(calls, signal); }
     catch { for (const read of reads) { read.failed = true; read.inflight = false; } if (signal.aborted) run.cutShort.add('calendar'); break; }
+    if (!signal.aborted && !parent.aborted && now() < sourceDeadlineAt) {
+      const retried = calls.map((_, index) => index).filter(index => !calls[index]!.args['pageToken']
+        && results[index]?.ok && classifiedProjectionText([results[index]!]) !== undefined && !rateLimited(results[index]));
+      if (retried.length > 0) {
+        try {
+          const again = await deps.execute(retried.map(index => calls[index]!), signal);
+          retried.forEach((index, position) => { const result = again[position]; if (result) results[index] = { ...result, key: calls[index]!.key }; });
+        } catch { /* the first failure remains the result */ }
+      }
+    }
     // E8: the window this batch paid for is kept for the session, so the run that superseded it never pays again.
     if (deps.authorizeEvidence?.(deps.ledger.evidenceBindings(run.researchId), new AbortController().signal) ?? true) rememberCalendarWindow(deps, reads, results, slots, now());
     if (parent.aborted || run.cancelled || run.stopped) { run.cancelled = true; invalidateEvidence(run); break; }
@@ -5171,6 +5190,14 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
       read.inflight = false;
       read.lastPageMs = Math.max(0, now() - pageStartedAt);
       const result = results[slots[n]!];      if (!result?.ok || (deps.authorizeEvidence && !result.binding)) { read.failed = true; if (result?.code !== undefined) read.code = result.code; return; }
+      if (classifiedProjectionText([result]) !== undefined) {
+        read.classified = (result as IntentSubResult & { classified: string }).classified;
+        read.plain = result.text;
+        run.failureLines.set('calendar', result.text);
+        read.failed = true;
+        read.exhausted = true;
+        return;
+      }
       // A calendar answer with text but no page envelope is still that source's answer: each tagged
       // line is one event, so the brief fan-out and the reply carry it like any other page.
       if (!result.calendarPage) {
@@ -6616,8 +6643,8 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             await collectCalendar(deps, run, signal, Math.min(readDeadlineMs, deadlineAt - now()), now);
             return calendarCalls.map(call => {
               const read = run.calendar.get(JSON.stringify(call.args));
-              const text = read ? [...read.events.values()].map(event => event.line).join('\n') : '';
-              return { key: call.key, name: call.name, ok: Boolean(read && (read.events.size > 0 || read.exhausted)), text, originalCharacters: text.length, omittedCharacters: 0, ...(read?.code ? { code: read.code } : {}) };
+              const text = read ? [...read.events.values()].map(event => event.line).concat(read.plain ? [read.plain] : []).join('\n') : '';
+              return { key: call.key, name: call.name, ok: Boolean(read && (read.events.size > 0 || read.exhausted)), text, originalCharacters: text.length, omittedCharacters: 0, ...(read?.code ? { code: read.code } : {}), ...(read?.classified ? { classified: read.classified } : {}) };
             });
           };
           const mailResults = async (): Promise<IntentSubResult[]> => {
@@ -6628,7 +6655,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             return mailCalls.map((call, n) => {
               const read = reads[n]!;
               const text = [...read.messages.values()].map(message => message.line).concat(read.plain ? [read.plain] : []).join('\n');
-              return { key: call.key, name: call.name, ok: read.messages.size > 0 || Boolean(read.plain) || read.exhausted, text, originalCharacters: text.length, omittedCharacters: 0, ...(read.code ? { code: read.code } : {}) };
+              return { key: call.key, name: call.name, ok: read.messages.size > 0 || Boolean(read.plain) || read.exhausted, text, originalCharacters: text.length, omittedCharacters: 0, ...(read.code ? { code: read.code } : {}), ...(read.classified ? { classified: read.classified } : {}) };
             });
           };
           let results: IntentSubResult[];
@@ -6679,7 +6706,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
             const mailInfo = part.source !== 'mail' || mailCalls.length === 0 ? undefined : mailQueryInfo(mailRead(run, mailCalls[0]!.args));
             run.ledger.set(parts.length === 1 ? key : `${key}#${part.source ?? index}`, { kind, source: part.source, summary: block.text, lines: block.lines, total: block.total, ...(part.results.length > 0 && part.results.every(result => result.ok && result.hostEvidence?.kind === 'remote-body') ? { bodyOnly: true } : {}) });
             if (part.source === null) continue;
-            if (part.results.some(result => result.ok && result.text.trim())) {
+            if (part.results.some(result => result.ok && result.text.trim()) && classifiedProjectionText(part.results) === undefined) {
               run.sourcesDone.add(part.source); run.sourcesFailed.delete(part.source); run.emptySearches.delete(part.source);
             } else if (classifiedProjectionText(part.results) !== undefined) {
               // LOGS.md L-01: the tool layer's own code says this read is a classified failure, and the line

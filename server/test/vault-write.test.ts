@@ -31,7 +31,7 @@ function harness(t: TestContext, url: string): Harness {
   const store = new Store(dir, [...liveMigrations]);
   t.after(() => store.close());
   const events: Record<string, unknown>[] = [];
-  const writer = new VaultWriter({ store, transport: createLuxWriteTransport({ url }), now: () => NOW, log: event => { events.push(event); } });
+  const writer = new VaultWriter({ store, backoff: async () => {}, transport: createLuxWriteTransport({ url }), now: () => NOW, log: event => { events.push(event); } });
   return { store, writer, events };
 }
 
@@ -70,7 +70,7 @@ test('a natural ask with nothing of his own to save writes nothing and says the 
 test('an unreachable vault is logged as unavailable with its closed code', async t => {
   const h = harness(t, 'http://127.0.0.1:1/mcp');
   speak(h, '41', `save to my vault: ${NOTE}`);
-  assert.deepEqual(await save(h, NOTE), { saved: false, code: 'vault_unavailable', guidance: 'the vault is not reachable right now' });
+  assert.deepEqual(await save(h, NOTE), { saved: false, code: 'vault_unavailable', guidance: 'Retried lux once. the vault is not reachable right now' });
   const attempt = h.events.at(-1);
   assert.equal(attempt?.['state'], 'unavailable');
   assert.equal(attempt?.['code'], 'vault_unavailable');

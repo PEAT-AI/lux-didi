@@ -266,8 +266,11 @@ for (const outcome of ['saved', 'unavailable', 'unknown'] as const) {
     const { attachment } = await attached(h);
     await ownerBlock(h, 'save a summary of this into Lux');
     await assistantBlock(h, 'On it.');
-    const result = await call(h, 'stage_lux_note', candidate);
-    assert.equal(h.saved.length, 1, 'the real transport was called before any yes or readback');
+    if (outcome === 'unavailable') t.mock.timers.enable({ apis: ['setTimeout'] });
+    const pending = call(h, 'stage_lux_note', candidate);
+    if (outcome === 'unavailable') { await drain(); t.mock.timers.tick(250); }
+    const result = await pending;
+    assert.equal(h.saved.length, outcome === 'unavailable' ? 2 : 1, 'unavailable retries exactly once; other outcomes never retry');
     assert.equal(result['saved'], outcome === 'saved', JSON.stringify(result));
     if (outcome === 'saved') {
       assert.equal(result['insightId'], 'synthetic-81');

@@ -808,7 +808,7 @@ test('C-STEADY104: a rolled-back read completion still permits a failed terminal
 for (const channel of ['eng', 'synthetic-missing']) {
   test(`C-STEADY104: channel ${channel} closes its owner journal with a speakable result`, async t => {
     const { MATTERMOST_TOOLS } = await import('../connectors/mattermost.js');
-    const sourceTools = MATTERMOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object', additionalProperties: true } }));
+    const sourceTools = MATTERMOST_TOOLS.map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: true } }));
     const names = sourceTools.map(tool => tool.name);
     const p = policy({ connector: 'mattermost', toolNames: names, schemaDigest: canonicalToolDigest(sourceTools) });
     const f = await fixture(t, { policy: p, sourceTools, resultOf: name => ({ content: [{ type: 'text', text: JSON.stringify(name === 'mattermost_whoami'

@@ -1129,3 +1129,24 @@ test('Gemini alarm mode speaks the alarm without the fresh-opening direction', a
   assert.ok(!JSON.stringify(f.frames[1]).includes(FRESH_OPENING), 'alarm startup must not send the neutral fresh-opening direction');
   assert.deepEqual(f.frames[1], { clientContent: { turns: [{ role: 'user', parts: [{ text: '[host note, not the owner] Speak the alarm now, following the session instructions.' }] }], turnComplete: true } });
 });
+
+
+test('SI-R3 Gemini: parallel research batch admits six and immediately answers the excess', async t => {
+  const { f, session, captured } = await ready(t);
+  f.send({ toolCall: { functionCalls: Array.from({ length: 8 }, (_, i) => ({ id: `synthetic-cap-${i}`, name: 'research', args: {} })) } });
+  const frame = await f.frame(2) as { toolResponse: { functionResponses: { id: string; response: unknown }[] } };
+  assert.deepEqual(frame.toolResponse.functionResponses.map(call => call.id), ['synthetic-cap-6', 'synthetic-cap-7']);
+  assert.match(JSON.stringify(frame), /research cap reached for this question/);
+  const calls = captured.events.flatMap(event => event.type === 'toolCall' ? event.calls : []);
+  assert.equal(calls.length, 6);
+  session.sendToolResponse({ responses: calls.map(call => ({ id: call.id, name: call.name, response: { ok: true } })) });
+  await f.frame(3);
+  f.send({ toolCall: { functionCalls: [{ id: 'synthetic-cap-later', name: 'research', args: {} }] } });
+  const later = await f.frame(4);
+  assert.match(JSON.stringify(later), /research cap reached for this question/, 'the cap spans provider rounds');
+  f.send({ voiceActivity: { type: 'ACTIVITY_START' } });
+  f.send({ toolCall: { functionCalls: [{ id: 'synthetic-next-question', name: 'research', args: {} }] } });
+  // Wait for a provider acknowledgement of the accepted call by answering it through the public API.
+  for (let i = 0; i < 20 && !captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'synthetic-next-question')); i++) await new Promise<void>(resolve => setImmediate(resolve));
+  assert.ok(captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'synthetic-next-question')), 'a new owner question resets the cap');
+});

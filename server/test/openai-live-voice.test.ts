@@ -2466,3 +2466,24 @@ test('SILENCE timing: short completed audio keeps its receipt until actual playb
   assert.equal(receipt['class'], 'c');
   assert.ok(Number(receipt['firstAudioAt']) > Number(receipt['createdAt']));
 });
+
+
+test('SI-R3 OpenAI: parallel research batch admits six and honestly answers the excess once', async t => {
+  const opened = await fakeReady(t, { clock: new FakeClock() });
+  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-cap' } }));
+  for (let i = 0; i < 8; i++) opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: `synthetic-cap-${i}`, name: 'research', arguments: '{}' } }));
+  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-cap-7', name: 'research', arguments: '{}' } }));
+  await quiet();
+  const dispatched = opened.captured.events.flatMap(event => event.type === 'toolCall' ? event.calls : []);
+  assert.equal(dispatched.length, 6);
+  const results = opened.socket.sent.map(frame => JSON.parse(frame) as { type: string; item?: { call_id: string; output: string } }).filter(frame => frame.type === 'response.item.create');
+  assert.equal(results.length, 2, 'over-cap calls get immediate results, even before the admitted calls finish');
+  assert.deepEqual(results.map(frame => frame.item?.call_id), ['synthetic-cap-6', 'synthetic-cap-7']);
+  for (const result of results) assert.match(result.item!.output, /research cap reached for this question/);
+  assert.equal(creates(opened.socket).length, 0, 'the active response still owns the continuation gate');
+  opened.session.sendToolResponse({ responses: dispatched.map(call => ({ id: call.id, name: call.name, response: { ok: true } })) });
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-cap', status: 'completed' } }));
+  await quiet();
+  assert.equal(creates(opened.socket).length, 1);
+  assert.equal(creates(opened.socket)[0]?.response?.tool_choice, 'none');
+});

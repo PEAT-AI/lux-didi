@@ -257,8 +257,8 @@ export function chatSubs(intent: ChatIntent, limit: number, fallbackQuery: strin
   const query = intent.terms.trim();
   if (intent.kind === 'topic-search') {
     const args: JsonObject = { query: query !== '' ? query : fallbackQuery, limit };
-    if (window['from_date'] !== undefined) args['after'] = window['from_date'];
-    if (window['to_date'] !== undefined) args['before'] = window['to_date'];
+    if (window['from_date'] !== undefined) args['from_date'] = window['from_date'];
+    if (window['to_date'] !== undefined) args['to_date'] = window['to_date'];
     return [{ key: 'c0', name: CHAT_SEARCH_TOOL, args }];
   }
   const args: JsonObject = { intent: intent.kind === 'person-said' ? 'person' : intent.kind === 'person-overview' ? 'overview' : intent.kind === 'channel-recent' ? 'channel' : 'group', limit, ...window };

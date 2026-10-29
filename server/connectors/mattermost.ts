@@ -89,7 +89,7 @@ export type MattermostResult = MattermostEvidence | MattermostRefused | Mattermo
 export interface BoundedInput { limit?: number }
 export interface ChannelInput { channel: string; limit?: number }
 export interface ThreadInput { postId: string }
-export interface QueryInput { query: string; limit?: number; after?: string; before?: string; /** A channel the ask names: name, display name or id. */ channel?: string; /** C-CHAT: the page after the ones already read. */ offset?: number }
+export interface QueryInput { query: string; limit?: number; from_date?: string; to_date?: string; after?: string; before?: string; /** A channel the ask names: name, display name or id. */ channel?: string; /** C-CHAT: the page after the ones already read. */ offset?: number }
 export interface AttentionInput { days?: number; limit?: number }
 export type AttentionReason = 'mention' | 'dm' | 'thread';
 
@@ -673,11 +673,10 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     const lower = after === undefined ? new Date(Date.now() - SEARCH_WINDOW_MS).toISOString() : boundedText(after);
     if (lower === undefined) return undefined;
     const day = (iso: string): string => iso.slice(0, 10);
-    const window: Record<string, string> = { after: lower, from_date: day(lower) };
+    const window: Record<string, string> = { from_date: day(lower) };
     if (before !== undefined) {
       const upper = boundedText(before);
       if (upper === undefined) return undefined;
-      window['before'] = upper;
       window['to_date'] = day(upper);
     }
     const declared = declaredSearchArguments();
@@ -1111,7 +1110,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       // #610: a search limit over the maximum is clamped to it, never sent as the child would refuse it.
       const bounded = limited(input.limit, true);
       if (!bounded) return { state: 'refused', reason: 'limit-out-of-budget' };
-      const window = searchWindow(input.after, input.before);
+      const window = searchWindow(input.from_date ?? input.after, input.to_date ?? input.before);
       if (window === undefined) return { state: 'refused', reason: 'invalid-window' };
       // #610/F10: the channel an ask names is only sent where the child declares the filter, so a
       // child without one searches its whole archive rather than refusing the read.

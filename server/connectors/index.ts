@@ -395,12 +395,12 @@ function threadArgs(args: Record<string, unknown>): boolean {
   return Object.keys(args).every(key => key === 'postId' || key === 'post_id') && threadPostId(args) !== '';
 }
 function searchArgs(args: Record<string, unknown>, maxText: number, maxLimit: number): boolean {
-  if (!Object.keys(args).every(key => ['query', 'limit', 'after', 'before', 'channel', 'offset'].includes(key))) return false;
+  if (!Object.keys(args).every(key => ['query', 'limit', 'from_date', 'to_date', 'channel', 'offset'].includes(key))) return false;
   if (args['offset'] !== undefined && !isCount(args['offset'], 0, MATTERMOST_CHAT.maxOffset)) return false;
   if (args['channel'] !== undefined && !isText(args['channel'], 60)) return false;
   if (!isText(args['query'], maxText)) return false;
   if (args['limit'] !== undefined && !isCount(args['limit'], 1, maxLimit)) return false;
-  return ['after', 'before'].every(key => args[key] === undefined || isText(args[key], 40));
+  return ['from_date', 'to_date'].every(key => args[key] === undefined || isText(args[key], 40));
 }
 /** The declaration a composed tool publishes; the host digests exactly these fields. */
 function composedDeclaration(tool: ConnectorComposedTool): ConnectorToolDeclaration {
@@ -530,8 +530,8 @@ const mattermostDescriptor: ConnectorDescriptor = {
       mattermostDeclaration('mattermost_get_thread', 'Read a bounded Mattermost thread. postId is a post id taken from a channel history, and post_id is accepted as the same id. Returns at most 8 posts, 250 characters each.',
         { postId: { type: 'string', minLength: 1, maxLength: text }, post_id: { type: 'string', minLength: 1, maxLength: text } }, ['postId'], threadArgs,
         { normalize: args => (isRecord(args) && threadPostId(args) !== '' ? { args: { postId: threadPostId(args) } } : undefined) }),
-      mattermostDeclaration('mattermost_search', 'Search bounded Mattermost messages by query, newest first, over the last 90 days unless after names an older start. No channel id needed: search first, no channel list needed. Put filters inside the query: From:<user>, After:<date>, In:<channel>, so "what did X say about Y" or "what happened in channel Z this week" is one call. Results are shaped newest first, at most 8 posts of 250 characters, not whole threads.',
-        { query: { type: 'string', minLength: 1, maxLength: text }, limit: { type: 'integer', minimum: 1, maximum: limit }, offset: { type: 'integer', minimum: 0, maximum: MATTERMOST_CHAT.maxOffset, description: 'Skip this many matches: the next page of the same search.' }, after: { type: 'string', minLength: 1, maxLength: 40, description: 'ISO instant the window starts at; 90 days before now by default.' }, before: { type: 'string', minLength: 1, maxLength: 40 }, channel: { type: 'string', minLength: 1, maxLength: 60, description: 'One channel name, display name or id the ask names; resolved through the channel list.' } }, ['query'], args => searchArgs(args, text, limit)),
+      mattermostDeclaration('mattermost_search', 'Search bounded Mattermost messages by query, newest first, over the last 90 days unless from_date names an older start. No channel id needed: search first, no channel list needed. Use from_date/to_date for date windows and channel for a named channel; never use inline After: or Before: operators, so "what did X say about Y" or "what happened in channel Z this week" is one call. Results are shaped newest first, at most 8 posts of 250 characters, not whole threads.',
+        { query: { type: 'string', minLength: 1, maxLength: text }, limit: { type: 'integer', minimum: 1, maximum: limit }, offset: { type: 'integer', minimum: 0, maximum: MATTERMOST_CHAT.maxOffset, description: 'Skip this many matches: the next page of the same search.' }, from_date: { type: 'string', minLength: 1, maxLength: 40, description: 'ISO day the window starts at; 90 days before now by default.' }, to_date: { type: 'string', minLength: 1, maxLength: 40 }, channel: { type: 'string', minLength: 1, maxLength: 60, description: 'One channel name, display name or id the ask names; resolved through the channel list.' } }, ['query'], args => searchArgs(args, text, limit)),
       // #604: the composite's own declaration, so one table feeds the grant and the dispatch.
       composedDeclaration(CONNECTOR_COMPOSED_TOOLS['mattermost']![0]!),
       composedDeclaration(CONNECTOR_COMPOSED_TOOLS['mattermost']![1]!),
@@ -547,7 +547,7 @@ const mattermostDescriptor: ConnectorDescriptor = {
         case 'mattermost_whoami': return reader.whoami(signal);
         case 'mattermost_get_channel_history': return reader.getChannelHistory(args as { channel: string; limit?: number }, signal);
         case 'mattermost_get_thread': return reader.getThread(args as { postId: string }, signal);
-        case 'mattermost_search': return reader.search(args as { query: string; limit?: number; after?: string; before?: string; offset?: number }, signal);
+        case 'mattermost_search': return reader.search(args as { query: string; limit?: number; from_date?: string; to_date?: string; offset?: number }, signal);
         case 'mattermost_attention': return reader.attention(args as { days?: number; limit?: number }, signal);
         case 'mattermost_chat': return reader.chat(args as unknown as ChatReadInput, signal);
         case 'mattermost_list_channels': return reader.listChannels(args, signal);

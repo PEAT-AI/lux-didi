@@ -75,4 +75,3 @@ export const luxNoteMigrations: readonly SchemaMigration[] = [{
 ] }, { owner: 'lux-note', version: 3, statements: [
   "UPDATE lux_note_stages SET state='cancelled',code='confirmation_removed' WHERE state IN ('staged','armed','settling')",
 ] }];
-

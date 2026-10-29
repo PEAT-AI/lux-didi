@@ -12,6 +12,12 @@ printf '# isolated global config\n' > "$work/npm-global"
 export npm_config_userconfig="$work/npm-user" npm_config_globalconfig="$work/npm-global"
 cd server
 npm run build
+# Historical comparative proof runs when the pinned release is available; current behavior tests below always run.
+if git cat-file -e c77491b713808192e6314babd8b0bdbb3154cbdf^{commit} 2>/dev/null; then
+  node test/direct102-red-base.integration.mjs
+else
+  printf '%s\n' 'DIRECT102_BASE_HISTORY_UNAVAILABLE: current behavior tests remain mandatory below'
+fi
 # Alarm cases are imported by the registry-wide intent suite, so release CI executes both.
 node_test_files --test-reporter=tap --test-timeout=30000 dist/test/tools-builtin-intent.test.js dist/test/research-calendar.test.js
 # Public tool guidance is also composed by text, memory and summary surfaces.

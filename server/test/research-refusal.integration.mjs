@@ -105,9 +105,18 @@ async function fixture(routeClasses=classes,speakAtStart=true){
  }catch(error){await service?.shutdown();await runtime?.close();for(const {sdk,transport}of sdkRows){await transport.close();await sdk.close();}for(const cleanup of cleanups.reverse())await cleanup();globalThis.fetch=originalFetch;store.close();rmSync(dir,{recursive:true,force:true});throw error;}
 }
 let positive,denied,revoked;
+let ownerSequence=0;
+// Independent shape probes are independent questions. A provider response start
+// closes the transcript episode, so no real quiet-window wait is needed.
+const speakAt=async(handle)=>{
+ const id='synthetic-owner-boundary-'+(++ownerSequence);
+ handle.wire.send({type:'session.input_transcript.delta',delta:'synthetic owner question'});
+ handle.wire.send({type:'response.event',delegation_id:id,event:{type:'response.created',response:{id}}});
+ handle.wire.send({type:'response.event',delegation_id:id,event:{type:'response.done',response:{id,status:'completed'}}});
+};
 try{
  positive=await fixture();
- for(const [reason,input] of invalid){const before=positive.calls.length,response=await positive.send(input);assert.equal(response.state,'refused');assert.equal(response.reason,reason);assert.equal(JSON.stringify(response).includes(sentinel),false);assert.equal(positive.calls.length,before);}
+ for(const [reason,input] of invalid){await speakAt(positive);const before=positive.calls.length,response=await positive.send(input);assert.equal(response.state,'refused');assert.equal(response.reason,reason);assert.equal(JSON.stringify(response).includes(sentinel),false);assert.equal(positive.calls.length,before);}
  const refusedTrace=positive.store.transaction(tx=>tx.all('SELECT outcome,output_written_at FROM trace_call ORDER BY intent_at'));
  assert.equal(refusedTrace.length,invalid.length);assert(refusedTrace.every(row=>row.outcome==='refused'&&Number.isSafeInteger(row.output_written_at)),'successful output receipt preserves semantic refusal');
  assert.equal(positive.store.transaction(tx=>tx.get('SELECT COUNT(*) AS n FROM tool_calls').n),0);assert.equal(positive.store.transaction(tx=>tx.get('SELECT COUNT(*) AS n FROM tool_dispatches').n),0);
@@ -122,6 +131,7 @@ try{
  // C-ENTITY: the entity rewrite refusal logs its three name counts as numbers, and never the owner's words.
  assert.equal(safeEvent({...refusals[0],namesKept:0}),undefined,'a closed reason without counts keeps the log free of them');
  const swap={action:'start',question:'Find Acmeworks pricing',topic:'Globex pricing'};
+ await speakAt(positive);
  const swapped=await positive.send(swap);
  assert.equal(swapped.state,'refused');assert.equal(swapped.reason,'entity_rewrite');
  assert.match(String(swapped.guidance),/keep the question's own names exactly/);
@@ -153,7 +163,6 @@ try{
  }finally{await gated.close();}
  // One owner turn grants one research operation, so the fixture speaks before each start it wants admitted.
 // One owner turn grants one research operation, so the fixture speaks before each start it wants admitted.
-const speakAt=async(handle)=>{handle.wire.send({type:'session.input_transcript.delta',delta:'synthetic owner question'});await new Promise(resolve=>setTimeout(resolve,800));};
 const speak=async()=>speakAt(positive);
 // The fake Gmail leg answers provider_failed in this fixture, which is neither this contract's surface nor a
 // refusal it changes, so the admitted reads asserted here are the knowledge and calendar legs.

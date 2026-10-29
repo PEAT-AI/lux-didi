@@ -1,3 +1,4 @@
+import { canarySessions } from '../live/canary.js';
 import { AlarmScheduler, AlarmSessionCoordinator } from '../host/alarm-scheduler.js';
 import { fakeReady as readyOpenAi, FakeClock as OpenAiClock } from './openai-live-voice-fixture.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -7801,4 +7802,36 @@ test('SI-R2: post-tool no-item signal fires the existing dead-air rung at five s
   h.advance(3_000); scheduler.runDue(); await settlePort();
   assert.equal(hostLines(captureDir).filter(line => line.event === 'live_dead_air_nudge').length, 1, 'the old eight-second timer is retired');
   attachment.close();
+});
+
+test('canary revoke emits a validated terminal paired to its provider open', async t => {
+  const h = await harness(t);
+  const { session, attachment } = await attached(h, 'canary-close');
+  const receipts: unknown[] = [];
+  const stop = attachHostLogSink({ event: raw => { const event = safeEvent(raw); if (event) receipts.push(event); } });
+  canarySessions.open(session.liveSessionId);
+  try {
+    h.owner.revoke(session.liveSessionId);
+    await attachment.done;
+    assert.ok(receipts.some(raw => {
+      const row = raw as Record<string, unknown>;
+      return row['event'] === 'live_terminal' && row['liveSessionId'] === session.liveSessionId && row['code'] === 'revoked';
+    }));
+  } finally { stop(); canarySessions.close(session.liveSessionId); }
+});
+
+test('typed owner text refuses before provider setup completes without sending', async t => {
+  const h = await harness(t);
+  const session = h.owner.create({ idempotencyKey: 'typed-before-ready', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await h.f.frame(1);
+  assert.equal(h.owner.providerReady(session.liveSessionId), false);
+  const before = h.f.frames.length;
+  assert.throws(() => h.owner.text('synthetic early owner text'), /not_ready/);
+  assert.equal(h.f.frames.length, before);
+  h.f.send({ setupComplete: {} });
+  await attachment.ready;
+  assert.equal(h.owner.providerReady(session.liveSessionId), true);
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
 });

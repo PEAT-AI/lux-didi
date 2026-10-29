@@ -362,7 +362,7 @@ test('direct102 real host and fake provider: preamble-before-open yields one nat
   assert.deepEqual(native.map(frame => frame.target), ['https://drive.google.com/file/d/synthetic-pitch/view', 'https://drive.google.com/file/d/synthetic-other/view']);
   await ownerBlock(h, 'what is the weather?');
   assert.equal((await call(h, 'open_source', { handle }))['code'], 'no_owner_request', 'a stale open verb is not authority');
-  assert.equal(native.length, 1);
+  assert.equal(native.length, 2);
   attachment.close();
 });
 

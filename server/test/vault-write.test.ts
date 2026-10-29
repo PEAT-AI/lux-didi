@@ -379,3 +379,18 @@ test('unavailable retries once with backoff and then confirms without a duplicat
   assert.equal(calls, 2);
   assert.equal(writer.claim(SESSION, NOTE).state, 'settled');
 });
+
+test('startup retries a legacy unavailable row only once across restarts', async t => {
+  const h = harness(t, 'http://127.0.0.1:1');
+  speak(h, 'legacy-unavailable', `save this to lux: ${NOTE}`);
+  h.store.transaction(tx => tx.run("UPDATE vault_writes SET state='failed',code='vault_unavailable'"));
+  let calls = 0;
+  const delays: number[] = [];
+  const options = { store: h.store, now: () => NOW, log: () => {}, backoff: async (ms: number) => { delays.push(ms); },
+    transport: { save: async () => { calls++; return { outcome: 'inserted' as const, insightId: 'recovered-7' }; } } };
+  await new VaultWriter(options).recovery;
+  await new VaultWriter(options).recovery;
+  assert.equal(calls, 1);
+  assert.deepEqual(delays, [250]);
+  assert.equal(h.store.transaction(tx => tx.get("SELECT state FROM vault_writes WHERE utterance_id='legacy-unavailable'"))?.state, 'confirmed');
+});

@@ -197,10 +197,17 @@ export class VaultWriter {
       tx.run("UPDATE vault_writes SET state='uncertain' WHERE state='dispatched'");
       // Authorized means the execution never crossed the dispatch boundary. Claim by op_id,
       // not by content, so recovery cannot bind to another authorization for the same note.
-      return tx.all("SELECT * FROM vault_writes WHERE state='authorized'").map(row => claimRow(tx, row));
+      return tx.all("SELECT * FROM vault_writes WHERE state='authorized' OR (state='failed' AND code='vault_unavailable' AND retry_count=0)").map(row => {
+        const retry = row.state === 'failed';
+        if (retry) tx.run("UPDATE vault_writes SET state='authorized',retry_count=1 WHERE op_id=? AND state='failed' AND retry_count=0", [String(row.op_id)]);
+        return { claim: claimRow(tx, retry ? { ...row, state: 'authorized' } : row), retry };
+      });
     });
-    this.recovery = Promise.all(claims.map(async claim => {
-      if (claim.state === 'dispatch') await this.dispatch(claim);
+    this.recovery = Promise.all(claims.map(async ({ claim, retry }) => {
+      if (claim.state === 'dispatch') {
+        if (retry) await this.#backoff(250);
+        await this.dispatch(claim);
+      }
     })).then(() => {});
   }
 

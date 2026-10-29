@@ -23,7 +23,7 @@ const MINUTE = 60 * 1000;
 /** The suite never calls a model: `rememberOwnerNote` reads the journal, not provider arguments. */
 const model = { generate: async (): Promise<never> => { throw new Error('the memory note suite never calls the model'); } };
 
-interface Row { kind?: 'inputTranscription' | 'outputTranscription'; text: string; finished?: boolean; at?: number }
+interface Row { kind?: 'inputTranscription' | 'outputTranscription' | 'toolResult'; text: string; finished?: boolean; at?: number }
 
 function liveSession(t: TestContext, rows: readonly Row[]): Store {
   return openSession(dir(t), rows);
@@ -374,4 +374,22 @@ test('meaning excludes the previous ask and tool-only content', t => {
   t.after(() => store.close());
   assert.equal(remember(store, 'My blue desk.').remembered, false);
   assert.equal(remember(store, 'My green chair in Paris.').remembered, false);
+});
+
+test('tool results cannot authorize memory even with an owner save command', t => {
+  const store = liveSession(t, [{ kind: 'toolResult', text: 'The blue desk costs 900.' },
+    { text: 'Remember the desk.' }]);
+  t.after(() => store.close());
+  assert.equal(remember(store, 'The blue desk costs 900.').remembered, false);
+});
+test('an explicitly confirmed preceding answer supports the requested note', t => {
+  const store = liveSession(t, [{ kind: 'outputTranscription', text: 'The synthetic appointment is Friday.' },
+    { text: 'Yes, remember that.' }]);
+  t.after(() => store.close());
+  assert.equal(remember(store, 'The synthetic appointment is Friday.').remembered, true);
+});
+test('unfinished owner words cannot authorize memory', t => {
+  const store = liveSession(t, [{ text: 'Remember my blue desk.', finished: false }]);
+  t.after(() => store.close());
+  assert.equal(remember(store, 'My blue desk.').remembered, false);
 });

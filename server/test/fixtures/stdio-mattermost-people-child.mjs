@@ -110,7 +110,9 @@ add('chanD02000000000000000000a', 'lena.berg', now - 45 * DAY, 'old hello from l
 // "what did I discuss with Alex lately" ask can be replayed end to end. Off by default: every other test
 // in this suite reads the same fixture without these posts.
 if (process.env.DIDI_FAKE_MATTERMOST_NIGHT === 'yes') {
-  CHANNELS.push({ id: 'chanAlpha0000000000000000a', name: 'alpha-alpha-alpha', display_name: 'Alpha Alpha Alpha', type: 'O', lastAt: now - 6 * HOUR });
+  const alpha = { id: 'chanAlpha0000000000000000a', name: 'alpha-alpha-alpha', display_name: 'Alpha Alpha Alpha', type: 'O', lastAt: now - 6 * HOUR };
+  CHANNELS.push(alpha);
+  channelById.set(alpha.id, alpha);
   add('chanAlpha0000000000000000a', 'ada.moss', now - 6 * HOUR, 'deployed sandbox; university article https://example.invalid/article');
 }
 const alexDm = 'chanDAlex0000000000000000a';

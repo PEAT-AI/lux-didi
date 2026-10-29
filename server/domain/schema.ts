@@ -173,4 +173,11 @@ export const domainMigrations: SchemaMigration[] = [
       `ALTER TABLE history_dependencies ADD COLUMN parent_revision INTEGER`,
     ],
   },
+  {
+    owner: 'domain', version: 9,
+    statements: [
+      `CREATE TABLE history_turns(id INTEGER PRIMARY KEY,live_session_id TEXT NOT NULL,journal_first INTEGER NOT NULL,journal_last INTEGER NOT NULL,role TEXT NOT NULL CHECK(role IN ('owner','assistant')),text TEXT NOT NULL,at INTEGER NOT NULL,UNIQUE(live_session_id,journal_first))`,
+      `CREATE VIRTUAL TABLE history_turns_fts USING fts5(text,content='history_turns',content_rowid='id',tokenize='unicode61 remove_diacritics 2',prefix='2 3')`,
+    ],
+  },
 ];

@@ -1,3 +1,4 @@
+import { deleteHistoryTurns } from './history-turns.js';
 import type { Transaction } from '../contracts/storage.js';
 import type { DataClass } from '../adapters/model/types.js';
 
@@ -70,6 +71,7 @@ export function forgetHistorySessions(tx: Transaction, ids: readonly string[], n
   }
   const deletedIds: string[] = [];
   for (const id of excluded) {
+    deleteHistoryTurns(tx, id);
     tx.run("INSERT OR IGNORE INTO history_exclusions(source_kind,source_id,forgotten_at) VALUES('live',?,?)", [id, now]);
     tx.run('UPDATE history_sessions SET revision=revision+1 WHERE live_session_id=?', [id]);
     for (const row of summaries.filter(row => row.live_session_id === id)) {

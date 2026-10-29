@@ -1,3 +1,4 @@
+import { persistHistoryTurns } from '../domain/history-turns.js';
 import type { DataClass, ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
 import { deadlineAt } from '../adapters/model/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
@@ -448,6 +449,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
 
   return {
     schedule(liveSessionId: string): void {
+      options.store.transaction(tx => persistHistoryTurns(tx, liveSessionId));
       void serialize(() => distill(liveSessionId)).catch(() => { /* never surfaces on the close path */ });
     },
     reconcile: (phase?: SummaryPhase): Promise<void> => reconcilePending(phase),

@@ -1,3 +1,4 @@
+import { backfillHistoryTurns } from '../domain/history-turns.js';
 import { DatabaseSync, constants } from 'node:sqlite';
 import type { StatementSync } from 'node:sqlite';
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
@@ -110,6 +111,8 @@ export class Store {
           run: (sql, params = []) => Number(this.#db!.prepare(sql).run(...params).changes),
           all: (sql, params = []) => this.#db!.prepare(sql).all(...params) as SQLRow[],
         };
+        const memoryTx = new Tx(sql => this.#db!.prepare(sql));
+        try { backfillHistoryTurns(memoryTx); } finally { memoryTx.expire(); }
         pruneTraceContent(traceExec, Date.now());
         this.#db.prepare("UPDATE runtime_outbox SET state='unknown', claim_token=NULL, lease_until=NULL WHERE state='claimed'").run();
         // Data hygiene at host start: a settled Live job row past its expiry is a delivered result from an

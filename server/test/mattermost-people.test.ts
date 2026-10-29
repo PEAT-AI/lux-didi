@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { createMcpAdapter } from '../adapters/mcp/adapter.js';
 import { McpRegistry } from '../adapters/mcp/registry.js';
 import { MemoryResultStore } from '../adapters/mcp/store.js';
-import type { EndpointConfig } from '../adapters/mcp/port.js';
+import { SOURCE_CHILD_DISPATCHES, type EndpointConfig } from '../adapters/mcp/port.js';
 import {
   CONNECTOR_COMPOSED_TOOLS, composedGrantedNames, connectionEnvelope, createMattermostReader, nameKey,
   MATTERMOST_ATTENTION_TOOL, MATTERMOST_CHAT_TOOL, MATTERMOST_PERSON_TOOLS, MATTERMOST_READ_TOOLS, MATTERMOST_TOOLS, withoutOwner,
@@ -750,7 +750,6 @@ test('overview does not import channel-index dispatches from an unrelated earlie
   const result = await f.reader.chat({ intent: 'overview', person: 'Ada', from_date: fixtureDaysAgo(7) });
   const read = chatRead(result);
   assert.ok(read.posts.length > 0);
-  const { SOURCE_CHILD_DISPATCHES } = await import('../adapters/mcp/port.js');
   // Identity and overview are the only children used by this call.
-  assert.equal(result[SOURCE_CHILD_DISPATCHES]?.length, 2);
+  assert.equal(result.state === 'completed' ? result[SOURCE_CHILD_DISPATCHES]?.length : undefined, 2);
 });

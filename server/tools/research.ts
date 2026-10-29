@@ -5026,6 +5026,7 @@ async function collectMail(deps: ResearchDeps, run: RunState, parent: AbortSigna
       if (classifiedProjectionText([result]) !== undefined) {
         read.classified = (result as IntentSubResult & { classified: string }).classified;
         read.plain = result.text;
+        run.failureLines.set('mail', result.text);
         read.failed = true;
         read.exhausted = true;
         return;
@@ -5164,7 +5165,7 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     catch { for (const read of reads) { read.failed = true; read.inflight = false; } if (signal.aborted) run.cutShort.add('calendar'); break; }
     if (!signal.aborted && !parent.aborted && now() < sourceDeadlineAt) {
       const retried = calls.map((_, index) => index).filter(index => !calls[index]!.args['pageToken']
-        && (!results[index]?.ok || classifiedProjectionText([results[index]!]) !== undefined) && !rateLimited(results[index]));
+        && results[index]?.ok && classifiedProjectionText([results[index]!]) !== undefined && !rateLimited(results[index]));
       if (retried.length > 0) {
         try {
           const again = await deps.execute(retried.map(index => calls[index]!), signal);
@@ -5192,6 +5193,7 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
       if (classifiedProjectionText([result]) !== undefined) {
         read.classified = (result as IntentSubResult & { classified: string }).classified;
         read.plain = result.text;
+        run.failureLines.set('calendar', result.text);
         read.failed = true;
         read.exhausted = true;
         return;

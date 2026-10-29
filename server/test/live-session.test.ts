@@ -5305,7 +5305,7 @@ test('S5: the orb never reads listening while a call obligation is open, whateve
   await settlePort();
 });
 
-test('S5: a failed backend turn settles typed, says one honest line, and is never rebuilt', async t => {
+for (const failureCode of ['backend_unavailable', 'provider_error'] as const) test(`S5: ${failureCode} settles typed, says one honest line, and is never rebuilt`, async t => {
   const receipts: Record<string, unknown>[] = [];
   const sink = attachHostLogSink({ event: raw => { receipts.push(raw as Record<string, unknown>); } });
   t.after(() => sink());
@@ -5313,7 +5313,7 @@ test('S5: a failed backend turn settles typed, says one honest line, and is neve
   const fake = progressPort();
   const h = await harness(t, { provider: 'openai', model: 'gpt-live-1', port: fake.port, tools: true, scheduler, limits: openaiLimits });
   const { session } = await openPort(h, 'failed-turn');
-  fake.emit({ type: 'turnFailed', code: 'backend_unavailable' });
+  fake.emit({ type: 'turnFailed', code: failureCode });
   await settlePort();
   // The typed disposition is immediate and metadata only.
   assert.deepEqual(receipts.filter(entry => entry['event'] === 'turn_failed'), [{ event: 'turn_failed', reason: 'provider_error' }],

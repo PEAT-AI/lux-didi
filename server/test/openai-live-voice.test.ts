@@ -2313,7 +2313,7 @@ for (const reason of ['turn_spent', 'answer_already_given', 'no_turn_since_resul
     await until(() => f.frames.filter(frame => frame['type'] === 'response.create').length > before);
     const creates = f.frames.filter(frame => frame['type'] === 'response.create').slice(before);
     assert.equal(creates.length, 1);
-    assert.deepEqual(creates[0]!['response'], { instructions: 'Answer now from the results already available. Do not call research again in this response.', tools: [], tool_choice: 'none' });
+    assert.equal(creates[0]!['response'], undefined);
   });
 }
 
@@ -2362,7 +2362,7 @@ test('alarm sessions seed no fresh-opening direction', async t => {
 
 
 const creates = (socket: { sent: string[] }) => socket.sent.map(frame => JSON.parse(frame) as { type: string; response?: { tool_choice?: string } }).filter(frame => frame.type === 'response.create');
-async function continuation(t: TestContext) {
+async function continuation(t: TestContext, accepted = true) {
   const clock = new FakeClock();
   const opened = await fakeReady(t, { clock });
   opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-initial' } }));
@@ -2370,7 +2370,7 @@ async function continuation(t: TestContext) {
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-initial', status: 'completed' } }));
   await quiet();
   opened.session.sendToolResponse({ responses: [{ id: 'synthetic-call', name: 'research', response: { ok: true } }] });
-  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-continuation' } }));
+  if (accepted) opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-continuation' } }));
   await quiet();
   return { ...opened, clock };
 }
@@ -2381,7 +2381,7 @@ test('SILENCE b-second: silent done immediately rescues without tools, once', as
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-continuation', status: 'completed' } }));
   await quiet();
   assert.equal(creates(opened.socket).length, before + 1);
-  assert.equal(creates(opened.socket).at(-1)?.response?.tool_choice, 'none');
+  assert.equal(creates(opened.socket).at(-1)?.response, undefined);
   opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-rescue' } }));
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-rescue', status: 'completed' } }));
   await quiet();
@@ -2423,7 +2423,12 @@ test('SILENCE chain: third tool round forces the fourth response to answer', asy
     opened.session.sendToolResponse({ responses: [{ id, name: 'research', response: { ok: true } }] });
     if (round < 3) opened.socket.deliver(delegated('response.created', { response: { id: `synthetic-round-${round}` } }));
   }
-  assert.equal(creates(opened.socket).at(-1)?.response?.tool_choice, 'none');
+  assert.equal(creates(opened.socket).at(-1)?.response, undefined);
+  const before = opened.captured.events.filter(event => event.type === 'toolCall').length;
+  opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-fourth', name: 'research', arguments: '{}' } }));
+  await quiet();
+  assert.equal(opened.captured.events.filter(event => event.type === 'toolCall').length, before);
+  assert.ok(opened.socket.sent.some(frame => frame.includes('synthetic-fourth') && frame.includes('answer now')));
 });
 
 test('SILENCE timing: a terminal receipt contains all latency landmarks and a class', async t => {
@@ -2487,7 +2492,7 @@ test('SI-R3 OpenAI: parallel research batch admits six and honestly answers the 
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-cap', status: 'completed' } }));
   await quiet();
   assert.equal(creates(opened.socket).length, 1);
-  assert.equal(creates(opened.socket)[0]?.response?.tool_choice, 'none');
+  assert.equal(creates(opened.socket)[0]?.response, undefined);
   opened.socket.deliver({ type: 'session.input_transcript.delta', delta: 'synthetic new question' });
   opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-new-owner' } }));
   opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-new-research', name: 'research', arguments: '{}' } }));
@@ -2516,7 +2521,7 @@ test('IN-R1 OpenAI: cap outcomes are traced and parallel research batch admits s
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-cap', status: 'completed' } }));
   await quiet();
   assert.equal(creates(opened.socket).length, 1);
-  assert.equal(creates(opened.socket)[0]?.response?.tool_choice, 'none');
+  assert.equal(creates(opened.socket)[0]?.response, undefined);
   const settled = receipts.filter(row => row.kind === 'call.output_written');
   for (let i = 0; i < 8; i++) {
     const row = settled.find(row => row.id === `synthetic-cap-${i}`);
@@ -2533,4 +2538,41 @@ test('IN-R1 OpenAI: cap outcomes are traced and parallel research batch admits s
   opened.socket.deliver(delegated('response.output_item.done', { item: { type: 'function_call', call_id: 'synthetic-new-research', name: 'research', arguments: '{}' } }));
   await quiet();
   assert.ok(opened.captured.events.some(event => event.type === 'toolCall' && event.calls.some(call => call.id === 'synthetic-new-research')), 'new owner input resets the cap even before its quiet tail');
+});
+
+for (const rejects of [1, 2]) test(`continuation rejection: ${rejects} rejects retries plain once then fails loudly`, async t => {
+  const opened = await continuation(t, false);
+  const before = creates(opened.socket).length;
+  for (let i = 0; i < rejects; i++) {
+    const frame = JSON.parse(opened.socket.sent.filter(raw => JSON.parse(raw).type === 'response.create').at(-1)!);
+    opened.socket.deliver({ type: 'error', error: { type: 'invalid_request_error', code: 'unknown_parameter', param: 'response', client_event_id: frame.event_id } });
+    await quiet(); // Drain the async event iterator, not the fake clock.
+    assert.equal(opened.captured.events.filter(event => event.type === 'turnFailed').length, i === 1 ? 1 : 0, 'second rejection emits failure without a terminal frame or clock advance');
+  }
+  assert.equal(creates(opened.socket).length, before + 1);
+  assert.equal(creates(opened.socket).at(-1)?.response, undefined);
+  assert.equal(opened.captured.events.some(event => event.type === 'turnFailed'), rejects === 2);
+});
+
+test('continuation active-response retry exhaustion fails on rejection, not on a later terminal frame', async t => {
+  const opened = await continuation(t, false);
+  const initial = creates(opened.socket).length;
+  const reject = () => {
+    const frame = JSON.parse(opened.socket.sent.filter(raw => JSON.parse(raw).type === 'response.create').at(-1)!);
+    opened.socket.deliver({ type: 'error', error: { type: 'invalid_request_error', code: 'response_in_progress', param: 'type', client_event_id: frame.event_id } });
+  };
+  reject();
+  assert.equal(creates(opened.socket).length, initial, 'first active-response rejection waits for that response to end');
+  assert.equal(opened.captured.events.some(event => event.type === 'turnFailed'), false);
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-active-response', status: 'completed' } }));
+  assert.equal(creates(opened.socket).length, initial + 1, 'exactly one plain retry');
+  assert.equal(creates(opened.socket).at(-1)?.response, undefined);
+  reject();
+  await quiet(); // Delivery to the async consumer requires a microtask turn only.
+  const failures = opened.captured.events.filter(event => event.type === 'turnFailed');
+  assert.equal(failures.length, 1, 'failure is immediate, with no clock advance or terminal frame');
+  assert.equal(failures[0]?.code, 'provider_error');
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-active-response', status: 'completed' } }));
+  assert.equal(creates(opened.socket).length, initial + 1, 'no third create or watchdog retry');
+  assert.equal(opened.captured.events.filter(event => event.type === 'turnFailed').length, 1);
 });

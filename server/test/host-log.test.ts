@@ -746,3 +746,15 @@ test('canary close terminal is validated as a closed session-paired receipt', ()
   assert.equal(safeEvent({ ...receipt, liveSessionId: 'invalid' }), undefined);
   assert.equal(safeEvent({ ...receipt, code: 'untrusted' }), undefined);
 });
+
+// AN-R1: the exhaustive emitter coverage includes this metadata-only alarm receipt.
+test('ignored alarm model time logs only a signed epoch skew', () => {
+  for (const skewMs of [-300000, 0, 300000]) {
+    assert.deepEqual(safeEvent({ event: 'alarm_model_time_ignored', skewMs }), { event: 'alarm_model_time_ignored', skewMs });
+  }
+  for (const skewMs of [NaN, Infinity, '300000', undefined, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal(safeEvent({ event: 'alarm_model_time_ignored', skewMs }), undefined);
+  }
+  assert.equal(safeEvent({ event: 'alarm_model_time_ignored', skewMs: 300000, words: 'synthetic private owner words' }), undefined);
+  assert.equal(safeEvent({ event: 'alarm_model_time_ignored', skewMs: 300000, fireAtUtc: 1793343600000 }), undefined);
+});

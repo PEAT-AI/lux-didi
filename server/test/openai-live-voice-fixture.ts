@@ -58,6 +58,7 @@ export async function fixture(t: TestContext) {
     socket.on('error', () => {});
     socket.on('message', (bytes: Buffer) => {
       const frame = JSON.parse(bytes.toString()) as Frame;
+      assertCreateProtocol(frame);
       frames.push(frame);
       // C-REBUILD8: the provider says its own rule out loud. A commentary append without a delegation is refused
       // by name (`command_rejected code=missing_required_parameter param=delegation_id kind=cmt`, 2026-10-28 N10),
@@ -107,6 +108,17 @@ export function collect(session: LiveVoiceSession) {
  * A fake clock for the adapter's turn-taking windows: `advance` fires every timer due inside the window in
  * order, so a test drives whole seconds of input-episode quiet and playback drain with no timer and no sleep.
  */
+// gpt-live-1 create protocol fixture: the adapter's ordinary continuation and
+// host-line create use only type/event_id. Recorded 10.5.1 rejection names
+// param=response as unknown_parameter. Delegation response settings are not creates.
+export const GPT_LIVE_CREATE_FIELDS = ['type', 'event_id'] as const;
+function assertCreateProtocol(frame: Frame): void {
+  if (frame['type'] !== 'response.create') return;
+  for (const key of Object.keys(frame)) {
+    if (!(GPT_LIVE_CREATE_FIELDS as readonly string[]).includes(key)) throw new Error(`unsupported gpt-live-1 response.create field: ${key}`);
+  }
+}
+
 export class FakeClock implements LiveVoiceClock {
   private time = 1_000_000;
   private next = 1;
@@ -158,6 +170,7 @@ export class FakeSocket extends EventEmitter {
   /** The link takes this many bytes out of the socket buffer, at whatever rate the test chooses. */
   drain(bytes: number) { this.bufferedAmount = Math.max(0, this.bufferedAmount - bytes); }
   send(frame: string, callback?: (error?: Error) => void) {
+    assertCreateProtocol(JSON.parse(frame) as Frame);
     this.sent.push(frame);
     if (this.trackBuffer) this.bufferedAmount += Buffer.byteLength(frame);
     if (!callback) return;

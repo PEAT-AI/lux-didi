@@ -409,8 +409,8 @@
       "fire_at_utc": 1793347200000,
       "tool": "set_alarm"
     },
-    "code": "time_mismatch",
-    "fire_at_utc": null
+    "code": "ready",
+    "fire_at_utc": 1793343600000
   },
   {
     "id": "case-34",
@@ -1856,8 +1856,61 @@
       "tool": "set_alarm",
       "fire_at_utc": 1793347200000
     },
-    "code": "time_mismatch",
-    "fire_at_utc": null,
-    "expectedSay": "The alarm was not set because the requested time differs from yours."
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "alarm-model-skew-relative",
+    "now": 1793340000000,
+    "finals": [
+      "Set an alarm",
+      "for in five",
+      "minutes from now"
+    ],
+    "call": {
+      "tool": "set_alarm",
+      "fire_at_utc": 1793340600000
+    },
+    "code": "ready",
+    "fire_at_utc": 1793340300000
+  },
+  {
+    "id": "alarm-model-skew-absolute",
+    "now": 1793340000000,
+    "finals": [
+      "Set an alarm at 7:45"
+    ],
+    "call": {
+      "tool": "set_alarm",
+      "fire_at_utc": 1793343600000
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "alarm-model-fallback",
+    "now": 1793340000000,
+    "finals": [
+      "Set an alarm"
+    ],
+    "call": {
+      "tool": "set_alarm",
+      "fire_at_utc": 1793340600000
+    },
+    "code": "ready",
+    "fire_at_utc": 1793340600000
+  },
+  {
+    "id": "alarm-owner-conflict",
+    "now": 1793340000000,
+    "finals": [
+      "Set an alarm at 7:45 and at 8:45"
+    ],
+    "call": {
+      "tool": "set_alarm",
+      "fire_at_utc": 1793340600000
+    },
+    "code": "unsupported_time_expression",
+    "fire_at_utc": null
   }
 ]

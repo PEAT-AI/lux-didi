@@ -2418,7 +2418,7 @@ export class LiveSessionOwner {
     return callCeilingMs(handle.pendingCalls.get(callId));
   }
 
-  async #debtRung(handle: ActiveSession, generation: number, step: 'rung' | 'rebuild'): Promise<void> {
+  async #debtRung(handle: ActiveSession, generation: number, step: 'rung' | 'rebuild', postToolNoOutput = false): Promise<void> {
     if (this.#settled(handle) || generation !== handle.generation || handle.debtSince === undefined) return;
     handle.debtTimer = undefined;
     if (handle.debtBargeIn) return;
@@ -2443,7 +2443,7 @@ export class LiveSessionOwner {
     // #538 R4: an answer in flight is never the ladder's to lose, but a response the owner cannot hear is not an
     // answer she is listening to. It buys the rung DEAD_AIR_RESPONSE_GRACE_MS and no more: a response that produced
     // no audio buys nothing, and a response that did has already cleared this debt.
-    if (step === 'rung' && handle.responseInProgress === true && handle.debtDeferred !== true) {
+    if (!postToolNoOutput && step === 'rung' && handle.responseInProgress === true && handle.debtDeferred !== true) {
       handle.debtDeferred = true;
       this.#scheduleDebt(handle, DEAD_AIR_RESPONSE_GRACE_MS, 'rung');
       return;
@@ -2453,7 +2453,7 @@ export class LiveSessionOwner {
     // The receipts the dead-air nudge has always written, whichever provider answers the rung.
     hostLogEvent({ event: 'live_dead_air', msSinceTool: turnAgeMs,
       msSinceAudible: handle.lastModelAudioAt === undefined ? null : Math.max(0, this.#now() - handle.lastModelAudioAt) });
-    hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: AUDIBLE_DEBT_RUNG_MS });
+    hostLogEvent({ event: 'live_dead_air_nudge', elapsedMs: postToolNoOutput ? 5_000 : AUDIBLE_DEBT_RUNG_MS });
     // One silence earns one nudge: the sliding watchdog's own receipt stays for the silences the debt clock never named.
     handle.deadAirNudgedAt = this.#now();
     const stalledTurn = handle.connection.turnId;
@@ -2727,6 +2727,15 @@ export class LiveSessionOwner {
   #watchdogEvent(handle: ActiveSession, event: LiveVoiceEvent): void {
     if (this.#settled(handle) || handle.rebuilding) return;
     const type = event.type;
+    // SI-R2: only a post-tool provider response with no output item earns the early rung.
+    // The adapter owns the item deadline; the host owns the existing recovery, never a parallel create.
+    if (type === 'interactionStatus' && event.value === 'post_tool_no_output') {
+      if (handle.debtSince !== undefined && handle.pendingCallIds.size === 0 && handle.deadAirNudgedAt === undefined) {
+        handle.debtTimer?.cancel(); handle.debtTimer = undefined;
+        void this.#debtRung(handle, handle.generation, 'rung', true).catch(() => { /* recovery settles its own failures */ });
+      }
+      return;
+    }
     // D3: a fill frame is not output. The provider streams inaudible frames between sentences, so re-arming
     // on one would push the deadline out forever and no stall would ever be witnessed.
     if (type === 'audio' && event.audible === false) return;

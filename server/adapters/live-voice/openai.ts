@@ -506,6 +506,24 @@ class Session implements LiveVoiceSession {
   /** Outputs of the current backend response already on the wire, across every deferral it needed (S5). */
   private batchAnswers = 0;
   private answerNow = false;
+  private lastToolOutputAt = 0;
+  private toolRounds = 0;
+  private silentRescueUsed = false;
+  private continuationTiming: { toolOutputAt: number; createAt: number; createdAt: number | null; firstItemAt: number | null; firstAudioAt: number | null; toolCall: boolean; nudged: boolean } | undefined;
+  private noItemTimer: unknown;
+
+  private clearNoItemTimer(): void {
+    if (this.noItemTimer !== undefined) this.clock.clearTimer(this.noItemTimer);
+    this.noItemTimer = undefined;
+  }
+
+  private logContinuationTiming(): void {
+    const timing = this.continuationTiming;
+    if (!timing) return;
+    hostLogEvent({ event: 'live_continuation_timing', ...timing,
+      class: timing.toolCall ? 'd-chain' : timing.firstAudioAt !== null ? 'c' : timing.nudged ? 'b' : 'b-second' });
+  }
+
   private lastAnswerNow = false;
   /** The batch of the create that went last, so a rejection can retry with the same count (S1-R1). */
   private lastContinuationCalls = 0;
@@ -840,6 +858,11 @@ class Session implements LiveVoiceSession {
   private emitOutput(pcm: Uint8Array, rmsDbfs: number = pcm16RmsDbfs(pcm)): void {
     const audible = rmsDbfs >= AUDIBLE_RMS_DBFS;
     if (audible) {
+      if (this.continuationTiming && this.continuationTiming.firstAudioAt === null) {
+        this.continuationTiming.firstAudioAt = this.clock.now();
+        this.clearNoItemTimer();
+        this.logContinuationTiming();
+      }
       this.audioSinceCompletion = true;
       this.silenceSent = false;
       this.queuePlayback(pcm.byteLength);
@@ -945,6 +968,10 @@ class Session implements LiveVoiceSession {
       return;
     }
     // Plain owner-end notices have no provider response id: currentResponse may belong to an old delegation.
+    this.toolRounds = 0;
+    this.silentRescueUsed = false;
+    this.clearNoItemTimer();
+    this.continuationTiming = undefined;
     this.emit({ type: 'modelTurnStarted' });
     this.touch();
   }
@@ -1031,6 +1058,11 @@ class Session implements LiveVoiceSession {
   private delegated(message: ObjectValue): void {
     const event = message.event;
     if (!object(event) || typeof event.type !== 'string') fail('protocol_error');
+    if (event.type.startsWith('response.output_item.') && this.continuationTiming) {
+      this.continuationTiming.firstItemAt ??= this.clock.now();
+      if (object(event.item) && event.item.type === 'function_call') this.continuationTiming.toolCall = true;
+      this.clearNoItemTimer();
+    }
     switch (event.type) {
       case 'response.created': {
         const responseId = object(event.response) && typeof event.response.id === 'string' && event.response.id.length ? event.response.id : undefined;
@@ -1045,6 +1077,18 @@ class Session implements LiveVoiceSession {
         this.clearInputEpisode();
         this.endTurnTranscripts('app_model_start');
         this.delegatedOutstanding = true;
+        const timing = this.continuationTiming;
+        if (timing && timing.createdAt === null) {
+          timing.createdAt = this.clock.now();
+          this.clearNoItemTimer();
+          this.noItemTimer = this.clock.setTimer(5_000, () => {
+            this.noItemTimer = undefined;
+            if (this.terminal || this.continuationTiming !== timing || !this.delegatedOutstanding || timing.firstItemAt !== null || timing.firstAudioAt !== null) return;
+            timing.nudged = true;
+            this.emit({ type: 'interactionStatus', value: 'post_tool_no_output' });
+            this.logContinuationTiming();
+          });
+        }
         this.generation += 1;
         // 3r D10: the completion account belongs to the response that is answering now, so the audible line of the
         // pre-tool turn can never complete this one before it has spoken.
@@ -1103,7 +1147,16 @@ class Session implements LiveVoiceSession {
    * gate, so a result deferred behind this response is never left unresumable.
    */
   private endResponse(message: ObjectValue | undefined): void {
+    this.clearNoItemTimer();
+    const timing = this.continuationTiming;
+    this.logContinuationTiming();
+    this.continuationTiming = undefined;
     this.delegatedOutstanding = false;
+    if (message && (message['status'] === undefined || message['status'] === 'completed') && timing && timing.firstAudioAt === null && !timing.toolCall && !this.silentRescueUsed && this.pendingCalls.length === 0 && this.episodeQuiet === undefined) {
+      this.silentRescueUsed = true;
+      this.answerNow = true;
+      this.continuationOwed = true;
+    }
     // O1b-A: the response stops being active here whatever stopped it, so its terminal receipt is taken here
     // too, with the provider's own status and the reason this adapter read from it.
     const responseKey = this.currentResponseKey;
@@ -1443,6 +1496,7 @@ class Session implements LiveVoiceSession {
         return this.continuationOutcome = 'failed';
       }
       const writtenAt = this.clock.now();
+      this.lastToolOutputAt = writtenAt;
       this.receipt('call.output_written', this.callIds(call.id), {
         // C-RESEARCH-CONTRACT T-04: a refused argument shape and an admission block are their own outcomes, so a
         // blocked call is never read back as one that answered.
@@ -1487,13 +1541,17 @@ class Session implements LiveVoiceSession {
       else if (this.delegatedOutstanding) this.continuationReceipt('deferred', 'awaiting_calls');
       return this.continuationOutcome = 'deferred';
     }
-    const answerNow = attempt ? this.lastAnswerNow : this.answerNow;
+    const round = this.toolRounds + (calls > 0 || this.continuationCalls > 0 ? 1 : 0);
+    const answerNow = attempt ? this.lastAnswerNow : this.answerNow || round >= 3;
     if (!this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont'),
       ...(answerNow ? { response: { instructions: 'Answer now from the results already available. Do not call research again in this response.', tools: [], tool_choice: 'none' } } : {}) }))) {
       this.continuationOwed = true;
       this.continuationReceipt('failed');
       return this.continuationOutcome = 'failed';
     }
+    this.toolRounds = round;
+    const now = this.clock.now();
+    this.continuationTiming = { toolOutputAt: this.lastToolOutputAt || now, createAt: now, createdAt: null, firstItemAt: null, firstAudioAt: null, toolCall: false, nudged: false };
     this.lastAnswerNow = answerNow;
     this.answerNow = false;
     this.continuationReceipt('sent');
@@ -1871,6 +1929,7 @@ class Session implements LiveVoiceSession {
     const status = code === 'closed' ? 'closed' : code === 'cancelled' ? 'cancelled' : code === 'deadline' ? 'deadline' : 'failed';
     const providerSideFailure = this.isReady && code === 'protocol_error';
     this.terminal = Object.freeze({ status, code, ...(this.recoverable || code === 'transport_error' || providerSideFailure ? { recoverable: true } : {}), ...(upstream ? { upstream } : {}) });
+    this.clearNoItemTimer();
     this.discardHeadStart();
     // gpt-live-1 owns barge-in and has no cancel/truncate command: cancel is a no-op, stop purges playback and closes.
     this.clearUploadBlock();

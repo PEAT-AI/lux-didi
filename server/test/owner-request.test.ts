@@ -56,7 +56,7 @@ test('direct102 authority: fragments only join an explicitly pending clarificati
 test('direct102 authority: external content records provenance counts but never creates a grant', () => {
   const requests = new OwnerRequests(() => 0);
   requests.source('s', 'mail');
-  assert.equal(requests.authorize('s', 'open', 'https://example.invalid').code, 'allowed');
+  assert.equal(requests.authorize('s', 'open', 'https://example.invalid').code, 'no_owner_request');
   requests.observe('s', 'j1', 'save a summary into lux');
   requests.source('s', 'mail');
   requests.source('s', 'web');
@@ -220,7 +220,7 @@ for (const words of [
     requests.observe('s', 'new', words);
     assert.equal(requests.authorize('s', 'open', 'deck').code, words === "don't open the deck" ? 'no_owner_request' : 'allowed');
     assert.equal(requests.authorize('s', 'set_alarm', 'time').code, 'allowed');
-    assert.equal(requests.authorize('s', 'lux_note', 'note').code, 'no_owner_request');
+    assert.equal(requests.authorize('s', 'lux_note', 'note').code, /save/.test(words) ? 'no_owner_request' : 'allowed');
   });
 }
 

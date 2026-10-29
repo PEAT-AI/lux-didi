@@ -24,7 +24,7 @@ import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validate
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
 import { ALARM_NAMES, ALARM_IDENTITY, parseAlarmTime, validateAlarmArguments, type AlarmArguments } from './alarm.js';
-import { OPEN_BROWSER_GUIDANCE, OPEN_GUIDANCE, OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit, openDestinationClass, ownerTurnWords, type OpenAuditKind, type OpenFamilyTool } from './open.js';
+import { OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit, openDestinationClass, ownerTurnWords, type OpenAuditKind, type OpenFamilyTool } from './open.js';
 
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
@@ -702,7 +702,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       });
       for (const name of ALARM_NAMES) definitions.push({
         name, accountId: ALARM_IDENTITY.accountId, resourceId: ALARM_IDENTITY.resourceId, effect: 'read',
-        description: `${name}: host-owned awake-Mac alarm. Mutations require the owner's fresh finalized spoken request; time is parsed from those words. Never claim a closed lid or sleeping Mac will ring.`,
+        description: `${name}: Call it when he asks; the host reads his words. An alarm rings only on an awake Mac.`,
         parameters: { type: 'object', properties: { id: { type: 'string' }, fire_at_utc: { type: 'number', description: 'Optional consistency check only, UTC milliseconds.' } }, additionalProperties: false },
         validate: validateAlarmArguments,
         async execute(args, context) {
@@ -809,7 +809,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             assertLiveIdentity(tx, call); target(snapshot, call, tx);
             if (!currentPolicies(tx, snapshot, 'gateway:live-voice') || !currentProjection(snapshot, 'gateway:live-voice')) throw Error('executor_policy_denied');
             const opened = code === 'opened' && dispatched ? { code: 'opened' as const, kind: dispatched.kind, title: dispatched.title } : undefined;
-            return complete(call as ToolCallIntent, !eligible ? requestRefusal(authorization.code) : refused !== undefined ? { code: refused, guidance: refused === 'not_allowed' && (openTool.name === 'open_file' || openTool.name === 'open_app') ? OPEN_BROWSER_GUIDANCE : OPEN_GUIDANCE[refused] } : opened ?? { code }, ['ordinary'], tx);
+            return complete(call as ToolCallIntent, !eligible ? requestRefusal(authorization.code) : refused !== undefined ? { ...requestRefusal('target_not_authorized'), reason: refused } : opened ?? { code }, ['ordinary'], tx);
           });
           return { status: 'completed' as const, result };
         },

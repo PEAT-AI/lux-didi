@@ -461,8 +461,8 @@ describe('openai gpt-live adapter', () => {
 
   test('#1023: the opening directive asks for one short dry line, never a canned greeting', () => {
     assert.match(FRESH_OPENING, /twelve words at most/);
-    assert.match(FRESH_OPENING, /^Internal startup direction, not words to speak:/);
-    assert.doesNotMatch(FRESH_OPENING, /\b(start the call|give me|say |tell him|speak |after that line, wait)\b/i, 'no imperative that can be mistaken for the spoken opener');
+    assert.match(FRESH_OPENING, /^Speak one original opening line now/);
+    assert.doesNotMatch(FRESH_OPENING, /\b(?:say|speak|tell him)\s+["“]/i, 'never quote a fixed speakable instruction as the opener');
     assert.match(FRESH_OPENING, /No greeting formula/);
     assert.match(FRESH_OPENING, /offer of help/);
     assert.match(FRESH_OPENING, /tool call precedes it/);

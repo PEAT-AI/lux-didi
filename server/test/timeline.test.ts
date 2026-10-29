@@ -218,14 +218,14 @@ test('#699: a stale server/dist is rebuilt before the read, and a failed build s
     const dataDir = join(root, 'data');
     // A checkout that fetched a newer source over an older build.
     utimesSync(join(dist, 'timeline.js'), older, older);
-    utimesSync(join(tree, 'server', 'settings.ts'), newer, newer);
+    for (const source of ['settings.ts', 'package.json']) utimesSync(join(tree, 'server', source), newer, newer);
     const failed = spawnSync(process.execPath, [cli, 'doctor', '--data-dir', dataDir], { encoding: 'utf8', env });
     assert.equal(failed.status, 7, 'the build exit status is the CLI status');
     assert.match(failed.stderr, /tsc: synthetic compile error/, "the build's own error is shown");
     assert.deepEqual(readFileSync(calls, 'utf8').trim().split('\n'), ['--prefix', join(tree, 'server'), 'run', 'build'], 'the documented build ran');
     // A fresh dist is authority: no build runs and the real module answers.
     rmSync(calls, { force: true });
-    utimesSync(join(tree, 'server', 'settings.ts'), older, older);
+    for (const source of ['settings.ts', 'package.json']) utimesSync(join(tree, 'server', source), older, older);
     utimesSync(join(dist, 'timeline.js'), newer, newer);
     const fresh = spawnSync(process.execPath, [cli, 'doctor', '--data-dir', dataDir], { encoding: 'utf8', env });
     assert.equal(existsSync(calls), false, 'a fresh dist needs no build');

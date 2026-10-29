@@ -866,6 +866,7 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
     { intent: 'person', person: 'Ada', query: 'recent messages' },
   ];
   for (const [step, args] of sequence.entries()) {
+    await t.test(`original-sequence-${step}`, async () => {
     const batch = await runToolCalls(owner, [{ id: `chat-${step}`, name: MATTERMOST_CHAT_TOOL, args: { ...args, from_date: fixtureDaysAgo(7) } }], {
       registry: owner.definitions('chat-sequence'), host: host as never, authority: { isCurrent: async () => true } as never,
       control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step, contentIndex: 0, seenIds: new Set<string>(), authorize: true, baseClasses: ['ordinary'],
@@ -874,6 +875,7 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
     assert.equal(batch.tools[0]?.status, 'completed', `step ${step}: ${JSON.stringify(batch.tools)}`);
     assert.match(JSON.stringify(batch.accepted), /pilot/iu, `step ${step} delivers actual post bodies`);
     assert.doesNotMatch(JSON.stringify(batch.accepted), /dispatch_reference_denied|no messages/iu);
+    });
   }
 
   // A deterministic provider replay: each recognizer final is observed separately,
@@ -890,7 +892,7 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
   ];
   let step = sequence.length;
   for (const replay of replays) {
-    if ('clarification' in replay) assert.equal(replay.clarification, 'Is Alpha Alpha Alpha the channel name?');
+    await t.test(replay.id, async () => {
     for (const [index, words] of replay.finals.entries()) owner.observeAlarmOwner('chat-sequence', `${replay.id}-final-${index}`, words, FIXTURE_NOW);
     const batch = await runToolCalls(owner, [{ id: replay.id, name: MATTERMOST_CHAT_TOOL, args: { ...replay.args, from_date: fixtureDaysAgo(7) } }], {
       registry: owner.definitions('chat-sequence'), host: host as never, authority: { isCurrent: async () => true } as never,
@@ -900,6 +902,7 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
     assert.equal(batch.tools[0]?.status, 'completed', `${replay.id}: ${JSON.stringify(batch.tools)}`);
     assert.match(JSON.stringify(batch.accepted), replay.body, `${replay.id}: actual model-visible post bodies`);
     assert.doesNotMatch(JSON.stringify(batch.accepted), /dispatch_reference_denied|no messages/iu, replay.id);
+    });
   }
 });
 

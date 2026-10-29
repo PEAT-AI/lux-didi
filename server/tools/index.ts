@@ -1,3 +1,4 @@
+import { createResultScope } from '../adapters/mcp/lifecycle.js';
 import { OwnerRequests, requestRefusal } from './owner-request.js';
 import { diagnosticContentAccess } from '../trace/content.js';
 import { hostLogEvent } from './host-events.js';
@@ -993,8 +994,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                 return expected;
               });
               if (!call) return { status: 'failed' };
+              const resultScope = createResultScope();
+              let value: ModelSnapshot;
+              try {
               let evidence: Awaited<ReturnType<typeof reader.call>>;
-              try { evidence = await dispatch.run({call,bound,snapshotSha256:sha256(canonicalJSON(snapshot)),allowedClasses:snapshot.acceptance.allowedClasses.filter(c => snapshot.acceptance.route.allowedClasses.includes(c))},() => reader.call(name, callArgs, context.signal)); } catch (error) {
+              try { evidence = await resultScope.run(() => dispatch.run({call,bound,snapshotSha256:sha256(canonicalJSON(snapshot)),allowedClasses:snapshot.acceptance.allowedClasses.filter(c => snapshot.acceptance.route.allowedClasses.includes(c))},() => reader.call(name, callArgs, context.signal))); } catch (error) {
                 const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : 'handler_outcome';
                 options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
                 return { status: code === 'connector_error' || code === 'handler_outcome' ? 'failed' : 'unknown', code };
@@ -1038,10 +1042,11 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               }
               reportToolStatus?.(p.endpoint.id, null);
               const sourceRefs = evidence[SOURCE_DISPATCH] ? [evidence[SOURCE_DISPATCH]!] : evidence[SOURCE_CHILD_DISPATCHES];
-              let value: ModelSnapshot;
               try { value = descriptor.project(evidence, dispatch.port, p); } catch (error) {
-                const code = error instanceof SyntaxError || (error instanceof Error && (error.message === 'unsupported_mcp_result' || error.message === 'unsupported_mcp_content')) ? 'invalid_result'
-                  : error instanceof Error ? 'connector_error' : 'handler_outcome';
+                const code = resultScope.failureCode ?? (error instanceof SyntaxError || (error instanceof Error && (error.message === 'unsupported_mcp_result' || error.message === 'unsupported_mcp_content')) ? 'invalid_result'
+                  : error instanceof Error ? 'connector_error' : 'handler_outcome');
+                const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code });
+                if (failure) hostLogEvent(failure);
                 // Only safe class/code metadata, never remote payloads or arbitrary exception text.
                 options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
                 return { status: 'failed', code };

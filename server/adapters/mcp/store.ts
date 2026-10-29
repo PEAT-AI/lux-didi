@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { currentResultScope } from './lifecycle.js';
 import type { ResultScope, ResultStorePort, SliceRequest, SliceResult, StoredPayload } from './port.js';
 export interface MemoryStoreOptions {
   maxBytes?: number;
@@ -7,7 +8,7 @@ export interface MemoryStoreOptions {
   maxSliceBytes?: number;
   now?: () => number;
 }
-interface Entry { scope: ResultScope; bytes: Uint8Array; sha256: string; expiresAt: number }
+interface Entry { pinned: boolean; scope: ResultScope; bytes: Uint8Array; sha256: string; expiresAt: number }
 /** Bounded ephemeral store, injected through Didi's port; no database or memory writes. */
 export class MemoryResultStore implements ResultStorePort {
   private readonly entries = new Map<string, Entry>();
@@ -18,12 +19,18 @@ export class MemoryResultStore implements ResultStorePort {
     for (const value of [this.options.maxBytes, this.options.maxEntries, this.options.ttlMs, this.options.maxSliceBytes]) if (!Number.isSafeInteger(value) || value <= 0) throw new Error('invalid-store-budget');
   }
   put(scope: ResultScope, bytes: Uint8Array): StoredPayload {
+    const lifecycle = currentResultScope();
+    if (lifecycle?.released) return { state: 'unavailable', reason: 'store-unavailable' };
     const now = this.options.now();
-    for (const [handle, entry] of this.entries) if (entry.expiresAt <= now) { this.used -= entry.bytes.length; this.entries.delete(handle); }
-    if (bytes.length > this.options.maxBytes) return { state: 'unavailable', reason: 'oversize' };
-    if (this.entries.size >= this.options.maxEntries || this.used + bytes.length > this.options.maxBytes) return { state: 'unavailable', reason: 'capacity' };
+    for (const [handle, entry] of this.entries) if (!entry.pinned && entry.expiresAt <= now) { this.used -= entry.bytes.length; this.entries.delete(handle); }
+    if (bytes.length > this.options.maxBytes) { if (lifecycle) lifecycle.failureCode = 'result_store_oversize'; return { state: 'unavailable', reason: 'oversize' }; }
+    if (this.entries.size >= this.options.maxEntries || this.used + bytes.length > this.options.maxBytes) { if (lifecycle) lifecycle.failureCode = 'result_store_full'; return { state: 'unavailable', reason: 'capacity' }; }
     const handle = randomUUID(); const sha256 = createHash('sha256').update(bytes).digest('hex'); const expiresAt = now + this.options.ttlMs;
-    this.entries.set(handle, { scope: structuredClone(scope), bytes: bytes.slice(), sha256, expiresAt }); this.used += bytes.length;
+    this.entries.set(handle, { pinned: lifecycle !== undefined, scope: structuredClone(scope), bytes: bytes.slice(), sha256, expiresAt }); this.used += bytes.length;
+    lifecycle?.retain(() => {
+      const entry = this.entries.get(handle);
+      if (entry) { this.used -= entry.bytes.length; this.entries.delete(handle); }
+    });
     return { state: 'available', handle, sha256, byteLength: bytes.length, expiresAt, encoding: 'http-response-entity' };
   }
   read(request: SliceRequest, authorize: (scope: ResultScope) => boolean): SliceResult {
@@ -31,7 +38,7 @@ export class MemoryResultStore implements ResultStorePort {
     if (!entry) return { state: 'unavailable', reason: 'unknown-or-evicted-handle' };
     const scope = entry.scope;
     if (request.endpointId !== scope.endpointId || request.generation !== scope.generation || request.account !== scope.account || request.resource !== scope.resource || !authorize(structuredClone(scope))) return { state: 'refused', reason: 'handle-scope-or-grant-refused' };
-    if (entry.expiresAt <= this.options.now()) return { state: 'expired', reason: 'handle-expired' };
+    if (!entry.pinned && entry.expiresAt <= this.options.now()) return { state: 'expired', reason: 'handle-expired' };
     if (!Number.isSafeInteger(request.offset) || !Number.isSafeInteger(request.length) || request.offset < 0 || request.length <= 0 || request.length > this.options.maxSliceBytes || request.offset + request.length > entry.bytes.length) return { state: 'unavailable', reason: 'slice-out-of-bounds' };
     return { state: 'available', bytes: entry.bytes.slice(request.offset, request.offset + request.length), byteLength: entry.bytes.length, sha256: entry.sha256, expiresAt: entry.expiresAt };
   }

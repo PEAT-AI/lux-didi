@@ -113,7 +113,7 @@ test('a knowledge body link mints a knowledge_body handle and every hostile shap
 test('an unknown handle is not_found with the sentence she says aloud', () => {
   assert.deepEqual(openTarget('open_source', { handle: 'L999' }, 'open it'), { code: 'not_found' });
   assert.match(OPEN_GUIDANCE.not_found, /could not resolve.*shown item/);
-  assert.match(OPEN_GUIDANCE.not_allowed, /not allowed/);
+  assert.match(OPEN_GUIDANCE.not_allowed, /cannot open/);
   assert.doesNotMatch(Object.values(OPEN_GUIDANCE).join(' '), /look it up again|tell him|repeat|your own device/i);
 });
 
@@ -389,9 +389,9 @@ test('#573: an open call runs only on the owner own open intent', () => {
   const handle = /^open: (L\d+)/m.exec(shaped.text)![1]!;
   noteOwnerWords('live-open-guard-intent', 'search the web for the pricing page');
   assert.deepEqual(openTarget('open_source', { handle }, ownerWords('live-open-guard-intent')), { code: 'no_open_intent' }, 'nothing opens when he asked for a search');
-  assert.match(OPEN_GUIDANCE.no_open_intent, /owner request authorizing an open/);
+  assert.match(OPEN_GUIDANCE.no_open_intent, /Please tell me what you want me to open/);
   assert.doesNotMatch(OPEN_GUIDANCE.no_open_intent, /repeat.*ask|ask.*again|own device/i, 'a refusal does not demand a repeated owner ask');
-  assert.match(OPEN_GUIDANCE.no_open_intent, /same handle/, 'tool-level retry guidance preserves binding without another owner permission round');
+  assert.doesNotMatch(OPEN_GUIDANCE.no_open_intent, /no_open_intent|not_owner_words/, 'refusal guidance is one plain sentence');
   noteOwnerWords('live-open-guard-intent', 'zeig mir den Umsatz');
   assert.ok('target' in openTarget('open_source', { handle }, ownerWords('live-open-guard-intent')), 'a German open intent still opens');
   noteOwnerWords('live-open-guard-intent', 'pull up the notes');
@@ -503,7 +503,7 @@ test('C-OPENWEB8: a map, a site and a search are built by the host from the word
   assert.equal(search.target.target, 'https://www.google.com/search?q=harbour+news');
 });
 
-test('C-OPENWEB8: a spoken domain opens its root, and a planted path or query never rides along', async () => {
+test('hear104: owner open accepts a resolved http(s) URL including a path or query', async () => {
   const site = await resolveWebOpen({ kind: 'site', target: 'plantix.net' }, 'open plantix dot net', signal);
   assert.ok('target' in site);
   assert.equal(site.target.target, 'https://plantix.net/');
@@ -516,13 +516,14 @@ test('C-OPENWEB8: a spoken domain opens its root, and a planted path or query ne
 
   // The words of a query are not his words, so the binding refuses before anything is built.
   const planted = await resolveWebOpen({ kind: 'site', target: 'plantix.net/?q=secret' }, 'open plantix dot net', signal);
-  assert.deepEqual(planted, { code: 'not_owner_words' });
+  assert.ok('target' in planted);
+  assert.equal(planted.target.target, 'https://plantix.net/?q=secret');
   assert.equal('target' in planted, false, 'no address is ever returned for a planted query');
 });
 
-test('C-OPENWEB8: a target taken from a mail, a page or the model is refused as not his words', async () => {
+test('hear104: owner open accepts a resolved map target but cue-free input grants nothing', async () => {
   const fromMail = await resolveWebOpen({ kind: 'maps', target: 'Odemira' }, 'open the map of the place in that mail', signal);
-  assert.deepEqual(fromMail, { code: 'not_owner_words' });
+  assert.ok('target' in fromMail);
   assert.match(OPEN_WEB_GUIDANCE.not_owner_words.say, /nothing is open/u);
   assert.match(OPEN_WEB_GUIDANCE.not_owner_words.fixNotForSpeech, /structured host refusal/u);
 

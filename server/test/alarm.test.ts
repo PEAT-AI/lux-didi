@@ -152,3 +152,22 @@ for (const words of [
   if (words.includes('summary')) assert.equal('label' in result && result.label, 'give me a summary');
   if (words.includes('library')) assert.equal('label' in result && result.label, 'I have to call the library');
 });
+
+test('hear104 wake without a period means the next morning, not this evening', () => {
+  const result = parseAlarmTime('wake me up at 8', Date.parse('2026-11-01T17:09:00Z'), 'UTC');
+  assert.equal(result.status, 'ready');
+  if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-11-02T08:00:00Z'));
+});
+test('hear104 relative reminder preserves owner label and ignores model-selected time', () => {
+  const result = parseAlarmTime('remind me in 10 minutes that I have to call the library', now, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status === 'ready') {
+    assert.equal(result.fireAtUtc, now + 600000);
+    assert.equal(result.label, 'I have to call the library');
+  }
+});
+test('hear104 quarter-to is a time, not a trailing label', () => {
+  const result = parseAlarmTime('set an alarm at quarter to eight', now, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status === 'ready') assert.equal(result.label, '');
+});

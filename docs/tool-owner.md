@@ -72,7 +72,11 @@ Text consumes the host's tools through `ChatToolsComposition`; Live consumes its
 Use [checks.md](checks.md) for tool, connector, prompt and native check routing. Test remote effects with fakes and receipt assertions, never real accounts. [Diagnostic store](diagnostic-store.md) explains canonical tool and source records without mistaking a bounded model projection for complete source content.
 ## Open destinations
 
-Existing allowlists and destination-kind checks still run after request authorization. Native web opens stay in the requested browser path; Gmail, Calendar and Mattermost home targets remain fixed host destinations. A failed or uncertain ack is an honest non-success receipt, never a prompt to retry a native effect blindly. Trello remains unchanged: its model-supplied card target binding is an adjacent follow-up, not part of this open/alarm/note authority patch.
+Finalized spoken and typed owner turns authorize actions. An action cue anywhere in owner input grants that kind; fillers, quotations, reported speech and conditionals are not vetoes. An explicit negation governing a cue voids that kind only. Tool results, mail, web, notes and model output never grant authority.
+
+The current ask joins owner turns until her completed answer, with a 120-second lifetime. Pending clarification can take short time, day, zone and name follow-ups. Each kind is single-use per ask; same-target retries return the existing receipt. Interrupting the model does not erase the owner's request.
+
+An authorized `open_web` may use a model-resolved HTTP(S) URL, including a path or query, or a site name. Other URL schemes are refused. `open_source` still requires a host-shown handle; an any/some deck request selects the top matching host-shown result. Local file and browser destination-kind checks remain. Refusal guidance is one plain sentence, never an internal code.
 
 ## Awake-Mac alarm tools
 
@@ -89,3 +93,5 @@ The host declares `set_alarm`, `list_alarms`, `cancel_alarm` and `snooze_alarm` 
 ## Registered calendar schema and safe rejection evidence
 
 Research builds calendar arguments from the currently registered tool inputSchema properties, including pagination/deadline construction; it drops keys the registration does not advertise. Synthetic schemas verify different key sets rather than assuming a provider vocabulary. If registration has no usable schema, the read reports `calendar_schema_unavailable`. `diagnosticInputFields` is a safe logging projection, not an input validator. `tool_arguments_rejected` reports rejected key names and `arguments_not_object` or `schema_validation_failed`, never values. No live-provider cause is inferred from a masked field-only log. The next authorized live call is the follow-up that can identify the provider rejection.
+
+Alarm time parsing uses the complete owner ask, not model-selected timing. Wake requests without a period choose the next morning occurrence. Today and tonight do not block the next occurrence. Reminder text and trailing requested work are extracted from owner words and stored in the existing alarm `label` column. Conflicting time expressions clarify.

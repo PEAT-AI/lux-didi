@@ -29,7 +29,7 @@ export interface NativeActionResult { type: 'native_action_result'; id: string; 
 
 export const OPEN_BROWSER_GUIDANCE = 'For a browser, tab, Chrome or link request, use open_source with a shown web handle or open_web for a site, never open_file or open_app. If a held result has no web link, say so and offer the home page or a web search in one sentence.';
 
-const OPEN_ONLY = 'These tools only open things: they never type, click, send or change anything.';
+const OPEN_ONLY = 'These tools only open things: they never type, click, send or change anything. If refused, say only the plain sentence in say, never internal codes or retry diagnostics.';
 
 export const OPEN_TOOLS: readonly { name: string; description: string; guidance: string; parameter: string; pattern: RegExp }[] = [
   { name: 'open_source', guidance: 'shown handle', description: `Call it when he asks; the host reads his words. Open one item the owner named, using the handle its lookup result carried in a line starting "open:". ${OPEN_ONLY}`, parameter: 'handle', pattern: /^L[0-9]{1,4}$/ },

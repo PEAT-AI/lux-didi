@@ -287,13 +287,18 @@ for (const outcome of ['saved', 'unavailable', 'unknown'] as const) {
 }
 
 for (const words of ['he said save this into Lux', 'if I say save this into Lux', 'what is in my calendar?']) {
-  test(`direct102 real host: non-save request cannot authorize a note: ${words}`, async t => {
+  test(`hear104 real host: owner save cue is independent of framing: ${words}`, async t => {
     const h = await harness(t, { tools: true });
     const { attachment } = await attached(h);
     await ownerBlock(h, words);
     const result = await call(h, 'stage_lux_note', candidate);
-    assert.equal(result['code'], 'no_owner_request');
-    assert.equal(h.saved.length, 0);
+    if (words.startsWith('he said') || words.startsWith('if I say')) {
+      assert.equal(result['saved'], true);
+      assert.equal(h.saved.length, 1);
+    } else {
+      assert.equal(result['code'], 'no_owner_request');
+      assert.equal(h.saved.length, 0);
+    }
     attachment.close();
   });
 }
@@ -320,7 +325,7 @@ for (const order of ['read_then_save', 'save_then_read'] as const) {
     if (order === 'read_then_save') await ownerBlock(h, 'save this into Lux');
     const result = await call(h, 'stage_lux_note', candidate);
     assert.equal(result['saved'], true, JSON.stringify(result));
-    assert.match(h.saved[0]!.content, order === 'save_then_read' ? /source counts \{"knowledge":[1-9]\d*\}/ : /source counts \{\}/);
+    assert.match(h.saved[0]!.content, /source counts \{"knowledge":[1-9]\d*\}/);
     attachment.close();
   });
 }
@@ -399,3 +404,13 @@ for (const source of ['Lux note', 'forwarded mail']) {
     attachment.close();
   });
 }
+
+test('hear104 typed owner input grants an open through the live text entry point', async t => {
+  const h = await harness(t, { tools: true });
+  const { session, attachment } = await attached(h);
+  h.owner.text('open example.com');
+  const ask = h.tools!.owner.ownerRequests.authorize(session.liveSessionId, 'open', 'https://example.com/');
+  assert.equal(ask.code, 'allowed');
+  assert.match(ask.words ?? '', /open example\.com/);
+  attachment.close();
+});

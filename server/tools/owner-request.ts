@@ -43,7 +43,7 @@ export class OwnerRequests implements OwnerRequestPort {
       ['cancel_alarm', /\b(?:cancel|stop)\b[^.!?]*\balarm\b/i],
       ['snooze_alarm', /\bsnooze\b/i],
       ['list_alarms', /\bshow\b[^.!?]*\balarms?\b/i],
-      ['lux_note', /\b(?:save|remember|note|write)\b|\bput\b[^.!?]*\blux\b/i],
+      ['lux_note', /\b(?:save|remember)\b|\b(?:note|write|put)\b[^.!?]*\blux\b/i],
     ];
     for (const [kind, cue] of cues) {
       const match = cue.exec(words);

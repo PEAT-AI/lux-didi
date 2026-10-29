@@ -115,8 +115,10 @@ if (process.env.DIDI_FAKE_MATTERMOST_NIGHT === 'yes') {
   channelById.set(alpha.id, alpha);
   add('chanAlpha0000000000000000a', 'ada.moss', now - 6 * HOUR, 'deployed sandbox; university article https://example.invalid/article');
   // A dedicated twenty-post conversation contains none of the model's recency keywords.
+  const person = { id: 'person-a', username: 'person.a', first_name: 'Person', last_name: 'A', nickname: '' };
+  USERS.push(person);
+  userByName.set(person.username, person);
   const direct = dm('chanDnight000000000000000a', 'person.a', now - HOUR);
-  USERS.push({ id: 'person-a', username: 'person.a', first_name: 'Person', last_name: 'A', nickname: '' });
   CHANNELS.push(direct);
   channelById.set(direct.id, direct);
   for (let n = 1; n <= 20; n += 1) add(direct.id, n % 2 ? 'person.a' : 'robert', now - n * HOUR, `entry ${n}`);

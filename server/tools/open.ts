@@ -1,7 +1,7 @@
 import type { OwnerRequestPort } from './types.js';
 import { randomUUID } from 'node:crypto';
 import { hostLogEvent } from './host-events.js';
-import { HOME_APPS, WEB_KINDS, beginHandleSession, endHandleSession, exposeHandles, homeDestination, mattermostOrigin, openDestination, resolveHandle, spokenDots, webDestination, registrableDomain, type HomeApp, type OpenKind, type WebKind } from './open-handles.js';
+import { HOME_APPS, WEB_KINDS, beginHandleSession, endHandleSession, exposeHandles, homeDestination, mattermostOrigin, openDestination, resolveHandle, spokenDots, webDestination, registrableDomain, stripOpenLines, type HomeApp, type OpenKind, type WebKind } from './open-handles.js';
 import { pickSiteDomain, publicQueryOf, type WebSearchPort } from './web-search.js';
 
 /** Builtin gateway identity: the open tools are host-native, never a remote connector. */
@@ -352,13 +352,21 @@ export class NativeActionBus {
  */
 export function exposeToolResults(results: readonly { id?: string; name?: string; response?: unknown }[]): { handle: string; kind: string }[] {
   const shown: { handle: string; kind: string }[] = [];
-  for (const result of results) {
-    const text = JSON.stringify(result.response ?? {});
-    exposeHandles(text);
-    for (const match of text.matchAll(/\bopen:\s*(L[0-9]{1,4})\b/g)) {
-      const resolved = resolveHandle(match[1]!);
-      if (resolved) shown.push({ handle: match[1]!, kind: resolved.kind });
+  const scan = (value: unknown): void => {
+    if (typeof value === 'string') {
+      for (const line of value.split('\n')) {
+        const match = /^open: (L[0-9]{1,4}) = /.exec(line);
+        if (!match || stripOpenLines(line) !== line) continue;
+        const resolved = resolveHandle(match[1]!);
+        if (resolved) shown.push({ handle: match[1]!, kind: resolved.kind });
+      }
+    } else if (value && typeof value === 'object') {
+      for (const child of Object.values(value)) scan(child);
     }
+  };
+  for (const result of results) {
+    exposeHandles(JSON.stringify(result.response ?? {}));
+    scan(result.response);
   }
   return shown;
 }

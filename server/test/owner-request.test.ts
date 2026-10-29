@@ -102,3 +102,14 @@ test('direct102 authority: a pending final waits for its event, never a timer th
   await waiting;
   assert.equal(requests.authorize('s', 'open', 'deck').code, 'allowed');
 });
+
+test('direct102 authority: any-kind candidates are ordered host results from this request only', () => {
+  const requests = new OwnerRequests(() => 0);
+  requests.observe('s', 'j1', 'open any deck');
+  const first = requests.currentId('s')!;
+  requests.shown('s', first, [{ handle: 'L1', kind: 'gmail' }, { handle: 'L2', kind: 'drive' }, { handle: 'L3', kind: 'docs' }]);
+  assert.equal(requests.topShown('s', ['drive', 'docs']), 'L2');
+  requests.observe('s', 'j2', 'open some deck');
+  requests.shown('s', first, [{ handle: 'L4', kind: 'drive' }]);
+  assert.equal(requests.topShown('s', ['drive', 'docs']), undefined, 'an old lookup cannot populate a new request');
+});

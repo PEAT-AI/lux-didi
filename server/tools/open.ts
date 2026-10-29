@@ -19,8 +19,8 @@ export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_sourc
 /** The one sentence the model says when an item open is refused or unknown. */
 export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch', string> = {
   not_found: 'The host could not resolve that shown item.',
-  not_allowed: 'That target is not allowed for this action. Tool retries use the same handle, without new authority.',
-  no_open_intent: 'There is no owner request authorizing an open; the host did not hear an open request. Tool retries use the same handle.',
+  not_allowed: 'I cannot open that target.',
+  no_open_intent: 'I did not hear an open request, so nothing is open.',
   kind_mismatch: 'That item is not the kind authorized by this request.',
 };
 /** A control frame and its ack, exactly as they cross the local Live socket. */
@@ -29,7 +29,7 @@ export interface NativeActionResult { type: 'native_action_result'; id: string; 
 
 export const OPEN_BROWSER_GUIDANCE = 'For a browser, tab, Chrome or link request, use open_source with a shown web handle or open_web for a site, never open_file or open_app. If a held result has no web link, say so and offer the home page or a web search in one sentence.';
 
-const OPEN_ONLY = 'These tools only open things: they never type, click, send or change anything.';
+const OPEN_ONLY = 'These tools only open things: they never type, click, send or change anything. If refused, say only the plain sentence in say, never internal codes or retry diagnostics.';
 
 export const OPEN_TOOLS: readonly { name: string; description: string; guidance: string; parameter: string; pattern: RegExp }[] = [
   { name: 'open_source', guidance: 'shown handle', description: `Call it when he asks; the host reads his words. Open one item the owner named, using the handle its lookup result carried in a line starting "open:". ${OPEN_ONLY}`, parameter: 'handle', pattern: /^L[0-9]{1,4}$/ },
@@ -248,6 +248,7 @@ function openRefusal(toolName: string, words: string, kind: OpenKind): 'no_open_
   const browser = /\b(?:browser|tabs?|links?|website|site)\b|\b(?:in|using|with)\s+(?:my\s+)?(?:chrome|safari)\b|\b[\w-]+\.(?:com|net|org|io|ai|co|de|uk)\b/iu.test(spokenDots(words));
   if ((toolName === 'open_file' || toolName === 'open_app') && browser) return 'not_allowed';
   if (toolName === 'open_app' && /\bopen\s+the\s+/iu.test(words) && !/\b(?:app|application)\b/iu.test(words)) return 'not_allowed';
+  if (toolName === 'open_file' && !/\b(?:local|file|folder|path)\b|~\/|\/Users\//i.test(words)) return 'not_allowed';
   if (toolName !== 'open_source') return undefined;
   const named = ASK_KINDS.filter(entry => entry.words.test(words));
   return named.length > 0 && !named.some(entry => entry.kinds.includes(kind)) ? 'kind_mismatch' : undefined;
@@ -257,7 +258,6 @@ function openRefusal(toolName: string, words: string, kind: OpenKind): 'no_open_
 export function openTarget(toolName: string, args: Record<string, string>, words = ''): { target: OpenTarget } | { code: 'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch' } {
   const resolved = resolveOpenTarget(toolName, args);
   if ('code' in resolved) return resolved;
-  if (toolName === 'open_file' && !webBinding(args['path']!.replace(/^\/Users\/[^/]+\/|^~\//, ''), words)) return { code: 'not_allowed' };
   if (toolName === 'open_app' && !webBinding(args['name']!.replace(/\.app$/i, ''), words)) return { code: 'not_allowed' };
   if (toolName === 'open_home') {
     const homes: Record<string, RegExp> = { gmail: /\b(?:gmail|mail|email|inbox)\b/i, calendar: /\b(?:calendar|schedule)\b/i, mattermost: /\b(?:mattermost|chat)\b/i };
@@ -395,7 +395,7 @@ export const OPEN_WEB_PARAMETERS: Record<string, unknown> = {
   required: ['kind', 'target'],
   additionalProperties: false,
 };
-export const OPEN_WEB_DESCRIPTION = `Call it when he asks; the host reads his words. Open a web page in his browser from the words he just said: kind maps for a place or directions, site for a site he named, search for words to search for. ${OPEN_ONLY} When he asks to open something on the web, call this at once instead of a web lookup, and never pass a URL, a host, a path or a query string. For a document or file he names by title, look it up and open it with open_source instead.`;
+export const OPEN_WEB_DESCRIPTION = `Call it when he asks; the host reads his words. Open a web page in his browser from the words he just said: kind maps for a place or directions, site for a site he named, search for words to search for. ${OPEN_ONLY} When he asks to open something on the web, call this at once instead of a web lookup, use a resolved http(s) URL or site when that answers his request. For a document or file he names by title, look it up and open it with open_source instead.`;
 export function validateOpenWeb(args: unknown): args is { kind: WebKind; target: string } {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
   const record = args as Record<string, unknown>;
@@ -417,7 +417,7 @@ export function webWords(text: string): string[] {
     .filter(Boolean);
 }
 
-/** Every word of the target is a word he said, so no retrieved text and no model sentence binds one. */
+/** Handle-tool target binding only, not open_web: each target word must occur in the owner words. */
 export function webBinding(target: string, ownerWords: string): boolean {
   const said = new Set(webWords(ownerWords));
   const wanted = webWords(target);
@@ -472,7 +472,13 @@ export interface WebOpenTarget { action: NativeAction; target: string; detail: s
  */
 export async function resolveWebOpen(args: { kind: WebKind; target: string }, words: string, signal: AbortSignal): Promise<{ target: WebOpenTarget } | WebOpenRefusal> {
   if (!WEB_INTENT.test(words)) return { code: 'no_open_intent' };
-  if (!webBinding(args.target, words)) return { code: 'not_owner_words' };
+  if (/^[a-z][a-z0-9+.-]*:/i.test(args.target) && !/^https?:\/\//i.test(args.target)) return { code: 'not_allowed' };
+  if (args.kind === 'site' && (/^https?:\/\//i.test(args.target) || /^[\w.-]+\.[a-z]{2,}(?:[/:?#]|$)/i.test(args.target))) {
+    try {
+      const url = new URL(/^https?:\/\//i.test(args.target) ? args.target : `https://${args.target}`);
+      return { target: { action: 'open_url', target: url.href, detail: 'web', kind: 'web', title: url.hostname } };
+    } catch { return { code: 'not_allowed' }; }
+  }
   const direct = webDestination(args.kind, args.target);
   if (direct !== undefined) return { target: { action: 'open_url', target: direct.url, detail: 'web', kind: 'web', title: direct.domain } };
   if (args.kind !== 'site') return { code: 'not_allowed' };

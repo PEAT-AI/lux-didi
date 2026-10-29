@@ -3831,7 +3831,7 @@ export class LiveSessionOwner {
           handle.turnInterrupted = true;
           logTurnScript(handle);
           clearOpenLedger(handle.liveSessionId);
-    this.#tools?.owner.ownerRequests.release(handle.liveSessionId);
+          // Owner authority survives a model interruption.
           // C-TURN8: the owner cut her off, so no claim of hers outlives the turn he interrupted.
           this.#resetClaimCheck(handle);
           // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.
@@ -3842,6 +3842,7 @@ export class LiveSessionOwner {
         // generationComplete alone does not end SPEAKING: the orb holds it until the turn completes
         // and playback drains (F2).
         if (event.type === 'turnComplete') {
+          this.#tools?.owner.ownerRequests.answered?.(handle.liveSessionId);
           // C-PITCH: one closed measurement per response that played audio, and the shift receipt when this
           // response's median F0 sits beyond the ratio from the session's running median (a voice change).
           this.#logVoiceProfile(handle, generation);
@@ -4852,8 +4853,8 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
         // #573: the open tools are checked against the owner's words since the model last spoke, so a
         // provider that finalizes one utterance as two turns still carries the whole ask.
         if (ownerTurn) noteOwnerWords(handle.liveSessionId, ownerTurn);
-        if (transcription?.finalOrigin !== 'typed') queueMicrotask(() => this.#ackAlarm(handle, text ?? ''));
-        if (ownerTurn && transcription?.finalOrigin !== 'typed') this.#tools?.owner.observeAlarmOwner(handle.liveSessionId, String(journalId), ownerTurn, now);
+        queueMicrotask(() => this.#ackAlarm(handle, text ?? ''));
+        if (ownerTurn) this.#tools?.owner.observeAlarmOwner(handle.liveSessionId, String(journalId), ownerTurn, now);
 
         // W6 item 6: the composed note listens to the same finalized owner turn, and to nothing else.
       }

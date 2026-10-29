@@ -39,11 +39,12 @@ test('alarm authority: a fragment fills only an explicit host clarification and 
   assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'request_expired');
 });
 
-test('alarm authority: an unrelated ask supersedes the old alarm; fragments without a clarification do not join', () => {
+test('hear104 alarm authority: finals join until the completed answer', () => {
   const gate = new OwnerRequests(() => 0);
   gate.observe('s', 'j1', 'set an alarm at eleven ten');
   gate.observe('s', 'j2', 'a.m. Singapore time');
-  assert.equal(gate.authorize('s', 'set_alarm', 'alarm').words, 'set an alarm at eleven ten');
+  assert.equal(gate.authorize('s', 'set_alarm', 'alarm').words, 'set an alarm at eleven ten a.m. Singapore time');
+  gate.answered('s');
   gate.observe('s', 'j3', 'what is the weather?');
   gate.observe('s', 'j4', 'a.m. Singapore time');
   assert.equal(gate.authorize('s', 'set_alarm', 'alarm').code, 'no_owner_request');

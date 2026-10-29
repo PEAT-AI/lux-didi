@@ -1,5 +1,5 @@
 type AlarmTime =
-  | { status: 'ready'; fireAtUtc: number; tz: string; confirmation: string }
+  | { status: 'ready'; fireAtUtc: number; tz: string; confirmation: string; label: string }
   | { status: 'clarify'; reason: 'missing_time' | 'missing_timezone' | 'unsupported_time_expression' }
   | { status: 'refused'; reason: 'time_mismatch' | 'invalid_time' };
 
@@ -13,7 +13,16 @@ function localParts(instant: number, tz: string): number[] {
 
 /** Interpret owner words, never use a model argument to choose the instant. */
 export function parseAlarmTime(words: string, now: number, tz: string, modelAt?: number): AlarmTime {
-  let text = words.toLowerCase().replace(/\b([ap])\s*\.\s*m\.?/g, '$1m');
+  // Labels come from owner input, not the model's arguments.
+  const trailing = /\b(?:and\s+((?:give|tell|show|read)\b.*)|that\s+(.+))$/i.exec(words);
+  const reminder = /\bremind me\b/i.test(words)
+    ? /\bto\s+(?!(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b)(.+)$/i.exec(words) : null;
+  const labelMatch = trailing ?? reminder;
+  const label = (trailing ? trailing[1] ?? trailing[2] : reminder?.[1])?.trim() ?? '';
+  const timeWords = labelMatch ? words.slice(0, labelMatch.index) : words;
+  let text = timeWords.toLowerCase().replace(/\b([ap])\s*\.\s*m\.?/g, '$1m');
+  text = text.replace(/\bwake me\s+up\b/g, 'wake me').replace(/\b(?:today|tonight)\b/g, '').replace(/\bfor\s+(?!\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b)[a-z]+\s+(?=(?:\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b))/, 'for ');
+  text = text.replace(/\b(alarm|wake me)\s+(?=(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b)/, '$1 at ');
   const named: Record<string, string> = { 'singapore time': 'Asia/Singapore', sgt: 'Asia/Singapore', utc: 'UTC', gmt: 'UTC', 'new york time': 'America/New_York', 'eastern time': 'America/New_York', 'central time': 'America/Chicago', 'mountain time': 'America/Denver', 'pacific time': 'America/Los_Angeles' };
   const zonePattern = /\b(singapore time|new york time|sgt|utc|gmt|[a-z_+-]+(?:\/[a-z_+-]+)+|[a-z]+ time)\b/g;
   const zones = [...text.matchAll(zonePattern)];
@@ -36,7 +45,7 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
   let fireAtUtc: number;
   const relative = new RegExp(`\\bin\\s+((?:\\d+|${Object.keys(values).join('|')})(?:[ -](?:one|two|three|four|five|six|seven|eight|nine))?)\\s+(minutes?|hours?)\\b`).exec(text);
   if (relative) {
-    const prefix = text.slice(0, relative.index).replace(/^.*?\b(?:alarm|wake me)\b/, '').replace(/^\s*snooze\b/, '').replace(/\bplease\b|[,;:]/g, '').trim();
+    const prefix = text.slice(0, relative.index).replace(/^.*?\b(?:alarm|wake me|remind me)\b/, '').replace(/^\s*snooze\b/, '').replace(/\bplease\b|[,;:]/g, '').trim();
     if (prefix) return { status: 'clarify', reason: 'unsupported_time_expression' };
     const amount = number(relative[1]!);
     if (!Number.isFinite(amount)) return { status: 'clarify', reason: 'unsupported_time_expression' };
@@ -48,13 +57,13 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
     // Select the first temporal introducer and consume its entire remainder, never prefer a later "at".
     const start = /\b(?:at|for)\s+|\b(?:noon|midnight)\b/.exec(text);
     if (!start) return { status: 'clarify', reason: 'missing_time' };
-    const prefix = text.slice(0, start.index).replace(/^.*?\b(?:alarm|wake me)\b/, '').replace(/^\s*snooze\b/, '')
+    const prefix = text.slice(0, start.index).replace(/^.*?\b(?:alarm|wake me|remind me)\b/, '').replace(/^\s*snooze\b/, '')
       .replace(/\b(?:tomorrow|morning|evening|tonight|am|pm|in|the|for|please)\b|[,;:]/g, '').trim();
     if (prefix) return { status: 'clarify', reason: 'unsupported_time_expression' };
     let expression = text.slice(start.index + (/^(?:noon|midnight)$/.test(start[0]) ? 0 : start[0].length)).trim();
     expression = expression.replace(/^(?:(?:tomorrow|morning|evening|tonight|in the morning|in the evening)\s+)+at\s+/, '');
     const tomorrow = /\btomorrow\b/.test(text);
-    const period = /\bam\b|\bmorning\b/.test(text) ? 'am'
+    const period = /\bam\b|\bmorning\b/.test(text) || /\bwake me\b/.test(text) && !/\bpm\b|\bevening\b/.test(text) ? 'am'
       : /\bpm\b|\bevening\b|\btonight\b/.test(text) ? 'pm' : undefined;
     expression = expression.replace(/\b(?:in the morning|in the evening|tomorrow|morning|evening|tonight|am|pm|please)\b/g, '').replace(/[.!?,]+$/, '').trim();
     const namedTime = expression === 'noon' || expression === 'midnight';
@@ -103,7 +112,7 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
     return { status: 'refused', reason: 'time_mismatch' };
   }
   const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(fireAtUtc);
-  return { status: 'ready', fireAtUtc, tz, confirmation: `Alarm set for ${dateTime} (${tz}).` };
+  return { status: 'ready', fireAtUtc, tz, label, confirmation: `Alarm set for ${dateTime} (${tz}).` };
 }
 
 export const ALARM_NAMES = ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm'] as const;

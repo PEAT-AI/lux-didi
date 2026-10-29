@@ -2,10 +2,10 @@ import type { ActionKind, RequestAuthorization, OwnerRequestPort } from './types
 interface Grant { target?: string; receipt?: unknown; inFlight?: boolean }
 interface Request {
   id: string; words: string; start: number; finals: number; journalId: string;
-  grants: Map<ActionKind, Grant>; pending?: { kind: ActionKind; field: string };
+  grants: Map<ActionKind, Grant>; answered?: boolean; pending?: { kind: ActionKind; field: string };
   sources: Record<string, number>; shown: { handle: string; kind: string }[];
 }
-/** Per tools-owner state. Only finalized owner transcription may call observe. */
+/** Per tools-owner state. Only finalized spoken or typed owner input may call observe. */
 export class OwnerRequests implements OwnerRequestPort {
   private requests = new Map<string, Request>();
   private sequence = 0;
@@ -15,10 +15,12 @@ export class OwnerRequests implements OwnerRequestPort {
   private external = new Set<string>();
   partial(session: string): void { this.pendingFinal.add(session); }
   async waitForFinal(session: string, signal: AbortSignal): Promise<void> {
-    if (!this.seenFinal.has(session) || !this.pendingFinal.has(session) || signal.aborted) return;
+    if (signal.aborted || this.seenFinal.has(session) && !this.pendingFinal.has(session)) return;
     await new Promise<void>(resolve => {
       const listeners = this.finalListeners.get(session) ?? new Set<() => void>();
+      const timer = setTimeout(() => finish(), 750);
       const finish = () => {
+        clearTimeout(timer);
         signal.removeEventListener('abort', finish);
         listeners.delete(finish);
         if (!listeners.size) this.finalListeners.delete(session);
@@ -34,42 +36,34 @@ export class OwnerRequests implements OwnerRequestPort {
     for (const finish of this.finalListeners.get(session) ?? []) finish();
     const previous = this.requests.get(session);
     if (previous?.journalId === journalId) return;
-    // Closed imperative grammar, not a growing blacklist of reported-speech subjects.
-    const prefix = /^(?:(?:naya|please|can you|could you|would you|i want you to|go ahead and|and|then|also)\b[\s,]*)+/i;
-    const imperative = /^(?:open|show|pull up|set|wake|cancel|stop|snooze|save|remember|put|note|write)\b/i;
-    const command = words.trim().replace(prefix, '');
-    const clauses = command.split(/\b(?:and then|and|then|also)\b|[;!]|\.(?=\s|$)/i)
-      .map(clause => clause.trim().replace(prefix, '')).filter(Boolean);
-    const lastCue = Math.max(0, ...clauses.filter(clause => imperative.test(clause)).map(clause => words.lastIndexOf(clause)));
-    // A conditional, deferral or negation vetoes the whole final, not just its own clause.
-    const direct = !/\b(?:if|unless|whenever|later|maybe|perhaps|suppose)\b|\b(?:when|once|after|before|should)\s+i\b|\bin\s+case\b|\bwould\s+you\b/i.test(words)
-      && !/\b(?:don['’]?t|do\s+not|never|not|no\s+need\s+to|forget\s+it)\b/i.test(words)
-      && !/[\p{Quotation_Mark}`:]/u.test(words)
-      && !/\b(?:said|says|told|tells|asked|wrote|writes|reads|the note|the instructions|the email|the message|the text)\b/i.test(words.slice(0, lastCue));
     const grants = new Map<ActionKind, Grant>();
-    if (direct && imperative.test(command)) {
-      const cues: [ActionKind, RegExp][] = [
-        ['open', /^(?:open|show|pull up)\b/i],
-        ['set_alarm', /^wake me\b|^set\b[^.!?]*\balarm\b/i],
-        ['cancel_alarm', /^(?:cancel|stop)\b[^.!?]*\balarm\b/i],
-        ['snooze_alarm', /^snooze\b/i],
-        ['list_alarms', /^show\b[^.!?]*\balarms?\b/i],
-        ['lux_note', /^(?:save|remember|note|write)\b|^put\b[^.!?]*\blux\b/i],
-      ];
-      for (const [kind, cue] of cues) if (clauses.some(clause => cue.test(clause))) grants.set(kind, {});
+    const cues: [ActionKind, RegExp][] = [
+      ['open', /(?:\b(?:open|show|pull up|search for|oeffne|zeige|zeig)\b|(?:^|\s)öffne\b)/iu],
+      ['set_alarm', /\bwake me\b|\bset\b[^.!?]*\balarm\b|\bremind me\s+(?:in|at)\b/i],
+      ['cancel_alarm', /\b(?:cancel|stop)\b[^.!?]*\balarm\b/i],
+      ['snooze_alarm', /\bsnooze\b/i],
+      ['list_alarms', /\bshow\b[^.!?]*\balarms?\b/i],
+      ['lux_note', /\b(?:save|remember)\b|\b(?:note|write|put)\b[^.!?]*\blux\b/i],
+    ];
+    for (const [kind, cue] of cues) {
+      const match = cue.exec(words);
+      if (!match) continue;
+      const before = words.slice(0, match.index);
+      if (/\b(?:don['’]?t|do not|never mind|forget it|never|not|no need to)[\s,]*(?:(?:please|you|ever)\s+)*$/i.test(before)) { previous?.grants.delete(kind); continue; }
+      grants.set(kind, {});
     }
-    if (!grants.size && direct && previous?.pending && this.clock() - previous.start <= 120000
-      && /^(?:(?:a\.?m\.?|p\.?m\.?)\b|singapore\b|sgt\b|(?:ten|quarter|half|\d+)\s+(?:past|to)\b|in\s+(?:\w+|\d+)\s+(?:minutes?|hours?)\b)/i.test(words.trim())) {
-      previous.words += ` ${words}`; previous.finals++; previous.journalId = journalId;
+    if (previous && (!previous.answered || previous.pending) && this.clock() - previous.start <= 120000) {
+      previous.words = words.startsWith(previous.words) ? words : `${previous.words} ${words}`;
+      previous.finals++; previous.journalId = journalId;
+      for (const [kind, grant] of grants) if (!previous.grants.has(kind)) previous.grants.set(kind, grant);
       delete previous.pending;
       return;
     }
-    if (!grants.size) {
-      if (!previous || this.clock() - previous.start > 120000 || !direct || /\b(?:what|when|where|why|how|who|can|could|tell|explain|compare|find|look|read|search|show|set|open|save|remember|put|cancel|snooze)\b/i.test(words)) this.requests.delete(session);
-      return;
-    }
+    // Retain even a cue-free first fragment: the next final may finish the request.
     this.requests.set(session, { id: `request-${++this.sequence}`, words, start: this.clock(), finals: 1, journalId, grants, sources: {}, shown: [] });
   }
+
+  answered(session: string): void { const request = this.requests.get(session); if (request) request.answered = true; }
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization {
     const request = this.requests.get(session);
     if (!request) return { code: 'no_owner_request' };

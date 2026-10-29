@@ -51,13 +51,13 @@ test('alarm: a resolved instant remains fixed when the system time zone changes'
   const result = parseAlarmTime('wake me at 8', now, 'America/New_York');
   assert.equal(result.status, 'ready');
   if (result.status !== 'ready') return;
-  assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
+  assert.equal(result.fireAtUtc, Date.parse('2026-10-29T12:00:00Z'));
   const london = parseAlarmTime('wake me at 8', now, 'Europe/London');
   assert.equal(london.status, 'ready');
   if (london.status !== 'ready') return;
-  assert.equal(london.fireAtUtc, Date.parse('2026-10-28T20:00:00Z'));
+  assert.equal(london.fireAtUtc, Date.parse('2026-10-29T08:00:00Z'));
   assert.equal(london.tz, 'Europe/London');
-  assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
+  assert.equal(result.fireAtUtc, Date.parse('2026-10-29T12:00:00Z'));
   assert.equal(result.tz, 'America/New_York');
 });
 
@@ -140,3 +140,59 @@ for (const words of ['set an alarm for tomorrow at seven', 'set an alarm for  to
     if (parsed.status === 'ready') assert.equal(parsed.fireAtUtc, Date.parse('2026-10-28T23:00:00Z'));
   });
 }
+
+for (const words of [
+  'Well, okay, set an alarm for ten past six p.m. today',
+  'set an alarm for um ten past six p.m.',
+  'wake me up tomorrow at eight and give me a summary',
+  'remind me in nine minutes that I have to call the library',
+]) test(`hear104 time and label: ${words}`, () => {
+  const result = parseAlarmTime(words, now, tz);
+  assert.equal(result.status, 'ready');
+  if (words.includes('summary')) assert.equal('label' in result && result.label, 'give me a summary');
+  if (words.includes('library')) assert.equal('label' in result && result.label, 'I have to call the library');
+});
+
+test('hear104 wake without a period means the next morning, not this evening', () => {
+  const result = parseAlarmTime('wake me up at 8', Date.parse('2026-11-01T17:09:00Z'), 'UTC');
+  assert.equal(result.status, 'ready');
+  if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-11-02T08:00:00Z'));
+});
+test('hear104 relative reminder preserves owner label and ignores model-selected time', () => {
+  const result = parseAlarmTime('remind me in 10 minutes that I have to call the library', now, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status === 'ready') {
+    assert.equal(result.fireAtUtc, now + 600000);
+    assert.equal(result.label, 'I have to call the library');
+  }
+});
+test('hear104 quarter-to is a time, not a trailing label', () => {
+  const result = parseAlarmTime('set an alarm at quarter to eight', now, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status === 'ready') assert.equal(result.label, '');
+});
+
+test('hear104 a pending bare-number follow-up supplies hour and minute', () => {
+  const result = parseAlarmTime('set an alarm Ten five, today', now, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-28T14:05:00Z'));
+});
+
+for (const [words, minute] of [
+  ['set an alarm for fi twenty past five p.m.', 20],
+  ['set an alarm for um five past five p.m.', 5],
+  ['set an alarm for fi ten past five p.m.', 10],
+] as const) test(`hear104 R5 one filler before spoken time: ${words}`, () => {
+  const result = parseAlarmTime(words, now, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.UTC(2026, 9, 29, 9, minute));
+});
+for (const time of [
+  '5', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve',
+  'five past five', 'twenty past five', 'twenty-five to five', 'thirty past five', 'forty past five', 'fifty to five',
+  'quarter past five', 'half past five', 'noon', 'midnight',
+]) test(`hear104 R5 filler does not change the instant: ${time}`, () => {
+  const clean = parseAlarmTime(`set an alarm for ${time}`, now, tz);
+  assert.equal(clean.status, 'ready');
+  assert.deepEqual(parseAlarmTime(`set an alarm for um ${time}`, now, tz), clean);
+});

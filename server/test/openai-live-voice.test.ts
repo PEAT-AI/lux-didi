@@ -2313,7 +2313,7 @@ for (const reason of ['turn_spent', 'answer_already_given', 'no_turn_since_resul
     await until(() => f.frames.filter(frame => frame['type'] === 'response.create').length > before);
     const creates = f.frames.filter(frame => frame['type'] === 'response.create').slice(before);
     assert.equal(creates.length, 1);
-    assert.deepEqual(creates[0]!['response'], { instructions: 'Answer now from the results already available. Do not call research again in this response.', tools: [], tool_choice: 'none' });
+    assert.equal(creates[0]!['response'], undefined);
   });
 }
 

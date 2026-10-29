@@ -51,6 +51,13 @@ assert "alert.beginSheetModal(for: parent)" in presentation
 assert "alert.window.makeKeyAndOrderFront(nil)" in presentation
 assert "runModal()" not in presentation
 assert "NSApp.activate" not in menu and "NSApp.activate" not in presentation
+termination = app.split("    func applicationShouldTerminate(_ sender:", 1)[1].split("    @objc private func pickupLiveCall", 1)[0]
+assert "DispatchQueue.global(qos: .userInitiated).asyncAfter" in termination
+assert "Darwin._exit(EXIT_SUCCESS)" in termination
+assert "quit_forced stage=" in termination and "quitDeadline.complete()" in termination
+assert termination.index("quitDeadline.request") < termination.index("await model.shutdown")
+shutdown = app.split("    func shutdown(stage:", 1)[1].split("    /// Quit ends", 1)[0]
+assert shutdown.index("let stopHost = Task") < shutdown.index("await client?.revokePageSession()")
 print("STATUS-QUIET WIRING PASS capabilityQueriesPerTick=0 launchAndActivation=true")
 PYTEST
 compile "$work/head-test" Sources/LuxDidi/*.swift

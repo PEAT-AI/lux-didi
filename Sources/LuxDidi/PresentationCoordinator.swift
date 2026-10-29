@@ -382,3 +382,49 @@ struct StatusMenuTracking {
         Self.live[id] = nil
     }
 }
+
+/// The watchdog must remain runnable even if the application's MainActor is blocked.
+enum NativeQuitStage: String, Sendable {
+    case awaitingMainActor, audio, logout, webSession, host, secondQuit
+}
+
+final class NativeQuitDeadline: @unchecked Sendable {
+    private enum State { case idle, running, finished, forced }
+    private let lock = NSLock()
+    private var state: State = .idle
+    private var currentStage: NativeQuitStage = .awaitingMainActor
+
+    /// Returns true only for the first request. A second request forces exit immediately.
+    func request(schedule: (Double, @escaping @Sendable () -> Void) -> Void,
+                 forced: @escaping @Sendable (NativeQuitStage) -> Void) -> Bool {
+        lock.lock()
+        guard state == .idle else {
+            let forceAgain = state == .running
+            if forceAgain { state = .forced }
+            lock.unlock()
+            if forceAgain { forced(.secondQuit) }
+            return false
+        }
+        state = .running
+        lock.unlock()
+        schedule(3) { [self] in
+            lock.lock()
+            guard state == .running else { lock.unlock(); return }
+            state = .forced
+            let stage = currentStage
+            lock.unlock()
+            forced(stage)
+        }
+        return true
+    }
+    func stage(_ stage: NativeQuitStage) {
+        lock.lock(); defer { lock.unlock() }
+        if state == .running { currentStage = stage }
+    }
+    func complete() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard state == .running else { return false }
+        state = .finished
+        return true
+    }
+}

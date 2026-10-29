@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import OSLog
 import Combine
 import SwiftUI
@@ -550,11 +551,18 @@ import WebKit
         await live?.stop(reason: .logout); liveAuthorityOwner.clear()
         await client?.revokePageSession(); shell?.clear()
     }
-    func shutdown() async {
+    func shutdown(stage: (NativeQuitStage) -> Void = { _ in }) async {
+        stage(.audio)
         stopVoiceForQuit()
-        await client?.revokePageSession(); shell?.clear()
+        // Start host EOF/drain independently of page logout, which may never answer.
+        let stopHost = Task { await supervisor?.stop(reason: .shutdown) }
+        stage(.logout)
+        await client?.revokePageSession()
+        stage(.webSession)
+        shell?.clear()
         liveAuthorityOwner.clear()
-        await supervisor?.stop(reason: .shutdown)
+        stage(.host)
+        await stopHost.value
     }
 
     /// Quit ends the call with its own reason: capture stops at once, the journal names app_quit, and the
@@ -695,7 +703,7 @@ struct RootView: View {
     private var loginLaunch = false
     private var launchKind: LaunchKind = .interactive
     private var cleanQuit = false
-    private var quitting = false
+    private let quitDeadline = NativeQuitDeadline()
     /// The one owner of the visible surface (#311). Every entry point (Dock
     /// click, hotkey, orb click, mode button, close) reports through it, so no
     /// sequence leaves two surfaces on screen.
@@ -1540,18 +1548,24 @@ struct RootView: View {
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if cleanQuit { return .terminateNow }
-        if !quitting {
-            quitting = true
-            model.stopVoiceForQuit()
-            // terminateLater enters a nested AppKit loop. A caller inside an
-            // async MainActor job can hold that executor and starve cleanup.
-            // Return first, then reissue clean termination after bounded logout.
+        let logger = Logger(subsystem: "LuxDidi", category: "quit")
+        let first = quitDeadline.request(schedule: { seconds, fire in
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + seconds, execute: fire)
+        }, forced: { stage in
+            logger.error("quit_forced stage=\(stage.rawValue, privacy: .public)")
+            // No MainActor hop or AppKit callback: even a wedged executor cannot hold Quit.
+            // The OS releases audio and closes host stdin, preserving its existing EOF drain.
+            Darwin._exit(EXIT_SUCCESS)
+        })
+        if first {
             Task {
-                await model.shutdown()
+                await model.shutdown(stage: { quitDeadline.stage($0) })
+                guard quitDeadline.complete() else { return }
                 cleanQuit = true
                 sender.terminate(nil)
             }
         }
+        // terminateLater would enter an AppKit nested loop and can starve actor cleanup.
         return .terminateCancel
     }
     @objc private func pickupLiveCall() { show(); model.pickUpLiveCall() }

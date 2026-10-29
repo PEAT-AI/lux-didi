@@ -813,7 +813,7 @@ for (const channel of ['eng', 'synthetic-missing']) {
     assert.ok(tool, 'the chat capability is published');
     const batch = await runToolCalls(f.owner, [{ id: 'channel-call', name: tool.name, args: { intent: 'channel', channel, limit: 8 } }], {
       registry: [tool], host: { ...f.host, grants: [{ tool: tool.name, effect: 'read', accountId: 'account', resourceId: 'resource' }] },
-      authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 }, seenIds: new Set(), step: 1,
+      authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 }, seenIds: new Set(), step: 1, contentIndex: 0, baseClasses: ['ordinary'],
     });
     assert.equal(batch.tools[0]?.status, 'completed');
     const row = f.store.transaction(tx => tx.get('SELECT state,result_json FROM tool_calls'))!;

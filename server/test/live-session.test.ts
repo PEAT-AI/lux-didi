@@ -7673,7 +7673,7 @@ test('an alarm permits one provider rebuild while its ring deadline is open', as
 
 test('overview alarms compose the same cached calendar digest and normal memory prompt', async t => {
   const fake = fakeLiveVoicePort();
-  const h = await harness(t, { port: fake.port, tools: true, system: NAYA_LIVE_BASE, calendarDigest: {
+  const h = await harness(t, { port: fake.port, tools: true, system: `${NAYA_LIVE_BASE}\n\n${NAYA_TOOLS}`, calendarDigest: {
     forStart: async () => ({ state: 'present', text: 'Synthetic day: 09:00 Project review', items: 1, fetchedAt: NOW }), refresh: () => {} } });
   await h.owner.prepareCalendar();
   const session = h.owner.create({ idempotencyKey: 'wake-overview', inputClass: 'ordinary', alarm: { ownerDisplayName: 'Synthetic Owner', scheduledTime: '08:00', label: 'give me an overview' } }, h.ctx);

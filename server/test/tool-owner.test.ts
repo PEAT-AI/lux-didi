@@ -48,6 +48,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const registry = new McpRegistry(); const p = options.policy ?? policy();
   const sourceTools = options.sourceTools ?? tools;
+  const rpcErrors: unknown[] = [];
   const endpoint = { id: p.endpoint.id, url: policyUrl(p.endpoint), account: p.endpoint.account, resource: p.endpoint.resource, ...(p.endpoint.credentialRef ? { credentialRef: p.endpoint.credentialRef } : {}) };
   registry.register(endpoint); registry.enable(endpoint.id); registry.allowEgress(endpoint.id);
   const sdk = new Server({ name: 'synthetic-owner', version: '1' }, { capabilities: { tools: { listChanged: false } } });
@@ -66,7 +67,12 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
       const packet = await req.clone().json() as { method: string; params?: { name: string; arguments: unknown } };
       if (packet.method === 'tools/call') calls.push({ name: packet.params!.name, arguments: packet.params!.arguments, signal: req.signal });
     }
-    return transport.handleRequest(req);
+    const response = await transport.handleRequest(req);
+    if (options.sourceTools) {
+      const payload = await response.clone().json().catch(() => undefined) as { error?: unknown } | undefined;
+      if (payload?.error) rpcErrors.push(payload.error);
+    }
+    return response;
   });
   const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: options.memoryBytes ?? 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic-token', budgets: { maxResponseBytes: 12000, projectionChars: 10, timeoutMs: 1000 } });
   t.after(async () => { await port.close(); await transport.close(); await sdk.close(); });
@@ -92,7 +98,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const execute = (call = intent(), args = { query: 'synthetic', limit: 1 }, useSignal = signal) => definitions().find(d => d.name === call.toolName)!.execute(args, { ...call, signal: useSignal });
   const run = async (model: ModelPort) => runTools({ model, request, registry: definitions(), host, authority: { isCurrent: async () => true }, maxSteps: 3,
     control: { signal, deadlineMs: Date.now() + 5000 }, journal: owner.journal, resultGate: owner.resultGate });
-  return { dir, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions,
+  return { dir, rpcErrors, get store() { return store; }, owner, port, reader, registry, acceptance, host, signal, calls, intent, binding, execute, run, definitions,
     setLive: (value: LiveAuthority | null) => { live = value; }, getLive: () => structuredClone(live!),
     setLookup: (value: () => Promise<LiveAuthority | null>) => { lookup = value; }, setDispatch: (value: () => void) => { onDispatch = value; }, setResult: (value: unknown) => { result = value; },
     reopen: () => { store.close(); store = new Store(dir, toolsMigrations); return createToolsOwner({ store, ownerId: 'owner', registry, port, lookupAuthority, ...(options.log ? { log: options.log } : {}) }); },
@@ -814,7 +820,7 @@ for (const channel of ['eng', 'synthetic-missing']) {
       registry: [tool], host: { ...f.host, grants: [{ tool: tool.name, effect: 'read', accountId: 'account', resourceId: 'resource' }] },
       authority: { isCurrent: async () => true }, control: { signal: f.signal, deadlineMs: Date.now() + 5000 }, seenIds: new Set(), step: 1, contentIndex: 0, baseClasses: ['ordinary'],
     });
-    assert.equal(batch.tools[0]?.status, 'completed', JSON.stringify(batch));
+    assert.equal(batch.tools[0]?.status, 'completed', JSON.stringify({ batch, rpcErrors: f.rpcErrors }));
     const row = f.store.transaction(tx => tx.get('SELECT state,result_json FROM tool_calls'))!;
     assert.equal(row.state, 'completed');
     assert.match(String(row.result_json), channel === 'eng' ? /Which channel do you mean/u : /not found/u);

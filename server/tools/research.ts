@@ -4660,15 +4660,22 @@ function driveSubs(query: string, ownerWords: string): IntentSubCall[] {
  * K6: one routed lookup. `memory` is read in process; every other layer becomes the internal read that
  * source already owns, under its own per-source deadline. Nothing here consults the selector.
  */
+function registeredCalendarArguments(args: JsonObject, inputSchema: ResearchDeps['inputSchema']): JsonObject | undefined {
+  if (!inputSchema) return args;
+  const properties = inputSchema(INTERNAL.calendarList)?.['properties'];
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return undefined;
+  return Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(properties, key))) as JsonObject;
+}
+
 function routedRead(lookup: ResearchLookup, context: Parameters<typeof routedReadUnfiltered>[1] & { inputSchema?: ResearchDeps['inputSchema'] }): ReturnType<typeof routedReadUnfiltered> {
   const read = routedReadUnfiltered(lookup, context);
   if (!context.inputSchema) return read; // Offline legacy callers have no host registration port.
   const subs: IntentSubCall[] = [];
   for (const sub of read.subs) {
     if (sub.name !== INTERNAL.calendarList) { subs.push(sub); continue; }
-    const properties = context.inputSchema(sub.name)?.['properties'];
-    if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return { ...read, subs: [], unresolved: true, reason: 'calendar_schema_unavailable' };
-    subs.push({ ...sub, args: Object.fromEntries(Object.entries(sub.args).filter(([key]) => Object.hasOwn(properties, key))) as JsonObject });
+    const args = registeredCalendarArguments(sub.args, context.inputSchema);
+    if (!args) return { ...read, subs: [], unresolved: true, reason: 'calendar_schema_unavailable' };
+    subs.push({ ...sub, args });
   }
   return { ...read, subs };
 }
@@ -5118,7 +5125,7 @@ async function collectCalendar(deps: ResearchDeps, run: RunState, parent: AbortS
     let scopeSlot: number | undefined;
     reads.forEach((read, n) => {
       slots.push(calls.length);
-      calls.push({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: { ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}), deadlineAt: sourceDeadlineAt } });
+      calls.push({ key: `calendar${run.ops + n}`, name: INTERNAL.calendarList, args: registeredCalendarArguments({ ...read.args, ...(read.nextPageToken ? { pageToken: read.nextPageToken } : {}), deadlineAt: sourceDeadlineAt }, deps.inputSchema) ?? {} });
       // N3: the list rides in the same batch as the read it qualifies, so the answer can count what it
       // did not read and the batch is the read, its list, then any further window.
       if (n === 0 && listScope) {

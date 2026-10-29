@@ -2357,7 +2357,7 @@ test('alarm sessions seed no fresh-opening direction', async t => {
   assert.match(JSON.stringify(start.session), /call the bank/);
 });
 
-import { attachHostLogSink } from '../tools/host-events.js';
+
 
 const creates = (socket: { sent: string[] }) => socket.sent.map(frame => JSON.parse(frame) as { type: string; response?: { tool_choice?: string } }).filter(frame => frame.type === 'response.create');
 async function continuation(t: TestContext) {
@@ -2391,7 +2391,7 @@ test('SILENCE b: no item at five seconds requests the existing nudge without ano
   const before = creates(opened.socket).length;
   opened.clock.advance(4_999);
   await quiet();
-  const nudges = () => opened.captured.filter(event => event.type === 'interactionStatus' && event.value === 'post_tool_no_output');
+  const nudges = () => opened.captured.events.filter(event => event.type === 'interactionStatus' && event.value === 'post_tool_no_output');
   assert.equal(nudges().length, 0);
   opened.clock.advance(1);
   await quiet();
@@ -2408,7 +2408,7 @@ test('SILENCE c: output item at 4.5 seconds prevents early nudge', async t => {
   opened.socket.deliver(delegated('response.output_item.added', { item: { type: 'message', id: 'synthetic-message' } }));
   opened.clock.advance(3_500);
   await quiet();
-  assert.equal(opened.captured.some(event => event.type === 'interactionStatus' && event.value === 'post_tool_no_output'), false);
+  assert.equal(opened.captured.events.some(event => event.type === 'interactionStatus' && event.value === 'post_tool_no_output'), false);
 });
 
 test('SILENCE chain: third tool round forces the fourth response to answer', async t => {

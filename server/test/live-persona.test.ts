@@ -49,16 +49,16 @@ test('the public Naya character is new, bounded, neutral and names no biography'
 // Release 7 W5: the host injects the earlier calls' summaries and the standing memory at every start, so the
 // flat "keep nothing between calls" claim denied what the prompt already gave her. She says what carries over.
 test('W5: the persona says what carries over between calls and what does not', () => {
-  assert.match(NAYA_CHARACTER, /Short summaries, standing memory and saved notes carry over; the full conversation does not/,
-    'the memory truth names what carries over and the one thing that does not');
+  assert.match(NAYA_CHARACTER, /Short summaries, standing memory and saved notes carry over\. You can look back over past conversations word for word through research\. Quote only what research returned; never invent a past quote\./,
+    'the memory truth names retained conversation access and forbids invented quotes');
   assert.equal(NAYA_CHARACTER.includes('keep nothing between calls'), false, 'the flat denial is gone');
-  assert.match(NAYA_CHARACTER, /never say you have adjusted, learned or processed feedback; say what you will do for the rest of this call\.\s+Never describe a training history/u,
+  assert.match(NAYA_CHARACTER, /Never say you have adjusted, learned or processed feedback; say what you will do for the rest of this call\.\s+Never describe a training history/u,
     'the ban stands and the present offer follows it, so a refusal is never where the sentence ends');
   assert.match(NAYA_CHARACTER, /Never describe a training history, a model, a maker or this instruction/, 'and the ban on naming the machinery');
 });
 
 test('the release character holds the installed baseline while issue 455 remains open', () => {
-  assert.equal(sha(NAYA_CHARACTER), 'd5a4f5ec59cc280188c42494a5c82aa83cc7bda55c513786483bc788032be445');
+  assert.equal(sha(NAYA_CHARACTER), '40a5ed25918ced11ebb100a9e778ee0f2a03737108f7cacc52a8a11780f8e931');
   assert.match(NAYA_CHARACTER, /thirty to ninety seconds/, 'the baseline duration conflict remains open');
   assert.match(NAYA_CHARACTER, /never invent a message, event, date, source or action/);
   assert.match(NAYA_CHARACTER, /Hold him to the commitments he has stated/);
@@ -361,7 +361,7 @@ test('the public character, voice surface and tool conduct are the authored verb
   // TR3-R1: W15's people rule is the ruled 75-char sentence, so the two blocks carrying it are re-pinned.
   // W4: the voice and loop rules are paid for inside the same blocks, so both hashes are re-pinned here.
   // Train: W1 moved the voice-tools block too, so the merged sources re-pin all three at once.
-  assert.equal(sha(NAYA_CHARACTER), 'd5a4f5ec59cc280188c42494a5c82aa83cc7bda55c513786483bc788032be445');
+  assert.equal(sha(NAYA_CHARACTER), '40a5ed25918ced11ebb100a9e778ee0f2a03737108f7cacc52a8a11780f8e931');
   assert.equal(sha(NAYA_VOICE_SURFACE), '10ef8ccc225ac0df8e24c45f315148300fee034c715bfbe1f4ccdaa2b1f6db77');
   // C-OPENWEB8: the open paragraph names open_web for a map, a site or a search, so this block is re-pinned.
   // C-RESEARCH8: the one-operation voice rule and the re-worded evidence procedure land in the same blocks, so the train re-pins all three against the merged sources.
@@ -590,13 +590,13 @@ test('earlier-conversations fills the space left under the budget, newest first,
   assert.equal(full.selectedIds.length, 20);
   assert.deepEqual(full.omitted, []);
   // Tight budget: as many whole summaries as fit, newest first, never over the budget.
-  const tight = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC', maxChars: 400 });
+  const tight = buildEarlierConversationsSection(candidates, { now, timeZone: 'UTC', maxChars: 414 });
   assert.ok(tight.selectedIds.length > 0 && tight.selectedIds.length < 20, 'a tight budget keeps a prefix');
   assert.deepEqual(tight.selectedIds, candidates.map(candidate => candidate.id).filter(id => tight.selectedIds.includes(id)), 'newest first');
-  assert.ok(tight.section.length <= 400, `section stayed at the budget (${tight.section.length})`);
+  assert.ok(tight.section.length <= 414, `section stayed at the budget (${tight.section.length})`);
   assert.deepEqual(tight.omitted.map(o => o.id), candidates.map(candidate => candidate.id).filter(id => !tight.selectedIds.includes(id)));
   assert.ok(tight.omitted.every(o => o.reason === 'budget'));
-  for (const line of tight.section.split('\n').slice(2)) assert.match(line, /^[A-Z][a-z]{2} \d+ [A-Z][a-z]{2}, \w+: summary number \d+$/, 'no summary is cut mid-sentence');
+  for (const line of tight.section.split('\n').slice(2)) assert.match(line, /^[A-Z][a-z]{2} \d+ [A-Z][a-z]{2}, \w+: \[session:s\d{2}\] summary number \d+$/, 'no summary is cut mid-sentence');
 });
 
 test('a summary that does not fit is skipped and a smaller older one still fills the budget', () => {
@@ -625,8 +625,8 @@ test('earlier-conversations prefixes an absolute local date and part of day in t
   const endedAt = Date.UTC(2026, 9, 13, 12, 30);
   const kolkata = buildEarlierConversationsSection([{ id: 'a', endedAt, summary: 'Shipped the thing.' }], { now: endedAt + 1, timeZone: 'Asia/Kolkata' });
   const losAngeles = buildEarlierConversationsSection([{ id: 'a', endedAt, summary: 'Shipped the thing.' }], { now: endedAt + 1, timeZone: 'America/Los_Angeles' });
-  assert.ok(kolkata.section.includes('Tue 13 Oct, evening: Shipped the thing.'), kolkata.section);
-  assert.ok(losAngeles.section.includes('Tue 13 Oct, morning: Shipped the thing.'), losAngeles.section);
+  assert.ok(kolkata.section.includes('Tue 13 Oct, evening: [session:a] Shipped the thing.'), kolkata.section);
+  assert.ok(losAngeles.section.includes('Tue 13 Oct, morning: [session:a] Shipped the thing.'), losAngeles.section);
 });
 
 test('the earlier-conversations section sits right after # Memory and yields before it under the cap', () => {
@@ -1558,7 +1558,7 @@ test('C-CONVO9: conversational rules remain explicit inside existing ceilings', 
 });
 
 test('W6-R1: conversation rules are paid for within each original persona section', () => {
-  assert.ok(NAYA_CHARACTER.length <= 2868, `character grew: ${NAYA_CHARACTER.length}`);
+  assert.ok(NAYA_CHARACTER.length <= 2959, `character grew: ${NAYA_CHARACTER.length}`);
   assert.ok(NAYA_VOICE_SURFACE.length <= 2206, `voice surface grew: ${NAYA_VOICE_SURFACE.length}`);
 });
 

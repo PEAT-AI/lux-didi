@@ -26,3 +26,7 @@ Legacy local memories of every kind remain readable for recall. They are never a
 ## Verification
 
 Use the selected-memory and memory-context producers named in [checks.md](checks.md). Tests should prove selection, omission, classification, stale/deleted records and observable UI state with synthetic records. A successful context compile proves neither real-account permission nor model recall quality. For a specific accepted run, inspect authorized metadata through [diagnostic-store.md](diagnostic-store.md).
+
+## Verbatim conversation recall
+
+Finished Live speech is retained as automatic transcription in `history_turns`, independently of summaries and without a time limit. Explicit forget deletes those turns and their full-text index entries. Research searches past calls by concrete words and returns match-centred, speaker-labelled excerpts; a session reference opens the full call in pages. Current-call speech and tool results are not past-conversation evidence. Legacy calls are backfilled as sensitive and remain subject to the selected route's class gate. Debug-journal pruning is unchanged; text already pruned before this feature cannot be recovered.

@@ -25,7 +25,7 @@ cp server/adapters/live-voice/types.ts "$out/source/adapters/live-voice/"
 cp server/adapters/live-voice/openai.ts server/adapters/live-voice/resample.ts server/adapters/live-voice/audio-level.ts "$out/source/adapters/live-voice/"
 # The adapter types name the host's trace port (O1b-A), so stage the trace kinds and the record door.
 cp server/trace/kinds.ts server/trace/record.ts server/trace/clock.ts "$out/source/trace/"
-cp server/domain/history-reader.ts server/domain/history-lifecycle.ts server/domain/util.ts server/domain/contract.ts "$out/source/domain/"
+cp server/domain/history-turns.ts server/domain/history-reader.ts server/domain/history-lifecycle.ts server/domain/util.ts server/domain/contract.ts "$out/source/domain/"
 cp server/adapters/mcp/port.ts server/adapters/mcp/registry.ts "$out/source/adapters/mcp/"
 cp server/connectors/google.ts "$out/source/connectors/"
 cp server/tools/vault-write.ts "$out/source/tools/"
@@ -111,7 +111,7 @@ for (const rule of [
 // The no-filler rule and the eight-line reply bound stay as they were.
 assert.ok(persona.NAYA_LIVE_BASE.includes('Only the host bridges lookups'), 'the no-filler rule is kept');
 // C-CONVO9 and W6-R1: new conversation rules pay for themselves within the existing sections.
-assert.ok(persona.NAYA_CHARACTER.length <= 2868);
+assert.ok(persona.NAYA_CHARACTER.length <= 2959);
 assert.ok(persona.NAYA_VOICE_SURFACE.length <= 2206);
 for (const rule of ['at most once per call', 'under thirty seconds with at most two spoken numbers',
   'put it in a document', 'stage_lux_note', 'host note, not the owner', 'never agree with the host',
@@ -190,4 +190,14 @@ console.log(JSON.stringify({ case: 'connector_truth', approvalNoControl: true, n
 assert.ok(persona.NAYA_VOICE_SURFACE.includes('Never name a settings or approval location the connector state line does not name.'),
   'the voice surface forbids naming a location the connector state line does not name, with or without connector rows');
 console.log(JSON.stringify({ case: 'connector_truth_without_rows', voiceRule: true }));
+NODE
+
+# C-RECALL104: retained conversations are research-backed, never invented quotes.
+node --input-type=module - "$out/dist" <<'NODE'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const persona = await import(pathToFileURL(`${process.argv[2]}/prompt/live-persona.js`).href);
+assert.ok(persona.NAYA_LIVE_BASE.includes('look back over past conversations word for word through research'));
+assert.ok(persona.NAYA_LIVE_BASE.includes('Quote only what research returned; never invent a past quote.'));
+assert.ok(!persona.NAYA_LIVE_BASE.includes('the full conversation does not'));
 NODE

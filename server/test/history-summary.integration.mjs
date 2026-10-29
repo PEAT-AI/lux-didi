@@ -5,7 +5,7 @@ import {hostMigrations} from '../dist/host/runtime.js';
 import {recordHistorySession,forgetHistorySessions} from '../dist/domain/history-lifecycle.js';
 import {createSummarizer} from '../dist/services/summarize.js';
 import {getBySession,injectionCandidates,summarySelection,insertSummary} from '../dist/domain/summaries.js';
-import {memoryLookup} from '../dist/tools/memory-search.js';
+import {createHistoryReader} from '../dist/domain/history-reader.js';
 import {createLiveSessionOwner,validateLiveProfile} from '../dist/live/index.js';
 import {fakeLiveVoicePort} from '../dist/test/fixtures/fake-live-voice.js';
 import {composeLiveInstruction,NAYA_LIVE_BASE} from '../dist/prompt/live-persona.js';
@@ -29,7 +29,7 @@ try{
  seed('legacy','ordinary',false);let legacyCalls=0;await run({generate:async()=>{legacyCalls++;throw Error('unexpected');}},all).distill('legacy');assert.equal(legacyCalls,0);assert.equal(store.transaction(tx=>getBySession(tx,'legacy')).skipReason,'history_provenance_unavailable');
  store.transaction(tx=>insertSummary(tx,{liveSessionId:'legacy-summary',status:'complete',summary:'Legacy unavailable text.',endedAt:now,now}));
  assert.equal(store.transaction(tx=>summarySelection(tx,all)).coverage.legacyUnavailable,1);
- const ordinary=store.transaction(tx=>memoryLookup(tx,'continuity'));assert(!ordinary.text.includes('private'));assert(!ordinary.text.includes('sensitive'));assert(!ordinary.text.includes('Legacy'));
+ const ordinary=store.transaction(tx=>{const page=createHistoryReader(()=>now).read(tx,{ownerId:store.assistantId,runId:'synthetic',routeIdentity:'synthetic',authorityEpoch:store.authorityEpoch,revision:1,allowedClasses:['ordinary']},{query:'continuity'});return {text:JSON.stringify(page.response)};});assert(!ordinary.text.includes('private'));assert(!ordinary.text.includes('sensitive'));assert(!ordinary.text.includes('Legacy'));
  seed('race','private');let entered,release;const waiting=new Promise(r=>entered=r),held=new Promise(r=>release=r);
  const pending=run({generate:async()=>{entered();await held;return {status:'complete',text:'{"skip":false,"summary":"Stale synthetic result."}'};}},all).distill('race');await waiting;
  store.transaction(tx=>tx.run('UPDATE history_sessions SET revision=revision+1 WHERE live_session_id=?',['race']));release();await pending;assert.equal(store.transaction(tx=>getBySession(tx,'race')),null);

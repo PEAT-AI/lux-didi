@@ -1,3 +1,4 @@
+import { persistHistoryTurns } from '../domain/history-turns.js';
 import type { DataClass, ModelPort, ModelRequest, ModelResult } from '../adapters/model/types.js';
 import { deadlineAt } from '../adapters/model/types.js';
 import type { StorePort, Transaction } from '../contracts/storage.js';
@@ -74,7 +75,7 @@ The transcript is automatic speech recognition of an owner who speaks English as
 numbers may be misheard. If a name looks garbled, describe the person or thing by role instead of guessing a
 spelling. Do not repeat content that only came from the earlier summaries listed below unless the owner
 discussed it again in this conversation. Leave out small talk, greetings, tests of the app and anything about
-how the app or the assistant works. Set skip to true when nothing worth remembering happened.`;
+how the app or the assistant works. Set skip to true only for calls consisting entirely of small talk or app tests. A substantive story, decision or discussion must be summarised, even if no fact or open loop needs saving.`;
 }
 
 export interface DistillationTurn { readonly speaker: 'owner' | 'assistant'; readonly text: string }
@@ -112,7 +113,7 @@ export function capDistillationInput(text: string): { text: string; truncated: b
   if (text.length <= DISTILLATION_INPUT_MAX_CHARS) return { text, truncated: false };
   const head = text.slice(0, DISTILLATION_INPUT_HEAD_CHARS);
   const tail = text.slice(text.length - DISTILLATION_INPUT_TAIL_CHARS);
-  return { text: `${head}\n[... transcript shortened ...]\n${tail}`, truncated: true };
+  return { text: `${head}\n[... middle of conversation omitted; opening 4000 and ending 20000 characters retained ...]\n${tail}`, truncated: true };
 }
 
 function localDate(ms: number, timeZone: string): string {
@@ -448,6 +449,7 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
 
   return {
     schedule(liveSessionId: string): void {
+      options.store.transaction(tx => persistHistoryTurns(tx, liveSessionId));
       void serialize(() => distill(liveSessionId)).catch(() => { /* never surfaces on the close path */ });
     },
     reconcile: (phase?: SummaryPhase): Promise<void> => reconcilePending(phase),

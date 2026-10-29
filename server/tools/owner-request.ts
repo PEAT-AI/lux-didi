@@ -1,5 +1,5 @@
 import type { ActionKind, RequestAuthorization, OwnerRequestPort } from './types.js';
-interface Grant { target?: string; receipt?: unknown; inFlight?: boolean }
+interface Grant { target?: string; receipt?: unknown; inFlight?: boolean; targets?: Map<string, Grant> }
 interface Request {
   id: string; words: string; start: number; finals: number; journalId: string;
   grants: Map<ActionKind, Grant>; answered?: boolean; pending?: { kind: ActionKind; field: string };
@@ -70,8 +70,9 @@ export class OwnerRequests implements OwnerRequestPort {
     const common = { id: request.id, words: request.words, journalId: request.journalId };
     const age = this.clock() - request.start;
     if (age < 0 || age > 120000) return { ...common, code: 'request_expired' };
-    const grant = request.grants.get(kind);
-    if (!grant) return { ...common, code: 'no_owner_request' };
+    const authority = request.grants.get(kind);
+    if (!authority) return { ...common, code: 'no_owner_request' };
+    const grant = kind === 'open' ? authority.targets?.get(target) ?? {} : authority;
     if (grant.target !== undefined) return !grant.inFlight && grant.target === target
       ? { ...common, code: 'idempotent', receipt: grant.receipt }
       : { ...common, code: 'grant_spent' };
@@ -81,14 +82,16 @@ export class OwnerRequests implements OwnerRequestPort {
     if (this.requests.get(session)?.id !== requestId) return { code: 'no_owner_request' };
     const authorization = this.authorize(session, kind, target);
     if (authorization.code === 'allowed') {
-      const grant = this.requests.get(session)!.grants.get(kind)!;
+      const authority = this.requests.get(session)!.grants.get(kind)!;
+      const grant = kind === 'open' ? this.openGrant(authority, target) : authority;
       grant.target = target; grant.inFlight = true;
     }
     return authorization;
   }
   failed(session: string, kind: ActionKind, target: string, requestId: string): void {
     const request = this.requests.get(session);
-    const grant = request?.grants.get(kind);
+    const authority = request?.grants.get(kind);
+    const grant = kind === 'open' ? authority?.targets?.get(target) : authority;
     if (request?.id === requestId && grant?.inFlight && grant.target === target) {
       delete grant.target; delete grant.inFlight;
     }
@@ -96,9 +99,16 @@ export class OwnerRequests implements OwnerRequestPort {
   commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string): void {
     const request = this.requests.get(session);
     if (!request || requestId !== undefined && request.id !== requestId) return;
-    const grant = request.grants.get(kind);
+    const authority = request.grants.get(kind);
+    const grant = kind === 'open' && authority ? this.openGrant(authority, target) : authority;
     if (!grant || !(grant.inFlight && grant.target === target) && this.authorize(session, kind, target).code !== 'allowed') return;
     grant.target = target; grant.receipt = receipt; delete grant.inFlight;
+  }
+  private openGrant(authority: Grant, target: string): Grant {
+    authority.targets ??= new Map();
+    let grant = authority.targets.get(target);
+    if (!grant) { grant = {}; authority.targets.set(target, grant); }
+    return grant;
   }
   clarify(session: string, kind: ActionKind, field: string): void {
     const request = this.requests.get(session);
@@ -129,7 +139,7 @@ export class OwnerRequests implements OwnerRequestPort {
     const request = this.requests.get(session);
     const grant = request?.grants.get(kind);
     return { ownerFinals: request?.finals ?? 0, requestAgeMs: request ? Math.max(0, Math.round(this.clock() - request.start)) : 0,
-      grantKind: kind, grantState: !grant ? 'absent' : grant.target !== undefined ? 'spent' : 'available' };
+      grantKind: kind, grantState: !grant ? 'absent' : grant.target !== undefined || [...(grant.targets?.values() ?? [])].some(target => target.target !== undefined) ? 'spent' : 'available' };
   }
   release(session: string): void {
     this.requests.delete(session); this.seenFinal.delete(session); this.pendingFinal.delete(session); this.external.delete(session);

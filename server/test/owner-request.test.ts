@@ -10,8 +10,10 @@ test('direct102 authority: finals alone grant compound effects, consumed once wi
   assert.equal(requests.authorize('s', 'open', 'deck').code, 'allowed');
   requests.commit('s', 'open', 'deck', { status: 'opened' });
   assert.equal(requests.authorize('s', 'open', 'deck').code, 'idempotent');
-  assert.equal(requests.authorize('s', 'open', 'other').code, 'grant_spent');
-  assert.equal(requests.authorize('s', 'set_alarm', 'seven').code, 'allowed');
+  assert.equal(requests.authorize('s', 'open', 'other').code, 'allowed');
+  requests.commit('s', 'set_alarm', 'seven', { code: 'set' });
+  assert.equal(requests.authorize('s', 'set_alarm', 'eight').code, 'grant_spent');
+  assert.equal(requests.authorize('s', 'set_alarm', 'seven').code, 'idempotent');
   now += 120001;
   assert.equal(requests.authorize('s', 'set_alarm', 'seven').code, 'request_expired');
 });
@@ -65,14 +67,15 @@ test('direct102 authority: external content records provenance counts but never 
   assert.equal(otherOwner.authorize('s', 'lux_note', 'summary').code, 'no_owner_request');
 });
 
-test('direct102 authority: in-flight reservations serialize opens and an old completion cannot spend a new ask', () => {
+test('direct102 authority: in-flight reservations serialize same-target opens and an old completion cannot spend a new ask', () => {
   const requests = new OwnerRequests(() => 0);
   requests.observe('s', 'j1', 'open the pitch deck');
   const first = requests.authorize('s', 'open', 'deck');
   assert.equal(first.code, 'allowed');
   assert.ok(first.id);
   assert.equal(requests.claim('s', 'open', 'deck', first.id).code, 'allowed');
-  assert.equal(requests.claim('s', 'open', 'other', first.id).code, 'grant_spent');
+  assert.equal(requests.claim('s', 'open', 'deck', first.id).code, 'grant_spent');
+  assert.equal(requests.claim('s', 'open', 'other', first.id).code, 'allowed');
   requests.answered('s');
   requests.observe('s', 'j2', 'open the new pitch deck');
   requests.commit('s', 'open', 'deck', { code: 'opened' }, first.id);

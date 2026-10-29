@@ -331,7 +331,7 @@ for (const order of ['read_then_save', 'save_then_read'] as const) {
 }
 
 
-test('direct102 real host and fake provider: preamble-before-open yields exactly one successful native open', async t => {
+test('direct102 real host and fake provider: preamble-before-open yields one native action per shown target', async t => {
   const h = await harness(t, { tools: true });
   const { session, attachment } = await attached(h);
   const native: NativeActionFrame[] = [];
@@ -358,10 +358,11 @@ test('direct102 real host and fake provider: preamble-before-open yields exactly
   assert.equal(native.length, 1, 'a same-target retry is idempotent');
   const second = shapeDriveFile({ name: 'Other synthetic deck', webViewLink: 'https://drive.google.com/file/d/synthetic-other/view' });
   exposeToolResults([{ name: 'drive_search_files', response: { text: second.text } }]);
-  assert.equal((await call(h, 'open_source', { handle: second.text.match(/open: (L[0-9]+)/)![1]! }))['code'], 'grant_spent');
+  assert.equal((await call(h, 'open_source', { handle: second.text.match(/open: (L[0-9]+)/)![1]! }))['code'], 'opened');
+  assert.deepEqual(native.map(frame => frame.target), ['https://drive.google.com/file/d/synthetic-pitch/view', 'https://drive.google.com/file/d/synthetic-other/view']);
   await ownerBlock(h, 'what is the weather?');
   assert.equal((await call(h, 'open_source', { handle }))['code'], 'no_owner_request', 'a stale open verb is not authority');
-  assert.equal(native.length, 1);
+  assert.equal(native.length, 2);
   attachment.close();
 });
 

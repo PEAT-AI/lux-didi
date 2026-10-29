@@ -59,7 +59,10 @@ test('the fallback mail query carries operators and keywords, chat carries after
   const mail = fallbackSelection('Can you check my email for the release status please', CONFIGURED, Date.parse('2026-10-16T12:00:00Z'));
   const mailQuery = mail.actions.find(action => action.kind === 'mail_search')?.query ?? '';
   // E6 (#609): the fallback is compiled by the one compiler, and keeps its own order.
-  assert.equal(mailQuery, 'in:inbox newer_than:14d release status');
+  assert.equal(mailQuery, 'newer_than:14d release status');
+  assert.doesNotMatch(mailQuery, /in:inbox/u, 'topic fallback searches all mail');
+  const inbox = fallbackSelection('anything new in my inbox', ['mail'], Date.parse('2026-10-16T12:00:00Z'));
+  assert.match(inbox.actions.find(action => action.kind === 'mail_search')?.query ?? '', /\bin:inbox\b/u, 'bare inbox scan retains the inbox filter');
   // ONE-1023 and DATES-R1 F3: no invented day when content terms remain, and with none left the base
   // recency window stays, because an empty chat query answers nothing.
   const termful = String(fallbackSelection('What did the team say about the release in Mattermost', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'chat_search')?.query);
@@ -76,7 +79,7 @@ test('the fallback mail query carries operators and keywords, chat carries after
   assert.equal(fallbackSelection('Anything important in my email today?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'in:inbox is:unread newer_than:2d -category:promotions -category:social -category:forums', 'a triage ask is the fixed scan');
   // INTEG-R2 / K6: a zero-term inbox ask is the 14-day recent-inbox scan on both paths.
   assert.equal(fallbackSelection('Show me the latest messages in my inbox', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'in:inbox newer_than:14d');
-  assert.equal(fallbackSelection('What is important in my email this week?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'in:inbox newer_than:7d is:important');
+  assert.equal(fallbackSelection('What is important in my email this week?', CONFIGURED, Date.parse('2026-10-16T12:00:00Z')).actions.find(action => action.kind === 'mail_search')?.query, 'newer_than:7d is:important');
   assert.equal(candidateSubs('mail_search', { question: 'q', configured: CONFIGURED, evidence: new Map() })[0]?.args['q'], 'in:inbox newer_than:2d');
 });
 

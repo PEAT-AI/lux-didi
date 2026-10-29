@@ -526,3 +526,27 @@ test('#1027: two empty reads say what was searched and how to narrow it', async 
   assert.match(note, /domain or a person's name/u, 'and says what would narrow it');
   assert.match(note, /found nothing matching/u, 'never a bare no');
 });
+
+
+test('C-RESIDUE fallback sender searches all mail, bare scans retain inbox', () => {
+  const sender = compileMailQuery('did Willow email me', 'Willow', NOW, ZONE, undefined, undefined, 'newer_than:14d');
+  assert.doesNotMatch(sender, /in:inbox/u);
+  assert.doesNotMatch(broaderMailQuery(sender) ?? '', /in:inbox/u);
+  const bare = compileMailQuery('anything new in my inbox', '', NOW, ZONE, undefined, undefined, 'newer_than:14d');
+  assert.match(bare, /in:inbox/u);
+});
+
+test('C-RESIDUE fallback sender ask reads an archived message without an INBOX label', async () => {
+  const archived = { id: 'residue-archived', labelIds: ['SENT'], headers: [{ name: 'Subject', value: 'Synthetic archive receipt' }, { name: 'From', value: 'Willow <willow@example.invalid>' }] };
+  const sent: string[] = [];
+  const h = mailHarness(async subs => subs.map(call => {
+    const q = String(call.args['q'] ?? '');
+    sent.push(q);
+    const messages = q.includes('in:inbox') && !archived.labelIds.includes('INBOX') ? [] : [archived];
+    return { key: call.key, name: call.name, ok: true, ...shapeGmailList({ messages }) } as IntentSubResult;
+  }));
+  const reply = await runResearch(h.deps, { action: 'start', question: 'did Willow email me', sources: 'mail' }, new AbortController().signal);
+  assert.ok(sent.length > 0, 'the fallback actually searched');
+  assert.ok(sent.every(q => !q.includes('in:inbox')), JSON.stringify(sent));
+  assert.match(JSON.stringify(reply), /Synthetic archive receipt/u);
+});

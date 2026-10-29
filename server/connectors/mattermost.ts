@@ -451,7 +451,7 @@ function chatPost(raw: Record<string, unknown>, owner?: string): ChatReadPost {
 
 /**
  * C-CHAT: the child's conversation overview in the read's own shape: one counted section per conversation,
- * at most three groups and three channels named, and the newest anchor posts across all of them.
+ * at most three groups and three channels named, and direct-message anchors first, then the newest shared-conversation posts.
  */
 function overviewOf(data: unknown, owner: string, span: string): Pick<MattermostChatRead, 'read' | 'total' | 'returned' | 'posts' | 'sections'> {
   const record = isRecord(data) ? data : {};
@@ -496,7 +496,7 @@ function overviewOf(data: unknown, owner: string, span: string): Pick<Mattermost
   const moreChannels = count(totals['channels']) - Math.min(channels.length, MATTERMOST_CHAT.candidates);
   if (moreGroups > 0) sections.push({ kind: 'group', name: `${moreGroups} more group chats`, counts: 'not named' });
   if (moreChannels > 0) sections.push({ kind: 'channel', name: `${moreChannels} more channels`, counts: 'not named' });
-  const posts = anchors.sort((a, b) => Date.parse(b.time) - Date.parse(a.time)).slice(0, 5);
+  const posts = anchors.sort((a, b) => Number(b.channel === 'direct messages') - Number(a.channel === 'direct messages') || Date.parse(b.time) - Date.parse(a.time)).slice(0, 5);
   const total = count(totals['dm_posts']) + count(totals['group_posts']) + count(totals['channel_posts_by_owner']) + count(totals['channel_posts_by_person']);
   return { read: `everything you and ${label} exchanged${span}`, total, returned: posts.length, posts, sections };
 }

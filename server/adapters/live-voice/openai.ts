@@ -506,7 +506,7 @@ class Session implements LiveVoiceSession {
   /** Outputs of the current backend response already on the wire, across every deferral it needed (S5). */
   private batchAnswers = 0;
   private answerNow = false;
-  private lastToolOutputAt = 0;
+  private lastToolOutputAt: number | undefined;
   private toolRounds = 0;
   private silentRescueUsed = false;
   private continuationTiming: { toolOutputAt: number; createAt: number; createdAt: number | null; firstItemAt: number | null; firstAudioAt: number | null; toolCall: boolean; nudged: boolean } | undefined;
@@ -521,7 +521,7 @@ class Session implements LiveVoiceSession {
     const timing = this.continuationTiming;
     if (!timing) return;
     hostLogEvent({ event: 'live_continuation_timing', ...timing,
-      class: timing.toolCall ? 'd-chain' : timing.firstAudioAt !== null ? 'c' : timing.nudged ? 'b' : 'b-second' });
+      class: timing.toolCall ? 'd-chain' : timing.nudged ? 'b' : timing.firstAudioAt !== null ? 'c' : 'b-second' });
   }
 
   private lastAnswerNow = false;
@@ -1152,7 +1152,7 @@ class Session implements LiveVoiceSession {
     this.logContinuationTiming();
     this.continuationTiming = undefined;
     this.delegatedOutstanding = false;
-    if (message && (message['status'] === undefined || message['status'] === 'completed') && timing && timing.firstAudioAt === null && !timing.toolCall && !this.silentRescueUsed && this.pendingCalls.length === 0 && this.episodeQuiet === undefined) {
+    if (message && (message['status'] === undefined || message['status'] === 'completed') && timing && timing.firstAudioAt === null && this.heldAudibleBytes === 0 && !this.audioSinceCompletion && !timing.toolCall && !this.silentRescueUsed && this.pendingCalls.length === 0 && this.episodeQuiet === undefined) {
       this.silentRescueUsed = true;
       this.answerNow = true;
       this.continuationOwed = true;
@@ -1541,7 +1541,7 @@ class Session implements LiveVoiceSession {
       else if (this.delegatedOutstanding) this.continuationReceipt('deferred', 'awaiting_calls');
       return this.continuationOutcome = 'deferred';
     }
-    const round = this.toolRounds + (calls > 0 || this.continuationCalls > 0 ? 1 : 0);
+    const round = this.toolRounds + (!attempt && (calls > 0 || this.continuationCalls > 0) ? 1 : 0);
     const answerNow = attempt ? this.lastAnswerNow : this.answerNow || round >= 3;
     if (!this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont'),
       ...(answerNow ? { response: { instructions: 'Answer now from the results already available. Do not call research again in this response.', tools: [], tool_choice: 'none' } } : {}) }))) {
@@ -1551,7 +1551,7 @@ class Session implements LiveVoiceSession {
     }
     this.toolRounds = round;
     const now = this.clock.now();
-    this.continuationTiming = { toolOutputAt: this.lastToolOutputAt || now, createAt: now, createdAt: null, firstItemAt: null, firstAudioAt: null, toolCall: false, nudged: false };
+    this.continuationTiming = { toolOutputAt: this.lastToolOutputAt ?? now, createAt: now, createdAt: null, firstItemAt: null, firstAudioAt: null, toolCall: false, nudged: false };
     this.lastAnswerNow = answerNow;
     this.answerNow = false;
     this.continuationReceipt('sent');

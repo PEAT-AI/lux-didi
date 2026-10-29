@@ -2438,4 +2438,11 @@ test('SILENCE timing: a terminal receipt contains all latency landmarks and a cl
   for (const key of ['toolOutputAt', 'createAt', 'createdAt', 'firstItemAt', 'firstAudioAt', 'class']) assert.ok(key in receipt, key);
   assert.equal(receipt['firstAudioAt'], null);
   assert.equal(receipt['class'], 'b-second');
+  assert.deepEqual(safeEvent(receipt), {
+    event: 'live_continuation_timing', toolOutputAt: receipt['toolOutputAt'], createAt: receipt['createAt'],
+    createdAt: receipt['createdAt'], firstItemAt: receipt['firstItemAt'], firstAudioAt: null, class: 'b-second',
+  }, 'timing survives the actual host.log whitelist');
+  assert.ok(Number(receipt['toolOutputAt']) <= Number(receipt['createAt']));
+  assert.ok(Number(receipt['createAt']) <= Number(receipt['createdAt']));
+  assert.equal(Number(receipt['firstItemAt']) - Number(receipt['createdAt']), 200);
 });

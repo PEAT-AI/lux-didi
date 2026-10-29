@@ -810,7 +810,7 @@ function googleEndpoint(id: string, unknownClass: string): Record<string, unknow
   return {
     id, transport: 'stdio', command: process.execPath,
     args: [googleChild, 'ok'],
-    env: { HOME: '/home/fixture', PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
+    env: { LUX_GOOGLE_MCP_ACCOUNT: OWNER, HOME: '/home/fixture', PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' },
     connector: 'google', account: ACCOUNT, resource: `google-${id}`, credentialRef: null, enabled: true,
     allowEgress: true, unknownClass,
   };
@@ -930,7 +930,7 @@ function installedShape(): { schemaVersion: 1; grantMode: 'owner-trusted-reads';
 function localEndpoint(endpoint: Record<string, unknown>, child: string, args: readonly string[]): Record<string, unknown> {
   const { url: _url, command: _command, ...rest } = endpoint;
   if (endpoint['transport'] === 'stdio') {
-    return { ...rest, command: process.execPath, args: [...args], env: { HOME: '/home/fixture', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' } };
+    return { ...rest, command: process.execPath, args: [...args], env: { ...(endpoint['connector'] === 'google' ? { LUX_GOOGLE_MCP_ACCOUNT: OWNER } : {}), HOME: '/home/fixture', PATH: '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' } };
   }
   return { ...rest, url: child };
 }
@@ -942,7 +942,7 @@ test('the installed five-endpoint shape reports every endpoint and connects ever
   const fixture = installedShape();
   const shape = fixture.endpoints.map(endpoint => {
     if (endpoint['connector'] === 'google') return localEndpoint(endpoint, '', [googleChild, 'ok']);
-    if (endpoint['connector'] === 'mattermost') return localEndpoint(endpoint, '', [join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'stdio-mattermost-child.mjs'), 'ok']);
+    if (endpoint['connector'] === 'mattermost') return localEndpoint(endpoint, '', [join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'stdio-mattermost-child.mjs'), 'catalog-owner']);
     // lux-knowledge and the three mongoose endpoints keep their streamable-http shape, each on its own
     // path, and point at a refusing local port.
     if (endpoint['connector'] === 'mongoose') return { ...endpoint, url: `http://127.0.0.1:1${new URL(String(endpoint['url'])).pathname}` };
@@ -1068,4 +1068,32 @@ test('a tampered or foreign durable row is refused, never re-published from conf
       assert.equal(report?.configurationError, 'owner-approval-required');
     } finally { await runtime.close(); }
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('finished connector reads cannot starve a shared store within one TTL', async () => {
+  const { createResultScope } = await import('../adapters/mcp/lifecycle.js');
+  const source = await fixture();
+  const { adapter, registry } = setup(source.url, { maxEntries: 64, maxBytes: 4 * 1024 * 1024, ttlMs: 60_000, now: () => 1000 });
+  try {
+    await approve(adapter, registry);
+    const kinds = [3, 1, 20, 1, 1, 1]; // person, overview, attention, calendar, search, knowledge
+    const read = async (count: number) => {
+      const scope = createResultScope();
+      try {
+        await scope.run(async () => {
+          for (let child = 0; child < count; child++) {
+            const result = await adapter.call(request);
+            assert.equal(result.state, 'completed');
+            if (result.state !== 'completed') throw Error('read failed');
+            assert.equal(result.payload.state, 'available');
+            if (result.payload.state !== 'available') throw Error('payload missing');
+            const slice = adapter.readSlice({ ...request, handle: result.payload.handle, offset: 0, length: Math.min(97, result.payload.byteLength) });
+            assert.equal(slice.state, 'available');
+          }
+        });
+      } finally { scope.release(); }
+    };
+    for (let index = 0; index < 40; index++) await read(kinds[index % kinds.length]!);
+    for (const count of kinds) await read(count);
+  } finally { await adapter.close(); await source.close(); }
 });

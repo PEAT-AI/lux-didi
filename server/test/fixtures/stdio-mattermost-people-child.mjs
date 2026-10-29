@@ -293,6 +293,25 @@ server.setRequestHandler('tools/call', async (request) => {
   const error = (message) => ({ isError: true, content: [{ type: 'text', text: message }] });
   if (!Object.hasOwn(SCHEMAS, name) || name === 'mattermost_post_message') return error(`unsupported tool ${name}`);
   if (name === 'mattermost_whoami') return text(OWNER);
+  // Capacity regression: a genuine 20-dispatch attention composition, fixed to the suite's clock.
+  if (process.env.DIDI_FAKE_MATTERMOST_LOAD === '20') {
+    const root = index => ({ id: `loadroot${index}`, username: OWNER.username, channel: 'Builders', timestamp: iso(now - HOUR), message: 'synthetic owner question', url: null });
+    if (name === 'mattermost_search' && args.query === `from:${OWNER.username}`) {
+      const results = Array.from({ length: 8 }, (_, index) => root(index));
+      return text({ total: results.length, returned: results.length, results });
+    }
+    if (name === 'mattermost_search' && (args.query === `@${OWNER.username}` || String(args.channel ?? '').startsWith('load-dm-'))) {
+      return text({ total: 0, returned: 0, results: [] });
+    }
+    if (name === 'mattermost_list_channels' && args.types?.includes('D')) {
+      const channels = Array.from({ length: 8 }, (_, index) => ({ id: `load-dm-${index}`, name: `load-dm-${index}`, display_name: `Synthetic DM ${index}`, type: 'D', last_post_at: now - HOUR }));
+      return text({ total: channels.length, returned: channels.length, offset: 0, channels });
+    }
+    if (name === 'mattermost_get_thread' && String(args.post_id).startsWith('loadroot')) {
+      return text({ root: root(Number(args.post_id.slice(8))), replies: [{ ...root(0), id: `reply${args.post_id}`, username: 'dana', timestamp: iso(now - HOUR / 2), message: 'synthetic reply' }] });
+    }
+  }
+
   if (name === 'mattermost_search') {
     const found = search(args);
     return found.error ? error(found.error) : text(found);

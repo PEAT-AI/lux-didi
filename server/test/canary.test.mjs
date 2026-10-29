@@ -121,11 +121,11 @@ for (const [label, options, expected, code] of [
 ]) test(`actual installed CLI preflight: ${label}`, async () => {
   const home = await mkdtemp(join(tmpdir(), 'didi-canary-preflight-'));
   try {
-    const data = join(home, 'synthetic-data');
+    const data = join(home, 'Library/Application Support/ai.peat.lux-didi');
     await mkdir(join(data, 'logs'), { recursive: true });
-    await writeFile(join(data, 'logs/host.log'), JSON.stringify({ event: 'host_started' }) + '\n' + (options.live ? JSON.stringify({ event: 'live_started' }) + '\n' : ''));
+    await writeFile(join(data, 'logs/host.log'), JSON.stringify({ event: 'host_started' }) + '\n' + (options.live ? JSON.stringify({ event: 'live_provider_open', liveSessionId: 'real' }) + '\n' : ''));
     if (options.asks) { await mkdir(join(home, '.lux/didi-canary'), { recursive: true }); await writeFile(join(home, '.lux/didi-canary/asks.json'), options.asks); }
-    const cli = spawnSync('bash', ['scripts/check-installed-canary.sh', join(home, 'Synthetic.app')], { cwd: new URL('../../', import.meta.url), env: { ...process.env, HOME: home, LUX_DIDI_DATA_DIR: data }, encoding: 'utf8', timeout: 5_000 });
+    const cli = spawnSync('bash', ['scripts/run-installed-canary.sh', join(home, 'Synthetic.app')], { cwd: new URL('../../', import.meta.url), env: { ...process.env, HOME: home, LUX_DIDI_DATA_DIR: undefined }, encoding: 'utf8', timeout: 5_000 });
     assert.equal(cli.status, expected, cli.stderr);
     assert.ok(cli.stdout.includes(code), cli.stdout);
     if (expected !== 0) assert.ok(!cli.stdout.includes('CANARY SKIP'));
@@ -133,7 +133,10 @@ for (const [label, options, expected, code] of [
 });
 test('live log resets only on host restart or a terminal receipt', () => {
   const lines = events => events.map(event => JSON.stringify(event)).join('\n');
-  assert.equal(liveCallInLog(lines([{ event: 'live_started' }])), true);
+  assert.equal(liveCallInLog(lines([{ event: 'live_started' }])), false);
+  assert.equal(liveCallInLog(lines([{ event: 'live_provider_open', liveSessionId: 'a' }])), true);
+  assert.equal(liveCallInLog(lines([{ event: 'live_provider_open', liveSessionId: 'a' }, { event: 'live_terminal', liveSessionId: 'b' }])), true);
+  assert.equal(liveCallInLog(lines([{ event: 'live_provider_open', liveSessionId: 'a' }, { event: 'live_session_diagnostics', liveSessionId: 'a', terminalCode: 'revoked' }])), false);
   assert.equal(liveCallInLog(lines([{ event: 'live_started' }, { event: 'live_terminal' }])), false);
   assert.equal(liveCallInLog(lines([{ event: 'live_started' }, { event: 'host_started' }])), false);
   assert.throws(() => liveCallInLog('malformed'), /invalid_host_log/);
@@ -146,6 +149,8 @@ test('host opener observes raw Gemini replies without OpenAI trace tables or sto
   const finals = [];
   const id = '11111111-1111-4111-8111-111111111111';
   let tapped;
+  let ready = false;
+  let waits = 0;
   const raw = {
     events: { async *[Symbol.asyncIterator]() {
       yield { type: 'modelTurnStarted' }; yield { type: 'turnComplete' };
@@ -155,6 +160,7 @@ test('host opener observes raw Gemini replies without OpenAI trace tables or sto
   const live = {
     create: () => ({ liveSessionId: id }),
     snapshot: () => ({ lifecycle: 'active', terminal: null }),
+    providerReady: () => ready,
     text: text => {
       finals.push(text);
       tapped.sendToolResponse({ responses: [{ id: 'call-1', name: 'search', response: { code: 'not_granted', items: ['synthetic'] } }] });
@@ -163,7 +169,9 @@ test('host opener observes raw Gemini replies without OpenAI trace tables or sto
     revoke: () => {},
   };
   const store = { transaction: callback => callback({ get: () => undefined, all: () => [] }) };
-  const host = new InstalledCanary(store, live, async () => {});
+  const host = new InstalledCanary(store, live, async () => {
+    if (!ready) { assert.equal(finals.length, 0); waits++; ready = true; }
+  });
   host.open([ask], { clientId: 'owner' });
   tapped = canarySessions.wrapSession(id, raw);
   assert.equal(canarySessions.isCanary(id), true);
@@ -173,6 +181,7 @@ test('host opener observes raw Gemini replies without OpenAI trace tables or sto
   assert.equal(report.providerTurns, 1);
   assert.match(report.lines[0], /code=not_granted/);
   assert.deepEqual(finals, ask.finals);
+  assert.equal(waits, 1);
   assert.equal(canarySessions.isCanary(id), false);
 });
 
@@ -274,4 +283,23 @@ test('empty MCP text/data envelopes are not payload', () => {
   for (const text of ['', '[]', '{}']) {
     assert.equal(assertCanaryResult(ask, { ...result, result: { code: 'ok', content: [{ type: 'text', text }] } }).code, 'empty_payload');
   }
+});
+
+test('provider readiness bound fails honestly without injecting owner text', async () => {
+  const id = '33333333-3333-4333-8333-333333333333';
+  let clock = 0;
+  let injected = 0;
+  const live = {
+    create: () => ({ liveSessionId: id }),
+    snapshot: () => ({ lifecycle: 'active', terminal: null }),
+    providerReady: () => false,
+    text: () => { injected++; }, revoke: () => {},
+  };
+  const store = { transaction: callback => callback({ get: () => undefined, all: () => [] }) };
+  const host = new InstalledCanary(store, live, async () => { clock += 5000; }, () => clock);
+  host.open([ask], { clientId: 'synthetic-native' });
+  const report = await host.run(id, 'synthetic-native');
+  assert.equal(injected, 0);
+  assert.match(report.lines[0], /code=provider_not_ready ms=10000/);
+  assert.equal(report.providerTurns, 0);
 });

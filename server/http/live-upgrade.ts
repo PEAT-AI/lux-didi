@@ -50,6 +50,7 @@ export interface LiveService {
   prewarm(): Promise<WarmPrewarmReceipt>;
   create(inputClass: DataClass, idempotencyKey: string, context: LiveContext): LiveSessionSnapshot;
   snapshot(liveSessionId: string): LiveSessionSnapshot;
+  providerReady?(liveSessionId: string): boolean;
   journal(liveSessionId: string, cursor: number | undefined, limit: number | undefined): LiveFragmentPage;
   revoke(liveSessionId: string): void;
   attach(liveSessionId: string, context: LiveContext): LiveAttachment;

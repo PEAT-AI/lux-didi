@@ -849,6 +849,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeMember(value.pickup, ['mute', 'connection', 'quiet', 'none'])) return;
     return { event: 'live_recovery', path: value.path, attempt: value.attempt, code: value.code, cause: value.cause, closeCode: value.closeCode, closeReason: value.closeReason, reason: value.reason, seedTurns: value.seedTurns, seedChars: value.seedChars, msSinceDrop: value.msSinceDrop, pickup: value.pickup, liveSessionId: value.liveSessionId, generation: value.generation };
   }
+  if (value.event === 'live_terminal') {
+    if (!closedKeys(value, ['event', 'liveSessionId', 'code'])) return;
+    if (typeof value.liveSessionId !== 'string' || !SESSION_ID.test(value.liveSessionId)) return;
+    // The administrative canary close is the only terminal sent through this event channel.
+    if (value.code !== 'revoked') return;
+    return { event: 'live_terminal', liveSessionId: value.liveSessionId, code: value.code };
+  }
   if (value.event === 'live_provider_open' || value.event === 'live_provider_ready') {
     // Closed shape: which session and generation the provider socket was opened for, how big the setup was
     // and, for the ready half, how long the provider took to acknowledge it.

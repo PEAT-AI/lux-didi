@@ -94,7 +94,7 @@ for (const removed of [
   'follow a plausible next source once',
 ]) assert.ok(!everything.includes(removed), `removed rule still present: ${removed}`);
 for (const rule of [
-  'One owner turn allows two research operations',
+  'One owner turn allows one research operation',
   'after a result arrives, never call research again until the owner speaks, except to stop',
   'Answer at once from a result, even a partial one',
   'state its coverage honestly in a few words, such as nine of thirty-eight events',
@@ -104,7 +104,7 @@ for (const rule of [
   'If research answers blocked, answer from the result you have',
 ]) assert.ok(voice.includes(rule), `voice rule missing: ${rule}`);
 for (const rule of [
-  'One owner turn allows two research operations',
+  'One owner turn allows one research operation',
   'Continue a run with its researchId only when the owner asks for more',
   'If research answers blocked, do not call it again in this turn',
 ]) assert.ok(procedure.includes(rule), `backend rule missing: ${rule}`);

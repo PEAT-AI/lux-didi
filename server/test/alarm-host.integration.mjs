@@ -125,8 +125,8 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   const attempts = f.attempts;
   assert.equal((await post('/api/v1/alarms/session', { id: due.id, ownerDisplayName: 'Synthetic Owner' })).status, 409);
   assert.equal(f.attempts, attempts, 'W11-R5: live session has no second provider attempt or injection');
-  await owner('snooze my alarm for five minutes'); now += 120001;
-  assert.match(await call('snooze_alarm', { id: String(due.id) }), /no_owner_request/);
+  await owner('snooze my alarm for five minutes'); now += 120001; mono += 120001;
+  assert.match(await call('snooze_alarm', { id: String(due.id) }), /request_expired/);
   await owner('snooze my alarm for five minutes');
   assert.match(await call('snooze_alarm', { id: String(due.id) }), /Alarm set/);
   assert.equal(rows().find(row => row.id === due.id).state, 'done');

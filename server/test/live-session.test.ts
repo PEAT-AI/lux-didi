@@ -7735,6 +7735,8 @@ test('alarm audio keeps one timer until the last-audible silence window expires'
       while (!chunk.done && chunk.value.kind !== 'audio') chunk = await output.next();
       assert.equal(chunk.value?.kind, 'audio', 'observe every frame before advancing the fake clock');
     }
+    fake.emit({ type: 'turnComplete' });
+    await settlePort();
     assert.ok(clock.pending.has(timer), 'audio updates a timestamp, not the existing timer');
   }
   clock.now = startedAt + 30000; clock.runDue();

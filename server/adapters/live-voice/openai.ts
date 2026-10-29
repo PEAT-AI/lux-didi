@@ -1351,11 +1351,7 @@ class Session implements LiveVoiceSession {
       if (errorCode === 'function_call_outputs_required' && command?.kind === 'cont') this.continuationOwed = true;
       else if (command?.kind === 'cont') {
         if (this.continuationRetries < 1) this.continueTurn(0, 1);
-        else {
-          this.continuationOwed = false;
-          this.emit({ type: 'turnFailed', code: 'provider_error' });
-          this.endResponse(undefined);
-        }
+        else this.failContinuation();
       }
       this.touch();
       return;
@@ -1378,6 +1374,7 @@ class Session implements LiveVoiceSession {
     // 3r F: an error is not a speech cut unless what it names says so. A rejection that only says a response is
     // already active is the one retry the continuation gate allows (3r A).
     if (ACTIVE_RESPONSE_ERROR.test(`${type} ${errorCode} ${param}`)) {
+      if (this.continuationRetries >= 1) { this.failContinuation(); this.touch(); return; }
       this.continuationOwed = true;
       this.continuationRejected = true;
       // The retry answers the same batch the rejected create answered (S1-R1).
@@ -1606,9 +1603,18 @@ class Session implements LiveVoiceSession {
   private resumeContinuation(): void {
     if (!this.continuationOwed) return;    if (!this.continuationRejected) { this.continueTurn(0, 0); return; }
     this.continuationRejected = false;
-    // Exactly one retry: a second rejection leaves the continuation owed and nothing more is sent.
-    if (this.continuationRetries >= 1) { this.continuationOwed = false; this.continuationOutcome = 'failed'; return; }
+    // Exactly one retry: exhausted rejection is a typed failure, never an abandoned owed continuation.
+    if (this.continuationRetries >= 1) { this.failContinuation(); return; }
     this.continueTurn(0, 1);
+  }
+
+  /** A rejected create never became a response, but the host still owes the owner a spoken failure. */
+  private failContinuation(): void {
+    this.continuationOwed = false;
+    this.continuationRejected = false;
+    this.continuationOutcome = 'failed';
+    this.emit({ type: 'turnFailed', code: 'provider_error' });
+    this.endResponse(undefined);
   }
 
   /** One client command id, so a provider error frame can be tied to the command that earned it (3r F, S4a-R4).

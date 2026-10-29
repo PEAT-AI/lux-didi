@@ -2546,9 +2546,33 @@ for (const rejects of [1, 2]) test(`continuation rejection: ${rejects} rejects r
   for (let i = 0; i < rejects; i++) {
     const frame = JSON.parse(opened.socket.sent.filter(raw => JSON.parse(raw).type === 'response.create').at(-1)!);
     opened.socket.deliver({ type: 'error', error: { type: 'invalid_request_error', code: 'unknown_parameter', param: 'response', client_event_id: frame.event_id } });
-    await quiet();
+    await quiet(); // Drain the async event iterator, not the fake clock.
+    assert.equal(opened.captured.events.filter(event => event.type === 'turnFailed').length, i === 1 ? 1 : 0, 'second rejection emits failure without a terminal frame or clock advance');
   }
   assert.equal(creates(opened.socket).length, before + 1);
   assert.equal(creates(opened.socket).at(-1)?.response, undefined);
   assert.equal(opened.captured.events.some(event => event.type === 'turnFailed'), rejects === 2);
+});
+
+test('continuation active-response retry exhaustion fails on rejection, not on a later terminal frame', async t => {
+  const opened = await continuation(t, false);
+  const initial = creates(opened.socket).length;
+  const reject = () => {
+    const frame = JSON.parse(opened.socket.sent.filter(raw => JSON.parse(raw).type === 'response.create').at(-1)!);
+    opened.socket.deliver({ type: 'error', error: { type: 'invalid_request_error', code: 'response_in_progress', param: 'type', client_event_id: frame.event_id } });
+  };
+  reject();
+  assert.equal(creates(opened.socket).length, initial, 'first active-response rejection waits for that response to end');
+  assert.equal(opened.captured.events.some(event => event.type === 'turnFailed'), false);
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-active-response', status: 'completed' } }));
+  assert.equal(creates(opened.socket).length, initial + 1, 'exactly one plain retry');
+  assert.equal(creates(opened.socket).at(-1)?.response, undefined);
+  reject();
+  await quiet(); // Delivery to the async consumer requires a microtask turn only.
+  const failures = opened.captured.events.filter(event => event.type === 'turnFailed');
+  assert.equal(failures.length, 1, 'failure is immediate, with no clock advance or terminal frame');
+  assert.equal(failures[0]?.code, 'provider_error');
+  opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-active-response', status: 'completed' } }));
+  assert.equal(creates(opened.socket).length, initial + 1, 'no third create or watchdog retry');
+  assert.equal(opened.captured.events.filter(event => event.type === 'turnFailed').length, 1);
 });

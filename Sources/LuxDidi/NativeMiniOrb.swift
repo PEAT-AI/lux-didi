@@ -367,7 +367,7 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         updateClickThrough()
     }
 
-    deinit {
+    isolated deinit {
         if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
         if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
     }

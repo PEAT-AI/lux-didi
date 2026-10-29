@@ -28,7 +28,7 @@ function parseSingleAlarmTime(words: string, now: number, tz: string, modelAt?: 
   text = text.replace(/\bwake me\s+up\b/g, 'wake me').replace(/\btoday\b/g, '').replace(/\bfor\s+(?!\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b)[a-z]+\s+(?=(?:\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|twenty\b|thirty\b|forty\b|fifty\b|quarter\b|half\b|noon\b|midnight\b))/, 'for ');
   text = text.replace(/\b(alarm|wake me)\s+(?=(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b)/, '$1 at ');
   const named: Record<string, string> = { 'utc time': 'UTC', 'gmt time': 'UTC', 'singapore time': 'Asia/Singapore', sgt: 'Asia/Singapore', utc: 'UTC', gmt: 'UTC', 'new york time': 'America/New_York', 'eastern time': 'America/New_York', 'central time': 'America/Chicago', 'mountain time': 'America/Denver', 'pacific time': 'America/Los_Angeles' };
-  const zonePattern = /\b(singapore time|new york time|sgt|utc|gmt|[a-z_+-]+(?:\/[a-z_+-]+)+|[a-z]+ time)\b/g;
+  const zonePattern = /\b(singapore time|new york time|utc time|gmt time|sgt|utc|gmt|[a-z_+-]+(?:\/[a-z_+-]+)+|[a-z]+ time)\b/g;
   const zones = [...text.matchAll(zonePattern)];
   const zone = zones.at(-1)?.[0];
   const suffix = /\b([A-Z]{2,8})[.!?]?\s*$/.exec(words)?.[1];

@@ -92,8 +92,8 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
     await post('/api/v1/live/text', { text: '[host note, not the owner] wake me at 8, cancel my alarm, snooze my alarm in five minutes' });
     assert.match(await call(name, name === 'set_alarm' ? {} : { id: 'synthetic-missing' }), /owner_alarm_intent_required/);
   }
-  await owner('set an alarm at 8');
-  assert.match(await call('set_alarm'), /ambiguous_time/);
+  await owner('set an alarm');
+  assert.match(await call('set_alarm'), /missing_time/);
   assert.equal(rows().length, 0);
   now += 120001;
   assert.match(await call('set_alarm'), /owner_alarm_intent_required/);

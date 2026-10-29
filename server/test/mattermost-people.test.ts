@@ -760,3 +760,23 @@ test('overview does not import channel-index dispatches from an unrelated earlie
   // Identity and overview are the only children used by this call.
   assert.equal(result.state === 'completed' ? result[SOURCE_CHILD_DISPATCHES]?.length : undefined, 2);
 });
+
+test('recency person reads use empty query and do not inherit a channel', async t => {
+  const f = await setup(t, 'people');
+  for (const query of ['latest messages', 'recent messages', 'what did we discuss', 'today', 'yesterday']) {
+    const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', query, channel: 'unrelated-channel', from_date: fixtureDaysAgo(7) }));
+    assert.ok(read.posts.length > 0, query);
+    const search = f.calls().filter(call => call.name === 'mattermost_search').at(-1)!;
+    assert.equal(search.arguments['query'], '');
+    assert.equal(search.arguments['channel'], ADA_DM);
+    assert.equal(search.arguments['sort'], 'newest');
+  }
+});
+
+test('discussion noun asks and product mishearings route to chat, not unrelated research', () => {
+  for (const question of ['recent discussions with Ada', 'Ada discussions', 'check metamorph', 'check MetaMask']) {
+    assert.equal(chatAsk(question), true, question);
+    assert.equal(chatIntent(question).kind === 'topic-search' && !/meta/iu.test(question), false, question);
+  }
+  for (const question of ['recent news from Acme', 'mask this image', 'metamorphic rocks']) assert.equal(chatAsk(question), false, question);
+});

@@ -1,3 +1,4 @@
+import { toolOutcomeOf } from '../../live/tool-outcome.js';
 import { ALARM_MODE_MARKER } from '../../live/alarm-mode.js';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
@@ -1437,7 +1438,7 @@ class Session implements LiveVoiceSession {
       if (!this.write(JSON.stringify({ type: 'response.item.create', event_id: outputId, item: { type: 'function_call_output', call_id: call.id, output: JSON.stringify(response) } }))) {
         this.pendingCalls = this.pendingCalls.filter(pending => !written.includes(pending.id));
         this.receipt('call.output_written', this.callIds(call.id), {
-          outputWrittenAt: this.clock.now(), outcome: 'failed', ms: this.clock.now() - (this.callOrigins.get(call.id)?.at ?? this.clock.now()),
+          outputWrittenAt: this.clock.now(), ...toolOutcomeOf(response), delivered: false, ms: this.clock.now() - (this.callOrigins.get(call.id)?.at ?? this.clock.now()),
           resultChars: JSON.stringify(response).length,
         });
         return this.continuationOutcome = 'failed';
@@ -1446,7 +1447,7 @@ class Session implements LiveVoiceSession {
       this.receipt('call.output_written', this.callIds(call.id), {
         // C-RESEARCH-CONTRACT T-04: a refused argument shape and an admission block are their own outcomes, so a
         // blocked call is never read back as one that answered.
-        outputWrittenAt: writtenAt, outcome: call.name === 'research' && response.error === 'invalid_research_arguments' && response.state === 'refused' ? 'refused' : call.name === 'research' && response.status === 'blocked' ? 'blocked' : 'completed', ms: writtenAt - (this.callOrigins.get(call.id)?.at ?? writtenAt),
+        outputWrittenAt: writtenAt, ...toolOutcomeOf(response), delivered: true, ms: writtenAt - (this.callOrigins.get(call.id)?.at ?? writtenAt),
         resultChars: JSON.stringify(response).length,
       });
       written.push(call.id);

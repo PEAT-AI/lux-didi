@@ -28,7 +28,7 @@ export interface CallView {
   executionMs?: number | null;
   callKey: string; responseKey: string | null; turnId: string | null; name: string; argsChars: number;
   intentAt: number; executedAt: number | null; outputPreparedAt: number | null; outputWrittenAt: number | null;
-  outcome: CallOutcome; ms: number | null; resultChars: number | null;
+  outcomeCode?: string | null; delivered?: boolean | null; outcome: CallOutcome; ms: number | null; resultChars: number | null;
   /** O1b-A: when the continuation this call's answer owed was decided, and how. Owed by the response, so
    *  every call of one answered batch carries the same decision. */
   continuationAt: number | null; continuationOutcome: ContinuationOutcome | null;
@@ -92,7 +92,7 @@ function callView(row: SQLRow): CallView {
     callKey: String(row.call_key), responseKey: str(row.response_key), turnId: str(row.turn_id), name: String(row.name),
     argsChars: numOr(row.args_chars, 0), intentAt: numOr(row.intent_at, 0), executedAt: num(row.executed_at),
     executionCompletedAt: num(row.execution_completed_at),outputPreparedAt: num(row.output_prepared_at), outputWrittenAt: num(row.output_written_at),
-    outcome: String(row.outcome) as CallOutcome, ms: num(row.ms), resultChars: num(row.result_chars),
+    outcomeCode: name(row.outcome_code), delivered: row.delivered === 1 ? true : row.delivered === 0 ? false : null, outcome: String(row.outcome) as CallOutcome, ms: num(row.ms), resultChars: num(row.result_chars),
     continuationAt: null, continuationOutcome: null,
   };
 }
@@ -742,7 +742,7 @@ export interface CallAudit {
 export interface AuditToolLatency { count: number; p50: number | null; p90: number | null }
 export interface AuditSummary {
   version: number; since: string; sessions: number;
-  callsPerTool: Record<string, number>;
+  outcomes: Record<string, number>; callsPerTool: Record<string, number>;
   latencyPerTool: Record<string, AuditToolLatency>;
   refusalsByCode: Record<string, number>;
   finalToAudio: AuditToolLatency;
@@ -776,7 +776,7 @@ function sortedNumbers(values: readonly (number | null)[]): number[] {
 /** One call's row: the store's own timings and outcome, and the refusal code the outcome line named. */
 function auditCallRow(call: CallView, lines: readonly LogLine[]): AuditCallRow {
   const settled = lines.find(line => line.event === 'tool_call_outcome' && line.callKey === call.callKey);
-  const code = settled === undefined ? null : name(settled.record.refusalCode);
+  const code = call.outcomeCode ?? (settled === undefined ? null : name(settled.record.refusalCode));
   return {
     turnId: call.turnId, callKey: call.callKey, name: call.name,
     executionMs: call.executionMs ?? null,
@@ -856,6 +856,7 @@ export function buildCallAudit(report: TimelineReport, scan: LogScan): CallAudit
 export function buildAuditSummary(read: TraceRead, scan: LogScan, since: number): AuditSummary {
   const sessions = read.all('SELECT DISTINCT live_session_id FROM trace_turn WHERE opened_at>=? ORDER BY live_session_id', [since])
     .map(row => String(row['live_session_id']));
+  const outcomes: Record<string, number> = {};
   const callsPerTool: Record<string, number> = {};
   const refusalsByCode: Record<string, number> = {};
   const latencyByTool = new Map<string, number[]>();
@@ -863,6 +864,7 @@ export function buildAuditSummary(read: TraceRead, scan: LogScan, since: number)
   for (const liveSessionId of sessions) {
     const audit = buildCallAudit(buildTimeline(read, liveSessionId), scan);
     for (const call of audit.calls) {
+      outcomes[call.outcome] = (outcomes[call.outcome] ?? 0) + 1;
       callsPerTool[call.name] = (callsPerTool[call.name] ?? 0) + 1;
       if (call.totalMs !== null) latencyByTool.set(call.name, [...(latencyByTool.get(call.name) ?? []), call.totalMs]);
     }
@@ -873,7 +875,7 @@ export function buildAuditSummary(read: TraceRead, scan: LogScan, since: number)
   for (const [tool, values] of [...latencyByTool.entries()].sort(([left], [right]) => left.localeCompare(right))) latencyPerTool[tool] = latencyOf(values);
   return {
     version: CALL_AUDIT_SCHEMA_VERSION, since: new Date(since).toISOString(), sessions: sessions.length,
-    callsPerTool, latencyPerTool, refusalsByCode, finalToAudio: latencyOf(finalToAudio),
+    outcomes, callsPerTool, latencyPerTool, refusalsByCode, finalToAudio: latencyOf(finalToAudio),
   };
 }
 
@@ -917,6 +919,7 @@ export function renderAuditSummary(summary: AuditSummary): string {
     const latency = summary.latencyPerTool[tool] ?? { count: 0, p50: null, p90: null };
     out.push(`${tool} ${summary.callsPerTool[tool]} ${auditMs(latency.p50)} ${auditMs(latency.p90)}`);
   }
+  out.push(`outcomes ${JSON.stringify(summary.outcomes)}`);
   const codes = Object.entries(summary.refusalsByCode).sort(([left], [right]) => left.localeCompare(right));
   out.push(`refusals by code ${codes.length === 0 ? 'none' : codes.map(([code, seen]) => `${code}=${seen}`).join(' ')}`);
   out.push(`final to audio n=${summary.finalToAudio.count} p50=${auditMs(summary.finalToAudio.p50)} p90=${auditMs(summary.finalToAudio.p90)}`);

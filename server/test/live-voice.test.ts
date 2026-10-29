@@ -1,3 +1,4 @@
+import './tool-outcome.test.js';
 import { ALARM_MODE_MARKER } from '../live/types.js';
 import { FRESH_OPENING } from '../adapters/live-voice/openai.js';
 import './live-remember.test.js';

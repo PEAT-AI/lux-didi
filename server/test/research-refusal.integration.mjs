@@ -157,7 +157,8 @@ const speakAt=async(handle)=>{handle.wire.send({type:'session.input_transcript.d
 const speak=async()=>speakAt(positive);
 // The fake Gmail leg answers provider_failed in this fixture, which is neither this contract's surface nor a
 // refusal it changes, so the admitted reads asserted here are the knowledge and calendar legs.
-for(const lookup of [{source:'knowledge',query:'synthetic'},{source:'calendar',query:'today'}]){await speak();const response=await positive.send({action:'start',question:'synthetic',topic:'synthetic names',lookups:[lookup]});assert.equal(response.error,undefined,JSON.stringify(response));assert(Array.isArray(response.findings)&&response.findings.some(finding=>finding.source===lookup.source),'source evidence returned: '+JSON.stringify(response));}
+const admittedOutcomes=[];
+for(const lookup of [{source:'knowledge',query:'synthetic'},{source:'calendar',query:'today'}]){await speak();const response=await positive.send({action:'start',question:'synthetic',topic:'synthetic names',lookups:[lookup]});assert.equal(response.error,undefined,JSON.stringify(response));assert(['complete','answered','partial'].includes(response.status),JSON.stringify(response));admittedOutcomes.push(response.status==='partial'?'partial':'completed');assert(Array.isArray(response.findings)&&response.findings.some(finding=>finding.source===lookup.source),'source evidence returned: '+JSON.stringify(response));}
 // C-RESEARCH-CONTRACT T-04: a call the admission refuses is `blocked` in the trace, never `completed`, and the
 // reply names the rule that applied.
 const blocked=await positive.send({action:'start',question:'synthetic',topic:'synthetic names'});
@@ -165,8 +166,9 @@ assert.equal(blocked.status,'blocked');assert.equal(blocked.reason,'turn_spent')
 assert.equal(blocked.directive,'Results were delivered earlier this turn. Answer from the delivered research results already in the conversation; do not describe this admission refusal as a search outcome.');
 const blockedRows=positive.store.transaction(tx=>tx.all("SELECT outcome FROM trace_call WHERE outcome='blocked'"));
 assert.equal(blockedRows.length,1,'one blocked call, recorded as blocked');
-assert.equal(positive.store.transaction(tx=>tx.get("SELECT COUNT(*) AS n FROM trace_call WHERE outcome='completed'").n),2,'the two admitted calls are the only completions');
- assert.equal(positive.store.transaction(tx=>tx.get("SELECT COUNT(*) AS n FROM trace_call WHERE outcome='completed' AND output_written_at IS NOT NULL").n),2);
+const admittedRows=positive.store.transaction(tx=>tx.all("SELECT outcome,delivered FROM trace_call WHERE outcome IN ('completed','partial') ORDER BY intent_at,call_key"));
+assert.deepEqual(admittedRows.map(row=>row.outcome).sort(),admittedOutcomes.sort(),'admitted business outcomes match the results, not transport success');
+assert(admittedRows.every(row=>row.delivered===1),'both admitted responses were delivered');
  assert.equal(positive.calls.filter(call=>call.id==='lux-knowledge').length,1);assert.equal(positive.calls.find(call=>call.id==='lux-knowledge').args.include_sensitive,true);assert.ok(positive.calls.filter(call=>call.id==='calendar').length>=1,'the calendar source was read');
  await positive.close();positive=undefined;
  denied=await fixture(['ordinary','private']);await speakAt(denied);const refusal=await denied.send({action:'start',question:'synthetic',topic:'synthetic names',lookups:[{source:'knowledge',query:'synthetic'}]});assert(!(refusal.findings??[]).some(finding=>finding.source==='knowledge'));assert.equal((refusal.findings??[]).length,0,'a sensitive-only read returns no findings to a private session');await denied.close();denied=undefined;

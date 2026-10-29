@@ -837,7 +837,7 @@ test('Mattermost declared child argument schemas match the recorded binary tools
 
 // MM-3 / original 15:29-15:31 regression: one owner, one accepted host run, five executions.
 test('MM-3: channel topic, person topic, overview and two recency reads all publish in ONE host run', async t => {
-  const f = await setup(t, 'people');
+  const f = await setup(t, 'people', undefined, { DIDI_FAKE_MATTERMOST_NIGHT: 'yes' });
   installPeople(parsePeople({ version: 1, people: [{ id: 'person-a', name: 'Ada Moss', aliases: ['Ada'], role: 'Engineer', circle: 'plantix', tier: 1, email: ['person-a@example.invalid'], mattermost: 'ada.moss' }] }));
   t.after(() => installPeople(null));
   const store = new Store(join(f.dir, 'synthetic-host'), toolsMigrations);
@@ -874,6 +874,32 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
     assert.equal(batch.tools[0]?.status, 'completed', `step ${step}: ${JSON.stringify(batch.tools)}`);
     assert.match(JSON.stringify(batch.accepted), /pilot/iu, `step ${step} delivers actual post bodies`);
     assert.doesNotMatch(JSON.stringify(batch.accepted), /dispatch_reference_denied|no messages/iu);
+  }
+
+  // A deterministic provider replay: each recognizer final is observed separately,
+  // then its recorded tool intent crosses the real host dispatch and result gate.
+  const replays = [
+    { id: 'MM-1', finals: [' And like, can you like check in the', ' Alpha Alpha Alpha channel and metamorph what Ada was yelling at me', ', about like', ' deploying something'], args: { intent: 'channel', channel: 'Alpha Alpha Alpha', query: 'deploying' }, body: /deployed sandbox/u },
+    { id: 'MM-2', finals: [" That's the name in MetaMask"], clarification: 'Is Alpha Alpha Alpha the channel name?', args: { intent: 'channel', channel: 'Alpha Alpha Alpha', query: 'deploying' }, body: /deployed sandbox/u },
+    { id: 'MM-3', finals: [' Can you check my d- -w- w', ' What is my- about my DMs with Ada, what do you find about them? What would this we discussed lately'], args: { intent: 'overview', person: 'Ada' }, body: /pilot/u },
+    { id: 'MM-4', finals: [' Can you get the latest messages', ' between me and Person A'], args: { intent: 'person', person: '@person.a', query: 'latest messages' }, body: /entry 1/u },
+    { id: 'MM-5', finals: ['recent discussions with Ada'], args: { intent: 'overview', person: 'Ada' }, body: /pilot/u },
+    { id: 'MM-6', finals: [" I mean like there's a thread where Ada and I have been discussing stuff, right? And um", ', Um, and he shared he shared an article you can from university, I think', " It's not it's not", ', yeah', ", It's not in it's not it's in there, there's a channel called Alpha Alpha Alpha Alpha"], args: { intent: 'channel', channel: 'Alpha Alpha Alpha Alpha', query: 'university' }, body: /https:\/\/example.invalid\/article/u },
+    { id: 'MM-7', finals: [' understand. But can you access uhh Metamos', ' Slack channel', ', Metamos'], args: { intent: 'channel', channel: 'Alpha Alpha Alpha' }, body: /deployed sandbox/u },
+    { id: 'MM-8', finals: [' Yes, um', ', check', ' Metamos, uh what we need to discuss with Ada. T-Is he all of the past conversations that we have been having'], args: { intent: 'overview', person: 'Ada' }, body: /pilot/u },
+  ];
+  let step = sequence.length;
+  for (const replay of replays) {
+    if ('clarification' in replay) assert.equal(replay.clarification, 'Is Alpha Alpha Alpha the channel name?');
+    for (const [index, words] of replay.finals.entries()) owner.observeAlarmOwner('chat-sequence', `${replay.id}-final-${index}`, words, FIXTURE_NOW);
+    const batch = await runToolCalls(owner, [{ id: replay.id, name: MATTERMOST_CHAT_TOOL, args: { ...replay.args, from_date: fixtureDaysAgo(7) } }], {
+      registry: owner.definitions('chat-sequence'), host: host as never, authority: { isCurrent: async () => true } as never,
+      control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step: step++, contentIndex: 0, seenIds: new Set<string>(), authorize: true, baseClasses: ['ordinary'],
+    });
+    assert.equal(batch.error, undefined, replay.id);
+    assert.equal(batch.tools[0]?.status, 'completed', `${replay.id}: ${JSON.stringify(batch.tools)}`);
+    assert.match(JSON.stringify(batch.accepted), replay.body, `${replay.id}: actual model-visible post bodies`);
+    assert.doesNotMatch(JSON.stringify(batch.accepted), /dispatch_reference_denied|no messages/iu, replay.id);
   }
 });
 
@@ -917,7 +943,7 @@ test('MM-5 and MM-7: discussion shapes and every recorded product mishearing sel
   }
 });
 
-test('MM-8 and ARG-1: noisy overview uses current person and no inherited channel or topic', () => {
+test('MM-8: noisy overview parser compiles its own person and topic', () => {
   const options = { terms: 'old-topic', nowMs: FIXTURE_NOW, timeZone: 'UTC' };
   const prior = chatSubs(chatIntent('what is new in the Builders channel about pilot', options), 8, '');
   assert.equal(prior[0]?.args['channel'], 'Builders');
@@ -941,7 +967,7 @@ test('MM-9: chat owner approval is named as a permission gate with its actual te
 
 test('plain topic searches also retry broader once and disclose hybrid to the model', async t => {
   const f = await setup(t, 'people', undefined, { DIDI_FAKE_MATTERMOST_NIGHT: 'yes' });
-  const result = await f.reader.search({ query: 'deploying', channel: 'Alpha Alpha Alpha', from_date: fixtureDaysAgo(7) });
+  const result = await f.reader.search({ query: 'deploying', channel: 'Alpha Alpha Alpha', from_date: fixtureDaysAgo(7) } as never);
   const projected = projectMattermostResult(f.adapter, result);
   assert.equal(projected.ok, true);
   if (!projected.ok) return;

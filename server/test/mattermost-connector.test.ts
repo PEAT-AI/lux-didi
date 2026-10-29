@@ -324,7 +324,7 @@ test('#581: a chat window ask sends from_date and sort newest and no inline Afte
   const research = reader(f.adapter, f.registry, digest);
   const execute = async (subs: readonly IntentSubCall[]): Promise<IntentSubResult[]> => Promise.all(subs.map(async call => {
     const window = typeof call.args['from_date'] === 'string' ? { from_date: call.args['from_date'] } : {};
-    const result = await research.search({ query: String(call.args['query'] ?? ''), limit: Number(call.args['limit'] ?? 5), ...window });
+    const result = await research.search({ query: String(call.args['query'] ?? ''), limit: Number(call.args['limit'] ?? 5), ...window } as never);
     const projected = result.state === 'completed' ? projectMattermostResult(f.adapter, result) : { ok: false as const };
     const text = projected.ok ? projected.projection.text : '';
     return { key: call.key, name: call.name, ok: projected.ok, text, originalCharacters: text.length, omittedCharacters: 0 };

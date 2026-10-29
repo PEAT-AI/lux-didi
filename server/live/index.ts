@@ -1388,7 +1388,8 @@ export class LiveSessionOwner {
   }
 
   #ackAlarm(handle: ActiveSession, words: string): void {
-    if (!/\b(?:i[’']?m (?:awake|up)|i am (?:awake|up)|got it|done|okay okay|stop|snooze|cancel)\b/i.test(words)) return;
+    const normalized = words.replace(/[^\p{L}\p{N}'’]+/gu, ' ');
+    if (!/\b(?:i[’']?m (?:awake|up)|i am (?:awake|up)|got it|done|okay okay|stop|snooze|cancel)\b/i.test(normalized)) return;
     const alarms = this.#ringingAlarms(handle);
     if (!alarms.length) return;
     // The most recently announced alarm owns this confirmation, not every ringing occurrence.
@@ -1397,6 +1398,7 @@ export class LiveSessionOwner {
     alarm.timer?.cancel();
     this.#alarmSessions.get(handle.liveSessionId)?.delete(alarm.setup.alarmId!);
     queueMicrotask(() => this.#tools?.alarmChanged?.());
+    try { handle.session.sendText({ text: hostNote('This alarm is acknowledged. Stop wake reminders and continue as a normal call. Honor any requested snooze/cancel with the alarm tools.') }); } catch { /* The acknowledged alarm remains stopped if transport is unavailable. */ }
   }
 
   #revision = 1;
@@ -4920,6 +4922,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
 
   #voiceStopGate(handle: ActiveSession, event: LiveVoiceEvent, generation: number, final = false): void {
     if (event.type !== 'inputTranscription') return;
+    if (this.#alarmSessions.get(handle.liveSessionId)?.size && /\bstop\b/i.test(event.text)) return;
     if (handle.muted || handle.terminal || generation !== handle.generation || event.finalOrigin === 'typed') return;
     const now = this.#now();
     if (handle.stopGeneration !== generation || handle.stopInputAt === undefined || now - handle.stopInputAt >= 3_000) {

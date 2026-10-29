@@ -161,6 +161,7 @@ async function harness(t: TestContext, overrides: {
   scheduler?: DeadlineClock;
   system?: string;
   language?: string;
+  calendarDigest?: import('../live/index.js').CalendarDigestOwner;
   acceptedPrompt?: (ownerId: string) => NonNullable<ReturnType<typeof validateLiveProfile>['acceptedPrompt']>;
   routeClasses?: readonly ('ordinary' | 'private' | 'sensitive')[];
   overlay?: { schemaVersion: 1; text: string; accent?: string };
@@ -411,7 +412,7 @@ async function harness(t: TestContext, overrides: {
       return { id: record.entryId, text: record.text, dataClass };
     });
   };
-  owner = createLiveSessionOwner({ store, voice, profile, ...{ memorySource }, ...(tools ? { tools } : {}), ...(overrides.researchWeb ? { researchWeb: overrides.researchWeb } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
+  owner = createLiveSessionOwner({ store, voice, profile, ...(overrides.calendarDigest ? { calendarDigest: overrides.calendarDigest } : {}), ...{ memorySource }, ...(tools ? { tools } : {}), ...(overrides.researchWeb ? { researchWeb: overrides.researchWeb } : {}), now: () => overrides.scheduler?.now ?? clock, timeZone: 'Asia/Kolkata', ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
   t.after(async () => { await owner.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { ...(toolRegistry ? { toolRegistry } : {}), ...(exposedToolOwner ? { toolOwner: exposedToolOwner } : {}), ...(publishCalendar ? { publishCalendar } : {}), requests, calls, get memorySelections() { return memorySelections; }, f, store, owner, ctx: context(store), dir, advance: ms => { if (overrides.scheduler) overrides.scheduler.now += ms; else clock += ms; } };
 }
@@ -7624,11 +7625,12 @@ test('alarm due during a live call injects once and unrelated earlier speech can
   const fake = fakeLiveVoicePort();
   const h = await harness(t, { port: fake.port, tools: true, scheduler: clock, limits: { idleMs: 300000, sessionMs: 900000 } });
   const { session, attachment } = await openPort(h, 'wake-existing');
-  fake.emit({ type: 'inputTranscription', text: "I'm awake", finished: true });
-  await settlePort();
   const scheduler = new AlarmScheduler({ store: h.store, clock: { now: () => clock.now, setTimeout: () => 1, clearTimeout: () => {} }, emit: () => {} });
   t.after(() => scheduler.stop());
   const alarm = scheduler.set({ fireAtUtc: clock.now, tz: 'UTC', label: 'call the bank', createdJournalId: 'synthetic-live-alarm' });
+  fake.emit({ type: 'inputTranscription', text: "I'm awake", finished: true });
+  await settlePort();
+  assert.equal(scheduler.list()[0]!.state, 'ringing', 'speech in an unrelated call cannot acknowledge a due alarm');
   const coordinator = new AlarmSessionCoordinator({ store: h.store, hasLiveSession: () => true,
     open: setup => h.owner.announceAlarm(setup)!.liveSessionId, degraded: () => assert.fail('unexpected degradation') });
   assert.equal(coordinator.attempt(alarm.id, 'Synthetic Owner').liveSessionId, session.liveSessionId);
@@ -7662,6 +7664,22 @@ test('an alarm permits one provider rebuild while its ring deadline is open', as
   assert.equal(fake.sessionsOpened, 2, 'no second rebuild');
   clock.now += 6000; clock.runDue();
   await settlePort();
+  h.owner.revoke(session.liveSessionId);
+  await attachment.done;
+});
+
+
+test('overview alarms compose the same cached calendar digest and normal memory prompt', async t => {
+  const fake = fakeLiveVoicePort();
+  const h = await harness(t, { port: fake.port, tools: true, calendarDigest: {
+    forStart: async () => ({ state: 'present', text: 'Synthetic day: 09:00 Project review', items: 1, fetchedAt: NOW }), refresh: () => {} } });
+  await h.owner.prepareCalendar();
+  const session = h.owner.create({ idempotencyKey: 'wake-overview', inputClass: 'ordinary', alarm: { ownerDisplayName: 'Synthetic Owner', scheduledTime: '08:00', label: 'give me an overview' } }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  assert.match(fake.requests[0]!.system.text, /09:00 Project review/);
+  assert.match(fake.requests[0]!.system.text, /Synthetic system/);
+  assert.match(fake.requests[0]!.system.text, /calendar digest/);
   h.owner.revoke(session.liveSessionId);
   await attachment.done;
 });

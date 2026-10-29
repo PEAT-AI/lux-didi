@@ -2296,3 +2296,15 @@ test('direct102 fresh opening demands speech itself, not an acknowledgment of st
   assert.match(FRESH_OPENING, /Do not acknowledge/);
   assert.doesNotMatch(FRESH_OPENING, /Internal startup direction/);
 });
+
+
+test('alarm sessions seed no fresh-opening direction', async t => {
+  const f = await fixture(t);
+  const session = new OpenAiLiveVoiceAdapter(options({ socketFactory: f.socketFactory }))
+    .open(request({ system: { text: 'Synthetic normal persona\n[alarm mode] call the bank', dataClass: 'ordinary' }, opening: 'model_first' }), control());
+  t.after(() => session.close());
+  await f.frame(1);
+  const start = f.frames[0] as unknown as Start;
+  assert.ok(!JSON.stringify(start.session['input'] ?? []).includes(FRESH_OPENING));
+  assert.match(JSON.stringify(start.session), /call the bank/);
+});

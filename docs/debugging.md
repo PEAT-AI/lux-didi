@@ -158,7 +158,7 @@ transaction that rolls back can still write that failed terminal; a storage fail
 that also prevents the failure write remains a reported `tool_journal_failed`, never a
 successful read. No software can promise persistence while storage refuses every write.
 
-`didi-timeline --audit` counts finalized lookup announcements such as “looking this up”,
+`scripts/didi-timeline call <session> --audit` counts finalized lookup announcements such as “looking this up”,
 “let me check”, and “one second, checking” with no following tool call in the same turn.
 This count does not export transcript text. It is a lower bound when content has been
 pruned, and is merged with the host's existing no-call receipts without double-counting

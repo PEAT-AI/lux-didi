@@ -150,6 +150,7 @@ async function harness(t: TestContext, overrides: {
   const saved: import('../tools/vault-write.js').VaultSaveArgs[] = [];
   const vaultTransport: import('../adapters/lux-write/client.js').LuxWriteTransport = {
     nearDuplicate: async () => undefined,
+    backoff: async () => {},
     save: async args => { saved.push(args); if (overrides.crashAfterInsert) throw Error('synthetic crash after insert'); return overrides.vaultUnavailable ? { outcome: 'unavailable' } : { outcome: 'inserted', insightId: 'synthetic-81' }; },
   };
   owner = createLiveSessionOwner({ store, voice, profile, vaultTransport, ...{ memorySource }, ...(tools ? { tools } : {}), now: () => overrides.scheduler?.now ?? clock, ...(overrides.scheduler ? { schedule: overrides.scheduler.schedule } : {}) });
@@ -266,11 +267,7 @@ for (const outcome of ['saved', 'unavailable', 'unknown'] as const) {
     const { attachment } = await attached(h);
     await ownerBlock(h, 'save a summary of this into Lux');
     await assistantBlock(h, 'On it.');
-    if (outcome === 'unavailable') t.mock.timers.enable({ apis: ['setTimeout'] });
-    const pending = call(h, 'stage_lux_note', candidate);
-    if (outcome === 'unavailable') { await drain(); t.mock.timers.tick(250); }
-    const result = await pending;
-    if (outcome === 'unavailable') t.mock.timers.reset();
+    const result = await call(h, 'stage_lux_note', candidate);
     assert.equal(h.saved.length, outcome === 'unavailable' ? 2 : 1, 'unavailable retries exactly once; other outcomes never retry');
     assert.equal(result['saved'], outcome === 'saved', JSON.stringify(result));
     if (outcome === 'saved') {

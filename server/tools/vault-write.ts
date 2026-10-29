@@ -44,7 +44,10 @@ export type VaultTransportResult =
 export interface VaultSaveArgs { readonly content: string; readonly title: string; readonly insightType: string; readonly project: string }
 
 /** One MCP write attempt. The client owns the wire; nothing above it retries. */
-export interface VaultTransport { save(args: VaultSaveArgs): Promise<VaultTransportResult> }
+export interface VaultTransport {
+  save(args: VaultSaveArgs): Promise<VaultTransportResult>;
+  backoff?(milliseconds: number): Promise<void>;
+}
 
 export type VaultClaim =
   | { readonly state: 'dispatch'; readonly opId: string; readonly content: string; readonly title: string }
@@ -191,7 +194,7 @@ export class VaultWriter {
 
   constructor(options: VaultWriterOptions) {
     this.#store = options.store; this.#transport = options.transport; this.#now = options.now; this.#log = options.log;
-    this.#backoff = options.backoff ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
+    this.#backoff = options.backoff ?? options.transport.backoff?.bind(options.transport) ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
     const claims = this.#store.transaction(tx => {
       // A dispatched row may have reached lux. Never replay it without a remote receipt.
       tx.run("UPDATE vault_writes SET state='uncertain' WHERE state='dispatched'");

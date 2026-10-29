@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { calendarRange } from '../tools/calendar-window.js';
-import { registeredCalendarArguments, runResearch, type ResearchDeps } from '../tools/research.js';
+import { registeredCalendarArguments, runResearch, ResearchLedger, type ResearchDeps } from '../tools/research.js';
 import type { IntentSubCall } from '../tools/intent.js';
 
 const now = Date.parse('2026-10-29T12:00:00Z');
 function harness(failed = false) {
   const calls: IntentSubCall[] = [];
   const deps: ResearchDeps = {
+    emit: () => {}, log: () => {}, ledger: new ResearchLedger(),
     now: () => now, timeZone: 'UTC', configured: ['calendar', 'mail'],
     execute: async subs => {
       calls.push(...subs);

@@ -303,6 +303,7 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         backgroundColor = .clear
         hasShadow = false
         hidesOnDeactivate = false
+        acceptsMouseMovedEvents = true
         overlay.onClick = { [weak self] in self?.press() }
         overlay.onExpand = onExpand
         let contextMenu = NSMenu()

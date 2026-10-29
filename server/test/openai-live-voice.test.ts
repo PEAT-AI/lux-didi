@@ -2362,7 +2362,7 @@ test('alarm sessions seed no fresh-opening direction', async t => {
 
 
 const creates = (socket: { sent: string[] }) => socket.sent.map(frame => JSON.parse(frame) as { type: string; response?: { tool_choice?: string } }).filter(frame => frame.type === 'response.create');
-async function continuation(t: TestContext) {
+async function continuation(t: TestContext, accepted = true) {
   const clock = new FakeClock();
   const opened = await fakeReady(t, { clock });
   opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-initial' } }));
@@ -2370,7 +2370,7 @@ async function continuation(t: TestContext) {
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-initial', status: 'completed' } }));
   await quiet();
   opened.session.sendToolResponse({ responses: [{ id: 'synthetic-call', name: 'research', response: { ok: true } }] });
-  opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-continuation' } }));
+  if (accepted) opened.socket.deliver(delegated('response.created', { response: { id: 'synthetic-continuation' } }));
   await quiet();
   return { ...opened, clock };
 }
@@ -2541,7 +2541,7 @@ test('IN-R1 OpenAI: cap outcomes are traced and parallel research batch admits s
 });
 
 for (const rejects of [1, 2]) test(`continuation rejection: ${rejects} rejects retries plain once then fails loudly`, async t => {
-  const opened = await continuation(t);
+  const opened = await continuation(t, false);
   const before = creates(opened.socket).length;
   for (let i = 0; i < rejects; i++) {
     const frame = JSON.parse(opened.socket.sent.filter(raw => JSON.parse(raw).type === 'response.create').at(-1)!);

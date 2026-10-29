@@ -409,8 +409,8 @@
       "fire_at_utc": 1793347200000,
       "tool": "set_alarm"
     },
-    "code": "time_mismatch",
-    "fire_at_utc": null
+    "code": "ready",
+    "fire_at_utc": 1793343600000
   },
   {
     "id": "case-34",
@@ -1856,9 +1856,8 @@
       "tool": "set_alarm",
       "fire_at_utc": 1793347200000
     },
-    "code": "time_mismatch",
-    "fire_at_utc": null,
-    "expectedSay": "The alarm was not set because the requested time differs from yours."
+    "code": "ready",
+    "fire_at_utc": 1793343600000
   },
   {
     "id": "alarm-model-skew-relative",

@@ -248,3 +248,35 @@ test('L-08: one classified connector failure reaches the host log sink and the h
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+for (const source of ['mail', 'calendar'] as const) {
+  for (const recovers of [true, false]) {
+    test(`C-RESIDUE ${source}: classified helper failure ${recovers ? 'retries to results' : 'twice is spoken failure, never empty'}`, async () => {
+      let attempts = 0;
+      const failure = `I couldn't read your ${source} just now. Please try again.`;
+      const success = source === 'mail' ? '- Synthetic archived mail [id residue-mail]' : '- Synthetic calendar appointment';
+      const h = harness([source], call => {
+        if (call.name === 'calendar_list_calendars') return subResult(call, '- Main [primary]');
+        attempts += 1;
+        return recovers && attempts > 1 ? subResult(call, success) : subResult(call, failure, true, 'provider_failure');
+      });
+      const reply = await runResearch(h.deps, {
+        action: 'start', question: source === 'mail' ? 'did Willow email me this week' : 'what is on my calendar this week',
+        topic: 'synthetic residue', lookups: [{ source, query: source === 'mail' ? 'Willow' : 'this week' }],
+      }, new AbortController().signal);
+      assert.equal(attempts, 2, 'one in-deadline retry');
+      const text = JSON.stringify(reply);
+      const receipt = h.sources.find(entry => entry.source === source);
+      assert.ok(receipt);
+      if (recovers) {
+        assert.ok(text.includes(success.slice(2)), text);
+        assert.notEqual(receipt.outcome, 'failed');
+        assert.ok(!text.includes(failure), text);
+      } else {
+        assert.equal(receipt.outcome, 'failed');
+        assert.ok(text.includes(failure), text);
+        assert.doesNotMatch(text, /empty_after_retry|found nothing|0 of 0/u);
+      }
+    });
+  }
+}

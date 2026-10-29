@@ -526,3 +526,12 @@ test('#1027: two empty reads say what was searched and how to narrow it', async 
   assert.match(note, /domain or a person's name/u, 'and says what would narrow it');
   assert.match(note, /found nothing matching/u, 'never a bare no');
 });
+
+
+test('C-RESIDUE fallback sender searches all mail, bare scans retain inbox', () => {
+  const sender = compileMailQuery('did Willow email me', 'Willow', NOW, ZONE, 'newer_than:14d');
+  assert.doesNotMatch(sender, /in:inbox/u);
+  assert.doesNotMatch(broaderMailQuery(sender) ?? '', /in:inbox/u);
+  const bare = compileMailQuery('anything new in my inbox', '', NOW, ZONE, 'newer_than:14d');
+  assert.match(bare, /in:inbox/u);
+});

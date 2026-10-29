@@ -141,7 +141,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
     { kind: 'search', target: 'drip irrigation', words: ['search for drip irrigation'], url: 'https://www.google.com/search?q=drip%20irrigation' },
   ];
   for (const entry of cases) {
-    for (const words of entry.words) owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, Date.now());
+    for (const words of entry.words) { noteOwnerWords(session.liveSessionId, words); owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, Date.now()); }
     const args = { kind: entry.kind, target: entry.target };
     const execute = async (): Promise<unknown> => {
       const intent: ToolCallIntent = { runId: authority.runId, actorId: authority.actorId, authorityEpoch: authority.authorityEpoch, revision: authority.revision, executionId: randomUUID(), callId: randomUUID(), toolName: web.name,
@@ -150,7 +150,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       return web.execute(args, { ...intent, signal });
     };
     const first = await execute();
-    assert.equal(JSON.stringify(first).includes('"code":"opened"'), true, entry.kind);
+    assert.equal(JSON.stringify(first).includes('"code":"opened"'), true, `${entry.kind}: ${JSON.stringify(first)}`);
     assert.equal(urls.at(-1), entry.url, entry.kind);
     assert.deepEqual(await execute(), first, 'same target returns its own receipt');
   }

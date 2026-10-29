@@ -961,3 +961,22 @@ test('a refused broader chat read is a refusal, never a false empty success', as
   assert.equal(result.state, 'refused');
   assert.equal('reason' in result && result.reason, 'read-grant-missing');
 });
+
+
+test('MM-4: twenty-post DM recency reads use newest history and actual today/yesterday windows', async t => {
+  const f = await setup(t, 'people', undefined, { DIDI_FAKE_MATTERMOST_NIGHT: 'yes' });
+  for (const query of ['latest messages', 'recent messages', 'last messages', "what's new", 'what did we discuss']) {
+    const read = chatRead(await f.reader.chat({ intent: 'person', person: '@person.a', query, from_date: fixtureDaysAgo(7) }));
+    assert.equal(read.total, 20);
+    assert.equal(read.posts[0]?.text, 'entry 1');
+    const sent = searches(f.calls()).at(-1)!;
+    assert.equal(sent['query'], '');
+    assert.equal(sent['sort'], 'newest');
+  }
+  for (const query of ['today', 'yesterday']) {
+    const window = chatWindow(query, FIXTURE_NOW, 'UTC');
+    const read = chatRead(await f.reader.chat({ intent: 'person', person: '@person.a', query, from_date: window.from!, to_date: window.to! }));
+    assert.ok(read.posts.length > 0);
+    assert.ok(read.posts.every(post => post.time.slice(0, 10) === window.from));
+  }
+});

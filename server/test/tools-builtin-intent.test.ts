@@ -22,7 +22,7 @@ import { MemoryResultStore } from '../adapters/mcp/store.js';
 import { noteModelOutput, noteOwnerWords, noteOwnerPartial, ownerTurnWords, webOwnerWords, resolveWebOpen, NativeActionBus, openWebFailure, nativeActions } from '../tools/open.js';
 import type { LiveAuthority } from '../tools/types.js';
 import type { ToolCallIntent } from '../adapters/model/types.js';
-import { runToolCalls } from '../tools/declarations.js';
+import { LIVE_NOT_MODEL_FACING, runToolCalls } from '../tools/declarations.js';
 import { attachHostLogSink } from '../tools/host-events.js';
 import { beginHandleSession, endHandleSession, mintOpenLine, exposeHandles } from '../tools/open-handles.js';
 import { fixture } from './live-voice-fixture.js';
@@ -211,4 +211,46 @@ test('C-OPEN11: the shared acquisition merges two finalized owner turns', async 
   noteOwnerWords(runId, 'please open');
   noteOwnerWords(runId, 'this email in my browser');
   assert.equal(await webOwnerWords(runId, new AbortController().signal), 'please open this email in my browser');
+});
+
+// C-ALARMFIX: compare the real host catalog with the provider's first wire frame.
+for (const provider of ['gemini', 'openai'] as const) test(`live owner catalog reaches ${provider} wire declarations`, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-live-catalog-'));
+  const store = new Store(join(dir, 'synthetic'), [...domainMigrations, ...liveMigrations, ...toolsMigrations]);
+  const f = await fixture(t);
+  const registry = new McpRegistry();
+  const port = createMcpAdapter({ registry, store: new MemoryResultStore({ maxBytes: 10000, maxSliceBytes: 512 }), resolveCredential: async () => 'synthetic' });
+  t.after(() => port.close());
+  let lookup: ((runId: string, signal: AbortSignal) => Promise<LiveAuthority | null>) | undefined;
+  const owner = createToolsOwner({ grantMode: 'owner-trusted-reads', store, ownerId: store.assistantId, registry, port, lookupAuthority: async (id, signal) => lookup?.(id, signal) ?? null });
+  const profile = validateLiveProfile({ provider, liveModelId: provider === 'gemini' ? 'models/synthetic' : 'gpt-live-1', voice: provider === 'gemini' ? 'Synthetic' : 'marin', keyReference: 'synthetic', route: { enabled: true, provider, modelId: provider === 'gemini' ? 'models/synthetic' : 'gpt-live-1', dataClasses: ['ordinary'] }, prompt: { text: 'Synthetic', dataClass: 'ordinary' } });
+  const { service } = composeLive(store, dir, { profile, socketFactory: f.socketFactory, credentials: { resolve: async () => 'synthetic' } }, undefined, undefined,
+    { owner, connectionIds: () => [], registerAuthoritySource: source => { lookup = source; } });
+  t.after(async () => { await service.shutdown(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const context = { clientId: 'synthetic-actor', auditId: 'synthetic-audit', authorityEpoch: store.authorityEpoch };
+  const session = service.create('ordinary', randomUUID(), context);
+  const attachment = service.attach(session.liveSessionId, context);
+  await f.frame(1);
+  const frame = f.frames[0] as { setup?: { tools?: { functionDeclarations: { name: string }[] }[] }; session?: { delegation: { responses: { tools?: { name: string }[] } } } };
+  const declarations = provider === 'gemini' ? frame.setup!.tools!.flatMap(group => group.functionDeclarations) : frame.session!.delegation.responses.tools!;
+  const names = declarations.map(tool => tool.name);
+  for (const tool of owner.liveDefinitions(session.liveSessionId, () => ({ code: 'remembered' }))) {
+    if (!Object.hasOwn(LIVE_NOT_MODEL_FACING, tool.name)) assert.ok(names.includes(tool.name), `${provider} omitted registered owner tool ${tool.name}`);
+  }
+  for (const name of ['set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm']) assert.ok(names.includes(name), `${provider}: ${name}`);
+  assert.ok(!names.includes('remember_note') && !names.includes('save_to_vault'));
+  f.send(provider === 'gemini' ? { setupComplete: {} } : { type: 'session.started', session: { id: 'synthetic-catalog' } });
+  await attachment.ready;
+  if (provider === 'gemini') {
+    // The fake provider selects only an advertised tool; the host receives real wire events,
+    // parses the owner's words, journals the call and commits the alarm in a synthetic store.
+    await f.frame(2); // startup nudge
+    f.send({ serverContent: { inputTranscription: { text: 'wake me at 7 tomorrow morning', finished: true }, turnComplete: true } });
+    f.send({ toolCall: { functionCalls: [{ id: 'synthetic-wake', name: 'set_alarm', args: {} }] } });
+    await f.frame(3);
+    const response = f.frames[2] as { toolResponse: { functionResponses: { name: string; response: unknown }[] } };
+    assert.equal(response.toolResponse.functionResponses[0]!.name, 'set_alarm');
+    assert.equal(store.transaction(tx => tx.get('SELECT COUNT(*) AS n FROM alarms')?.n), 1, JSON.stringify(response));
+    assert.equal(store.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM tool_calls WHERE json_extract(intent_json, '$.toolName')='set_alarm'")?.n), 1);
+  }
 });

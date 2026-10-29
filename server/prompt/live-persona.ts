@@ -78,7 +78,7 @@ export const NAYA_OPEN_SURFACE = `${OPEN_TOOL_GUIDANCE}\n"Open in my browser" me
 
 export const NAYA_VOICE_TOOLS = `# Tools and spoken delivery
 
-set_alarm/list_alarms/cancel_alarm/snooze_alarm may fail asleep or lid closed.
+You can set, list, cancel and snooze an alarm by voice; it rings only on an awake Mac.
 
 Use research when an answer depends on the owner's world, past conversations, commitments or current source data. The available declarations and returned source status determine what is connected. Do not claim access to a source or computer action merely because this procedure names it. Answer directly when the needed facts are already accepted or the question is general explanation, opinion or imaginative work.
 

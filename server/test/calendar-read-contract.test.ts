@@ -85,7 +85,7 @@ test('research calendar projection keeps attendee names and response status', as
 
 test('a second calendar ask in one session still returns event titles', async () => {
   const h = eventsHarness();
-  const ask = { action: 'start', question: 'what is on my calendar next week', lookups: [{ source: 'calendar', query: 'next week' }] };
+  const ask = { action: 'start' as const, question: 'what is on my calendar next week', lookups: [{ source: 'calendar' as const, query: 'next week' }] };
   const first = await runResearch(h.deps, ask, new AbortController().signal);
   const second = await runResearch(h.deps, ask, new AbortController().signal);
   assert.match(JSON.stringify(first['findings']), /Synthetic event 0/);

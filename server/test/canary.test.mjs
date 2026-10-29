@@ -216,3 +216,40 @@ test('actual HTTP canary opener rejects model-shaped/browser requests and marks 
   assert.equal(revoked, 1);
   assert.equal(canarySessions.isCanary(id), false);
 });
+
+test('Gemini-shaped session without OpenAI trace receipts exposes raw replies and standardized provider turns', async () => {
+  const sessions = new CanarySessions();
+  sessions.open('gemini-canary');
+  const sent = [];
+  const raw = {
+    brand: 'real-session',
+    events: { async *[Symbol.asyncIterator]() {
+      yield { type: 'modelTurnStarted' };
+      yield { type: 'toolCall', calls: [{ id: 'call-1', name: 'search', args: {} }] };
+      yield { type: 'turnComplete' };
+      yield { type: 'modelTurnStarted' };
+      yield { type: 'turnComplete' };
+    } },
+    sendText(input) { assert.equal(this.brand, 'real-session'); sent.push(input); },
+    sendToolResponse(input) { assert.equal(this.brand, 'real-session'); sent.push(input); return { accepted: true }; },
+  };
+  assert.equal(sessions.wrapSession('ordinary', raw), raw, 'ordinary provider sessions retain object identity');
+  const tapped = sessions.wrapSession('gemini-canary', raw);
+  tapped.sendText({ text: 'synthetic owner final' });
+  const iterator = tapped.events[Symbol.asyncIterator]();
+  await iterator.next(); await iterator.next(); await iterator.next();
+  const reply = { code: 'not_granted', items: ['synthetic'] };
+  tapped.sendToolResponse({ responses: [{ id: 'call-1', name: 'search', response: reply }] });
+  await iterator.next(); await iterator.next();
+  const progress = sessions.progress('gemini-canary');
+  assert.equal(progress.turns, 2);
+  assert.equal(progress.completed, 2);
+  assert.equal(progress.pending, 0);
+  assert.equal(progress.streaming, false);
+  assert.ok(progress.completedStep > progress.lastResultStep);
+  assert.deepEqual(progress.calls[0].result, reply);
+  assert.equal(progress.calls[0].tool, 'search');
+  assert.equal(assertCanaryResult(ask, progress.calls[0]).code, 'not_granted');
+  assert.deepEqual(sent[0], { text: 'synthetic owner final' });
+  sessions.close('gemini-canary');
+});

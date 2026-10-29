@@ -824,8 +824,9 @@ test('Mattermost declared child argument schemas match the recorded binary tools
   };
   for (const recorded of recordedMattermostToolsList.tools) {
     const tool = declared.find(tool => tool.name === recorded.name)!;
-    check(tool.parameters.properties, recorded.inputSchema.properties);
-    const drift = { ...tool.parameters.properties, after: { type: 'string' } };
+    const properties = tool.parameters.properties as Record<string, unknown>;
+    check(properties, recorded.inputSchema.properties);
+    const drift = { ...properties, after: { type: 'string' } };
     assert.throws(() => check(drift, recorded.inputSchema.properties), /binary does not accept after/u);
   }
 });

@@ -393,8 +393,8 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     return { event: value.event, callKey: value.callKey, tool: value.tool };
   }
   if (value.event === 'tool_call_outcome') {
-    // C-LOGS11: what one call settled as, as a closed outcome and a closed refusal code; a call that did not
-    // refuse carries no code, so a missing code is never mistaken for a `refused`. `ms` is the host's own
+    // Business outcomes have bounded tool-owned codes, including clarification and handler failures.
+    // A missing code stays absent. `ms` is the host's own
     // measured duration when it has one, and the field is absent when it does not, never a zero.
     const withCode = value.refusalCode !== undefined;
     const withMs = value.ms !== undefined;
@@ -404,8 +404,7 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeMember(value.outcome, TOOL_CALL_OUTCOMES)) return;
     if (withMs && !isSafeCount(value.ms)) return;
     if (withCode && (typeof value.refusalCode !== 'string' || !/^[A-Za-z0-9_-]{1,96}$/.test(value.refusalCode))) return;
-    // A code belongs to a refusal: a call that completed or failed did not refuse, so a code beside it is a
-    // mislabelled line, and the line is dropped rather than published with a contradictory pair.
+    // Success and empty results carry no refusal or failure code.
     if (withCode && (value.outcome === 'completed' || value.outcome === 'empty')) return;
     return { event: 'tool_call_outcome', callKey: value.callKey, tool: value.tool, outcome: value.outcome,
       ...(withMs ? { ms: value.ms } : {}), ...(withCode ? { refusalCode: value.refusalCode } : {}) };

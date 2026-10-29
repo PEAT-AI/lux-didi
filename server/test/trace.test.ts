@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -999,4 +999,31 @@ test('C-QUALITY Q06: the v6 migration keeps every query shape row and widens the
       assert.equal(Number(store.transaction(tx => tx.get("SELECT COUNT(*) AS n FROM trace_query_shape WHERE source='drive'")!['n'])), 1, 'a Drive read now has a row');
     } finally { store.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test('C-TRUTH: migrate a copy of a synthetic v8 store without losing calls or result content', () => {
+  const source = mkdtempSync(join(tmpdir(), 'truth-v8-source-'));
+  const target = mkdtempSync(join(tmpdir(), 'truth-v9-copy-'));
+  try {
+    const database = new DatabaseSync(join(source, 'synthetic.sqlite'));
+    database.exec('CREATE TABLE runtime_migrations(owner TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(owner, version))');
+    for (const migration of traceMigrations.filter(migration => migration.version <= 8)) {
+      for (const statement of migration.statements) database.exec(statement);
+      database.prepare('INSERT INTO runtime_migrations VALUES (?,?)').run('trace', migration.version);
+    }
+    database.prepare("INSERT INTO trace_call(call_key,live_session_id,connection_epoch,name,args_chars,intent_at,outcome) VALUES ('old','synthetic','e0','research',2,?,'completed')").run(Date.now());
+    database.exec("INSERT INTO trace_call_result(call_key,text,text_truncated) VALUES ('old','synthetic content',0)");
+    database.close();
+    copyFileSync(join(source, 'synthetic.sqlite'), join(target, 'state.sqlite'));
+    const store = new Store(target);
+    try {
+      store.transaction(tx => {
+        assert.equal(tx.get("SELECT text FROM trace_call_result WHERE call_key='old'")!.text, 'synthetic content');
+        assert.equal(tx.get("SELECT outcome FROM trace_call WHERE call_key='old'")!.outcome, 'completed');
+        tx.run("UPDATE trace_call SET outcome='clarify',outcome_code='missing_time',delivered=1 WHERE call_key='old'");
+        assert.equal(tx.get("SELECT outcome_code FROM trace_call WHERE call_key='old'")!.outcome_code, 'missing_time');
+      });
+    } finally { store.close(); }
+  } finally { rmSync(source, { recursive: true, force: true }); rmSync(target, { recursive: true, force: true }); }
 });

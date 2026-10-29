@@ -1,3 +1,4 @@
+import { DatabaseSync } from 'node:sqlite';
 // The two log-backed views (call, doctor) and the list row, over logs in today's shape.
 // Fixture: server/test/fixtures/timeline-call.json. Every value in it is invented.
 import { test } from 'node:test';
@@ -524,4 +525,38 @@ test('C-STEADY104: count-only audit detects unfulfilled spoken lookup claims', (
     call(store, SESSION, 'claim-1', 'fulfilling-call', 'research', 'completed', 10, T0 + 1002);
     assert.equal(store.transaction(tx => buildCallAudit(buildTimeline(tx, SESSION), scanLogs([]))).aggregates.claimsWithoutCall, 2);
   });
+});
+
+
+test('C-TRUTH: CLI audits a private WAL snapshot without writing to the source directory', () => {
+  const cli = fileURLToPath(new URL('../../../scripts/didi-timeline', import.meta.url));
+  const source = mkdtempSync(join(tmpdir(), 'truth-wal-source-'));
+  const target = mkdtempSync(join(tmpdir(), 'truth-wal-readonly-'));
+  try {
+    const store = new Store(source);
+    turn(store, 'synthetic-truth', 't1', 1, Date.now());
+    call(store, 'synthetic-truth', 't1', 'c1', 'mattermost_chat', 'completed', 1, Date.now());
+    store.close();
+    const db = new DatabaseSync(join(source, 'state.sqlite'));
+    try {
+      db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0');
+      db.exec("UPDATE trace_call SET outcome='failed',outcome_code='tool_journal_failed',delivered=1 WHERE call_key='c1'");
+      copyFileSync(join(source, 'state.sqlite'), join(target, 'state.sqlite'));
+      copyFileSync(join(source, 'state.sqlite-wal'), join(target, 'state.sqlite-wal'));
+    } finally { db.close(); }
+    chmodSync(join(target, 'state.sqlite'), 0o444);
+    chmodSync(join(target, 'state.sqlite-wal'), 0o444);
+    chmodSync(target, 0o555);
+    const result = spawnSync(process.execPath, [cli, 'sessions', '--since', '2000-01-01', '--audit-summary', '--json', '--data-dir', target], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /store mode: private snapshot/);
+    assert.deepEqual(JSON.parse(result.stdout).outcomes, { failed: 1 });
+    assert.equal(existsSync(join(target, 'state.sqlite-shm')), false);
+    const audit = spawnSync(process.execPath, [cli, 'call', 'synthetic-truth', '--audit', '--json', '--data-dir', target], { encoding: 'utf8' });
+    assert.equal(audit.status, 0, audit.stderr);
+    assert.equal(JSON.parse(audit.stdout).calls[0].refusalCode, 'tool_journal_failed');
+  } finally {
+    chmodSync(target, 0o700);
+    rmSync(source, { recursive: true, force: true }); rmSync(target, { recursive: true, force: true });
+  }
 });

@@ -598,11 +598,6 @@ function stepSourceOf(name: string): string {
 /** S4a-R2 (e): the one execution state a call of this turn has, and the only vocabulary an execution receipt names. */
 type ExecStatus = 'queued' | 'running' | 'done' | 'failed' | 'timeout' | 'cancelled';
 
-/** C-LOGS11: what one tool response settled as, in the log's closed outcome and refusal vocabulary. A
- *  refusal code is only ever a member of TOOL_REFUSAL_CODES, so a reader counts refusals by code. The research
- *  reply carries its own closed status (`answered`, `partial`, `stopped`, `unavailable`), so the map is explicit
- *  instead of treating any status other than `completed` as a failure. */
-
 /** #1020: how much of what was sent a settled research projection may record, so the journal line stays short. */
 const RESEARCH_PROJECTION_CHARS = 240;
 

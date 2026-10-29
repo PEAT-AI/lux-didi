@@ -16,11 +16,13 @@ export function toolOutcomeOf(response: Readonly<Record<string, unknown>>): Tool
   if (status === 'stopped' || status === 'cancelled') return result('cancelled');
   if (status === 'partial') return result('partial');
   if (status === 'empty' || response.total === 0) return { outcome: 'empty' };
-  const content = ['answer', 'text', 'content', 'messages', 'results', 'items', 'cards', 'channels', 'note', 'alarm', 'id']
+  if (status !== undefined && !['answered', 'completed', 'ok', 'success', 'scheduled', 'created', 'set', 'available'].includes(String(status))) return { outcome: 'unknown' };
+  const content = ['findings', 'result', 'entryId', 'alarmId', 'card', 'boards', 'lists', 'posts', 'answer', 'text', 'content', 'messages', 'results', 'items', 'cards', 'channels', 'note', 'alarm', 'id']
     .some(key => {
       const value = response[key];
       return typeof value === 'string' ? value.trim().length > 0 : Array.isArray(value) ? value.length > 0 : value !== null && typeof value === 'object' && Object.keys(value).length > 0;
     });
+  if (!content && ['findings', 'messages', 'results', 'items', 'cards', 'posts'].some(key => Array.isArray(response[key]) && response[key].length === 0)) return { outcome: 'empty' };
   if (content || response.saved === true || response.remembered === true) return { outcome: 'completed' };
   return { outcome: 'unknown' };
 }

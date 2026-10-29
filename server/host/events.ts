@@ -17,8 +17,7 @@ export const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'
  * W2-R1 / F3: the closed reasons a stored approval can refuse a connect, one per condition. The type is
  * the closure: a mistyped reason fails type-check at the refusal rather than silently dropping its line.
  */
-/** C-LOGS11: the closed set a tool-call outcome line may name as its refusal. A reason outside this set
- *  is logged as `refused`, never as free text, so a reader counts refusals by code and never parses prose. */
+/** Business reason codes are bounded tokens at the log boundary, never result text or error prose. */
 export type ToolRefusalCode = string;
 export const TOOL_REFUSAL_CODES: readonly ToolRefusalCode[] = ['unknown_tool', 'duplicate_call_id', 'grant_not_permitted', 'stale_or_revoked_authority', 'round_deadline', 'round_cancelled', 'invalid_arguments', 'no_owner_input', 'refused'];
 /** C-LOGS11: what one tool call settled as, on the log line as in the trace store. */

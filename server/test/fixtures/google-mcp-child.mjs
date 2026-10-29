@@ -103,6 +103,7 @@ server.setRequestHandler('tools/call', request => {
   const name = request.params?.name;
   const args = request.params?.arguments ?? {};
   if (pidFile) appendFileSync(`${pidFile}.calls`, `${name}\n`);
+  if ((mode === 'auth-data' || mode === 'auth-consent') && toolCalls++ === 0) return { content: [{ type: 'text', text: JSON.stringify({ data: { error: mode === 'auth-data' ? 'auth needed' : { code: 'scope_missing', message: 'consent required' } } }) }] };
   const failsFirstMail = mode.startsWith('first-mail:') && name === 'gmail_search_messages' && mailCalls++ === 0;
   if (mode.startsWith('code:') || mode.startsWith('drive-code:') || (mode.startsWith('first:') && toolCalls++ === 0) || failsFirstMail) {
     const code = mode.slice(mode.indexOf(':') + 1);

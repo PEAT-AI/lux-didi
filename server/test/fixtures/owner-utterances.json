@@ -1793,5 +1793,58 @@
     },
     "code": "allowed",
     "fire_at_utc": null
+  },
+  {
+    "id": "GA-R4-comma-144",
+    "finals": [
+      "Remind me in 20 minutes,"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793341200000
+  },
+  {
+    "id": "GA-R4-comma-145",
+    "finals": [
+      "in an hour,"
+    ],
+    "call": {
+      "tool": "set_alarm"
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "GA-R4-comma-146",
+    "finals": [
+      "search the web for synthetic clocks,"
+    ],
+    "call": {
+      "tool": "open_web",
+      "kind": "search",
+      "target": "synthetic clocks"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "relative-time-on-later-final",
+    "finals": [
+      "put an alarm",
+      "in nine minutes"
+    ],
+    "call": {
+      "tool": "set_alarm",
+      "fire_at_utc": 1793340660000
+    },
+    "code": "ready",
+    "fire_at_utc": 1793340660000,
+    "toolDelayMs": 120000,
+    "finalOffsetsMs": [
+      0,
+      120000
+    ]
   }
 ]

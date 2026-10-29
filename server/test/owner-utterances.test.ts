@@ -7,21 +7,21 @@ import { parseAlarmTime } from '../tools/alarm.js';
 import { openTarget, resolveWebOpen } from '../tools/open.js';
 
 const corpus = JSON.parse(readFileSync(new URL('../../test/fixtures/owner-utterances.json', import.meta.url), 'utf8')) as {
-  id: string; resolve_code?: string; nativeCode?: string; now?: number; clarifyAfter?: number[]; finals: string[]; call: Record<string, string | number | null> & { tool: string };
+  id: string; resolve_code?: string; nativeCode?: string; now?: number; clarifyAfter?: number[]; finalOffsetsMs?: number[]; finals: string[]; call: Record<string, string | number | null> & { tool: string };
   code: string; fire_at_utc: number | null;
 }[];
 const now = Date.UTC(2026, 9, 30, 6);
 for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' / ')}`, async () => {
   const owner = new OwnerRequests(() => 0);
   row.finals.forEach((words, i) => {
-    owner.observe('synthetic', `final-${i}`, words);
+    owner.observe('synthetic', `final-${i}`, words, (row.now ?? now) + (row.finalOffsetsMs?.[i] ?? 0));
     if (row.clarifyAfter?.includes(i)) { owner.clarify('synthetic', 'set_alarm', 'missing_time'); owner.answered('synthetic'); }
   });
   const kind = row.call.tool.startsWith('open_') ? 'open' : row.call.tool === 'set_alarm' ? 'set_alarm' : 'lux_note';
   const authorization = owner.authorize('synthetic', kind, JSON.stringify(row.call));
   let code: string = authorization.code;
   if (code === 'allowed' && kind === 'set_alarm') {
-    const parsed = parseAlarmTime(authorization.words ?? '', row.now ?? now, 'UTC', row.call.fire_at_utc as number | undefined ?? undefined);
+    const parsed = parseAlarmTime(authorization.words ?? '', authorization.observedAt ?? row.now ?? now, 'UTC', row.call.fire_at_utc as number | undefined ?? undefined);
     code = parsed.status === 'ready' ? 'ready' : parsed.reason;
     if (parsed.status === 'ready') assert.equal(parsed.fireAtUtc, row.fire_at_utc);
   } else if (code === 'allowed' && kind === 'open') {

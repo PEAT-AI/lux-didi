@@ -180,7 +180,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
 
   // Replay the same speech corpus through stored intents, real alarm transactions and native receipts.
   const corpus = JSON.parse(readFileSync(new URL('../../test/fixtures/owner-utterances.json', import.meta.url), 'utf8')) as {
-    id: string; finals: string[]; nativeCode?: string; toolDelayMs?: number; now?: number; clarifyAfter?: number[];
+    id: string; finals: string[]; nativeCode?: string; toolDelayMs?: number; now?: number; clarifyAfter?: number[]; finalOffsetsMs?: number[];
     call: Record<string, unknown> & { tool: string }; code: string; fire_at_utc: number | null;
   }[];
   const oldTZ = process.env.TZ;
@@ -191,7 +191,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
       owner.ownerRequests.release(session.liveSessionId);
       alarmNow = row.now ?? Date.UTC(2026, 9, 30, 6);
       for (const [i, words] of row.finals.entries()) {
-        owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, alarmNow);
+        owner.observeAlarmOwner(session.liveSessionId, randomUUID(), words, alarmNow + (row.finalOffsetsMs?.[i] ?? 0));
         if (row.clarifyAfter?.includes(i)) {
           owner.ownerRequests.clarify(session.liveSessionId, 'set_alarm', 'missing_time');
           owner.ownerRequests.answered?.(session.liveSessionId);

@@ -40,8 +40,8 @@ import { FakeSocket, options as openaiOptions } from './openai-live-voice-fixtur
 import { options as geminiOptions, request, control } from './live-voice-fixture.js';
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 for (const provider of ['openai', 'gemini'] as const) {
-  for (const [index, [response, outcome, refusalCode]] of cases.entries()) {
-    test(`${provider} wire business outcome ${index}: ${outcome}`, async t => {
+  for (const delivered of [true, false]) for (const [index, [response, outcome, refusalCode]] of cases.entries()) {
+    test(`${provider} wire delivered=${delivered} business outcome ${index}: ${outcome}`, async t => {
       const directory = mkdtempSync(join(tmpdir(), 'didi-truth-'));
       const store = new Store(directory);
       t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -68,18 +68,20 @@ for (const provider of ['openai', 'gemini'] as const) {
         socket.deliver({ type: 'response.event', delegation_id: 'd1', event: { type: 'response.done', response: { id: 'r1', status: 'completed' } } });
       } else socket.deliver({ toolCall: { functionCalls: [call] } });
       await tick();
-      session.sendToolResponse({ responses: [{ id: call.id, name: call.name, response }] });
+      if (!delivered) socket.send = () => { throw new Error('synthetic wire failure'); };
+      const sent = session.sendToolResponse({ responses: [{ id: call.id, name: call.name, response }] });
       await tick();
+      if (!delivered) assert.equal(sent, 'failed');
       const rows = store.transaction(tx => tx.all('SELECT outcome, outcome_code, delivered FROM trace_call'));
       assert.equal(rows.length, 1);
       assert.equal(rows[0]!.outcome, outcome);
       assert.equal(rows[0]!.outcome_code, refusalCode ?? null);
-      assert.equal(rows[0]!.delivered, 1);
+      assert.equal(rows[0]!.delivered, Number(delivered));
       const host = safeEvent({ event: 'tool_call_outcome', callKey: call.id, tool: call.name, ...toolOutcomeOf(response) });
       assert.equal(host?.outcome, outcome);
       assert.equal(host?.refusalCode, refusalCode);
       const frames = socket.sent.map(frame => JSON.parse(frame));
-      assert.ok(frames.some(frame => provider === 'openai' ? frame.item?.type === 'function_call_output' : frame.toolResponse?.functionResponses?.length === 1));
+      assert.equal(frames.some(frame => provider === 'openai' ? frame.item?.type === 'function_call_output' : frame.toolResponse?.functionResponses?.length === 1), delivered);
       session.close(); await events;
     });
   }

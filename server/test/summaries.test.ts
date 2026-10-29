@@ -625,6 +625,7 @@ test('verbatim turns backfill survives summary skip, is idempotent, and forget c
     f.store.transaction(tx => {
       tx.run('DELETE FROM history_sessions WHERE live_session_id=?', ['recall-legacy']);
       tx.run('UPDATE live_sessions SET terminal_at=? WHERE live_session_id=?', [NOW - 40 * 86400000, 'recall-legacy']);
+      tx.run('UPDATE live_journal SET arrived_at=? WHERE live_session_id=?', [NOW - 40 * 86400000, 'recall-legacy']);
       assert.equal(backfillHistoryTurns(tx), 2);
       assert.equal(backfillHistoryTurns(tx), 0);
       assert.equal(tx.get('SELECT data_class FROM history_sessions WHERE live_session_id=?', ['recall-legacy'])?.data_class, 'sensitive');
@@ -751,4 +752,38 @@ test('research recall replay keeps named-person dialogue, offers more, and opens
     const forbidden = f.store.transaction(tx => reader.read(tx, { ...scope, runId: 'another-live-call' }, { recordRef: ref }));
     assert.equal(forbidden.response.status, 'history_reference_unavailable');
   } finally { f.cleanup(); }
+});
+
+test('startup captures legacy speech before pruning and explicit session reads page the complete call', () => {
+  const f = open();
+  let reopened: Store | undefined;
+  try {
+    seedSession(f.store, 'startup-legacy');
+    const words = 'Synthetic route marker. '.repeat(300);
+    seedTurn(f.store, 'startup-legacy', 'inputTranscription', words);
+    seedTurn(f.store, 'startup-legacy', 'outputTranscription', 'The synthetic reply ends the call.');
+    f.store.transaction(tx => {
+      summaries.insertSummary(tx, { liveSessionId: 'startup-legacy', status: 'skipped', skipReason: 'model_skip', endedAt: NOW, now: NOW });
+      tx.run('DELETE FROM history_sessions WHERE live_session_id=?', ['startup-legacy']);
+      const old = Date.now() - 40 * 86400000;
+      tx.run('UPDATE live_sessions SET terminal_at=? WHERE live_session_id=?', [old, 'startup-legacy']);
+      tx.run('UPDATE live_journal SET arrived_at=? WHERE live_session_id=?', [old, 'startup-legacy']);
+    });
+    f.store.close();
+    reopened = new Store(f.dir, [...domainMigrations, ...liveMigrations]);
+    const store = reopened;
+    store.transaction(tx => {
+      assert.equal(tx.all('SELECT id FROM history_turns').length, 2);
+      assert.equal(tx.get("SELECT text FROM live_journal WHERE live_session_id=? AND kind='inputTranscription'", ['startup-legacy'])?.text, null);
+      const reader = createHistoryReader();
+      const scope = { ownerId: store.assistantId, runId: 'new-call', routeIdentity: 'synthetic', authorityEpoch: store.authorityEpoch, revision: 1, allowedClasses: ['sensitive'] as DataClass[] };
+      const first = reader.read(tx, scope, { recordRef: 'session:startup-legacy' }).response;
+      assert.equal(String(first.text).length, 6000);
+      assert.equal(first.complete, false);
+      const next = reader.read(tx, scope, { cursor: String(first.nextCursor) }).response;
+      assert.equal(String(first.text) + String(next.text), `Owner: ${words}\nNaya: The synthetic reply ends the call.`);
+      assert.equal(next.complete, true);
+      assert.equal(reader.read(tx, { ...scope, allowedClasses: ['ordinary'] }, { recordRef: 'session:startup-legacy' }).response.status, 'history_reference_unavailable');
+    });
+  } finally { reopened?.close(); f.cleanup(); }
 });

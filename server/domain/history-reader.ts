@@ -3,7 +3,6 @@ import type { Transaction, SQLRow } from '../contracts/storage.js';
 import type { DataClass, JsonObject } from '../adapters/model/types.js';
 import { HISTORY_CLASSES, historyForgotten, historySessionEvidence, type HistoryEligibility } from './history-lifecycle.js';
 import { fold, tokenize } from './util.js';
-import { backfillHistoryTurns } from './history-turns.js';
 
 export interface HistoryScope {
   ownerId: string; runId: string; conversationId?: string; routeIdentity: string; authorityEpoch: string; revision: number;
@@ -117,7 +116,7 @@ export function historyEvidenceCurrent(tx: Transaction, ownerId: string, evidenc
   return evidence.sources.every(ref => sourceValue(tx, ownerId, ref, eligibility)?.ref.fingerprint === ref.fingerprint);
 }
 
-function corpus(tx: Transaction, scope: HistoryScope, query: string): { records: RecordValue[]; coverage: JsonObject } {
+function corpus(tx: Transaction, scope: HistoryScope, query: string, from?: string, to?: string): { records: RecordValue[]; coverage: JsonObject } {
   const records: RecordValue[] = [];
   const eligibility: HistoryEligibility = new Map();
   let unavailableLabels = false, classFiltered = false, legacyRawUnavailable = false;
@@ -127,17 +126,15 @@ function corpus(tx: Transaction, scope: HistoryScope, query: string): { records:
     if (value.text.trim()) records.push(value);
   };
   for (const row of tx.all('SELECT id FROM entries ORDER BY id')) admit(entryValue(tx, String(row.id)));
-  for (const row of tx.all("SELECT id FROM conversation_summaries WHERE status='complete' ORDER BY id")) admit(summaryValue(tx, String(row.id), eligibility));
-  // Legacy backfill is idempotent; terminal callers also persist before summary dispatch.
-  backfillHistoryTurns(tx);
+  for (const row of tx.all("SELECT id FROM conversation_summaries WHERE status='complete' AND live_session_id<>? ORDER BY id", [scope.currentSessionId ?? scope.runId])) admit(summaryValue(tx, String(row.id), eligibility));
   const terms = recallTerms(query);
   const expression = terms.map(term => `"${term.replaceAll('"', '""')}"*`).join(' OR ');
   const current = scope.currentSessionId ?? scope.runId;
   const hits = expression ? tx.all(`SELECT t.*,bm25(history_turns_fts) AS rank FROM history_turns_fts
-    JOIN history_turns t ON t.id=history_turns_fts.rowid JOIN history_sessions h ON h.live_session_id=t.live_session_id
-    WHERE history_turns_fts MATCH ? AND h.owner_id=? AND t.live_session_id<>?
-    ORDER BY rank,t.role='owner' DESC,t.at DESC`, [expression, scope.ownerId, current]) : tx.all(`SELECT t.*,0 AS rank FROM history_turns t
-    JOIN history_sessions h ON h.live_session_id=t.live_session_id WHERE h.owner_id=? AND t.live_session_id<>? ORDER BY t.at DESC,t.role='owner' DESC`, [scope.ownerId, current]);
+    JOIN history_turns t ON t.id=history_turns_fts.rowid JOIN history_sessions h ON h.live_session_id=t.live_session_id JOIN live_sessions l ON l.live_session_id=t.live_session_id
+    WHERE history_turns_fts MATCH ? AND h.owner_id=? AND t.live_session_id<>? AND t.at>=? AND t.at<?
+    ORDER BY rank,t.role='owner' DESC,l.terminal_at DESC`, [expression, scope.ownerId, current, from ? Date.parse(from) : 0, to ? Date.parse(to) : Number.MAX_SAFE_INTEGER]) : tx.all(`SELECT t.*,0 AS rank FROM history_turns t
+    JOIN history_sessions h ON h.live_session_id=t.live_session_id WHERE h.owner_id=? AND t.live_session_id<>? AND t.at>=? AND t.at<? ORDER BY t.at DESC,t.role='owner' DESC`, [scope.ownerId, current, from ? Date.parse(from) : 0, to ? Date.parse(to) : Number.MAX_SAFE_INTEGER]);
   const seen = new Set<string>();
   for (const hit of hits) {
     const id = String(hit.live_session_id);
@@ -201,10 +198,10 @@ export function createHistoryReader(now: () => number = Date.now): { read(tx: Tr
       if (!stored || stored.snapshot.scope !== scopeKey || (!!args.recordRef && !stored.detail)) return unavailable('history_reference_unavailable');
       position = stored;
     } else {
-      const { records, coverage } = corpus(tx, scope, args.query ?? '');
+      const { records, coverage } = corpus(tx, scope, args.query ?? '', args.from, args.to);
       const tokens = recallTerms(args.query ?? '');
       const ranked = records.map(value => ({ value, score: tokens.reduce((sum, term) => sum + (fold(value.text).includes(term) ? 1 : 0), 0) }))
-        .filter(({ value, score }) => (value.ref.kind === 'live' || !tokens.length || score > 0) && (!args.from || value.date >= Date.parse(args.from)) && (!args.to || value.date < Date.parse(args.to)))
+        .filter(({ value, score }) => (value.ref.kind === 'live' || !tokens.length || score > 0) && (value.ref.kind === 'live' || ((!args.from || value.date >= Date.parse(args.from)) && (!args.to || value.date < Date.parse(args.to)))))
         .sort((a, b) => Number(b.value.ref.kind === 'live') - Number(a.value.ref.kind === 'live') || (a.value.ref.kind === 'live' && b.value.ref.kind === 'live' ? Number(a.value.metadata['recallRank']) - Number(b.value.metadata['recallRank']) : b.score - a.score) || b.value.date - a.value.date);
       const snapshot: SearchSnapshot = { runId: scope.runId, ...(scope.conversationId ? { conversationId: scope.conversationId } : {}), tokens: new Map(), scope: scopeKey, expires: now() + REFERENCE_LIFETIME_MS, sources: ranked.map(row => row.value.ref), references: [], coverage, limit: Math.min(args.limit ?? 5, 5), snippets: ranked.map(row => String(row.value.metadata['recallExcerpt'] ?? row.value.text.slice(0, 550))) };
       snapshot.references = snapshot.sources.map((_, index) => token({ snapshot, index, offset: 0, detail: true }));

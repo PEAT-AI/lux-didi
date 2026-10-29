@@ -7,7 +7,7 @@ import { parseAlarmTime } from '../tools/alarm.js';
 import { openTarget, resolveWebOpen } from '../tools/open.js';
 
 const corpus = JSON.parse(readFileSync(new URL('../../test/fixtures/owner-utterances.json', import.meta.url), 'utf8')) as {
-  id: string; resolve_code?: string; nativeCode?: string; now?: number; clarifyAfter?: number[]; finalOffsetsMs?: number[]; finals: string[]; call: Record<string, string | number | null> & { tool: string };
+  id: string; expectedSay?: string; resolve_code?: string; nativeCode?: string; now?: number; clarifyAfter?: number[]; finalOffsetsMs?: number[]; finals: string[]; call: Record<string, string | number | null> & { tool: string };
   code: string; fire_at_utc: number | null;
 }[];
 const now = Date.UTC(2026, 9, 30, 6);
@@ -37,6 +37,7 @@ for (const row of corpus) test(`owner utterance ${row.id}: ${row.finals.join(' /
     endHandleSession(row.id);
   }
   assert.equal(code, row.resolve_code ?? row.code);
+  if (row.expectedSay !== undefined) assert.equal(requestRefusal(code).say, row.expectedSay, `${row.id}: spoken refusal mapping`);
   if (code === 'no_owner_request') {
     const refused = requestRefusal(code);
     assert.match(refused.say, /no current owner request/i);

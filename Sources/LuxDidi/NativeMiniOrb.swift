@@ -186,6 +186,10 @@ enum MiniOrbFrameStore {
 /// orb is the circle inscribed in it, so the four transparent corners are not the orb's to take.
 /// A point outside the circle is handed to the app below; a point on it stays a click or a drag.
 enum MiniOrbClickThrough {
+    static func ignoresMouse(isVisible: Bool, at point: CGPoint, in frame: CGRect) -> Bool {
+        isVisible && !keepsClick(at: point, in: frame)
+    }
+
     static func radius(in frame: CGRect) -> CGFloat { min(frame.width, frame.height) / 2 }
 
     static func keepsClick(at point: CGPoint, in frame: CGRect) -> Bool {
@@ -277,7 +281,8 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     /// ORBFIRST: a drag is the only source of a remembered frame, so the panel has to know one is
     /// in flight. The click-through follow takes the panel out of hit testing outside the circle.
     private var userDragging = false
-    private var clickThroughFollow: Timer?
+    private var localMouseMonitor: Any?
+    private var globalMouseMonitor: Any?
     private var wakeMonitor: NSObjectProtocol?
     var onReceipt: (@MainActor ([String: Any]) -> Void)?
 
@@ -298,6 +303,7 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         backgroundColor = .clear
         hasShadow = false
         hidesOnDeactivate = false
+        acceptsMouseMovedEvents = true
         overlay.onClick = { [weak self] in self?.press() }
         overlay.onExpand = onExpand
         let contextMenu = NSMenu()
@@ -332,6 +338,11 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     override var canBecomeKey: Bool { MiniOrbPanelPolicy.becomesKey }
     override var canBecomeMain: Bool { MiniOrbPanelPolicy.becomesMain }
 
+    override func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
+        super.order(place, relativeTo: otherWin)
+        updateClickThrough()
+    }
+
     private func observeAppearance() {
         NotificationCenter.default.addObserver(self, selector: #selector(activeSpaceChanged),
                                                name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
@@ -341,28 +352,38 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
             }
     }
 
-    /// ORBFIRST: WindowServer hands a click to the window under the cursor only when that window
-    /// takes part in hit testing. Clearing `ignoresMouseEvents` outside the drawn circle takes the
-    /// panel out of it, so the click reaches the app below; the flag follows the cursor at 30 Hz,
-    /// which needs no Accessibility or Input Monitoring grant.
+    /// Mouse-moved monitors also see the cursor while this panel is click-through. A local
+    /// monitor covers this app; a global mouse-only monitor covers other apps without an
+    /// Accessibility or Input Monitoring grant. Neither monitor consumes or changes events.
     private func followCursor() {
-        let timer = Timer(timeInterval: 0.03, repeats: true) { [weak self] _ in
+        let movement: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: movement) { [weak self] event in
+            MainActor.assumeIsolated { self?.updateClickThrough() }
+            return event
+        }
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: movement) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateClickThrough() }
         }
-        RunLoop.main.add(timer, forMode: .common)
-        clickThroughFollow = timer
+        updateClickThrough()
+    }
+
+    isolated deinit {
+        if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
+        if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
     }
 
     private func updateClickThrough() {
-        guard isVisible else { ignoresMouseEvents = false; return }
-        ignoresMouseEvents = !MiniOrbClickThrough.keepsClick(at: NSEvent.mouseLocation, in: frame)
+        let next = MiniOrbClickThrough.ignoresMouse(isVisible: isVisible, at: NSEvent.mouseLocation, in: frame)
+        StatusQuiet.publish(current: ignoresMouseEvents, next: next) { ignoresMouseEvents = $0 }
     }
 
     func dragBegan() { userDragging = true }
 
     func dragEnded() {
+        setFrame(MiniOrbFrameRestore.afterScreenChange(current: frame, saved: nil, screens: menuSafeFrames), display: false)
         userDragging = false
         rememberFrameIfDragged()
+        updateClickThrough()
     }
 
     private func rememberFrameIfDragged() {
@@ -370,10 +391,16 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
         rememberFrame()
     }
 
+    private var menuSafeFrames: [CGRect] {
+        NSScreen.screens.map {
+            MiniOrbMenuSafety.availableFrame(screen: $0.frame, visible: $0.visibleFrame,
+                                            menuBarHeight: NSStatusBar.system.thickness)
+        }
+    }
     private func restoreFrame() {
         let defaults = UserDefaults.standard
         let saved = defaults.string(forKey: frameKey).map(NSRectFromString)
-        setFrame(MiniOrbFrameRestore.resolve(saved, screens: NSScreen.screens.map(\.visibleFrame)), display: false)
+        setFrame(MiniOrbFrameRestore.resolve(saved, screens: menuSafeFrames), display: false)
     }
     /// A display that appears, sleeps or disappears re-places the orb, so it is never stranded on
     /// a screen that is gone. Registered from init, the only place the panel is born.
@@ -384,10 +411,11 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     /// A screen change re-places the orb and writes nothing: the saved frame belongs to the owner's
     /// drag, so unplugging a display can never overwrite the position it returns to.
     @objc private func screenParametersChanged() {
-        let screens = NSScreen.screens.map(\.visibleFrame)
+        let screens = menuSafeFrames
         let saved = UserDefaults.standard.string(forKey: frameKey).map(NSRectFromString)
         setFrame(MiniOrbFrameRestore.afterScreenChange(current: frame, saved: saved, screens: screens),
                  display: false)
+        updateClickThrough()
         // C-LIVE L2-09: one receipt per change of the screen state, never one per notification.
         let state = "\(NSScreen.screens.count);\(orbScreenToken)"
         if screenReceipt.changed(state) {
@@ -460,5 +488,15 @@ final class MiniOrbHitView: NSView {
         let end = event.locationInWindow
         guard hypot(end.x - start.x, end.y - start.y) < 4 else { return }
         onClick?()
+    }
+}
+
+/// Fullscreen and auto-hide can make visibleFrame include the menu strip. Reserve it even
+/// then, so an all-Spaces orb cannot sit above a status-item click target.
+enum MiniOrbMenuSafety {
+    static func availableFrame(screen: CGRect, visible: CGRect, menuBarHeight: CGFloat) -> CGRect {
+        let top = min(visible.maxY, screen.maxY - menuBarHeight)
+        return CGRect(x: visible.minX, y: visible.minY, width: visible.width,
+                      height: max(0, top - visible.minY))
     }
 }

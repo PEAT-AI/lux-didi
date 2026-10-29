@@ -163,3 +163,5 @@ successful read. No software can promise persistence while storage refuses every
 This count does not export transcript text. It is a lower bound when content has been
 pruned, and is merged with the host's existing no-call receipts without double-counting
 the larger of the two counts.
+
+Status tick regression: `bash Tests/DidiStatusTests/check-status-quiet.sh` runs headless with a base-red proof; live calls still poll every two seconds, but unchanged status fields and orb click-through do not write, and notification capability refreshes only at launch, activation or explicit permission request. Installed WindowServer rate acceptance belongs to a separately authorized owner observation, not shared-desktop UI tests.

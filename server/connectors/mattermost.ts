@@ -385,6 +385,7 @@ function preflight(registry: McpRegistry, settings: Settings, tool: MattermostEv
 export function nameKey(text: string): string {
   return text.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/&/gu, ' and ')
     .split(/[^\p{L}\p{N}]+/u).filter(Boolean)
+    .filter((word, index, words) => index === 0 || word !== words[index - 1])
     .map(word => (word.length > 3 && word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word)).join(' ');
 }
 

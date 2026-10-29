@@ -78,7 +78,7 @@ const CHANNEL_PLACEHOLDER = /^(?:name|channel|exact|string|called|exact name)$/i
  * to the chat source and are never a channel name, a person or a search term. Lowercase, compared with
  * whitespace folded, so "meta most" and "MetaMost" are the same word.
  */
-export const CHAT_PRODUCT_NAMES: readonly string[] = ['metamos', 'metamost', 'meta most', 'metamouse', 'meta mouse', 'matter most', 'mattermost', 'metamorph', 'metamask'];
+export const CHAT_PRODUCT_NAMES: readonly string[] = ['metamos', 'metamost', 'meta most', 'metamouse', 'meta mouse', 'matter most', 'mattermost', 'metamorph', 'metamask', 'metamo'];
 
 const escapeWord = (word: string): string => word.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 /** The same list as one alternation, a space between its words optional so "meta most" is one form. */
@@ -99,13 +99,13 @@ const CHAT_FILLER = new Set([
   'post', 'posts', 'posted', 'write', 'wrote', 'written', 'say', 'said', 'send', 'sent', 'tell', 'told', 'messaged', 'ask', 'asked', 'share', 'shared', 'reply', 'replied', 'answer', 'answered',
   'discuss', 'discussed', 'talk', 'talked', 'chatted', 'speak', 'spoke', 'latest', 'newest', 'recent', 'recently', 'lately', 'new', 'news', 'anything', 'something', 'everything', 'happening', 'happened', 'going',
   'named', 'called', 'what', 'whats', "what's", 'did', 'has', 'have', 'had', 'me', 'my', 'i', 'we', 'us', 'and', 'with', 'from', 'by', 'in', 'on', 'the', 'a', 'an', 'is', 'are', 'of', 'to', 'about',
-  'this', 'last', 'past', 'week', 'month', 'today', 'yesterday', 'topics', 'topic', 'stuff', 'things', 'update', 'updates',
+  'like', 'uh', 'um', 'this', 'last', 'past', 'week', 'month', 'today', 'yesterday', 'topics', 'topic', 'stuff', 'things', 'update', 'updates',
 ]);
 
 const NAME_HEAD = new Set(['check', 'what', 'who', 'when', 'did', 'have', 'with']);
 
 function cleanName(raw: string): string | undefined {
-  const parts = raw.trim().replace(/[.,!?;:'’]+$/u, '').split(/\s+/u).filter(Boolean);
+  const parts = raw.split(/(?<=\p{L}{2})[.!?]\s/u, 1)[0]!.trim().replace(/[.,!?;:'’]+$/u, '').split(/\s+/u).filter(Boolean);
   while (parts.length > 0 && NAME_HEAD.has(parts[0]!.toLowerCase())) parts.shift();
   while (parts.length > 0 && NAME_TAIL.has(parts[parts.length - 1]!.toLowerCase())) parts.pop();
   if (parts.length === 0) return undefined;

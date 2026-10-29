@@ -558,3 +558,18 @@ test('#661: a refusal carries up to three closest channel names by word score', 
   const miss = resolveChannelReference('singapore summit office', channels);
   assert.equal('error' in miss && miss.error, 'channel-not-found: singapore summit office; closest names: Singapore Summit, Singapore Office, Singapore Standup');
 });
+
+
+test('STAGE4: a named-day search result reports the actual read window to the owner', async t => {
+  const f = setup('ok');
+  t.after(async () => { await f.adapter.close(); rmSync(f.dir, { recursive: true, force: true }); });
+  const digest = await approve(f.adapter, f.registry);
+  const result = await reader(f.adapter, f.registry, digest).search({ query: 'release', from_date: '2026-10-21', to_date: '2026-10-21' });
+  assert.equal(result.state, 'completed');
+  if (result.state !== 'completed') return;
+  assert.deepEqual(result.window, { from: '2026-10-21', to: '2026-10-21' });
+  const projected = projectMattermostResult(f.adapter, result);
+  assert.equal(projected.ok, true);
+  if (!projected.ok) return;
+  assert.match(projected.projection.text, /^Read window: 2026-10-21 through 2026-10-21\./u);
+});

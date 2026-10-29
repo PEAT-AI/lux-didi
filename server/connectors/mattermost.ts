@@ -74,6 +74,8 @@ export type MattermostEvidenceTool = MattermostTool | typeof MATTERMOST_ATTENTIO
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
 export interface MattermostEvidence extends SourceDispatchEvidence {
   searchMode?: 'hybrid';
+  /** Actual binary date bounds used by a search, retained for the spoken result. */
+  window?: { from: string; to?: string };
   decodedResult: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
   tool: MattermostEvidenceTool;
@@ -1138,14 +1140,17 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (input.offset !== undefined && (!Number.isSafeInteger(input.offset) || input.offset < 0 || input.offset > MATTERMOST_CHAT.maxOffset)) return { state: 'refused', reason: 'invalid-offset' };
       const page = input.offset !== undefined && input.offset > 0 && declaredSearchArguments().includes('offset') ? { offset: input.offset } : {};
       const args = { query, ...keywordMode(), ...bounded, ...window, ...filter, ...page };
+      const withWindow = (result: MattermostResult): MattermostResult => result.state === 'completed'
+        ? { ...result, window: { from: window['from_date']!, ...(window['to_date'] === undefined ? {} : { to: window['to_date'] }) } }
+        : result;
       const first = await dispatch('mattermost_search', args, signal);
-      if (first.state !== 'completed' || query === '' || (postsIn(first.decodedResult) ?? []).length > 0 || !declaredSearchArguments().includes('mode')) return first;
+      if (first.state !== 'completed' || query === '' || (postsIn(first.decodedResult) ?? []).length > 0 || !declaredSearchArguments().includes('mode')) return withWindow(first);
       const second = await dispatch('mattermost_search', { ...args, mode: 'hybrid', ...(declaredSearchArguments().includes('rerank') ? { rerank: false } : {}) }, signal);
       if (second.state !== 'completed') return second;
       const children = [first[SOURCE_DISPATCH], second[SOURCE_DISPATCH]].filter((ref): ref is SourceDispatchRef => ref !== undefined);
       const result = { ...second, searchMode: 'hybrid' as const, [SOURCE_CHILD_DISPATCHES]: children };
       delete result[SOURCE_DISPATCH];
-      return result;
+      return withWindow(result);
     },
     async listChannels(input: BoundedInput, signal?: AbortSignal): Promise<MattermostResult> {
       const denied = preflight(registry, settings, 'mattermost_list_channels');

@@ -159,6 +159,11 @@ export function projectMattermostResult(port: McpPort, evidence: ConnectorResult
     const notice = 'Used hybrid search after no keyword matches.\n';
     projection = { ...projection, text: notice + projection.text, originalCharacters: notice.length + projection.originalCharacters };
   }
+  if (evidence.tool === 'mattermost_search' && 'window' in evidence && isRecord(evidence.window) && typeof evidence.window['from'] === 'string') {
+    const window = evidence.window;
+    const notice = `Read window: ${window['from']}${typeof window['to'] === 'string' ? ` through ${window['to']}` : ' onward'}.\n`;
+    projection = { ...projection, text: notice + projection.text, originalCharacters: notice.length + projection.originalCharacters };
+  }
   // Metadata only: which shape the read took, and its sizes. Never any message content.
   hostLogEvent({ event: 'mattermost_shape', tool: evidence.tool, rawCharacters: payload.text.length, shapedCharacters: projection.text.length, itemCount: projection.itemCount ?? 0, shape: projection.shape ?? 'unknown' });
   return { ok: true, projection };

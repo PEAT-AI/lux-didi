@@ -780,3 +780,23 @@ test('discussion noun asks and product mishearings route to chat, not unrelated 
   }
   for (const question of ['recent news from Acme', 'mask this image', 'metamorphic rocks']) assert.equal(chatAsk(question), false, question);
 });
+
+test('empty topic read retries hybrid exactly once with the same DM and date filters', async t => {
+  const f = await setup(t, 'people');
+  const call = f.adapter.call.bind(f.adapter);
+  const searches: Record<string, unknown>[] = [];
+  f.adapter.call = async (request, signal) => {
+    if (request.toolName !== 'mattermost_search') return call(request, signal);
+    searches.push({ ...request.arguments });
+    // The fake archive has related DM posts, but only the broader engine finds them.
+    return call(request.arguments['mode'] === 'hybrid' ? { ...request, arguments: { ...request.arguments, query: '' } } : request, signal);
+  };
+  const read = chatRead(await f.reader.chat({ intent: 'person', person: 'Ada', query: 'sandboxing', from_date: fixtureDaysAgo(7) }));
+  assert.ok(read.posts.length > 0);
+  assert.equal(searches.length, 2);
+  assert.equal(searches[0]?.['mode'], 'keyword');
+  assert.equal(searches[1]?.['mode'], 'hybrid');
+  assert.equal(searches[1]?.['channel'], ADA_DM);
+  assert.equal(searches[1]?.['from_date'], fixtureDaysAgo(7));
+  assert.match(projectMattermostResult({ name: MATTERMOST_CHAT_TOOL, result: { content: [{ type: 'text', text: JSON.stringify(read) }] } }).text, /hybrid/iu);
+});

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { calendarRange } from '../tools/calendar-window.js';
-import { registeredCalendarArguments, runResearch, ResearchLedger, type ResearchDeps } from '../tools/research.js';
+import { registeredCalendarArguments, runResearch, ResearchLedger, VoiceReplyBook, capVoiceReply, type ResearchDeps } from '../tools/research.js';
+import { shapeGcalList } from '../tools/live-shape.js';
 import type { IntentSubCall } from '../tools/intent.js';
 
 const now = Date.parse('2026-10-29T12:00:00Z');
@@ -63,3 +64,58 @@ for (const [phrase, start, end] of [
     assert.equal(args?.['timeMax'], `${end}T00:00:00.000Z`);
   });
 }
+
+function eventsHarness(count = 1) {
+  const h = harness();
+  const shaped = shapeGcalList({ events: Array.from({ length: count }, (_, i) => ({ id: `synthetic-${i}`, summary: `Synthetic event ${i}`, start: { dateTime: `2026-11-0${2 + i % 7}T12:00:00Z` }, attendees: [{ displayName: 'Sam', responseStatus: 'accepted' }, { displayName: 'Jo', responseStatus: 'tentative' }] })) });
+  h.deps.execute = async calls => {
+    h.calls.push(...calls);
+    return calls.map(call => ({ key: call.key, name: call.name, ok: true, text: call.name === 'calendar_list_events' ? shaped.text : '', originalCharacters: shaped.originalCharacters, omittedCharacters: 0, ...(call.name === 'calendar_list_events' ? { calendarPage: shaped.calendarPage } : {}) }));
+  };
+  return h;
+}
+
+test('research calendar projection keeps attendee names and response status', async () => {
+  const h = eventsHarness();
+  const reply = await runResearch(h.deps, { action: 'start', question: 'who is in my meeting next week', lookups: [{ source: 'calendar', query: 'next week' }] }, new AbortController().signal);
+  const text = JSON.stringify(reply['findings']);
+  assert.match(text, /Sam.*accepted/);
+  assert.match(text, /Jo.*tentative/);
+});
+
+test('a second calendar ask in one session still returns event titles', async () => {
+  const h = eventsHarness();
+  const ask = { action: 'start', question: 'what is on my calendar next week', lookups: [{ source: 'calendar', query: 'next week' }] };
+  const first = await runResearch(h.deps, ask, new AbortController().signal);
+  const second = await runResearch(h.deps, ask, new AbortController().signal);
+  assert.match(JSON.stringify(first['findings']), /Synthetic event 0/);
+  assert.match(JSON.stringify(second['findings']), /Synthetic event 0/);
+});
+
+test('a 28-event week fits the voice page or names the remaining items and cursor', async () => {
+  const h = eventsHarness(28);
+  const reply = await runResearch(h.deps, { action: 'start', question: 'what is on my calendar next week', lookups: [{ source: 'calendar', query: 'next week' }] }, new AbortController().signal);
+  const page = capVoiceReply(reply, new VoiceReplyBook());
+  const text = JSON.stringify(page);
+  assert.ok(text.length <= 3000);
+  const heard = Array.from({ length: 28 }, (_, i) => new RegExp(`Synthetic event ${i}(?![0-9])`).test(text)).filter(Boolean).length;
+  assert.ok(heard === 28 || /\+\d+ more/.test(text), `${heard} heard without a remainder count`);
+  if (heard < 28) { assert.equal(typeof page['pageCursor'], 'string'); assert.doesNotMatch(text, /nothing more to fetch/); }
+});
+
+test('capped findings expose the asked-for DM source before a large knowledge result', async () => {
+  const h = harness();
+  h.deps.configured = ['knowledge', 'chat'];
+  h.deps.execute = async calls => calls.map(call => ({ key: call.key, name: call.name, ok: true, text: call.name === 'search_knowledge' ? `### ${'Synthetic knowledge '.repeat(180)} [id 1]` : '- Synthetic direct message from Sam', originalCharacters: 4000, omittedCharacters: 0 }));
+  const reply = await runResearch(h.deps, { action: 'start', question: 'show my DMs and related knowledge', lookups: [{ source: 'knowledge', query: 'synthetic' }, { source: 'chat', query: 'synthetic' }] }, new AbortController().signal);
+  const page = capVoiceReply(reply, new VoiceReplyBook());
+  assert.match(JSON.stringify(page['findings']), /Synthetic direct message/);
+});
+
+for (const source of ['calendar', 'mail'] as const) test(`a skipped ${source} leg is not an empty search`, async () => {
+  const h = harness();
+  h.deps.configured = [];
+  const reply = await runResearch(h.deps, { action: 'start', question: `read my ${source} today`, lookups: [source === 'calendar' ? { source, query: 'today' } : { source, mail: { q: 'synthetic' } }] }, new AbortController().signal);
+  assert.match(JSON.stringify(reply), new RegExp(`couldn't read your ${source}`));
+  assert.doesNotMatch(JSON.stringify(reply), /found nothing matching/);
+});

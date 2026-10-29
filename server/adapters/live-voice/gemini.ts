@@ -1,3 +1,5 @@
+import { toolOutcomeOf } from '../../live/tool-outcome.js';
+import type { LiveTracePort } from '../../trace/record.js';
 import { ALARM_MODE_MARKER } from '../../live/alarm-mode.js';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import WebSocket from 'ws';
@@ -108,6 +110,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 interface Settings {
+  trace?: LiveTracePort | undefined;
   modelId: string; voice: string; enabled: boolean; allowed: readonly DataClass[];
   keyReference: string; resolve: (reference: string) => Promise<string | undefined>;
   limits: Readonly<LiveVoiceLimits>; socketFactory: LiveSocketFactory;
@@ -143,7 +146,7 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
   }
   open(request: LiveVoiceRequest, control: LiveVoiceControl): LiveVoiceSession {
     if (!object(control)) fail('invalid_request');
-    const settings = { ...this.settings, limits: { ...this.settings.limits, ...control.limits } };
+    const settings = { ...this.settings, limits: { ...this.settings.limits, ...control.limits }, trace: control.trace };
     for (const name of timerNames) if (!Number.isSafeInteger(settings.limits[name]) || settings.limits[name] < 1) fail('invalid_request');
     if (control.idleResetMs !== undefined && (!Number.isSafeInteger(control.idleResetMs) || control.idleResetMs < 1 || control.idleResetMs > 2_147_483_647)) fail('invalid_request');
     if (!settings.enabled) fail('route_denied');
@@ -417,6 +420,7 @@ class Session implements LiveVoiceSession {
         const calls = message.toolCall.functionCalls;
         if (calls.some(c => !object(c) || typeof c.id !== 'string' || !c.id || typeof c.name !== 'string' || !c.name || !object(c.args)) || new Set(calls.map(c => c.id)).size !== calls.length) fail('protocol_error');
         this.pendingCalls = structuredClone(calls) as LiveToolCall[];
+        for (const call of this.pendingCalls) this.settings.trace?.receipt('call.intent', { callKey: call.id }, { name: call.name, argsChars: JSON.stringify(call.args).length, intentAt: Date.now(), providerCallId: call.id });
         this.emit({ type: 'modelTurnStarted' });
         this.emit({ type: 'toolCall', calls: structuredClone(this.pendingCalls) });
       }
@@ -629,7 +633,14 @@ class Session implements LiveVoiceSession {
       ? input.responses.map(({ id, name, response }) => ({ id, name, ...(name === MEMORY_TOOL ? { scheduling: 'SILENT' } : {}), response }))
       : input.responses;
     const frame = JSON.stringify({ toolResponse: { functionResponses: responses } });
-    if (!this.write(frame)) return 'failed';
+    const preparedAt = Date.now();
+    for (const call of input.responses) {
+      this.settings.trace?.receipt('call.executed', { callKey: call.id }, { executedAt: preparedAt });
+      this.settings.trace?.receipt('call.output_prepared', { callKey: call.id }, { outputPreparedAt: preparedAt });
+    }
+    const delivered = this.write(frame);
+    for (const call of input.responses) this.settings.trace?.receipt('call.output_written', { callKey: call.id }, { outputWrittenAt: Date.now(), ...toolOutcomeOf(call.response), delivered, ms: 0, resultChars: JSON.stringify(call.response).length });
+    if (!delivered) return 'failed';
     this.pendingCalls = [];
     return 'sent';
   }

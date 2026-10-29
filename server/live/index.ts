@@ -33,7 +33,7 @@ import { hostClockDomain, hostMonotonicMs } from '../trace/clock.js';
 import type { TraceEventKind, TurnCloseReason, TurnOutcome } from '../trace/kinds.js';
 
 import { clockSync, hostLogEvent, LIVE_REBUILD_TRIGGERS, LIVE_STATE_CAUSES, NATIVE_END_REASONS, setLogContext } from '../host/log.js';
-import type { ToolCallOutcome, ToolRefusalCode } from '../host/events.js';
+import { toolOutcomeOf } from './tool-outcome.js';
 import { liveToolStep, stepSubject, type LiveToolStepBody } from '../tools/host-events.js';
 import { validateAcceptedPrompt } from './config.js';
 import { VoiceProfileMeter } from './voice-profile.js';
@@ -602,19 +602,6 @@ type ExecStatus = 'queued' | 'running' | 'done' | 'failed' | 'timeout' | 'cancel
  *  refusal code is only ever a member of TOOL_REFUSAL_CODES, so a reader counts refusals by code. The research
  *  reply carries its own closed status (`answered`, `partial`, `stopped`, `unavailable`), so the map is explicit
  *  instead of treating any status other than `completed` as a failure. */
-function toolOutcomeOf(response: JsonObject): { outcome: ToolCallOutcome; refusalCode?: ToolRefusalCode } {
-  const status = typeof response.status === 'string' ? response.status : undefined;
-  const error = typeof response.error === 'string' ? response.error : undefined;
-  const stated = typeof response.reason === 'string' ? response.reason : typeof response.code === 'string' ? response.code : undefined;
-  const code = (reason: string): ToolRefusalCode => refusalCode(reason) as ToolRefusalCode;
-  if (status === 'refused' || stated === 'no_owner_input' || error === 'opener_not_fetched') return { outcome: 'refused', refusalCode: code(stated ?? error ?? 'refused') };
-  // A call the registry did not grant never reached a source: that is a refusal of admission, by code.
-  if (error === 'Tool not granted') return { outcome: 'refused', refusalCode: 'grant_not_permitted' };
-  if (status === 'blocked' || error === 'tool_result_denied') return { outcome: 'blocked' };
-  if (status === 'stopped') return { outcome: 'cancelled' };
-  if (error !== undefined || status === 'unavailable' || status === 'failed' || status === 'error') return { outcome: 'failed' };
-  return { outcome: 'completed' };
-}
 
 /** #1020: how much of what was sent a settled research projection may record, so the journal line stays short. */
 const RESEARCH_PROJECTION_CHARS = 240;

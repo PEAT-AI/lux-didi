@@ -19,11 +19,11 @@ export const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'
  */
 /** C-LOGS11: the closed set a tool-call outcome line may name as its refusal. A reason outside this set
  *  is logged as `refused`, never as free text, so a reader counts refusals by code and never parses prose. */
-export type ToolRefusalCode = 'unknown_tool' | 'duplicate_call_id' | 'grant_not_permitted' | 'stale_or_revoked_authority' | 'round_deadline' | 'round_cancelled' | 'invalid_arguments' | 'no_owner_input' | 'refused';
+export type ToolRefusalCode = string;
 export const TOOL_REFUSAL_CODES: readonly ToolRefusalCode[] = ['unknown_tool', 'duplicate_call_id', 'grant_not_permitted', 'stale_or_revoked_authority', 'round_deadline', 'round_cancelled', 'invalid_arguments', 'no_owner_input', 'refused'];
 /** C-LOGS11: what one tool call settled as, on the log line as in the trace store. */
-export type ToolCallOutcome = 'completed' | 'failed' | 'refused' | 'blocked' | 'cancelled' | 'unknown';
-export const TOOL_CALL_OUTCOMES: readonly ToolCallOutcome[] = ['completed', 'failed', 'refused', 'blocked', 'cancelled', 'unknown'];
+export type ToolCallOutcome = 'completed' | 'empty' | 'clarify' | 'partial' | 'failed' | 'refused' | 'blocked' | 'cancelled' | 'unknown';
+export const TOOL_CALL_OUTCOMES: readonly ToolCallOutcome[] = ['completed', 'empty', 'clarify', 'partial', 'failed', 'refused', 'blocked', 'cancelled', 'unknown'];
 export type ApprovalRefusalReason = 'endpoint_changed' | 'tools_widened' | 'class_tightened' | 'schema_changed' | 'row_invalid';
 export const APPROVAL_REFUSAL_REASONS: readonly ApprovalRefusalReason[] = ['endpoint_changed', 'tools_widened', 'class_tightened', 'schema_changed', 'row_invalid'];
 export const LOG_CAUSES: readonly LogCause[] = ['tool', 'provider', 'owner', 'network', 'audio', 'host', 'connector', 'config'];

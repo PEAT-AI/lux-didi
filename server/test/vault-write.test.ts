@@ -368,7 +368,6 @@ test('unavailable retries once with backoff and then confirms without a duplicat
   const writer = new VaultWriter({ store: h.store, now: () => NOW, log: () => {},
     backoff: async ms => { delays.push(ms); },
     transport: { save: async () => ++calls === 1 ? { outcome: 'unavailable' } : { outcome: 'inserted', insightId: 'retry-7' } } });
-  writer.observe = writer.observe.bind(writer);
   h.store.transaction(tx => writer.observe(tx, SESSION, 'retry', `save this to lux: ${NOTE}`));
   const claim = writer.claim(SESSION, NOTE);
   assert.equal(claim.state, 'dispatch');

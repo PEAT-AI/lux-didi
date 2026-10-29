@@ -177,18 +177,31 @@ export interface VaultWriterOptions {
   readonly transport: VaultTransport;
   readonly now: () => number;
   readonly log: (event: Record<string, unknown>) => void;
+  readonly backoff?: (milliseconds: number) => Promise<void>;
 }
 
 /** The voice-only write service: mint, atomic claim, one dispatch, one settlement, no retry anywhere. */
 export class VaultWriter {
   readonly #store: VaultStore;
   readonly #transport: VaultTransport;
+  readonly #backoff: (milliseconds: number) => Promise<void>;
+  readonly recovery: Promise<void>;
   readonly #now: () => number;
   readonly #log: (event: Record<string, unknown>) => void;
 
   constructor(options: VaultWriterOptions) {
     this.#store = options.store; this.#transport = options.transport; this.#now = options.now; this.#log = options.log;
-    this.#store.transaction(tx => tx.run("UPDATE vault_writes SET state='uncertain' WHERE state='dispatched'"));
+    this.#backoff = options.backoff ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
+    const claims = this.#store.transaction(tx => {
+      // A dispatched row may have reached lux. Never replay it without a remote receipt.
+      tx.run("UPDATE vault_writes SET state='uncertain' WHERE state='dispatched'");
+      // Authorized means the execution never crossed the dispatch boundary. Claim by op_id,
+      // not by content, so recovery cannot bind to another authorization for the same note.
+      return tx.all("SELECT * FROM vault_writes WHERE state='authorized'").map(row => claimRow(tx, row));
+    });
+    this.recovery = Promise.all(claims.map(async claim => {
+      if (claim.state === 'dispatch') await this.dispatch(claim);
+    })).then(() => {});
   }
 
   /** Called inside the journal transaction of a final owner transcription. */
@@ -212,7 +225,22 @@ export class VaultWriter {
     let result: VaultTransportResult;
     try { result = await this.#transport.save({ content: claim.content, title: claim.title, insightType: VAULT_INSIGHT_TYPE, project: VAULT_PROJECT }); }
     catch { result = { outcome: 'unknown' }; }
-    return this.settle(claim.opId, result, Math.max(0, this.#now() - started));
+    let retried = false;
+    if (result.outcome === 'unavailable') {
+      // Unavailable is a pre-dispatch failure. Unknown/failed/duplicate never retry.
+      const retry = this.#store.transaction(tx => tx.run(
+        "UPDATE vault_writes SET retry_count=1 WHERE op_id=? AND state='dispatched' AND retry_count=0", [claim.opId]));
+      if (retry === 1) {
+        retried = true;
+        await this.#backoff(250);
+        try { result = await this.#transport.save({ content: claim.content, title: claim.title, insightType: VAULT_INSIGHT_TYPE, project: VAULT_PROJECT }); }
+        catch { result = { outcome: 'unknown' }; }
+      }
+    }
+    const receipt = this.settle(claim.opId, result, Math.max(0, this.#now() - started));
+    return retried ? { ...receipt, guidance: receipt.saved
+      ? `Retried when lux became reachable; saved to lux as ${claim.title}.`
+      : `Retried lux once. ${receipt.guidance ?? 'The note was not saved.'}` } : receipt;
   }
 
   settle(opId: string, result: VaultTransportResult, latencyMs: number): VaultReceipt {
@@ -229,5 +257,6 @@ export class VaultWriter {
 
 /** The tool's reply to the model: a true receipt or a closed code with words to say, never a save claim. */
 export function vaultReceiptJson(receipt: VaultReceipt): JsonObject {
+  if (receipt.saved) return { saved: true, insightId: receipt.insightId ?? '', guidance: receipt.guidance ?? 'Saved to lux.' };
   return { saved: receipt.saved, ...(receipt.code === undefined ? {} : { code: receipt.code }), ...(receipt.insightId === undefined ? {} : { insightId: receipt.insightId }), ...(receipt.guidance === undefined ? {} : { guidance: receipt.guidance }) };
 }

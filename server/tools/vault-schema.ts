@@ -26,4 +26,6 @@ export const vaultMigrations: readonly SchemaMigration[] = [{
 }, { owner: 'live', version: 13, statements: [
   'ALTER TABLE vault_writes ADD COLUMN external_context_present INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE vault_writes ADD COLUMN candidate_digest TEXT',
+] }, { owner: 'live', version: 14, statements: [
+  'ALTER TABLE vault_writes ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0',
 ] }];

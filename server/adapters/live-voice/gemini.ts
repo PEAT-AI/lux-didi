@@ -191,7 +191,8 @@ export class GeminiLiveVoiceAdapter implements LiveVoicePort {
         ? JSON.stringify({ clientContent: { turns: [...history, { role: 'user', parts: [{ text: request.openingText }] }], turnComplete: opening === 'model_first' } })
       : opening === 'model_first'
         ? JSON.stringify({ clientContent: {
-          turns: [...history, { role: 'user', parts: [{ text: FRESH_OPENING }] }], turnComplete: true } })
+          turns: [...history, { role: 'user', parts: [{ text: request.system.text.includes('[alarm mode]')
+            ? '[host note, not the owner] Speak the alarm now, following the session instructions.' : FRESH_OPENING }] }], turnComplete: true } })
         : history.length ? JSON.stringify({ clientContent: { turns: history, turnComplete: false } }) : undefined;
     if (Buffer.byteLength(setup) > settings.limits.maxOutgoingBytes || (initial && Buffer.byteLength(initial) > settings.limits.maxOutgoingBytes)) fail('outgoing_limit');
     if (!object(control) || !(control.signal instanceof AbortSignal) || !Number.isSafeInteger(control.deadlineMs)

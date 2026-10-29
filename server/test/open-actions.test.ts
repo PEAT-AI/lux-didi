@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { safeEvent } from '../host/log.js';
-import { NativeActionBus, OPEN_GUIDANCE, OPEN_RECEIPT_CODES, OPEN_WEB_GUIDANCE, OPEN_TOOLS, OPEN_TOOL_NAMES, ownerTurnWords, resolveWebOpen, useWebSearchPort, validateOpenWeb, webWords, exposeToolResults, noteModelOutput, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openParameters, openTarget, ownerWords, receiptDetail, validateOpen } from '../tools/open.js';
+import { NativeActionBus, OPEN_GUIDANCE, OPEN_RECEIPT_CODES, OPEN_WEB_GUIDANCE, OPEN_TOOLS, OPEN_TOOL_NAMES, ownerTurnWords, webOwnerWords, resolveWebOpen, useWebSearchPort, validateOpenWeb, webWords, exposeToolResults, noteModelOutput, noteOpened, noteOwnerWords, noteSpoken, openClaimCorrection, openParameters, openTarget, ownerWords, receiptDetail, validateOpen } from '../tools/open.js';
 import { beginHandleSession, endHandleSession, exposeHandles, noteMattermostOrigin, openDestination, resolveHandle } from '../tools/open-handles.js';
 import { shapeDriveFile, shapeGcalList, shapeGmailList, shapeGmailRead, shapeLuxKnowledge } from '../tools/live-shape.js';
 
@@ -629,4 +629,16 @@ test('C-OPEN11: a deck link opens the browser, and a missing link mints no handl
   assert.equal(result.target.target, 'https://drive.google.com/file/d/abc123/view');
   const unlinked = shapeDriveFile({ name: 'Synthetic deck' });
   assert.doesNotMatch(unlinked.text, /open: L/);
+});
+
+
+test('direct102: model preamble does not erase a finalized owner browser ask', async t => {
+  const run = 'direct102-preamble';
+  const words = 'open the pitch deck in my browser';
+  noteOwnerWords(run, words);
+  noteModelOutput(run);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const acquisition = webOwnerWords(run, new AbortController().signal);
+  t.mock.timers.tick(1500);
+  assert.equal(await acquisition, words);
 });

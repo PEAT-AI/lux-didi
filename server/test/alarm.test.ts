@@ -64,3 +64,39 @@ test('alarm: spoken number words resolve without relying on a model digit conver
   assert.equal(result.status, 'ready');
   if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
 });
+
+
+// The transcription spellings here are synthetic reproductions, not owner content.
+for (const [words, instant] of [
+  ['set an alarm at eleven ten in the morning', '2026-10-29T03:10:00Z'],
+  ['set an alarm at 11:10 a.m. Singapore time', '2026-10-29T03:10:00Z'],
+  ['set an alarm at 11:10 am SGT', '2026-10-29T03:10:00Z'],
+  ['set an alarm at seven oh five in the morning', '2026-10-28T23:05:00Z'],
+  ['set an alarm at ten past eleven in the morning', '2026-10-29T03:10:00Z'],
+  ['set an alarm at half past six in the morning', '2026-10-28T22:30:00Z'],
+  ['set an alarm at quarter to eight in the morning', '2026-10-28T23:45:00Z'],
+  ['set an alarm at noon', '2026-10-29T04:00:00Z'],
+  ['set an alarm at midnight', '2026-10-28T16:00:00Z'],
+  ['set an alarm at eleven ten tonight', '2026-10-28T15:10:00Z'],
+  ['set an alarm at eleven ten tomorrow morning', '2026-10-29T03:10:00Z'],
+  ['set an alarm in 20 minutes', '2026-10-28T13:20:00Z'],
+  ['set an alarm at eight', '2026-10-29T00:00:00Z'],
+] as const) {
+  test(`direct102 alarm golden: ${words}`, () => {
+    const result = parseAlarmTime(words, now, tz);
+    assert.equal(result.status, 'ready');
+    if (result.status !== 'ready') return;
+    assert.equal(result.fireAtUtc, Date.parse(instant));
+    assert.equal(result.tz, tz);
+  });
+}
+
+test('direct102: an unknown spoken zone clarifies instead of falling back to the host zone', () => {
+  const result = parseAlarmTime('set an alarm at 11:10 am Atlantis time', now, tz);
+  assert.deepEqual(result, { status: 'clarify', reason: 'missing_timezone' });
+});
+
+test('direct102: an unconsumed minute expression never silently schedules the hour', () => {
+  const result = parseAlarmTime('set an alarm at eleven flibberty minutes in the morning', now, tz);
+  assert.deepEqual(result, { status: 'clarify', reason: 'unsupported_time_expression' });
+});

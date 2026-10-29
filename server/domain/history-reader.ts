@@ -3,10 +3,11 @@ import type { Transaction, SQLRow } from '../contracts/storage.js';
 import type { DataClass, JsonObject } from '../adapters/model/types.js';
 import { HISTORY_CLASSES, historyForgotten, historySessionEvidence, type HistoryEligibility } from './history-lifecycle.js';
 import { fold, tokenize } from './util.js';
+import { backfillHistoryTurns } from './history-turns.js';
 
 export interface HistoryScope {
   ownerId: string; runId: string; conversationId?: string; routeIdentity: string; authorityEpoch: string; revision: number;
-  allowedClasses: readonly DataClass[];
+  allowedClasses: readonly DataClass[]; currentSessionId?: string;
 }
 export interface HistoryArguments { query?: string; from?: string; to?: string; limit?: number; cursor?: string; recordRef?: string }
 export interface HistorySourceRef {
@@ -16,7 +17,7 @@ export interface HistorySourceRef {
 export interface HistoryEvidence { sources: HistorySourceRef[] }
 export interface HistoryResult { response: JsonObject; dataClasses: DataClass[]; evidence: HistoryEvidence }
 interface RecordValue { ref: HistorySourceRef; text: string; metadata: JsonObject; date: number }
-interface SearchSnapshot { runId: string; conversationId?: string; tokens: Map<string, string>; scope: string; expires: number; sources: HistorySourceRef[]; references: string[]; coverage: JsonObject; limit: number }
+interface SearchSnapshot { runId: string; conversationId?: string; tokens: Map<string, string>; scope: string; expires: number; sources: HistorySourceRef[]; references: string[]; coverage: JsonObject; limit: number; snippets: string[] }
 interface Position { snapshot: SearchSnapshot; index: number; offset: number; detail: boolean }
 const PAGE_CHARACTERS = 6000;
 const REFERENCE_LIFETIME_MS = 30 * 60_000;
@@ -46,18 +47,44 @@ function entryValue(tx: Transaction, id: string): RecordValue | null {
   return { ref: { kind: 'entry', id, first: 0, last: 0, transcriptKind: '', dataClass, fingerprint: digest({ metadata, text }) }, text, metadata, date: Number(row.captured_at) };
 }
 
-function liveValue(tx: Transaction, ownerId: string, id: string, rows: SQLRow[], eligibility: HistoryEligibility = new Map()): RecordValue | null {
-  if (!rows.length || historyForgotten(tx, id)) return null;
+function liveValue(tx: Transaction, ownerId: string, id: string, eligibility: HistoryEligibility = new Map()): RecordValue | null {
+  if (historyForgotten(tx, id)) return null;
   const session = tx.get(`SELECT h.data_class,h.revision,l.journal_complete FROM history_sessions h JOIN live_sessions l ON l.live_session_id=h.live_session_id
     WHERE h.live_session_id=? AND h.owner_id=? AND l.owner_assistant_id=?`, [id, ownerId, ownerId]);
   if (!session || !knownClass(session.data_class) || !historySessionEvidence(tx, id, eligibility)) return null;
+  const rows = tx.all('SELECT * FROM history_turns WHERE live_session_id=? ORDER BY journal_first', [id]);
+  if (!rows.length) return null;
   const first = rows[0]!, last = rows.at(-1)!;
-  const text = rows.map(row => String(row.text ?? '')).join('');
-  const metadata = { sourceId: `${id}:${first.journal_id}:${last.journal_id}`, sessionId: id, sourceKind: 'live', role: first.kind === 'inputTranscription' ? 'user' : 'assistant',
-    date: new Date(Number(first.arrived_at)).toISOString(), derivation: 'automatic_transcription', dataClass: session.data_class, revision: session.revision,
-    journalFirst: first.journal_id, journalLast: last.journal_id, final: last.finished === 1, journalComplete: session.journal_complete === 1 };
-  return { ref: { kind: 'live', id, first: Number(first.journal_id), last: Number(last.journal_id), transcriptKind: String(first.kind), dataClass: session.data_class,
-    fingerprint: digest({ metadata, rows }) }, text, metadata, date: Number(first.arrived_at) };
+  const text = rows.map(row => `${row.role === 'owner' ? 'Owner' : 'Naya'}: ${row.text}`).join('\n');
+  const metadata = { sourceId: id, sessionId: id, sourceKind: 'live', role: first.role === 'owner' ? 'user' : 'assistant',
+    date: new Date(Number(first.at)).toISOString(), localDate: new Date(Number(first.at)).toLocaleDateString('en-GB'),
+    partOfDay: Number(new Date(Number(first.at)).getHours()) < 12 ? 'morning' : Number(new Date(Number(first.at)).getHours()) < 18 ? 'afternoon' : 'evening',
+    derivation: 'automatic_transcription', dataClass: session.data_class, revision: session.revision,
+    journalFirst: first.journal_first, journalLast: last.journal_last, final: true, journalComplete: session.journal_complete === 1 };
+  return { ref: { kind: 'live', id, first: Number(first.journal_first), last: Number(last.journal_last), transcriptKind: 'session', dataClass: session.data_class,
+    fingerprint: digest({ metadata, rows }) }, text, metadata, date: Number(first.at) };
+}
+
+const RECALL_FILLERS = new Set('a an the i you we she he it they me my your our did do does have has had was were is are be been what when where how why about talked talk said say told tell yesterday story transcript last time conversation conversations remember und oder der die das ein eine ich du wir ihr sie er es im in am an mit von zu auf haben hat hatten war waren ist sind was wie wann wo gestern erzähl erzählt gesagt besprochen'.split(' '));
+function recallTerms(query: string): string[] { return [...new Set(tokenize(query))].filter(term => term.length > 1 && !RECALL_FILLERS.has(term)); }
+function turnExcerpt(tx: Transaction, id: string, hitId: number, terms: readonly string[]): string {
+  const rows = tx.all('SELECT id,role,text FROM history_turns WHERE live_session_id=? ORDER BY journal_first', [id]);
+  const index = rows.findIndex(row => Number(row.id) === hitId);
+  const hit = rows[index]; if (!hit) return '';
+  const label = (row: SQLRow) => row.role === 'owner' ? 'Owner: ' : 'Naya: ';
+  const text = String(hit.text), folded = fold(text);
+  const match = terms.map(term => folded.indexOf(term)).filter(at => at >= 0).sort((a, b) => a - b)[0] ?? 0;
+  const start = Math.max(0, match - 130), end = Math.min(text.length, start + 340);
+  let excerpt = `${label(hit)}${start ? '...' : ''}${text.slice(start, end)}${end < text.length ? '...' : ''}`;
+  for (const distance of [1, 2, 3, 4]) for (const neighbour of [index + distance, index - distance]) {
+    const row = rows[neighbour]; if (!row || excerpt.length >= 520) continue;
+    const room = 550 - excerpt.length - label(row).length - 1;
+    if (room < 30) continue;
+    const body = String(row.text), cropped = body.length > room ? body.slice(0, room - 3) + '...' : body;
+    const line = `${label(row)}${cropped}`;
+    excerpt = neighbour < index ? `${line}\n${excerpt}` : `${excerpt}\n${line}`;
+  }
+  return excerpt;
 }
 
 function summaryValue(tx: Transaction, id: string, eligibility: HistoryEligibility = new Map()): RecordValue | null {
@@ -82,9 +109,7 @@ export function historySummaryEvidence(tx: Transaction, ids: readonly string[]):
 function sourceValue(tx: Transaction, ownerId: string, ref: HistorySourceRef, eligibility: HistoryEligibility = new Map()): RecordValue | null {
   if (ref.kind === 'entry') return entryValue(tx, ref.id);
   if (ref.kind === 'summary') return summaryValue(tx, ref.id, eligibility);
-  if (!hasTable(tx, 'live_journal')) return null;
-  return liveValue(tx, ownerId, ref.id, tx.all(`SELECT journal_id,provider_sequence,kind,text,finished,arrived_at FROM live_journal
-    WHERE live_session_id=? AND journal_id>=? AND journal_id<=? AND kind=? ORDER BY journal_id`, [ref.id, ref.first, ref.last, ref.transcriptKind]), eligibility);
+  return liveValue(tx, ownerId, ref.id, eligibility);
 }
 
 /** Called by the canonical result gate, after every await and before publication. */
@@ -93,7 +118,7 @@ export function historyEvidenceCurrent(tx: Transaction, ownerId: string, evidenc
   return evidence.sources.every(ref => sourceValue(tx, ownerId, ref, eligibility)?.ref.fingerprint === ref.fingerprint);
 }
 
-function corpus(tx: Transaction, scope: HistoryScope): { records: RecordValue[]; coverage: JsonObject } {
+function corpus(tx: Transaction, scope: HistoryScope, query: string): { records: RecordValue[]; coverage: JsonObject } {
   const records: RecordValue[] = [];
   const eligibility: HistoryEligibility = new Map();
   let unavailableLabels = false, classFiltered = false, legacyRawUnavailable = false;
@@ -104,24 +129,27 @@ function corpus(tx: Transaction, scope: HistoryScope): { records: RecordValue[];
   };
   for (const row of tx.all('SELECT id FROM entries ORDER BY id')) admit(entryValue(tx, String(row.id)));
   for (const row of tx.all("SELECT id FROM conversation_summaries WHERE status='complete' ORDER BY id")) admit(summaryValue(tx, String(row.id), eligibility));
-  if (hasTable(tx, 'live_journal')) {
-    for (const session of tx.all('SELECT live_session_id FROM live_sessions WHERE owner_assistant_id=? ORDER BY live_session_id', [scope.ownerId])) {
-      const id = String(session.live_session_id);
-      if (historyForgotten(tx, id)) continue;
-      if (!tx.get('SELECT 1 FROM history_sessions WHERE live_session_id=? AND owner_id=?', [id, scope.ownerId])) { legacyRawUnavailable = true; continue; }
-      const pending = new Map<string, SQLRow[]>();
-      const flush = (kind: string) => { const rows = pending.get(kind); if (rows?.length) admit(liveValue(tx, scope.ownerId, id, rows, eligibility)); pending.delete(kind); };
-      for (const row of tx.all(`SELECT journal_id,provider_sequence,kind,text,finished,arrived_at FROM live_journal WHERE live_session_id=? ORDER BY journal_id`, [id])) {
-        const kind = String(row.kind);
-        if (kind === 'inputTranscription' || kind === 'outputTranscription') {
-          const rows = pending.get(kind) ?? []; rows.push(row); pending.set(kind, rows);
-          if (row.finished === 1) flush(kind);
-        } else if (kind === 'turnComplete' || kind === 'interrupted' || kind === 'terminal') {
-          flush('inputTranscription'); flush('outputTranscription');
-        }
-      }
-      flush('inputTranscription'); flush('outputTranscription');
-    }
+  // Legacy backfill is idempotent; terminal callers also persist before summary dispatch.
+  backfillHistoryTurns(tx);
+  const terms = recallTerms(query);
+  const expression = terms.map(term => `"${term.replaceAll('"', '""')}"*`).join(' OR ');
+  const current = scope.currentSessionId ?? scope.runId;
+  const hits = expression ? tx.all(`SELECT t.*,bm25(history_turns_fts) AS rank FROM history_turns_fts
+    JOIN history_turns t ON t.id=history_turns_fts.rowid JOIN history_sessions h ON h.live_session_id=t.live_session_id
+    WHERE history_turns_fts MATCH ? AND h.owner_id=? AND t.live_session_id<>?
+    ORDER BY rank,t.role='owner' DESC,t.at DESC`, [expression, scope.ownerId, current]) : tx.all(`SELECT t.*,0 AS rank FROM history_turns t
+    JOIN history_sessions h ON h.live_session_id=t.live_session_id WHERE h.owner_id=? AND t.live_session_id<>? ORDER BY t.at DESC,t.role='owner' DESC`, [scope.ownerId, current]);
+  const seen = new Set<string>();
+  for (const hit of hits) {
+    const id = String(hit.live_session_id);
+    if (seen.has(id)) continue;
+    const value = liveValue(tx, scope.ownerId, id, eligibility);
+    if (!value || !scope.allowedClasses.includes(value.ref.dataClass)) { classFiltered = true; continue; }
+    seen.add(id);
+    value.metadata['recallExcerpt'] = turnExcerpt(tx, id, Number(hit.id), terms);
+    value.metadata['recallRank'] = Number(hit.rank);
+    records.push(value);
+    if (seen.size >= 5) break;
   }
   return { records, coverage: { legacyRawUnavailable, unavailableLabels, classFiltered, scope: 'retained_local_records', transcripts: 'automatic_transcription_not_verbatim_audio' } };
 }
@@ -164,13 +192,12 @@ export function createHistoryReader(now: () => number = Date.now): { read(tx: Tr
       if (!stored || stored.snapshot.scope !== scopeKey || (!!args.recordRef && !stored.detail)) return unavailable('history_reference_unavailable');
       position = stored;
     } else {
-      if (scope.conversationId) for (const [id, position] of positions) if (position.snapshot.conversationId === scope.conversationId && position.snapshot.runId !== scope.runId) positions.delete(id);
-      const { records, coverage } = corpus(tx, scope);
-      const tokens = [...new Set(tokenize(args.query ?? ''))];
+      const { records, coverage } = corpus(tx, scope, args.query ?? '');
+      const tokens = recallTerms(args.query ?? '');
       const ranked = records.map(value => ({ value, score: tokens.reduce((sum, term) => sum + (fold(value.text).includes(term) ? 1 : 0), 0) }))
-        .filter(({ value, score }) => (!tokens.length || score > 0) && (!args.from || value.date >= Date.parse(args.from)) && (!args.to || value.date < Date.parse(args.to)))
-        .sort((a, b) => b.score - a.score || b.value.date - a.value.date || String(a.value.metadata.sourceId).localeCompare(String(b.value.metadata.sourceId)));
-      const snapshot: SearchSnapshot = { runId: scope.runId, ...(scope.conversationId ? { conversationId: scope.conversationId } : {}), tokens: new Map(), scope: scopeKey, expires: now() + REFERENCE_LIFETIME_MS, sources: ranked.map(row => row.value.ref), references: [], coverage, limit: args.limit ?? 10 };
+        .filter(({ value, score }) => (value.ref.kind === 'live' || !tokens.length || score > 0) && (!args.from || value.date >= Date.parse(args.from)) && (!args.to || value.date < Date.parse(args.to)))
+        .sort((a, b) => Number(b.value.ref.kind === 'live') - Number(a.value.ref.kind === 'live') || (a.value.ref.kind === 'live' && b.value.ref.kind === 'live' ? Number(a.value.metadata['recallRank']) - Number(b.value.metadata['recallRank']) : b.score - a.score) || b.value.date - a.value.date);
+      const snapshot: SearchSnapshot = { runId: scope.runId, ...(scope.conversationId ? { conversationId: scope.conversationId } : {}), tokens: new Map(), scope: scopeKey, expires: now() + REFERENCE_LIFETIME_MS, sources: ranked.map(row => row.value.ref), references: [], coverage, limit: Math.min(args.limit ?? 5, 5), snippets: ranked.map(row => String(row.value.metadata['recallExcerpt'] ?? row.value.text.slice(0, 550))) };
       snapshot.references = snapshot.sources.map((_, index) => token({ snapshot, index, offset: 0, detail: true }));
       position = { snapshot, index: 0, offset: 0, detail: false };
     }
@@ -188,7 +215,7 @@ export function createHistoryReader(now: () => number = Date.now): { read(tx: Tr
     }
     const nextIndex = index + values.length;
     const nextCursor = nextIndex < snapshot.sources.length ? token({ snapshot, index: nextIndex, offset: 0, detail: false }) : null;
-    return { response: { status: 'ok', hits: values.map((value, i) => ({ ...value.metadata, recordRef: snapshot.references[index + i], snippet: value.text.slice(0, 240), totalCharacters: value.text.length })),
+    return { response: { status: 'ok', hits: values.map((value, i) => ({ ...value.metadata, recordRef: snapshot.references[index + i], sessionRef: snapshot.references[index + i], snippet: snapshot.snippets[index + i]!, truncated: value.text !== snapshot.snippets[index + i], totalCharacters: value.text.length })),
       totalMatches: snapshot.sources.length, nextCursor, complete: nextCursor === null, coverage: snapshot.coverage }, dataClasses, evidence };
   } };
 }

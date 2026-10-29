@@ -391,7 +391,7 @@ const NAME_CANDIDATE = /\b([A-Za-z][A-Za-z'\u2019-]*)\b/gu;
 /** Typography, not a name: the first word of the text or of a sentence. */
 const SENTENCE_START = /(?:^|[.!?]\s+)$/u;
 /** An ask that refers to a past conversation may use her memory even when it names someone. */
-const PAST_CONVERSATION = /\b(?:last time|last we|we said|we discussed|we talked|what did we|did we say|earlier we|remember when)\b/iu;
+const PAST_CONVERSATION = /\b(?:yesterday|story|transcript|you said|you told me|last time|last we|we said|we discussed|we talked|what did we|did we say|earlier we|remember when)\b/iu;
 
 export function pastConversationAsk(question: string): boolean { return PAST_CONVERSATION.test(question); }
 
@@ -3973,7 +3973,7 @@ function rankMemoryEvidence(hits: readonly JsonObject[], tokens: readonly string
     const at = Date.parse(String(hit['date'] ?? ''));
     return { hit, kind: memoryKind(hit), score: tokens.filter(token => words.includes(token)).length, at: Number.isFinite(at) ? at : 0 };
   });
-  scored.sort((left, right) => right.score - left.score || left.kind - right.kind || right.at - left.at);
+  scored.sort((left, right) => Number(right.hit['sourceKind'] === 'live') - Number(left.hit['sourceKind'] === 'live') || right.score - left.score || left.kind - right.kind || right.at - left.at);
   return scored.map(entry => entry.hit);
 }
 
@@ -3988,7 +3988,8 @@ function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunS
   const live = asked ? new Set<string>() : liveSessionIds(hits, question, history);
   const kept = hits.filter(hit => {
     if (keys.has(memoryWords(String(hit['snippet'] ?? '')))) return false;
-    if (asked) return true;
+    if (hit['sessionId'] === currentSessionId) return false;
+    if (asked || pastConversationAsk(question)) return true;
     // A remembered note is memory even when it was written in this call; the recording of the
     // conversation itself, and every summary of it, never is.
     if (hit['sourceKind'] === 'entry') return true;
@@ -4147,12 +4148,6 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     }
     target.total += entry.total === undefined ? items.length : entry.total === entry.lines.length ? items.length : entry.total;
     if (!existing) groups.push(target);
-  }
-  // C-DEPTH item 2: an ask that names a person or a document gives her memory no allocation at all, unless
-  // it refers to a past conversation, so her own notes can never crowd out the evidence she was asked for.
-  if (requestedEntities(run.question ?? '').length > 0 && !pastConversationAsk(run.question ?? '')) {
-    const at = groups.findIndex(group => group.source === 'memory');
-    if (at >= 0) groups.splice(at, 1);
   }
   const calendarEvents = new Map<string, RetainedCalendarEvent>();
   for (const read of run.calendar.values()) for (const [key, event] of read.events) calendarEvents.set(key, event);
@@ -4342,7 +4337,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
         : `${note} I left out ${calendarLeftOut} calendar ${calendarLeftOut === 1 ? 'event' : 'events'} to keep this answer short.`;
     // R4: this note is composed when the run has stopped waiting, so a source still in `pending` did not return in
     // time; only the first answer point, which answers while the readers keep going, says "still searching".
-    let settledNote = complete ? (spokenNote === undefined ? RESEARCH.completeNote : `${spokenNote} ${RESEARCH.completeNote}`)
+    let settledNote = complete && run.historyTokens.size === 0 ? (spokenNote === undefined ? RESEARCH.completeNote : `${spokenNote} ${RESEARCH.completeNote}`)
       : stillReading.length > 0 ? `${RESEARCH.hardStopNote}${stillReading.map(source => SOURCE_LABEL[source]).join(', ')}`
         // #634: an unread source is named once, in the coverage header, never again in the note.
         : canRepeat && moreAvailable ? (spokenNote === undefined ? RESEARCH.moreAvailableNote : `${spokenNote} ${RESEARCH.moreAvailableNote}`) : spokenNote;
@@ -5253,9 +5248,9 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
   for (const plan of plans.filter(entry => entry.read.source === 'memory')) {
     const args = plan.lookup.history ?? { query: plan.lookup.query };
     const reference = args.cursor ?? args.recordRef;
-    if (reference && !run.historyTokens.has(reference)) {
-      run.unavailableReasons.set('memory', 'history_reference_unavailable'); done.push(settle(plan, 'unavailable')); continue;
-    }
+    // The canonical history reader validates call-scoped refs, including refs from older research runs.
+    // Never narrow that authority to this research run's transient token set.
+    void reference;
     if (!evidenceAllowed(deps, run, context.signal)) { done.push(settle(plan, 'unavailable')); continue; }
     // RUN-R7: the memory read is cut on the run's clock, released when the read settles.
     const cut = cutAfter(RESEARCH.sourceDeadline.memory, deps.schedule);
@@ -5864,6 +5859,8 @@ const TOPIC_SKIP = new Set([...KNOWLEDGE_FILLER, ...REFERENTIAL_WORDS, ...CONTIN
  * model's own direction is judged: a continue's question and topic never reach a source (#565).
  */
 function continuesRun(run: RunState, call: ResearchCall, question: string): boolean {
+  // An explicit local record handle is navigation, not a new topic.
+  if (call.lookups?.some(lookup => lookup.history?.recordRef || lookup.history?.cursor)) return true;
   const read = new Set<SourceKind>([...run.route, ...run.sourcesDone, ...run.pending]);
   // A run's own id continues it only for more of what it already read, judged on the words and lookups
   // the call brings. A source the run never read, or words about a new topic, is a new ask (review F2).

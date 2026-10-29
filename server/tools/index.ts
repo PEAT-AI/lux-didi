@@ -996,6 +996,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               if (!call) return { status: 'failed' };
               const resultScope = createResultScope();
               let value: ModelSnapshot;
+              let sourceRefs: readonly SourceDispatchRef[] | undefined;
               try {
                 let evidence: Awaited<ReturnType<typeof reader.call>>;
                 try { evidence = await resultScope.run(() => dispatch.run({call,bound,snapshotSha256:sha256(canonicalJSON(snapshot)),allowedClasses:snapshot.acceptance.allowedClasses.filter(c => snapshot.acceptance.route.allowedClasses.includes(c))},() => reader.call(name, callArgs, context.signal))); } catch (error) {
@@ -1050,7 +1051,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
                   return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0, classified: status.code }, []) };
                 }
                 reportToolStatus?.(p.endpoint.id, null);
-                const sourceRefs = evidence[SOURCE_DISPATCH] ? [evidence[SOURCE_DISPATCH]!] : evidence[SOURCE_CHILD_DISPATCHES];
+                sourceRefs = evidence[SOURCE_DISPATCH] ? [evidence[SOURCE_DISPATCH]!] : evidence[SOURCE_CHILD_DISPATCHES];
                 try { value = descriptor.project(evidence, dispatch.port, p); } catch (error) {
                   const code = resultScope.failureCode ?? (error instanceof SyntaxError || (error instanceof Error && (error.message === 'unsupported_mcp_result' || error.message === 'unsupported_mcp_content')) ? 'invalid_result'
                     : error instanceof Error ? 'connector_error' : 'handler_outcome');

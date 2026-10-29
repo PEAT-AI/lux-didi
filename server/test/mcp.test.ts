@@ -1072,8 +1072,8 @@ test('a tampered or foreign durable row is refused, never re-published from conf
 
 test('finished connector reads cannot starve a shared store within one TTL', async () => {
   const { createResultScope } = await import('../adapters/mcp/lifecycle.js');
-  const fixture = await server();
-  const { adapter, registry } = setup(fixture.url, { maxEntries: 64, maxBytes: 4 * 1024 * 1024, ttlMs: 60_000, now: () => 1000 });
+  const source = await fixture();
+  const { adapter, registry } = setup(source.url, { maxEntries: 64, maxBytes: 4 * 1024 * 1024, ttlMs: 60_000, now: () => 1000 });
   try {
     await approve(adapter, registry);
     const kinds = [3, 1, 20, 1, 1, 1]; // person, overview, attention, calendar, search, knowledge
@@ -1095,5 +1095,5 @@ test('finished connector reads cannot starve a shared store within one TTL', asy
     };
     for (let index = 0; index < 40; index++) await read(kinds[index % kinds.length]!);
     for (const count of kinds) await read(count);
-  } finally { await adapter.close(); await fixture.close(); }
+  } finally { await adapter.close(); await source.close(); }
 });

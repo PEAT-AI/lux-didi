@@ -51,9 +51,9 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
   const sourceTools = options.sourceTools ?? tools;
   const rpcErrors: unknown[] = [];
   if (options.sourceTools) {
-    const callTool = Client.prototype.callTool;
-    t.mock.method(Client.prototype, 'callTool', async function(this: Client, ...args: Parameters<Client['callTool']>) {
-      try { return await callTool.apply(this, args); }
+    const request = Client.prototype.request;
+    t.mock.method(Client.prototype, 'request', async function(this: Client, ...args: Parameters<Client['request']>) {
+      try { return await request.apply(this, args); }
       catch (error) { rpcErrors.push({ clientError: String(error) }); throw error; }
     });
   }

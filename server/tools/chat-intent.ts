@@ -43,14 +43,13 @@ const PERSON_SAID = new RegExp(String.raw`\bwhat (?:did|does|has|have|had|is|are
  */
 const PERSON_FROM = new RegExp(String.raw`\b(?:messages?|posts?|dms?|notes?) (?:from|by) ${NAME}`, 'iu');
 /** "my DMs with Ada", "my chat with Ada": both sides of the direct conversation. */
-const PERSON_WITH = new RegExp(String.raw`\b(?:dms?|direct messages?|direct chats?|private chats?|chats?|conversations?|discussions?|messages?|thread) with ${NAME}`, 'iu');
+const PERSON_WITH = new RegExp(String.raw`\b(?:dms?|direct messages?|direct chats?|private chats?|chats?|conversations?|messages?|thread) with ${NAME}`, 'iu');
 /**
  * "what did I discuss with Ada", "what have Ada and I talked about", "what I exchanged with Ada",
  * "what Ada wrote to me": everything the two exchanged. R8-W9: "exchanged with", "talked to",
  * "chatted with" and "wrote to" are the same ask said another way, never a topic search.
  */
 const PERSON_DISCUSS = new RegExp(String.raw`\b(?:discuss|discussed|talk|talked|talk about|talked about|chat|chatted|chat about|chatted about|speak|spoke|speak about|spoke about|exchange|exchanged|write|wrote|written|message|messaged) (?:with|to) ${NAME}`, 'iu');
-const PERSON_DISCUSSIONS = new RegExp(String.raw`^\s*${NAME} discussions?\b`, 'iu');
 const PERSON_AND_I = new RegExp(String.raw`\b${NAME} and (?:i|me) (?:discuss|discussed|talk|talked|chat|chatted|spoke|speak)\b`, 'iu');
 /** "my group chat with Ada and Kim". */
 const GROUP_WITH = /\bgroup (?:chats?|dms?|messages?|conversations?|threads?)? ?with ((?:\p{L}[\p{L}'’.-]*)(?:(?:\s*,\s*|\s+and\s+|\s*&\s*)\p{L}[\p{L}'’.-]*){1,3})/iu;
@@ -78,7 +77,7 @@ const CHANNEL_PLACEHOLDER = /^(?:name|channel|exact|string|called|exact name)$/i
  * to the chat source and are never a channel name, a person or a search term. Lowercase, compared with
  * whitespace folded, so "meta most" and "MetaMost" are the same word.
  */
-export const CHAT_PRODUCT_NAMES: readonly string[] = ['metamos', 'metamost', 'meta most', 'metamouse', 'meta mouse', 'matter most', 'mattermost', 'metamorph', 'metamask', 'metamo'];
+export const CHAT_PRODUCT_NAMES: readonly string[] = ['metamos', 'metamost', 'meta most', 'metamouse', 'meta mouse', 'matter most', 'mattermost'];
 
 const escapeWord = (word: string): string => word.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 /** The same list as one alternation, a space between its words optional so "meta most" is one form. */
@@ -99,14 +98,11 @@ const CHAT_FILLER = new Set([
   'post', 'posts', 'posted', 'write', 'wrote', 'written', 'say', 'said', 'send', 'sent', 'tell', 'told', 'messaged', 'ask', 'asked', 'share', 'shared', 'reply', 'replied', 'answer', 'answered',
   'discuss', 'discussed', 'talk', 'talked', 'chatted', 'speak', 'spoke', 'latest', 'newest', 'recent', 'recently', 'lately', 'new', 'news', 'anything', 'something', 'everything', 'happening', 'happened', 'going',
   'named', 'called', 'what', 'whats', "what's", 'did', 'has', 'have', 'had', 'me', 'my', 'i', 'we', 'us', 'and', 'with', 'from', 'by', 'in', 'on', 'the', 'a', 'an', 'is', 'are', 'of', 'to', 'about',
-  'like', 'uh', 'um', 'this', 'last', 'past', 'week', 'month', 'today', 'yesterday', 'topics', 'topic', 'stuff', 'things', 'update', 'updates',
+  'this', 'last', 'past', 'week', 'month', 'today', 'yesterday', 'topics', 'topic', 'stuff', 'things', 'update', 'updates',
 ]);
 
-const NAME_HEAD = new Set(['check', 'what', 'who', 'when', 'did', 'have', 'with']);
-
 function cleanName(raw: string): string | undefined {
-  const parts = raw.split(/(?<=\p{L}{2})[.!?]\s/u, 1)[0]!.trim().replace(/[.,!?;:'’]+$/u, '').split(/\s+/u).filter(Boolean);
-  while (parts.length > 0 && NAME_HEAD.has(parts[0]!.toLowerCase())) parts.shift();
+  const parts = raw.trim().replace(/[.,!?;:'’]+$/u, '').split(/\s+/u).filter(Boolean);
   while (parts.length > 0 && NAME_TAIL.has(parts[parts.length - 1]!.toLowerCase())) parts.pop();
   if (parts.length === 0) return undefined;
   const name = parts.join(' ');
@@ -153,7 +149,7 @@ export function chatAsk(question: string): boolean {
   // R8-W9: "can you read Metamost" names the chat by its own spoken name, so the ask routes to the chat.
   if (chatProductName(question)) return true;
   if (groupPeople(question) !== undefined) return true;
-  for (const shape of [PERSON_SAID, PERSON_FROM, PERSON_WITH, PERSON_DISCUSS, PERSON_AND_I, PERSON_DISCUSSIONS]) {
+  for (const shape of [PERSON_SAID, PERSON_FROM, PERSON_WITH, PERSON_DISCUSS, PERSON_AND_I]) {
     const found = shape.exec(question)?.[1];
     if (found !== undefined && cleanName(found) !== undefined) return true;
   }
@@ -240,7 +236,7 @@ export function chatIntent(question: string, options: { terms: string; nowMs: nu
     const found = shape.exec(question)?.[1];
     return found === undefined ? undefined : cleanName(found);
   };
-  const discussed = person(PERSON_DISCUSS) ?? person(PERSON_AND_I) ?? person(PERSON_DISCUSSIONS);
+  const discussed = person(PERSON_DISCUSS) ?? person(PERSON_AND_I);
   if (discussed !== undefined) return { kind: 'person-overview', person: discussed, terms: aboutTerms(question, [discussed]), window };
   const withThem = person(PERSON_WITH);
   if (withThem !== undefined) return { kind: 'person-said', person: withThem, sides: 'both', terms: aboutTerms(question, [withThem]), window };
@@ -260,8 +256,8 @@ export function chatSubs(intent: ChatIntent, limit: number, fallbackQuery: strin
   const query = intent.terms.trim();
   if (intent.kind === 'topic-search') {
     const args: JsonObject = { query: query !== '' ? query : fallbackQuery, limit };
-    if (window['from_date'] !== undefined) args['from_date'] = window['from_date'];
-    if (window['to_date'] !== undefined) args['to_date'] = window['to_date'];
+    if (window['from_date'] !== undefined) args['after'] = window['from_date'];
+    if (window['to_date'] !== undefined) args['before'] = window['to_date'];
     return [{ key: 'c0', name: CHAT_SEARCH_TOOL, args }];
   }
   const args: JsonObject = { intent: intent.kind === 'person-said' ? 'person' : intent.kind === 'person-overview' ? 'overview' : intent.kind === 'channel-recent' ? 'channel' : 'group', limit, ...window };

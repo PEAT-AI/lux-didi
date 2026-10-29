@@ -191,3 +191,13 @@ assert.ok(persona.NAYA_VOICE_SURFACE.includes('Never name a settings or approval
   'the voice surface forbids naming a location the connector state line does not name, with or without connector rows');
 console.log(JSON.stringify({ case: 'connector_truth_without_rows', voiceRule: true }));
 NODE
+
+# C-RECALL104: retained conversations are research-backed, never invented quotes.
+node --input-type=module - "$out/dist" <<'NODE'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const persona = await import(pathToFileURL(`${process.argv[2]}/prompt/live-persona.js`).href);
+assert.ok(persona.NAYA_LIVE_BASE.includes('look back over past conversations word for word through research'));
+assert.ok(persona.NAYA_LIVE_BASE.includes('Quote only what research returned; never invent a past quote.'));
+assert.ok(!persona.NAYA_LIVE_BASE.includes('the full conversation does not'));
+NODE

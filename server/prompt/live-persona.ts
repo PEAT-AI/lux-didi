@@ -485,7 +485,7 @@ export function earlierConversationsBudget(otherSectionsChars: number): number {
 
 export const CONVERSATION_RECALL_COVERAGE_NOTE = 'Conversation recall is incomplete. Some retained history could not be included because its eligibility is unverified or the selected route cannot read it. Missing context does not mean a conversation never happened. Use the authorized history tools when an answer depends on earlier discussion, and mention a gap only when it affects the answer.';
 
-export interface EarlierConversationCandidate { readonly id: string; readonly endedAt: number; readonly summary: string }
+export interface EarlierConversationCandidate { readonly id: string; readonly liveSessionId?: string; readonly endedAt: number; readonly summary: string }
 export interface EarlierConversationsResult {
   readonly section: string;
   readonly selectedIds: readonly string[];
@@ -518,7 +518,7 @@ export function buildEarlierConversationsSection(
   let used = overhead;
   for (const candidate of ordered) {
     if (candidate.endedAt < cutoff || candidate.endedAt > options.now) { omitted.push({ id: candidate.id, reason: 'stale' }); continue; }
-    const line = `${datePrefix(candidate.endedAt, options.timeZone)} [session:${candidate.id}] ${candidate.summary}`;
+    const line = `${datePrefix(candidate.endedAt, options.timeZone)} [session:${candidate.liveSessionId ?? candidate.id}] ${candidate.summary}`;
     const next = used + line.length + (lines.length ? 1 : 0);
     if (next > maxChars) { omitted.push({ id: candidate.id, reason: 'budget' }); continue; }
     lines.push(line); used = next; selectedIds.push(candidate.id);

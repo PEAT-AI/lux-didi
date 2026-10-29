@@ -187,7 +187,17 @@ export function createHistoryReader(now: () => number = Date.now): { read(tx: Tr
     const scopeKey = digest({ ...scope, runId: scope.conversationId ? `conversation:${scope.conversationId}` : scope.runId });
     let position: Position;
     if (args.cursor || args.recordRef) {
-      const stored = positions.get(args.cursor ?? args.recordRef!);
+      let stored = positions.get(args.cursor ?? args.recordRef!);
+      if (!stored && args.recordRef?.startsWith('session:')) {
+        const id = args.recordRef.slice('session:'.length);
+        const value = liveValue(tx, scope.ownerId, id);
+        if (value && id !== (scope.currentSessionId ?? scope.runId) && scope.allowedClasses.includes(value.ref.dataClass)) {
+          const snapshot: SearchSnapshot = { runId: scope.runId, ...(scope.conversationId ? { conversationId: scope.conversationId } : {}), tokens: new Map(), scope: scopeKey, expires: now() + REFERENCE_LIFETIME_MS,
+            sources: [value.ref], references: [args.recordRef], coverage: { transcripts: 'automatic_transcription_not_verbatim_audio' }, limit: 1, snippets: [] };
+          stored = { snapshot, index: 0, offset: 0, detail: true };
+          positions.set(args.recordRef, stored);
+        }
+      }
       if (!stored || stored.snapshot.scope !== scopeKey || (!!args.recordRef && !stored.detail)) return unavailable('history_reference_unavailable');
       position = stored;
     } else {

@@ -927,3 +927,14 @@ test('MM-8 and ARG-1: noisy overview uses current person and no inherited channe
   assert.equal(current[0]?.args['channel'], undefined);
   assert.equal(current[0]?.args['query'], undefined);
 });
+
+test('MM-9: chat owner approval is named as a permission gate with its actual terminal approval surface', async t => {
+  const f = await setup(t, 'people');
+  const deps = researchDeps(f);
+  deps.unavailableNow = () => [{ source: 'chat', reason: 'owner-approval-required' }];
+  const reply = await runResearch(deps, { action: 'start', question: 'my DMs with Ada', topic: 'Ada DMs' }, new AbortController().signal);
+  assert.match(String(reply['coverage']), /chat grant_missing/u);
+  assert.match(JSON.stringify(reply), /owner approval/u);
+  assert.match(JSON.stringify(reply), /mcp-cli\.js approve/u);
+  assert.equal(f.calls().filter(call => call.name === 'mattermost_search').length, 0);
+});

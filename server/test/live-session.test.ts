@@ -7723,13 +7723,18 @@ test('alarm audio keeps one timer until the last-audible silence window expires'
   const session = h.owner.create({ idempotencyKey: 'wake-window', inputClass: 'ordinary', alarm: { alarmId: alarm.id, ownerDisplayName: 'Synthetic Owner', scheduledTime: '08:00', label: alarm.label, ringDeadlineUtc: clock.now + 600000 } }, h.ctx);
   const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
   await attachment.ready;
+  const output = attachment.output[Symbol.asyncIterator]();
   const startedAt = clock.now;
   const timer = [...clock.pending].find(entry => entry.due === startedAt + 30000);
   assert.ok(timer, 'one initial silence timer');
   for (const elapsed of [10000, 20000]) {
     clock.now = startedAt + elapsed;
-    for (let frame = 0; frame < 10; frame++) fake.emit({ type: 'audio', pcm, rate: 24000, audible: true });
-    await settlePort();
+    for (let frame = 0; frame < 10; frame++) {
+      fake.emit({ type: 'audio', pcm, rate: 24000, audible: true });
+      let chunk = await output.next();
+      while (!chunk.done && chunk.value.kind !== 'audio') chunk = await output.next();
+      assert.equal(chunk.value?.kind, 'audio', 'observe every frame before advancing the fake clock');
+    }
     assert.ok(clock.pending.has(timer), 'audio updates a timestamp, not the existing timer');
   }
   clock.now = startedAt + 30000; clock.runDue();

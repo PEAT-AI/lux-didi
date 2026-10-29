@@ -1140,6 +1140,7 @@ test('SI-R3 Gemini: parallel research batch admits six and immediately answers t
   }) })).open(request(), control());
   t.after(() => session.close());
   const captured = collect(session);
+  await new Promise<void>(resolve => setImmediate(resolve));
   socket.deliver({ setupComplete: {} });
   await session.ready;
   socket.deliver({ toolCall: { functionCalls: Array.from({ length: 8 }, (_, i) => ({ id: `synthetic-cap-${i}`, name: 'research', args: {} })) } });

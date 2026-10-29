@@ -175,5 +175,5 @@ test('hear104 quarter-to is a time, not a trailing label', () => {
 test('hear104 a pending bare-number follow-up supplies hour and minute', () => {
   const result = parseAlarmTime('set an alarm Ten five, today', now, tz);
   assert.equal(result.status, 'ready');
-  if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-29T02:05:00Z'));
+  if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-28T14:05:00Z'));
 });

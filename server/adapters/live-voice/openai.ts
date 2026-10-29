@@ -508,6 +508,7 @@ class Session implements LiveVoiceSession {
   private answerNow = false;
   private lastToolOutputAt: number | undefined;
   private researchCalls = 0;
+  private researchAdmissions = new Set<string>();
   private toolRounds = 0;
   private silentRescueUsed = false;
   private continuationTiming: { toolOutputAt: number; createAt: number; createdAt: number | null; firstItemAt: number | null; firstAudioAt: number | null; toolCall: boolean; nudged: boolean } | undefined;
@@ -934,6 +935,7 @@ class Session implements LiveVoiceSession {
     if (this.episodeQuiet === undefined) {
       this.toolRounds = 0;
       this.researchCalls = 0;
+      this.researchAdmissions.clear();
       this.silentRescueUsed = false;
       this.clearNoItemTimer();
       this.continuationTiming = undefined;
@@ -1229,7 +1231,7 @@ class Session implements LiveVoiceSession {
         return;
       }
       this.researchCalls += 1;
-      if (this.researchCalls === 6) this.answerNow = true;
+      this.researchAdmissions.add(call.id);
     }
     this.emit({ type: 'toolCall', calls: [call] });
     this.touch();
@@ -1484,6 +1486,8 @@ class Session implements LiveVoiceSession {
     }
     for (const { id, response } of fresh) {
       if (this.answeredCalls.has(id)) fail('protocol_error');
+      // Structural refusals never ran research. Release their admission slot without changing trace truth.
+      if (response['state'] === 'refused' && this.researchAdmissions.delete(id)) this.researchCalls -= 1;
       this.answeredCalls.set(id, response);
     }
     if (!fresh.length) return this.continuationOutcome;
@@ -1564,7 +1568,7 @@ class Session implements LiveVoiceSession {
       return this.continuationOutcome = 'deferred';
     }
     const round = this.toolRounds + (!attempt && (calls > 0 || this.continuationCalls > 0) ? 1 : 0);
-    const answerNow = attempt ? this.lastAnswerNow : this.answerNow || round >= 3;
+    const answerNow = attempt ? this.lastAnswerNow : this.answerNow || round >= 3 || this.researchCalls >= 6;
     if (!this.write(JSON.stringify({ type: 'response.create', event_id: this.commandId('cont'),
       ...(answerNow ? { response: { instructions: 'Answer now from the results already available. Do not call research again in this response.', tools: [], tool_choice: 'none' } } : {}) }))) {
       this.continuationOwed = true;

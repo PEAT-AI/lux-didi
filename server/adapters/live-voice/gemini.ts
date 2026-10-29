@@ -235,6 +235,7 @@ class Session implements LiveVoiceSession {
   private cleaned = false;
   private pendingCalls: LiveToolCall[] = [];
   private researchCalls = 0;
+  private researchAdmissions = new Set<string>();
   private researchAwaitingInput = false;
   private informationalKeys = new Set<string>();
   unknownTopLevelKeys = 0;
@@ -426,7 +427,7 @@ class Session implements LiveVoiceSession {
               status: 'blocked', reason: 'research_cap_reached', message: 'research cap reached for this question',
             } });
           } else {
-            if (call.name === 'research') this.researchCalls += 1;
+            if (call.name === 'research') { this.researchCalls += 1; this.researchAdmissions.add(call.id); }
             admitted.push(call);
           }
         }
@@ -457,6 +458,7 @@ class Session implements LiveVoiceSession {
         if (!object(activity)) fail('protocol_error');
         if ((activity.type ?? activity.voiceActivityType) === 'ACTIVITY_START') {
           this.researchCalls = 0;
+          this.researchAdmissions.clear();
           this.researchAwaitingInput = false;
           events.push({ type: 'waitingForInput', value: true });
         }
@@ -560,6 +562,7 @@ class Session implements LiveVoiceSession {
           const text = 'text' in transcription ? this.text(transcription.text) : '';
           if (type === 'inputTranscription' && text.trim().length && this.researchAwaitingInput) {
             this.researchCalls = 0;
+            this.researchAdmissions.clear();
             this.researchAwaitingInput = false;
           }
           if (type === 'inputTranscription') { this.diagnostic.inputTranscriptionEvents++; this.diagnostic.inputTranscriptionCharacters += text.length; }
@@ -654,6 +657,9 @@ class Session implements LiveVoiceSession {
       : input.responses;
     const frame = JSON.stringify({ toolResponse: { functionResponses: responses } });
     if (!this.write(frame)) return 'failed';
+    for (const { id, response } of input.responses) {
+      if (response['state'] === 'refused' && this.researchAdmissions.delete(id)) this.researchCalls -= 1;
+    }
     this.pendingCalls = [];
     return 'sent';
   }

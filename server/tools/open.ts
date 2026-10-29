@@ -19,8 +19,8 @@ export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_sourc
 /** The one sentence the model says when an item open is refused or unknown. */
 export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch', string> = {
   not_found: 'The host could not resolve that shown item.',
-  not_allowed: 'That target is not allowed for this action. Tool retries use the same handle, without new authority.',
-  no_open_intent: 'There is no owner request authorizing an open; the host did not hear an open request. Tool retries use the same handle.',
+  not_allowed: 'I cannot open that target.',
+  no_open_intent: 'Please tell me what you want me to open.',
   kind_mismatch: 'That item is not the kind authorized by this request.',
 };
 /** A control frame and its ack, exactly as they cross the local Live socket. */
@@ -472,7 +472,7 @@ export interface WebOpenTarget { action: NativeAction; target: string; detail: s
  */
 export async function resolveWebOpen(args: { kind: WebKind; target: string }, words: string, signal: AbortSignal): Promise<{ target: WebOpenTarget } | WebOpenRefusal> {
   if (!WEB_INTENT.test(words)) return { code: 'no_open_intent' };
-  if (!webBinding(args.target, words)) return { code: 'not_owner_words' };
+  if (/^[a-z][a-z0-9+.-]*:/i.test(args.target) && !/^https?:\/\//i.test(args.target)) return { code: 'not_allowed' };
   const direct = webDestination(args.kind, args.target);
   if (direct !== undefined) return { target: { action: 'open_url', target: direct.url, detail: 'web', kind: 'web', title: direct.domain } };
   if (args.kind !== 'site') return { code: 'not_allowed' };

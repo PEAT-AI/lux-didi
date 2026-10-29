@@ -751,7 +751,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               alarmTz = String(old.tz);
               tx.run("UPDATE alarms SET state='done' WHERE id=?", [input.id!]);
             }
-            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [context.executionId, parsed.fireAtUtc, alarmTz, '', ask.journalId]);
+            tx.run("INSERT INTO alarms(id,fire_at_utc,tz,label,state,created_journal_id) VALUES(?,?,?,?,'pending',?)", [context.executionId, parsed.fireAtUtc, alarmTz, parsed.label, ask.journalId]);
             if (name === 'snooze_alarm') tx.run('INSERT INTO alarm_snoozes(alarm_id,next_alarm_id) VALUES(?,?)', [input.id!, context.executionId]);
             consumed = ask.journalId;
             const health = options.alarms?.health() ?? { degraded: true, reasons: ['shell_unreachable'] };

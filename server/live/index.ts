@@ -81,7 +81,7 @@ const ALARM_MODE_MARKER = '[alarm mode]';
 export function alarmSessionInstructions(input: import('./types.js').AlarmSessionSetup): string {
   const reminder = input.label?.trim();
   const overview = reminder && /overview|briefing|rundown|what['’]?s on/i.test(reminder);
-  return `${ALARM_MODE_MARKER} Use your normal persona and voice, including its warm morning manner. Open by addressing ${JSON.stringify(input.ownerDisplayName)} with the time ${JSON.stringify(input.scheduledTime)}.${reminder ? ` Say the reminder text first: ${JSON.stringify(reminder)}.` : ''}${overview ? ' Give a short day overview using the calendar digest above and the normal research tools; do not invent events or claim unavailable sources.' : ''} Briefly invite a spoken answer. Host wake notes request another short, friendly wake line, shorter each time. Only an explicit awake or confirmation phrase, or snooze/cancel request, acknowledges this alarm. Once acknowledged continue as a normal call. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
+  return `${ALARM_MODE_MARKER} Use your normal persona and voice, including its warm morning manner. Open by addressing ${JSON.stringify(input.ownerDisplayName)} with the time ${JSON.stringify(input.scheduledTime)}.${reminder ? ` Say the reminder text first: ${JSON.stringify(reminder)}.` : ''}${overview ? ' Give a short day overview using the calendar digest above and the normal research tools; do not invent events or claim unavailable sources.' : ''} ${input.alarmId ? ` Alarm id ${JSON.stringify(input.alarmId)} identifies this occurrence for snooze/cancel tools.` : ''} Briefly invite a spoken answer. Host wake notes request another short, friendly wake line, shorter each time. Only an explicit awake or confirmation phrase, or snooze/cancel request, acknowledges this alarm. Once acknowledged continue as a normal call. Alarm tools require the owner's own finalized speech. Never claim a sleeping Mac or closed lid will ring.`;
 }
 
 /** Host instructions are never owner words, including on adapters with only a user text channel. */
@@ -1958,6 +1958,7 @@ export class LiveSessionOwner {
       ...(silentStart ? { openingText: LIVE_DROPPED_LINE_MARK } : {}),
       ...(this.#profile.language !== undefined ? { languageCode: this.#profile.language } : {}),
       ...(declarations.length ? { tools: declarations } : {}) };
+    const alarmIdleMs = Math.max(this.#profile.limits.idleMs, ...[...(this.#alarmSessions.get(liveSessionId)?.values() ?? [])].map(alarm => (alarm.setup.ringDeadlineUtc ?? this.#now()) - this.#now()));
     const sessionMs = Math.min(this.#profile.limits.sessionMs, this.#profile.limits.callMaxMs);
     const deadlineMs = Date.now() + sessionMs;
     const deadlineAt = this.#now() + sessionMs;
@@ -1969,7 +1970,7 @@ export class LiveSessionOwner {
     const openedAt = this.#now();
     try {
       // Absolute wall clock for the adapter; the injected clock is the owner's own durable order.
-      session = this.#voice.open(request, { signal: abort.signal, deadlineMs, limits: this.#profile.limits, trace: this.#tracePort(liveSessionId, connection) });
+      session = this.#voice.open(request, { signal: abort.signal, deadlineMs, limits: { ...this.#profile.limits, idleMs: alarmIdleMs }, trace: this.#tracePort(liveSessionId, connection) });
       hostLogEvent({ event: 'live_provider_open', liveSessionId, generation: 0, instructionChars: request.system.text.length,
         seedChars: (request.history ?? []).reduce((sum, turn) => sum + turn.text.length, 0), tools: request.tools?.length ?? 0 });
     } catch (error) {

@@ -433,6 +433,8 @@ final class ConnectingRing {
     }
 
     func presenceChanged(_ next: PresenceState, failed: Bool) {
+        // Once capture opens, the spoken alarm owns delivery, not a competing local chime.
+        if next == .live { stopAlarm() }
         guard alarmDeadline == nil else { return }
         let at = now()
         switch director.transition(to: next, failed: failed, atMs: at) {

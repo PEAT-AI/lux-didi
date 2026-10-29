@@ -23,13 +23,17 @@ The host stores alarms through the existing tool schema migrations. Its injected
 
 The pending-to-ringing transition and a ten-minute ringing deadline commit before the `alarm_due` frame. A restart replays the same occurrence only inside its saved deadline, without extending it. Multiple due alarms retain separate ids; the shell uses one chime output rather than stacking chimes. Snooze creates a new occurrence and cannot resurrect or snooze the old occurrence twice.
 
-The shell immediately plays a short chime through the existing cached connecting-ring player, repeating every 45 seconds until acknowledged or the deadline. Provider failure does not stop that local loop. Finalized credible owner speech acknowledges ringing; a subsequent snooze or cancel still requires its own matching spoken intent.
+The shell immediately plays a short chime through the existing cached connecting-ring player, repeating every 45 seconds until acknowledged or the deadline. Provider failure does not stop that local loop. Finalized explicit confirmation in the announcing call acknowledges that alarm; a subsequent snooze or cancel still requires its own matching spoken intent.
 
-### Alarm speech, W11-R5
+### Alarm speech, release 10.4
 
-For an occurrence with no live conversation, the host reserves at most one provider-session attempt. Its **session setup instructions**, not a user-role message, contain alarm mode, the Mac account's display name and scheduled time. No calendar or mail lookup is requested. Automatic provider recovery is disabled for that alarm-mode session.
+A due alarm uses Naya's normal live persona, memory, calendar digest and research tools, with an alarm block appended to the normal instructions. She opens by name and time, says the stored reminder first, and gives a short day overview when the reminder requests an overview, briefing, rundown or what's on. An alarm does not receive the normal fresh-opening direction.
 
-If a conversation is already live, the alarm is the local chime and menu-bar state only. The host neither injects text nor rebuilds the session. It records `alarm_degraded` with `live_session_no_channel`; the next finalized owner speech acknowledges the alarm. A general non-user note channel for live sessions remains separate work, not an alarm reliability dependency.
+With no live call, the shell starts an alarm call. During an existing call it routes the alarm into that call immediately as a host note, with no competing chime. When an alarm call becomes live, any fallback chime stops. The notification fallback has the default sound. No sleeping-Mac guarantee is made.
+
+The host requests a shorter, friendly wake line after 30 seconds without model audio and repeats until acknowledgement, snooze/cancel, or the ten-minute ring deadline. The host idle budget covers the ring deadline; an alarm allows one provider rebuild while that deadline remains open. Chimes remain the standalone fallback when no call is available.
+
+Only finalized spoken awake/confirmation phrases such as "I'm awake", "I'm up", "got it", "done", "okay okay" or "stop", and explicit snooze/cancel requests, acknowledge an alarm. A mumble or unrelated call does not. The most recently announced alarm in that call owns the confirmation; other ringing alarms are untouched. After acknowledgement the call continues normally. Snooze/cancel still use the normal owner-authorized alarm tools.
 
 ## Shell status and honesty
 

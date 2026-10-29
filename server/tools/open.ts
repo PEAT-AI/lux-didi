@@ -417,7 +417,7 @@ export function webWords(text: string): string[] {
     .filter(Boolean);
 }
 
-/** Every word of the target is a word he said, so no retrieved text and no model sentence binds one. */
+/** Handle-tool target binding only, not open_web: each target word must occur in the owner words. */
 export function webBinding(target: string, ownerWords: string): boolean {
   const said = new Set(webWords(ownerWords));
   const wanted = webWords(target);

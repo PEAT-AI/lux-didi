@@ -355,6 +355,7 @@ test('direct102 real host and fake provider: preamble-before-open yields one nat
   exposeToolResults([{ name: 'drive_search_files', response: { text: second.text } }]);
   assert.equal((await call(h, 'open_source', { handle: second.text.match(/open: (L[0-9]+)/)![1]! }))['code'], 'opened');
   assert.deepEqual(native.map(frame => frame.target), ['https://drive.google.com/file/d/synthetic-pitch/view', 'https://drive.google.com/file/d/synthetic-other/view']);
+  await assistantBlock(h, 'Those decks are open.');
   await ownerBlock(h, 'what is the weather?');
   assert.equal((await call(h, 'open_source', { handle }))['code'], 'opened', 'a new finalized owner ask supplies fresh authority without a cue');
   assert.equal(native.length, 3);

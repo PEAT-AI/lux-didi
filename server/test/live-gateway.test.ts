@@ -1149,6 +1149,12 @@ for (const scenario of [
     await waitFor(async () => (await json(h.origin, `/api/v1/live-sessions/${id}/journal`, { headers: bearer(h) })).body.data.fragments
       .some((fragment: { kind: string }) => fragment.kind === 'inputTranscription'), 1_500);
   }
+  if ('late' in scenario) {
+    // A late final may finish speech already in flight; an entirely spontaneous call cannot wait for a future ask.
+    h.f.send({ serverContent: { inputTranscription: { text: 'open', finished: false } } });
+    await waitFor(async () => (await json(h.origin, `/api/v1/live-sessions/${id}/journal`, { headers: bearer(h) })).body.data.fragments
+      .some((fragment: { kind: string }) => fragment.kind === 'inputTranscription'), 1_500);
+  }
   h.f.send({ toolCall: { functionCalls: [{ id: 'open-call-1', name: 'open_web', args: { kind: scenario.kind, target: scenario.target } }] } });
   // Real provider ordering regression: one late event, never a retry or a polling producer.
   if ('late' in scenario) {

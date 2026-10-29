@@ -144,3 +144,79 @@ Release 8 shipped four live failures with every test green: an untested tool ent
 | Check | Evidence |
 | --- | --- |
 | `scripts/check-installed-alarm.sh [app target]` | Runs the four alarm tools, stub-clock delivery, fake-shell frames and alarm setup against packaged host modules, with synthetic state and no audio or app launch. With no target it stages an offline package; an explicit target never falls back to the checkout. The installed-check discovery runner finds this script automatically. |
+
+## Installed real-provider canary (opt-in, paid)
+
+`scripts/check-installed-canary.sh <installed-target>` is discovered automatically by
+`scripts/run-installed-checks.sh`. This is an explicit exception to the fake-only local/CI
+rule above: **only the installer/operator runs the paid path after installation**. Author
+and reviewer checks use recorded fake sessions. Do not launch or relaunch the app for this
+check. The already-running shell must be the exact bundle named by `<installed-target>`.
+
+The opt-in file is **outside this public repository** at `~/.lux/didi-canary/asks.json`.
+Never commit it, its real names, or its results. Start from the synthetic
+[`scripts/fixtures/canary-asks.example.json`](../scripts/fixtures/canary-asks.example.json),
+replace the placeholders locally, and choose the actual canonical tool names exposed by
+your configured connectors. The example is not a real account corpus. The format is:
+
+```json
+[
+  {
+    "id": "alarm-split",
+    "finals": ["Set an alarm", "in two minutes"],
+    "expect": {"tool": "set_alarm", "codeClass": "success", "nonEmpty": false, "sideEffect": "alarm"}
+  }
+]
+```
+
+- Use 1 to 15 unique, safe `id` values. `finals` holds 1 to 8 owner finals per ask,
+  including speech-recognition splits. Finals are injected unchanged through the existing
+  typed-owner-text path, with `finalOrigin === 'typed'`; they are not a prompt quoting an ask.
+- `expect.tool` names the actual tool, including a source tool called inside research,
+  not just the model's prose or a guessed connector name. `codeClass` is `success`.
+  `nonEmpty` requires data in the tool's own reply. Successful typed read-data envelopes
+  report `code=data`; explicit error/refusal fields always fail. A stored `completed`
+  outcome never converts a refusal into a pass.
+- Optional `sideEffect` is `alarm`, `open`, or `note`. Alarms must exist as a pending row
+  belonging to a tool call in this canary session, then be cancelled. Opens must receive a
+  matching acknowledgement from the production native transport. The shell's host-only
+  `canary_ack` action returns before all URL, workspace, window and focus operations.
+- The active save tool is `stage_lux_note`, not the retired `remember_note`. Use a clearly
+  synthetic note. Its remote insight ID must match a confirmed `vault_writes` row for this
+  session. Cleanup reads that exact insight, archives it through the configured local
+  lux-knowledge endpoint, and verifies it in the archived list. Missing or failed cleanup
+  fails the ask. No arbitrary model-provided insight ID can authorize deletion.
+
+Before any paid work, the script reads `logs/host.log` under `LUX_DIDI_DATA_DIR` (default:
+`~/Library/Application Support/ai.peat.lux-didi-operator`), using the host's structured
+start/terminal receipts. A live call is refused **even if the asks file is absent**. The
+host also checks its authoritative active-session rows, closing the preflight race.
+Only an absent asks file prints `CANARY SKIP reason=private_ask_file_absent` and exits 0.
+Invalid JSON, unreadable files, a busy call, an unavailable shell/provider, a timeout,
+missing data, a refusal or failed cleanup are failures, never skips.
+
+The script writes one private request containing only a nonce, bundle target and deadline.
+The already-running shell claims it and uses its existing bearer authority to open one
+host session, then attaches its real `LiveSocketTransport`. No credentials or asks are
+copied into the request. The host-side session registry alone selects canary native mode;
+model arguments and tool result properties cannot enable it. The normal configured voice
+provider is used, not a fake provider or a fake native client. There is no capture device
+or microphone input. Providers that produce audio on text turns keep that normal output
+path; the native transport decodes and discards that audio rather than playing it.
+
+The host runs at most 15 asks in one session, waits for each provider response and tool
+work to settle, and reads raw own tool replies rather than stored outcome labels. Each
+ask has a 25-second turn bound. A request-wide 350-second deadline revokes the session;
+cleanup has an 8-second bound, and the script has a hard six-minute outer deadline.
+It prints only `CANARY PASS|FAIL id=<id> tool=<tool> code=<code> ms=<ms>` plus a summary
+with `providerTurns=<count>` measured from provider response records. A native/transport
+failure before the host can return its count explicitly reports `providerTurns=unknown`
+and fails; it is not reported as zero paid usage or a pass. Any failed ask exits 1.
+
+`scripts/check-host.sh` exercises the actual CLI's absent-file and busy-call paths in
+private temporary homes, the recorded-session runner and failure classes with fakes,
+and, on macOS, a lock-compiled native proof that acknowledgement never invokes the
+workspace opener and text-only attachment rejects an ordinary session. Linux CI runs
+the same fake assertion/CLI tests without Swift or real services. The broader native
+regression gate remains `scripts/check-native-live.sh`; documentation uses
+`scripts/check-docs.sh`.

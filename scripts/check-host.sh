@@ -22,6 +22,10 @@ if [ "$(uname -s)" = Darwin ]; then
   (
     native_work=$(mktemp -d "${TMPDIR:-/tmp}/didi-alarm-build.XXXXXX")
     trap 'rm -rf "$native_work"' EXIT
+    scripts/with-compile-lock.sh -- swiftc -j 1 -num-threads 1 -swift-version 6 -strict-concurrency=complete -warnings-as-errors -parse-as-library \
+      Sources/LuxDidi/NativeActions.swift Sources/LuxDidi/LiveSocketTransport.swift Sources/LuxDidi/LiveSessionCoordinator.swift \
+      server/test/canary-native.swift -o "$native_work/canary-native"
+    "$native_work/canary-native"
     bash scripts/build-macos-app.sh "$native_work/LuxDidi.app" --cache "$native_work/cache"
   )
 fi

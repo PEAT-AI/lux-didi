@@ -264,6 +264,18 @@ public actor LiveSessionCoordinator {
     }
 
     /// The only entry that generates a new key. Replaces the previous operation, never resurrects it.
+    /// A host-created canary uses the real socket/native action path, but no microphone or player.
+    /// This entry is called only by the private installed-check request handler, never model frames.
+    public static func attachCanary(_ frozen: LiveBeginIntent, snapshot: LiveSnapshot,
+                                    sockets: any LiveSocketConnecting) async throws -> any LiveSocket {
+        guard snapshot.idempotencyKey.hasPrefix("canary:"), snapshot.lifecycle == "accepted",
+              snapshot.assistantId == frozen.assistantID, snapshot.authorityEpoch == frozen.authorityEpoch,
+              snapshot.profileIdentity == frozen.profileIdentity,
+              UUID(uuidString: snapshot.liveSessionId) != nil else { throw LiveClientError.invalidFrame }
+        return try await sockets.connect(LiveSocketBinding(origin: frozen.origin, sessionID: snapshot.liveSessionId,
+                                                            authorityEpoch: frozen.authorityEpoch, profileIdentity: frozen.profileIdentity))
+    }
+
     public func begin(_ frozen: LiveBeginIntent) async {
         generation &+= 1; operation &+= 1
         let token = generation, op = operation

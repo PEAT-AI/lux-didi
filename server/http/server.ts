@@ -8,6 +8,7 @@ import { Store, scrubDeletedMemoryResponses } from '../runtime/store.js';
 import type { DomainPort, EntryTombstone } from '../contracts/domain.js';
 import { ChatError, redactDeletedMemoryContext, type ChatPort } from '../chat/index.js';
 import { redactDeletedMemorySnapshots } from '../live/index.js';
+import { InstalledCanary } from '../live/canary.js';
 import type { ConnectedStatus } from '../host/connected.js';
 import { ServiceError } from '../contracts/errors.js';
 import { ConfigError } from '../config/index.js';
@@ -77,6 +78,7 @@ export interface EntryDeletionResponse extends EntryTombstone { liveSessionRetai
 export interface RunningService { server: Server; origin: string; close(): Promise<void> }
 export async function listenService(options: ServiceOptions): Promise<RunningService> {
   const { store, domain, chat, live } = options;
+  const canary = live ? new InstalledCanary(store, live) : undefined;
   const modelStatus = options.modelStatus ?? { status: 'unconfigured' };
   const streamClosers = new Map<string, Set<() => void>>();
   const alarmStreams = new Set<() => void>();
@@ -133,6 +135,23 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
       if (url.hash || url.username || url.password) throw new ServiceError('BAD_REQUEST', 'Invalid request target');
       if (serveStatic && await serveStatic(req, res)) return;
       const method = req.method ?? '';
+      if (url.pathname === '/api/v1/live-canary/open' || url.pathname === '/api/v1/live-canary/run') {
+        // Native bearer only. There is deliberately no model tool or browser route for this flag.
+        const actor = operatorPrincipal(req, store, origin);
+        const context = authorityContext(req, store, actor);
+        if (method !== 'POST' || !canary) throw new ServiceError('BAD_REQUEST', 'Canary unavailable');
+        const body = await readBody(req);
+        if (!body || typeof body !== 'object' || Array.isArray(body)) throw new ServiceError('BAD_REQUEST', 'Invalid canary request');
+        const input = body as Record<string, unknown>;
+        if (url.pathname.endsWith('/open')) {
+          if (Object.keys(input).length !== 2 || !('asks' in input) || typeof input['deadline'] !== 'number') throw new ServiceError('BAD_REQUEST', 'Invalid canary opener');
+          send(res, 200, success(canary.open(input['asks'], context, input['deadline'])));
+        } else {
+          if (Object.keys(input).length !== 1 || typeof input['sessionId'] !== 'string') throw new ServiceError('BAD_REQUEST', 'Invalid canary session');
+          send(res, 200, success(await canary.run(input['sessionId'], context.clientId)));
+        }
+        return;
+      }
       if (url.pathname.startsWith('/api/v1/alarms/') && options.alarms) {
         const actor = principal(req);
         if (actor.mode !== 'bearer') throw new ServiceError('FORBIDDEN', 'Native shell only', 403);

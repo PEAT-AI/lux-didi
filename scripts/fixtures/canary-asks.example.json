@@ -1,0 +1,15 @@
+[
+  {"id":"alarm-split","finals":["Set an alarm","in two minutes"],"expect":{"tool":"set_alarm","codeClass":"success","nonEmpty":false,"sideEffect":"alarm"}},
+  {"id":"dm-latest","finals":["What is my latest direct message with <person-a>?"],"expect":{"tool":"mattermost_get_channel_history","codeClass":"success","nonEmpty":true}},
+  {"id":"channel-topic","finals":["What is the topic of <channel-a>?"],"expect":{"tool":"mattermost_list_channels","codeClass":"success","nonEmpty":true}},
+  {"id":"calendar-today","finals":["What is on my calendar today?"],"expect":{"tool":"calendar_list_events","codeClass":"success","nonEmpty":true}},
+  {"id":"calendar-next-week","finals":["What is on my calendar next week?"],"expect":{"tool":"calendar_list_events","codeClass":"success","nonEmpty":true}},
+  {"id":"gmail-last-day","finals":["Find email about <synthetic-project> from the last day."],"expect":{"tool":"gmail_search_messages","codeClass":"success","nonEmpty":true}},
+  {"id":"drive-search","finals":["Find the <synthetic-project> planning document in Drive."],"expect":{"tool":"drive_search_files","codeClass":"success","nonEmpty":true}},
+  {"id":"trello-backlog","finals":["What is in the backlog on <synthetic-board>?"],"expect":{"tool":"trello_read","codeClass":"success","nonEmpty":true}},
+  {"id":"knowledge-search","finals":["Search lux knowledge for <synthetic-project>."],"expect":{"tool":"search_knowledge","codeClass":"success","nonEmpty":true}},
+  {"id":"mongoose-company","finals":["Find <synthetic-company> in Mongoose."],"expect":{"tool":"get_company_profile","codeClass":"success","nonEmpty":true}},
+  {"id":"remember-note","finals":["Remember a note titled Canary synthetic note: the synthetic project mascot is a paper kite."],"expect":{"tool":"stage_lux_note","codeClass":"success","nonEmpty":true,"sideEffect":"note"}},
+  {"id":"open-site","finals":["Open https://example.com in my browser."],"expect":{"tool":"open_web","codeClass":"success","nonEmpty":false,"sideEffect":"open"}},
+  {"id":"recall-conversation","finals":["What did we say about <synthetic-project> in our past conversations?"],"expect":{"tool":"conversation_history","codeClass":"success","nonEmpty":true}}
+]

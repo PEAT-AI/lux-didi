@@ -267,7 +267,13 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
         return;
       }
       const raw = data.toString();
-      if (raw.includes('"native_action_result"') && nativeActions.settle(attachment.liveSessionId, parseFrame(raw))) return;
+      if (raw.includes('"native_action_result"')) {
+        const frame = parseFrame(raw);
+        if (nativeActions.settle(attachment.liveSessionId, frame)) {
+          canarySessions.acknowledgeNative(attachment.liveSessionId, frame);
+          return;
+        }
+      }
       // O1b-N: a playback receipt is a bounded closed frame. It is validated and recorded inside the
       // session (trace/ingest.ts); a refused one is journaled by typed code and dropped, never closing
       // the socket. An unknown control below still closes, exactly as before.

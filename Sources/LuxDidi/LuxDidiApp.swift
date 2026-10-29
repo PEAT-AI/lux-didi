@@ -79,6 +79,7 @@ import WebKit
     let notifications = NativeNotifications()
     @Published private(set) var alarmCaption: String?
     private var alarmShell: NativeAlarmShell?
+    private var installedCanaryWatch: Task<Void, Never>?
     private(set) var client: CompanionClient? { didSet { bindAlarmShell() } }
     private func bindAlarmShell() {
         alarmShell?.stop(); alarmShell = nil
@@ -162,6 +163,40 @@ import WebKit
             client = CompanionClient(descriptor: descriptor, credential: { try descriptor.credential() })
         } catch { self.error = CompanionError.invalidConfiguration.localizedDescription }
     }
+    /// Private request files are owner-local control, not model input or a tool result.
+    private func watchInstalledCanary() {
+        guard installedCanaryWatch == nil else { return }
+        installedCanaryWatch = Task { [weak self] in
+            let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".lux/didi-canary")
+            while !Task.isCancelled {
+                if let self, let client = self.client {
+                    let request = directory.appendingPathComponent("request.json")
+                    if let data = try? Data(contentsOf: request), data.count <= 4096,
+                       let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                       let nonce = object["nonce"] as? String, UUID(uuidString: nonce) != nil,
+                       let deadline = object["deadline"] as? Double, deadline > Date().timeIntervalSince1970 * 1000,
+                       let target = object["target"] as? String, URL(fileURLWithPath: target).standardizedFileURL == Bundle.main.bundleURL.standardizedFileURL {
+                        let claimed = directory.appendingPathComponent("claimed-\(nonce).json")
+                        if (try? FileManager.default.moveItem(at: request, to: claimed)) != nil {
+                            let result = directory.appendingPathComponent("\(nonce).result.json")
+                            do {
+                                let asks = try Data(contentsOf: directory.appendingPathComponent("asks.json"))
+                                guard asks.count <= 131072 else { throw LiveClientError.invalidFrame }
+                                let output = try await NativeLiveConversation.runInstalledCanary(authority: client.authenticatedRequestBuilder(), asks: asks, deadline: deadline)
+                                try output.write(to: result, options: .atomic)
+                            } catch {
+                                let failure: [String: Any] = ["failed": 1, "lines": ["CANARY FAIL id=session tool=none code=native_canary_failed ms=0", "CANARY SUMMARY pass=0 fail=1 providerTurns=unknown"]]
+                                if let output = try? JSONSerialization.data(withJSONObject: failure) { try? output.write(to: result, options: .atomic) }
+                            }
+                            try? FileManager.default.removeItem(at: claimed)
+                        }
+                    }
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
     func refresh() async { voice.refresh() }
     private lazy var notificationCapability = NativeNotificationCapabilityState(source: { [notifications] in
         await notifications.capability()
@@ -190,6 +225,7 @@ import WebKit
                     client = CompanionClient(descriptor: descriptor, credential: credential, expectedEpoch: connection.authorityEpoch, connectionGuard: allowed)
                 }
                 liveAuthorityOwner.rebind(connection.nonce)
+                watchInstalledCanary()
                 if shell?.descriptor.origin != descriptor.origin { shell = CompanionWeb(descriptor: descriptor, bridge: bridge) }
             }
             guard let client, let shell else { throw CompanionError.invalidConfiguration }

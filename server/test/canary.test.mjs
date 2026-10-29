@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CanarySessions, assertCanaryResult, canaryPreflight, validateCanaryAsks } from '../dist/live/canary.js';
+import { CanarySessions, canarySessions, assertCanaryResult, canaryPreflight, validateCanaryAsks } from '../dist/live/canary.js';
 
 const ask = { id: 'synthetic-read', finals: ['Find the synthetic project'], expect: { tool: 'search', codeClass: 'success', nonEmpty: true } };
 const result = { tool: 'search', result: { code: 'ok', items: [{ title: 'Synthetic project' }] }, ms: 4 };
@@ -49,4 +49,128 @@ test('native canary authority comes only from session opener, not frame/model fi
   assert.throws(() => sessions.nativeFrame('canary-session', frame), /canary_timeout/);
   sessions.close('canary-session');
   assert.equal(sessions.nativeFrame('canary-session', frame).action, 'open_url');
+});
+
+// Recorded sessions drive the exact production runner, not a separate assertion implementation.
+const { runCanaryAsks, InstalledCanary } = await import('../dist/live/canary.js');
+const { mkdtemp, mkdir, writeFile, readFile, rm } = await import('node:fs/promises');
+const { tmpdir } = await import('node:os');
+const { join } = await import('node:path');
+const { spawnSync } = await import('node:child_process');
+const { liveCallInLog } = await import('../../scripts/lib/check-installed-canary.mjs');
+
+for (const [label, recorded, effect, expected] of [
+  ['pass', result, undefined, 'PASS'],
+  ['wrong-tool', { ...result, tool: 'other' }, undefined, 'FAIL'],
+  ['stored-completed-refusal', { ...result, outcome: 'completed', result: { code: 'not_allowed', items: ['synthetic'] } }, undefined, 'FAIL'],
+  ['empty', { ...result, result: { code: 'ok', items: [] } }, undefined, 'FAIL'],
+  ['side-effect-missing', result, 'alarm', 'FAIL'],
+  ['provider-timeout', { ...result, timedOut: true }, undefined, 'FAIL'],
+]) test(`recorded session runner: ${label}`, async () => {
+  const ownerFinals = [];
+  let closed = 0;
+  let cleaned = 0;
+  const splitAsk = { ...ask, finals: ['Find the synthetic', 'project'], expect: { ...ask.expect, ...(effect ? { sideEffect: effect } : {}) } };
+  const report = await runCanaryAsks([splitAsk], {
+    inject: finals => ownerFinals.push(...finals),
+    observe: async () => [recorded],
+    verifyAndCleanup: async () => { cleaned++; },
+    providerTurns: () => 2,
+    close: () => { closed++; },
+  }, new AbortController().signal);
+  assert.match(report.lines[0], new RegExp(`^CANARY ${expected} id=synthetic-read tool=`));
+  assert.match(report.lines.at(-1), /providerTurns=2$/);
+  assert.deepEqual(ownerFinals, splitAsk.finals);
+  assert.equal(closed, 1);
+  assert.equal(cleaned, 1, 'cleanup runs even when result assertions fail');
+});
+test('aborted paid budget never injects another owner final', async () => {
+  const abort = new AbortController(); abort.abort();
+  let injected = 0;
+  const report = await runCanaryAsks([ask], {
+    inject: () => { injected++; }, observe: async () => [], verifyAndCleanup: async () => {}, providerTurns: () => 0, close: () => {},
+  }, abort.signal);
+  assert.equal(injected, 0);
+  assert.equal(report.failed, 1);
+  assert.match(report.lines[0], /code=provider_timeout/);
+});
+test('native acknowledgement must match an emitted action on the marked session', () => {
+  const sessions = new CanarySessions(); sessions.open('marked');
+  const ack = { type: 'native_action_result', id: 'known', ok: true, code: 'opened' };
+  sessions.acknowledgeNative('marked', ack);
+  assert.equal(sessions.nativeAckCount('marked'), 0);
+  sessions.nativeFrame('marked', { type: 'native_action', id: 'known', action: 'open_url', target: 'https://example.com' });
+  sessions.acknowledgeNative('ordinary', ack);
+  sessions.acknowledgeNative('marked', { ...ack, ok: false });
+  assert.equal(sessions.nativeAckCount('marked'), 0);
+  sessions.acknowledgeNative('marked', ack);
+  assert.equal(sessions.nativeAckCount('marked'), 1);
+  sessions.close('marked');
+});
+test('own refusal status overrides a misleading success code', () => {
+  assert.equal(assertCanaryResult(ask, { ...result, result: { code: 'ok', status: 'refused', reason: 'not_granted', items: ['synthetic'] } }).ok, false);
+  assert.equal(assertCanaryResult(ask, { ...result, result: { messages: [] } }).code, 'empty_payload');
+  assert.equal(assertCanaryResult(ask, { ...result, result: { saved: false, code: 'write_failed', title: 'synthetic' } }).ok, false);
+});
+
+for (const [label, options, expected, code] of [
+  ['absent-private-file', {}, 0, 'CANARY SKIP reason=private_ask_file_absent'],
+  ['live-call-without-asks', { live: true }, 1, 'code=call_live'],
+  ['invalid-present-file', { asks: '{not-json' }, 1, 'CANARY FAIL'],
+  ['missing-target-is-not-skip', { asks: JSON.stringify([ask]) }, 1, 'CANARY FAIL'],
+]) test(`actual installed CLI preflight: ${label}`, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'didi-canary-preflight-'));
+  try {
+    const data = join(home, 'synthetic-data');
+    await mkdir(join(data, 'logs'), { recursive: true });
+    await writeFile(join(data, 'logs/host.log'), JSON.stringify({ event: 'host_started' }) + '\n' + (options.live ? JSON.stringify({ event: 'live_started' }) + '\n' : ''));
+    if (options.asks) { await mkdir(join(home, '.lux/didi-canary'), { recursive: true }); await writeFile(join(home, '.lux/didi-canary/asks.json'), options.asks); }
+    const cli = spawnSync('bash', ['scripts/check-installed-canary.sh', join(home, 'Synthetic.app')], { cwd: new URL('../../', import.meta.url), env: { ...process.env, HOME: home, LUX_DIDI_DATA_DIR: data }, encoding: 'utf8', timeout: 5_000 });
+    assert.equal(cli.status, expected, cli.stderr);
+    assert.ok(cli.stdout.includes(code), cli.stdout);
+    if (expected !== 0) assert.ok(!cli.stdout.includes('CANARY SKIP'));
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+test('live log resets only on host restart or a terminal receipt', () => {
+  const lines = events => events.map(event => JSON.stringify(event)).join('\n');
+  assert.equal(liveCallInLog(lines([{ event: 'live_started' }])), true);
+  assert.equal(liveCallInLog(lines([{ event: 'live_started' }, { event: 'live_terminal' }])), false);
+  assert.equal(liveCallInLog(lines([{ event: 'live_started' }, { event: 'host_started' }])), false);
+  assert.throws(() => liveCallInLog('malformed'), /invalid_host_log/);
+});
+test('synthetic ask example stays inside the public format and paid count cap', async () => {
+  const example = JSON.parse(await readFile(new URL('../../scripts/fixtures/canary-asks.example.json', import.meta.url), 'utf8'));
+  assert.equal(validateCanaryAsks(example).length, 13);
+});
+test('host opener owns its flag and raw result observation ignores stored completed state', async () => {
+  let injected = false;
+  const finals = [];
+  const id = '11111111-1111-4111-8111-111111111111';
+  const live = {
+    create: () => ({ liveSessionId: id }),
+    snapshot: () => ({ lifecycle: 'active', terminal: null }),
+    text: text => { injected = true; finals.push(text); },
+    revoke: () => {},
+  };
+  const store = { transaction: callback => callback({
+    get: sql => {
+      if (sql.includes('COUNT(*)')) return { n: 3 };
+      if (sql.includes('SELECT status,terminal_at')) return { status: 'completed', terminal_at: 0 };
+      return undefined;
+    },
+    all: sql => {
+      if (injected && sql.includes('FROM trace_call c')) return [{ call_key: 'synthetic', name: 'search', intent_at: Date.now(), text: JSON.stringify({ code: 'not_granted', items: ['synthetic'] }) }];
+      return [];
+    },
+  }) };
+  const host = new InstalledCanary(store, live);
+  host.open([ask], { clientId: 'owner' });
+  assert.equal(canarySessions.isCanary(id), true);
+  await assert.rejects(() => host.run(id, 'other-client'), /invalid_canary_session/);
+  const report = await host.run(id, 'owner');
+  assert.equal(report.failed, 1);
+  assert.equal(report.providerTurns, 3);
+  assert.match(report.lines[0], /code=not_granted/);
+  assert.deepEqual(finals, ask.finals);
+  assert.equal(canarySessions.isCanary(id), false);
 });

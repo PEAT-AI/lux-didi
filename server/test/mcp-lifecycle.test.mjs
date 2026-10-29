@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MemoryResultStore } from '../adapters/mcp/store.js';
-import { createResultScope } from '../adapters/mcp/lifecycle.js';
+import { MemoryResultStore } from '../dist/adapters/mcp/store.js';
+import { createResultScope } from '../dist/adapters/mcp/lifecycle.js';
 const binding = { endpointId: 'synthetic', generation: 1, account: 'account', resource: 'resource' };
 const bytes = new TextEncoder().encode('{"content":[{"type":"text","text":"synthetic"}]}');
 
@@ -20,7 +20,7 @@ test('two runs retain their own pending entries and release failed partial reads
   second.release();
   const failed = createResultScope();
   try { await failed.run(async () => { assert.equal(store.put(binding, bytes).state, 'available'); throw Error('synthetic child failure'); }); }
-  catch (error) { assert.equal((error as Error).message, 'synthetic child failure'); }
+  catch (error) { assert.equal(error.message, 'synthetic child failure'); }
   finally { failed.release(); }
   assert.equal(store.put(binding, bytes).state, 'available');
 });

@@ -72,6 +72,7 @@ export interface LiveProfile {
 
 export type LiveToolsComposition = {
   owner: ReturnType<typeof createToolsOwner>; connectionIds(): string[];
+  alarmChanged?(): void;
   /** One explicit new owner request may retry unavailable transport, never a model tool retry. */
   recover?(): Promise<void>;
   /** Configured connector endpoints and their state, for the host-generated runtime context. */
@@ -129,7 +130,7 @@ export interface LiveOwnerConfig {
 }
 
 export interface LiveContext { readonly clientId: string; readonly auditId: string; readonly authorityEpoch: string }
-export interface AlarmSessionSetup { readonly ownerDisplayName: string; readonly scheduledTime: string }
+export interface AlarmSessionSetup { readonly ownerDisplayName: string; readonly scheduledTime: string; readonly label?: string; readonly alarmId?: string; readonly ringDeadlineUtc?: number }
 export interface CreateLiveSession { readonly idempotencyKey: string; readonly inputClass: DataClass; readonly pickupJobId?: string; readonly alarm?: AlarmSessionSetup }
 
 export interface LiveGrantSnapshot {

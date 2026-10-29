@@ -82,6 +82,7 @@ import WebKit
         alarmShell?.stop(); alarmShell = nil
         guard let client else { return }
         let shell = NativeAlarmShell(authority: client.authenticatedRequestBuilder(), ring: connectingRing,
+            isCallLive: { [weak self] in self?.live?.isCapturing == true },
             onDue: { [weak self] id in
                 guard let self else { return }
                 if self.live?.isCapturing == true { self.alarmShell?.noteLiveSession(id) }

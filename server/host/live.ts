@@ -79,7 +79,7 @@ class HostLiveService implements LiveService {
   private requireKey(): void { if (!this.keyPresent) unavailable('key_missing'); this.binding?.check(); }
   createAlarm(alarm: import('../live/types.js').AlarmSessionSetup, idempotencyKey: string, context: LiveContext): LiveSessionSnapshot {
     this.requireKey();
-    return this.owner.create({ inputClass: 'ordinary', idempotencyKey, alarm }, context);
+    return this.owner.announceAlarm(alarm) ?? this.owner.create({ inputClass: 'ordinary', idempotencyKey, alarm }, context);
   }
   create(inputClass: DataClass, idempotencyKey: string, context: LiveContext): LiveSessionSnapshot {
     this.requireKey();

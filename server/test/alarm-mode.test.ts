@@ -10,7 +10,7 @@ import { AlarmScheduler, AlarmSessionCoordinator } from '../host/alarm-scheduler
 import { alarmSessionInstructions } from '../live/index.js';
 
 for (const alreadyLive of [false, true]) {
-  test(`alarm mode: ${alreadyLive ? 'live session gets no injected text or rebuild' : 'unavailable provider gets at most one attempt'}`, t => {
+  test(`alarm mode: ${alreadyLive ? 'live session receives one alarm announcement' : 'unavailable provider gets at most one attempt'}`, t => {
     const directory = mkdtempSync(join(tmpdir(), 'synthetic-alarm-mode-'));
     const store = new Store(directory, toolsMigrations);
     const scheduler = new AlarmScheduler({ store, clock: { now: () => 1000, setTimeout: () => 1, clearTimeout: () => {} }, emit: () => {} });
@@ -19,13 +19,13 @@ for (const alreadyLive of [false, true]) {
     let opens = 0;
     const degraded: string[] = [];
     const coordinator = new AlarmSessionCoordinator({ store, hasLiveSession: () => alreadyLive,
-      open: () => { opens++; throw Error('synthetic unavailable'); }, degraded: (_id, reason) => degraded.push(reason) });
+      open: setup => { opens++; assert.equal(setup.alarmId, alarm.id); if (alreadyLive) return 'synthetic-live'; throw Error('synthetic unavailable'); }, degraded: (_id, reason) => degraded.push(reason) });
     const first = coordinator.attempt(alarm.id, 'Synthetic Owner');
     assert.equal(first.status, alreadyLive ? 'live' : 'unavailable');
     coordinator.attempt(alarm.id, 'Synthetic Owner');
-    assert.equal(opens, alreadyLive ? 0 : 1);
+    assert.equal(opens, 1);
     assert.equal(scheduler.list()[0]?.state, 'ringing', 'provider result cannot stop local ringing');
-    assert.ok(degraded.includes(alreadyLive ? 'live_session_no_channel' : 'provider_unavailable'));
+    assert.deepEqual(degraded, alreadyLive ? [] : ['provider_unavailable']);
   });
 }
 

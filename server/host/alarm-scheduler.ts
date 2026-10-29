@@ -155,7 +155,7 @@ export class AlarmShellBridge {
 export class AlarmSessionCoordinator {
   constructor(private readonly options: {
     store: StorePort; hasLiveSession(): boolean;
-    open(setup: { ownerDisplayName: string; scheduledTime: string }, idempotencyKey: string): string;
+    open(setup: import('../live/types.js').AlarmSessionSetup, idempotencyKey: string): string;
     degraded(id: string, reason: 'live_session_no_channel' | 'provider_unavailable'): void;
   }) {}
   attempt(id: string, ownerDisplayName: string): { status: 'live' | 'unavailable' | 'attempted' | 'created'; liveSessionId?: string } {
@@ -165,15 +165,12 @@ export class AlarmSessionCoordinator {
       return read(row);
     });
     if (!alarm) return { status: 'attempted' };
-    if (this.options.hasLiveSession()) {
-      this.options.degraded(id, 'live_session_no_channel');
-      return { status: 'live' };
-    }
+    const alreadyLive = this.options.hasLiveSession();
     try {
       const scheduledTime = new Intl.DateTimeFormat('en-GB', { timeZone: alarm.tz, hour: '2-digit', minute: '2-digit' }).format(alarm.fireAtUtc);
-      const liveSessionId = this.options.open({ ownerDisplayName, scheduledTime }, `alarm:${id}`);
+      const liveSessionId = this.options.open({ ownerDisplayName, scheduledTime, label: alarm.label, alarmId: id, ringDeadlineUtc: alarm.ringDeadlineUtc! }, `alarm:${id}`);
       this.options.store.transaction(tx => tx.run('UPDATE alarm_session_attempts SET live_session_id=? WHERE alarm_id=?', [liveSessionId, id]));
-      return { status: 'created', liveSessionId };
+      return { status: alreadyLive ? 'live' : 'created', liveSessionId };
     } catch {
       this.options.degraded(id, 'provider_unavailable');
       return { status: 'unavailable' };

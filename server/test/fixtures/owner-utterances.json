@@ -1,0 +1,569 @@
+[
+  {
+    "id": "case-0",
+    "finals": [
+      "put an alarm at 11:40 PM"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793403600000
+  },
+  {
+    "id": "case-1",
+    "finals": [
+      "make an alarm at 11:40 PM"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793403600000
+  },
+  {
+    "id": "case-2",
+    "finals": [
+      "create an alarm at 11:40 PM"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793403600000
+  },
+  {
+    "id": "case-3",
+    "finals": [
+      "add an alarm at 11:40 PM"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793403600000
+  },
+  {
+    "id": "case-4",
+    "finals": [
+      "set an alarm at 11:40 PM"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793403600000
+  },
+  {
+    "id": "case-5",
+    "finals": [
+      "put an alarm on 11 PM 40 today"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793403600000
+  },
+  {
+    "id": "case-6",
+    "finals": [
+      "at um seven a.m."
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-7",
+    "finals": [
+      "ten forty p.m. for today"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793400000000
+  },
+  {
+    "id": "case-8",
+    "finals": [
+      "10:40 PM PM"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793400000000
+  },
+  {
+    "id": "case-9",
+    "finals": [
+      "at um - ten forty p.m. today PM"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793400000000
+  },
+  {
+    "id": "case-10",
+    "finals": [
+      "seven forty-five am"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "case-11",
+    "finals": [
+      "half past seven am"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793345400000
+  },
+  {
+    "id": "case-12",
+    "finals": [
+      "quarter to eight am"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "case-13",
+    "finals": [
+      "wake me at seven am"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-14",
+    "finals": [
+      "remind me at seven am"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-15",
+    "finals": [
+      "so like uh at seven am"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-16",
+    "finals": [
+      "at seven am today"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-17",
+    "finals": [
+      "on seven am"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-18",
+    "finals": [
+      "for seven am"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-19",
+    "finals": [
+      "seven am"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-20",
+    "finals": [
+      "in nine minutes"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793340540000
+  },
+  {
+    "id": "case-21",
+    "finals": [
+      "in an hour"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-22",
+    "finals": [
+      "put an alarm in nine minutes"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793340540000
+  },
+  {
+    "id": "case-23",
+    "finals": [
+      "at seven am for tomorrow"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793430000000
+  },
+  {
+    "id": "case-24",
+    "finals": [
+      "set an alarm at 7",
+      ":45 am"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793346300000
+  },
+  {
+    "id": "case-25",
+    "finals": [
+      "put",
+      "an alarm",
+      "at seven am"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793343600000
+  },
+  {
+    "id": "case-26",
+    "finals": [
+      "11",
+      "PM",
+      "40"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793403600000
+  },
+  {
+    "id": "case-27",
+    "finals": [
+      "in",
+      "nine",
+      "minutes"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "ready",
+    "fire_at_utc": 1793340540000
+  },
+  {
+    "id": "case-28",
+    "finals": [],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-29",
+    "finals": [
+      "don't set an alarm at seven am"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-30",
+    "finals": [
+      "do not make an alarm at seven am"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-31",
+    "finals": [
+      "set an alarm"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "missing_time",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-32",
+    "finals": [
+      "at seven am or eight am"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": null
+    },
+    "code": "unsupported_time_expression",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-33",
+    "finals": [
+      "at seven am"
+    ],
+    "call": {
+      "name": "set_alarm",
+      "fire_at_utc": 1793347200000
+    },
+    "code": "time_mismatch",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-34",
+    "finals": [
+      "could you",
+      "example.com"
+    ],
+    "call": {
+      "name": "open_web",
+      "kind": "site",
+      "target": "https://example.com"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-35",
+    "finals": [
+      "do not open it"
+    ],
+    "call": {
+      "name": "open_web",
+      "kind": "site",
+      "target": "https://example.com"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-36",
+    "finals": [
+      "directions",
+      "Synthetic Park"
+    ],
+    "call": {
+      "name": "open_web",
+      "kind": "map",
+      "target": "Synthetic Park"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-37",
+    "finals": [
+      "do not open it"
+    ],
+    "call": {
+      "name": "open_web",
+      "kind": "map",
+      "target": "Synthetic Park"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-38",
+    "finals": [
+      "find",
+      "synthetic clocks"
+    ],
+    "call": {
+      "name": "open_web",
+      "kind": "search",
+      "target": "synthetic clocks"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-39",
+    "finals": [
+      "do not open it"
+    ],
+    "call": {
+      "name": "open_web",
+      "kind": "search",
+      "target": "synthetic clocks"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-40",
+    "finals": [
+      "Calculator",
+      "please"
+    ],
+    "call": {
+      "name": "Calculator"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-41",
+    "finals": [
+      "do not open it"
+    ],
+    "call": {
+      "name": "Calculator"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-42",
+    "finals": [
+      "that file",
+      "please"
+    ],
+    "call": {
+      "name": "open_file",
+      "path": "~/synthetic.txt"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-43",
+    "finals": [
+      "do not open it"
+    ],
+    "call": {
+      "name": "open_file",
+      "path": "~/synthetic.txt"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-44",
+    "finals": [
+      "my inbox",
+      "please"
+    ],
+    "call": {
+      "name": "open_home",
+      "app": "gmail"
+    },
+    "code": "allowed",
+    "fire_at_utc": null
+  },
+  {
+    "id": "case-45",
+    "finals": [
+      "do not open it"
+    ],
+    "call": {
+      "name": "open_home",
+      "app": "gmail"
+    },
+    "code": "no_owner_request",
+    "fire_at_utc": null
+  }
+]

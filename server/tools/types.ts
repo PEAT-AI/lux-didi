@@ -1,3 +1,4 @@
+import type { OwnerRequests } from './owner-request.js';
 import type { TrelloBoard } from './trello.js';
 import type { RemoteResultLineage } from './received-body.js';
 import type { RememberNotePort } from './remember.js';
@@ -70,6 +71,7 @@ export type ConnectionRestoreResult = { state: 'restored' } | { state: 'refused'
 export type StageNotePort = (tx: Transaction, runId: string, args: { title: string; body: string; evidenceRefs: string[] }) => JsonValue;
 
 export interface ToolsOwner {
+  readonly ownerRequests: OwnerRequests;
   observeAlarmOwner(session: string, journalId: string, words: string, at: number): void;
   readonly sourcePort: McpPort;
   journal: ToolCallJournal; resultGate: ToolResultGate;

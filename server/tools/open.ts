@@ -151,7 +151,6 @@ const INTENT_TURNS = 3;
 const INTENT_CHARS = 400;
 interface IntentWindow { turns: string[]; modelSpoke: boolean; partial?: string }
 const ownerTurn = new Map<string, IntentWindow>();
-const ownerFinalized = new Map<string, Set<() => void>>();
 export function noteOwnerPartial(runId: string, text: string): void {
   const window = ownerTurn.get(runId) ?? { turns: [], modelSpoke: false };
   window.partial = `${window.partial ?? ''}${text}`.slice(-INTENT_CHARS);
@@ -161,7 +160,6 @@ export function noteOwnerWords(runId: string, text: string): void {
   const window = ownerTurn.get(runId) ?? { turns: [], modelSpoke: false };
   const turns = window.modelSpoke ? [] : window.turns;
   ownerTurn.set(runId, { turns: [...turns, text.slice(-INTENT_CHARS)].slice(-INTENT_TURNS), modelSpoke: false });
-  for (const resolve of ownerFinalized.get(runId) ?? []) resolve();
 }
 /** The model produced output: the next finalized owner turn opens a fresh intent window. */
 export function noteModelOutput(runId: string): void {
@@ -180,25 +178,8 @@ export function ownerTurnWords(runId: string): string {
 
 /** One bounded event wait, not a polling loop; cleanup on finalization, abort or timeout. */
 export async function webOwnerWords(runId: string, signal: AbortSignal): Promise<string> {
-  // All five open tools share this acquisition. Partial words tell us finalization is pending,
-  // but only finalized owner words authorize a native action.
-  const finalized = () => ownerTurn.get(runId)?.modelSpoke ? '' : ownerWords(runId);
-  if ((!ownerTurn.get(runId)?.partial && (OPEN_INTENT.test(finalized()) || WEB_INTENT.test(finalized()))) || signal.aborted) return finalized();
-  await new Promise<void>(resolve => {
-    const finish = () => {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', finish);
-      listeners.delete(finish);
-      if (!listeners.size) ownerFinalized.delete(runId);
-      resolve();
-    };
-    const listeners = ownerFinalized.get(runId) ?? new Set<() => void>();
-    listeners.add(finish);
-    ownerFinalized.set(runId, listeners);
-    const timer = setTimeout(finish, 1500);
-    signal.addEventListener('abort', finish, { once: true });
-  });
-  return finalized();
+  void signal;
+  return ownerWords(runId);
 }
 
 /** What she said this turn, so the claim check reads her own words and never the owner's. */

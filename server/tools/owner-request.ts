@@ -9,8 +9,29 @@ interface Request {
 export class OwnerRequests implements OwnerRequestPort {
   private requests = new Map<string, Request>();
   private sequence = 0;
+  private seenFinal = new Set<string>();
+  private pendingFinal = new Set<string>();
+  private finalListeners = new Map<string, Set<() => void>>();
+  private external = new Set<string>();
+  partial(session: string): void { this.pendingFinal.add(session); }
+  async waitForFinal(session: string, signal: AbortSignal): Promise<void> {
+    if (!this.seenFinal.has(session) || !this.pendingFinal.has(session) || signal.aborted) return;
+    await new Promise<void>(resolve => {
+      const listeners = this.finalListeners.get(session) ?? new Set<() => void>();
+      const finish = () => {
+        signal.removeEventListener('abort', finish);
+        listeners.delete(finish);
+        if (!listeners.size) this.finalListeners.delete(session);
+        resolve();
+      };
+      listeners.add(finish); this.finalListeners.set(session, listeners);
+      signal.addEventListener('abort', finish, { once: true });
+    });
+  }
   constructor(private readonly clock: () => number = () => performance.now()) {}
   observe(session: string, journalId: string, words: string): void {
+    this.seenFinal.add(session); this.pendingFinal.delete(session);
+    for (const finish of this.finalListeners.get(session) ?? []) finish();
     const previous = this.requests.get(session);
     if (previous?.journalId === journalId) return;
     const direct = !/^["“”]|\b(?:he|she|they|mail|email|note|summary)\s+(?:said|says|asked)|\b(?:hypothetically|suppose)|\bif\s+(?:i|we|you|he|she|they|it|someone)|\bshould\s+(?:i|we|you)\b/i.test(words);
@@ -85,7 +106,9 @@ export class OwnerRequests implements OwnerRequestPort {
     const request = this.requests.get(session);
     return request && this.clock() - request.start <= 120000 ? request.id : undefined;
   }
+  externalContentPresent(session: string): boolean { return this.external.has(session); }
   source(session: string, kind: string, requestId?: string): void {
+    this.external.add(session);
     const request = this.requests.get(session);
     if (request && (requestId === undefined || request.id === requestId) && this.clock() - request.start <= 120000) request.sources[kind] = (request.sources[kind] ?? 0) + 1;
   }
@@ -96,7 +119,10 @@ export class OwnerRequests implements OwnerRequestPort {
     return { ownerFinals: request?.finals ?? 0, requestAgeMs: request ? Math.max(0, Math.round(this.clock() - request.start)) : 0,
       grantKind: kind, grantState: !grant ? 'absent' : grant.target !== undefined ? 'spent' : 'available' };
   }
-  release(session: string): void { this.requests.delete(session); }
+  release(session: string): void {
+    this.requests.delete(session); this.seenFinal.delete(session); this.pendingFinal.delete(session); this.external.delete(session);
+    for (const finish of this.finalListeners.get(session) ?? []) finish();
+  }
 }
 
 export function requestRefusal(code: string): { status: 'refused'; code: string; say: string } {

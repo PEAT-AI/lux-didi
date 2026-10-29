@@ -76,6 +76,9 @@ export type RequestAuthorization =
   | { code: Exclude<RequestCode, 'no_owner_request'>; id: string; words: string; journalId: string; receipt?: unknown };
 
 export interface OwnerRequestPort {
+  partial(session: string): void;
+  waitForFinal(session: string, signal: AbortSignal): Promise<void>;
+  externalContentPresent(session: string): boolean;
   observe(session: string, journalId: string, words: string): void;
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization;
   claim(session: string, kind: ActionKind, target: string, requestId: string): RequestAuthorization;

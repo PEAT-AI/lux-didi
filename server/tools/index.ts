@@ -642,6 +642,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
       if (composedNotes !== false) definitions.push({ ...STAGE_NOTE_IDENTITY, description: STAGE_NOTE_GUIDANCE, effect: 'write', parameters: STAGE_NOTE_PARAMETERS, validate: validateStageNote,
         async execute(args, context) {
           if (context.runId !== runId || !validateStageNote(args) || context.signal.aborted) return { status: 'failed' };
+          await ownerRequests.waitForFinal(runId, context.signal);
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' };
           // The booked call this execute may complete, re-read inside whichever transaction uses it.
@@ -707,6 +708,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         validate: validateAlarmArguments,
         async execute(args, context) {
           if (context.runId !== runId || !validateAlarmArguments(args) || context.signal.aborted) return { status: 'failed' as const };
+          await ownerRequests.waitForFinal(runId, context.signal);
           const input = args as AlarmArguments;
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
@@ -773,6 +775,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         parameters: openParameters(openTool), validate: args => validateOpen(args, openTool),
         async execute(args, context) {
           if (context.runId !== runId || !validateOpen(args, openTool) || context.signal.aborted) return { status: 'failed' as const };
+          await ownerRequests.waitForFinal(runId, context.signal);
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
           const requestTarget = JSON.stringify(args);
@@ -827,6 +830,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
         parameters: OPEN_WEB_PARAMETERS, validate: validateOpenWeb,
         async execute(args, context) {
           if (context.runId !== runId || !validateOpenWeb(args) || context.signal.aborted) return { status: 'failed' as const };
+          await ownerRequests.waitForFinal(runId, context.signal);
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
           const requestTarget = JSON.stringify(args);

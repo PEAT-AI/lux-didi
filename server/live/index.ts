@@ -2016,7 +2016,7 @@ export class LiveSessionOwner {
     const candidate = freezeNote({ title: args.title, body: args.body });
     if (candidate.state !== 'frozen') return { saved: false, code: candidate.code, say: 'The note was not saved because its payload is invalid.' };
     const sources = requests!.sources(liveSessionId);
-    const external = Object.keys(sources).length > 0;
+    const external = requests!.externalContentPresent(liveSessionId);
     const provenance = `Provenance: request ${request.id}; source counts ${JSON.stringify(sources)}; ${external ? 'contains external content' : 'owner conversation'}.`;
     const body = `${args.body.trim()}\n\n${provenance}`;
     const frozen = freezeNote({ title: args.title, body, externalContextPresent: true });
@@ -3753,6 +3753,7 @@ export class LiveSessionOwner {
           handle.turnInterrupted = true;
           logTurnScript(handle);
           clearOpenLedger(handle.liveSessionId);
+    this.#tools?.owner.ownerRequests.release(handle.liveSessionId);
           // C-TURN8: the owner cut her off, so no claim of hers outlives the turn he interrupted.
           this.#resetClaimCheck(handle);
           // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.
@@ -4080,7 +4081,7 @@ export class LiveSessionOwner {
           : typeof response.reason === 'string' ? response.reason
           : closed ?? (record?.status === 'refused' ? refusalCode(record.reason)
           : record ? String(record.status) : 'refused');
-        if (ok && requestId) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, stepSourceOf(call.name), requestId);
+        if (ok) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, stepSourceOf(call.name), requestId ?? '');
         return { key: call.id, name: call.name, ok, text,
           ...(consumed?.state === 'allowed' && consumed.evidence.kind === 'remote-body' ? { hostEvidence: consumed.evidence } : {}),
           ...(ok && call.name === HISTORY_IDENTITY.name ? { historyPage: response } : {}), ...(ok && accepted ? { binding: accepted.binding } : {}),
@@ -4110,7 +4111,7 @@ export class LiveSessionOwner {
       ...(this.#researchWeb === undefined ? {} : { web: { search: async (request: Parameters<WebSearchPort['search']>[0]) => {
         const requestId = this.#tools!.owner.ownerRequests.currentId(handle.liveSessionId);
         const result = await this.#researchWeb!.search(request);
-        if (result.ok && requestId) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, 'web', requestId);
+        if (result.ok) this.#tools!.owner.ownerRequests.source(handle.liveSessionId, 'web', requestId ?? '');
         return result;
       } } }),
       emit: progress => {
@@ -4741,6 +4742,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
     const persist = (tx: Transaction) => {
       const transcription = event.type === 'inputTranscription' || event.type === 'outputTranscription' ? event : undefined;
       if (event.type === 'inputTranscription' && !event.finished && text) noteOwnerPartial(handle.liveSessionId, text);
+        if (transcription?.finalOrigin !== 'typed') this.#tools?.owner.ownerRequests.partial(handle.liveSessionId);
       const mono = hostMonotonicMs();
       tx.run('INSERT INTO live_journal(live_session_id,provider_sequence,kind,text,finished,value,tool_json,terminal_outcome,rejected_kind,rejected_sequence,payload_bytes,arrived_at,connection_epoch,provider_event_id,provider_start_ms,provider_end_ms,received_mono_ms,clock_domain,final_origin,finalized_at,finalized_mono_ms) VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,?,?,?,?,?,?,?)',
         [handle.liveSessionId,event.sequence,kind,text,finished,value,toolJSON,bytes,now,handle.connection.epoch,

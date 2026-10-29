@@ -6,8 +6,10 @@ import { parseAlarmTime } from '../tools/alarm.js';
 const now = Date.parse('2026-10-28T13:00:00Z');
 const tz = 'Asia/Singapore';
 
-test('alarm: an unqualified eight needs clarification, without a write candidate', () => {
-  assert.deepEqual(parseAlarmTime('set an alarm at 8', now, tz), { status: 'clarify', reason: 'ambiguous_time' });
+test('alarm: an unqualified eight chooses the next future occurrence', () => {
+  const result = parseAlarmTime('set an alarm at 8', now, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
 });
 
 test('alarm: wake me permits the morning default in the system IANA zone', () => {
@@ -16,7 +18,7 @@ test('alarm: wake me permits the morning default in the system IANA zone', () =>
   if (result.status !== 'ready') return;
   assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
   assert.equal(result.tz, tz);
-  assert.equal(result.confirmation, 'Alarm set for 8:00 tomorrow morning.');
+  assert.equal(result.confirmation, 'Alarm set for 29/10/2026, 08:00 (Asia/Singapore).');
 });
 
 test('alarm: explicit morning and evening resolve without a model-supplied time', () => {

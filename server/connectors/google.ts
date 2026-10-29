@@ -1,3 +1,4 @@
+import { decodeGoogleEnvelope } from '../tools/google.js';
 import { closeSync, openSync, readSync, realpathSync } from 'node:fs';
 import { isAbsolute, resolve, sep } from 'node:path';
 import { SOURCE_DISPATCH, SOURCE_CHILD_DISPATCHES, type SourceDispatchEvidence } from '../adapters/mcp/port.js';
@@ -235,6 +236,13 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       projection: structuredClone(result.projection),
       response: structuredClone(result.payload),
     };
+    if (evidence.state === 'completed') {
+      const text = contentText(evidence.decodedResult);
+      const decoded = text === undefined ? undefined : decodeGoogleEnvelope(text);
+      if (decoded && !decoded.ok && decoded.reason === 'credential-missing') return {
+        ...evidence, state: 'tool-error', decodedResult: { content: [{ type: 'text', text: 'credential-missing: auth needed' }], isError: true },
+      };
+    }
     return evidence;
   }
 

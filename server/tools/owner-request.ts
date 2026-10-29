@@ -1,5 +1,5 @@
 import type { ActionKind, RequestAuthorization, OwnerRequestPort } from './types.js';
-interface Grant { target?: string; receipt?: unknown }
+interface Grant { target?: string; receipt?: unknown; inFlight?: boolean }
 interface Request {
   id: string; words: string; start: number; finals: number; journalId: string;
   grants: Map<ActionKind, Grant>; pending?: { kind: ActionKind; field: string };
@@ -13,18 +13,21 @@ export class OwnerRequests implements OwnerRequestPort {
   observe(session: string, journalId: string, words: string): void {
     const previous = this.requests.get(session);
     if (previous?.journalId === journalId) return;
-    const direct = !/["“”]|\b(?:he|she|they|mail|email|note|summary)\s+(?:said|says|asked)|\b(?:if|hypothetically|suppose)|\bshould\s+(?:i|we|you)\b/i.test(words);
+    const direct = !/^["“”]|\b(?:he|she|they|mail|email|note|summary)\s+(?:said|says|asked)|\b(?:hypothetically|suppose)|\bif\s+(?:i|we|you|he|she|they|it|someone)|\bshould\s+(?:i|we|you)\b/i.test(words);
     const grants = new Map<ActionKind, Grant>();
     if (direct) {
       const cues: [ActionKind, RegExp][] = [
-        ['open', /\b(?:open|launch|show)\b/i],
-        ['set_alarm', /\bwake me\b|\b(?:set|make|create)\b[^.!?]*\balarm\b/i],
-        ['cancel_alarm', /\b(?:cancel|delete|remove|stop)\b[^.!?]*\balarm\b/i],
-        ['snooze_alarm', /\bsnooze\b/i],
-        ['list_alarms', /\b(?:list|show|what)\b[^.!?]*\balarms?\b/i],
-        ['lux_note', /\b(?:save|remember)\b|\bput\b[^.!?]*\blux\b/i],
+        ['open', /^(?:open|launch|show)\b/i],
+        ['set_alarm', /^wake me\b|^(?:set|make|create)\b[^.!?]*\balarm\b/i],
+        ['cancel_alarm', /^(?:cancel|delete|remove|stop)\b[^.!?]*\balarm\b/i],
+        ['snooze_alarm', /^snooze\b/i],
+        ['list_alarms', /^(?:list|show|what)\b[^.!?]*\balarms?\b/i],
+        ['lux_note', /^(?:save|remember)\b|^put\b[^.!?]*\blux\b/i],
       ];
-      for (const [kind, cue] of cues) if (cue.test(words)) grants.set(kind, {});
+      const clauses = words.split(/\b(?:and then|and|then|also)\b|[;.!]/i).map(clause => clause.trim()
+        .replace(/^(?:(?:please|okay|ok|right|now)\b[\s,]*)+/i, '')
+        .replace(/^(?:(?:can|could|would|will) you(?: please)?|i (?:want|need|would like) you to)\s+/i, ''));
+      for (const [kind, cue] of cues) if (clauses.some(clause => cue.test(clause))) grants.set(kind, {});
     }
     if (!grants.size && direct && previous?.pending && this.clock() - previous.start <= 120000
       && /^(?:(?:a\.?m\.?|p\.?m\.?)\b|singapore\b|sgt\b|(?:ten|quarter|half|\d+)\s+(?:past|to)\b|in\s+(?:\w+|\d+)\s+(?:minutes?|hours?)\b)/i.test(words.trim())) {
@@ -46,15 +49,33 @@ export class OwnerRequests implements OwnerRequestPort {
     if (age < 0 || age > 120000) return { ...common, code: 'request_expired' };
     const grant = request.grants.get(kind);
     if (!grant) return { ...common, code: 'no_owner_request' };
-    if (grant.target !== undefined) return grant.target === target
+    if (grant.target !== undefined) return !grant.inFlight && grant.target === target
       ? { ...common, code: 'idempotent', receipt: grant.receipt }
       : { ...common, code: 'grant_spent' };
     return { ...common, code: 'allowed' };
   }
-  commit(session: string, kind: ActionKind, target: string, receipt: unknown): void {
-    if (this.authorize(session, kind, target).code !== 'allowed') return;
-    const grant = this.requests.get(session)!.grants.get(kind)!;
-    grant.target = target; grant.receipt = receipt;
+  claim(session: string, kind: ActionKind, target: string, requestId: string): RequestAuthorization {
+    if (this.requests.get(session)?.id !== requestId) return { code: 'no_owner_request' };
+    const authorization = this.authorize(session, kind, target);
+    if (authorization.code === 'allowed') {
+      const grant = this.requests.get(session)!.grants.get(kind)!;
+      grant.target = target; grant.inFlight = true;
+    }
+    return authorization;
+  }
+  failed(session: string, kind: ActionKind, target: string, requestId: string): void {
+    const request = this.requests.get(session);
+    const grant = request?.grants.get(kind);
+    if (request?.id === requestId && grant?.inFlight && grant.target === target) {
+      delete grant.target; delete grant.inFlight;
+    }
+  }
+  commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string): void {
+    const request = this.requests.get(session);
+    if (!request || requestId !== undefined && request.id !== requestId) return;
+    const grant = request.grants.get(kind);
+    if (!grant || !(grant.inFlight && grant.target === target) && this.authorize(session, kind, target).code !== 'allowed') return;
+    grant.target = target; grant.receipt = receipt; delete grant.inFlight;
   }
   clarify(session: string, kind: ActionKind, field: string): void {
     const request = this.requests.get(session);

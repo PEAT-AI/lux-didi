@@ -78,7 +78,9 @@ export type RequestAuthorization =
 export interface OwnerRequestPort {
   observe(session: string, journalId: string, words: string): void;
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization;
-  commit(session: string, kind: ActionKind, target: string, receipt: unknown): void;
+  claim(session: string, kind: ActionKind, target: string, requestId: string): RequestAuthorization;
+  failed(session: string, kind: ActionKind, target: string, requestId: string): void;
+  commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string): void;
   clarify(session: string, kind: ActionKind, field: string): void;
   currentId(session: string): string | undefined;
   source(session: string, kind: string, requestId?: string): void;

@@ -2029,7 +2029,7 @@ export class LiveSessionOwner {
       const response: JsonObject = receipt.saved && receipt.insightId
         ? { saved: true, title: args.title, insightId: receipt.insightId, say: `Saved: ${args.title} (${receipt.insightId}).` }
         : { saved: false, code: receipt.code ?? 'write_failed', say: 'The note was not saved.' };
-      if (response.saved) requests!.commit(liveSessionId, 'lux_note', target, response);
+      if (response.saved) requests!.commit(liveSessionId, 'lux_note', target, response, request.id);
       hostLogEvent({ event: 'lux_note_audit', ...requests!.audit(liveSessionId, 'lux_note'), refusalCode: response.saved ? 'none' : response.code });
       return response;
     };

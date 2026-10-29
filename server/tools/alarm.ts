@@ -151,7 +151,7 @@ export function parseAlarmTime(words: string, now: number, tz: string, modelAt?:
   const remainder = text.replace(pattern, ' ');
   if (/\b(?:minutes?|hours?)\b/.test(remainder)) return direct;
   const leftoverNumbers = remainder.match(new RegExp(`\\b${num}\\b`, 'g')) ?? [];
-  if (leftoverNumbers.some(value => !expressions.some(expression => expression.replace(/^(?:at|on|for)\s+/, '').startsWith(value + ' '))))) return direct;
+  if (leftoverNumbers.some(value => !expressions.some(expression => expression.replace(/^(?:at|on|for)\s+/, '').startsWith(value + ' ')))) return direct;
   if (!expressions.length) return direct;
   const zone = [...text.matchAll(/\b(?:[a-z_+-]+\/[a-z_+-]+|[a-z]+ time|sgt|utc|gmt)\b/g)].at(-1)?.[0] ?? '';
   const day = /\btomorrow\b/.test(text) ? 'tomorrow' : /\btonight\b/.test(text) ? 'tonight' : '';

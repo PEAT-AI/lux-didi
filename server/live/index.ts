@@ -1179,7 +1179,7 @@ export function rememberOwnerNote(tx: Transaction, liveSessionId: string, args: 
     hostLogEvent({ event: 'memory_note', remembered: result.remembered === true, code: String(result.code ?? 'remembered'),
       words: words.length, supported: metrics.supported, supportRatio: Math.round(metrics.ratio * 1000) / 1000, turns: turns.length });
     // A refusal is never silent: the model is told what to say, so the owner hears that nothing was kept.
-    if (result.remembered === true) return { ...result, guidance: 'Saved to your notes.' };
+    if (result.remembered === true) return { ...result, guidance: `Saved to your notes. ${String(result.guidance ?? '')}`.trim() };
     const code = String(result.code ?? '');
     return { ...result, guidance: result.guidance ?? REFUSAL_GUIDANCE[code] ?? DEFAULT_REFUSAL_GUIDANCE };
   };

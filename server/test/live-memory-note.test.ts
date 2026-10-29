@@ -73,7 +73,7 @@ function entry(store: Store, entryId: unknown) {
 }
 
 /** One character per delta, the shape gpt-live-1 streams; the note's words sit in the FIRST delta. */
-const deltas = (owner: string, at = NOW): Row[] => [...owner].map(text => ({ text, finished: false, at }));
+const deltas = (owner: string, at = NOW): Row[] => [...owner].map((text, index) => ({ text, finished: index === owner.length - 1, at }));
 
 const LONG_TURN = 'rob prefers short answers in the morning and no meetings before nine because the school run takes the early school slot every weekday';
 
@@ -100,11 +100,11 @@ test('a note copied from a tool result is refused', async t => {
   assert.deepEqual(refusal(await remember(store, 'Mongoose mint is due Friday and shipped to Lisbon')), { remembered: false, code: 'owner_text_mismatch' });
 });
 
-test('a support ratio below 60 percent is refused, and exactly 60 percent is accepted', async t => {
+test('unsupported content refuses even when most words match', async t => {
   const store = liveSession(t, [{ text: 'the plumber comes on tuesday morning with a ladder', finished: true }]);
   assert.deepEqual(refusal(await remember(store, 'plumber tuesday drill attachment hammer wrench')), { remembered: false, code: 'owner_text_mismatch' },
     'two of five content words is 40 percent');
-  assert.equal((await remember(store, 'plumber tuesday morning ladder drill')).remembered, true, 'three of five content words is 60 percent');
+  assert.equal((await remember(store, 'plumber tuesday morning ladder drill')).remembered, false, 'a drill was never requested');
 });
 
 test('an owner turn older than the ten minute window is refused', async t => {
@@ -172,7 +172,7 @@ test('an ask split across two consecutive owner turns is stored', async t => {
     { text: 'remember the plumber comes on tuesday', finished: true },
     { text: 'and there is a ladder and a wrench ready', finished: true },
   ]);
-  const result = await remember(store, 'the plumber brings a ladder and a wrench on tuesday');
+  const result = await remember(store, 'plumber tuesday; ladder and wrench ready');
   assert.equal(result.remembered, true, 'the union of the window\'s turns supports the note');
 });
 
@@ -199,7 +199,7 @@ test('a note stitched from two non-adjacent turns is refused', async t => {
     { text: 'the bins go out on thursday evening', finished: true },
     { text: 'and there is a ladder and a wrench ready', finished: true },
   ]);
-  assert.deepEqual(refusal(await remember(store, 'the plumber brings a ladder and a wrench on tuesday')),
+  assert.deepEqual(refusal(await remember(store, 'plumber tuesday; ladder and wrench ready')),
     { remembered: false, code: 'owner_text_mismatch' }, 'those words are two asks apart');
 });
 

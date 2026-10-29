@@ -174,3 +174,45 @@ test('host opener owns its flag and raw result observation ignores stored comple
   assert.deepEqual(finals, ask.finals);
   assert.equal(canarySessions.isCanary(id), false);
 });
+
+test('actual HTTP canary opener rejects model-shaped/browser requests and marks only native bearer sessions', async t => {
+  const { Store } = await import('../dist/runtime/store.js');
+  const { listenService } = await import('../dist/http/server.js');
+  const home = await mkdtemp(join(tmpdir(), 'didi-canary-http-'));
+  const store = new Store(home);
+  store.transaction(tx => tx.run('CREATE TABLE live_sessions(live_session_id TEXT PRIMARY KEY,lifecycle TEXT NOT NULL)'));
+  let created = 0;
+  let revoked = 0;
+  const id = '22222222-2222-4222-8222-222222222222';
+  const live = {
+    enabled: true, maxIncomingBytes: 65536, maxBufferedBytes: 65536,
+    create: (_inputClass, key) => { created++; return { liveSessionId: id, idempotencyKey: key, lifecycle: 'accepted' }; },
+    revoke: () => { revoked++; }, shutdown: async () => {},
+  };
+  const service = await listenService({ store, live, port: 0 });
+  t.diagnostic(`CANARY HTTP FIXTURE port=${new URL(service.origin).port} pid=${process.pid}`);
+  try {
+    const url = `${service.origin}/api/v1/live-canary/open`;
+    const body = JSON.stringify({ asks: [ask], deadline: Date.now() + 300_000 });
+    const token = (await readFile(join(home, 'admin-credential'), 'utf8')).trim();
+    const auth = { Authorization: `Bearer ${token}`, 'X-Didi-Authority-Epoch': store.authorityEpoch, 'Content-Type': 'application/json' };
+    const anonymous = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+    assert.equal(anonymous.status, 401);
+    const browser = await fetch(url, { method: 'POST', headers: { ...auth, Origin: service.origin }, body });
+    assert.equal(browser.status, 403);
+    assert.equal(created, 0);
+    assert.equal(canarySessions.isCanary(id), false);
+    const modelFlag = await fetch(url, { method: 'POST', headers: auth, body: JSON.stringify({ ...JSON.parse(body), canary: true }) });
+    assert.equal(modelFlag.status, 400);
+    assert.equal(created, 0);
+    const opened = await fetch(url, { method: 'POST', headers: auth, body });
+    assert.equal(opened.status, 200, await opened.text());
+    assert.equal(created, 1);
+    assert.equal(canarySessions.isCanary(id), true);
+  } finally {
+    await service.close(); store.close(); await rm(home, { recursive: true, force: true });
+    t.diagnostic('CANARY HTTP FIXTURE closed=true');
+  }
+  assert.equal(revoked, 1);
+  assert.equal(canarySessions.isCanary(id), false);
+});

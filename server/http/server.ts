@@ -491,6 +491,7 @@ export async function listenService(options: ServiceOptions): Promise<RunningSer
   if (!address || typeof address === 'string') throw new Error('Missing service address');
   origin = `http://127.0.0.1:${address.port}`;
   return { server, origin, close: () => new Promise<void>((resolve, reject) => {
+    canary?.shutdown();
     for (const close of [...alarmStreams]) close();
     for (const closers of [...streamClosers.values()]) for (const close of [...closers]) close();
     const finish = () => { server.close(error => error ? reject(error) : resolve()); server.closeIdleConnections(); };

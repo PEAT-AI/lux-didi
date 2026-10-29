@@ -171,6 +171,11 @@ type RawCall = { key: string; tool: string; result: Record<string, unknown>; ms:
 export class InstalledCanary {
   #session: { id: string; clientId: string; asks: CanaryAsk[]; timer: ReturnType<typeof setTimeout>; abort: AbortController; running: boolean } | undefined;
   constructor(private readonly store: Store, private readonly live: LiveService) {}
+  shutdown(): void {
+    if (!this.#session) return;
+    const { id, timer, abort } = this.#session;
+    clearTimeout(timer); abort.abort(); this.live.revoke(id); canarySessions.close(id); this.#session = undefined;
+  }
   open(value: unknown, context: LiveContext, deadline = Date.now() + 350_000): LiveSessionSnapshot {
     const asks = validateCanaryAsks(value);
     const remaining = deadline - Date.now();

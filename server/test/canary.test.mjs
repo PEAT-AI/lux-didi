@@ -269,3 +269,9 @@ test('raw side-effect reply is retained for cleanup even if provider send throws
 test('empty data cannot pass because query/reason metadata is non-empty', () => {
   assert.equal(assertCanaryResult(ask, { ...result, result: { code: 'ok', query: 'synthetic project', reason: 'no matching rows', items: [] } }).code, 'empty_payload');
 });
+
+test('empty MCP text/data envelopes are not payload', () => {
+  for (const text of ['', '[]', '{}']) {
+    assert.equal(assertCanaryResult(ask, { ...result, result: { code: 'ok', content: [{ type: 'text', text }] } }).code, 'empty_payload');
+  }
+});

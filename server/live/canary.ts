@@ -39,9 +39,15 @@ export function canaryResultCode(result: Record<string, unknown>): string {
 }
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const hasData = (value: unknown): boolean => {
-  if (typeof value === 'string') return value.trim().length > 0;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (text.startsWith('[') || text.startsWith('{')) {
+      try { return hasData(JSON.parse(text)); } catch { /* ordinary source text, not a JSON envelope */ }
+    }
+    return text.length > 0;
+  }
   if (Array.isArray(value)) return value.some(hasData);
-  if (record(value)) return Object.entries(value).some(([key, item]) => !['code', 'ok', 'outcome', 'status', 'error', 'guidance', 'say', 'fixNotForSpeech'].includes(key) && hasData(item));
+  if (record(value)) return Object.entries(value).some(([key, item]) => !['code', 'ok', 'outcome', 'status', 'error', 'reason', 'query', 'cursor', 'nextCursor', 'type', 'mimeType', 'guidance', 'say', 'fixNotForSpeech'].includes(key) && hasData(item));
   return false;
 };
 export function assertCanaryResult(ask: CanaryAsk, observation: CanaryObservation): { ok: boolean; code: string } {
@@ -50,7 +56,9 @@ export function assertCanaryResult(ask: CanaryAsk, observation: CanaryObservatio
   if (observation.tool !== ask.expect.tool) return fail('wrong_tool');
   const code = canaryResultCode(observation.result);
   if (!successCodes.has(code) || observation.result['ok'] === false || observation.result['error']) return fail(code);
-  if (ask.expect.nonEmpty && !hasData(observation.result)) return fail('empty_payload');
+  const dataFields = ['items', 'results', 'messages', 'events', 'files', 'cards', 'boards', 'channels', 'posts', 'alarms', 'matches', 'data', 'content', 'body', 'text', 'markdown', 'entries', 'insights', 'companies', 'company', 'history', 'answer', 'topic'].filter(key => key in observation.result);
+  const nonEmpty = dataFields.length ? dataFields.some(key => hasData(observation.result[key])) : hasData(observation.result);
+  if (ask.expect.nonEmpty && !nonEmpty) return fail('empty_payload');
   if (observation.sideEffect && (!observation.sideEffect.observed || !observation.sideEffect.cleaned)) return fail('side_effect_missing');
   if (ask.expect.sideEffect) {
     const effect = observation.sideEffect;

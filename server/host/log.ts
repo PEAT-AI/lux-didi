@@ -205,6 +205,11 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!closedKeys(value, ['event', 'ms']) || !isSafeCount(value.ms)) return;
     return { event: 'host_ready_ms', ms: value.ms };
   }
+  if (value.event === 'alarm_scheduler_started') {
+    // #751: a count only. A label or a time here would be the owner's schedule in the diagnostic log.
+    if (!closedKeys(value, ['event', 'pending']) || !isSafeCount(value.pending)) return;
+    return { event: 'alarm_scheduler_started', pending: value.pending };
+  }
   if (value.event === 'alarm_set' || value.event === 'alarm_due' || value.event === 'alarm_ring_started'
     || value.event === 'alarm_acknowledged' || value.event === 'alarm_missed' || value.event === 'alarm_degraded') {
     if (typeof value.alarmId !== 'string' || !/^[A-Za-z0-9:_-]{1,256}$/.test(value.alarmId)

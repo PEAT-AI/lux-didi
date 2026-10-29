@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { AlarmLogEvent } from './events.js';
+import { alarmSchedulerStarted } from './events.js';
+import type { AlarmLogEvent, AlarmSchedulerEvent } from './events.js';
 import type { StorePort, SQLRow, Transaction } from '../contracts/storage.js';
 
 export type AlarmState = 'pending' | 'ringing' | 'done' | 'cancelled' | 'missed';
@@ -26,7 +27,7 @@ export class AlarmScheduler {
   private timer: unknown;
   private stopped = false;
   private delivered = new Set<string>();
-  constructor(private readonly options: { store: StorePort; clock: AlarmClock; emit(event: AlarmDue): void; changed?(alarms: Alarm[]): void; log?(event: AlarmLogEvent): void }) {}
+  constructor(private readonly options: { store: StorePort; clock: AlarmClock; emit(event: AlarmDue): void; changed?(alarms: Alarm[]): void; log?(event: AlarmLogEvent | AlarmSchedulerEvent): void }) {}
   private record(alarm: Alarm, event: AlarmLogEvent['event'], reason: AlarmLogEvent['reason']): void {
     try { this.options.log?.({ event, reason, alarmId: alarm.id, scheduledMs: alarm.fireAtUtc, actualMs: this.options.clock.now() }); }
     catch { /* Diagnostic storage must never become the ringing reliability path. */ }
@@ -100,6 +101,11 @@ export class AlarmScheduler {
       catch { this.record(alarm, 'alarm_degraded', 'shell_unreachable'); }
     }
     const rows = this.list();
+    // #751: one start line with the pending count, so a restart that dropped the schedule is visible in the log.
+    if (reason === 'start') {
+      try { this.options.log?.(alarmSchedulerStarted(rows.filter(row => row.state === 'pending').length)); }
+      catch { /* Diagnostic storage must never become the ringing reliability path. */ }
+    }
     this.options.changed?.(rows);
     const active = rows.filter(row => row.state === 'pending' || row.state === 'ringing');
     if (active.length) {

@@ -147,3 +147,15 @@ export type AlarmLogReason = typeof ALARM_LOG_REASONS[number];
 export interface AlarmLogEvent {
   event: typeof ALARM_LOG_EVENTS[number]; alarmId: string; scheduledMs: number; actualMs: number; reason: AlarmLogReason;
 }
+
+/**
+ * #751: the one line the scheduler writes when the host arms it. It carries the pending count and nothing
+ * else: no alarm id, no label and no time, because it describes the schedule rather than one alarm.
+ */
+export const ALARM_SCHEDULER_EVENTS = ['alarm_scheduler_started'] as const;
+export interface AlarmSchedulerEvent {
+  event: typeof ALARM_SCHEDULER_EVENTS[number]; pending: number;
+}
+export function alarmSchedulerStarted(pending: number): AlarmSchedulerEvent {
+  return { event: 'alarm_scheduler_started', pending };
+}

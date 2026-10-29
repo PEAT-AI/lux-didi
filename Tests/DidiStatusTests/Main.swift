@@ -3,6 +3,33 @@ import Foundation
 /// Fake sinks only: no application, notification center, status item or window is created.
 @main struct StatusQuietTests {
     @MainActor static func main() async {
+        let quit = NativeQuitDeadline()
+        let forced = QuitTestResults()
+        var deadline: (@Sendable () -> Void)?
+        var bound: Double = 0
+        precondition(quit.request(schedule: { seconds, callback in bound = seconds; deadline = callback },
+                                  forced: { forced.append($0) }))
+        precondition(bound == 3, "shutdown must have a three-second hard deadline")
+        let hanging = HangingShutdownModel()
+        let hangingTask = Task { await hanging.shutdown(); return quit.complete() }
+        await hanging.waitUntilStarted()
+        quit.stage(.logout)
+        deadline?() // Advance the fake clock, never wait for real time.
+        precondition(forced.values == [.logout], "deadline must exit despite suspended shutdown")
+        hanging.release()
+        let late = await hangingTask.value
+        precondition(!late, "late completion must not issue another exit")
+        let fast = NativeQuitDeadline()
+        var fastDeadline: (@Sendable () -> Void)?
+        precondition(fast.request(schedule: { _, callback in fastDeadline = callback }, forced: { forced.append($0) }))
+        precondition(fast.complete(), "fast shutdown should exit cleanly")
+        fastDeadline?()
+        precondition(forced.values == [.logout], "clean exit cancels forced termination logically")
+        let repeated = NativeQuitDeadline()
+        var timers = 0
+        precondition(repeated.request(schedule: { _, _ in timers += 1 }, forced: { forced.append($0) }))
+        precondition(!repeated.request(schedule: { _, _ in timers += 1 }, forced: { forced.append($0) }))
+        precondition(timers == 1 && forced.values == [.logout, .secondQuit], "second Quit exits immediately")
         var menu = StatusMenuTracking()
         var receipts: [(String, Int, Int)] = []
         for _ in 0..<20 { menu.requested { receipts.append(($0, $1, $2)) } }
@@ -109,4 +136,27 @@ import Foundation
     var queries = 0
     var value: NotificationCapability = .authorized
     func read() async -> NotificationCapability { queries += 1; return value }
+}
+
+private final class QuitTestResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stages: [NativeQuitStage] = []
+    var values: [NativeQuitStage] { lock.lock(); defer { lock.unlock() }; return stages }
+    func append(_ stage: NativeQuitStage) { lock.lock(); defer { lock.unlock() }; stages.append(stage) }
+}
+
+@MainActor private final class HangingShutdownModel {
+    private var shutdownContinuation: UnsafeContinuation<Void, Never>?
+    private var startedContinuation: CheckedContinuation<Void, Never>?
+    func shutdown() async {
+        await withUnsafeContinuation { continuation in
+            shutdownContinuation = continuation
+            startedContinuation?.resume(); startedContinuation = nil
+        }
+    }
+    func waitUntilStarted() async {
+        if shutdownContinuation != nil { return }
+        await withCheckedContinuation { startedContinuation = $0 }
+    }
+    func release() { shutdownContinuation?.resume(); shutdownContinuation = nil }
 }

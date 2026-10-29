@@ -49,10 +49,22 @@ import Foundation
 
         var ignores = false
         var orbWrites = 0
-        for next in [false, false, true, true, false, false] {
+        let frame = CGRect(x: 100, y: 100, width: 220, height: 220)
+        func hover(_ point: CGPoint, visible: Bool = true) {
+            let next = MiniOrbClickThrough.ignoresMouse(isVisible: visible, at: point, in: frame)
             StatusQuiet.publish(current: ignores, next: next) { ignores = $0; orbWrites += 1 }
         }
-        precondition(orbWrites == 2)
+        for _ in 0..<20 { hover(CGPoint(x: 210, y: 210)) }
+        precondition(orbWrites == 0, "identical inside hover events must not write")
+        hover(CGPoint(x: 101, y: 101))
+        precondition(orbWrites == 1 && ignores)
+        for _ in 0..<20 { hover(CGPoint(x: 101, y: 101)) }
+        precondition(orbWrites == 1, "identical outside hover events must not write")
+        hover(CGPoint(x: 210, y: 210))
+        precondition(orbWrites == 2 && !ignores)
+        hover(CGPoint(x: 101, y: 101))
+        hover(CGPoint(x: 101, y: 101), visible: false)
+        precondition(orbWrites == 4 && !ignores, "hidden panel resets click-through once")
         print("STATUS-QUIET PASS identicalTicks=20 fieldChanges=true errors=true orb=true headless=true")
     }
 }

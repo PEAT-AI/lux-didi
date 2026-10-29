@@ -28,6 +28,12 @@ assert app.count("await model.refreshNotificationCapability()") == 2, "launch an
 assert "quietStatusItem.update(" in app
 orb = Path("Sources/LuxDidi/NativeMiniOrb.swift").read_text()
 assert "StatusQuiet.publish(current: ignoresMouseEvents, next: next)" in orb
+assert "Timer(timeInterval: 0.03" not in orb and "clickThroughFollow" not in orb
+assert "NSEvent.addLocalMonitorForEvents(matching: movement)" in orb
+assert "NSEvent.addGlobalMonitorForEvents(matching: movement)" in orb
+assert "return event" in orb
+assert "NSEvent.removeMonitor(localMouseMonitor)" in orb
+assert "NSEvent.removeMonitor(globalMouseMonitor)" in orb
 print("STATUS-QUIET WIRING PASS capabilityQueriesPerTick=0 launchAndActivation=true")
 PYTEST
 compile "$work/head-test" Sources/LuxDidi/*.swift

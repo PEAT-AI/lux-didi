@@ -3,7 +3,6 @@ import { ADMISSION_BLOCK_REASONS, CHAT_QUERY_OPERATORS, CHAT_RECEIPT_REASONS, LO
 import { APPROVAL_REFUSAL_REASONS } from './events.js';
 import { STOP_NAMES, STOP_WORD_LIMIT } from '../live/stop-phrase.js';
 import { TRELLO_CALL_TOOLS, TRELLO_WRITE_ARGUMENT_FIELDS } from '../tools/trello.js';
-import { OPEN_RECEIPT_CODES, OPEN_TOOL_NAMES } from '../tools/open.js';
 import { clientDiagnostic } from '../http/routes.js';
 import { ALARM_LOG_REASONS } from './events.js';
 import { TOOL_FAILURE_CODES } from '../adapters/model/types.js';

@@ -24,7 +24,7 @@ import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validate
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
 import { ALARM_NAMES, ALARM_IDENTITY, parseAlarmTime, validateAlarmArguments, type AlarmArguments } from './alarm.js';
-import { OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
+import { OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, openWebFailure, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
 
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
@@ -793,15 +793,15 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             eligible = authorization.code === 'allowed' || authorization.code === 'idempotent';
             if (!eligible) dispatched = undefined;
           }
+          // A guard refusal never reached the native side, so its receipt is the closed policy code, while the
+          // model is told the reason the call was refused.
+          const code: OpenReceiptCode = authorization.code === 'idempotent' ? (authorization.receipt as { code: OpenReceiptCode }).code : dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
           const payload: JsonObject = authorization.code === 'idempotent' ? authorization.receipt as JsonObject
             : !eligible ? requestRefusal(authorization.code)
             : refused !== undefined ? { ...requestRefusal('target_not_authorized'), reason: refused }
             : code === 'opened' && dispatched ? { code: 'opened', kind: dispatched.kind, title: dispatched.title, say: `Opened: ${dispatched.title}.` }
             : { code, say: 'The host could not confirm that the target opened.' };
           if (dispatched && authorization.code === 'allowed') ownerRequests.commit(runId, 'open', requestTarget, payload, authorization.id);
-          // A guard refusal never reached the native side, so its receipt is the closed policy code, while the
-          // model is told the reason the call was refused.
-          const code: OpenReceiptCode = authorization.code === 'idempotent' ? (authorization.receipt as { code: OpenReceiptCode }).code : dispatched === undefined ? refused ?? 'failed' : authorization.code === 'idempotent' ? 'opened' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target);
           if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
           else nativeActionReceipt('open_url', code, openTool.name === 'open_home' ? 'home' : 'none');
           // C-POLISH10: the audit line names the tool, the kind, the counted words and the class it resolved to, so a
@@ -848,7 +848,7 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
             if (!eligible) dispatched = undefined;
           }
           const refused = 'target' in resolved ? undefined : resolved.code;
-          const code: OpenReceiptCode = authorization.code === 'idempotent' ? (authorization.receipt as { code: OpenReceiptCode }).code : dispatched === undefined ? refused ?? 'failed' : authorization.code === 'idempotent' ? 'opened' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target, 'native_timeout');
+          const code: OpenReceiptCode = authorization.code === 'idempotent' ? (authorization.receipt as { code: OpenReceiptCode }).code : dispatched === undefined ? refused ?? 'failed' : await nativeActions.dispatch(runId, dispatched.action, dispatched.target, 'native_timeout');
           if (dispatched) nativeActionReceipt(dispatched.action, code, dispatched.detail);
           else nativeActionReceipt('open_url', code, 'web');
           // C-POLISH10: the audit line for a web open: the kind, how many words the target was, whether his own words

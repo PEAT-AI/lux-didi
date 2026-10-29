@@ -390,7 +390,8 @@ test('#573: an open call runs only on the owner own open intent', () => {
   noteOwnerWords('live-open-guard-intent', 'search the web for the pricing page');
   assert.deepEqual(openTarget('open_source', { handle }, ownerWords('live-open-guard-intent')), { code: 'no_open_intent' }, 'nothing opens when he asked for a search');
   assert.match(OPEN_GUIDANCE.no_open_intent, /owner request authorizing an open/);
-  assert.doesNotMatch(OPEN_GUIDANCE.no_open_intent, /repeat|retry|same handle/i, 'a refusal does not demand a repeated owner ask');
+  assert.doesNotMatch(OPEN_GUIDANCE.no_open_intent, /repeat.*ask|ask.*again|own device/i, 'a refusal does not demand a repeated owner ask');
+  assert.match(OPEN_GUIDANCE.no_open_intent, /same handle/, 'tool-level retry guidance preserves binding without another owner permission round');
   noteOwnerWords('live-open-guard-intent', 'zeig mir den Umsatz');
   assert.ok('target' in openTarget('open_source', { handle }, ownerWords('live-open-guard-intent')), 'a German open intent still opens');
   noteOwnerWords('live-open-guard-intent', 'pull up the notes');

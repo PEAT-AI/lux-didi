@@ -19,8 +19,8 @@ export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_sourc
 /** The one sentence the model says when an item open is refused or unknown. */
 export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch', string> = {
   not_found: 'The host could not resolve that shown item.',
-  not_allowed: 'That target is not allowed for this action.',
-  no_open_intent: 'There is no current owner request authorizing an open, so nothing is open.',
+  not_allowed: 'That target is not allowed for this action. Tool retries use the same handle, without new authority.',
+  no_open_intent: 'There is no owner request authorizing an open; the host did not hear an open request. Tool retries use the same handle.',
   kind_mismatch: 'That item is not the kind authorized by this request.',
 };
 /** A control frame and its ack, exactly as they cross the local Live socket. */

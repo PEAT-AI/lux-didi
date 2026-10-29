@@ -23,7 +23,7 @@ import { projectMattermostResult } from '../tools/mattermost.js';
 import { shapeMattermost } from '../tools/live-shape.js';
 import { INTERNAL, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
 import { ResearchLedger, runResearch, shapeBlock, type ResearchDeps } from '../tools/research.js';
-import { chatAsk, chatIntent, chatWindow, spokenChannel } from '../tools/chat-intent.js';
+import { chatAsk, chatIntent, chatSubs, chatWindow, spokenChannel } from '../tools/chat-intent.js';
 import { installPeople, parsePeople, type PeopleSnapshot } from '../people/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -887,4 +887,43 @@ test('CH-R4: question words never become part of the person before and I', () =>
   }
   const invalid = chatIntent('check what and I discussed', { terms: '', nowMs: FIXTURE_NOW, timeZone: 'UTC' });
   assert.equal(invalid.person, undefined);
+});
+
+// The parser receives the accumulated finalized words; the actual accepted-host publication
+// sequence is tested separately above. No recognizer or live adapter is started here.
+test('MM-1 and MM-6: repeated channel names and inflected topics return the named archive posts', async t => {
+  const f = await setup(t, 'people', undefined, { DIDI_FAKE_MATTERMOST_NIGHT: 'yes' });
+  const fragments = [' And like, can you like check in the', ' Alpha Alpha Alpha channel and metamorph what Ada was yelling at me', ', about like', ' deploying something'];
+  const intent = chatIntent(fragments.join(''), { terms: 'deploying', nowMs: FIXTURE_NOW, timeZone: 'UTC' });
+  assert.equal(intent.kind, 'channel-recent');
+  assert.equal(intent.channel, 'Alpha Alpha Alpha');
+  const calls = chatSubs(intent, 8, '');
+  const first = chatRead(await f.reader.chat(calls[0]!.args as never));
+  assert.equal(first.clarify, undefined);
+  assert.ok(first.posts.some(post => /deployed sandbox/u.test(post.text)));
+  assert.match(first.read, /hybrid/u);
+  const revised = chatRead(await f.reader.chat({ intent: 'channel', channel: 'Alpha Alpha Alpha Alpha', query: 'university', from_date: fixtureDaysAgo(7) }));
+  assert.equal(revised.clarify, undefined);
+  assert.ok(revised.posts.some(post => /https:\/\/example.invalid\/article/u.test(post.text)));
+});
+
+test('MM-5 and MM-7: discussion shapes and every recorded product mishearing select chat research', async t => {
+  const f = await setup(t, 'people');
+  for (const question of ['recent discussions with Ada', 'Ada discussions', ...['Metamos', 'Metamost', 'Metamo', 'metamorph', 'MetaMask', 'MetaMouse'].map(name => `can you access ${name}`)]) {
+    const planned: IntentSubCall[] = [];
+    const reply = await runResearch(researchDeps(f, planned), { action: 'start', question, topic: question }, new AbortController().signal);
+    assert.ok(planned.some(call => call.name === INTERNAL.chatRead || call.name === INTERNAL.chatSearch), question);
+    assert.doesNotMatch(String(reply['coverage']), /chat skipped_by_route/u, question);
+  }
+});
+
+test('MM-8 and ARG-1: noisy overview uses current person and no inherited channel or topic', () => {
+  const options = { terms: 'old-topic', nowMs: FIXTURE_NOW, timeZone: 'UTC' };
+  const prior = chatSubs(chatIntent('what is new in the Builders channel about pilot', options), 8, '');
+  assert.equal(prior[0]?.args['channel'], 'Builders');
+  const current = chatSubs(chatIntent('Yes, um, check Metamos, uh what we need to discuss with Ada. T-Is he all of the past conversations that we have been having', options), 8, '');
+  assert.equal(current[0]?.args['intent'], 'overview');
+  assert.equal(current[0]?.args['person'], 'Ada');
+  assert.equal(current[0]?.args['channel'], undefined);
+  assert.equal(current[0]?.args['query'], undefined);
 });

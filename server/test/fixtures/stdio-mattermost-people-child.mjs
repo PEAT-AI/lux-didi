@@ -109,6 +109,10 @@ add('chanD02000000000000000000a', 'lena.berg', now - 45 * DAY, 'old hello from l
 // R8-W9: an opt-in synthetic colleague whose direct conversation holds twelve posts, so the audit's
 // "what did I discuss with Alex lately" ask can be replayed end to end. Off by default: every other test
 // in this suite reads the same fixture without these posts.
+if (process.env.DIDI_FAKE_MATTERMOST_NIGHT === 'yes') {
+  CHANNELS.push({ id: 'chanAlpha0000000000000000a', name: 'alpha-alpha-alpha', display_name: 'Alpha Alpha Alpha', type: 'O', lastAt: now - 6 * HOUR });
+  add('chanAlpha0000000000000000a', 'ada.moss', now - 6 * HOUR, 'deployed sandbox; university article https://example.invalid/article');
+}
 const alexDm = 'chanDAlex0000000000000000a';
 if (process.env.DIDI_FAKE_MATTERMOST_ALEX === 'yes') {
   const alex = { id: 'user0alex000000000000000a', username: 'alex.ray', first_name: 'Alex', last_name: 'Ray', nickname: '' };
@@ -153,7 +157,8 @@ function search(args) {
   const query = typeof args.query === 'string' ? args.query.trim() : '';
   if (query !== '') {
     const terms = words(query);
-    list = list.filter(post => terms.every(term => words(`${post.message} ${post.attachmentText ?? ''}`).includes(term)));
+    const stem = word => word.replace(/(?:ing|ed)$/u, '');
+    list = list.filter(post => terms.every(term => words(`${post.message} ${post.attachmentText ?? ''}`).some(word => args.mode === 'hybrid' ? stem(word) === stem(term) : word === term)));
   }
   list.sort((a, b) => b.at - a.at);
   const offset = args.offset ?? 0;

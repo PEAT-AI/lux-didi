@@ -1095,7 +1095,15 @@ function feel(text: string): 'affirm' | 'deny' | undefined {
 }
 
 // A contraction is one word: "don't" must read as the negator it is, so apostrophes go before tokens.
-const tokens = (text: string): string[] => text.toLowerCase().replace(/['\u2019]/g, '').split(/[^a-z0-9]+/).filter(Boolean);
+// Normalize equivalent constructions, not isolated words taken out of their meaning:
+// a commute includes work, but a journey to Paris does not; taking a walk is not
+// permission to drop 'take' from arbitrary tasks. Negators and numbers stay intact.
+const memoryPhrases = (text: string): string => text.toLowerCase()
+  .replace(/\bjourney\s+to\s+work\b/g, 'commute')
+  .replace(/\b(?:take|takes|taking|go\s+for|goes\s+for|going\s+for)\s+(?:a\s+)?walk\b/g, 'walk')
+  .replace(/\b(?:every|each)\s+day\b/g, 'daily')
+  .replace(/\blasts(?=\s+\d+\s+(?:minutes?|hours?)\b)/g, 'takes');
+const tokens = (text: string): string[] => memoryPhrases(text).replace(/['\u2019]/g, '').split(/[^a-z0-9]+/).filter(Boolean);
 // Polarity belongs to the clause that carries the note's words, not to the whole turn: the same turn can
 // affirm "short answers in the morning" and then say "no meetings before nine".
 const MEMORY_CLAUSE_BREAK = /[.;!?,]|\b(?:and|but|because|so|then|while)\b/i;
@@ -1111,7 +1119,9 @@ function dominantClause(text: string, words: ReadonlySet<string>): string {
  * The preference and polarity verbs are excluded on purpose: they decide direction through feel(),
  * and counting them in the ratio refused a short honest note whose ask used another tense. */
 const MEMORY_WORD_MEANINGS: Readonly<Record<string, string>> = {
-  brief: 'short', concise: 'short', little: 'small', quick: 'fast', walking: 'walk', walks: 'walk', works: 'work',
+  brief: 'short', concise: 'short', little: 'small', quick: 'fast', rapid: 'fast',
+  walking: 'walk', walks: 'walk', works: 'work', each: 'every', peaceful: 'quiet',
+  purchase: 'buy', purchases: 'buy', phone: 'call', replies: 'response', responses: 'response',
 };
 const memoryWord = (word: string): string => MEMORY_WORD_MEANINGS[word] ?? word;
 const contentWords = (text: string): string[] => tokens(text).map(memoryWord)

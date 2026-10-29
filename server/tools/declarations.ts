@@ -1,4 +1,3 @@
-import { diagnosticInputFields } from './diagnostic-input.js';
 import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import { controlled, Interrupted } from '../adapters/model/control.js';
@@ -94,9 +93,8 @@ function jsonTypeOf(value: unknown): string {
 /** Metadata only: top-level keys and each value's JSON type, never a value. */
 function logArgumentsRejected(name: string, args: unknown): void {
   const record = args !== null && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
-  const declared = diagnosticInputFields(name);
-  const fields = Object.keys(record).slice(0,24).map(key => `${declared.includes(key) ? key : 'unknown'}:${jsonTypeOf(record[key])}`);
-  hostLogEvent({ event: 'tool_arguments_rejected', tool: name, fields });
+  const fields = Object.keys(record).slice(0,24).map(key => `${/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key) ? key : 'invalid_key'}:${jsonTypeOf(record[key])}`);
+  hostLogEvent({ event: 'tool_arguments_rejected', tool: name, fields, reason: args === null || typeof args !== 'object' || Array.isArray(args) ? 'arguments_not_object' : 'schema_validation_failed' });
 }
 /** The one line the model may speak when a call is refused for its arguments: owner-facing, no host prose. */
 export const INVALID_ARGUMENTS_SPEECH = 'That lookup failed on my side.';

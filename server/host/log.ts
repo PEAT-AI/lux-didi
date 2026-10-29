@@ -343,6 +343,14 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!['low_score', 'no_overlap', 'none'].includes(String(value.reason))) return;
     return { event: 'knowledge_autopen', decision: value.decision, bucket: value.bucket, reason: value.reason };
   }
+  if (['open_audit', 'alarm_audit', 'lux_note_audit'].includes(String(value.event)) && 'grantKind' in value) {
+    if (Object.keys(value).sort().join(',') !== ['event', 'ownerFinals', 'requestAgeMs', 'grantKind', 'grantState', 'refusalCode'].sort().join(',')) return;
+    if (!Number.isInteger(value.ownerFinals) || Number(value.ownerFinals) < 0 || !Number.isFinite(value.requestAgeMs) || Number(value.requestAgeMs) < 0) return;
+    if (!['open', 'set_alarm', 'list_alarms', 'cancel_alarm', 'snooze_alarm', 'lux_note'].includes(String(value.grantKind))) return;
+    if (!['absent', 'available', 'spent'].includes(String(value.grantState))) return;
+    if (typeof value.refusalCode !== 'string' || !/^[a-z_]{1,64}$/.test(value.refusalCode)) return;
+    return { event: value.event, ownerFinals: value.ownerFinals, requestAgeMs: value.requestAgeMs, grantKind: value.grantKind, grantState: value.grantState, refusalCode: value.refusalCode };
+  }
   if (value.event === 'open_audit') {
     // C-POLISH10: what one open call was asked to open, as closed classes and counts: no words, no handle, no URL.
     if (!closedKeys(value, ['bound', 'destination', 'event', 'kind', 'refusal', 'tool', 'words'])) return;
@@ -775,12 +783,13 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
   }
   if (value.event === 'tool_arguments_rejected') {
     // Closed shape: tool name and argument key:type paths only, never a value.
-    if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'fields'].sort().join(',')) return;
+    if (Object.keys(value).sort().join(',') !== ['event', 'tool', 'fields', 'reason'].sort().join(',')) return;
     const token = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(v);
     const fieldPattern = /^[A-Za-z_][A-Za-z0-9_]{0,63}:(string|number|boolean|array|object|null|undefined)$/;
     if (!token(value.tool)) return;
     if (!Array.isArray(value.fields) || value.fields.length > 24 || value.fields.some(field => typeof field !== 'string' || !fieldPattern.test(field))) return;
-    return { event: 'tool_arguments_rejected', tool: value.tool, fields: value.fields };
+    if (!['arguments_not_object', 'schema_validation_failed'].includes(String(value.reason))) return;
+    return { event: 'tool_arguments_rejected', tool: value.tool, fields: value.fields, reason: value.reason };
   }
   if (value.event === 'live_session_superseded') {
     // Closed shape: the superseded session id only, never any owner or transcript detail.

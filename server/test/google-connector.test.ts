@@ -1195,3 +1195,14 @@ test('Google wire contract catches injected schema drift', () => {
   delete events.inputSchema.properties.q;
   assert.throws(() => assertGoogleWireContract(recording), /wire keys drifted/);
 });
+
+test('two selected calendars out of three are read with declared helper arguments only', async () => {
+  const fake = fakeCalendarPort({ calendars: [{ id: 'primary', summary: 'Primary', primary: true }, { id: 'second', summary: 'Second' }, { id: 'third', summary: 'Third' }], eventsFor: id => ({ events: [{ id, summary: `Synthetic ${id}`, start: { dateTime: '2026-11-02T12:00:00Z' } }] }) });
+  const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'google-tools-list.json'), 'utf8'));
+  const properties = recording.families.calendar.tools.find((tool: { name: string }) => tool.name === 'calendar_list_events').inputSchema.properties;
+  const reader = await calendarReader(fake.port, {}, properties);
+  const result = await reader.gcalList({ calendarIds: ['primary', 'second'], timeMin: '2026-11-02T00:00:00Z', timeMax: '2026-11-09T00:00:00Z' });
+  assert.equal(result.state, 'completed');
+  assert.deepEqual(fake.listArgs.map(args => args['calendarId']).sort(), ['primary', 'second']);
+  for (const args of fake.listArgs) for (const key of Object.keys(args)) assert.ok(Object.hasOwn(properties, key), `undeclared ${key}`);
+});

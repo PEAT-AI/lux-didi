@@ -26,7 +26,10 @@ test('registered calendar args discard both unknown keys and clamp the declared 
 
 test('named wedding search reaches two weeks ahead instead of the current day', async () => {
   const h = harness();
-  await runResearch(h.deps, { action: 'start', question: "do you find Sam's wedding", lookups: [{ source: 'calendar', query: "Sam's wedding" }] }, new AbortController().signal);
+  const shaped = shapeGcalList({ events: [{ id: 'wedding', summary: "Sam's wedding", start: { dateTime: new Date(now + 14 * 86400000).toISOString() } }] });
+  h.deps.execute = async calls => { h.calls.push(...calls); return calls.map(call => ({ key: call.key, name: call.name, ok: true, text: shaped.text, calendarPage: shaped.calendarPage, originalCharacters: shaped.originalCharacters, omittedCharacters: 0 })); };
+  const reply = await runResearch(h.deps, { action: 'start', question: "do you find Sam's wedding", lookups: [{ source: 'calendar', query: "Sam's wedding" }] }, new AbortController().signal);
+  assert.match(JSON.stringify(reply['findings']), /Sam's wedding/);
   const args = h.calls.find(call => call.name === 'calendar_list_events')?.args;
   assert.ok(args);
   assert.equal(args['q'], "Sam's wedding");
@@ -67,7 +70,7 @@ for (const [phrase, start, end] of [
 
 function eventsHarness(count = 1) {
   const h = harness();
-  const shaped = shapeGcalList({ events: Array.from({ length: count }, (_, i) => ({ id: `synthetic-${i}`, summary: `Synthetic event ${i}`, start: { dateTime: `2026-11-0${2 + i % 7}T12:00:00Z` }, attendees: [{ displayName: 'Sam', responseStatus: 'accepted' }, { displayName: 'Jo', responseStatus: 'tentative' }] })) });
+  const shaped = shapeGcalList({ events: Array.from({ length: count }, (_, i) => ({ id: `synthetic-${i}`, summary: `Synthetic event ${i}`, calendar: 'Synthetic calendar', start: { dateTime: `2026-11-0${2 + i % 7}T12:00:00Z` }, attendees: [{ displayName: 'Sam', responseStatus: 'accepted' }, { displayName: 'Jo', responseStatus: 'tentative' }] })) });
   h.deps.execute = async calls => {
     h.calls.push(...calls);
     return calls.map(call => ({ key: call.key, name: call.name, ok: true, text: call.name === 'calendar_list_events' ? shaped.text : '', originalCharacters: shaped.originalCharacters, omittedCharacters: 0, ...(call.name === 'calendar_list_events' ? { calendarPage: shaped.calendarPage } : {}) }));

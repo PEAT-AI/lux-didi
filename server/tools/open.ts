@@ -393,13 +393,6 @@ export function webWords(text: string): string[] {
     .filter(Boolean);
 }
 
-/** Handle-tool target binding only, not open_web: each target word must occur in the owner words. */
-export function webBinding(target: string, ownerWords: string): boolean {
-  const said = new Set(webWords(ownerWords));
-  const wanted = webWords(target);
-  return wanted.length > 0 && wanted.every(word => said.has(word));
-}
-
 /** The not-for-speech refusal the invalid-arguments path uses: a fix for the model and a line to speak. */
 export interface NotForSpeech { fixNotForSpeech: string; say: string }
 /** A closed, speech-safe receipt even when execution failed before it could open anything. */

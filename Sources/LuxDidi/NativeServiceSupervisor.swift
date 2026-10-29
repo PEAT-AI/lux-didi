@@ -518,7 +518,21 @@ struct NativeHostRecord: Codable, Equatable, Sendable {
 
 /// Policy shared by forced exit and stale-pidfile recovery. Every signal revalidates identity.
 enum NativeHostReaper {
-    enum Outcome: String { case absent, foreign, reaped, signaled, failed }
+    enum Outcome: String {
+        case absent, foreign, reaped, signaled, failed
+        case decodeFailed = "decode_failed"
+    }
+    /// A stale record must not turn a foreign process or corrupt file into a launch blocker.
+    static func recover(read: () throws -> NativeHostRecord?, reap: (NativeHostRecord) -> Outcome,
+                        remove: () -> Void) -> Outcome {
+        let record: NativeHostRecord?
+        do { record = try read() }
+        catch { remove(); return .decodeFailed }
+        guard let record else { return .absent }
+        let outcome = reap(record)
+        if outcome == .foreign { remove() }
+        return outcome
+    }
     static func reap(record: NativeHostRecord, expectedExecutable: String,
                      inspect: (Int32) -> NativeHostIdentity?, alive: (Int32) -> Bool,
                      signal: (Int32, Int32) -> Void, pause: () -> Void,
@@ -576,13 +590,17 @@ final class NativeHostProcessRegistry: @unchecked Sendable {
     }
     static func recover(file: URL, executable: URL) throws {
         guard FileManager.default.fileExists(atPath: file.path) else { return }
-        let record = try JSONDecoder().decode(NativeHostRecord.self, from: Data(contentsOf: file))
-        let outcome = NativeHostReaper.reap(record: record, expectedExecutable: executable.resolvingSymlinksInPath().path,
-            inspect: NativeHostIdentity.read, alive: NativeHostIdentity.alive,
-            signal: { _ = kill($0, $1) }, pause: pause,
-            remove: { try? FileManager.default.removeItem(at: file) }, confirmDeath: true)
+        let remove = { try? FileManager.default.removeItem(at: file) }
+        let outcome = NativeHostReaper.recover(
+            read: { try JSONDecoder().decode(NativeHostRecord.self, from: Data(contentsOf: file)) },
+            reap: { record in
+                NativeHostReaper.reap(record: record, expectedExecutable: executable.resolvingSymlinksInPath().path,
+                    inspect: NativeHostIdentity.read, alive: NativeHostIdentity.alive,
+                    signal: { _ = kill($0, $1) }, pause: pause,
+                    remove: { _ = remove() }, confirmDeath: true)
+            }, remove: { _ = remove() })
         log(outcome)
-        guard outcome == .absent || outcome == .reaped else { throw NativeServiceError.invalidRuntime }
+        guard outcome != .failed else { throw NativeServiceError.invalidRuntime }
     }
     private static func log(_ outcome: NativeHostReaper.Outcome) {
         Logger(subsystem: "LuxDidi", category: "host_recovery").notice("host_recovery outcome=\(outcome.rawValue, privacy: .public)")

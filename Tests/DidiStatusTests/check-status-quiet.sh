@@ -60,6 +60,9 @@ assert "try await Task.detached { try NativeHostProcessRegistry.recover" in supe
 assert supervisor.index("NativeHostProcessRegistry.recover(file:") < supervisor.index("try owned.launch(executable: runtime.node")
 assert "try NativeHostProcessRegistry.shared.spawned(pid: owned.pid" in supervisor
 assert "NativeHostProcessRegistry.shared.stopped(pid: owned.pid)" in supervisor
+assert "let outcome = NativeHostReaper.recover(" in supervisor
+assert "guard outcome != .failed else" in supervisor
+assert 'case decodeFailed = "decode_failed"' in supervisor
 assert "quit_forced stage=" in termination and "quitDeadline.complete()" in termination
 assert termination.index("quitDeadline.request") < termination.index("await model.shutdown")
 shutdown = app.split("    func shutdown(stage:", 1)[1].split("    /// Quit ends", 1)[0]

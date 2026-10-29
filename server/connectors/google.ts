@@ -69,7 +69,7 @@ export type GoogleResult = GoogleEvidence | GoogleRefused | GoogleUnknown;
 
 export interface GmailListInput { maxResults?: number; q?: string; pageToken?: string }
 export interface GmailReadInput { id: string; format?: 'metadata' | 'full' }
-export interface GcalCalendarsInput { maxResults?: number; pageToken?: string }
+export interface GcalCalendarsInput { maxResults?: number; pageToken?: string; refresh?: boolean }
 /** C-DRIVE drive_search_files: a name query, optional type filter and window, at most ten files. */
 export interface DriveSearchInput { query: string; mime_types?: readonly string[]; modified_after?: string; limit?: number }
 export interface DriveGetInput { file_id: string }
@@ -426,6 +426,10 @@ export function createGoogleReader(options: GoogleOptions): GoogleReader {
       if (denied) return { state: 'refused', reason: denied };
       const bounded = listArgs(input, GOOGLE_DEFAULTS.listResults);
       if (!bounded.ok) return { state: 'refused', reason: bounded.reason };
+      if (input.refresh !== undefined) {
+        if (typeof input.refresh !== 'boolean') return { state: 'refused', reason: 'invalid-refresh' };
+        bounded.args['refresh'] = input.refresh;
+      }
       return dispatch('calendar_list_calendars', bounded.args, signal);
     },
     async gcalList(input: GcalListInput, signal?: AbortSignal): Promise<GoogleResult> {

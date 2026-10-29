@@ -872,7 +872,7 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
     });
     assert.equal(batch.error, undefined, `step ${step}: ${JSON.stringify(batch.tools)}`);
     assert.equal(batch.tools[0]?.status, 'completed', `step ${step}: ${JSON.stringify(batch.tools)}`);
-    assert.match(JSON.stringify(batch.responses), /pilot/iu, `step ${step} delivers actual post bodies`);
-    assert.doesNotMatch(JSON.stringify(batch.responses), /dispatch_reference_denied|no messages/iu);
+    assert.match(JSON.stringify(batch.accepted), /pilot/iu, `step ${step} delivers actual post bodies`);
+    assert.doesNotMatch(JSON.stringify(batch.accepted), /dispatch_reference_denied|no messages/iu);
   }
 });

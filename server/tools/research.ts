@@ -2067,7 +2067,7 @@ export interface RunState {
   deliveredFindings: Set<string>;
   bodies: Map<string, ReceivedBody>; bodyCursors: Map<string, BodyCursor>; bodyCursorRequested?: string;
   mail: Map<string, MailRead>; mailDelivered: Set<string>; mailCursors: Map<string, MailCursor>; mailCursorRequested?: string; mailDeadlineAt?: number; mailRateRetried?: boolean;
-  historyBindings: ToolResultBinding[]; historyTokens: Set<string>;
+  historyBindings: ToolResultBinding[]; historyTokens: Set<string>; historyMore: Set<string>;
   /** F2: the owner's own words behind each compiled Gmail query, so a live step speaks them. */
   ownerQueries: Map<string, string>;
   /** E6 (#609): the message date a read may not go behind, for an ask that named only hours. */
@@ -2158,7 +2158,7 @@ export interface RunState {
 function invalidateEvidence(run: RunState): void {
   run.bodies.clear(); run.bodyCursors.clear();
   run.mail.clear(); run.mailDelivered.clear(); run.mailCursors.clear();
-  run.calendar.clear(); run.calendarDelivered.clear(); run.historyBindings = []; run.historyTokens.clear();
+  run.calendar.clear(); run.calendarDelivered.clear(); run.historyBindings = []; run.historyTokens.clear(); run.historyMore.clear();
   for (const [key, entry] of run.ledger) if (entry.source === 'calendar' || entry.source === 'mail') run.ledger.delete(key);
 }
 
@@ -2185,7 +2185,7 @@ export class ResearchLedger {
       startedAt: input.now, deadlineMs: input.deadlineMs, rounds: 0, maxRounds: input.maxRounds, ops: 0,
       progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       bodies: new Map(), bodyCursors: new Map(), mail: new Map(), mailDelivered: new Set(), mailCursors: new Map(),
-      historyBindings: [], historyTokens: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
+      historyBindings: [], historyTokens: new Set(), historyMore: new Set(), calendar: new Map(), calendarDelivered: new Set(), ledger: new Map(), evidence: new Map(), readKinds: new Set(), sourcesDone: new Set(), sourcesFailed: new Set(),
       calls: new Set(), emptySearches: new Map(), cutShort: new Set(), unavailableReasons: new Map(), failureLines: new Map(), chatChannelClosest: [], chatNotes: [], route: new Set(), retried: new Set(), ownerQueries: new Map(), mailSince: new Map(), droppedDayFilters: new Set(), broadenedChat: new Map(), web: [], webAttribution: [], pending: new Set(), metaStartAsContinue: false, bodyReplies: 0, supersededAborts: 0, pendingWaiters: new Set(),
     };
     this.#runs.set(researchId, run);
@@ -2212,7 +2212,7 @@ export class ResearchLedger {
       startedAt: input.now, deadlineMs: input.deadlineMs, maxRounds: input.maxRounds,
       rounds: 0, ops: 0, progressAbort: new AbortController(), cancelled: false, ended: false, stopped: false,
       mail: new Map([...existing.mail].map(([key, read]) => [key, { ...read, messages: new Map(read.messages), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), mailDelivered: new Set(existing.mailDelivered), mailCursors: new Map([...existing.mailCursors].map(([key, cursor]) => [key, { ...cursor, ids: [...cursor.ids] }])),
-      historyBindings: [...existing.historyBindings], historyTokens: new Set(existing.historyTokens),
+      historyBindings: [...existing.historyBindings], historyTokens: new Set(existing.historyTokens), historyMore: new Set(existing.historyMore),
       calendar: new Map([...existing.calendar].map(([key, read]) => [key, { ...read, events: new Map(read.events), bindings: [...read.bindings], tokens: new Set(read.tokens), failed: read.failed || Boolean(read.inflight), inflight: false }])), calendarDelivered: new Set(existing.calendarDelivered),
       ledger: new Map(existing.ledger), evidence: new Map(existing.evidence), readKinds: new Set(existing.readKinds), sourcesDone: new Set(existing.sourcesDone), sourcesFailed: new Set(existing.sourcesFailed), pending: new Set(existing.pending), pendingWaiters: new Set(),
       calls: new Set(existing.calls), emptySearches: new Map(existing.emptySearches), cutShort: new Set(existing.cutShort),
@@ -4320,7 +4320,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
     // #653: a closed run has no read in flight, so no source is named as still reading once it ended.
     const closed = run.ended || run.stopped || run.cancelled;
     const stillReading = closed ? [] : configured.filter(source => run.pending.has(source));
-    const complete = status === 'answered' && !trimmed && stillReading.length === 0 && [...run.sourcesDone].some(source => configured.includes(source));
+    const complete = status === 'answered' && !trimmed && run.historyMore.size === 0 && stillReading.length === 0 && [...run.sourcesDone].some(source => configured.includes(source));
     // LAT-1023: evidence left unread is named in one short clause, so a capped answer is never read as the
     // whole record. A source this run never reached and a page it dropped both count as unread.
     // #3: a read that found nothing was still made, so it never rides the "did not search" note.
@@ -4340,7 +4340,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
         : `${note} I left out ${calendarLeftOut} calendar ${calendarLeftOut === 1 ? 'event' : 'events'} to keep this answer short.`;
     // R4: this note is composed when the run has stopped waiting, so a source still in `pending` did not return in
     // time; only the first answer point, which answers while the readers keep going, says "still searching".
-    let settledNote = run.historyTokens.size > 0 ? RESEARCH.moreAvailableNote : complete ? (spokenNote === undefined ? RESEARCH.completeNote : `${spokenNote} ${RESEARCH.completeNote}`)
+    let settledNote = run.historyMore.size > 0 ? RESEARCH.moreAvailableNote : complete ? (spokenNote === undefined ? RESEARCH.completeNote : `${spokenNote} ${RESEARCH.completeNote}`)
       : stillReading.length > 0 ? `${RESEARCH.hardStopNote}${stillReading.map(source => SOURCE_LABEL[source]).join(', ')}`
         // #634: an unread source is named once, in the coverage header, never again in the note.
         : canRepeat && moreAvailable ? (spokenNote === undefined ? RESEARCH.moreAvailableNote : `${spokenNote} ${RESEARCH.moreAvailableNote}`) : spokenNote;
@@ -4352,7 +4352,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       const rest = `The rest come next: ${deferred.map(source => SOURCE_LABEL[source]).join(', ')}.`;
       settledNote = settledNote === undefined ? rest : `${settledNote} ${rest}`;
     }
-    return { findings, reply: { coverage: coverageOf(findings), ...coverageRows(operationCoverage(run, findings)), researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat || run.historyTokens.size > 0, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
+    return { findings, reply: { coverage: coverageOf(findings), ...coverageRows(operationCoverage(run, findings)), researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat || run.historyMore.size > 0, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, down to a source's last line: the Live budget is a hard bound, so a kept
   // line wider than the budget is dropped whole rather than left to overrun it (LAT-1023 B3). R5 (RESCAP-R5):
@@ -5272,14 +5272,29 @@ async function routedGroup(deps: ResearchDeps, run: RunState, plans: readonly Ro
         run.unavailableReasons.set('memory', String(page['status'] ?? 'history_unavailable'));
         done.push({ ...settle(plan, 'unavailable'), historyPage: page }); continue;
       }
-      if (typeof page['nextCursor'] === 'string') run.historyTokens.add(page['nextCursor']);
+      // F6: authority to reopen a ref is not evidence that any text remains unread.
+      if (reference) run.historyMore.delete(`cursor:${reference}`);
+      if (typeof page['nextCursor'] === 'string') {
+        run.historyTokens.add(page['nextCursor']); run.historyMore.add(`cursor:${page['nextCursor']}`);
+      }
       // #575: her own spoken turn from this call or the last one confirms a past answer instead of being
       // new evidence, so it is dropped unless the owner asked what she said.
       const askedWhatSheSaid = ASKS_WHAT_SHE_SAID.test(context.question);
       const raw = Array.isArray(page['hits']) ? page['hits'].filter(isRecord) : [];
       const hits = memoryEvidence(raw, context.question, run, askedWhatSheSaid, deps.liveSessionId);
       const kept = { ...page, hits };
-      for (const hit of hits) if (typeof hit['recordRef'] === 'string') run.historyTokens.add(hit['recordRef']);
+      const sourceKey = (value: JsonObject): string => `${value['sourceKind'] ?? ''}:${value['sourceId'] ?? value['recordRef'] ?? ''}`;
+      for (const hit of hits) {
+        if (typeof hit['recordRef'] === 'string') run.historyTokens.add(hit['recordRef']);
+        const key = `record:${sourceKey(hit)}`;
+        const truncated = hit['truncated'] === true || (typeof hit['totalCharacters'] === 'number' && typeof hit['snippet'] === 'string' && hit['totalCharacters'] > hit['snippet'].length);
+        if (truncated) run.historyMore.add(key); else run.historyMore.delete(key);
+      }
+      if (typeof page['text'] === 'string') {
+        const key = `record:${sourceKey(page)}`;
+        if (page['complete'] === false || typeof page['nextCursor'] === 'string') run.historyMore.add(key);
+        else run.historyMore.delete(key);
+      }
       const lines = typeof page['text'] === 'string' ? [page['text']] : hits.map(hit => String(hit['snippet'] ?? ''));
       // #615: a page trimmed to the rows this call may read never reports the rows it dropped as matches.
       const total = hits.length === raw.length ? Number(page['totalMatches'] ?? lines.length) : hits.length;
@@ -6251,7 +6266,7 @@ async function runResearchLoop(deps: ResearchDeps, call: ResearchCall, signal: A
   // K6: a routed start names its own layers, so the selector is skipped and every lookup runs at once.
   const lookups = normalizeLookups(call.lookups).map(lookup => entity.heard === undefined || entity.name === undefined
     ? lookup : { ...lookup, query: lookup.query.split(entity.heard).join(entity.name) });
-  if (call.action === 'continue' && run.historyTokens.size > 0 && lookups.length === 0) return { researchId: run.researchId, status: 'partial', findings: [], canContinue: true, note: 'Continue local history with a memory lookup containing history.recordRef or history.cursor from historyPages.' };
+  if (call.action === 'continue' && run.historyMore.size > 0 && lookups.length === 0) return { researchId: run.researchId, status: 'partial', findings: [], canContinue: true, note: 'Continue local history with a memory lookup containing history.recordRef or history.cursor from historyPages.' };
   // #657 item 1: a status or test-all ask names every source, so the host reads the first batch within
   // the limit and leaves the rest for the next call, instead of refusing the whole ask.
   if (statusAsk(question)) {

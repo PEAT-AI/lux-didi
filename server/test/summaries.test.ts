@@ -832,3 +832,46 @@ test('F5: a diacritic-heavy source retains the matched words in its verbatim cro
     });
   } finally { f.cleanup(); }
 });
+
+
+test('F6: complete short recall has no more note, while a truncated record offers and clears continuation', async () => {
+  const f = open();
+  try {
+    seedSession(f.store, 'short-record');
+    seedSession(f.store, 'long-record');
+    seedTurn(f.store, 'short-record', 'inputTranscription', 'The quartz hill is our destination.');
+    seedTurn(f.store, 'long-record', 'inputTranscription', 'Synthetic background. '.repeat(45) + 'The cobalt lighthouse is our destination.');
+    f.store.transaction(tx => {
+      tx.run('UPDATE history_sessions SET owner_id=?', [f.store.assistantId]);
+      tx.run('UPDATE live_journal SET arrived_at=?', [NOW - 86400000]);
+      backfillHistoryTurns(tx);
+    });
+    const reader = createHistoryReader(() => NOW);
+    const scope = { ownerId: f.store.assistantId, runId: 'different-run', currentSessionId: 'current-call', routeIdentity: 'synthetic', authorityEpoch: f.store.authorityEpoch, revision: 1, allowedClasses: ['ordinary'] as DataClass[] };
+    const deps: ResearchDeps = {
+      now: () => NOW, liveSessionId: 'current-call', configured: ['memory'], emit: () => {}, log: () => {}, logSubcall: () => {}, ledger: new ResearchLedger(),
+      execute: async calls => calls.map(call => {
+        const page = f.store.transaction(tx => reader.read(tx, scope, call.args as HistoryArguments)).response;
+        return { key: call.key, name: call.name, ok: true, text: '', originalCharacters: 0, omittedCharacters: 0,
+          binding: { executionId: call.key } as NonNullable<Awaited<ReturnType<ResearchDeps['execute']>>[number]['binding']>, historyPage: page };
+      }),
+    };
+    const signal = new AbortController().signal;
+    const short = await runResearch(deps, { action: 'start', question: 'what did we say about quartz hill yesterday', lookups: [{ source: 'memory', query: 'quartz hill' }] }, signal);
+    assert.equal(short['status'], 'complete');
+    assert.equal(short['canContinue'], false);
+    assert.match(String(short['note']), /Nothing more to fetch/);
+    assert.doesNotMatch(String(short['note']), /offer the rest|more is available/i);
+    const long = await runResearch(deps, { action: 'start', question: 'what did we say about the lighthouse yesterday', lookups: [{ source: 'memory', query: 'lighthouse' }] }, signal);
+    assert.equal(long['status'], 'partial');
+    assert.equal(long['canContinue'], true);
+    assert.match(String(long['note']), /offer the rest|more/i);
+    assert.doesNotMatch(String(long['note']), /Nothing more to fetch/);
+    const ref = (long['historyPages'] as Array<{ hits: Array<{ recordRef: string }> }>)[0]!.hits[0]!.recordRef;
+    const full = await runResearch(deps, { action: 'continue', researchId: String(long['researchId']), question: 'Read the complete record', lookups: [{ source: 'memory', history: { recordRef: ref } }] }, signal);
+    assert.match(JSON.stringify(full['historyPages']), /Owner: Synthetic background/);
+    assert.equal(full['status'], 'complete');
+    assert.equal(full['canContinue'], false);
+    assert.match(String(full['note']), /Nothing more to fetch/);
+  } finally { f.cleanup(); }
+});

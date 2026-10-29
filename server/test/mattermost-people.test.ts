@@ -742,3 +742,15 @@ for (const [channel, phrase] of [['eng', /Which channel do you mean/u], ['synthe
     assert.equal(projection.projection.itemCount, 0);
   });
 }
+
+// Night-shift regression: a channel index from an earlier call is not evidence for an overview.
+test('overview does not import channel-index dispatches from an unrelated earlier read', async t => {
+  const f = await setup(t, 'people');
+  await f.reader.getChannelHistory({ channel: 'Builders', limit: 5 });
+  const result = await f.reader.chat({ intent: 'overview', person: 'Ada', from_date: fixtureDaysAgo(7) });
+  const read = chatRead(result);
+  assert.ok(read.posts.length > 0);
+  const { SOURCE_CHILD_DISPATCHES } = await import('../adapters/mcp/port.js');
+  // Identity and overview are the only children used by this call.
+  assert.equal(result[SOURCE_CHILD_DISPATCHES]?.length, 2);
+});

@@ -73,6 +73,7 @@ export type MattermostEvidenceTool = MattermostTool | typeof MATTERMOST_ATTENTIO
 
 /** Opaque local evidence, mirroring the Lux knowledge connector shape. */
 export interface MattermostEvidence extends SourceDispatchEvidence {
+  searchMode?: 'hybrid';
   decodedResult: unknown;
   state: 'completed' | 'tool-error' | 'protocol-error';
   tool: MattermostEvidenceTool;
@@ -1136,7 +1137,15 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       // C-CHAT: the next page of the same search, sent only where the child declares paging.
       if (input.offset !== undefined && (!Number.isSafeInteger(input.offset) || input.offset < 0 || input.offset > MATTERMOST_CHAT.maxOffset)) return { state: 'refused', reason: 'invalid-offset' };
       const page = input.offset !== undefined && input.offset > 0 && declaredSearchArguments().includes('offset') ? { offset: input.offset } : {};
-      return dispatch('mattermost_search', { query, ...keywordMode(), ...bounded, ...window, ...filter, ...page }, signal);
+      const args = { query, ...keywordMode(), ...bounded, ...window, ...filter, ...page };
+      const first = await dispatch('mattermost_search', args, signal);
+      if (first.state !== 'completed' || query === '' || (postsIn(first.decodedResult) ?? []).length > 0 || !declaredSearchArguments().includes('mode')) return first;
+      const second = await dispatch('mattermost_search', { ...args, mode: 'hybrid', ...(declaredSearchArguments().includes('rerank') ? { rerank: false } : {}) }, signal);
+      if (second.state !== 'completed') return second;
+      const children = [first[SOURCE_DISPATCH], second[SOURCE_DISPATCH]].filter((ref): ref is SourceDispatchRef => ref !== undefined);
+      const result = { ...second, searchMode: 'hybrid' as const, [SOURCE_CHILD_DISPATCHES]: children };
+      delete result[SOURCE_DISPATCH];
+      return result;
     },
     async listChannels(input: BoundedInput, signal?: AbortSignal): Promise<MattermostResult> {
       const denied = preflight(registry, settings, 'mattermost_list_channels');

@@ -154,7 +154,11 @@ export function projectMattermostResult(port: McpPort, evidence: ConnectorResult
   if (!payload.ok) return { ok: false, reason: payload.reason };
   let data: unknown = payload.text;
   try { data = JSON.parse(payload.text); } catch { data = payload.text; }
-  const projection = renderMattermostTool(evidence.tool, data);
+  let projection = renderMattermostTool(evidence.tool, data);
+  if ('searchMode' in evidence && evidence.searchMode === 'hybrid') {
+    const notice = 'Used hybrid search after no keyword matches.\n';
+    projection = { ...projection, text: notice + projection.text, originalCharacters: notice.length + projection.originalCharacters };
+  }
   // Metadata only: which shape the read took, and its sizes. Never any message content.
   hostLogEvent({ event: 'mattermost_shape', tool: evidence.tool, rawCharacters: payload.text.length, shapedCharacters: projection.text.length, itemCount: projection.itemCount ?? 0, shape: projection.shape ?? 'unknown' });
   return { ok: true, projection };

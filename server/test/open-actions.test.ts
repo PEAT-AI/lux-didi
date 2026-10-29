@@ -389,7 +389,7 @@ test('#573: an open call runs only on the owner own open intent', () => {
   const handle = /^open: (L\d+)/m.exec(shaped.text)![1]!;
   noteOwnerWords('live-open-guard-intent', 'search the web for the pricing page');
   assert.deepEqual(openTarget('open_source', { handle }, ownerWords('live-open-guard-intent')), { code: 'no_open_intent' }, 'nothing opens when he asked for a search');
-  assert.match(OPEN_GUIDANCE.no_open_intent, /Please tell me what you want me to open/);
+  assert.match(OPEN_GUIDANCE.no_open_intent, /I did not hear an open request/);
   assert.doesNotMatch(OPEN_GUIDANCE.no_open_intent, /repeat.*ask|ask.*again|own device/i, 'a refusal does not demand a repeated owner ask');
   assert.doesNotMatch(OPEN_GUIDANCE.no_open_intent, /no_open_intent|not_owner_words/, 'refusal guidance is one plain sentence');
   noteOwnerWords('live-open-guard-intent', 'zeig mir den Umsatz');

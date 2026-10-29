@@ -122,7 +122,7 @@ for (const rule of ['at most once per call', 'under thirty seconds with at most 
 assert.ok(persona.NAYA_OPEN_SURFACE.includes('Never invent a failed-open reason'), 'the open surface bans an invented reason');
 assert.ok(persona.NAYA_OPEN_SURFACE.includes('retry once with the same handle'), 'the open surface retries on a repeated ask');
 for (const code of ['no_open_intent', 'not_allowed']) {
-  assert.ok(open.OPEN_GUIDANCE[code].includes('same handle'), `the ${code} guidance asks for the same handle on a retry`);
+  assert.match(open.OPEN_GUIDANCE[code], /^[A-Z][^.!?\n]+[.!?]$/, `the ${code} guidance is one plain refusal sentence`); assert.doesNotMatch(open.OPEN_GUIDANCE[code], /no_open_intent|not_allowed|not_owner_words|same handle|retry/i, 'refusal speech contains no internal codes or retry diagnostics');
 }
 assert.equal(open.OPEN_GUIDANCE.no_open_intent.includes('did not hear an open request'), true, 'no_open_intent says she did not hear one');
 // C-OPENWEB8: a web ask is answered by open_web at once, and a refused binding says nothing is open.

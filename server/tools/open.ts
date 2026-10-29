@@ -20,7 +20,7 @@ export const OPEN_TOOL_NAMES: ReadonlySet<string> = new Set<string>(['open_sourc
 export const OPEN_GUIDANCE: Record<'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch', string> = {
   not_found: 'The host could not resolve that shown item.',
   not_allowed: 'I cannot open that target.',
-  no_open_intent: 'Please tell me what you want me to open.',
+  no_open_intent: 'I did not hear an open request, so nothing is open.',
   kind_mismatch: 'That item is not the kind authorized by this request.',
 };
 /** A control frame and its ack, exactly as they cross the local Live socket. */

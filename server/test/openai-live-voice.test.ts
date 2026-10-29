@@ -2512,7 +2512,7 @@ test('IN-R1 OpenAI: cap outcomes are traced and parallel research batch admits s
   assert.deepEqual(results.map(frame => frame.item?.call_id), ['synthetic-cap-6', 'synthetic-cap-7']);
   for (const result of results) assert.match(result.item!.output, /research cap reached for this question/);
   assert.equal(creates(opened.socket).length, 0, 'the active response still owns the continuation gate');
-  opened.session.sendToolResponse({ responses: dispatched.map(call => ({ id: call.id, name: call.name, response: { status: 'ok' } })) });
+  opened.session.sendToolResponse({ responses: dispatched.map(call => ({ id: call.id, name: call.name, response: { status: 'answered', findings: ['synthetic finding'] } })) });
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-cap', status: 'completed' } }));
   await quiet();
   assert.equal(creates(opened.socket).length, 1);
@@ -2521,7 +2521,7 @@ test('IN-R1 OpenAI: cap outcomes are traced and parallel research batch admits s
   for (let i = 0; i < 8; i++) {
     const row = settled.find(row => row.id === `synthetic-cap-${i}`);
     assert.ok(row);
-    assert.equal(row.detail['outcome'], i < 6 ? 'ok' : 'refused');
+    assert.equal(row.detail['outcome'], i < 6 ? 'completed' : 'refused');
     assert.equal(row.detail['delivered'], true);
     if (i >= 6) {
       assert.equal(row.detail['refusalCode'], 'research_cap_reached');

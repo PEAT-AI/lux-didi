@@ -1183,13 +1183,14 @@ test('IN-R1 Gemini: cap outcomes are traced and parallel research batch admits s
   const responses = () => socket.sent.map(frame => JSON.parse(frame) as { toolResponse?: { functionResponses: { id: string }[] } }).filter(frame => frame.toolResponse);
   assert.deepEqual(responses()[0]!.toolResponse!.functionResponses.map(call => call.id), ['synthetic-cap-6', 'synthetic-cap-7']);
   assert.match(JSON.stringify(responses()[0]), /research cap reached for this question/);
-  session.sendToolResponse({ responses: calls.map(call => ({ id: call.id, name: call.name, response: { status: 'ok' } })) });
+  session.sendToolResponse({ responses: calls.map(call => ({ id: call.id, name: call.name, response: { status: 'answered', findings: ['synthetic finding'] } })) });
+  assert.equal(responses().filter(frame => frame.toolResponse!.functionResponses.some(call => call.id === 'synthetic-cap-0')).length, 1, 'one admitted-batch response resumes the Gemini model exactly once');
   socket.deliver({ toolCall: { functionCalls: [{ id: 'synthetic-cap-later', name: 'research', args: {} }] } });
   const settled = receipts.filter(row => row.kind === 'call.output_written');
   for (let i = 0; i < 8; i++) {
     const row = settled.find(row => row.id === `synthetic-cap-${i}`);
     assert.ok(row);
-    assert.equal(row.detail['outcome'], i < 6 ? 'ok' : 'refused');
+    assert.equal(row.detail['outcome'], i < 6 ? 'completed' : 'refused');
     assert.equal(row.detail['delivered'], true);
     if (i >= 6) {
       assert.equal(row.detail['refusalCode'], 'research_cap_reached');

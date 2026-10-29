@@ -50,7 +50,7 @@ function parseSingleAlarmTime(words: string, now: number, tz: string, modelAt?: 
   const first = temporal.exec(text);
   if (first) {
     const before = text.slice(0, first.index);
-    const context = before.match(/\b(?:tomorrow|morning|evening|wake me)\b/g)?.join(' ') ?? '';
+    const context = before.match(/\b(?:tomorrow|morning|evening)\b/g)?.join(' ') ?? '';
     text = `${context} ${text.slice(first.index)}`.trim();
     // Relative speech often finishes with the request rather than starting with it.
     text = text.replace(/(minutes?|hours?)\s+(?:from now\s*)?(?:can you|could you|please)\b[^0-9]*$/, '$1')
@@ -80,7 +80,7 @@ function parseSingleAlarmTime(words: string, now: number, tz: string, modelAt?: 
     let expression = text.slice(start.index + (/^(?:noon|midnight)$/.test(start[0]) ? 0 : start[0].length)).trim();
     expression = expression.replace(/^(?:(?:tomorrow|morning|evening|tonight|in the morning|in the evening)\s+)+at\s+/, '');
     const tomorrow = /\btomorrow\b/.test(text);
-    const period = /\bam\b|\bmorning\b/.test(text) || /\bwake me\b/.test(text) && !/\bpm\b|\bevening\b/.test(text) ? 'am'
+    const period = /\bam\b|\bmorning\b/.test(text) || /\bwake me\b/.test(words) && !/\bpm\b|\bevening\b/.test(text) ? 'am'
       : /\bpm\b|\bevening\b|\btonight\b/.test(text) ? 'pm' : undefined;
     expression = expression.replace(/\b(?:in the morning|in the evening|tomorrow|morning|evening|tonight|am|pm|please)\b/g, '').replace(/[.!?,]+$/, '').trim();
     const namedTime = expression === 'noon' || expression === 'midnight';

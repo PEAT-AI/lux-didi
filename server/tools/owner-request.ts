@@ -55,7 +55,7 @@ export class OwnerRequests implements OwnerRequestPort {
   answered(session: string): void { const request = this.requests.get(session); if (request) request.answered = true; }
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization {
     const request = this.requests.get(session);
-    if (!request || request.answered && !request.pending) return { code: 'no_owner_request' };
+    if (!request || request.answered) return { code: 'no_owner_request' };
     const common = { id: request.id, words: request.words, journalId: request.journalId, observedAt: request.observedAt };
     const age = this.clock() - request.start;
     if (age < 0 || age > 120000) return { ...common, code: 'request_expired' };

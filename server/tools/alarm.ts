@@ -14,8 +14,11 @@ function localParts(instant: number, tz: string): number[] {
 /** Interpret owner words, never use a model argument to choose the instant. */
 export function parseAlarmTime(words: string, now: number, tz: string, modelAt?: number): AlarmTime {
   // Labels come from owner input, not the model's arguments.
-  const labelMatch = /\b(?:and\s+((?:give|tell|show|read)\b.*)|that\s+(.+)|to\s+(.+))$/i.exec(words);
-  const label = labelMatch ? (labelMatch[1] ?? labelMatch[2] ?? labelMatch[3] ?? '').trim() : '';
+  const trailing = /\b(?:and\s+((?:give|tell|show|read)\b.*)|that\s+(.+))$/i.exec(words);
+  const reminder = /\bremind me\b/i.test(words)
+    ? /\bto\s+(?!(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b)(.+)$/i.exec(words) : null;
+  const labelMatch = trailing ?? reminder;
+  const label = (trailing ? trailing[1] ?? trailing[2] : reminder?.[1])?.trim() ?? '';
   const timeWords = labelMatch ? words.slice(0, labelMatch.index) : words;
   let text = timeWords.toLowerCase().replace(/\b([ap])\s*\.\s*m\.?/g, '$1m');
   text = text.replace(/\bwake me\s+up\b/g, 'wake me').replace(/\b(?:today|tonight)\b/g, '').replace(/\bfor\s+(?!\d|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|quarter\b|half\b|noon\b|midnight\b)[a-z]+\s+(?=(?:\d|ten\b|quarter\b|half\b))/, 'for ');

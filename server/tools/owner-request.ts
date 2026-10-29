@@ -15,10 +15,12 @@ export class OwnerRequests implements OwnerRequestPort {
   private external = new Set<string>();
   partial(session: string): void { this.pendingFinal.add(session); }
   async waitForFinal(session: string, signal: AbortSignal): Promise<void> {
-    if (!this.seenFinal.has(session) || !this.pendingFinal.has(session) || signal.aborted) return;
+    if (signal.aborted || this.seenFinal.has(session) && !this.pendingFinal.has(session)) return;
     await new Promise<void>(resolve => {
       const listeners = this.finalListeners.get(session) ?? new Set<() => void>();
+      const timer = setTimeout(() => finish(), 750);
       const finish = () => {
+        clearTimeout(timer);
         signal.removeEventListener('abort', finish);
         listeners.delete(finish);
         if (!listeners.size) this.finalListeners.delete(session);
@@ -36,7 +38,7 @@ export class OwnerRequests implements OwnerRequestPort {
     if (previous?.journalId === journalId) return;
     const grants = new Map<ActionKind, Grant>();
     const cues: [ActionKind, RegExp][] = [
-      ['open', /\b(?:open|show|pull up)\b/i],
+      ['open', /\b(?:open|show|pull up|search for|öffne|oeffne|zeige|zeig)\b/iu],
       ['set_alarm', /\bwake me\b|\bset\b[^.!?]*\balarm\b|\bremind me\s+(?:in|at)\b/i],
       ['cancel_alarm', /\b(?:cancel|stop)\b[^.!?]*\balarm\b/i],
       ['snooze_alarm', /\bsnooze\b/i],
@@ -47,7 +49,7 @@ export class OwnerRequests implements OwnerRequestPort {
       const match = cue.exec(words);
       if (!match) continue;
       const before = words.slice(0, match.index);
-      if (/\b(?:don['’]?t|do not|never mind|forget it)\s*(?:(?:please|you|ever)\s+)*$/i.test(before)) { previous?.grants.delete(kind); continue; }
+      if (/\b(?:don['’]?t|do not|never mind|forget it|never|not|no need to)[\s,]*(?:(?:please|you|ever)\s+)*$/i.test(before)) { previous?.grants.delete(kind); continue; }
       grants.set(kind, {});
     }
     if (previous && (!previous.answered || previous.pending) && this.clock() - previous.start <= 120000) {

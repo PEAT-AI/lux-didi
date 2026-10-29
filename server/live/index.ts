@@ -3753,7 +3753,7 @@ export class LiveSessionOwner {
           handle.turnInterrupted = true;
           logTurnScript(handle);
           clearOpenLedger(handle.liveSessionId);
-    this.#tools?.owner.ownerRequests.release(handle.liveSessionId);
+          // Owner authority survives a model interruption.
           // C-TURN8: the owner cut her off, so no claim of hers outlives the turn he interrupted.
           this.#resetClaimCheck(handle);
           // E1: one metadata-only host record per provider barge-in. Never audio, text or a provider payload.

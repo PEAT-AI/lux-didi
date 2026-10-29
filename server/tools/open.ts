@@ -257,7 +257,6 @@ function openRefusal(toolName: string, words: string, kind: OpenKind): 'no_open_
 export function openTarget(toolName: string, args: Record<string, string>, words = ''): { target: OpenTarget } | { code: 'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch' } {
   const resolved = resolveOpenTarget(toolName, args);
   if ('code' in resolved) return resolved;
-  if (toolName === 'open_file' && !webBinding(args['path']!.replace(/^\/Users\/[^/]+\/|^~\//, ''), words)) return { code: 'not_allowed' };
   if (toolName === 'open_app' && !webBinding(args['name']!.replace(/\.app$/i, ''), words)) return { code: 'not_allowed' };
   if (toolName === 'open_home') {
     const homes: Record<string, RegExp> = { gmail: /\b(?:gmail|mail|email|inbox)\b/i, calendar: /\b(?:calendar|schedule)\b/i, mattermost: /\b(?:mattermost|chat)\b/i };
@@ -395,7 +394,7 @@ export const OPEN_WEB_PARAMETERS: Record<string, unknown> = {
   required: ['kind', 'target'],
   additionalProperties: false,
 };
-export const OPEN_WEB_DESCRIPTION = `Call it when he asks; the host reads his words. Open a web page in his browser from the words he just said: kind maps for a place or directions, site for a site he named, search for words to search for. ${OPEN_ONLY} When he asks to open something on the web, call this at once instead of a web lookup, and never pass a URL, a host, a path or a query string. For a document or file he names by title, look it up and open it with open_source instead.`;
+export const OPEN_WEB_DESCRIPTION = `Call it when he asks; the host reads his words. Open a web page in his browser from the words he just said: kind maps for a place or directions, site for a site he named, search for words to search for. ${OPEN_ONLY} When he asks to open something on the web, call this at once instead of a web lookup, use a resolved http(s) URL or site when that answers his request. For a document or file he names by title, look it up and open it with open_source instead.`;
 export function validateOpenWeb(args: unknown): args is { kind: WebKind; target: string } {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
   const record = args as Record<string, unknown>;
@@ -473,6 +472,12 @@ export interface WebOpenTarget { action: NativeAction; target: string; detail: s
 export async function resolveWebOpen(args: { kind: WebKind; target: string }, words: string, signal: AbortSignal): Promise<{ target: WebOpenTarget } | WebOpenRefusal> {
   if (!WEB_INTENT.test(words)) return { code: 'no_open_intent' };
   if (/^[a-z][a-z0-9+.-]*:/i.test(args.target) && !/^https?:\/\//i.test(args.target)) return { code: 'not_allowed' };
+  if (args.kind === 'site' && (/^https?:\/\//i.test(args.target) || /^[\w.-]+\.[a-z]{2,}(?:[/:?#]|$)/i.test(args.target))) {
+    try {
+      const url = new URL(/^https?:\/\//i.test(args.target) ? args.target : `https://${args.target}`);
+      return { target: { action: 'open_url', target: url.href, detail: 'web', kind: 'web', title: url.hostname } };
+    } catch { return { code: 'not_allowed' }; }
+  }
   const direct = webDestination(args.kind, args.target);
   if (direct !== undefined) return { target: { action: 'open_url', target: direct.url, detail: 'web', kind: 'web', title: direct.domain } };
   if (args.kind !== 'site') return { code: 'not_allowed' };

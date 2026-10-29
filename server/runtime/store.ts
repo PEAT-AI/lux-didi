@@ -98,7 +98,7 @@ export class Store {
       this.#db = new DatabaseSync(join(directory, 'state.sqlite'), { timeout: 0, enableForeignKeyConstraints: true, enableDoubleQuotedStringLiterals: false });
       this.#db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL');
       const denied = new Set<number>([constants.SQLITE_TRANSACTION, constants.SQLITE_SAVEPOINT, constants.SQLITE_PRAGMA, constants.SQLITE_ATTACH, constants.SQLITE_DETACH]);
-      this.#db.setAuthorizer((action, _arg1, arg2) => !this.#allowControl && (denied.has(action) || (action === constants.SQLITE_FUNCTION && arg2 === 'load_extension')) ? constants.SQLITE_DENY : constants.SQLITE_OK);
+      this.#db.setAuthorizer((action, arg1, arg2) => !this.#allowControl && ((denied.has(action) && !(action === constants.SQLITE_PRAGMA && arg1 === 'data_version' && arg2 === null)) || (action === constants.SQLITE_FUNCTION && arg2 === 'load_extension')) ? constants.SQLITE_DENY : constants.SQLITE_OK);
       this.#db.exec('BEGIN IMMEDIATE');
       try {
         for (const sql of runtimeSchema) this.#db.exec(sql);

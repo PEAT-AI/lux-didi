@@ -646,20 +646,14 @@ test('verbatim turns backfill survives summary skip, is idempotent, and forget c
   } finally { f.cleanup(); }
 });
 
-import { DatabaseSync, constants as sqliteConstants } from 'node:sqlite';
-test('FTS5 diagnostic identifies the exact Store control authorization boundary', () => {
-  const db = new DatabaseSync(':memory:');
-  const denied: Array<{ action: number; arg1: string | null; arg2: string | null }> = [];
-  const controls = new Set<number>([sqliteConstants.SQLITE_TRANSACTION, sqliteConstants.SQLITE_SAVEPOINT, sqliteConstants.SQLITE_PRAGMA, sqliteConstants.SQLITE_ATTACH, sqliteConstants.SQLITE_DETACH]);
+test('Store permits only the FTS read-only data_version pragma', () => {
+  const f = open();
   try {
-    db.exec("CREATE TABLE history_turns(id INTEGER PRIMARY KEY,text TEXT); CREATE VIRTUAL TABLE history_turns_fts USING fts5(text,content='history_turns',content_rowid='id',tokenize='unicode61 remove_diacritics 2',prefix='2 3'); BEGIN IMMEDIATE;");
-    db.setAuthorizer((action, arg1, arg2) => {
-      if (controls.has(action) || (action === sqliteConstants.SQLITE_FUNCTION && arg2 === 'load_extension')) {
-        denied.push({ action, arg1, arg2 }); return sqliteConstants.SQLITE_DENY;
-      }
-      return sqliteConstants.SQLITE_OK;
+    f.store.transaction(tx => {
+      assert.equal(typeof tx.get('PRAGMA data_version')?.data_version, 'number');
+      assert.throws(() => tx.run('PRAGMA journal_mode=DELETE'), /authoriz/i);
+      assert.throws(() => tx.run('PRAGMA writable_schema=ON'), /authoriz/i);
+      assert.throws(() => tx.run('PRAGMA data_version=1'), /authoriz/i);
     });
-    try { db.prepare('INSERT INTO history_turns_fts(rowid,text) VALUES(1,?)').run('synthetic diagnostic'); } catch { /* report exact denied action, not an inferred table exemption */ }
-    assert.deepEqual(denied, [], 'FTS internal operations denied by the current Store policy');
-  } finally { db.close(); }
+  } finally { f.cleanup(); }
 });

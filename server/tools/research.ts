@@ -3990,7 +3990,7 @@ function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunS
     if (keys.has(memoryWords(String(hit['snippet'] ?? '')))) return false;
     const sessionId = hit['sessionId'];
     if (typeof sessionId === 'string' && (sessionId === currentSessionId || live.has(sessionId))) return false;
-    if (asked || pastConversationAsk(question)) return true;
+    if (asked || (pastConversationAsk(question) && typeof sessionId === 'string')) return true;
     // A remembered note is memory even when it was written in this call; the recording of the
     // conversation itself, and every summary of it, never is.
     if (hit['sourceKind'] === 'entry') return true;

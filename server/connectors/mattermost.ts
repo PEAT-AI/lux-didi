@@ -816,7 +816,7 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
   }
 
   /** C-CHAT: one read of a chat read, with the child's own count, never the page length. */
-  async function postsRead(owner: string, filters: Record<string, unknown>, limit: number, offset: number, capture: (evidence: SourceDispatchEvidence) => void, signal?: AbortSignal): Promise<{ ok: true; total?: number; posts: ChatReadPost[] } | { ok: false; result: MattermostResult }> {
+  async function postsRead(owner: string, filters: Record<string, unknown>, limit: number, offset: number, capture: (evidence: SourceDispatchEvidence) => void, signal?: AbortSignal): Promise<{ ok: true; total?: number; posts: ChatReadPost[]; broadened?: string } | { ok: false; result: MattermostResult }> {
     const declared = declaredSearchArguments();
     const args: Record<string, unknown> = { query: typeof filters['query'] === 'string' ? filters['query'] : '', ...keywordMode(), limit };
     if (declared.includes('sort')) args['sort'] = 'newest';
@@ -830,13 +830,22 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       if (!declared.includes('offset')) return { ok: false, result: { state: 'refused', reason: 'search-filter-missing: offset' } };
       args['offset'] = offset;
     }
-    const result = await read('mattermost_search', args, signal);
+    let result = await read('mattermost_search', args, signal);
     if (!result.ok) return result;
     capture(result.evidence);
+    let broadened: string | undefined;
+    // Retry once, only for a real topic and only with a mode the child declares.
+    // Keep every scope filter and page boundary on the broader read.
+    if ((postsIn(result.evidence.decodedResult) ?? []).length === 0 && args['query'] !== '' && declared.includes('mode')) {
+      result = await read('mattermost_search', { ...args, mode: 'hybrid', ...(declared.includes('rerank') ? { rerank: false } : {}) }, signal);
+      if (!result.ok) return result;
+      capture(result.evidence);
+      broadened = 'hybrid search after no keyword matches';
+    }
     const data = contentJson(result.evidence.decodedResult);
     const posts = (postsIn(result.evidence.decodedResult) ?? []).map(post => chatPost(post, owner));
     const total = isRecord(data) && Number.isSafeInteger(data['total']) ? data['total'] as number : undefined;
-    return { ok: true, ...(total === undefined ? {} : { total }), posts };
+    return { ok: true, ...(total === undefined ? {} : { total }), posts, ...(broadened === undefined ? {} : { broadened }) };
   }
 
   type PersonOutcome = { kind: 'person'; username: string; display: string; dmChannelId?: string; missing?: string }
@@ -933,8 +942,8 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
       const said = notes.filter((note): note is string => note !== undefined);
       return said.length === 0 ? {} : { missing: said.join('; ') };
     };
-    const page = (read: string, posts: { total?: number; posts: ChatReadPost[] }, missing?: string): MattermostResult => finish({
-      ...base, read: `${read}${span}${about}`, ...(posts.total === undefined ? {} : { total: posts.total }), returned: posts.posts.length, posts: posts.posts, ...missingOf(missing),
+    const page = (read: string, posts: { total?: number; posts: ChatReadPost[]; broadened?: string }, missing?: string): MattermostResult => finish({
+      ...base, read: `${read}${span}${about}${posts.broadened === undefined ? '' : ` (${posts.broadened})`}`, ...(posts.total === undefined ? {} : { total: posts.total }), returned: posts.posts.length, posts: posts.posts, ...missingOf(missing),
     });
 
     if (input.intent === 'person' || input.intent === 'overview') {

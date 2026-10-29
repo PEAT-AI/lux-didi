@@ -107,6 +107,7 @@ test('A2: each live builtin executes against its exact stored intent', async t =
   ];
   for (const entry of openCases) for (const mode of ['no ask', 'ask', 'split ask'] as const) {
     await t.test(`${entry.name}: ${mode}`, async () => {
+      owner.ownerRequests.answered?.(session.liveSessionId);
       noteModelOutput(session.liveSessionId);
       noteOwnerWords(session.liveSessionId, mode === 'ask' ? entry.ask : 'this is the synthetic item');
       owner.observeAlarmOwner(session.liveSessionId, randomUUID(), mode === 'ask' ? entry.ask : 'this is the synthetic item', Date.now());

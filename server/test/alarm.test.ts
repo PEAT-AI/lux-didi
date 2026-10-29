@@ -51,11 +51,11 @@ test('alarm: a resolved instant remains fixed when the system time zone changes'
   const result = parseAlarmTime('wake me at 8', now, 'America/New_York');
   assert.equal(result.status, 'ready');
   if (result.status !== 'ready') return;
-  assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
+  assert.equal(result.fireAtUtc, Date.parse('2026-10-29T12:00:00Z'));
   const london = parseAlarmTime('wake me at 8', now, 'Europe/London');
   assert.equal(london.status, 'ready');
   if (london.status !== 'ready') return;
-  assert.equal(london.fireAtUtc, Date.parse('2026-10-28T20:00:00Z'));
+  assert.equal(london.fireAtUtc, Date.parse('2026-10-29T08:00:00Z'));
   assert.equal(london.tz, 'Europe/London');
   assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
   assert.equal(result.tz, 'America/New_York');

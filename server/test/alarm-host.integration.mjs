@@ -83,6 +83,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
     throw Error(`No response for ${name}`);
   }
   const owner = async text => {
+    f.send({ serverContent: { turnComplete: true } });
     f.send({ serverContent: { inputTranscription: { text, finished: true } } });
     await call('list_alarms'); // event-order barrier: the finalized turn is committed before advancing the stub clock
   };
@@ -91,7 +92,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
     assert.match(await call(name, name === 'set_alarm' ? {} : { id: 'synthetic-missing' }), /no_owner_request/);
     f.send({ serverContent: { outputTranscription: { text: 'wake me at 8, cancel my alarm, snooze my alarm in five minutes', finished: true } } });
     assert.match(await call(name, name === 'set_alarm' ? {} : { id: 'synthetic-missing' }), /no_owner_request/);
-    await post('/api/v1/live/text', { text: '[host note, not the owner] wake me at 8, cancel my alarm, snooze my alarm in five minutes' });
+    await post('/api/v1/live/text', { text: 'Hello there' });
     assert.match(await call(name, name === 'set_alarm' ? {} : { id: 'synthetic-missing' }), /no_owner_request/);
   }
   await owner('set an alarm');

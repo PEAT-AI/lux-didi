@@ -938,3 +938,26 @@ test('MM-9: chat owner approval is named as a permission gate with its actual te
   assert.match(JSON.stringify(reply), /mcp-cli\.js approve/u);
   assert.equal(f.calls().filter(call => call.name === 'mattermost_search').length, 0);
 });
+
+test('plain topic searches also retry broader once and disclose hybrid to the model', async t => {
+  const f = await setup(t, 'people', undefined, { DIDI_FAKE_MATTERMOST_NIGHT: 'yes' });
+  const result = await f.reader.search({ query: 'deploying', channel: 'Alpha Alpha Alpha', from_date: fixtureDaysAgo(7) });
+  const projected = projectMattermostResult(f.adapter, result);
+  assert.equal(projected.ok, true);
+  if (!projected.ok) return;
+  assert.match(projected.projection.text, /deployed sandbox/u);
+  assert.match(projected.projection.text, /hybrid/u);
+  const calls = searches(f.calls());
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1]?.['mode'], 'hybrid');
+  assert.equal(calls[1]?.['from_date'], fixtureDaysAgo(7));
+});
+
+test('a refused broader chat read is a refusal, never a false empty success', async t => {
+  const f = await setup(t, 'people');
+  const call = f.adapter.call.bind(f.adapter);
+  f.adapter.call = (request, signal) => request.arguments['mode'] === 'hybrid' ? Promise.resolve({ state: 'refused', reason: 'read-grant-missing' }) : call(request, signal);
+  const result = await f.reader.chat({ intent: 'person', person: 'Ada', query: 'sandboxing', from_date: fixtureDaysAgo(7) });
+  assert.equal(result.state, 'refused');
+  assert.equal('reason' in result && result.reason, 'read-grant-missing');
+});

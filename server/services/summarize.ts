@@ -363,8 +363,9 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
           return;
         }
         result = await callModel(input.text, source.dataClass, controller.signal);
-      } catch {
-        lastError = 'model_error';
+      } catch (error) {
+        // A port that surfaces the credential failure by throwing gets the same rule as one that returns it.
+        lastError = error instanceof Error && error.message === 'credential_unavailable' ? 'credential_unavailable' : 'model_error';
       }
       if (result && !RETRYABLE.has(result.status)) {
         const parsed = parseDistillationResult(result.text);
@@ -384,6 +385,10 @@ export function createSummarizer(options: SummarizerOptions): Summarizer {
         return;
       }
       lastError = result ? failureCode(result) : lastError;
+      // #603: a missing or refused credential is not transient inside one call. Retrying waits the backoff and
+      // spends the attempt budget on the same refusal, so this failure closes the row at once and leaves its
+      // retry count for the next host start, which is when a credential is up (RETRYABLE_FAILURE_CODES).
+      if (lastError === 'credential_unavailable') break;
       if (retryCount - firstRetry >= SUMMARY_MAX_RETRIES) break;
       await pause(options.delay, SUMMARY_RETRY_BACKOFF_MS[Math.min(retryCount - firstRetry, SUMMARY_RETRY_BACKOFF_MS.length - 1)] ?? 0);
       retryCount += 1;

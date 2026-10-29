@@ -338,8 +338,8 @@ final class MiniOrbPanel: NSPanel, NSWindowDelegate {
     override var canBecomeKey: Bool { MiniOrbPanelPolicy.becomesKey }
     override var canBecomeMain: Bool { MiniOrbPanelPolicy.becomesMain }
 
-    override func orderWindow(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
-        super.orderWindow(place, relativeTo: otherWin)
+    override func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
+        super.order(place, relativeTo: otherWin)
         updateClickThrough()
     }
 

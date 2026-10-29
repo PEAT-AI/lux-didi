@@ -942,7 +942,7 @@ test('the installed five-endpoint shape reports every endpoint and connects ever
   const fixture = installedShape();
   const shape = fixture.endpoints.map(endpoint => {
     if (endpoint['connector'] === 'google') return localEndpoint(endpoint, '', [googleChild, 'ok']);
-    if (endpoint['connector'] === 'mattermost') return localEndpoint(endpoint, '', [join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'stdio-mattermost-child.mjs'), 'ok']);
+    if (endpoint['connector'] === 'mattermost') return localEndpoint(endpoint, '', [join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'stdio-mattermost-child.mjs'), 'catalog-owner']);
     // lux-knowledge and the three mongoose endpoints keep their streamable-http shape, each on its own
     // path, and point at a refusing local port.
     if (endpoint['connector'] === 'mongoose') return { ...endpoint, url: `http://127.0.0.1:1${new URL(String(endpoint['url'])).pathname}` };

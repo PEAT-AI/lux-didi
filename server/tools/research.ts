@@ -3973,7 +3973,7 @@ function rankMemoryEvidence(hits: readonly JsonObject[], tokens: readonly string
     const at = Date.parse(String(hit['date'] ?? ''));
     return { hit, kind: memoryKind(hit), score: tokens.filter(token => words.includes(token)).length, at: Number.isFinite(at) ? at : 0 };
   });
-  scored.sort((left, right) => Number(right.hit['sourceKind'] === 'live') - Number(left.hit['sourceKind'] === 'live') || right.score - left.score || left.kind - right.kind || right.at - left.at);
+  scored.sort((left, right) => right.score - left.score || left.kind - right.kind || right.at - left.at);
   return scored.map(entry => entry.hit);
 }
 
@@ -3985,10 +3985,11 @@ function rankMemoryEvidence(hits: readonly JsonObject[], tokens: readonly string
 function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunState, asked: boolean, currentSessionId?: string): JsonObject[] {
   const keys = new Set([question, run.question ?? ''].filter(text => text.trim().length > 0).map(memoryWords));
   const history = run.previousCallAt ?? run.startedAt;
-  const live = asked ? new Set<string>() : liveSessionIds(hits, question, history);
+  const live = liveSessionIds(hits, question, history);
   const kept = hits.filter(hit => {
     if (keys.has(memoryWords(String(hit['snippet'] ?? '')))) return false;
-    if (hit['sessionId'] === currentSessionId) return false;
+    const sessionId = hit['sessionId'];
+    if (typeof sessionId === 'string' && (sessionId === currentSessionId || live.has(sessionId))) return false;
     if (asked || pastConversationAsk(question)) return true;
     // A remembered note is memory even when it was written in this call; the recording of the
     // conversation itself, and every summary of it, never is.
@@ -3999,7 +4000,7 @@ function memoryEvidence(hits: readonly JsonObject[], question: string, run: RunS
     const at = Date.parse(String(hit['date'] ?? ''));
     return !Number.isFinite(at) || at < history;
   });
-  return rankMemoryEvidence(kept, tokenize(question));
+  return pastConversationAsk(question) ? kept : rankMemoryEvidence(kept, tokenize(question));
 }
 
 /** Citation metadata has its own 12,000 character envelope, outside the spoken reply budget. */
@@ -4337,7 +4338,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
         : `${note} I left out ${calendarLeftOut} calendar ${calendarLeftOut === 1 ? 'event' : 'events'} to keep this answer short.`;
     // R4: this note is composed when the run has stopped waiting, so a source still in `pending` did not return in
     // time; only the first answer point, which answers while the readers keep going, says "still searching".
-    let settledNote = complete && run.historyTokens.size === 0 ? (spokenNote === undefined ? RESEARCH.completeNote : `${spokenNote} ${RESEARCH.completeNote}`)
+    let settledNote = run.historyTokens.size > 0 ? RESEARCH.moreAvailableNote : complete ? (spokenNote === undefined ? RESEARCH.completeNote : `${spokenNote} ${RESEARCH.completeNote}`)
       : stillReading.length > 0 ? `${RESEARCH.hardStopNote}${stillReading.map(source => SOURCE_LABEL[source]).join(', ')}`
         // #634: an unread source is named once, in the coverage header, never again in the note.
         : canRepeat && moreAvailable ? (spokenNote === undefined ? RESEARCH.moreAvailableNote : `${spokenNote} ${RESEARCH.moreAvailableNote}`) : spokenNote;
@@ -4349,7 +4350,7 @@ function buildReply(run: RunState, status: 'answered' | 'partial' | 'stopped' | 
       const rest = `The rest come next: ${deferred.map(source => SOURCE_LABEL[source]).join(', ')}.`;
       settledNote = settledNote === undefined ? rest : `${settledNote} ${rest}`;
     }
-    return { findings, reply: { coverage: coverageOf(findings), ...coverageRows(operationCoverage(run, findings)), researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
+    return { findings, reply: { coverage: coverageOf(findings), ...coverageRows(operationCoverage(run, findings)), researchId: run.researchId, status: status !== 'answered' ? status : complete ? 'complete' : 'partial', findings, unchecked, canContinue: canRepeat || run.historyTokens.size > 0, ...(run.web.length > 0 ? { markdown: webFooter(run.web, run.webAttribution), webSources: run.web.map(({ title, url }) => ({ title, url })), ...(run.webAttribution.length === 0 ? {} : { webAttribution: run.webAttribution }) } : {}), ...mailFields, ...(calendarCoverage ? { calendarCoverage: { ...calendarCoverage, shown: calendarShown, localRemaining: Math.max(0, remaining.length - calendarShown) } } : {}), ...(settledNote !== undefined ? { note: settledNote } : {}), ...(sources !== undefined ? { sources } : {}), ...(unavailableReasons !== undefined ? { unavailable: unavailableReasons } : {}) } };
   };
   // Trim the longest source first, down to a source's last line: the Live budget is a hard bound, so a kept
   // line wider than the budget is dropped whole rather than left to overrun it (LAT-1023 B3). R5 (RESCAP-R5):

@@ -9,7 +9,13 @@ import { hostMigrations } from '../host/runtime.js';
 import { resolveLiveMemory } from '../host/live.js';
 import { recall } from '../domain/memory.js';
 import * as labels from '../domain/labels.js';
-import { memoryLookup } from '../tools/memory-search.js';
+import { createHistoryReader } from '../domain/history-reader.js';
+import type { Transaction } from '../contracts/storage.js';
+function historyLookup(tx: Transaction, store: Store, query: string) {
+  const result = createHistoryReader(() => NOW).read(tx, { ownerId: store.assistantId, runId: 'synthetic', routeIdentity: 'synthetic', authorityEpoch: store.authorityEpoch, revision: 1, allowedClasses: ['ordinary'] }, { query });
+  const lines = (result.response.hits as unknown as Array<{ snippet: string }>).map(hit => hit.snippet);
+  return { lines, text: lines.join('\n'), total: result.response.totalMatches };
+}
 import { createSummarizer } from '../services/summarize.js';
 import { getBySession } from '../domain/summaries.js';
 import type { ModelPort } from '../adapters/model/types.js';
@@ -35,7 +41,7 @@ test('memory eligibility integration: entry and parent class matrix agrees with 
       const id = `${entry}-${parent}`; f.add(id, entry, parent, `Synthetic matrix ${id}`);
     }
     const automatic = f.store.transaction(resolveLiveMemory);
-    const routed = f.store.transaction(tx => memoryLookup(tx, 'Synthetic matrix'));
+    const routed = f.store.transaction(tx => historyLookup(tx, f.store, 'Synthetic matrix'));
     assert.deepEqual(automatic.map(row => row.id), ['ordinary-ordinary']);
     assert.equal(routed.lines.length, 1); assert.ok(routed.lines[0]!.includes('ordinary-ordinary'));
     assert.ok(!routed.text.includes('ordinary-unknown'), 'missing parent label fails closed');
@@ -48,7 +54,7 @@ test('memory eligibility integration: more than40 disallowed matches cannot star
     try {
       for (let i = 0; i < 45; i++) f.add(`blocked-${i}`, blocked === 'entry' ? 'private' : 'ordinary', blocked === 'parent' ? 'private' : 'ordinary', 'Synthetic keyword priority', NOW + i);
       f.add('allowed', 'ordinary', 'ordinary', 'Synthetic keyword allowed', NOW - 1000);
-      const routed = f.store.transaction(tx => memoryLookup(tx, 'keyword priority'));
+      const routed = f.store.transaction(tx => historyLookup(tx, f.store, 'keyword priority'));
       assert.equal(routed.lines.length, 1); assert.ok(routed.lines[0]!.includes('allowed'));
       const defaultRecall = f.store.transaction(tx => recall(tx, 'keyword priority', 40));
       assert.equal(defaultRecall.hits.length, 40); assert.equal(defaultRecall.totalMatches, 46);
@@ -64,11 +70,11 @@ test('memory eligibility integration: current relabels, stable ties and source p
   try {
     f.add('a', 'ordinary', 'private', 'Synthetic keyword first'); f.add('b', 'ordinary', 'ordinary', 'Synthetic keyword second');
     f.store.transaction(tx => tx.run('INSERT INTO source_references VALUES (?,?,?,?,?,?,?,?,?,?)', ['source-b', 'entry', 'b', 'Synthetic source', 'fixture', 'synthetic-account', 'external-b', NOW - 500, 'present', null]));
-    assert.equal(f.store.transaction(tx => memoryLookup(tx, 'keyword')).lines.length, 1);
+    assert.equal(f.store.transaction(tx => historyLookup(tx, f.store, 'keyword')).lines.length, 1);
     f.store.transaction(tx => labels.correct(tx, { subject: { kind: 'session', id: 'parent-a' }, expectedRevision: 1, dataClass: 'ordinary' }, NOW + 1));
-    assert.equal(f.store.transaction(tx => memoryLookup(tx, 'keyword')).lines.length, 2);
+    assert.equal(f.store.transaction(tx => historyLookup(tx, f.store, 'keyword')).lines.length, 2);
     f.store.transaction(tx => labels.correct(tx, { subject: { kind: 'session', id: 'parent-a' }, expectedRevision: 2, dataClass: 'private' }, NOW + 2));
-    assert.equal(f.store.transaction(tx => memoryLookup(tx, 'keyword')).lines.length, 1);
+    assert.equal(f.store.transaction(tx => historyLookup(tx, f.store, 'keyword')).lines.length, 1);
     const original = f.store.transaction(tx => recall(tx, 'keyword', 20));
     assert.deepEqual(original.hits.map(hit => hit.entryId), ['a', 'b']);
     assert.equal(original.hits[1]!.sourceRefs[0]!.externalId, 'external-b');
@@ -80,8 +86,8 @@ test('memory eligibility integration: current relabels, stable ties and source p
     assert.equal(f.store.transaction(tx => labels.entryAndParentOrdinary(tx, 'missing-entry', 'parent-b')), false);
     assert.equal(hash(), untouched, 'relabels never write a different store');
     for (let i = 0; i < 20; i++) f.add(`line-${i}`, 'ordinary', 'ordinary', 'Synthetic keyword ' + 'x'.repeat(400), NOW + i);
-    const capped = f.store.transaction(tx => memoryLookup(tx, 'keyword'));
-    assert.equal(capped.lines.length, 12); assert.ok(capped.lines.every(line => line.length <= 267));
+    const capped = f.store.transaction(tx => historyLookup(tx, f.store, 'keyword'));
+    assert.equal(capped.lines.length, 5); assert.ok(capped.lines.every(line => line.length <= 550));
   } finally { f.cleanup(); control.cleanup(); }
 });
 
@@ -107,6 +113,6 @@ test('memory eligibility integration: real summarizer rejects private input befo
       assert.equal(stored.status, dataClass === 'ordinary' ? 'complete' : 'skipped');
       if (dataClass !== 'ordinary') { assert.equal(stored.skipReason, 'summary_route_class_denied'); assert.equal(stored.summary, null); assert.equal(calls, 0); }
     }
-    assert.equal(calls, 1); assert.equal(f.store.transaction(tx => memoryLookup(tx, 'summary keyword')).lines.length, 1);
+    assert.equal(calls, 1); assert.equal(f.store.transaction(tx => historyLookup(tx, f.store, 'summary keyword')).lines.length, 1);
   } finally { f.cleanup(); }
 });

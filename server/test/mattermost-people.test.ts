@@ -868,7 +868,7 @@ test('MM-3: channel topic, person topic, overview and two recency reads all publ
   for (const [step, args] of sequence.entries()) {
     const batch = await runToolCalls(owner, [{ id: `chat-${step}`, name: MATTERMOST_CHAT_TOOL, args: { ...args, from_date: fixtureDaysAgo(7) } }], {
       registry: owner.definitions('chat-sequence'), host: host as never, authority: { isCurrent: async () => true } as never,
-      control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step, contentIndex: 0, seenIds: new Set<string>(), baseClasses: ['ordinary'],
+      control: { signal: new AbortController().signal, deadlineMs: Date.now() + 5000 }, step, contentIndex: 0, seenIds: new Set<string>(), authorize: true, baseClasses: ['ordinary'],
     });
     assert.equal(batch.error, undefined, `step ${step}: ${JSON.stringify(batch.tools)}`);
     assert.equal(batch.tools[0]?.status, 'completed', `step ${step}: ${JSON.stringify(batch.tools)}`);

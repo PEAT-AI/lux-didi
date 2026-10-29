@@ -1349,14 +1349,15 @@ export class LiveSessionOwner {
   #expiryTimer: ReturnType<NonNullable<LiveOwnerConfig['schedule']>> | undefined;
   readonly #profileIdentity: string;
   readonly #active = new Map<string, ActiveSession>();
-  readonly #alarmSessions = new Map<string, Map<string, { setup: import('./types.js').AlarmSessionSetup; repeats: number; rebuilds: number; afterJournalId: number; lastAudibleAt: number; lastPromptAt: number; timer?: { cancel(): void } }>>();
+  readonly #alarmSessions = new Map<string, Map<string, { setup: import('./types.js').AlarmSessionSetup; repeats: number; rebuilds: number; afterJournalId: number; lastAudibleAt: number; lastPromptAt: number; announcedAt: number; timer?: { cancel(): void } }>>();
 
   /** A due alarm belongs to the call that actually announces it, never to unrelated owner speech. */
   announceAlarm(setup: import('./types.js').AlarmSessionSetup): LiveSessionSnapshot | undefined {
     const handle = [...this.#active.values()].find(value => !value.terminal && value.ready);
     if (!handle || !setup.alarmId) return undefined;
     const alarms = this.#alarmSessions.get(handle.liveSessionId) ?? new Map();
-    alarms.set(setup.alarmId, { setup, repeats: 0, rebuilds: 0, afterJournalId: handle.inputJournalId ?? 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now() });
+    alarms.get(setup.alarmId)?.timer?.cancel();
+    alarms.set(setup.alarmId, { setup, repeats: 0, rebuilds: 0, afterJournalId: handle.inputJournalId ?? 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() });
     this.#alarmSessions.set(handle.liveSessionId, alarms);
     handle.session.sendText({ text: hostNote(alarmSessionInstructions(setup) + ' Announce this now in the current call.') });
     this.#armAlarm(handle);
@@ -1385,7 +1386,7 @@ export class LiveSessionOwner {
         if (this.#now() - Math.max(alarm.lastAudibleAt, alarm.lastPromptAt) >= 30_000) {
           alarm.lastPromptAt = this.#now();
           if (handle.ready) {
-            try { handle.session.sendText({ text: hostNote(`Alarm wake reminder ${++alarm.repeats}: say a shorter friendly wake line for ${JSON.stringify(alarm.setup.label || 'the alarm')}, and ask whether they are awake. No answer has acknowledged it.`) }); } catch { /* Provider recovery owns transport failure. */ }
+            try { handle.session.sendText({ text: hostNote(`Alarm wake reminder ${++alarm.repeats}: say a shorter friendly wake line for ${JSON.stringify(alarm.setup.label || 'the alarm')}, and ask whether they are awake. No answer has acknowledged it.`) }); alarm.announcedAt = this.#now(); } catch { /* Provider recovery owns transport failure. */ }
           }
         }
         this.#armAlarm(handle);
@@ -1397,7 +1398,7 @@ export class LiveSessionOwner {
     const alarms = this.#ringingAlarms(handle);
     if (!alarms.length) return;
     // The most recently announced alarm owns this confirmation, not every ringing occurrence.
-    const alarm = alarms[alarms.length - 1]!;
+    const alarm = alarms.reduce((latest, candidate) => candidate.announcedAt > latest.announcedAt ? candidate : latest);
     // Gemini can finalize accumulated deltas with an empty frame, or the host can seal them at model start.
     // Never borrow speech from before the announcement or from an earlier finalized utterance.
     const utterance = this.#store.transaction(tx => {
@@ -1685,7 +1686,7 @@ export class LiveSessionOwner {
           JSON.stringify(this.#profile.route.dataClasses), input.inputClass, this.#revision, now]);
       return this.#snapshot(tx, tx.get('SELECT * FROM live_sessions WHERE live_session_id=?', [liveSessionId])!);
     });
-    if (input.alarm?.alarmId && !this.#alarmSessions.has(snapshot.liveSessionId)) this.#alarmSessions.set(snapshot.liveSessionId, new Map([[input.alarm.alarmId, { setup: input.alarm, repeats: 0, rebuilds: 0, afterJournalId: 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now() }]]));
+    if (input.alarm?.alarmId && !this.#alarmSessions.has(snapshot.liveSessionId)) this.#alarmSessions.set(snapshot.liveSessionId, new Map([[input.alarm.alarmId, { setup: input.alarm, repeats: 0, rebuilds: 0, afterJournalId: 0, lastAudibleAt: this.#now(), lastPromptAt: this.#now(), announcedAt: this.#now() }]]));
     this.#armExpiry();
     return snapshot;
   }

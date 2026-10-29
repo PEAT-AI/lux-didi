@@ -798,5 +798,5 @@ test('empty topic read retries hybrid exactly once with the same DM and date fil
   assert.equal(searches[1]?.['mode'], 'hybrid');
   assert.equal(searches[1]?.['channel'], ADA_DM);
   assert.equal(searches[1]?.['from_date'], fixtureDaysAgo(7));
-  assert.match(projectMattermostResult({ name: MATTERMOST_CHAT_TOOL, result: { content: [{ type: 'text', text: JSON.stringify(read) }] } }).text, /hybrid/iu);
+  assert.match(read.read, /hybrid/iu);
 });

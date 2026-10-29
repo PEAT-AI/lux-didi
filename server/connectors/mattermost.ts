@@ -594,14 +594,14 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
   }
   async function loadChannels(signal?: AbortSignal, capture?: (evidence: SourceDispatchEvidence) => void): Promise<MattermostChannel[] | { error: string }> {
     const cached = channelIndex.get();
-    if (cached) { port.recordReuse?.(channelIndex.origin); capture?.({ [SOURCE_DISPATCH]: channelIndex.origin }); return cached; }
+    if (cached) { port.recordReuse?.(channelIndex.origin); if (channelIndex.origin) capture?.({ [SOURCE_DISPATCH]: channelIndex.origin }); return cached; }
     const denied = preflight(registry, settings, 'mattermost_list_channels');
     if (denied) return { error: denied };
     const loaded = await readChannels(signal);
     if ('error' in loaded) return loaded;
     channelIndex.set(loaded.channels);
     channelIndex.origin = loaded.origin;
-    capture?.({ [SOURCE_DISPATCH]: loaded.origin });
+    if (loaded.origin) capture?.({ [SOURCE_DISPATCH]: loaded.origin });
     return loaded.channels;
   }
   async function resolveAgainstIndex(reference: string, signal?: AbortSignal): Promise<string | { error: string }> {

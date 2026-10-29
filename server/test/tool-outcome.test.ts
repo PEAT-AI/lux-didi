@@ -16,8 +16,10 @@ const cases = [
   [{}, 'unknown', undefined],
   [{ status: 'unrecognized', text: 'Not a known settlement' }, 'unknown', undefined],
   [{ status: 'complete', findings: [{ text: 'Synthetic research finding' }] }, 'completed', undefined],
+  [{ status: 'complete', findings: [], note: 'No matches' }, 'empty', undefined],
+  [{ remembered: false, status: 'error', code: 'tool_journal_failed' }, 'failed', 'tool_journal_failed'],
   [{ status: 'completed' }, 'unknown', undefined],
-  [{ saved: false, code: 'unrecognized_gate' }, 'refused', 'unrecognized_gate'],
+  [{ saved: false, code: 'unrecognized_gate' }, 'unknown', 'unrecognized_gate'],
 ] as const;
 for (const [response, outcome, refusalCode] of cases) {
   test(`business outcome ${JSON.stringify(response)}`, () => {
@@ -56,7 +58,8 @@ for (const provider of ['openai', 'gemini'] as const) {
       await tick();
       socket.deliver(provider === 'openai' ? { type: 'session.started', session: { id: 'synthetic' } } : { setupComplete: {} });
       await session.ready;
-      const call = { id: 'synthetic-call', name: 'research', args: {} };
+      const names = ['set_alarm', 'set_alarm', 'trello_read', 'mattermost_chat', 'mattermost_chat', 'remember_note', 'stage_lux_note'];
+      const call = { id: 'synthetic-call', name: names[index] ?? 'research', args: {} };
       if (provider === 'openai') {
         socket.deliver({ type: 'session.delegation.created', delegation: { id: 'd1', offset_ms: 0, response_id: 'r1' } });
         socket.deliver({ type: 'response.event', delegation_id: 'd1', event: { type: 'response.created', response: { id: 'r1' } } });

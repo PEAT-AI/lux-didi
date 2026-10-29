@@ -507,6 +507,7 @@ class Session implements LiveVoiceSession {
   private batchAnswers = 0;
   private answerNow = false;
   private lastToolOutputAt: number | undefined;
+  private researchCalls = 0;
   private toolRounds = 0;
   private silentRescueUsed = false;
   private continuationTiming: { toolOutputAt: number; createAt: number; createdAt: number | null; firstItemAt: number | null; firstAudioAt: number | null; toolCall: boolean; nudged: boolean } | undefined;
@@ -969,6 +970,7 @@ class Session implements LiveVoiceSession {
     }
     // Plain owner-end notices have no provider response id: currentResponse may belong to an old delegation.
     this.toolRounds = 0;
+    this.researchCalls = 0;
     this.silentRescueUsed = false;
     this.clearNoItemTimer();
     this.continuationTiming = undefined;
@@ -1213,6 +1215,19 @@ class Session implements LiveVoiceSession {
       name: call.name, argsChars: typeof item.arguments === 'string' ? item.arguments.length : 0,
       intentAt: this.clock.now(), providerCallId: call.id,
     });
+    // SI-R3: admission is per owner question, including parallel calls in one provider response.
+    if (call.name === 'research') {
+      if (this.researchCalls >= 6) {
+        this.answerNow = true;
+        this.sendToolResponse({ responses: [{ id: call.id, name: call.name, response: {
+          status: 'blocked', reason: 'research_cap_reached', message: 'research cap reached for this question',
+        } }] });
+        this.touch();
+        return;
+      }
+      this.researchCalls += 1;
+      if (this.researchCalls === 6) this.answerNow = true;
+    }
     this.emit({ type: 'toolCall', calls: [call] });
     this.touch();
   }

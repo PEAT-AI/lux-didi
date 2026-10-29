@@ -234,6 +234,8 @@ class Session implements LiveVoiceSession {
   private closeTimer: ReturnType<typeof setTimeout> | undefined;
   private cleaned = false;
   private pendingCalls: LiveToolCall[] = [];
+  private researchCalls = 0;
+  private researchAwaitingInput = false;
   private informationalKeys = new Set<string>();
   unknownTopLevelKeys = 0;
   private initialTurnComplete = false;
@@ -416,9 +418,23 @@ class Session implements LiveVoiceSession {
         if (!this.isReady || this.pendingCalls.length || !object(message.toolCall) || !Array.isArray(message.toolCall.functionCalls) || !message.toolCall.functionCalls.length || message.toolCall.functionCalls.length > 16) fail('protocol_error');
         const calls = message.toolCall.functionCalls;
         if (calls.some(c => !object(c) || typeof c.id !== 'string' || !c.id || typeof c.name !== 'string' || !c.name || !object(c.args)) || new Set(calls.map(c => c.id)).size !== calls.length) fail('protocol_error');
-        this.pendingCalls = structuredClone(calls) as LiveToolCall[];
+        const admitted: LiveToolCall[] = [];
+        const refused: LiveToolResponse[] = [];
+        for (const call of structuredClone(calls) as LiveToolCall[]) {
+          if (call.name === 'research' && this.researchCalls >= 6) {
+            refused.push({ id: call.id, name: call.name, response: {
+              status: 'blocked', reason: 'research_cap_reached', message: 'research cap reached for this question',
+            } });
+          } else {
+            if (call.name === 'research') this.researchCalls += 1;
+            admitted.push(call);
+          }
+        }
+        this.researchAwaitingInput = true;
+        this.pendingCalls = admitted;
+        if (refused.length && !this.write(JSON.stringify({ toolResponse: { functionResponses: refused } }))) return;
         this.emit({ type: 'modelTurnStarted' });
-        this.emit({ type: 'toolCall', calls: structuredClone(this.pendingCalls) });
+        if (admitted.length) this.emit({ type: 'toolCall', calls: structuredClone(admitted) });
       }
       if ('toolCallCancellation' in message) {
         if (!object(message.toolCallCancellation) || !Array.isArray(message.toolCallCancellation.ids) || message.toolCallCancellation.ids.some(id => typeof id !== 'string')) fail('protocol_error');
@@ -439,7 +455,11 @@ class Session implements LiveVoiceSession {
       if ('voiceActivity' in message) {
         const activity = message.voiceActivity;
         if (!object(activity)) fail('protocol_error');
-        if ((activity.type ?? activity.voiceActivityType) === 'ACTIVITY_START') events.push({ type: 'waitingForInput', value: true });
+        if ((activity.type ?? activity.voiceActivityType) === 'ACTIVITY_START') {
+          this.researchCalls = 0;
+          this.researchAwaitingInput = false;
+          events.push({ type: 'waitingForInput', value: true });
+        }
         if ((activity.type ?? activity.voiceActivityType) === 'ACTIVITY_END') events.push({ type: 'waitingForInput', value: false });
       }
       const knownKeys = ['error', 'toolCall', 'toolCallCancellation', 'setupComplete', 'serverContent', 'voiceActivity', 'sessionResumptionUpdate', 'goAway'];
@@ -538,6 +558,10 @@ class Session implements LiveVoiceSession {
         // text-less outputTranscription together. Skipping the empty transcription keeps the audio.
         if ('text' in transcription || transcription.finished === true) {
           const text = 'text' in transcription ? this.text(transcription.text) : '';
+          if (type === 'inputTranscription' && text.trim().length && this.researchAwaitingInput) {
+            this.researchCalls = 0;
+            this.researchAwaitingInput = false;
+          }
           if (type === 'inputTranscription') { this.diagnostic.inputTranscriptionEvents++; this.diagnostic.inputTranscriptionCharacters += text.length; }
           events.push({ type, text, ...('finished' in transcription ? { finished: transcription.finished as boolean } : {}) });
         }

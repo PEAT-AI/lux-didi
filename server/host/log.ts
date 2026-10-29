@@ -1225,6 +1225,12 @@ export function safeEvent(raw: unknown): Record<string, unknown> | undefined {
     if (!isSafeToken(value.type) || !isSafeToken(value.code) || !isSafeToken(value.param)) return;
     return { event: 'live_provider_error', type: value.type, code: value.code, param: value.param };
   }
+  if (value.event === 'live_continuation_timing') {
+    const times = ['toolOutputAt', 'createAt', 'createdAt', 'firstItemAt', 'firstAudioAt'] as const;
+    if (!times.every(key => value[key] === null || (typeof value[key] === 'number' && Number.isFinite(value[key]) && value[key] >= 0))) return;
+    if (!['b', 'b-second', 'c', 'd-chain'].includes(String(value.class))) return;
+    return { event: 'live_continuation_timing', ...Object.fromEntries(times.map(key => [key, value[key]])), class: value.class };
+  }
   if (value.event === 'gptlive_tool_output') {
     // 3r: one tool answer per delegated response, its call count and whether a continuation reached the wire.
     // C-LOG-ENVELOPE adds the provider's ids, ids only.

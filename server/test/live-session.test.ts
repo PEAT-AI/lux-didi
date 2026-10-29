@@ -7772,3 +7772,32 @@ test('confirmation targets the alarm announced most recently by time after a rea
   h.owner.revoke(session.liveSessionId);
   await attachment.done;
 });
+
+
+test('SI-R2: post-tool no-item signal fires the existing dead-air rung at five seconds', async t => {
+  const captureDir = mkdtempSync(join(tmpdir(), 'didi-live-silence-'));
+  const stop = captureHostDiagnostics(new HostLog(captureDir));
+  t.after(() => { stop(); rmSync(captureDir, { recursive: true, force: true }); });
+  const fake = fakeLiveVoicePort();
+  const scheduler = new DeadlineClock();
+  const h = await harness(t, { port: fake.port, scheduler, tools: true, limits: { idleMs: 600_000, sessionMs: 600_000 } });
+  const session = h.owner.create({ idempotencyKey: 'silence-five', inputClass: 'ordinary' }, h.ctx);
+  const attachment = h.owner.attach({ liveSessionId: session.liveSessionId }, h.ctx);
+  await attachment.ready;
+  fake.emit(portEvent({ type: 'toolCall', calls: [{ id: 'synthetic-silence-tool', name: 'search_knowledge', args: { query: 'synthetic', limit: 1 } }] }));
+  await settlePort();
+  assert.equal(fake.toolResponses.length, 1);
+  fake.emit(portEvent({ type: 'modelTurnStarted' }));
+  await settlePort();
+  h.advance(4_999); scheduler.runDue(); await settlePort();
+  assert.equal(hostLines(captureDir).filter(line => line.event === 'live_dead_air_nudge').length, 0);
+  h.advance(1);
+  fake.emit(portEvent({ type: 'interactionStatus', value: 'post_tool_no_output' }));
+  await settlePort();
+  const nudges = hostLines(captureDir).filter(line => line.event === 'live_dead_air_nudge');
+  assert.equal(nudges.length, 1);
+  assert.equal(nudges[0]!['elapsedMs'], 5_000);
+  h.advance(3_000); scheduler.runDue(); await settlePort();
+  assert.equal(hostLines(captureDir).filter(line => line.event === 'live_dead_air_nudge').length, 1, 'the old eight-second timer is retired');
+  attachment.close();
+});

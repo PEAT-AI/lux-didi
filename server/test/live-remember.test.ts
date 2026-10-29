@@ -270,6 +270,7 @@ for (const outcome of ['saved', 'unavailable', 'unknown'] as const) {
     const pending = call(h, 'stage_lux_note', candidate);
     if (outcome === 'unavailable') { await drain(); t.mock.timers.tick(250); }
     const result = await pending;
+    if (outcome === 'unavailable') t.mock.timers.reset();
     assert.equal(h.saved.length, outcome === 'unavailable' ? 2 : 1, 'unavailable retries exactly once; other outcomes never retry');
     assert.equal(result['saved'], outcome === 'saved', JSON.stringify(result));
     if (outcome === 'saved') {

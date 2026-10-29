@@ -518,7 +518,7 @@ test('hear104: owner open accepts a resolved http(s) URL including a path or que
   const planted = await resolveWebOpen({ kind: 'site', target: 'plantix.net/?q=secret' }, 'open plantix dot net', signal);
   assert.ok('target' in planted);
   assert.equal(planted.target.target, 'https://plantix.net/?q=secret');
-  assert.equal('target' in planted, false, 'no address is ever returned for a planted query');
+  assert.equal('target' in planted, true, 'authorized web opens may carry a resolved query');
 });
 
 test('hear104: owner open accepts a resolved map target but cue-free input grants nothing', async () => {

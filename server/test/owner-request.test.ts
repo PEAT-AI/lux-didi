@@ -243,10 +243,10 @@ test('hear104 split finals retain the complete ask', () => {
 test('hear104 pending alarm keeps short number and day follow-ups across an answer', () => {
   const requests = new OwnerRequests(() => 0);
   requests.observe('s', 'j1', 'Okay, set an alarm');
-  requests.clarify('s', 'set_alarm', 'time');
+  requests.clarify('s', 'set_alarm', 'missing_time');
   requests.answered('s');
   requests.observe('s', 'j2', 'Ten');
-  requests.clarify('s', 'set_alarm', 'time');
+  requests.clarify('s', 'set_alarm', 'missing_time');
   requests.observe('s', 'j3', 'five, today');
   const ask = requests.authorize('s', 'set_alarm', 'time');
   assert.equal(ask.code, 'allowed');

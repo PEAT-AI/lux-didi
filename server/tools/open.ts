@@ -248,6 +248,7 @@ function openRefusal(toolName: string, words: string, kind: OpenKind): 'no_open_
   const browser = /\b(?:browser|tabs?|links?|website|site)\b|\b(?:in|using|with)\s+(?:my\s+)?(?:chrome|safari)\b|\b[\w-]+\.(?:com|net|org|io|ai|co|de|uk)\b/iu.test(spokenDots(words));
   if ((toolName === 'open_file' || toolName === 'open_app') && browser) return 'not_allowed';
   if (toolName === 'open_app' && /\bopen\s+the\s+/iu.test(words) && !/\b(?:app|application)\b/iu.test(words)) return 'not_allowed';
+  if (toolName === 'open_file' && !/\b(?:local|file|folder|path)\b|~\/|\/Users\//i.test(words)) return 'not_allowed';
   if (toolName !== 'open_source') return undefined;
   const named = ASK_KINDS.filter(entry => entry.words.test(words));
   return named.length > 0 && !named.some(entry => entry.kinds.includes(kind)) ? 'kind_mismatch' : undefined;

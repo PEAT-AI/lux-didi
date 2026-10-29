@@ -341,6 +341,7 @@ test('direct102 real host and fake provider: preamble-before-open yields exactly
     return true;
   });
   t.after(unbind);
+  await ownerBlock(h, 'Good morning');
   assert.equal((await call(h, 'open_source', { handle: 'L999' }))['code'], 'no_owner_request', 'an opener cannot act on injected summaries');
   await assistantBlock(h, 'The synthetic opening is spoken.');
   await ownerBlock(h, 'open the pitch deck in my browser');

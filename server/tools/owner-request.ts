@@ -38,7 +38,7 @@ export class OwnerRequests implements OwnerRequestPort {
     if (previous?.journalId === journalId) return;
     const grants = new Map<ActionKind, Grant>();
     const cues: [ActionKind, RegExp][] = [
-      ['open', /\b(?:open|show|pull up|search for|öffne|oeffne|zeige|zeig)\b/iu],
+      ['open', /(?:\b(?:open|show|pull up|search for|oeffne|zeige|zeig)\b|(?:^|\s)öffne\b)/iu],
       ['set_alarm', /\bwake me\b|\bset\b[^.!?]*\balarm\b|\bremind me\s+(?:in|at)\b/i],
       ['cancel_alarm', /\b(?:cancel|stop)\b[^.!?]*\balarm\b/i],
       ['snooze_alarm', /\bsnooze\b/i],

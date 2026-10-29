@@ -740,7 +740,7 @@ test('research recall replay keeps named-person dialogue, offers more, and opens
     const ref = pages[0]!.hits[0]!.recordRef;
     const named = await runResearch(deps, { action: 'start', question: 'What did Mira choose?', lookups: [{ source: 'memory', query: 'Mira lighthouse' }] }, signal);
     assert.match(JSON.stringify(named['findings']), /Mira and I chose the cobalt lighthouse/);
-    const opened = await runResearch(deps, { action: 'continue', researchId: named['researchId'], question: 'Open that whole conversation', lookups: [{ source: 'memory', query: '', history: { recordRef: ref } }] }, signal);
+    const opened = await runResearch(deps, { action: 'continue', researchId: String(named['researchId']), question: 'Open that whole conversation', lookups: [{ source: 'memory', query: '', history: { recordRef: ref } }] }, signal);
     assert.match(JSON.stringify(opened), /Owner: A synthetic introduction/);
     assert.match(JSON.stringify(opened), /Naya: I suggested bringing the violet map/);
     const forbidden = f.store.transaction(tx => reader.read(tx, { ...scope, runId: 'another-live-call' }, { recordRef: ref }));

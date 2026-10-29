@@ -2340,7 +2340,7 @@ test('C-STEADY104: a fake provider rejecting commentary delegation_id does not e
   f.send({ type: 'error', error: { type: 'invalid_request_error', code: 'invalid_value', param: 'delegation_id', client_event_id: append['event_id'] } });
   await until(() => logged().some(entry => entry['event'] === 'command_rejected'));
   const before = captured.events.filter(event => event.type === 'audio').length;
-  sendAudio(f, 2_400);
+  sendAudio(f, 12_000);
   await until(() => captured.events.filter(event => event.type === 'audio').length > before);
   assert.equal(captured.events.some(event => event.type === 'interrupted'), false);
 });

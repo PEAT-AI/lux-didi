@@ -6,7 +6,7 @@ interface Request {
   grants: Map<ActionKind, Grant>; pending?: { kind: ActionKind; field: string };
   sources: Record<string, number>;
 }
-export interface RequestAuthorization { code: RequestCode; id?: string; words?: string; receipt?: unknown }
+export interface RequestAuthorization { code: RequestCode; id?: string; words?: string; journalId?: string; receipt?: unknown }
 
 /** Per tools-owner state. Only finalized owner transcription may call observe. */
 export class OwnerRequests {
@@ -41,7 +41,7 @@ export class OwnerRequests {
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization {
     const request = this.requests.get(session);
     if (!request) return { code: 'no_owner_request' };
-    const common = { id: request.id, words: request.words };
+    const common = { id: request.id, words: request.words, journalId: request.journalId };
     const age = this.clock() - request.start;
     if (age < 0 || age > 120000) return { ...common, code: 'request_expired' };
     const grant = request.grants.get(kind);

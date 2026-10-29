@@ -7183,7 +7183,6 @@ export function capVoiceReply(reply: JsonObject, book: VoiceReplyBook, cap: numb
     // on the body's own next page once the store's slices are spent.
     return { ...page, canContinue: true, pageCursor: book.keepSlices(researchId, envelope, rest), pagesRemaining: pagesLeft(rest) };
   }
-  const units = voiceUnitsOf(reply);
   const remainingNote = (count: number): string => `+${count} more lines; continue with pageCursor to fetch the rest.`;
   const previousNote = typeof envelope['note'] === 'string' ? envelope['note'].replace(/nothing more to fetch/gu, 'more on the next page') : '';
   // Reserve the continuation line before packing, so announcing a cut never breaks the voice cap.

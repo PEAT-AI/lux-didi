@@ -1115,7 +1115,7 @@ test('#606 Gemini preserves a text-less owner final after transcript fragments',
 });
 
 test('Gemini alarm mode speaks the alarm without the fresh-opening direction', async t => {
-  const f = await fixture(t);
+  const f = await providerFixture(t);
   const session = new GeminiLiveVoiceAdapter(options({ socketFactory: f.socketFactory })).open({
     ...request(), opening: 'model_first', history: [],
     system: { text: 'Synthetic persona\n[alarm mode] Wake Synthetic Owner at 08:00, call the bank', dataClass: 'ordinary' },

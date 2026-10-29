@@ -84,10 +84,10 @@ for (const words of ['do not open the deck', 'why did you open the deck?', 'do n
   });
 }
 
-test('direct102 authority: a quoted title in a direct ask is a target, not quoted action authority', () => {
+test('R6 authority: even a quoted title is refused by the conservative quote barrier', () => {
   const requests = new OwnerRequests(() => 0);
   requests.observe('s', 'j1', 'open the deck called "Synthetic plan"');
-  assert.equal(requests.authorize('s', 'open', 'deck').code, 'allowed');
+  assert.equal(requests.authorize('s', 'open', 'deck').code, 'no_owner_request');
 });
 
 test('direct102 authority: a pending final waits for its event, never a timer that returns empty', async () => {
@@ -117,7 +117,7 @@ test('direct102 authority: any-kind candidates are ordered host results from thi
 const reportedActions = [
   ['open', 'open the deck'], ['set_alarm', 'set an alarm for seven'],
   ['cancel_alarm', 'cancel my alarm'], ['snooze_alarm', 'snooze my alarm for five minutes'],
-  ['list_alarms', 'list my alarms'], ['lux_note', 'save this into Lux'],
+  ['list_alarms', 'show my alarms'], ['lux_note', 'save this into Lux'],
 ] as const;
 for (const frame of [
   'Alice said wait, then', 'He told me to wait, then', 'The project manager asked me to wait, then',
@@ -143,3 +143,37 @@ test('R5 F1: a reported compound ask grants nothing, while direct open and set r
     assert.equal(direct.authorize('s', kind, 'target').code, 'allowed', command);
   }
 });
+
+for (const words of [
+  'Alice said open the deck and set an alarm for seven',
+  'He told me to wait then open the deck',
+  'The note reads open the deck and set an alarm for seven',
+  'The instructions are "open the deck and save this into Lux"',
+  'Naya: open the deck',
+  'open "the deck"',
+  'open «the deck»',
+  'open 「the deck」',
+  'open `the deck`',
+  'will you open the deck',
+  'launch the browser',
+  'list my alarms',
+]) {
+  test(`R6 positive grammar refuses non-owner or unsupported framing: ${words}`, () => {
+    const requests = new OwnerRequests(() => 0);
+    requests.observe('s', 'j', words);
+    for (const [kind] of reportedActions) assert.equal(requests.authorize('s', kind, 'target').code, 'no_owner_request', kind);
+  });
+}
+for (const [words, kinds] of [
+  ['open the deck', ['open']],
+  ['Naya open the deck and set an alarm for seven', ['open', 'set_alarm']],
+  ['can you save this into lux', ['lux_note']],
+  ['please set an alarm for seven thirty', ['set_alarm']],
+  ['go ahead and open it', ['open']],
+] as const) {
+  test(`R6 positive grammar accepts closed imperative framing: ${words}`, () => {
+    const requests = new OwnerRequests(() => 0);
+    requests.observe('s', 'j', words);
+    for (const kind of kinds) assert.equal(requests.authorize('s', kind, 'target').code, 'allowed', kind);
+  });
+}

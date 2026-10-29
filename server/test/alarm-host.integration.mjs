@@ -106,7 +106,7 @@ test('real-host matrix: set_alarm, list_alarms, cancel_alarm, snooze_alarm and s
   await owner('in one minute');
   assert.match(await call('set_alarm', { fire_at_utc: now + 65000 }), /Alarm set/);
   const first = String(rows()[0].id);
-  await owner('list my alarms');
+  await owner('show my alarms');
   assert.match(await call('list_alarms'), new RegExp(first));
   await owner('cancel my alarm'); now += 120001; mono += 120001;
   assert.match(await call('cancel_alarm', { id: first }), /request_expired/);

@@ -34,21 +34,25 @@ export class OwnerRequests implements OwnerRequestPort {
     for (const finish of this.finalListeners.get(session) ?? []) finish();
     const previous = this.requests.get(session);
     if (previous?.journalId === journalId) return;
-    // A reporting frame covers the whole final, including commands after and/then; subjects are not a name allowlist.
-    const direct = !/^["“”]|(?:^|\s)\S+\s+(?:said|says|told|tells|asked|asks|wrote|writes|wants|wanted|suggested|suggests|recommended|recommends|instructed|instructs|ordered|requested|advised|advises|claimed|mentioned|mentions|reported|stated)|\b(?:hypothetically|suppose)|\bif\s+(?:i|we|you|he|she|they|it|someone)|\bshould\s+(?:i|we|you)\b/i.test(words);
+    // Closed imperative grammar, not a growing blacklist of reported-speech subjects.
+    const prefix = /^(?:(?:naya|please|can you|could you|would you|i want you to|go ahead and|and|then|also)\b[\s,]*)+/i;
+    const imperative = /^(?:open|show|pull up|set|wake|cancel|snooze|save|remember|put|note|write)\b/i;
+    const command = words.trim().replace(prefix, '');
+    const clauses = command.split(/\b(?:and then|and|then|also)\b|[;!]|\.(?=\s|$)/i)
+      .map(clause => clause.trim().replace(prefix, '')).filter(Boolean);
+    const lastCue = Math.max(0, ...clauses.filter(clause => imperative.test(clause)).map(clause => words.lastIndexOf(clause)));
+    const direct = !/[\p{Quotation_Mark}`:]/u.test(words)
+      && !/\b(?:said|says|told|tells|asked|wrote|writes|reads|the note|the instructions|the email|the message|the text)\b/i.test(words.slice(0, lastCue));
     const grants = new Map<ActionKind, Grant>();
-    if (direct) {
+    if (direct && imperative.test(command)) {
       const cues: [ActionKind, RegExp][] = [
-        ['open', /^(?:open|launch|show)\b/i],
-        ['set_alarm', /^wake me\b|^(?:set|make|create)\b[^.!?]*\balarm\b/i],
-        ['cancel_alarm', /^(?:cancel|delete|remove|stop)\b[^.!?]*\balarm\b/i],
+        ['open', /^(?:open|show|pull up)\b/i],
+        ['set_alarm', /^wake me\b|^set\b[^.!?]*\balarm\b/i],
+        ['cancel_alarm', /^cancel\b[^.!?]*\balarm\b/i],
         ['snooze_alarm', /^snooze\b/i],
-        ['list_alarms', /^(?:list|show|what)\b[^.!?]*\balarms?\b/i],
-        ['lux_note', /^(?:save|remember)\b|^put\b[^.!?]*\blux\b/i],
+        ['list_alarms', /^show\b[^.!?]*\balarms?\b/i],
+        ['lux_note', /^(?:save|remember|note|write)\b|^put\b[^.!?]*\blux\b/i],
       ];
-      const clauses = words.split(/\b(?:and then|and|then|also)\b|[;.!]/i).map(clause => clause.trim()
-        .replace(/^(?:(?:please|okay|ok|right|now)\b[\s,]*)+/i, '')
-        .replace(/^(?:(?:can|could|would|will) you(?: please)?|i (?:want|need|would like) you to)\s+/i, ''));
       for (const [kind, cue] of cues) if (clauses.some(clause => cue.test(clause))) grants.set(kind, {});
     }
     if (!grants.size && direct && previous?.pending && this.clock() - previous.start <= 120000

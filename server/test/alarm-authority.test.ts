@@ -4,7 +4,7 @@ import { OwnerRequests } from '../tools/owner-request.js';
 import { parseAlarmTime } from '../tools/alarm.js';
 
 for (const [operation, words] of [
-  ['set_alarm', 'wake me at 8'], ['list_alarms', 'list my alarms'],
+  ['set_alarm', 'wake me at 8'], ['list_alarms', 'show my alarms'],
   ['cancel_alarm', 'cancel my alarm'], ['snooze_alarm', 'snooze my alarm for five minutes'],
 ] as const) {
   test(`alarm authority: ${operation} requires an unexpired finalized owner request`, () => {

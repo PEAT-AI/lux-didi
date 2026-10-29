@@ -24,7 +24,7 @@ import { claimVaultWrite, VAULT_WRITE_IDENTITY, VAULT_WRITE_PARAMETERS, validate
 import { researchDeclaration, researchSourcesFromToolNames } from './research.js';
 import { TRELLO_ARGUMENT_GUIDANCE, TRELLO_READ_DESCRIPTION, TRELLO_READ_IDENTITY, TRELLO_READ_PARAMETERS, TRELLO_WRITE_DESCRIPTION, TRELLO_WRITE_IDENTITY, TRELLO_WRITE_PARAMETERS, validateTrelloRead, validateTrelloWrite } from './trello.js';
 import { ALARM_NAMES, ALARM_IDENTITY, parseAlarmTime, validateAlarmArguments, type AlarmArguments } from './alarm.js';
-import { OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
+import { OPEN_IDENTITY, OPEN_TOOL_NAMES, OPEN_TOOLS, OPEN_WEB_DESCRIPTION, OPEN_WEB_NAME, OPEN_WEB_PARAMETERS, nativeActionReceipt, nativeActions, noteOpened, openParameters, openTarget, anyOpenKinds, ownerWords, resolveWebOpen, validateOpen, validateOpenWeb, webOpenedSay, type OpenReceiptCode, openAudit } from './open.js';
 
 import { PEOPLE_LOOKUP_DECLARATION, peopleLookupResult, validatePeopleLookup } from '../people/index.js';
 export { toolsMigrations } from './schema.js';
@@ -778,10 +778,14 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
           await ownerRequests.waitForFinal(runId, context.signal);
           const gate = await resultGate.authorize({ ...context, grants: [] }, [], ['ordinary'], context.signal);
           if (gate.state !== 'allowed' || context.signal.aborted) return { status: 'failed' as const };
-          const requestTarget = JSON.stringify(args);
+          const words = ownerRequests.authorize(runId, 'open', '').words ?? '';
+          const anyKinds = openTool.name === 'open_source' ? anyOpenKinds(words) : [];
+          const top = anyKinds.length ? ownerRequests.topShown(runId, anyKinds) : undefined;
+          const effectiveArgs = top ? { ...args, handle: top } : args;
+          const requestTarget = JSON.stringify(effectiveArgs);
           let authorization = ownerRequests.authorize(runId, 'open', requestTarget);
           let eligible = authorization.code === 'allowed' || authorization.code === 'idempotent';
-          const resolved = authorization.code === 'allowed' ? openTarget(openTool.name, args, authorization.words ?? '') : { code: 'no_open_intent' as const };
+          const resolved = authorization.code === 'allowed' && (!anyKinds.length || top) ? openTarget(openTool.name, effectiveArgs, authorization.words ?? '') : { code: 'no_open_intent' as const };
           const refused = 'target' in resolved ? undefined : resolved.code;
           let dispatched = 'target' in resolved ? resolved.target : undefined;
           if (dispatched && authorization.code === 'allowed') {

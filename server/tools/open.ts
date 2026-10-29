@@ -34,8 +34,8 @@ const OPEN_ONLY = 'These tools only open things: they never type, click, send or
 export const OPEN_TOOLS: readonly { name: string; description: string; guidance: string; parameter: string; pattern: RegExp }[] = [
   { name: 'open_source', guidance: 'shown handle', description: `Call it when he asks; the host reads his words. Open one item the owner named, using the handle its lookup result carried in a line starting "open:". ${OPEN_ONLY}`, parameter: 'handle', pattern: /^L[0-9]{1,4}$/ },
   { name: 'open_home', guidance: 'app home', description: `Call it when he asks; the host reads his words. Open the home page of Gmail, Google Calendar or Mattermost. ${OPEN_ONLY}`, parameter: 'app', pattern: /^(gmail|calendar|mattermost)$/ },
-  { name: 'open_file', guidance: 'local path', description: `Only for an explicitly local file request, never a browser, tab or link request: open an existing file or folder inside the owner's home folder with its default app. ${OPEN_ONLY}`, parameter: 'path', pattern: /^\/|^~/ },
-  { name: 'open_app', guidance: 'app name', description: `Only launch an installed application by name; never use this for a domain or site name, or to open a page in a browser. ${OPEN_ONLY}`, parameter: 'name', pattern: /^\S(?:.*\S)?$/ },
+  { name: 'open_file', guidance: 'local path', description: `Call it when he asks; the host reads his words. Only for an explicitly local file request, never a browser, tab or link request: open an existing file or folder inside the owner's home folder with its default app. ${OPEN_ONLY}`, parameter: 'path', pattern: /^\/|^~/ },
+  { name: 'open_app', guidance: 'app name', description: `Call it when he asks; the host reads his words. Only launch an installed application by name; never use this for a domain or site name, or to open a page in a browser. ${OPEN_ONLY}`, parameter: 'name', pattern: /^\S(?:.*\S)?$/ },
 ];
 
 export function openParameters(tool: (typeof OPEN_TOOLS)[number]): Record<string, unknown> {
@@ -236,6 +236,11 @@ const ASK_KINDS: readonly { words: RegExp; kinds: readonly OpenKind[] }[] = [
 ];
 
 /** A handle resolves to a kind the ask named: a mail thread is never opened as the deck he asked for. */
+export function anyOpenKinds(words: string): readonly OpenKind[] {
+  if (!/\b(?:any|some|one of)\b/i.test(words)) return [];
+  return [...new Set(ASK_KINDS.filter(entry => entry.words.test(words.toLowerCase())).flatMap(entry => entry.kinds))];
+}
+
 function openRefusal(toolName: string, words: string, kind: OpenKind): 'no_open_intent' | 'kind_mismatch' | 'not_allowed' | undefined {
   if (!OPEN_INTENT.test(words)) return 'no_open_intent';
   // A web request must never degrade into a local default-app action. A site name
@@ -252,6 +257,12 @@ function openRefusal(toolName: string, words: string, kind: OpenKind): 'no_open_
 export function openTarget(toolName: string, args: Record<string, string>, words = ''): { target: OpenTarget } | { code: 'not_found' | 'not_allowed' | 'no_open_intent' | 'kind_mismatch' } {
   const resolved = resolveOpenTarget(toolName, args);
   if ('code' in resolved) return resolved;
+  if (toolName === 'open_file' && !webBinding(args['path']!.replace(/^\/Users\/[^/]+\/|^~\//, ''), words)) return { code: 'not_allowed' };
+  if (toolName === 'open_app' && !webBinding(args['name']!.replace(/\.app$/i, ''), words)) return { code: 'not_allowed' };
+  if (toolName === 'open_home') {
+    const homes: Record<string, RegExp> = { gmail: /\b(?:gmail|mail|email|inbox)\b/i, calendar: /\b(?:calendar|schedule)\b/i, mattermost: /\b(?:mattermost|chat)\b/i };
+    if (!homes[args['app']!]?.test(words)) return { code: 'not_allowed' };
+  }
   const refusal = openRefusal(toolName, words, resolved.target.kind);
   return refusal === undefined ? resolved : { code: refusal };
 }
@@ -339,8 +350,17 @@ export class NativeActionBus {
  * research replies and direct tool replies alike, after every trim. A handle opens only when this text
  * carries its `open:` line.
  */
-export function exposeToolResults(results: readonly { id?: string; name?: string; response?: unknown }[]): void {
-  for (const result of results) exposeHandles(JSON.stringify(result.response ?? {}));
+export function exposeToolResults(results: readonly { id?: string; name?: string; response?: unknown }[]): { handle: string; kind: string }[] {
+  const shown: { handle: string; kind: string }[] = [];
+  for (const result of results) {
+    const text = JSON.stringify(result.response ?? {});
+    exposeHandles(text);
+    for (const match of text.matchAll(/\bopen:\s*(L[0-9]{1,4})\b/g)) {
+      const resolved = resolveHandle(match[1]!);
+      if (resolved) shown.push({ handle: match[1]!, kind: resolved.kind });
+    }
+  }
+  return shown;
 }
 
 /** The Mattermost origin a frame carries, and only for a destination that is a Mattermost viewer link. */

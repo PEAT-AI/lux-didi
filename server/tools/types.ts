@@ -85,6 +85,8 @@ export interface OwnerRequestPort {
   failed(session: string, kind: ActionKind, target: string, requestId: string): void;
   commit(session: string, kind: ActionKind, target: string, receipt: unknown, requestId?: string): void;
   clarify(session: string, kind: ActionKind, field: string): void;
+  shown(session: string, requestId: string, handles: readonly { handle: string; kind: string }[]): void;
+  topShown(session: string, kinds: readonly string[]): string | undefined;
   currentId(session: string): string | undefined;
   source(session: string, kind: string, requestId?: string): void;
   sources(session: string): Record<string, number>;

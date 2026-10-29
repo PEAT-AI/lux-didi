@@ -4407,6 +4407,7 @@ export class LiveSessionOwner {
   }
 
   async #toolBatch(handle: ActiveSession, event: Extract<LiveVoiceEvent, { type: 'toolCall' }>, generation: number): Promise<void> {
+    let ownerRequestId: string | undefined;
     handle.thinking = true;
     // #1022 F5/F3: the per-turn latency loops delete this clock, so the arrival time is read once, here.
     const arrivedAt = new Map(event.calls.flatMap(call => { const at = handle.callStartedAt.get(call.id); return at === undefined ? [] : [[call.id, at] as const]; }));
@@ -4449,6 +4450,7 @@ export class LiveSessionOwner {
       const control = { signal: jobAbort.signal, deadlineMs: handle.deadlineMs };
 if (event.calls.some(call => call.name === 'remember_note' || call.name === 'save_to_vault' || call.name === 'trello_write' || call.name === 'stage_lux_note')) await this.#waitForOwnerTranscript(handle, event.sequence);
       if (this.#settled(handle) || generation !== handle.generation) return;
+      ownerRequestId = this.#tools.owner.ownerRequests.currentId(handle.liveSessionId);
       if (event.calls.every(call => call.name === RESEARCH_TOOL_NAME)) {
         for (const call of event.calls) if (call.id !== undefined) hostLogEvent({ event: 'tool_call_dispatched', callKey: callKeyOf(call.id), tool: call.name });
         const outcome = await this.#researchBatch(handle, event, generation, host, dispatchGate.state === 'allowed');
@@ -4696,7 +4698,8 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
               ...(settled.refusalCode === undefined ? {} : { refusalCode: settled.refusalCode }) });
           }
           // OPEN2-R4: the one exposure point, on the text these results deliver after every trim.
-          exposeToolResults(responses);
+          const shown = exposeToolResults(responses);
+          if (ownerRequestId) this.#tools?.owner.ownerRequests.shown(handle.liveSessionId, ownerRequestId, shown);
           // C-CONTINUITY item 5: the total-context figure counts every tool payload this call hands the provider,
           // research and intent alike, refusals and errors included, so the number it reports is really the total.
           handle.contextToolChars += responses.reduce((sum, entry) => sum + JSON.stringify(entry.response ?? {}).length, 0);

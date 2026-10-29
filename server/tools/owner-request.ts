@@ -3,7 +3,7 @@ interface Grant { target?: string; receipt?: unknown; inFlight?: boolean }
 interface Request {
   id: string; words: string; start: number; finals: number; journalId: string;
   grants: Map<ActionKind, Grant>; pending?: { kind: ActionKind; field: string };
-  sources: Record<string, number>;
+  sources: Record<string, number>; shown: { handle: string; kind: string }[];
 }
 /** Per tools-owner state. Only finalized owner transcription may call observe. */
 export class OwnerRequests implements OwnerRequestPort {
@@ -60,7 +60,7 @@ export class OwnerRequests implements OwnerRequestPort {
       if (!previous || this.clock() - previous.start > 120000 || !direct || /\b(?:what|when|where|why|how|who|can|could|tell|explain|compare|find|look|read|search|show|set|open|save|remember|put|cancel|snooze)\b/i.test(words)) this.requests.delete(session);
       return;
     }
-    this.requests.set(session, { id: `request-${++this.sequence}`, words, start: this.clock(), finals: 1, journalId, grants, sources: {} });
+    this.requests.set(session, { id: `request-${++this.sequence}`, words, start: this.clock(), finals: 1, journalId, grants, sources: {}, shown: [] });
   }
   authorize(session: string, kind: ActionKind, target: string): RequestAuthorization {
     const request = this.requests.get(session);
@@ -101,6 +101,16 @@ export class OwnerRequests implements OwnerRequestPort {
   clarify(session: string, kind: ActionKind, field: string): void {
     const request = this.requests.get(session);
     if (request?.grants.has(kind) && (field === 'missing_time' || field === 'missing_timezone' || field === 'unsupported_time_expression')) request.pending = { kind, field };
+  }
+  shown(session: string, requestId: string, handles: readonly { handle: string; kind: string }[]): void {
+    const request = this.requests.get(session);
+    if (!request || request.id !== requestId || this.clock() - request.start > 120000) return;
+    for (const handle of handles) if (!request.shown.some(shown => shown.handle === handle.handle)) request.shown.push({ ...handle });
+  }
+  topShown(session: string, kinds: readonly string[]): string | undefined {
+    const request = this.requests.get(session);
+    if (!request || this.clock() - request.start > 120000) return undefined;
+    return request.shown.find(shown => kinds.includes(shown.kind))?.handle;
   }
   currentId(session: string): string | undefined {
     const request = this.requests.get(session);

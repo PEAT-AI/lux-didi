@@ -1183,7 +1183,7 @@ test('IN-R1 Gemini: cap outcomes are traced and parallel research batch admits s
   const responses = () => socket.sent.map(frame => JSON.parse(frame) as { toolResponse?: { functionResponses: { id: string }[] } }).filter(frame => frame.toolResponse);
   assert.deepEqual(responses()[0]!.toolResponse!.functionResponses.map(call => call.id), ['synthetic-cap-6', 'synthetic-cap-7']);
   assert.match(JSON.stringify(responses()[0]), /research cap reached for this question/);
-  session.sendToolResponse({ responses: calls.map(call => ({ id: call.id, name: call.name, response: { ok: true } })) });
+  session.sendToolResponse({ responses: calls.map(call => ({ id: call.id, name: call.name, response: { status: 'ok' } })) });
   socket.deliver({ toolCall: { functionCalls: [{ id: 'synthetic-cap-later', name: 'research', args: {} }] } });
   const settled = receipts.filter(row => row.kind === 'call.output_written');
   for (let i = 0; i < 8; i++) {

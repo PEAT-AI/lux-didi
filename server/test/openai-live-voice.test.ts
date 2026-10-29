@@ -2512,7 +2512,7 @@ test('IN-R1 OpenAI: cap outcomes are traced and parallel research batch admits s
   assert.deepEqual(results.map(frame => frame.item?.call_id), ['synthetic-cap-6', 'synthetic-cap-7']);
   for (const result of results) assert.match(result.item!.output, /research cap reached for this question/);
   assert.equal(creates(opened.socket).length, 0, 'the active response still owns the continuation gate');
-  opened.session.sendToolResponse({ responses: dispatched.map(call => ({ id: call.id, name: call.name, response: { ok: true } })) });
+  opened.session.sendToolResponse({ responses: dispatched.map(call => ({ id: call.id, name: call.name, response: { status: 'ok' } })) });
   opened.socket.deliver(delegated('response.done', { response: { id: 'synthetic-cap', status: 'completed' } }));
   await quiet();
   assert.equal(creates(opened.socket).length, 1);

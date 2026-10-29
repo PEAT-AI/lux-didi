@@ -385,11 +385,11 @@ struct StatusMenuTracking {
 
 /// The watchdog must remain runnable even if the application's MainActor is blocked.
 enum NativeQuitStage: String, Sendable {
-    case awaitingMainActor, audio, logout, webSession, host, secondQuit
+    case awaitingMainActor, audio, logout, webSession, host, applicationExit, secondQuit
 }
 
 final class NativeQuitDeadline: @unchecked Sendable {
-    private enum State { case idle, running, finished, forced }
+    private enum State { case idle, running, exiting, forced }
     private let lock = NSLock()
     private var state: State = .idle
     private var currentStage: NativeQuitStage = .awaitingMainActor
@@ -399,7 +399,7 @@ final class NativeQuitDeadline: @unchecked Sendable {
                  forced: @escaping @Sendable (NativeQuitStage) -> Void) -> Bool {
         lock.lock()
         guard state == .idle else {
-            let forceAgain = state == .running
+            let forceAgain = state == .running || state == .exiting
             if forceAgain { state = .forced }
             lock.unlock()
             if forceAgain { forced(.secondQuit) }
@@ -409,7 +409,7 @@ final class NativeQuitDeadline: @unchecked Sendable {
         lock.unlock()
         schedule(3) { [self] in
             lock.lock()
-            guard state == .running else { lock.unlock(); return }
+            guard state == .running || state == .exiting else { lock.unlock(); return }
             state = .forced
             let stage = currentStage
             lock.unlock()
@@ -424,7 +424,9 @@ final class NativeQuitDeadline: @unchecked Sendable {
     func complete() -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard state == .running else { return false }
-        state = .finished
+        // Keep the watchdog armed through AppKit/applicationWillTerminate cleanup.
+        state = .exiting
+        currentStage = .applicationExit
         return true
     }
 }

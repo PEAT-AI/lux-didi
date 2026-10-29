@@ -23,13 +23,16 @@ import Foundation
         var fastDeadline: (@Sendable () -> Void)?
         precondition(fast.request(schedule: { _, callback in fastDeadline = callback }, forced: { forced.append($0) }))
         precondition(fast.complete(), "fast shutdown should exit cleanly")
+        precondition(forced.values == [.logout], "fast shutdown must take the clean exit path")
+        // In production an exited process cannot run its timer. If final AppKit cleanup hangs,
+        // the same deadline remains armed rather than losing the hard exit guarantee.
         fastDeadline?()
-        precondition(forced.values == [.logout], "clean exit cancels forced termination logically")
+        precondition(forced.values == [.logout, .applicationExit])
         let repeated = NativeQuitDeadline()
         var timers = 0
         precondition(repeated.request(schedule: { _, _ in timers += 1 }, forced: { forced.append($0) }))
         precondition(!repeated.request(schedule: { _, _ in timers += 1 }, forced: { forced.append($0) }))
-        precondition(timers == 1 && forced.values == [.logout, .secondQuit], "second Quit exits immediately")
+        precondition(timers == 1 && forced.values == [.logout, .applicationExit, .secondQuit], "second Quit exits immediately")
         var menu = StatusMenuTracking()
         var receipts: [(String, Int, Int)] = []
         for _ in 0..<20 { menu.requested { receipts.append(($0, $1, $2)) } }

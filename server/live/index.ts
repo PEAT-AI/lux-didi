@@ -3493,12 +3493,19 @@ export class LiveSessionOwner {
     return true;
   }
 
+  /** Provider setup, not durable lifecycle, admits owner input. */
+  providerReady(liveSessionId: string): boolean {
+    const handle = this.#active.get(liveSessionId);
+    return !!handle?.ready && !handle.terminal;
+  }
+
   /** Send operator-typed text into the newest active session as a user turn (W5-R4 item 2). */
   text(text: string): void {
     if (typeof text !== 'string' || !text.length || text.length > 4000) throw new LiveError('invalid_request');
     const handle = [...this.#active.values()].filter(candidate => !candidate.terminal).at(-1);
     if (!handle) throw new LiveError('not_found', 'No active Live session');
     this.#guardHandle(handle);
+    if (!handle.ready) throw new LiveError('not_ready');
     const event = { type: 'inputTranscription' as const, sequence: 0, text, finished: true, finalOrigin: 'typed' as const };
     handle.connectorRecovery = this.#tools?.recover?.();
     handle.session.sendText({ text });
@@ -4923,6 +4930,7 @@ if (event.calls.some(call => call.name === 'remember_note' || call.name === 'sav
       attempt(() => handle.consumer.close());
       handle.resolveDone();
     }
+    if (canarySessions.isCanary(handle.liveSessionId)) hostLogEvent({ event: 'live_terminal', liveSessionId: handle.liveSessionId, code: handle.diagnosticTerminalCode });
     this.#emitDiagnostics(handle);
     if (handle.persistFailure) console.error(JSON.stringify({ event: 'live_terminal_write_failed', liveSessionId: handle.liveSessionId,
       code: handle.diagnosticTerminalCode, class: 'Error' }));

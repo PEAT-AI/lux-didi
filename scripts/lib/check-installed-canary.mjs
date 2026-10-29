@@ -6,16 +6,16 @@ import { setTimeout as pause } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 
 export function liveCallInLog(text) {
-  let live = false;
+  const live = new Set();
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     let row;
     try { row = JSON.parse(line); } catch { throw new Error('invalid_host_log'); }
-    if (row.event === 'host_started') live = false;
-    if (row.event === 'live_started') live = true;
-    if (row.event === 'live_terminal' || (row.event === 'host_error' && row.class === 'LiveTerminal') || (row.event === 'live_session_diagnostics' && row.terminalCode)) live = false;
+    if (row.event === 'host_started') live.clear();
+    if (row.event === 'live_provider_open') live.add(row.liveSessionId);
+    if (row.event === 'live_terminal' || (row.event === 'host_error' && row.class === 'LiveTerminal') || (row.event === 'live_session_diagnostics' && row.terminalCode)) live.delete(row.liveSessionId);
   }
-  return live;
+  return live.size > 0;
 }
 
 export async function installedCanary(argv, env = process.env, output = line => process.stdout.write(`${line}\n`)) {
@@ -24,7 +24,7 @@ export async function installedCanary(argv, env = process.env, output = line => 
   const home = env.HOME || homedir();
   const directory = join(home, '.lux/didi-canary');
   const asksPath = join(directory, 'asks.json');
-  const logPath = join(env.LUX_DIDI_DATA_DIR || join(home, 'Library/Application Support/ai.peat.lux-didi-operator'), 'logs/host.log');
+  const logPath = join(env.LUX_DIDI_DATA_DIR || join(home, 'Library/Application Support/ai.peat.lux-didi'), 'logs/host.log');
   let absent = false;
   try { const stat = await lstat(asksPath); if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 131072) throw new Error('invalid_ask_file'); }
   catch (error) { if (error.code === 'ENOENT') absent = true; else throw error; }

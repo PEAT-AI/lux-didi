@@ -223,7 +223,7 @@ type RawCall = { key: string; tool: string; result: Record<string, unknown>; ms:
 /** Only called from the bearer-authenticated local canary opener, never a model tool. */
 export class InstalledCanary {
   #session: { id: string; clientId: string; asks: CanaryAsk[]; timer: ReturnType<typeof setTimeout>; abort: AbortController; running: boolean } | undefined;
-  constructor(private readonly store: Store, private readonly live: LiveService, private readonly wait: (signal: AbortSignal) => Promise<void> = async signal => { await pause(50, undefined, { signal }); }) {}
+  constructor(private readonly store: Store, private readonly live: LiveService, private readonly wait: (signal: AbortSignal) => Promise<void> = async signal => { await pause(50, undefined, { signal }); }, private readonly now: () => number = Date.now) {}
   shutdown(): void {
     if (!this.#session) return;
     const { id, timer, abort } = this.#session;
@@ -262,9 +262,15 @@ export class InstalledCanary {
     const session = this.#session;
     if (!session || session.id !== id || session.clientId !== clientId || session.running) throw new Error('invalid_canary_session');
     session.running = true;
-    const readyDeadline = Date.now() + 10_000;
-    while (!session.abort.signal.aborted && this.live.snapshot(id).lifecycle !== 'active' && !this.live.snapshot(id).terminal && Date.now() < readyDeadline) {
+    const readyStarted = this.now();
+    const readyDeadline = readyStarted + 10_000;
+    while (!session.abort.signal.aborted && !this.live.providerReady?.(id) && !this.live.snapshot(id).terminal && this.now() < readyDeadline) {
       try { await this.wait(session.abort.signal); } catch { break; }
+    }
+    if (!this.live.providerReady?.(id)) {
+      const lines = session.asks.map(ask => `CANARY FAIL id=${ask.id} tool=${ask.expect.tool} code=provider_not_ready ms=${Math.max(0, this.now() - readyStarted)}`);
+      lines.push(`CANARY SUMMARY pass=0 fail=${session.asks.length} providerTurns=0`);
+      return { lines, passed: 0, failed: session.asks.length, providerTurns: 0 };
     }
     let prior = new Set<string>();
     let started = 0;
@@ -273,7 +279,7 @@ export class InstalledCanary {
     const cleaned = new Set<string>();
     const port: CanaryPort = {
       inject: finals => {
-        if (this.live.snapshot(id).lifecycle !== 'active') throw new Error('provider_unavailable');
+        if (!this.live.providerReady?.(id)) throw new Error('provider_unavailable');
         prior = new Set(this.#calls(id).map(row => row.key)); started = Date.now(); ackBefore = canarySessions.nativeAckCount(id);
         completedBefore = canarySessions.progress(id)?.completed ?? 0;
         for (const text of finals) this.live.text(text);

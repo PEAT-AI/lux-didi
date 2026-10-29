@@ -1133,7 +1133,7 @@ class Session implements LiveVoiceSession {
           this.touch();
           return;
         }
-        this.endResponse(message);
+        this.endResponse(message, true);
         this.touch();
         return;
       }
@@ -1146,13 +1146,13 @@ class Session implements LiveVoiceSession {
    * outstanding flag so the turn can still complete, closes the delegation, and lets an owed continuation through the
    * gate, so a result deferred behind this response is never left unresumable.
    */
-  private endResponse(message: ObjectValue | undefined): void {
+  private endResponse(message: ObjectValue | undefined, completed = false): void {
     this.clearNoItemTimer();
     const timing = this.continuationTiming;
     this.logContinuationTiming();
     this.continuationTiming = undefined;
     this.delegatedOutstanding = false;
-    if (message && (message['status'] === undefined || message['status'] === 'completed') && timing && timing.firstAudioAt === null && this.heldAudibleBytes === 0 && !this.audioSinceCompletion && !timing.toolCall && !this.silentRescueUsed && this.pendingCalls.length === 0 && this.episodeQuiet === undefined) {
+    if (completed && timing && timing.firstAudioAt === null && this.heldAudibleBytes === 0 && !this.audioSinceCompletion && !timing.toolCall && !this.silentRescueUsed && this.pendingCalls.length === 0 && this.episodeQuiet === undefined) {
       this.silentRescueUsed = true;
       this.answerNow = true;
       this.continuationOwed = true;

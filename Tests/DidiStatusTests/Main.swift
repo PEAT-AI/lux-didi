@@ -2,7 +2,25 @@ import Foundation
 
 /// Fake sinks only: no application, notification center, status item or window is created.
 @main struct StatusQuietTests {
-    static func main() {
+    @MainActor static func main() async {
+        let source = FakeCapabilitySource()
+        let capability = NativeNotificationCapabilityState(source: { await source.read() })
+        _ = await capability.refresh(for: .launch)
+        precondition(source.queries == 1)
+        for _ in 0..<20 {
+            let value = await capability.refresh(for: .poll)
+            precondition(value == .authorized)
+        }
+        precondition(source.queries == 1, "polls must not query notification settings")
+        source.value = .denied
+        let activated = await capability.refresh(for: .didBecomeActive)
+        precondition(source.queries == 2 && activated == .denied)
+        for _ in 0..<20 { _ = await capability.refresh(for: .poll) }
+        precondition(source.queries == 2)
+        _ = await capability.refresh(for: .didBecomeActive)
+        precondition(source.queries == 3, "each activation refreshes exactly once")
+        _ = await capability.refresh(for: .permissionChanged)
+        precondition(source.queries == 4)
         var jobs: [NativePendingLiveJob] = []
         var error: String?
         var publishes = 0
@@ -67,4 +85,10 @@ import Foundation
         precondition(orbWrites == 4 && !ignores, "hidden panel resets click-through once")
         print("STATUS-QUIET PASS identicalTicks=20 fieldChanges=true errors=true orb=true headless=true")
     }
+}
+
+@MainActor private final class FakeCapabilitySource {
+    var queries = 0
+    var value: NotificationCapability = .authorized
+    func read() async -> NotificationCapability { queries += 1; return value }
 }

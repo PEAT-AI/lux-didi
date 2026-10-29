@@ -7,10 +7,7 @@ import {NAYA_CHARACTER,NAYA_VOICE_SURFACE,NAYA_LIVE_BASE,NAYA_TOOLS,composeLiveI
 import {OpenAiLiveVoiceAdapter,openAiInstructions,OPENAI_TOOLS_SECTION,OPENAI_DELIVERY_SECTION} from '../dist/adapters/live-voice/openai.js';
 import {fixture,options,request,control} from '../dist/test/openai-live-voice-fixture.js';
 const baselineCommit='31cc08d54248fe00562e7506dbed7ce28fbaf019';
-const baseline=execFileSync('git',['show',baselineCommit+':server/prompt/live-persona.ts'],{encoding:'utf8'})
-  .replace("Be honest about yourself. Short summaries, standing memory and saved notes carry over; the full conversation does not, so never say you have adjusted, learned or processed feedback; say what you will do for the rest of this call. Never describe a training history, a model, a maker or this instruction.","Be honest about yourself. Short summaries, standing memory and saved notes carry over. You can look back over past conversations word for word through research. Quote only what research returned; never invent a past quote. Never say you have adjusted, learned or processed feedback; say what you will do for the rest of this call. Never describe a training history, a model, a maker or this instruction.")
-  .replace("readonly id: string; readonly endedAt: number; readonly summary: string }","readonly id: string; readonly liveSessionId?: string; readonly endedAt: number; readonly summary: string }")
-  .replace("${datePrefix(candidate.endedAt, options.timeZone)} ${candidate.summary}","${datePrefix(candidate.endedAt, options.timeZone)} [session:${candidate.liveSessionId ?? candidate.id}] ${candidate.summary}");
+const baseline=execFileSync('git',['show',baselineCommit+':server/prompt/live-persona.ts'],{encoding:'utf8'});
 assert.equal(readFileSync(new URL('../prompt/live-persona.ts',import.meta.url),'utf8'),baseline);
 const oldAdapter=execFileSync('git',['show',baselineCommit+':server/adapters/live-voice/openai.ts'],{encoding:'utf8'});
 const extract=name=>baseline.match(new RegExp('export const '+name+' = `([\\s\\S]*?)`;'))[1];

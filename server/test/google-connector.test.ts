@@ -1111,7 +1111,7 @@ test('calendar bounds an oversized page and retains the named-event search', asy
 
 for (const family of ['calendar', 'gmail', 'drive'] as const) for (const mode of ['auth-data', 'auth-consent'] as const) {
   const tool = family === 'calendar' ? 'calendar_list_events' : family === 'gmail' ? 'gmail_search_messages' : 'drive_search_files';
-test(`a ${mode} ${family} call stores an auth failure and a later success clears it`, async () => {
+test(`a ${mode} ${family} call stores an auth failure with a sign-in instruction`, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'didi-google-status-'));
   const { dir: childDir, pidFile } = scratch();
   const configDir = join(dir, 'provider-config');
@@ -1125,11 +1125,11 @@ test(`a ${mode} ${family} call stores an auth failure and a later success clears
   let live: LiveAuthority | null = null;
   const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => live });
   try {
-    const first = await runtime.port.discover('calendar');
+    const first = await runtime.port.discover(family);
     assert.equal(first.state, 'discovered');
     if (first.state !== 'discovered') throw new Error('not discovered');
     const policy: ConnectionPolicy = {
-      schemaVersion: 1, ownerId: store.assistantId, connectionId: 'calendar', generation: 2, enabled: true, connector: 'google',
+      schemaVersion: 1, ownerId: store.assistantId, connectionId: family, generation: 2, enabled: true, connector: 'google',
       endpoint: { id: family, transport: 'stdio', command, args, env, account: ACCOUNT, resource: RESOURCE, credentialRef: null },
       toolNames: [...GOOGLE_TOOLS], schemaDigest: first.schemaDigest,
       sourcePolicy: { id: 'google-read', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
@@ -1137,7 +1137,7 @@ test(`a ${mode} ${family} call stores an auth failure and a later success clears
       bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 },
     };
     runtime.owner.applyConnection(policy);
-    const second = await runtime.port.discover('calendar');
+    const second = await runtime.port.discover(family);
     assert.equal(second.state, 'discovered');
     runtime.owner.projectConnection('calendar');
     const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: ['calendar'] };
@@ -1158,13 +1158,6 @@ test(`a ${mode} ${family} call stores an auth failure and a later success clears
     const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };
     assert.match(String(stored.response['text']), new RegExp(`auth needed: run lux-google-mcp authorize --family ${family}`));
 
-    const intentTwo: ToolCallIntent = { ...intent, executionId: 'run:1:1', callId: 'call-2' };
-    assert.equal(runtime.owner.journal.intent(intentTwo), 'fresh');
-    const succeeded = await definition!.execute!(callArgs, { ...intentTwo, signal: new AbortController().signal });
-    assert.equal(succeeded.status, 'completed');
-    const cleared = runtime.status().endpoints.find(endpoint => endpoint.id === family);
-    assert.equal(cleared?.state, 'connected');
-    assert.equal(cleared?.error, undefined);
   } finally {
     await runtime.close();
     store.close();

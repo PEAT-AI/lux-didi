@@ -2296,3 +2296,33 @@ test('direct102 fresh opening demands speech itself, not an acknowledgment of st
   assert.match(FRESH_OPENING, /Do not acknowledge/);
   assert.doesNotMatch(FRESH_OPENING, /Internal startup direction/);
 });
+
+for (const reason of ['turn_spent', 'answer_already_given', 'no_turn_since_result']) {
+  test(`C-STEADY104: blocked research ${reason} answers once without offering tools`, async t => {
+    const { f, session, captured } = await ready(t);
+    f.send({ type: 'session.delegation.created', delegation: { id: 'steady', response_id: 'resp_steady', offset_ms: 0 } });
+    f.send({ type: 'response.event', delegation_id: 'steady', event: { type: 'response.created', response: { id: 'resp_steady' } } });
+    f.send({ type: 'response.event', delegation_id: 'steady', event: functionCall('steady-call') });
+    f.send({ type: 'response.event', delegation_id: 'steady', event: { type: 'response.done', response: { id: 'resp_steady', status: 'completed' } } });
+    await until(() => captured.events.some(event => event.type === 'toolCall'));
+    const before = f.frames.filter(frame => frame['type'] === 'response.create').length;
+    session.sendToolResponse({ responses: [{ id: 'steady-call', name: 'research', response: { status: 'blocked', reason } }] });
+    await until(() => f.frames.filter(frame => frame['type'] === 'response.create').length > before);
+    const creates = f.frames.filter(frame => frame['type'] === 'response.create').slice(before);
+    assert.equal(creates.length, 1);
+    assert.deepEqual(creates[0]!['response'], { instructions: 'Answer now from the results already available. Do not call research again in this response.', tools: [], tool_choice: 'none' });
+  });
+}
+
+test('C-STEADY104: commentary cannot reject a delegation awaiting function output', async t => {
+  const { f, session, captured } = await ready(t);
+  f.send({ type: 'session.delegation.created', delegation: { id: 'steady', response_id: 'resp_steady', offset_ms: 0 } });
+  f.send({ type: 'response.event', delegation_id: 'steady', event: { type: 'response.created', response: { id: 'resp_steady' } } });
+  f.send({ type: 'response.event', delegation_id: 'steady', event: functionCall('steady-call') });
+  await until(() => captured.events.some(event => event.type === 'toolCall'));
+  assert.equal(session.sendCommentary!({ text: 'Still looking...' }), false);
+  assert.equal(f.frames.some(frame => frame['type'] === 'session.commentary.append'), false);
+  f.send({ type: 'response.event', delegation_id: 'steady', event: { type: 'response.done', response: { id: 'resp_steady', status: 'completed' } } });
+  session.sendToolResponse({ responses: [{ id: 'steady-call', name: 'research', response: { findings: ['synthetic result'] } }] });
+  await until(() => f.frames.some(frame => frame['type'] === 'response.create'));
+});

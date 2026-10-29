@@ -787,3 +787,12 @@ for (const effect of ['read', 'write'] as const) {
     assert.equal(JSON.stringify(logged).includes('synthetic handler failure'), false, 'the exception message is not diagnostic payload');
   });
 }
+
+test('C-STEADY104: a rolled-back read completion still permits a failed terminal', async t => {
+  const f = await fixture(t);
+  const call = f.intent();
+  f.owner.journal.intent(call);
+  assert.throws(() => f.owner.complete(call, { text: 'x'.repeat(10000) }, ['private']));
+  f.owner.journal.fail(call, 'failed', 'handler_outcome');
+  assert.equal(f.store.transaction(tx => tx.get('SELECT state FROM tool_calls'))?.state, 'failed');
+});

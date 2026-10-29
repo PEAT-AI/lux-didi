@@ -12,6 +12,7 @@ import type { DataClass, LiveVoiceProvider } from '../adapters/live-voice/index.
 import type { LiveAccent } from '../prompt/live-persona.js';
 import { authorityContext, operatorPrincipal } from './auth.js';
 import { nativeActions } from '../tools/open.js';
+import { canarySessions } from '../live/canary.js';
 import type { CalendarDigestSnapshot } from '../live/warm-context.js';
 import type { WarmPrewarmReceipt } from '../live/index.js';
 
@@ -249,7 +250,8 @@ export function createLiveUpgrader(options: LiveUpgradeOptions) {
     // One native-action sender per Live session; this socket is also the only path audio already uses.
     const forgetActions = nativeActions.bind(attachment.liveSessionId, frame => {
       if (ws.readyState !== ws.OPEN) return false;
-      ws.send(JSON.stringify(frame));
+      // A model/tool frame cannot request native dry-run authority. Only the host opener can.
+      ws.send(JSON.stringify(canarySessions.nativeFrame(attachment.liveSessionId, frame)));
       return true;
     });
     const detach = onceDetach(attachment);

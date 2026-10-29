@@ -609,3 +609,39 @@ test('an in-flight summary row is never listed as a failed summary', async () =>
     assert.equal(listed.includes('real-failure'), true, 'a summary that really failed is still listed');
   } finally { f.cleanup(); }
 });
+
+// C-RECALL104: synthetic ASR text only, including the legacy policy pin R104-R1.
+import { backfillHistoryTurns, rebuildHistoryTurnIndex } from '../domain/history-turns.js';
+import { createHistoryReader } from '../domain/history-reader.js';
+import { forgetHistorySessions } from '../domain/history-lifecycle.js';
+
+test('verbatim turns backfill survives summary skip, is idempotent, and forget clears FTS', () => {
+  const f = open();
+  try {
+    seedSession(f.store, 'recall-legacy');
+    seedTurn(f.store, 'recall-legacy', 'inputTranscription', 'The synthetic trip ends at the cobalt lighthouse.');
+    seedTurn(f.store, 'recall-legacy', 'outputTranscription', 'We will bring the violet map.');
+    f.store.transaction(tx => {
+      tx.run('DELETE FROM history_sessions WHERE live_session_id=?', ['recall-legacy']);
+      tx.run('UPDATE live_sessions SET terminal_at=? WHERE live_session_id=?', [NOW - 40 * 86400000, 'recall-legacy']);
+      assert.equal(backfillHistoryTurns(tx), 2);
+      assert.equal(backfillHistoryTurns(tx), 0);
+      assert.equal(tx.get('SELECT data_class FROM history_sessions WHERE live_session_id=?', ['recall-legacy'])?.data_class, 'sensitive');
+      const hits = tx.all(`SELECT t.text,bm25(history_turns_fts) AS rank,snippet(history_turns_fts,0,'[',']','...',12) AS excerpt FROM history_turns_fts JOIN history_turns t ON t.id=history_turns_fts.rowid WHERE history_turns_fts MATCH ?`, ['"lighthouse"*']);
+      assert.equal(hits.length, 1);
+      assert.match(String(hits[0]?.excerpt), /lighthouse/);
+      rebuildHistoryTurnIndex(tx);
+      assert.equal(tx.all('SELECT rowid FROM history_turns_fts WHERE history_turns_fts MATCH ?', ['lighthouse']).length, 1);
+      const reader = createHistoryReader(() => NOW);
+      const scope = { ownerId: f.store.assistantId, runId: 'recall-run', routeIdentity: 'synthetic', authorityEpoch: f.store.authorityEpoch, revision: 1, allowedClasses: ['sensitive'] as DataClass[] };
+      const found = reader.read(tx, scope, { query: 'lighthouse' });
+      assert.equal((found.response.hits as unknown[]).length, 1);
+      assert.match(JSON.stringify(found.response), /cobalt lighthouse/);
+      assert.equal((reader.read(tx, { ...scope, allowedClasses: ['ordinary'] }, { query: 'lighthouse' }).response.hits as unknown[]).length, 0);
+      forgetHistorySessions(tx, ['recall-legacy'], NOW);
+      assert.equal(tx.all('SELECT * FROM history_turns').length, 0);
+      assert.equal(tx.all('SELECT rowid FROM history_turns_fts WHERE history_turns_fts MATCH ?', ['lighthouse']).length, 0);
+      assert.equal(backfillHistoryTurns(tx), 0);
+    });
+  } finally { f.cleanup(); }
+});

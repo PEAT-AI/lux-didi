@@ -111,8 +111,8 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     assert.deepEqual(listProjection.sources, [{ title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#all/t1', sourceType: 'gmail' }, { title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#all/t2', sourceType: 'gmail' }]);
 
     const outOfBudget = await gmail.gmailList({ maxResults: 999 });
-    assert.equal(outOfBudget.state, 'refused');
-    assert.equal(outOfBudget.state === 'refused' ? outOfBudget.reason : '', 'max-results-out-of-budget');
+    const clampedEnvelope = envelopeOf(completed(outOfBudget));
+    assert.equal((clampedEnvelope['received'] as Record<string, unknown>)['maxResults'], 25);
 
     const read = completed(await gmail.gmailRead({ id: 'm1', format: 'full' }));
     payloadPorts.set(read, adapter);
@@ -1094,4 +1094,15 @@ test('C-CAL8: a warm calendar digest that cuts ends with +N more', async () => {
   assert.ok((digest ?? '').length <= CALENDAR_DIGEST_CHARS, 'the digest never exceeds the bound');
   assert.match(digest ?? '', /^1[4-7]:00 synthetic/, `the next meeting opens the digest: ${digest}`);
   assert.match(digest ?? '', /, \+\d+ more$/, `a cut digest ends with its count: ${digest}`);
+});
+
+// C-CAL: a model-selected page above the budget is bounded, not rejected before the wire.
+test('calendar bounds an oversized page and retains the named-event search', async () => {
+  const fake = fakeCalendarPort({ calendars: [{ id: 'primary', summary: 'Synthetic' }], eventsFor: () => ({ events: [] }) });
+  const reader = await calendarReader(fake.port);
+  const result = await reader.gcalList({ calendarId: 'primary', maxResults: 100, q: 'Synthetic wedding', timeMin: '2026-09-29T00:00:00Z', timeMax: '2027-04-29T00:00:00Z' } as Parameters<typeof reader.gcalList>[0]);
+  assert.equal(result.state, 'completed');
+  assert.equal(fake.listArgs.length, 1);
+  assert.equal(fake.listArgs[0]?.['maxResults'], 50);
+  assert.equal(fake.listArgs[0]?.['q'], 'Synthetic wedding');
 });

@@ -43,13 +43,14 @@ const PERSON_SAID = new RegExp(String.raw`\bwhat (?:did|does|has|have|had|is|are
  */
 const PERSON_FROM = new RegExp(String.raw`\b(?:messages?|posts?|dms?|notes?) (?:from|by) ${NAME}`, 'iu');
 /** "my DMs with Ada", "my chat with Ada": both sides of the direct conversation. */
-const PERSON_WITH = new RegExp(String.raw`\b(?:dms?|direct messages?|direct chats?|private chats?|chats?|conversations?|messages?|thread) with ${NAME}`, 'iu');
+const PERSON_WITH = new RegExp(String.raw`\b(?:dms?|direct messages?|direct chats?|private chats?|chats?|conversations?|discussions?|messages?|thread) with ${NAME}`, 'iu');
 /**
  * "what did I discuss with Ada", "what have Ada and I talked about", "what I exchanged with Ada",
  * "what Ada wrote to me": everything the two exchanged. R8-W9: "exchanged with", "talked to",
  * "chatted with" and "wrote to" are the same ask said another way, never a topic search.
  */
 const PERSON_DISCUSS = new RegExp(String.raw`\b(?:discuss|discussed|talk|talked|talk about|talked about|chat|chatted|chat about|chatted about|speak|spoke|speak about|spoke about|exchange|exchanged|write|wrote|written|message|messaged) (?:with|to) ${NAME}`, 'iu');
+const PERSON_DISCUSSIONS = new RegExp(String.raw`^\s*${NAME} discussions?\b`, 'iu');
 const PERSON_AND_I = new RegExp(String.raw`\b${NAME} and (?:i|me) (?:discuss|discussed|talk|talked|chat|chatted|spoke|speak)\b`, 'iu');
 /** "my group chat with Ada and Kim". */
 const GROUP_WITH = /\bgroup (?:chats?|dms?|messages?|conversations?|threads?)? ?with ((?:\p{L}[\p{L}'’.-]*)(?:(?:\s*,\s*|\s+and\s+|\s*&\s*)\p{L}[\p{L}'’.-]*){1,3})/iu;
@@ -77,7 +78,7 @@ const CHANNEL_PLACEHOLDER = /^(?:name|channel|exact|string|called|exact name)$/i
  * to the chat source and are never a channel name, a person or a search term. Lowercase, compared with
  * whitespace folded, so "meta most" and "MetaMost" are the same word.
  */
-export const CHAT_PRODUCT_NAMES: readonly string[] = ['metamos', 'metamost', 'meta most', 'metamouse', 'meta mouse', 'matter most', 'mattermost'];
+export const CHAT_PRODUCT_NAMES: readonly string[] = ['metamos', 'metamost', 'meta most', 'metamouse', 'meta mouse', 'matter most', 'mattermost', 'metamorph', 'metamask'];
 
 const escapeWord = (word: string): string => word.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 /** The same list as one alternation, a space between its words optional so "meta most" is one form. */
@@ -149,7 +150,7 @@ export function chatAsk(question: string): boolean {
   // R8-W9: "can you read Metamost" names the chat by its own spoken name, so the ask routes to the chat.
   if (chatProductName(question)) return true;
   if (groupPeople(question) !== undefined) return true;
-  for (const shape of [PERSON_SAID, PERSON_FROM, PERSON_WITH, PERSON_DISCUSS, PERSON_AND_I]) {
+  for (const shape of [PERSON_SAID, PERSON_FROM, PERSON_WITH, PERSON_DISCUSS, PERSON_AND_I, PERSON_DISCUSSIONS]) {
     const found = shape.exec(question)?.[1];
     if (found !== undefined && cleanName(found) !== undefined) return true;
   }
@@ -236,7 +237,7 @@ export function chatIntent(question: string, options: { terms: string; nowMs: nu
     const found = shape.exec(question)?.[1];
     return found === undefined ? undefined : cleanName(found);
   };
-  const discussed = person(PERSON_DISCUSS) ?? person(PERSON_AND_I);
+  const discussed = person(PERSON_DISCUSS) ?? person(PERSON_AND_I) ?? person(PERSON_DISCUSSIONS);
   if (discussed !== undefined) return { kind: 'person-overview', person: discussed, terms: aboutTerms(question, [discussed]), window };
   const withThem = person(PERSON_WITH);
   if (withThem !== undefined) return { kind: 'person-said', person: withThem, sides: 'both', terms: aboutTerms(question, [withThem]), window };

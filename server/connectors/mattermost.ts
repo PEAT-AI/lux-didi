@@ -913,7 +913,10 @@ export function createMattermostReader(options: MattermostOptions): MattermostRe
     if (!who.ok) return who.result;
     // R8-W9: the owner's own name and handle are never a search term; "what Ada and Robert Smith decided"
     // asks about Ada, and searching either finds every post the owner ever wrote (F2: the display name too).
-    const asked = withoutOwner(query, who.owner.username, who.owner.displayName);
+    // A model's recency labels are not topics. Keep real topic phrases, but read
+    // the DM newest-first when the entire query is only a recency request.
+    const recency = /^(?:(?:latest|recent|last|today|yesterday|new|messages?|posts?|dms?|direct|what|did|we|discuss|what's|whats|is|the|our|my|your|lately|conversations?)\s*)+$/iu.test(query.trim());
+    const asked = withoutOwner((input.intent === 'person' || input.intent === 'overview') && recency ? '' : query, who.owner.username, who.owner.displayName);
     const children: SourceDispatchRef[] = who.evidence[SOURCE_DISPATCH] ? [who.evidence[SOURCE_DISPATCH]!] : [];
     const capture = (evidence: SourceDispatchEvidence): void => { if (evidence[SOURCE_DISPATCH]) children.push(evidence[SOURCE_DISPATCH]!); };
     const window = { from: input.from_date ?? new Date(Date.now() - MATTERMOST_CHAT.days * DAY_MS).toISOString().slice(0, 10), ...(input.to_date === undefined ? {} : { to: input.to_date }) };

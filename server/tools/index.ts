@@ -997,60 +997,70 @@ export function createToolsOwner(options: ToolsOwnerOptions): ToolsOwner & LiveR
               const resultScope = createResultScope();
               let value: ModelSnapshot;
               try {
-              let evidence: Awaited<ReturnType<typeof reader.call>>;
-              try { evidence = await resultScope.run(() => dispatch.run({call,bound,snapshotSha256:sha256(canonicalJSON(snapshot)),allowedClasses:snapshot.acceptance.allowedClasses.filter(c => snapshot.acceptance.route.allowedClasses.includes(c))},() => reader.call(name, callArgs, context.signal))); } catch (error) {
-                const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : 'handler_outcome';
-                options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
-                return { status: code === 'connector_error' || code === 'handler_outcome' ? 'failed' : 'unknown', code };
-              }
-              // A completed read carries real data even when the turn deadline fired while it finished:
-              // never discard it silently (F9 partial calendar reads); a refused or unknown result stays unknown.
-              if (context.signal.aborted && evidence.state !== 'completed') return { status: 'unknown' };
-              if (evidence.state === 'unknown') {
-                const code = dispatchedFailureCode(evidence.reason);
-                options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: 'Error', messageHead: code });
-                return { status: 'unknown', code };
-              }
-              if (evidence.state !== 'completed') {
-                // TR4-R8: a refused read asks the connector too, so a latched endpoint answers the owner
-                // with its closed code's line rather than an empty result. A connector without a word
-                // table answers undefined and keeps the plain failure code below.
-                const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' || evidence.state === 'refused' ? descriptor.status?.(evidence, p.endpoint) : undefined;
-                if (!status) {
-                  // Keep the failure cause truthful: a refused connector read names its reason; a child
-                  // tool/protocol error is an unusable result. Either way surface a real code.
-                  // #637: a channel the chat connector does not know is its own closed code, so the reply can
-                  // say the channel is unknown; every other refusal keeps the code it had.
-                  const failureCode = evidence.state === 'refused' && evidence.reason.startsWith('channel-not-found') ? 'channel_not_found' as const : evidence.state === 'refused' ? dispatchedFailureCode(evidence.reason) : 'invalid_result';
-                  return { status: 'failed', code: failureCode };
+                let evidence: Awaited<ReturnType<typeof reader.call>>;
+                try { evidence = await resultScope.run(() => dispatch.run({call,bound,snapshotSha256:sha256(canonicalJSON(snapshot)),allowedClasses:snapshot.acceptance.allowedClasses.filter(c => snapshot.acceptance.route.allowedClasses.includes(c))},() => reader.call(name, callArgs, context.signal))); } catch (error) {
+                  const code = resultScope.failureCode ?? (error instanceof Error && 'code' in error && typeof error.code === 'string' && isToolFailureCode(error.code) ? error.code : 'handler_outcome');
+                  const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code });
+                  if (failure) hostLogEvent(failure);
+                  options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
+                  return { status: code === 'connector_error' || code === 'handler_outcome' ? 'failed' : 'unknown', code };
                 }
-                // A classified failure is visible: the endpoint flips to configured and the call
-                // returns the plain reason as its projection, never an empty success. A status that
-                // names a content-free log line (an unknown helper code, a Didi defect) writes it too.
-                reportToolStatus?.(p.endpoint.id, status);
-                if (status.log) options.log?.(status.log);
-                // LOGS.md L-08: every classified failure is one closed host event, so host.log tells a
-                // failed read from an empty one. The endpoint id, the tool and the classified code only:
-                // no argument, no payload, no helper text. A code that is not one word is not logged.
-                // It travels on the host-log channel, whose sink owns validation, because the owner log
-                // accepts only the closed transport-failure shape.
-                const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code: status.code });
-                if (failure) hostLogEvent(failure);
-                // `classified` is the closed code this projection stands for, so the reader that shapes it can
-                // call it a failed read by evidence instead of guessing from the words it carried.
-                return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0, classified: status.code }, []) };
-              }
-              reportToolStatus?.(p.endpoint.id, null);
-              const sourceRefs = evidence[SOURCE_DISPATCH] ? [evidence[SOURCE_DISPATCH]!] : evidence[SOURCE_CHILD_DISPATCHES];
-              try { value = descriptor.project(evidence, dispatch.port, p); } catch (error) {
-                const code = resultScope.failureCode ?? (error instanceof SyntaxError || (error instanceof Error && (error.message === 'unsupported_mcp_result' || error.message === 'unsupported_mcp_content')) ? 'invalid_result'
-                  : error instanceof Error ? 'connector_error' : 'handler_outcome');
-                const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code });
-                if (failure) hostLogEvent(failure);
-                // Only safe class/code metadata, never remote payloads or arbitrary exception text.
-                options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
-                return { status: 'failed', code };
-              }
+                if (resultScope.failureCode) {
+                  const code = resultScope.failureCode;
+                  const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code });
+                  if (failure) hostLogEvent(failure);
+                  options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: 'Error', messageHead: code });
+                  return { status: 'failed', code };
+                }
+                // A completed read carries real data even when the turn deadline fired while it finished:
+                // never discard it silently (F9 partial calendar reads); a refused or unknown result stays unknown.
+                if (context.signal.aborted && evidence.state !== 'completed') return { status: 'unknown' };
+                if (evidence.state === 'unknown') {
+                  const code = dispatchedFailureCode(evidence.reason);
+                  options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: 'Error', messageHead: code });
+                  return { status: 'unknown', code };
+                }
+                if (evidence.state !== 'completed') {
+                  // TR4-R8: a refused read asks the connector too, so a latched endpoint answers the owner
+                  // with its closed code's line rather than an empty result. A connector without a word
+                  // table answers undefined and keeps the plain failure code below.
+                  const status = evidence.state === 'tool-error' || evidence.state === 'protocol-error' || evidence.state === 'refused' ? descriptor.status?.(evidence, p.endpoint) : undefined;
+                  if (!status) {
+                    // Keep the failure cause truthful: a refused connector read names its reason; a child
+                    // tool/protocol error is an unusable result. Either way surface a real code.
+                    // #637: a channel the chat connector does not know is its own closed code, so the reply can
+                    // say the channel is unknown; every other refusal keeps the code it had.
+                    const failureCode = evidence.state === 'refused' && evidence.reason.startsWith('channel-not-found') ? 'channel_not_found' as const : evidence.state === 'refused' ? dispatchedFailureCode(evidence.reason) : 'invalid_result';
+                    return { status: 'failed', code: failureCode };
+                  }
+                  // A classified failure is visible: the endpoint flips to configured and the call
+                  // returns the plain reason as its projection, never an empty success. A status that
+                  // names a content-free log line (an unknown helper code, a Didi defect) writes it too.
+                  reportToolStatus?.(p.endpoint.id, status);
+                  if (status.log) options.log?.(status.log);
+                  // LOGS.md L-08: every classified failure is one closed host event, so host.log tells a
+                  // failed read from an empty one. The endpoint id, the tool and the classified code only:
+                  // no argument, no payload, no helper text. A code that is not one word is not logged.
+                  // It travels on the host-log channel, whose sink owns validation, because the owner log
+                  // accepts only the closed transport-failure shape.
+                  const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code: status.code });
+                  if (failure) hostLogEvent(failure);
+                  // `classified` is the closed code this projection stands for, so the reader that shapes it can
+                  // call it a failed read by evidence instead of guessing from the words it carried.
+                  return { status: 'completed', result: complete(call, { tool: name, text: status.reason, partial: false, originalCharacters: status.reason.length, omittedCharacters: 0, classified: status.code }, []) };
+                }
+                reportToolStatus?.(p.endpoint.id, null);
+                const sourceRefs = evidence[SOURCE_DISPATCH] ? [evidence[SOURCE_DISPATCH]!] : evidence[SOURCE_CHILD_DISPATCHES];
+                try { value = descriptor.project(evidence, dispatch.port, p); } catch (error) {
+                  const code = resultScope.failureCode ?? (error instanceof SyntaxError || (error instanceof Error && (error.message === 'unsupported_mcp_result' || error.message === 'unsupported_mcp_content')) ? 'invalid_result'
+                    : error instanceof Error ? 'connector_error' : 'handler_outcome');
+                  const failure = classifiedFailureEvent({ endpointId: p.endpoint.id, connector: p.connector, tool: name, code });
+                  if (failure) hostLogEvent(failure);
+                  // Only safe class/code metadata, never remote payloads or arbitrary exception text.
+                  options.log?.({ event: 'tool_failure', code, tool: name, connector: p.connector, errorClass: error instanceof SyntaxError ? 'SyntaxError' : error instanceof Error ? 'Error' : 'UnknownThrow', messageHead: code });
+                  return { status: 'failed', code };
+                }
+              } finally { resultScope.release(); }
               // One boundary for every connector: a projected tool result is redacted before it is
               // persisted to tool_calls, put into evidence or source cards, or sent to the model.
               const redacted = redactSecretsWithCount(value.response);

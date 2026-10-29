@@ -71,6 +71,7 @@ export type ToolCallRefusal = Omit<ToolCallIntent, 'accountId' | 'resourceId'> &
 export const MCP_FAILURE_STAGES = ['timeout', 'cancelled', 'child_exited', 'pipe_closed', 'sdk_protocol_rejected', 'invalid_result'] as const;
 export type McpFailureStage = (typeof MCP_FAILURE_STAGES)[number];
 export const TOOL_FAILURE_CODES = [...MCP_FAILURE_STAGES, 'connector_error', 'handler_outcome',
+  'result_store_full', 'result_store_oversize', 'result_store_unavailable',
   // #637: the ask named a channel the chat connector does not know, so no read was made.
   'channel_not_found',
   // TR-R8: the tool door refused a read the connection does not cover, so no read was dispatched.

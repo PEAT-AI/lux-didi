@@ -113,7 +113,7 @@ test('a knowledge body link mints a knowledge_body handle and every hostile shap
 test('an unknown handle is not_found with the sentence she says aloud', () => {
   assert.deepEqual(openTarget('open_source', { handle: 'L999' }, 'open it'), { code: 'not_found' });
   assert.match(OPEN_GUIDANCE.not_found, /could not resolve.*shown item/);
-  assert.match(OPEN_GUIDANCE.not_allowed, /host destination policy/);
+  assert.match(OPEN_GUIDANCE.not_allowed, /not allowed/);
   assert.doesNotMatch(Object.values(OPEN_GUIDANCE).join(' '), /look it up again|tell him|repeat|your own device/i);
 });
 
@@ -389,7 +389,7 @@ test('#573: an open call runs only on the owner own open intent', () => {
   const handle = /^open: (L\d+)/m.exec(shaped.text)![1]!;
   noteOwnerWords('live-open-guard-intent', 'search the web for the pricing page');
   assert.deepEqual(openTarget('open_source', { handle }, ownerWords('live-open-guard-intent')), { code: 'no_open_intent' }, 'nothing opens when he asked for a search');
-  assert.match(OPEN_GUIDANCE.no_open_intent, /direct owner open request/);
+  assert.match(OPEN_GUIDANCE.no_open_intent, /owner request authorizing an open/);
   assert.match(OPEN_GUIDANCE.no_open_intent, /same handle/, 'a repeated ask retries with the same handle');
   noteOwnerWords('live-open-guard-intent', 'zeig mir den Umsatz');
   assert.ok('target' in openTarget('open_source', { handle }, ownerWords('live-open-guard-intent')), 'a German open intent still opens');
@@ -404,7 +404,7 @@ test('#573: a handle of another kind is a mismatch, and the asked kind opens wit
   exposeHandles(mail.text);
   const mailHandle = /^open: (L\d+)/m.exec(mail.text)![1]!;
   assert.deepEqual(openTarget('open_source', { handle: mailHandle }, 'open the presentation'), { code: 'kind_mismatch' }, 'a mail thread is never the presentation he asked for');
-  assert.match(OPEN_GUIDANCE.kind_mismatch, /requested kind/);
+  assert.match(OPEN_GUIDANCE.kind_mismatch, /kind authorized by this request/);
   const deck = shapeLuxKnowledge('get_insight', JSON.stringify({ id: 2, content: 'quarterly deck at https://docs.google.com/presentation/d/ABC/edit' }));
   exposeHandles(deck.text);
   const deckHandle = /^open: (L\d+)/m.exec(deck.text)![1]!;
@@ -523,7 +523,7 @@ test('C-OPENWEB8: a target taken from a mail, a page or the model is refused as 
   const fromMail = await resolveWebOpen({ kind: 'maps', target: 'Odemira' }, 'open the map of the place in that mail', signal);
   assert.deepEqual(fromMail, { code: 'not_owner_words' });
   assert.match(OPEN_WEB_GUIDANCE.not_owner_words.say, /nothing is open/u);
-  assert.match(OPEN_WEB_GUIDANCE.not_owner_words.fixNotForSpeech, /bound.*owner request/u);
+  assert.match(OPEN_WEB_GUIDANCE.not_owner_words.fixNotForSpeech, /structured host refusal/u);
 
   // A question about a site is not an open request, whatever it names.
   const asking = await resolveWebOpen({ kind: 'site', target: 'evil.com' }, 'did you get a mail from evil dot com?', signal);

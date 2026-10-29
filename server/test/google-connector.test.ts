@@ -111,8 +111,10 @@ test('a granted google endpoint calls the real child with bounded defaults and b
     assert.deepEqual(listProjection.sources, [{ title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#all/t1', sourceType: 'gmail' }, { title: 'Gmail: Synthetic subject line & more', url: 'https://mail.google.com/mail/u/0/#all/t2', sourceType: 'gmail' }]);
 
     const outOfBudget = await gmail.gmailList({ maxResults: 999 });
-    assert.equal(outOfBudget.state, 'refused');
-    assert.equal(outOfBudget.state === 'refused' ? outOfBudget.reason : '', 'max-results-out-of-budget');
+    const clampedList = completed(outOfBudget);
+    payloadPorts.set(clampedList, adapter);
+    const clampedEnvelope = envelopeOf(clampedList);
+    assert.equal((clampedEnvelope['received'] as Record<string, unknown>)['maxResults'], 25);
 
     const read = completed(await gmail.gmailRead({ id: 'm1', format: 'full' }));
     payloadPorts.set(read, adapter);
@@ -1094,4 +1096,113 @@ test('C-CAL8: a warm calendar digest that cuts ends with +N more', async () => {
   assert.ok((digest ?? '').length <= CALENDAR_DIGEST_CHARS, 'the digest never exceeds the bound');
   assert.match(digest ?? '', /^1[4-7]:00 synthetic/, `the next meeting opens the digest: ${digest}`);
   assert.match(digest ?? '', /, \+\d+ more$/, `a cut digest ends with its count: ${digest}`);
+});
+
+// C-CAL: a model-selected page above the budget is bounded, not rejected before the wire.
+test('calendar bounds an oversized page and retains the named-event search', async () => {
+  const fake = fakeCalendarPort({ calendars: [{ id: 'primary', summary: 'Synthetic' }], eventsFor: () => ({ events: [] }) });
+  const reader = await calendarReader(fake.port);
+  const result = await reader.gcalList({ calendarId: 'primary', maxResults: 100, q: 'Synthetic wedding', timeMin: '2026-09-29T00:00:00Z', timeMax: '2027-04-29T00:00:00Z' } as Parameters<typeof reader.gcalList>[0]);
+  assert.equal(result.state, 'completed');
+  assert.equal(fake.listArgs.length, 1);
+  assert.equal(fake.listArgs[0]?.['maxResults'], 50);
+  assert.equal(fake.listArgs[0]?.['q'], 'Synthetic wedding');
+});
+
+for (const family of ['calendar', 'gmail', 'drive'] as const) for (const mode of ['auth-data', 'auth-consent'] as const) {
+  const tool = family === 'calendar' ? 'calendar_list_events' : family === 'gmail' ? 'gmail_search_messages' : 'drive_search_files';
+test(`a ${mode} ${family} call stores an auth failure with a sign-in instruction`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'didi-google-status-'));
+  const { dir: childDir, pidFile } = scratch();
+  const configDir = join(dir, 'provider-config');
+  const store = new Store(join(dir, 'data'), toolsMigrations);
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  const env = { HOME: join(tmpdir(), 'didi-google-home'), PATH: process.env.PATH ?? '/usr/bin', LOGNAME: '', SHELL: '', TERM: '', USER: '' };
+  const command = process.execPath;
+  const args = [child, mode, pidFile];
+  const entry = { id: family, transport: 'stdio', command, args, env, connector: 'google', account: ACCOUNT, resource: RESOURCE, credentialRef: null, enabled: true, allowEgress: true, unknownClass: 'ordinary' };
+  writeFileSync(join(configDir, 'mcp.json'), JSON.stringify({ schemaVersion: 1, grantMode: 'owner-trusted-reads', endpoints: [entry] }), { mode: 0o600 });
+  let live: LiveAuthority | null = null;
+  const runtime = await composeMcpRuntime({ store, ownerId: store.assistantId, configDir, lookupAuthority: async () => live });
+  try {
+    const first = await runtime.port.discover(family);
+    assert.equal(first.state, 'discovered');
+    if (first.state !== 'discovered') throw new Error('not discovered');
+    const policy: ConnectionPolicy = {
+      schemaVersion: 1, ownerId: store.assistantId, connectionId: family, generation: 2, enabled: true, connector: 'google',
+      endpoint: { id: family, transport: 'stdio', command, args, env, account: ACCOUNT, resource: RESOURCE, credentialRef: null },
+      toolNames: [...GOOGLE_TOOLS], schemaDigest: first.schemaDigest,
+      sourcePolicy: { id: 'google-read', revision: 1, unknownClass: 'private', allowedClasses: ['private'] },
+      route: { identity: 'voice', allowedClasses: ['private'] },
+      bounds: { maxQueryChars: 80, maxSearchLimit: 3, maxGetIds: 3, maxEntityBytes: 4096, maxResultBytes: 4096 },
+    };
+    runtime.owner.applyConnection(policy);
+    const second = await runtime.port.discover(family);
+    assert.equal(second.state, 'discovered');
+    runtime.owner.projectConnection(family);
+    const acceptance: RunAcceptance = { ownerId: store.assistantId, actorId: 'actor', runId: 'run', authorityEpoch: store.authorityEpoch, revision: 1, route: { identity: 'voice', provider: 'gemini', modelId: 'gemini-2.5-flash', allowedClasses: ['private'] }, allowedClasses: ['private'], connectionIds: [family] };
+    const accepted = store.transaction(tx => runtime.owner.snapshotRun(tx, acceptance));
+    live = { ...acceptance, acceptedRunHash: accepted.sha256 };
+
+    const definition = runtime.owner.definitions('run').find(candidate => candidate.name === tool);
+    assert(definition?.execute);
+    const callArgs = family === 'drive' ? { query: 'synthetic' } : family === 'gmail' ? { q: 'synthetic' } : { calendarId: 'primary' };
+    const intent: ToolCallIntent = { runId: 'run', actorId: 'actor', authorityEpoch: store.authorityEpoch, revision: 1, executionId: 'run:1:0', toolName: tool, argumentsHash: sha256(JSON.stringify(callArgs)), callId: 'call', accountId: ACCOUNT, resourceId: RESOURCE };
+    assert.equal(runtime.owner.journal.intent(intent), 'fresh');
+    const failed = await definition!.execute!(callArgs, { ...intent, signal: new AbortController().signal });
+    assert.equal(failed.status, 'completed');
+    const flipped = runtime.status().endpoints.find(endpoint => endpoint.id === family);
+    assert.equal(flipped?.state, 'configured');
+    assert.equal(flipped?.error, `auth needed: run lux-google-mcp authorize --family ${family} to sign in again`);
+    const row = store.transaction(tx => tx.get('SELECT result_json FROM tool_calls WHERE execution_id=?', ['run:1:0']));
+    const stored = JSON.parse(String(row?.result_json)) as { response: Record<string, unknown> };
+    assert.match(String(stored.response['text']), new RegExp(`auth needed: run lux-google-mcp authorize --family ${family}`));
+
+  } finally {
+    await runtime.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(childDir, { recursive: true, force: true });
+  }
+});
+}
+
+// C2: compare the exposed wire surface, allowing Didi's intentionally smaller page budgets.
+function assertGoogleWireContract(recording: { families: Record<string, { tools: { name: string; inputSchema: { properties: Record<string, { type: string; maximum?: number }> } }[] }> }) {
+  const remote = new Map(Object.values(recording.families).flatMap(family => family.tools).map(tool => [tool.name, tool]));
+  for (const declaration of connectorDescriptor('google')!.declarations({} as ConnectionPolicy)) {
+    const helper = remote.get(declaration.name);
+    assert.ok(helper, `${declaration.name} missing from helper`);
+    const properties = declaration.parameters['properties'] as Record<string, { type: string; maximum?: number }>;
+    assert.deepEqual(Object.keys(properties).sort(), Object.keys(helper.inputSchema.properties).sort(), `${declaration.name} wire keys drifted`);
+    for (const [key, schema] of Object.entries(properties)) {
+      const accepted: { type: string; maximum?: number } = helper.inputSchema.properties[key]!;
+      assert.equal(schema.type, accepted.type, `${declaration.name}.${key} type drifted`);
+      if (schema.maximum !== undefined && accepted.maximum !== undefined) assert.ok(schema.maximum <= accepted.maximum, `${declaration.name}.${key} exceeds helper budget`);
+    }
+  }
+}
+test('Google child declarations match the dated recorded tools/list wire contract', () => {
+  const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'google-tools-list.json'), 'utf8'));
+  assert.equal(recording.helper, 'lux-google-mcp');
+  assert.equal(recording.version, '0.1.0');
+  assert.equal(recording.retrieved, '2026-10-30');
+  assertGoogleWireContract(recording);
+});
+test('Google wire contract catches injected schema drift', () => {
+  const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'google-tools-list.json'), 'utf8'));
+  const events = recording.families.calendar.tools.find((tool: { name: string }) => tool.name === 'calendar_list_events');
+  delete events.inputSchema.properties.q;
+  assert.throws(() => assertGoogleWireContract(recording), /wire keys drifted/);
+});
+
+test('two selected calendars out of three are read with declared helper arguments only', async () => {
+  const fake = fakeCalendarPort({ calendars: [{ id: 'primary', summary: 'Primary', primary: true }, { id: 'second', summary: 'Second' }, { id: 'third', summary: 'Third' }], eventsFor: id => ({ events: [{ id, summary: `Synthetic ${id}`, start: { dateTime: '2026-11-02T12:00:00Z' } }] }) });
+  const recording = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'google-tools-list.json'), 'utf8'));
+  const properties = recording.families.calendar.tools.find((tool: { name: string }) => tool.name === 'calendar_list_events').inputSchema.properties;
+  const reader = await calendarReader(fake.port, {}, properties);
+  const result = await reader.gcalList({ calendarIds: ['primary', 'second'], timeMin: '2026-11-02T00:00:00Z', timeMax: '2026-11-09T00:00:00Z' });
+  assert.equal(result.state, 'completed');
+  assert.deepEqual(fake.listArgs.map(args => args['calendarId']).sort(), ['primary', 'second']);
+  for (const args of fake.listArgs) for (const key of Object.keys(args)) assert.ok(Object.hasOwn(properties, key), `undeclared ${key}`);
 });

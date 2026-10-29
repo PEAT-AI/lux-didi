@@ -350,12 +350,15 @@ test('#1020: a paged calendar read never claims more shown than total, and a cut
 
 // W2: the calendar fan-out is bounded by the run's own source budget, never by the connector's constant.
 
-test('every calendar read carries the run remaining source budget as an absolute deadline', async () => {
+test('every calendar read carries the remaining budget as helper maxMs, never an internal deadline', async () => {
   const h = fixture([event(19)]);
   await runResearch(h.deps, { action: 'start', lookups: [{ source: 'calendar', query: 'today' }] }, signal());
   const reads = h.calls.filter(call => call['name'] === 'calendar_list_events');
   assert.ok(reads.length > 0, 'the run read the calendar');
-  for (const call of reads) assert.equal(call['deadlineAt'], fixedNow + 12_000, 'the connector is bounded by the caller budget, never by the 40 s constant');
+  for (const call of reads) {
+    assert.equal(call['maxMs'], 12_000, 'the helper is bounded by the caller budget');
+    assert.equal(Object.hasOwn(call, 'deadlineAt'), false, 'the absolute deadline stays internal');
+  }
 });
 
 test('E8: a whole calendar week comes back at once, one compact line per day', async () => {

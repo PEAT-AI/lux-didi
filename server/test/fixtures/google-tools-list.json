@@ -1,0 +1,260 @@
+{
+  "helper": "lux-google-mcp",
+  "version": "0.1.0",
+  "retrieved": "2026-10-30",
+  "families": {
+    "calendar": {
+      "tools": [
+        {
+          "name": "calendar_list_calendars",
+          "description": "List the calendars the account can see, bounded by maxResults with an explicit continuation token, cached for ten minutes unless refresh is true, which an events-only grant does not authorize.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "maxResults": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "default": 25
+              },
+              "pageToken": {
+                "type": "string",
+                "minLength": 1
+              },
+              "refresh": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        {
+          "name": "calendar_list_events",
+          "description": "List events on one calendar or on several calendars at once, bounded by maxResults with an explicit continuation token, optionally inside a timeMin/timeMax RFC 3339 window, with coverage reported as visibility=unverified.",
+          "inputSchema": {
+            "type": "object",
+            "anyOf": [
+              {
+                "required": [
+                  "calendarId"
+                ]
+              },
+              {
+                "required": [
+                  "calendarIds"
+                ]
+              }
+            ],
+            "required": [],
+            "additionalProperties": false,
+            "properties": {
+              "maxResults": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "default": 25
+              },
+              "pageToken": {
+                "type": "string",
+                "minLength": 1
+              },
+              "calendarId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "calendarIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "include": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "attendees",
+                    "organizer",
+                    "description",
+                    "conference"
+                  ]
+                }
+              },
+              "maxMs": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "timeMin": {
+                "type": "string",
+                "minLength": 1
+              },
+              "timeMax": {
+                "type": "string",
+                "minLength": 1
+              },
+              "q": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "gmail": {
+      "tools": [
+        {
+          "name": "gmail_get_profile",
+          "description": "Read the Gmail profile (address, message and thread totals) of the selected binding.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+          }
+        },
+        {
+          "name": "gmail_search_messages",
+          "description": "Search messages and return each match's headers and snippet, bounded by maxResults with an explicit continuation token, where q needs the wider read scope.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "maxResults": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "default": 25
+              },
+              "pageToken": {
+                "type": "string",
+                "minLength": 1
+              },
+              "q": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        {
+          "name": "gmail_read_message",
+          "description": "Read one message's headers and snippet, its attachment metadata, plus the plain-text body with format=full, which needs the wider read scope.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "format": {
+                "type": "string",
+                "enum": [
+                  "metadata",
+                  "full"
+                ],
+                "default": "metadata"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "name": "gmail_get_thread",
+          "description": "Read one thread's messages in provider order, each shaped like gmail_read_message with its internalDate and attachment metadata.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "format": {
+                "type": "string",
+                "enum": [
+                  "metadata",
+                  "full"
+                ],
+                "default": "full"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "name": "gmail_list_labels",
+          "description": "List the account's labels with their provider id, name and type, system and user alike.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "drive": {
+      "tools": [
+        {
+          "name": "drive_search_files",
+          "description": "Find Drive files the account owns or that are shared with it whose name contains query, newest first, returning each file's owners and webViewLink and never a download, export or thumbnail link.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "minLength": 1
+              },
+              "mime_types": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "modified_after": {
+                "type": "string",
+                "minLength": 1
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "default": 5
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "name": "drive_get_file",
+          "description": "Read one Drive file's name, type, owners, modification time, trashed flag and webViewLink by id, never a download, export or thumbnail link.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "file_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "file_id"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    }
+  }
+}

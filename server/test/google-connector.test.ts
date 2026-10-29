@@ -1170,13 +1170,13 @@ test(`a ${mode} ${family} call stores an auth failure with a sign-in instruction
 // C2: compare the exposed wire surface, allowing Didi's intentionally smaller page budgets.
 function assertGoogleWireContract(recording: { families: Record<string, { tools: { name: string; inputSchema: { properties: Record<string, { type: string; maximum?: number }> } }[] }> }) {
   const remote = new Map(Object.values(recording.families).flatMap(family => family.tools).map(tool => [tool.name, tool]));
-  for (const declaration of connectorDescriptor('google').declarations({} as ConnectionPolicy)) {
+  for (const declaration of connectorDescriptor('google')!.declarations({} as ConnectionPolicy)) {
     const helper = remote.get(declaration.name);
     assert.ok(helper, `${declaration.name} missing from helper`);
     const properties = declaration.parameters['properties'] as Record<string, { type: string; maximum?: number }>;
     assert.deepEqual(Object.keys(properties).sort(), Object.keys(helper.inputSchema.properties).sort(), `${declaration.name} wire keys drifted`);
     for (const [key, schema] of Object.entries(properties)) {
-      const accepted = helper.inputSchema.properties[key]!;
+      const accepted: { type: string; maximum?: number } = helper.inputSchema.properties[key]!;
       assert.equal(schema.type, accepted.type, `${declaration.name}.${key} type drifted`);
       if (schema.maximum !== undefined && accepted.maximum !== undefined) assert.ok(schema.maximum <= accepted.maximum, `${declaration.name}.${key} exceeds helper budget`);
     }

@@ -498,7 +498,7 @@ struct NativeHostIdentity: Codable, Equatable, Sendable {
 
     static func read(_ pid: Int32) -> NativeHostIdentity? {
         guard pid > 1 else { return nil }
-        var path = [CChar](repeating: 0, count: Int(PROC_PIDPATHINFO_MAXSIZE))
+        var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
         guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else { return nil }
         var info = proc_bsdinfo()
         guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size)) == Int32(MemoryLayout<proc_bsdinfo>.size) else { return nil }

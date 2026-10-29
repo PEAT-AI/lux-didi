@@ -2393,6 +2393,8 @@ export function bindResearchQuery(query: string, allowed: string): { query: stri
 }
 
 export interface ResearchDeps {
+  /** Exact host-held registration for the accepted run, never diagnostic logging fields. */
+  inputSchema?: ((tool: string) => JsonObject | undefined) | undefined;
   /** Recent conversational words only, never injected directories or profile context. */
   queryContext?: (() => string) | undefined;
   timeZone?: string;
@@ -4658,7 +4660,20 @@ function driveSubs(query: string, ownerWords: string): IntentSubCall[] {
  * K6: one routed lookup. `memory` is read in process; every other layer becomes the internal read that
  * source already owns, under its own per-source deadline. Nothing here consults the selector.
  */
-function routedRead(lookup: ResearchLookup, context: { question: string; topic?: string | undefined; ownerWords?: string | undefined; configured: readonly SourceKind[]; run: RunState; now: () => number; timeZone?: string }): { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } {
+function routedRead(lookup: ResearchLookup, context: Parameters<typeof routedReadUnfiltered>[1] & { inputSchema?: ResearchDeps['inputSchema'] }): ReturnType<typeof routedReadUnfiltered> {
+  const read = routedReadUnfiltered(lookup, context);
+  if (!context.inputSchema) return read; // Offline legacy callers have no host registration port.
+  const subs: IntentSubCall[] = [];
+  for (const sub of read.subs) {
+    if (sub.name !== INTERNAL.calendarList) { subs.push(sub); continue; }
+    const properties = context.inputSchema(sub.name)?.['properties'];
+    if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return { ...read, subs: [], unresolved: true, reason: 'calendar_schema_unavailable' };
+    subs.push({ ...sub, args: Object.fromEntries(Object.entries(sub.args).filter(([key]) => Object.hasOwn(properties, key))) as JsonObject });
+  }
+  return { ...read, subs };
+}
+
+function routedReadUnfiltered(lookup: ResearchLookup, context: { question: string; topic?: string | undefined; ownerWords?: string | undefined; configured: readonly SourceKind[]; run: RunState; now: () => number; timeZone?: string }): { unresolved?: boolean; reason?: string; source: SourceKind | 'memory'; kind: LedgerKind; subs: IntentSubCall[] } {
   const query = lookup.query;
   if (lookup.source === 'memory') return { source: 'memory', kind: 'memory_search', subs: [{ key: 'history', name: HISTORY_IDENTITY.name, args: { ...(lookup.history ?? { query }) } }] };
   if (lookup.source === 'company') return { source: 'mongoose', kind: 'knowledge_search', subs: companySubs(query) };
@@ -5478,7 +5493,7 @@ async function routedResearch(deps: ResearchDeps, run: RunState, question: strin
   // N3: group by the read a lookup resolves to, so 'company' and 'mongoose', or 'replies' and 'chat',
   // share one execution; the group keeps the order in which each source first appeared.
   // TOPIC-R2 F1: the routed read names the owner's words for this run, never this hop's alone.
-  const readContext = { question, topic: run.topic, ownerWords: run.question === undefined ? question : `${run.question} ${question}`.trim(), configured, run, now, ...(deps.timeZone ? { timeZone: deps.timeZone } : {}) };
+  const readContext = { inputSchema: deps.inputSchema, question, topic: run.topic, ownerWords: run.question === undefined ? question : `${run.question} ${question}`.trim(), configured, run, now, ...(deps.timeZone ? { timeZone: deps.timeZone } : {}) };
   const groups = new Map<SourceKind | 'memory', RoutedPlan[]>();
   for (const lookup of lookups) {
     const plan: RoutedPlan = { lookup, read: routedRead(lookup, readContext) };

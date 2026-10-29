@@ -18,7 +18,7 @@ import type { MattermostAttention, MattermostChatRead, MattermostReader, Matterm
 import { projectMattermostResult } from '../tools/mattermost.js';
 import { shapeMattermost } from '../tools/live-shape.js';
 import { INTERNAL, type IntentSubCall, type IntentSubResult } from '../tools/intent.js';
-import { ResearchLedger, runResearch, shapeBlock, type ResearchDeps } from '../tools/research.js';
+import { ResearchLedger, routedSelection, runResearch, shapeBlock, type ResearchDeps } from '../tools/research.js';
 import { chatAsk, chatIntent, chatSubs, chatWindow, spokenChannel } from '../tools/chat-intent.js';
 import { installPeople, parsePeople, type PeopleSnapshot } from '../people/index.js';
 
@@ -864,6 +864,8 @@ test('MM-1 and MM-6: repeated channel names and inflected topics return the name
 test('MM-5 and MM-7: discussion shapes and every recorded product mishearing select chat research', async t => {
   const f = await setup(t, 'people');
   for (const question of ['recent discussions with Ada', 'Ada discussions', ...['Metamos', 'Metamost', 'Metamo', 'metamorph', 'MetaMask', 'MetaMouse'].map(name => `can you access ${name}`)]) {
+    assert.equal(chatAsk(question), true, question);
+    assert.ok(routedSelection(question, ['chat'], FIXTURE_NOW)?.actions.some(action => action.kind === 'chat_search'), question);
     const planned: IntentSubCall[] = [];
     const reply = await runResearch(researchDeps(f, planned), { action: 'start', question, topic: question }, new AbortController().signal);
     assert.ok(planned.some(call => call.name === INTERNAL.chatRead || call.name === INTERNAL.chatSearch), question);

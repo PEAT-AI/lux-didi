@@ -25,7 +25,7 @@ cp server/adapters/live-voice/types.ts "$out/source/adapters/live-voice/"
 cp server/adapters/live-voice/openai.ts server/adapters/live-voice/resample.ts server/adapters/live-voice/audio-level.ts "$out/source/adapters/live-voice/"
 # The adapter types name the host's trace port (O1b-A), so stage the trace kinds and the record door.
 cp server/trace/kinds.ts server/trace/record.ts server/trace/clock.ts "$out/source/trace/"
-cp server/domain/history-reader.ts server/domain/history-lifecycle.ts server/domain/util.ts server/domain/contract.ts "$out/source/domain/"
+cp server/domain/history-turns.ts server/domain/history-reader.ts server/domain/history-lifecycle.ts server/domain/util.ts server/domain/contract.ts "$out/source/domain/"
 cp server/adapters/mcp/port.ts server/adapters/mcp/registry.ts "$out/source/adapters/mcp/"
 cp server/connectors/google.ts "$out/source/connectors/"
 cp server/tools/vault-write.ts "$out/source/tools/"

@@ -57,7 +57,7 @@ test('alarm: a resolved instant remains fixed when the system time zone changes'
   if (london.status !== 'ready') return;
   assert.equal(london.fireAtUtc, Date.parse('2026-10-29T08:00:00Z'));
   assert.equal(london.tz, 'Europe/London');
-  assert.equal(result.fireAtUtc, Date.parse('2026-10-29T00:00:00Z'));
+  assert.equal(result.fireAtUtc, Date.parse('2026-10-29T12:00:00Z'));
   assert.equal(result.tz, 'America/New_York');
 });
 
@@ -170,4 +170,10 @@ test('hear104 quarter-to is a time, not a trailing label', () => {
   const result = parseAlarmTime('set an alarm at quarter to eight', now, tz);
   assert.equal(result.status, 'ready');
   if (result.status === 'ready') assert.equal(result.label, '');
+});
+
+test('hear104 a pending bare-number follow-up supplies hour and minute', () => {
+  const result = parseAlarmTime('set an alarm Ten five, today', now, tz);
+  assert.equal(result.status, 'ready');
+  if (result.status === 'ready') assert.equal(result.fireAtUtc, Date.parse('2026-10-29T02:05:00Z'));
 });

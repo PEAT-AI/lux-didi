@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import Combine
 import SwiftUI
 import Carbon
@@ -683,6 +684,9 @@ struct RootView: View {
     private var singleKeyGrantTimer: Timer?
     private var singleKeyGrantMonitor: NSObjectProtocol?
     private var keyboardMonitor: Any?
+    private var statusClickMonitor: Any?
+    private var menuTracking = StatusMenuTracking()
+    private let menuLogger = Logger(subsystem: "LuxDidi", category: "menu")
     private var terminationMonitor: NSObjectProtocol?
     /// 338: the wake observer, paired with the sleep one above so the warm context is refreshed
     /// exactly when the Mac comes back and no session is running.
@@ -808,6 +812,17 @@ struct RootView: View {
         // menu after the default target pass. A menu item never opens a live microphone.
         menu.addItem(miniOrbMenu.item())
         statusItem.menu = menu
+        statusClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            MainActor.assumeIsolated {
+                if let self, let button = self.statusItem.button, event.window === button.window,
+                   button.bounds.contains(button.convert(event.locationInWindow, from: nil)) {
+                    self.menuTracking.requested { event, requests, opens in
+                        self.menuLogger.info("\(event, privacy: .public) requested=\(requests) opened=\(opens)")
+                    }
+                }
+            }
+            return event
+        }
         hotkey.onToggle = { [weak self] in self?.toggleMiniOrb() }
         hotkeyCode = hotkey.register()
         model.hotkeyStatus = hotkeyCode == noErr ? "⌃ ⌥ Space · Naya window" : "Unavailable (OSStatus \(hotkeyCode)); use the menu bar"
@@ -921,7 +936,9 @@ struct RootView: View {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             NSWorkspace.shared.open(directory)
         } catch {
-            let alert = NSAlert(); alert.messageText = "Logs are unavailable."; alert.runModal()
+            let alert = NSAlert(); alert.messageText = "Logs are unavailable."
+            alert.addButton(withTitle: "OK")
+            StatusSafeAlert.present(alert, parent: window)
         }
     }
 
@@ -1055,10 +1072,11 @@ struct RootView: View {
         loginMenuItem?.title = loginAvailability?.text ?? "Open at login: unavailable in this launch"
         loginMenuItem?.state = loginAvailability?.status == .on ? .on : .off
         loginMenuItem?.isEnabled = loginAvailability != nil
-        // #3p, #1021: the notice is only there while the key has no tap, and a grant picked
-        // in System Settings while the app runs brings the tap up on this very look.
-        refreshAccessibilityNotice()
-        recheckSingleKeyGrant()
+        // Never query TCC, install event taps or run modal work inside menu tracking.
+        // Activation and the existing grant timer refresh the cached grant notice instead.
+        menuTracking.opened { event, requests, opens in
+            menuLogger.info("\(event, privacy: .public) requested=\(requests) opened=\(opens)")
+        }
     }
     /// #3p, R2: the notice's button. The owner's one explicit click asks for the Input
     /// Monitoring grant, which puts Naya in that list by itself, and opens the pane so the
@@ -1087,11 +1105,11 @@ struct RootView: View {
         guard plan.onActivation, let interval = plan.pollInterval else { stopSingleKeyGrantWatch(); return }
         guard singleKeyGrantTimer == nil else { return }
         singleKeyGrantTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.recheckSingleKeyGrant() }
+            Task { @MainActor in self?.scheduleSingleKeyGrantRecheck() }
         }
         singleKeyGrantMonitor = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.recheckSingleKeyGrant() }
+            Task { @MainActor in self?.scheduleSingleKeyGrantRecheck() }
         }
     }
     private func stopSingleKeyGrantWatch() {
@@ -1102,6 +1120,17 @@ struct RootView: View {
     }
     /// The tap goes in the moment the grant is there, one receipt says so, and the line that
     /// said the key was off goes with it.
+    private var singleKeyRecheckScheduled = false
+    private func scheduleSingleKeyGrantRecheck() {
+        guard !singleKeyRecheckScheduled else { return }
+        singleKeyRecheckScheduled = true
+        RunLoop.main.perform(inModes: [.default]) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.singleKeyRecheckScheduled = false
+                self?.recheckSingleKeyGrant()
+            }
+        }
+    }
     private func recheckSingleKeyGrant() {
         let wasTapped = singleKey.tapCreated
         singleKey.start()
@@ -1127,12 +1156,26 @@ struct RootView: View {
 
     /// #620: the owner opened the full window. The grant alert is asked exactly where it was asked
     /// before (once per app version, interactive launches only) and the sheet appears once.
+    private func showSingleKeyGrantExplanation() {
+        let alert = NSAlert()
+        alert.messageText = "A Right Command tap mutes Naya"
+        alert.informativeText = SingleKeyTrigger.explanation
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Not now")
+        StatusSafeAlert.present(alert, parent: window) { [weak self] accepted in
+            guard accepted else { return }
+            SingleKeyTrigger.requestListenEventAccess()
+            self?.scheduleSingleKeyGrantRecheck()
+        }
+    }
+
     private func showDeferredPrompts() {
         recordPrompts(deferredPrompts.ownerOpenedWindow { prompt in
             switch prompt {
             case .grantAlert:
                 guard launchKind == .interactive else { return false }
-                SingleKeyTrigger.requestGrantIfNeeded(for: launchKind, version: model.shortcutGrantVersion)
+                SingleKeyTrigger.requestGrantIfNeeded(for: launchKind, version: model.shortcutGrantVersion,
+                    prompt: { [weak self] in self?.showSingleKeyGrantExplanation() })
                 return true
             case .gettingStarted:
                 guard window != nil, NativeGettingStartedOnce.consume(UserDefaults.standard) else { return false }
@@ -1227,7 +1270,7 @@ struct RootView: View {
         let enabled = !SingleKeyTrigger.isEnabled
         SingleKeyTrigger.isEnabled = enabled
         if enabled {
-            if !SingleKeyTrigger.isGranted { SingleKeyTrigger.requestGrantNow() }
+            if !SingleKeyTrigger.isGranted { showSingleKeyGrantExplanation() }
             singleKey.start()
         } else {
             singleKey.stop()
@@ -1517,6 +1560,7 @@ struct RootView: View {
         liveCallTimer?.invalidate(); liveCallBadge?.cancel(); liveCallHealth?.cancel()
         model.stopRecording("Didi quit"); hotkey.unregister(); liveShortcuts.unregister()
         if let keyboardMonitor { NSEvent.removeMonitor(keyboardMonitor) }
+        if let statusClickMonitor { NSEvent.removeMonitor(statusClickMonitor) }
         if let terminationMonitor { NSWorkspace.shared.notificationCenter.removeObserver(terminationMonitor) }
         if let wakeMonitor { NSWorkspace.shared.notificationCenter.removeObserver(wakeMonitor) }
     }
